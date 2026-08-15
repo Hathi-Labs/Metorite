@@ -30,6 +30,8 @@ limitations). Do not add product specs to `docs/`.
 
 | Spec | Board row(s) |
 |---|---|
+| `metorite_migration.md` | THE MIGRATION BOARD — MG-1 … MG-19 |
+| `specs/rebrand_metorite.md` | MG-13 … MG-18 |
 | `work_plan.md` | THE BOARD — §1 contract · §2 rows · §3 decisions · §4 owners · §6 gates |
 | `HANDOFF.md` | THE QUEUE (D39) — what the last session left unfinished, injected at session start by `.claude/hooks/session-handoff.mjs`. ⚠️ **Actions, never state**: `work_plan.md` §2 stays the only current-state authority, and every entry carries a **Check** that re-derives whether it is still real. Sessions delete entries whose Check passes; `/handoff` is the workflow. |
 | `../FOUNDATION_BUILDOUT_CHECKLIST.md` *(repo ROOT)* | WS-1 · WS-4 · WS-5 |
