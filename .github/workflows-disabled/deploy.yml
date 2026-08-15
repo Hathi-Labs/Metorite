@@ -1,0 +1,314 @@
+# CommandCenter — CI/CD pipeline for Hostinger VPS deployment.
+#
+# Trigger: push to main (after PR merge) or manual dispatch.
+# Flow:    lint → test → SSH to VPS → git pull → docker compose up →
+#          uv sync → restart gateway → rebuild workbench → reload Caddy.
+#
+# Required GitHub Secrets (set in repo Settings → Secrets and variables → Actions):
+#   HOSTINGER_HOST       — VPS IP or hostname (e.g. 123.45.67.89)
+#   HOSTINGER_USER       — SSH user (e.g. acb)
+#   HOSTINGER_SSH_KEY    — SSH private key (ed25519 or rsa)
+#   HOSTINGER_APP_DIR    — app root on VPS (default /opt/acb/app)
+#
+# Optional:
+#   LITELLM_MASTER_KEY     — for infra smoke test
+#
+# NOT a secret, despite what this header used to say. It claimed
+# "GATEWAY_INTERNAL_TOKEN — if set, injects into .env on deploy". No such
+# injection exists anywhere in this workflow or in scripts/vps_apply.sh; the
+# only mechanism is vps_apply.sh READING /opt/acb/app/.env and reconciling
+# workbench/control_plane/.env.local to match it. So `.env` on the box is the
+# source of truth for that token, and rotating it needs no GitHub secret and no
+# push-path deploy — edit .env, then run scripts/vps_pull.sh --force.
+# The stale comment mattered: it sent the rotation runbook through a mechanism
+# that does not exist, and that runbook's failure mode is locking out every
+# signed-in member.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    # WS-25: `paths-ignore` was REMOVED here, deliberately, and it cost a few
+    # minutes of CI per docs commit to do it.
+    #
+    # It used to skip this whole workflow for `**.md`, `project-docs/**`,
+    # `skills/**` and `workbench/e2e/**`. That was a sound optimisation while
+    # delivery was push-based and documentation did not need to reach the box.
+    # It is wrong now, for two reasons:
+    #   1. `publish-release` lives in this workflow, and a workflow-level path
+    #      filter skips the JOBS too — so a docs-only merge would never move
+    #      `release`, and the box would never converge on it. Agents running ON
+    #      the box read AGENTS.md and project-docs/specs; stale copies there
+    #      are the exact failure this workstream exists to remove.
+    #   2. It made the stranding invisible. #357 was documentation-only, so no
+    #      run was ever queued for it — "no failed run" read as "nothing to do"
+    #      rather than "never attempted".
+    # Converging the box on main matters more than saving four minutes.
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip test suite (use only for emergency hotfixes)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Gate 1: Lint + Type Check ──────────────────────────────────────────
+  lint:
+    name: "Lint & type-check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Ruff lint (info-only, not blocking)
+        continue-on-error: true
+        run: uv run ruff check . || echo "ruff found issues (non-blocking — see log)"
+
+      - name: Mypy (info-only, not blocking)
+        continue-on-error: true
+        run: uv run mypy apps packages --ignore-missing-imports || echo "mypy found issues"
+
+  # ── Gate 2: Unit Tests ─────────────────────────────────────────────────
+  test:
+    name: "Unit tests"
+    runs-on: ubuntu-latest
+    needs: lint
+    if: ${{ !inputs.skip_tests }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Run unit tests
+        run: uv run python -m pytest tests/unit/ -x -v
+
+  # ── Publish the ref the VPS polls (WS-25) ──────────────────────────────
+  # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
+  # so CI gating survives the inversion to pull-based delivery: a commit whose
+  # tests failed never becomes something the box will install.
+  #
+  # Gated on lint+test and DELIBERATELY NOT on the deploy job. That looks wrong
+  # until you remember what this is for: when GitHub cannot reach the VPS, the
+  # deploy job FAILS. Gating the ref on deploy success would withhold it exactly
+  # when the box's own pull is the only delivery path left — which is the
+  # outage this whole workstream exists to fix. What `release` asserts is "this
+  # commit passed the gates and is safe to install", not "GitHub managed to
+  # install it".
+  #
+  # The push is a plain fast-forward: git refuses a non-fast-forward rather
+  # than rewriting, so a force-push to main can never silently rewind the box.
+  publish-release:
+    name: "Publish release ref"
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: >-
+      ${{ always()
+      && needs.lint.result == 'success'
+      && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth: 0, not the default shallow clone. `git push` proves the
+      # fast-forward CLIENT-side: with depth 1 the runner does not have the
+      # commit `release` currently points at, so every push after the one that
+      # CREATED the ref was rejected with "fetch first" — release sat at the
+      # first published commit (#360) while three merges deployed past it,
+      # and the box's pull path had nothing new to converge on.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward release to this commit
+        run: |
+          set -euo pipefail
+          echo "publishing ${GITHUB_SHA} to refs/heads/release"
+          git push origin "${GITHUB_SHA}:refs/heads/release"
+
+  # ── Gate 3: Build & Deploy to Hostinger ────────────────────────────────
+  deploy:
+    name: "Deploy to Hostinger"
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    # NOT `if: success()`. With skip_tests=true the `test` job is SKIPPED, and a
+    # dependent guarded by success() is skipped along with it — so the emergency
+    # hotfix path silently deployed nothing, exactly when it was needed most.
+    # Treat a skipped test job as acceptable; a FAILED one still blocks.
+    if: >-
+      ${{ always()
+      && needs.lint.result == 'success'
+      && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    env:
+      # Runner-reachable public URLs used to VERIFY the deploy by outcome
+      # (see the deploy step's rationale).
+      GATEWAY_URL: https://api.commandcenter.fracktal.in
+      WORKBENCH_URL: https://commandcenter.fracktal.in
+    steps:
+      # ── OUTCOME-VERIFIED DEPLOY ──────────────────────────────────────────
+      # Why this shape: the remote deploy script runs to "Deployment complete"
+      # in ~60s, but appleboy/ssh-action intermittently reports FAILURE anyway
+      # because the runner↔VPS SSH *session teardown* hits `dial tcp i/o
+      # timeout` — a Hostinger network blip on connection close, NOT a failed
+      # deploy (verified: both services end up live on the pushed commit). So
+      # we must NOT trust the SSH action's exit code. Instead:
+      #   1. run the (idempotent) deploy, ignoring its reported outcome;
+      #   2. VERIFY the app is actually serving via the public health endpoint;
+      #   3. only re-run the deploy if verification fails (app genuinely down),
+      #      with backoff to outlast a network blip;
+      #   4. the job passes iff the final verification passes.
+      # This turns "SSH close flaked but deploy succeeded" (the common case)
+      # into GREEN, and only fails when the app is truly unreachable.
+
+      - uses: actions/checkout@v4
+
+      - name: Deploy + verify (up to 3 rounds)
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+        run: |
+          set -uo pipefail
+
+          # Materialise the deploy script + private key on the runner. A
+          # keepalive-enabled ssh invocation keeps a held session alive through
+          # NAT/idle culling (ServerAliveInterval) and bounds a slow handshake
+          # (ConnectTimeout).
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # WS-25 D1: the apply script is a versioned FILE now, not 437 lines of
+          # shell inside this YAML's env: block. One copy — shellcheckable,
+          # diffable, runnable by hand during an incident — and, critically, the
+          # same file scripts/vps_pull.sh executes when the box updates itself,
+          # so the pushed and pulled delivery paths cannot drift apart.
+          cp scripts/vps_apply.sh /tmp/deploy_remote.sh
+
+          ssh_deploy() {
+            # 1800s, matched to the pull unit's TimeoutStartSec. 900 was fatal
+            # in a way verify() cannot see: the pre-migration backup alone
+            # takes ~11 minutes on the 4GB box, so the session was killed
+            # MID-APPLY — migrations never ran, services never restarted —
+            # and verify() then blessed the still-running OLD deployment as
+            # green. A timeout kill is the one failure mode where "the app is
+            # healthy" says nothing about "the deploy happened".
+            timeout 1800 ssh \
+              -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=30 -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=8 -o BatchMode=yes \
+              "$SSH_USER@$SSH_HOST" 'bash -s' < /tmp/deploy_remote.sh
+          }
+
+          run_deploy() {
+            # The SSH exit code is ADVISORY — a flaky session teardown must not
+            # be read as a failed deploy. verify() below is the real signal.
+            echo "── Running remote deploy script ──"
+            if ssh_deploy; then
+              echo "  ssh returned 0"
+            else
+              echo "  (ssh exited non-zero — verifying by health regardless)"
+            fi
+          }
+
+          verify() {
+            # The deploy is SUCCESSFUL iff the app is actually serving to USERS,
+            # which requires Caddy: gate on the PUBLIC workbench URL answering
+            # (2xx/3xx), not just the gateway. The direct-IP gateway probe stays
+            # as a fallback for the gateway signal only — it must never mask a
+            # dead Caddy (that exact blind spot let a full outage ship green).
+            # The 4GB box can be slow right after a rebuild — allow a warm-up.
+            echo "── Verifying public workbench + gateway health ──"
+            for i in $(seq 1 24); do
+              gw_ok=0
+              if curl -fsS --max-time 10 "$GATEWAY_URL/health" >/dev/null 2>&1; then
+                gw_ok=1
+              elif curl -fsS --max-time 10 "http://$SSH_HOST:8080/health" >/dev/null 2>&1; then
+                gw_ok=1
+              fi
+              wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null || echo 000)
+              if [ "$gw_ok" = 1 ] && printf '%s' "$wb_code" | grep -qE '^[23]'; then
+                echo "  gateway healthy; workbench / -> HTTP $wb_code (poll $i)"
+                return 0
+              fi
+              echo "  not healthy yet (gateway_ok=$gw_ok workbench=$wb_code, poll $i/24) — 10s…"
+              sleep 10
+            done
+            return 1
+          }
+
+          for round in 1 2 3; do
+            echo "════════ Deploy round $round/3 ════════"
+            run_deploy
+            if verify; then
+              echo "✅ Deploy verified healthy on round $round."
+              exit 0
+            fi
+            echo "⚠️  App not healthy after round $round."
+            if [ "$round" -lt 3 ]; then
+              backoff=$((round * 60))
+              echo "Backing off ${backoff}s to outlast any network blip…"
+              sleep "$backoff"
+            fi
+          done
+
+          echo "❌ App still unreachable after 3 deploy+verify rounds."
+          echo "   Diagnose: SSH to the box and check 'systemctl status acb-gateway acb-workbench'"
+          echo "   and 'docker compose -f infra/docker-compose.yml logs --tail=100'."
+          exit 1
+
+  # ── Post-deploy: Smoke test (hit /health endpoint) ─────────────────────
+  smoke:
+    name: "Smoke test"
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: success()
+    steps:
+      - name: Health check
+        # Informational only. The deploy job already gates on the gateway,
+        # workbench and infra being healthy *on the box* before it completes;
+        # this probe hits the PUBLIC URL, which can be transiently unreachable
+        # for minutes while the concurrent Next.js rebuild saturates the 4GB
+        # VPS. A flap here must not mark an otherwise-successful deploy failed.
+        continue-on-error: true
+        run: |
+          GATEWAY_URL="${GATEWAY_URL:-https://api.commandcenter.fracktal.in}"
+          echo "Hitting $GATEWAY_URL/health (with retries for cold start)..."
+          # The 4GB VPS is still under heavy load right after deploy (the
+          # Next.js rebuild pegs CPU/RAM), so the gateway can take a couple of
+          # minutes to answer. Retry for up to ~5min before calling it a failure
+          # so a slow warm-up doesn't masquerade as a broken deploy.
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 "$GATEWAY_URL/health"; then
+              echo ""
+              echo "Gateway is healthy (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt/30 failed — retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after 30 attempts (~5min)"
+          exit 1

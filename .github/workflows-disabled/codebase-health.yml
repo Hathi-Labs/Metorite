@@ -1,0 +1,83 @@
+# Weekly codebase-health review (dev-velocity tooling, Phase 3).
+# Runs scripts/codebase_health.py over the whole repo and opens/updates ONE
+# rolling tracking issue with the complexity + size + maintainability report.
+# It FLAGS and PROPOSES — it never edits code. Acting on the report is done
+# by a human or a coding agent via the `codebase-health-audit` skill.
+# Spec: project-docs/specs/dev_velocity_tooling_2026-07.md
+name: codebase-health
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"      # every Monday 05:00 UTC (after upstream-sync at 04:00)
+  workflow_dispatch:          # allow manual runs
+
+permissions:
+  contents: read
+  issues: write               # open/update the tracking issue
+
+jobs:
+  health:
+    name: "Measure + report"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Run codebase-health measurement
+        id: measure
+        run: |
+          uv run python scripts/codebase_health.py --top 20 > health.txt
+          uv run python scripts/codebase_health.py --json > health.json
+          echo "--- report ---"
+          cat health.txt
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Extract the headline numbers for the issue title.
+          avg=$(uv run python -c "import json;print(json.load(open('health.json'))['summary']['avg_cc'])")
+          over_fail=$(uv run python -c "import json;print(json.load(open('health.json'))['summary']['over_fail'])")
+          worst=$(uv run python -c "import json;d=json.load(open('health.json'))['worst_blocks'];print(d[0]['complexity'] if d else 0)")
+
+          title="Codebase health — avg cc ${avg}, ${over_fail} funcs over fail, worst ${worst}"
+          body_file=issue_body.md
+          {
+            echo "**Automated weekly codebase-health report** (\`scripts/codebase_health.py\`)."
+            echo ""
+            echo "This is a rolling tracking issue — it is updated in place each week. It"
+            echo "FLAGS structural-health signals that predict *agent drag*; it does not"
+            echo "change code. To act on a flagged file, invoke the \`codebase-health-audit\`"
+            echo "skill (review -> plan -> refactor -> re-measure) — flag-only, never auto-refactor."
+            echo ""
+            echo "Run: \`${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\`"
+            echo ""
+            echo '```'
+            cat health.txt
+            echo '```'
+            echo ""
+            echo "Ratchet plan: [\`dev_velocity_tooling_2026-07.md\`](../blob/main/project-docs/specs/dev_velocity_tooling_2026-07.md)"
+          } > "$body_file"
+
+          # Find an existing open tracking issue by its label; update it, else create.
+          existing=$(gh issue list --label codebase-health --state open --limit 1 --json number --jq '.[0].number // empty' || true)
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file "$body_file"
+            echo "Updated tracking issue #$existing"
+          else
+            # Ensure the label exists (idempotent), then create.
+            gh label create codebase-health --color BADA55 --description "Weekly code-health tracking" 2>/dev/null || true
+            gh issue create --title "$title" --body-file "$body_file" --label codebase-health
+            echo "Created new tracking issue"
+          fi

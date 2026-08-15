@@ -1,0 +1,211 @@
+# External health check for the CommandCenter VPS.
+#
+# This is the OUTSIDE half of a two-layer watchdog:
+#
+#   1. deploy/hostinger/health-watchdog.sh runs ON the box (systemd timer) and
+#      restarts anything that is down. It keeps working when the box is cut off
+#      from the internet — which is exactly when CI cannot reach it.
+#   2. THIS workflow probes from outside. It catches the failure the on-box
+#      watchdog structurally cannot: every service healthy locally, but the box
+#      unreachable from the internet. Only an external prober sees that.
+#
+# It opens (and auto-closes) a single GitHub issue so an outage is visible even
+# when nobody is looking at the app.
+
+name: vps-health
+
+on:
+  schedule:
+    # Hourly at :17. Was daily, but a daily probe cannot answer "is it still
+    # happening?" — an outage could start and clear between two checks and
+    # leave no trace. Hourly builds an actual reachability record from outside
+    # the network, which is the only way to prove recurrence (or its absence)
+    # to Hostinger. Deliberately off the hour: shared runner capacity is
+    # tightest at :00 and scheduled jobs get queued there.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      diagnose:
+        description: "SSH in and dump firewall/network forensics"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vps-health
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: "Probe public endpoints"
+    runs-on: ubuntu-latest
+    outputs:
+      healthy: ${{ steps.probe.outputs.healthy }}
+      report: ${{ steps.probe.outputs.report }}
+    steps:
+      - name: Probe gateway + workbench
+        id: probe
+        env:
+          GATEWAY_URL: https://api.commandcenter.fracktal.in/health
+          WORKBENCH_URL: https://commandcenter.fracktal.in
+        run: |
+          HEALTHY=1
+          REPORT=""
+
+          # Retry before declaring an outage — a single failed probe is more
+          # often a transient blip than a real outage, and a flapping alert
+          # that cries wolf gets ignored.
+          for target in "gateway|$GATEWAY_URL" "workbench|$WORKBENCH_URL"; do
+            name="${target%%|*}"
+            url="${target#*|}"
+            code=000
+            for attempt in 1 2 3; do
+              code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+              # Any HTTP response means the stack is serving; 2xx/3xx/401 are
+              # all "alive". Only a total absence of response is an outage.
+              if [ "$code" != "000" ]; then break; fi
+              echo "  $name attempt $attempt failed — retrying in 20s"
+              sleep 20
+            done
+            if [ "$code" = "000" ]; then
+              HEALTHY=0
+              REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
+              echo "::error::${name} unreachable at ${url}"
+            else
+              REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
+              echo "${name} OK (HTTP ${code})"
+            fi
+          done
+
+          echo "healthy=${HEALTHY}" >> "$GITHUB_OUTPUT"
+          {
+            echo "report<<REPORT_EOF"
+            printf '%s' "${REPORT}"
+            echo "REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # Only runs on manual dispatch with diagnose=true. SSH is the thing that
+  # breaks during these outages, so this is best-effort and never fails the run.
+  diagnose:
+    name: "SSH diagnostics"
+    runs-on: ubuntu-latest
+    needs: probe
+    if: ${{ inputs.diagnose }}
+    steps:
+      - name: Collect on-box network + service state
+        continue-on-error: true
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+
+          # Reachability FLAPS minute to minute (observed: deploy SSH'd in at
+          # 13:39, this job timed out at 13:43). One attempt proves nothing, so
+          # retry across several minutes before concluding the box is cut off.
+          cat > /tmp/remote.sh <<'REMOTE'
+          echo "## uptime";        uptime
+          echo "## units";         systemctl is-active acb.service acb-gateway acb-workbench caddy 2>&1
+          echo "## enabled";       systemctl is-enabled acb.service acb-gateway acb-workbench caddy 2>&1
+          echo "## watchdog timer"; systemctl status acb-health-watchdog.timer --no-pager 2>&1 | head -15
+          echo "## listeners";     ss -lntp 2>/dev/null | head -25
+          echo "## ufw";           sudo ufw status verbose 2>/dev/null | head -30 || echo "(no ufw)"
+          echo "## iptables";      sudo iptables -S INPUT 2>/dev/null | head -40 || echo "(no iptables)"
+          echo "## fail2ban";      sudo fail2ban-client status 2>/dev/null || echo "(no fail2ban)"
+          echo "## sshd bans";     sudo fail2ban-client status sshd 2>/dev/null || true
+          echo "## recidive bans"; sudo fail2ban-client status recidive 2>/dev/null || true
+          echo "## watchdog log";  sudo tail -40 /var/log/acb/health-watchdog.log 2>/dev/null || echo "(none yet)"
+          echo "## forensics";     sudo tail -80 /var/log/acb/net-forensics.log 2>/dev/null || echo "(none yet)"
+          REMOTE
+
+          for attempt in 1 2 3 4 5 6; do
+            echo "───── SSH attempt ${attempt}/6 ─────"
+            if timeout 120 ssh -i ~/.ssh/k \
+                 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                 -o ConnectTimeout=20 -o BatchMode=yes \
+                 "${SSH_USER}@${SSH_HOST}" 'bash -s' < /tmp/remote.sh; then
+              echo "───── diagnostics collected on attempt ${attempt} ─────"
+              exit 0
+            fi
+            echo "  attempt ${attempt} failed — waiting 45s"
+            sleep 45
+          done
+          echo "SSH FAILED after 6 attempts — box unreachable from GitHub runners too"
+          exit 0
+
+  # Open one issue on outage, close it on recovery. Keeping a single issue
+  # (rather than one per run) stops a multi-day outage burying the repo.
+  alert:
+    name: "Open / close outage issue"
+    runs-on: ubuntu-latest
+    needs: probe
+    if: always()
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HEALTHY: ${{ needs.probe.outputs.healthy }}
+      REPORT: ${{ needs.probe.outputs.report }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Ensure label exists
+        run: |
+          gh label create "vps-outage" --repo "${{ github.repository }}" \
+            --description "Automated VPS health alert" --color "B60205" 2>/dev/null || true
+
+      - name: Reconcile outage issue
+        run: |
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" \
+            --label vps-outage --state open --json number --jq '.[0].number // empty')"
+
+          if [ "${HEALTHY}" = "1" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "${{ github.repository }}" \
+                --body "Recovered — public endpoints are responding again as of $(date -u '+%Y-%m-%dT%H:%M:%SZ'). Closing."
+              gh issue close "$EXISTING" --repo "${{ github.repository }}"
+              echo "Closed outage issue #$EXISTING"
+            else
+              echo "Healthy, no open outage issue. Nothing to do."
+            fi
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "The scheduled health check could not reach CommandCenter."
+            echo
+            printf '%s\n' "${REPORT}"
+            echo "Checked at $(date -u '+%Y-%m-%dT%H:%M:%SZ') from a GitHub runner."
+            echo
+            echo "**Run:** ${RUN_URL}"
+            echo
+            echo "### If the box is up but unreachable"
+            echo "This has happened before: the VPS stays alive (metrics keep"
+            echo "reporting, outbound traffic flows) while inbound connections are"
+            echo "dropped. The on-box watchdog cannot fix that — it is a network"
+            echo "problem, not a service problem. Check, in order:"
+            echo
+            echo "1. \`/var/log/acb/net-forensics.log\` on the box — firewall and"
+            echo "   listener state captured every 10 minutes, including during the outage."
+            echo "2. Re-run this workflow with **diagnose = true** to pull that log out over SSH."
+            echo "3. Hostinger VPS metrics — if uptime keeps climbing, the box never rebooted."
+          } > "$BODY_FILE"
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body-file "$BODY_FILE"
+            echo "Commented on existing outage issue #$EXISTING"
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "VPS unreachable — $(date -u '+%Y-%m-%d %H:%M UTC')" \
+              --label "vps-outage" --body-file "$BODY_FILE"
+          fi
+          rm -f "$BODY_FILE"
+
+      - name: Fail the run if unhealthy
+        if: ${{ needs.probe.outputs.healthy != '1' }}
+        run: |
+          echo "::error::CommandCenter is unreachable — see the vps-outage issue."
+          exit 1

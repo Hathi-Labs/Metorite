@@ -1,0 +1,125 @@
+# Deep one-off forensics for the recurring "VPS alive but unreachable" problem.
+#
+# Purpose: settle ONE question — are inbound packets being dropped ON the box,
+# or upstream of it (Hostinger edge / ISP routing)? Those have completely
+# different fixes and everything else follows from the answer.
+#
+# The decisive evidence is packet COUNTERS, not config:
+#   * `iptables -L -v -n` counters on the INPUT DROP policy and ufw chains.
+#     If legitimate inbound SYNs were dropped by the box, these climb.
+#   * `ip -s link show eth0` RX errors/dropped at the NIC.
+#     If the packets never arrived at all, the box is innocent — the loss is
+#     upstream and nothing we change here can fix it.
+#
+# Run:  gh workflow run vps-forensics.yml --ref main
+# Read-only. Collects, never changes anything.
+
+name: vps-forensics
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: "SSH attempts before giving up (45s apart)"
+        default: "20"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    name: "Collect deep forensics"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: SSH in (persistent retry) and dump state
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_USER }}
+          ATTEMPTS: ${{ inputs.attempts || '20' }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/k && chmod 600 ~/.ssh/k
+
+          cat > /tmp/forensics.sh <<'REMOTE'
+          echo "===== IDENTITY / BOOT ====="
+          date -u; uptime
+          echo "-- boots --";        journalctl --list-boots 2>/dev/null | tail -8
+          echo "-- last reboots --"; last -x reboot shutdown 2>/dev/null | head -8
+
+          echo "===== DECISIVE: PACKET COUNTERS ====="
+          # If the box were dropping inbound SYNs, these counters climb. If the
+          # packets never arrived, the loss is upstream and this stays flat.
+          echo "-- iptables INPUT (verbose, counters) --"
+          sudo iptables -L INPUT -v -n --line-numbers 2>/dev/null | head -25
+          echo "-- ufw chains with counters --"
+          sudo iptables -L ufw-before-input -v -n 2>/dev/null | head -20
+          sudo iptables -L ufw-after-logging-input -v -n 2>/dev/null | head -10
+          echo "-- NIC counters (RX errors/dropped = arrived but discarded) --"
+          ip -s link show eth0 2>/dev/null
+          echo "-- socket summary --"; ss -s 2>/dev/null
+          echo "-- SYN backlog / listen drops --"
+          nstat -az 2>/dev/null | grep -iE 'ListenDrops|ListenOverflows|TCPBacklogDrop|SyncookiesSent' || \
+            netstat -s 2>/dev/null | grep -iE 'listen|overflow|SYN' | head -10
+
+          echo "===== FIREWALL CONFIG ====="
+          sudo ufw status numbered 2>/dev/null | head -30
+          echo "-- ufw log tail (blocked packets are logged here) --"
+          sudo tail -40 /var/log/ufw.log 2>/dev/null || echo "(no ufw.log)"
+
+          echo "===== WHO ELSE COULD BE BLOCKING ====="
+          echo "-- fail2ban --";  sudo fail2ban-client status 2>/dev/null || echo "(not installed)"
+          echo "-- crowdsec --";  sudo cscli decisions list 2>/dev/null | head -20 || echo "(not installed)"
+          echo "-- hostinger/monarx agents --"
+          systemctl list-units --type=service --state=running --no-pager 2>/dev/null \
+            | grep -iE 'monarx|hostinger|agent|shield|ddos' || echo "(none matched)"
+          echo "-- ipset (bulk blocklists) --"
+          sudo ipset list -n 2>/dev/null | head -10 || echo "(no ipset)"
+
+          echo "===== NETWORK / KERNEL EVENTS ====="
+          ip route show; ip -4 addr show eth0 2>/dev/null | head -6
+          echo "-- kernel: link/net/oom --"
+          sudo dmesg -T 2>/dev/null | grep -iE 'oom|killed process|eth0|link is|carrier|martian|rp_filter' | tail -25
+          echo "-- journal: network manager / systemd-networkd --"
+          sudo journalctl -u systemd-networkd -u networking --no-pager -n 25 2>/dev/null || true
+
+          echo "===== SSHD ====="
+          systemctl is-active ssh sshd 2>/dev/null
+          echo "-- sshd recent --"; sudo journalctl -u ssh -u sshd --no-pager -n 30 2>/dev/null | tail -30
+          echo "-- auth.log (brute force can trigger provider-side mitigation) --"
+          sudo tail -30 /var/log/auth.log 2>/dev/null | tail -30 || echo "(no auth.log)"
+
+          echo "===== APP STATE ====="
+          systemctl is-active acb.service acb-gateway acb-workbench caddy 2>&1
+          systemctl is-enabled acb.service acb-gateway acb-workbench caddy 2>&1
+          systemctl status acb-health-watchdog.timer --no-pager 2>&1 | head -8
+
+          echo "===== WATCHDOG HISTORY (self-heal record) ====="
+          sudo tail -60 /var/log/acb/health-watchdog.log 2>/dev/null || echo "(none)"
+          echo "===== FORENSICS HISTORY (firewall state over time) ====="
+          sudo tail -120 /var/log/acb/net-forensics.log 2>/dev/null || echo "(none)"
+
+          echo "===== EGRESS (does the box reach the internet?) ====="
+          curl -s -o /dev/null -m 10 -w 'github  -> %{http_code}\n' https://api.github.com || echo "egress FAILED"
+          curl -s -m 10 https://api.ipify.org 2>/dev/null && echo " <- box public IP as seen outbound" || true
+          echo "===== END ====="
+          REMOTE
+
+          ok=0
+          for i in $(seq 1 "$ATTEMPTS"); do
+            echo "───── SSH attempt ${i}/${ATTEMPTS} ─────"
+            if timeout 240 ssh -i ~/.ssh/k \
+                 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                 -o ConnectTimeout=20 -o BatchMode=yes \
+                 "${SSH_USER}@${SSH_HOST}" 'bash -s' < /tmp/forensics.sh; then
+              echo "───── COLLECTED on attempt ${i} ─────"
+              ok=1
+              break
+            fi
+            echo "  attempt ${i} failed"
+            [ "$i" -lt "$ATTEMPTS" ] && sleep 45
+          done
+          [ "$ok" = "1" ] || echo "NEVER GOT IN after ${ATTEMPTS} attempts — port 22 blocked for the whole window"
+          exit 0
