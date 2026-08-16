@@ -165,20 +165,6 @@ this file grows a graveyard and the graveyard is what goes stale.
   §9.9
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-9 · `schema.generated.sql` regeneration is overdue · [AGENT]
-- **Check:** compare `ls -l infra/postgres/schema.generated.sql` against
-  `ls infra/postgres/[0-9]*.sql | sort -V | tail -1` → a generated file older
-  than the newest migration means still pending. Measured 2026-08-14: generated
-  2026-08-12, newest migration 176. (⚠️ Two bugs already found in this one line:
-  the path is `infra/postgres/`, not `docs/` — a `docs/` Check would have
-  silently "passed" on a missing file — and a bare `*.sql` glob answers
-  `schema.generated.sql` itself.)
-- **Why:** Stale since roughly migration 113; the ladder is now at 175. A
-  generated artefact that lags by sixty migrations is worse than absent, because
-  it is read as current.
-- **Authority:** `work_plan.md` §2 WS-28 row (where it was first flagged)
-- **Added:** 2026-08-14 · pre-existing, carried in so it stops being invisible
-
 ### H-10 · A conflicted PR runs NO checks — the R1 guard's blind window · [AGENT]
 - **Check:** `rg -n "pull_request" .github/workflows/pr-check.yml` → if the
   migration-prefix guard still runs only on `pull_request` (which checks out
