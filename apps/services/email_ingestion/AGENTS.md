@@ -9,7 +9,7 @@ Also provides an aiosmtpd inbound SMTP server for receiving mail directly
 
 ## Ownership
 
-- Owner: CommandCenter Core team
+- Owner: Metorite Core team
 - Path: apps/email_ingestion/
 - DB: email_accounts, email_messages, email_attachments, email_folders, email_sync_log
 

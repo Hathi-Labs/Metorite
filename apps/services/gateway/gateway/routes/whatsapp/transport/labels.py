@@ -5,7 +5,7 @@ WhatsApp labels live in the account's app-state; the whatsmeow bridge syncs them
 into ``wa_labels`` + ``wa_chat_labels`` (see transport/bridge.py). This route
 serves them to the inbox: a small list with per-label chat counts, so the app can
 show label chips on chats and a "filter by label" affordance — the same tags the
-user set up inside WhatsApp, surfaced in CommandCenter.
+user set up inside WhatsApp, surfaced in Metorite.
 
 Distinct from ``/whatsapp/categories`` (W2), which are OUR policy carriers.
 """

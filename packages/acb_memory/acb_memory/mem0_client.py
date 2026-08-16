@@ -15,7 +15,7 @@ so the scope key must ride the field that actually filters. ``scope_key()`` buil
 the key; ``AGENT_SCOPE_PREFIX`` / ``ORG_SCOPE_KEY`` are the reserved namespaces.
 
 Design:
-- Backend: Postgres + pgvector (reuses the existing CommandCenter Postgres;
+- Backend: Postgres + pgvector (reuses the existing Metorite Postgres;
   Mem0 creates its own 'mem0_memories' collection automatically).
 - LLM for extraction: gateway /v1 via litellm SDK (same tier-1 model as agents use).
 - Embedding: text-embedding-3-small via gateway /v1 (litellm SDK, cached).

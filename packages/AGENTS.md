@@ -1,7 +1,7 @@
 # Shared Packages
 
 ## Purpose
-Reusable Python packages shared across all CommandCenter services.
+Reusable Python packages shared across all Metorite services.
 
 ## Packages
 - acb_skills/ -- Agent loading, skill management, tool injection. Org access control: `integrations.build_integrations(..., is_authorized=)` filters services the ACTING MEMBER may not use (agents declare a want, not an entitlement), and `memory_tools` gates org-scoped memory writes on `memory:write_org` via a run-scoped predicate ContextVar. Both default to unfiltered when no member is attached, so background runs are unchanged (agent_tools, web_tools, memory_tools, write_artifact, todo_tools, ask_tools, error_tools, note_tools, history_tools, github_tools, integrations, loader, registry)

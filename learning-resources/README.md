@@ -1,14 +1,14 @@
 # Learning Resources — Building & Deploying an Agent Orchestration Platform
 
-> A field guide to how **CommandCenter** is built, and — more importantly — how *you* could build and deploy a similar system on the open internet.
+> A field guide to how **Metorite** is built, and — more importantly — how *you* could build and deploy a similar system on the open internet.
 
-This folder is a self-contained course. It uses CommandCenter (Fracktal Works' self-mutating,
+This folder is a self-contained course. It uses Metorite (Fracktal Works' self-mutating,
 multi-agent "operating system for a company") as the worked example, but every chapter is written
 so the **patterns transfer** to any agent-orchestration product you might build. Where we describe a
-CommandCenter-specific choice, we call out the general principle behind it so you can make your own
+Metorite-specific choice, we call out the general principle behind it so you can make your own
 call.
 
-CommandCenter itself, in one sentence: *a FastAPI core listens for events, dynamically loads
+Metorite itself, in one sentence: *a FastAPI core listens for events, dynamically loads
 specialist AI agents from Git repositories, runs them on the Microsoft Agent Framework, streams
 their reasoning to a Next.js control plane over the AG-UI protocol, gates every external write behind
 human approval, and — when an agent fails — spawns a GitHub Copilot SDK sandbox that opens a PR to
@@ -26,7 +26,7 @@ fix the agent's own code.*
   CopilotKit/AG-UI, the GitHub Copilot SDK.
 
 You do **not** need prior experience with any of those named libraries. Each chapter introduces the
-concept first, then shows how CommandCenter uses it.
+concept first, then shows how Metorite uses it.
 
 ---
 

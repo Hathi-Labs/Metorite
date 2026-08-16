@@ -98,7 +98,7 @@ Control Plane (Next.js browser UI) and local development tools.
 - "Request desktop" (via the "..." overflow menu on mobile, or the "Monitor" icon in the drawer) sets a persisted
   preference and widens the viewport meta to width=1280, so the full desktop layout renders.
 - A floating "Mobile view" pill appears in forced-desktop mode to return to the mobile layout.
-- **Mobile top bar**: slim (h-11), hamburger (opens unified drawer) + centered "CommandCenter" title + "…" overflow menu.
+- **Mobile top bar**: slim (h-11), hamburger (opens unified drawer) + centered "Metorite" title + "…" overflow menu.
   The overflow menu contains Desktop toggle and Sign out — no toolbar-style "Desktop" button cluttering the header.
 - **Unified drawer**: useMobileDrawer() context lets child pages inject arbitrary content (conversations list,
   file browser, filters, etc.) into the hamburger drawer. The drawer includes default nav links and user section.
@@ -141,7 +141,7 @@ the authenticated session; a subdomain is a *lookup to be verified against the
 session*, never an assertion to be trusted. See `saas_multitenancy.md` §1.5.
 
 **Never point the browser at the gateway.** A top-level navigation to
-`api.commandcenter.fracktal.in` carries **no** Bearer and **no** `X-User-Email`
+`api.metorite.fracktal.in` carries **no** Bearer and **no** `X-User-Email`
 — session cookies live on the workbench origin and a navigation cannot add
 headers. `/email/oauth/{provider}/authorize` was reached that way and answered
 "Authentication required" to every user for six days.

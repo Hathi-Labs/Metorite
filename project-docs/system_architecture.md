@@ -1,14 +1,14 @@
-# System Architecture — CommandCenter v2 (Distributed, Self-Mutating Agent Network)
+# System Architecture — Metorite v2 (Distributed, Self-Mutating Agent Network)
 
-> Project: CommandCenter v2 · Org: Fracktal Works · Date: 2026-06-02  
-> Updated: 2026-06-10 — (v2.5) Unified MAF runtime: Copilot SDK agents now run through CommandCenterCopilotAgent (MAF subclass). Package upgrades: agent-framework-core 1.8.0, agent-framework-github-copilot 1.0.0rc1, github-copilot-sdk 1.0.0. Local git tracking for pure MAF agents. Mutation layer enhanced with agent purpose context. · ⚠️ **stale-warning added 2026-08-09**: body last verified ~2026-06-10 and predates D15 multi-tenancy, the workflows app, CRM/Projects/People apps — trust `specs/` and `work_plan.md` over this file where they disagree; re-verify any anchor before use
+> Project: Metorite v2 · Org: Fracktal Works · Date: 2026-06-02  
+> Updated: 2026-06-10 — (v2.5) Unified MAF runtime: Copilot SDK agents now run through MetoriteCopilotAgent (MAF subclass). Package upgrades: agent-framework-core 1.8.0, agent-framework-github-copilot 1.0.0rc1, github-copilot-sdk 1.0.0. Local git tracking for pure MAF agents. Mutation layer enhanced with agent purpose context. · ⚠️ **stale-warning added 2026-08-09**: body last verified ~2026-06-10 and predates D15 multi-tenancy, the workflows app, CRM/Projects/People apps — trust `specs/` and `work_plan.md` over this file where they disagree; re-verify any anchor before use
 > Status: v2.5 — Single unified MAF runtime. All agents MAF-native. Local git tracking for agent folders.
 
 ---
 
 ## 1. Architectural Drivers
 
-- **Source of truth lives in ClickUp, Zoho, Odoo.** CommandCenter is a read-mostly mirror with approval-gated writes.
+- **Source of truth lives in ClickUp, Zoho, Odoo.** Metorite is a read-mostly mirror with approval-gated writes.
 - **Pull + Push + Ambient** interaction modes must all be supported.
 - **Decoupled agent and skill repositories.** Every agent and every skill lives in its own GitHub repository. The Core engine contains no agent logic or skill files.
 - **Persistent runtime loading.** Agent and skill repos are cloned once into a persistent local cache and refreshed via `git pull` on each event (~0.5 s). No full re-clone per run; no server redeploy to pick up new agent logic.
@@ -26,10 +26,10 @@
 
 ```mermaid
 C4Context
-    title CommandCenter v2 — System Context
+    title Metorite v2 — System Context
     Person(exec, "Executives", "Leadership, founders")
     Person(emp, "Employees (~20)", "Sales, delivery, engineering, ops")
-    System(core, "CommandCenter Core", "Event router + dynamic agent orchestration + self-mutation")
+    System(core, "Metorite Core", "Event router + dynamic agent orchestration + self-mutation")
 
     System_Ext(gh, "GitHub", "Per-agent repos + per-skill repos + PR review for self-mutation")
     System_Ext(clickup, "ClickUp", "Source of truth: tasks, projects, stages")
@@ -58,10 +58,10 @@ C4Context
 
 ```mermaid
 C4Container
-    title CommandCenter v2 — Containers
+    title Metorite v2 — Containers
     Person(user, "User", "Executive / Employee")
 
-    Container_Boundary(core, "CommandCenter Core") {
+    Container_Boundary(core, "Metorite Core") {
         Container(gw, "Interaction Gateway", "FastAPI + WebSocket", "Listens for webhook/cron events; pull queries; push notifications; approval UI. Hosts both MAF agent dispatch and Copilot SDK SSE endpoints.")
         Container(dal, "Dynamic Agent Loader", "Python (importlib + sys.path)", "On event: clones target agent repo + declared skill repos; imports agents.py at runtime; calls build_agents() and runs via MAF native workflow engine (no DTS in Phase 0).")
         Container(orch, "Orchestrator", "MAF HandoffBuilder + native workflow engine", "Executes agent workflows via MAF HandoffBuilder/ConcurrentBuilder/MagenticBuilder. HITL via Action Broker pattern (Postgres approval_queue). Routes to Self_Mutation_Node on error. DurableTask deferred to Phase 2.")
@@ -120,7 +120,7 @@ C4Container
 ## 4. Distributed Repository Layout
 
 ```
-FracktalWorks/CommandCenter-Core           ← Core engine (this repo). FastAPI, Docker infra, MAF orchestration harness, Postgres entity/memory/audit, LiteLLM, Action Broker.
+Hathi-Labs/Metorite           ← Core engine (this repo). FastAPI, Docker infra, MAF orchestration harness, Postgres entity/memory/audit, LiteLLM, Action Broker.
 FracktalWorks/agent-task-manager           ← Agent: ClickUp task management + stale-task escalation
 FracktalWorks/agent-billing                ← Agent: billing & invoice workflows
 FracktalWorks/agent-sales                  ← Agent: Zoho CRM sales pipeline + deal follow-ups
@@ -617,7 +617,7 @@ Pure MAF agents that don't have GitHub repositories (e.g., agents under developm
 
 ### 13.3 Runtime Taxonomy — Unified MAF Runtime (as of 2026-06-10)
 
-CommandCenter now uses a **single unified MAF runtime** for all agents. The dual-runtime split (Copilot SDK direct path + MAF path) has been retired.
+Metorite now uses a **single unified MAF runtime** for all agents. The dual-runtime split (Copilot SDK direct path + MAF path) has been retired.
 
 **Resolution:** `agent-framework-github-copilot` 1.0.0rc1 (released 2026-06-05) relaxed its SDK dependency from `<0.1.33` to `<2,>=1.0.0`, enabling full re-integration. All agents now run through MAF.
 
@@ -631,10 +631,10 @@ CommandCenter now uses a **single unified MAF runtime** for all agents. The dual
 
 | Agent `agent_runtime` | Executor | BYOK mechanism |
 |---|---|---|
-| `github-copilot` | `CommandCenterCopilotAgent` (MAF subclass) → `agent.run(stream=True)` | `provider` in `default_options` → forwarded to Copilot SDK via patched `_create_session()` |
+| `github-copilot` | `MetoriteCopilotAgent` (MAF subclass) → `agent.run(stream=True)` | `provider` in `default_options` → forwarded to Copilot SDK via patched `_create_session()` |
 | `maf` | MAF `Agent.run()` | `OpenAIChatCompletionClient` injected with BYOK `base_url` + `api_key` |
 
-**Key architectural change:** The `CommandCenterCopilotAgent` (at `apps/orchestrator/orchestrator/copilot_agent.py`) extends `GitHubCopilotAgent` with:
+**Key architectural change:** The `MetoriteCopilotAgent` (at `apps/orchestrator/orchestrator/copilot_agent.py`) extends `GitHubCopilotAgent` with:
 1. **BYOK provider forwarding** — patches `_create_session()` to pass `provider` from `default_options` to the Copilot SDK `SessionConfig`
 2. **Rich event streaming** — patches `_stream_updates()` to handle ALL Copilot SDK event types (reasoning/thinking, tool progress, partial terminal output, agent intent) and translate them to MAF `AgentResponseUpdate` objects
 3. **Zero agent repo changes** — the executor monkey-patches these methods onto the loaded agent at runtime, so agent repos continue returning standard `GitHubCopilotAgent` instances
@@ -660,13 +660,13 @@ The frontend routes to two endpoints, both now MAF-native:
 | Chat Mode | Endpoint | Runtime |
 |---|---|---|
 | Orchestrator chat | `/copilot/chat` | MAF `Agent` with `OpenAIChatCompletionClient` (plain MAF — the router) |
-| Named agent chat (`copilot` mode) | `/agent/run/stream` | `CommandCenterCopilotAgent` (MAF-wrapped Copilot SDK) |
+| Named agent chat (`copilot` mode) | `/agent/run/stream` | `MetoriteCopilotAgent` (MAF-wrapped Copilot SDK) |
 
 ---
 
 #### GitHub Copilot SDK (`github-copilot-sdk` Python package, v1.0.0)
 
-**What it is:** A Python library that wraps the Copilot CLI binary via JSON-RPC. In CommandCenter, it is **only used inside `GitHubCopilotAgent` / `CommandCenterCopilotAgent`** (MAF wrappers) and inside the mutation sandbox (`acb-mutation-runner` Docker container). It is never called directly by application code.
+**What it is:** A Python library that wraps the Copilot CLI binary via JSON-RPC. In Metorite, it is **only used inside `GitHubCopilotAgent` / `MetoriteCopilotAgent`** (MAF wrappers) and inside the mutation sandbox (`acb-mutation-runner` Docker container). It is never called directly by application code.
 
 **What it can do:**
 - Native tool execution: shell commands, file read/write, Python script execution
@@ -687,8 +687,8 @@ Mode B — BYOK (provider key):
 ```
 
 **Where it lives:**
-- `apps/orchestrator/orchestrator/copilot_agent.py` — `CommandCenterCopilotAgent` (MAF subclass with BYOK + rich events)
-- `apps/orchestrator/orchestrator/executor.py` — Patches loaded agents with `CommandCenterCopilotAgent` methods at runtime
+- `apps/orchestrator/orchestrator/copilot_agent.py` — `MetoriteCopilotAgent` (MAF subclass with BYOK + rich events)
+- `apps/orchestrator/orchestrator/executor.py` — Patches loaded agents with `MetoriteCopilotAgent` methods at runtime
 - `apps/orchestrator/mutation_runner.py` — Sandboxed mutation container (standalone Copilot SDK usage — by design)
 - `apps/orchestrator/Dockerfile.mutation` — `acb-mutation-runner` Docker image (spawned on demand by Self_Mutation_Node)
 - `apps/orchestrator/mutation_runner.py` — mutation runner script inside the container
@@ -721,8 +721,8 @@ agent = GitHubCopilotAgent(
 ```
 
 **Where it lives in this repo:**
-- `apps/orchestrator/orchestrator/executor.py` — Unified agent runner for all agents. `CommandCenterCopilotAgent` (MAF subclass) handles `github-copilot` agents with BYOK + rich streaming. MAF `Agent.run()` handles `maf` agents.
-- `apps/orchestrator/orchestrator/copilot_agent.py` — `CommandCenterCopilotAgent` class with BYOK provider forwarding and full event streaming.
+- `apps/orchestrator/orchestrator/executor.py` — Unified agent runner for all agents. `MetoriteCopilotAgent` (MAF subclass) handles `github-copilot` agents with BYOK + rich streaming. MAF `Agent.run()` handles `maf` agents.
+- `apps/orchestrator/orchestrator/copilot_agent.py` — `MetoriteCopilotAgent` class with BYOK provider forwarding and full event streaming.
 - `apps/orchestrator/orchestrator/agents.py` — Orchestrator agent definition loading.
 - Each `agent-<name>/agents.py` (external repos) — per-agent `build_agents()` definitions
 - Context providers wired at startup: `Mem0ContextProvider` (episodic memory) + `RedisHistoryProvider` (conversation history)

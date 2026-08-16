@@ -3,12 +3,12 @@
 ## Purpose
 
 The gateway is the HTTP/WS entry point for all external interaction with
-CommandCenter. It hosts the MAF AG-UI chat endpoint, agent run/stream endpoints,
+Metorite. It hosts the MAF AG-UI chat endpoint, agent run/stream endpoints,
 webhook receivers, OAuth callbacks, and the Control Plane API.
 
 ## Ownership
 
-- Owner: CommandCenter Core team
+- Owner: Metorite Core team
 - Path: apps/gateway/
 
 ## Local Contracts

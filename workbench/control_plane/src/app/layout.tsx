@@ -42,7 +42,7 @@ import { ToastProvider } from "@/components/ui/Toast";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
-  title: "CommandCenter Control Plane",
+  title: "Metorite Control Plane",
   description: "Skill Studio, Chat, Agents and Integrations for the Fracktal AI Company Brain.",
 };
 

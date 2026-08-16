@@ -78,7 +78,7 @@ describe("the lockup", () => {
     // The failure this guards is an empty box where a logo would be.
     const l = lockup(null, "Control Plane");
     expect(l.kind).toBe("default");
-    expect(l).toMatchObject({ title: "CommandCenter", caption: "Control Plane" });
+    expect(l).toMatchObject({ title: "Metorite", caption: "Control Plane" });
   });
 
   it("falls back when the row exists but carries no logo", () => {
@@ -103,7 +103,7 @@ describe("the lockup", () => {
   });
 
   it("keeps the attribution wording in exactly one place", () => {
-    expect(POWERED_BY).toBe("powered by CommandCenter");
+    expect(POWERED_BY).toBe("powered by Metorite");
   });
 });
 

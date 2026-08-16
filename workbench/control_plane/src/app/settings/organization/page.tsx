@@ -4,7 +4,7 @@
  * Settings → Organization — the customer's own identity inside the product.
  *
  * Today that is one thing: the logo that replaces our mark in the top-left of
- * every member's shell, with "powered by CommandCenter" beneath it. The page is
+ * every member's shell, with "powered by Metorite" beneath it. The page is
  * scoped to the org, so it is admin-gated — one member changing what the whole
  * company sees is exactly the kind of write that has an admin gate on it.
  *

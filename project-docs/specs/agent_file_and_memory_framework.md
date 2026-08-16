@@ -40,7 +40,7 @@ function, table, and seam; **read this before changing how persistence works**),
 > KB/RAG corpus, which is neither Code (not executable) nor State (not accumulated). It is
 > review-gated like code and compiles to a derived, version-pinned index.
 >
-> That doc also narrows this one's scope. It targets agents that live **inside CommandCenter**
+> That doc also narrows this one's scope. It targets agents that live **inside Metorite**
 > — first-party agents in `apps/agents/` and agents built by the Agent Workshop — and splits
 > them into **declarative** (manifest + instructions + KB, stored in Postgres and published
 > like a Custom App) and **code** (a real `agents.py`, in the monorepo). Four of six
@@ -216,15 +216,15 @@ than VS Code + Git), it MUST preserve every invariant here. Considerations:
 ## 6. Second-tenant portability + the production mutation gap *(phrasing predates D15 — read 'second tenant' as 'another organization', whose isolation is rows + RLS, not a deployment; a dedicated deployment survives only as a priced placement)*
 
 **Portability:** the blob store, three-folder contract, and memory scopes are all
-keyed on `agent_name` with no CommandCenter-specific coupling, so MAF agents built
+keyed on `agent_name` with no Metorite-specific coupling, so MAF agents built
 on a second tenant deployment *(2026-08-09, under D15: another organization, not another
 deployment)* use the identical mechanism. When we stand up
 agents there, they must adopt this framework verbatim — same tables, same tools,
 same folders. Do not fork the storage model per platform.
 
 **The one thing that does NOT port as-is — code mutation:** today a native MAF
-agent's approved self-mutation opens a PR against the **shared CommandCenter
-monorepo**. That is fine only while all agents are first-party and Command Center is
+agent's approved self-mutation opens a PR against the **shared Metorite
+monorepo**. That is fine only while all agents are first-party and Metorite is
 WIP. For multi-tenant / customer agents this is unacceptable — third
 parties must never push to the shared monorepo. This must be replaced (per-tenant
 repo, or a tenant-scoped store the loader reads at runtime) before production

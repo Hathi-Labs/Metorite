@@ -129,9 +129,9 @@ def test_copilot_addendum_injection_is_idempotent(monkeypatch):
     agent = _FakeCopilotAgent()
     ti._inject_agent_tools([agent])
     content1 = agent._default_options["system_message"]["content"]
-    assert "CommandCenter Platform Tools" in content1
+    assert "Metorite Platform Tools" in content1
     ti._inject_agent_tools([agent])
     content2 = agent._default_options["system_message"]["content"]
     # Second injection must NOT append a duplicate addendum.
-    assert content2.count("## CommandCenter Platform Tools") == 1
+    assert content2.count("## Metorite Platform Tools") == 1
     assert content2 == content1

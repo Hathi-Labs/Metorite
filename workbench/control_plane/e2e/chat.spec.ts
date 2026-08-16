@@ -162,11 +162,11 @@ async function gotoChat(page: Page) {
   // word; target the Conversations PANEL header exactly.
   await expect(page.getByText("Conversations", { exact: true })).toBeVisible();
   // A fresh visit now opens the "New session" agent picker; pick the default
-  // CommandCenter (orchestrator) agent to land in the chat with an input.
+  // Metorite (orchestrator) agent to land in the chat with an input.
   const picker = page.getByText("New session", { exact: true });
   if (await picker.isVisible().catch(() => false)) {
     await page
-      .getByRole("button", { name: /CommandCenter General-purpose AI company brain/i })
+      .getByRole("button", { name: /Metorite General-purpose AI company brain/i })
       .click();
   }
   await expect(page.getByPlaceholder(/Message orchestrator/i)).toBeVisible();
@@ -178,7 +178,7 @@ async function openAgentPicker(page: Page) {
 }
 
 test.describe("Unified chat interface", () => {
-  test("loads the CommandCenter session with unified controls and memories", async ({ page }) => {
+  test("loads the Metorite session with unified controls and memories", async ({ page }) => {
     const requests: ChatRequest[] = [];
     await installChatMocks(page, () => ({ events: [{ type: "done" }] }), requests);
 

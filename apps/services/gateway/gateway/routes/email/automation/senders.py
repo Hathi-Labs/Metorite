@@ -760,7 +760,7 @@ async def _http_unsubscribe(url: str) -> tuple[bool, str]:
         # redirects; the mailto / provider-filter fallbacks cover the rest.
         async with httpx.AsyncClient(
             follow_redirects=False, timeout=10.0,
-            headers={"User-Agent": "CommandCenter-Unsubscribe/1.0"},
+            headers={"User-Agent": "Metorite-Unsubscribe/1.0"},
         ) as client:
             try:
                 resp = await client.post(

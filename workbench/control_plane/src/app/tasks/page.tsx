@@ -120,7 +120,7 @@ export default function TasksPage() {
   }, [openDrawer, closeDrawer, openQuickCapture, selectView]);
 
   // Ubiquitous capture — a hotkey opens the capture palette from any Tasks view.
-  // (App-wide capture from other Command Center apps needs a persisted store +
+  // (App-wide capture from other Metorite apps needs a persisted store +
   // AppShell-level listener — see spec §2.1 C2 [plumbing].)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

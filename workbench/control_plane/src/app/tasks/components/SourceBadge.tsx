@@ -29,7 +29,7 @@ export function SourceBadge({
       tone={local ? "neutral" : "primary"}
       size={size}
       icon={local ? "HardDrive" : "Cloud"}
-      title={local ? "Local — stored in CommandCenter" : `Synced — ${label}`}
+      title={local ? "Local — stored in Metorite" : `Synced — ${label}`}
     >
       {label}
     </Badge>

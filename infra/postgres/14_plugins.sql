@@ -1,4 +1,4 @@
--- CommandCenter — Plugin Registry.
+-- Metorite — Plugin Registry.
 -- Stores Claude-style self-describing plugins.
 -- Each plugin ships an ai-plugin.json manifest + openapi.yaml spec
 -- served from a URL.  Tools are auto-generated from the OpenAPI spec

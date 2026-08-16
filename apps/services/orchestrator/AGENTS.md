@@ -2,20 +2,20 @@
 
 ## Purpose
 
-The orchestrator is the runtime engine for all agent execution in CommandCenter.
+The orchestrator is the runtime engine for all agent execution in Metorite.
 It dynamically loads agents from GitHub repos or local folders, executes them
 via MAF, handles cross-agent delegation, triggers self-mutation on failure,
 and streams chat responses as AG-UI events.
 
 ## Ownership
 
-- Owner: CommandCenter Core team
+- Owner: Metorite Core team
 - Path: apps/orchestrator/
 
 ## Local Contracts
 
 1. executor.py is the single entry point for agent execution (streaming and batch). Injects platform tools, MCP server config from the registry, and integration credentials at runtime. Integration credentials are filtered by the ACTING MEMBER first (`_integration_authorizer` → `build_integrations(is_authorized=)`, org access control): an agent's config.json declares a want, not an entitlement, and the filter runs BEFORE the per-run env injection so an unauthorized credential never enters the run's environment. Runs with no attributable active member (cron, reconciler, webhooks) are deliberately unfiltered — see project-docs/specs/org_access_control.md §8a. ⚠️ Every `/v1` client here (agents.py, _model_resolution.py, code_session.py, mutation.py, the executor's BYOK provider config) MUST read `settings.llm_api_key` — never `gateway_internal_token`, which is the service identity and must not reach model-authored code (§8b). A test in tests/unit/test_service_identity_and_webhook_auth.py fails if one does.
-2. copilot_agent.py provides CommandCenterCopilotAgent -- the MAF wrapper for Copilot SDK agents with BYOK + MCP server forwarding
+2. copilot_agent.py provides MetoriteCopilotAgent -- the MAF wrapper for Copilot SDK agents with BYOK + MCP server forwarding
 3. agents.py exports build_orchestrator_agent() -- the main orchestrator MAF Agent
 4. mutation.py handles Self_Mutation_Node -- spawns Docker sandbox on agent failure
 5. stream_relay.py buffers all SSE events to Redis Streams for fire-and-forget chat with live reconnection
@@ -29,7 +29,7 @@ and streams chat responses as AG-UI events.
 
 ### Adding a new agent runtime feature
 1. Feature goes in executor.py (streaming: run_agent_stream, batch: run_agent)
-2. If it touches Copilot SDK agents, modify CommandCenterCopilotAgent in copilot_agent.py
+2. If it touches Copilot SDK agents, modify MetoriteCopilotAgent in copilot_agent.py
 3. Ensure all Copilot SDK event types are translated to AG-UI SSE events
 4. Test with both github-copilot and maf agent types
 5. Run pytest tests/ before committing
@@ -62,7 +62,7 @@ and streams chat responses as AG-UI events.
 - Model switch mid-thread: detected via _copilot_model_store; forces new session.
 
 ### Streaming event flow
-1. run_agent_stream() creates CommandCenterCopilotAgent patches on loaded agent
+1. run_agent_stream() creates MetoriteCopilotAgent patches on loaded agent
 2. agent.run(stream=True) returns AgentResponseUpdate objects via _run_copilot_attempt()
 3. Each update is translated to AG-UI SSE events (TEXT_MESSAGE_CONTENT, TOOL_CALL_*, etc.)
 

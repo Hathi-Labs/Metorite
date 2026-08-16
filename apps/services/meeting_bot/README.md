@@ -1,8 +1,8 @@
-# CommandCenter Meeting Bot (self-hosted)
+# Metorite Meeting Bot (self-hosted)
 
 A **fully self-hosted** meeting-joining worker — a headless-Chrome (Playwright)
 participant that joins a meeting link, records the call audio, and hands it back
-to CommandCenter. **No third-party cloud, no per-hour API.** The only cost is
+to Metorite. **No third-party cloud, no per-hour API.** The only cost is
 the machine this runs on.
 
 It exists so the AI Note Taker's "Join call" feature (spec §3.13) can be driven
@@ -15,7 +15,7 @@ transcribe → diarize → speaker-name → summary pipeline like any other reco
 Each bot **is a real headless Chrome joining a live WebRTC call** — roughly
 **1–3 GB RAM + up to 2 CPU cores per concurrent meeting**, and this MVP runs
 **one meeting per instance** (scale out by running more instances). That does
-**not** fit CommandCenter's small default VPS, so this worker is deliberately
+**not** fit Metorite's small default VPS, so this worker is deliberately
 standalone: run it on the upsized VPS or a dedicated box.
 
 ## HTTP contract
@@ -110,7 +110,7 @@ MEETING_BOT_TOKEN=$(openssl rand -hex 24) docker compose up -d --build
 curl localhost:8080/health
 ```
 
-Then point the gateway at it (on the CommandCenter host `.env`):
+Then point the gateway at it (on the Metorite host `.env`):
 
 ```
 NOTES_BOT_PROVIDER=selfhosted
@@ -325,7 +325,7 @@ curl -s -H "Authorization: Bearer $MEETING_BOT_TOKEN" \
   localhost:8095/bots/<bot-id>/screenshot -o /tmp/bot.png
 ```
 
-From CommandCenter itself the same detail is at
+From Metorite itself the same detail is at
 `GET /notes/meetings/{meeting_id}/bot/diagnostics`, and the failure text now
 shows on the Notes screen for 30 minutes after it happens.
 

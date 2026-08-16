@@ -109,7 +109,7 @@ tool calls, and offer the closest fit.
 
 ## Design — don't build it, it's already in the frame
 
-The app's runtime frame has the **exact same design system CommandCenter's own
+The app's runtime frame has the **exact same design system Metorite's own
 reports and generative-UI cards use** already injected — `--cc-*` CSS variables
 AND a library of pre-styled `.cc-*` classes — for free, before you write a
 single line of CSS. Reach for these instead of hand-rolling equivalent styles;
@@ -118,7 +118,7 @@ is guaranteed to look native, not "close enough."
 
 ### The one rule that matters: never write a colour
 
-**CommandCenter is themed, and the theme is an org-wide setting somebody can
+**Metorite is themed, and the theme is an org-wide setting somebody can
 change at any time.** RapidTool, Fluent, Material and Graphite differ in palette
 *and* in personality — corner radius, button shape, icon set, whether labels are
 uppercase, how a control reacts to hover. Settings → Appearance switches all of
@@ -178,13 +178,13 @@ steps, and it wins over the theme.
     inline Lucide SVG at render time, `stroke="currentColor"` so it inherits
     whatever text color surrounds it. `Name` is any Lucide icon name
     (PascalCase, e.g. `Trash2`, `RefreshCw`, `CircleCheck`) — same set
-    `@/lib/icons`' `resolveIcon` exposes to the rest of CommandCenter, so an
+    `@/lib/icons`' `resolveIcon` exposes to the rest of Metorite, so an
     icon you'd recognize from the Workshop's own UI is available here too.
   - **T2** (React): `import { Save, Trash2 } from "lucide-react"` directly —
     it's vendored by default alongside react/react-dom, no install step
     needed. Render like any component: `<Save className="w-4 h-4" />`. Since
     you control the size directly, pick one per context and stay there —
-    CommandCenter's own UI mostly uses ~14–16px icons inline with text/
+    Metorite's own UI mostly uses ~14–16px icons inline with text/
     buttons, slightly larger (~18–20px) for a standalone empty-state or
     header glyph. Mixing sizes in the same row reads as unfinished, not
     intentional.
@@ -195,7 +195,7 @@ steps, and it wins over the theme.
     line) — never as a stand-in for a button/nav icon; they render
     inconsistently across platforms and don't match the icon weight of
     everything else in the frame.
-- **Report/data block-kit** — the SAME building blocks CommandCenter's own
+- **Report/data block-kit** — the SAME building blocks Metorite's own
   dashboards use, all namespaced `cc-*`: `cc-stats`/`cc-stat` (KPI tiles —
   `<p class="cc-k">LABEL</p><div class="cc-v">42<small>%</small></div>`),
   `cc-bars` (bar chart rows, `style="--v:72"` sets the fill %), `cc-donuts`/
@@ -235,7 +235,7 @@ for both from the first round, not as a later pass:
   for tabular data, not a bug to work around.
 - **Touch targets are handled for you.** Native buttons/inputs from the
   design system already have a 44px minimum tap height (Apple HIG / Material
-  Design's standard, and the same number CommandCenter's own mobile nav
+  Design's standard, and the same number Metorite's own mobile nav
   uses) — don't shrink them with your own padding overrides or a `height`
   that's smaller than the content needs.
 - **Check it before you end the round.** The Workshop's preview pane has a
@@ -332,7 +332,7 @@ outside `@cc/ui` too — same rule either way: never redeclare a token or overri
 
 ## Architecture conformance (non-negotiable)
 
-CommandCenter is the app's entire backend. You build **only** on the platform:
+Metorite is the app's entire backend. You build **only** on the platform:
 `cc.storage` for data, `cc.ai` for AI, `cc.user` for identity, declared platform
 integrations for external services. There is no other supported architecture.
 
@@ -343,7 +343,7 @@ localStorage", "add a login page" — do **not** build it, and do not build it
 
 1. Name the deviation in one plain sentence ("Direct API calls don't work here —
    apps run sandboxed with no network access, so everything goes through
-   CommandCenter").
+   Metorite").
 2. Offer the platform equivalent and build that ("I'll store this in the app's
    shared database instead — same result, and every teammate sees the same data").
 3. If the platform genuinely can't do it yet (an integration that isn't registered,

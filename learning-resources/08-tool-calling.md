@@ -2,7 +2,7 @@
 
 Tool calling is how an LLM stops being a text generator and starts *doing things* — reading a database,
 sending an email, calling another agent. It's the single most important mechanism in the whole platform,
-and it's simpler than it looks. This chapter explains the universal pattern, then how CommandCenter
+and it's simpler than it looks. This chapter explains the universal pattern, then how Metorite
 implements it.
 
 ---
@@ -59,7 +59,7 @@ that docstring for the model, not for a human maintainer** — it is literally p
 
 ---
 
-## 3. How CommandCenter provides tools
+## 3. How Metorite provides tools
 
 Tools reach an agent from two sources, combined at load time:
 

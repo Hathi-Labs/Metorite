@@ -1,6 +1,6 @@
 """Agent delegation tools — auto-injected into every loaded agent.
 
-Any MAF agent or GitHub Copilot SDK agent running through CommandCenter can
+Any MAF agent or GitHub Copilot SDK agent running through Metorite can
 call another registered agent as a sub-task without any changes to the agent
 repo itself. The tools are injected by the executor at load time.
 
@@ -83,7 +83,7 @@ def _parent_run_model() -> str | None:
 
 
 async def call_agent(agent_name: str, message: str) -> str:
-    """Delegate a sub-task to another CommandCenter agent and return its response.
+    """Delegate a sub-task to another Metorite agent and return its response.
 
     Runs the target agent synchronously and awaits the full result. Use this
     when your current task depends on the sub-agent's output before continuing.

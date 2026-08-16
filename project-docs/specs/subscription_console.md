@@ -26,10 +26,10 @@ customer-facing.
 > ⚠️ **Substrate moved — D32.2 (2026-08-12).** The tables this console reads
 > (`org_module_entitlement`, `user_module_seat`, `credit_ledger`, `usage_rollup`,
 > `invoice`) now live in the **central Control Plane service**, not in each
-> CommandCenter deployment: **`specs/platform_control_plane.md` (WS-31)**. This
+> Metorite deployment: **`specs/platform_control_plane.md` (WS-31)**. This
 > console becomes a **client** of that service rather than a reader of CC-local
 > tables. **D35 (2026-08-12) confirms the split and fixes the other half:** this
-> console stays **inside CommandCenter** at `/settings/billing`, while the
+> console stays **inside Metorite** at `/settings/billing`, while the
 > Operator Console becomes a **separate deployable app** — so §1's "the two share
 > tables and must never share routes" is enforced by the deployment boundary
 > rather than by a guard inside one application. **Nothing about its scope, its surfaces or its access rules changes** —
@@ -39,7 +39,7 @@ customer-facing.
 > available) is defined once in WS-31 §3.3 — do not recompute it here.
 
 **What this is.** The console a **customer's org admin** uses to manage their
-Command Center subscription: see what **Centers and add-ons** they own (modules
+Metorite subscription: see what **Centers and add-ons** they own (modules
 are internal atoms, never the customer frame — D23), assign seats, watch AI
 credit burn, and request changes. It is the customer-side complement of the
 **Operator Console** (`saas_multitenancy.md` §4.1a, `/operator`, MT-4) — the two

@@ -6,7 +6,7 @@
 · **Date:** 2026-07-16 · **Owner:** vjvarada
 
 A no-code, node-based builder that lets makers compose **automated workflows** from
-CommandCenter's existing agents, tools, and integrations — triggered on command, by
+Metorite's existing agents, tools, and integrations — triggered on command, by
 schedule, by webhook, or by an inbound event (email, CRM change, etc.). Conceptually
 modelled on Microsoft Copilot Studio, with implementation patterns borrowed from
 [Sim](https://github.com/simstudioai/sim) and
@@ -18,7 +18,7 @@ modelled on Microsoft Copilot Studio, with implementation patterns borrowed from
 
 Build a **"Workflows" surface** in the control plane: a three-pane visual editor
 (palette · canvas · inspector) on top of a new persistence model and a graph
-execution engine that reuses CommandCenter's existing primitives — `call_agent`,
+execution engine that reuses Metorite's existing primitives — `call_agent`,
 the integrations registry, the ingestion/webhook pipeline, and the orchestrator's
 tier dispatch.
 
@@ -143,12 +143,12 @@ The only real fork is *hand-rolled DAG scheduler (Sim)* vs *compile-to-LangGraph
 
 ---
 
-## 3. Mapping onto CommandCenter
+## 3. Mapping onto Metorite
 
-CommandCenter already has most of the *runtime* a workflow engine needs. The gap is
+Metorite already has most of the *runtime* a workflow engine needs. The gap is
 the **graph model, the editor, and a user-configurable trigger binding.**
 
-| Workflow concept | Already exists in CommandCenter | Gap to build |
+| Workflow concept | Already exists in Metorite | Gap to build |
 |---|---|---|
 | **Agent node** | `call_agent` / `call_agents_parallel` / `call_agent_background` (`packages/acb_skills/acb_skills/agent_tools.py`); orchestrator tier dispatch (`orchestrator/executor.py`) | A node handler that invokes these declaratively |
 | **Tool / integration node** | Integrations registry (`acb_skills/integrations.py::_REGISTRY` — zoho-crm, gmail, clickup, google-sheets, apollo, serpapi, …); injected tool modules (web/github/memory/todo…) | Expose each as a typed, catalog-driven node |
@@ -248,7 +248,7 @@ Edges carry `sourceHandle` for branching (open-agent-builder rule #4):
 
 The authoring experience is what makes or breaks a no-code tool. Design goals, in
 priority order: **legible at a glance · fast to build · hard to break · reads like
-CommandCenter.** Full interactive mockup lives alongside this doc
+Metorite.** Full interactive mockup lives alongside this doc
 (`docs/workflow-editor/mockup.html`) and is published as an Artifact.
 
 ### 5.1 Layout — three panes + a run console
@@ -276,7 +276,7 @@ the graph is readable at a glance:
 
 - **Triggers** (amber) — Manual / On command · Schedule (cron) · Webhook · Inbound
   email · CRM change (Zoho) · Task change (ClickUp) · Incoming API call.
-- **Agents** (violet) — any registered CommandCenter agent (task-manager,
+- **Agents** (violet) — any registered Metorite agent (task-manager,
   email-assistant, orchestrator, …) plus "Ask a question" (elicitation) and a generic
   "Run agent" with free-form instructions.
 - **Tools / Integrations** (teal) — one node per registered integration action:
@@ -328,7 +328,7 @@ the node schema to be LLM-emittable from day one (flat, typed, documented).
 
 ## 6. Execution engine — compile to Microsoft Agent Framework Workflows
 
-**Do not hand-roll a DAG scheduler.** CommandCenter already runs on Microsoft Agent
+**Do not hand-roll a DAG scheduler.** Metorite already runs on Microsoft Agent
 Framework (MAF), and `agent-framework-core` (pinned `>=1.8.0`) ships a full graph
 **Workflows** engine that is currently unused. It provides exactly the run-model this
 design needs — a directed graph of **executors** connected by **edges**, run with a
@@ -442,7 +442,7 @@ payload and enqueues a `workflow_run` (Copilot Studio's unified-trigger idea, Si
    become org-scoped via RLS at MT-1b.]* Who can publish (executive vs employee)?
 6. **Secrets in nodes.** Nodes must never read raw credentials — resolve through the
    integrations registry at run time, exactly as agents do today.
-7. **MCP.** Both references treat integrations as MCP. CommandCenter already has MCP
+7. **MCP.** Both references treat integrations as MCP. Metorite already has MCP
    (`.mcp.json`, per-agent `mcp_servers`). An "MCP tool" node is a natural fit and
    future-proofs the tool catalog.
 8. **Versioning & rollback.** Immutable `workflow_version` gives free rollback; decide
@@ -495,7 +495,7 @@ multi-agent workflow nodes.
   fixtures** — a directory of whole workflows paired with expected output,
   driven by one generic runner, so adding coverage is adding a file
   (`evals/trajectories/workflows/*.json`).
-- CommandCenter internals: `apps/services/orchestrator/orchestrator/executor.py`,
+- Metorite internals: `apps/services/orchestrator/orchestrator/executor.py`,
   `packages/acb_skills/acb_skills/agent_tools.py`,
   `packages/acb_skills/acb_skills/integrations.py`,
   `apps/services/gateway/gateway/routes/email/automation/engine.py`,

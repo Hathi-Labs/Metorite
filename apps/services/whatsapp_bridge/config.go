@@ -13,7 +13,7 @@ type Config struct {
 	// Addr is the host:port the bridge's own HTTP API listens on. The gateway's
 	// BridgeProvider + connect routes talk to this. Default ":8790".
 	Addr string
-	// GatewayURL is the CommandCenter gateway base URL the bridge posts inbound
+	// GatewayURL is the Metorite gateway base URL the bridge posts inbound
 	// messages + pairing events to (…/whatsapp/bridge/ingest and …/paired).
 	GatewayURL string
 	// Secret is the shared secret sent as X-Bridge-Secret in BOTH directions.

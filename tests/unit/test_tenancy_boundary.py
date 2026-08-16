@@ -1,6 +1,6 @@
 """The tenant boundary, as a ratchet (WS-29).
 
-⚠️ **114 of CommandCenter's 147 tables still carry no tenant key.** That is not
+⚠️ **114 of Metorite's 147 tables still carry no tenant key.** That is not
 a bug list — it is the honest state of a system built for one organisation. The
 bug would be adding the 147th.
 
@@ -314,7 +314,7 @@ def test_a_new_table_must_carry_a_tenant_key() -> None:
                  - set(gen.HOMONYM_BLOCKED))
     assert not new, (
         f"{new} has no `organization_id` REFERENCING `organization`. "
-        f"CommandCenter is multi-tenant (specs/saas_multitenancy.md): give it "
+        f"Metorite is multi-tenant (specs/saas_multitenancy.md): give it "
         f"one, or add it to BASELINE_UNSCOPED with the reason in your PR."
     )
 

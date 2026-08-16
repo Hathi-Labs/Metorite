@@ -24,7 +24,7 @@ class _FakeResult:
 
 
 class _FakeAgent:
-    """Stands in for CommandCenterCopilotAgent — records what it was built with."""
+    """Stands in for MetoriteCopilotAgent — records what it was built with."""
 
     instances: ClassVar[list[_FakeAgent]] = []
 
@@ -50,7 +50,7 @@ def _reset(monkeypatch):
     _FakeAgent.instances = []
     _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)
     monkeypatch.setattr(
-        "orchestrator.copilot_agent.CommandCenterCopilotAgent", _FakeAgent,
+        "orchestrator.copilot_agent.MetoriteCopilotAgent", _FakeAgent,
     )
     yield
     _WRITE_ARTIFACT_CONTEXT.pop("permission_check_root", None)

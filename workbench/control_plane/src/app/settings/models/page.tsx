@@ -889,7 +889,7 @@ function ModelDetailPanel({ model, enabled, busy, onToggle, onClose }: {
               ? "border border-success/20 bg-success/5 text-success hover:bg-success/10"
               : "bg-primary text-primary-foreground hover:opacity-90"
           }`}>
-          {busy ? "…" : enabled ? "✓ Enabled — click to disable" : "Enable in CommandCenter"}
+          {busy ? "…" : enabled ? "✓ Enabled — click to disable" : "Enable in Metorite"}
         </button>
 
         {/* Capabilities */}

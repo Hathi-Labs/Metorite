@@ -1,6 +1,6 @@
 """Custom Apps · publish-time conformance scan (RFC §4.0, layer 3).
 
-Static checks that a bundle honours the platform contract — CommandCenter is
+Static checks that a bundle honours the platform contract — Metorite is
 the app's only backbone. The sandbox already makes deviations non-functional
 at runtime (layer 2); this scan catches them at publish so the author hears
 "use the platform way" from the builder instead of shipping a broken app.

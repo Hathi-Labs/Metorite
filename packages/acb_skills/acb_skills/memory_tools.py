@@ -2,9 +2,9 @@
 
 Auto-injected into every agent alongside ``web_search`` and ``call_agent``.
 
-These tools give agents ACTIVE control over the CommandCenter memory systems:
+These tools give agents ACTIVE control over the Metorite memory systems:
 
-READ tools (query what CommandCenter knows):
+READ tools (query what Metorite knows):
 - remember(query) → str
     Search Mem0 episodic memory for relevant past facts about the current user.
     Returns formatted facts the agent can use for continuity.

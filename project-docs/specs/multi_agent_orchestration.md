@@ -261,7 +261,7 @@ churn is the underlying copilot-SDK major, not the framework client surface.)
 ```
 RAM   : 3915 MB total · 2805 MB available · gateway RSS ≈ 418 MB · swap 4 GB (137 MB used)
 Disk  : 48 G total · 23 G available · agent clones 3.5 G
-        (commandcenter-dev 2.1 G, agent-sales-assistant 1.4 G — everything else < 10 MB)
+        (metorite-dev 2.1 G, agent-sales-assistant 1.4 G — everything else < 10 MB)
 ```
 
 Agents run **in-process on a shared venv**, so `sys.modules` is shared and the marginal cost of an
@@ -819,7 +819,7 @@ uv run ruff check .
    *(Moot here — Phases 2–3 superseded. Workflow-node HITL shipped as the Action Broker inbox
    pause/resume in `workflows_app.md`. The HITL-vs-SSE-relay question that **is** still live is
    Phase 4.4's, and it is scoped there.)*
-4. ~~Do we cap live nodes per workflow (`commandcenter-dev` alone is a 2.1 GB clone)?~~
+4. ~~Do we cap live nodes per workflow (`metorite-dev` alone is a 2.1 GB clone)?~~
    *(Moot here — belongs to `workflows_app.md` under D6.)*
 
 **No open questions remain in this document.** Every decision Phase 4 needs is either recorded above

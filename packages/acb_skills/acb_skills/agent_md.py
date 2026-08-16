@@ -4,19 +4,19 @@ GitHub Copilot Chat (and the Copilot SDK) author an agent's identity in a
 single Markdown file under ``.github/agents/``:
 
     ---
-    name: CommandCenter
+    name: Metorite
     description: >
-      Self-anneal agent for the CommandCenter platform...
+      Self-anneal agent for the Metorite platform...
     model: claude-sonnet-4-5
     tools:
       - runCommands
       - editFiles
       - terminal
     ---
-    # CommandCenter Self-Anneal Agent
+    # Metorite Self-Anneal Agent
     You are a senior software engineer...        <- inline system prompt
 
-CommandCenter wraps Copilot SDK agents inside MAF, so historically the
+Metorite wraps Copilot SDK agents inside MAF, so historically the
 runtime built each agent from ``agents.py`` / ``instructions.md`` and the
 ``.agent.md`` file was only consumed by VS Code — never by the deployment.
 
@@ -24,7 +24,7 @@ This module gives the runtime a defensive reader for that file so a live
 chat (or any agent run) honours the agent's authored instructions, model,
 and (advisory) tool list.  The ``tools`` field uses VS Code Copilot's
 vocabulary (``editFiles``/``terminal``/...) which does not map 1:1 onto
-CommandCenter's platform-injected tools, so it is surfaced as advisory
+Metorite's platform-injected tools, so it is surfaced as advisory
 metadata only — it never restricts what the agent can actually call.
 
 Parsing mirrors :mod:`acb_skills.registry`'s frontmatter conventions:
@@ -142,9 +142,9 @@ _VSCODE_TOOL_MAP: dict[str, tuple[str, ...]] = {
 # names its .agent.md advertises and the ones it actually has.
 _RUNTIME_NOTE = """
 ---
-## Runtime note (CommandCenter)
+## Runtime note (Metorite)
 
-You are NOT running inside VS Code — you run headless in the CommandCenter
+You are NOT running inside VS Code — you run headless in the Metorite
 runtime. Your definition lists VS Code tool names; use these instead:
 
 - `editFiles` / `new` → **write_artifact(path, content)** — pass the file's
@@ -185,7 +185,7 @@ def runtime_note_for(tools: list[str]) -> str:
     """The prompt note reconciling VS Code tool names with this runtime.
 
     Returned only for agents that actually speak the VS Code vocabulary — an
-    agent authored for CommandCenter needs no such correction. Additive: it
+    agent authored for Metorite needs no such correction. Additive: it
     never rewrites the author's prose, it just stops the prose from pointing at
     affordances that don't exist here.
     """

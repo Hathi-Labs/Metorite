@@ -278,7 +278,7 @@ def _denied_result(reason: str) -> Any:
     return PermissionRequestResult(
         kind="denied-by-rules",
         feedback=(
-            "Blocked by CommandCenter's permission policy: " + reason +
+            "Blocked by Metorite's permission policy: " + reason +
             ". If you need this, ask the user to approve it explicitly."
         ),
     )

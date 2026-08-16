@@ -3,7 +3,7 @@
 > **Status:** Phase A SHIPPED · Phases B–C not started (was: Brainstorm / Design proposal)
 > **Date:** 2026-06-14 · **Re-dated 2026-08-09:** Phase A shipped (D7) with the MAF-side injection gap ticketed as WS-8c (`agent_architecture.md` §12.2); Phases B/C remain research.
 > **Scope:** How Model Context Protocol (MCP) servers and Claude-style plugins
-> extend CommandCenter beyond the current REST API integration model.
+> extend Metorite beyond the current REST API integration model.
 
 > **Update 2026-08-01 (doc-truth pass):** **Phase A (MCP Server Registry, §6) is SHIPPED** —
 > the `mcp_servers` table (`infra/postgres/13_mcp_servers.sql`), gateway CRUD + connectivity-test
@@ -20,7 +20,7 @@
 
 ## 1. The Three Integration Tiers
 
-CommandCenter's Integrations page now surfaces three distinct integration
+Metorite's Integrations page now surfaces three distinct integration
 patterns — each suited to a different class of problem:
 
 | Tier | Pattern | Discovery | Auth | Best For |
@@ -162,7 +162,7 @@ At runtime:
 
 | Transport | When | Example |
 |---|---|---|
-| **stdio** (local process) | Server runs on same machine as CommandCenter | Postgres MCP, Filesystem MCP — needs local access |
+| **stdio** (local process) | Server runs on same machine as Metorite | Postgres MCP, Filesystem MCP — needs local access |
 | **HTTP/SSE** (remote) | Server is hosted elsewhere | Brave Search, GitHub — cloud-hosted MCP servers |
 
 For Docker deployment: stdio MCP servers run as sidecar containers in the
@@ -369,7 +369,7 @@ On each agent run:
 ```
                         ┌─────────────────────────────┐
                         │  Do you want to extend       │
-                        │  CommandCenter with a new    │
+                        │  Metorite with a new    │
                         │  tool or data source?        │
                         └─────────────┬───────────────┘
                                       │
@@ -479,9 +479,9 @@ Scheduled via the existing cron trigger system in `config.json`.
 
 > A user writes a plugin for their industry-specific ERP. They publish the
 > manifest URL. Another company in the same industry installs it from the
-> store with one click. CommandCenter agents can now interact with that ERP.
+> store with one click. Metorite agents can now interact with that ERP.
 
-This is the plugin store model: CommandCenter becomes a platform, not just
+This is the plugin store model: Metorite becomes a platform, not just
 a product.
 
 ---
@@ -499,7 +499,7 @@ a product.
 - [ ] Executor: `_build_mcp_servers()` — queries table, builds config
 - [ ] Executor: inject `mcp_servers=` into `GitHubCopilotAgent`
 - [ ] UI: MCP tab — list, add form, test button, status indicator
-- [ ] Documentation: how to run an MCP server with CommandCenter
+- [ ] Documentation: how to run an MCP server with Metorite
 
 ### Phase B — Plugin System (estimated: 2-3 weeks)
 
@@ -527,7 +527,7 @@ a product.
 
 | Concern | Mitigation |
 |---|---|
-| **Plugin code execution** | Plugins are NOT code — they are API descriptions. Only HTTP calls are proxied. No arbitrary code runs on CommandCenter servers. |
+| **Plugin code execution** | Plugins are NOT code — they are API descriptions. Only HTTP calls are proxied. No arbitrary code runs on Metorite servers. |
 | **Credential leaks** | All tokens encrypted at rest (pgcrypto). Never logged. Never in agent repos. |
 | **OAuth token scope** | Minimum required scopes declared in manifest. User approves only what's needed. |
 | **Plugin supply chain** | Manifest + OpenAPI spec validated on install. Hash-pinned. Version-locked until user updates. |
@@ -566,7 +566,7 @@ a product.
 - [Model Context Protocol specification](https://modelcontextprotocol.io/)
 - [Claude Plugins documentation](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/plugins)
 - [OpenAPI 3.0 specification](https://spec.openapis.org/oas/v3.0.3)
-- CommandCenter Integration Registry: `packages/acb_skills/acb_skills/integrations.py`
+- Metorite Integration Registry: `packages/acb_skills/acb_skills/integrations.py`
 - Agent executor: `apps/services/orchestrator/orchestrator/executor.py` (MCP injection now in `apps/services/orchestrator/orchestrator/_tool_injection.py`)
 - System architecture: `project-docs/system_architecture.md`
 - Agent builder guide: `project-docs/agent_repo_compatibility.md`

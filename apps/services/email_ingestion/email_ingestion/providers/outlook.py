@@ -729,7 +729,7 @@ class OutlookProvider(BaseEmailProvider):
         """PATCH read state / flag on the Graph message.
 
         Outlook has no "star" concept, so ``is_starred`` is ignored (the star is
-        kept as a local-only marker in CommandCenter).
+        kept as a local-only marker in Metorite).
         """
         patch: dict[str, Any] = {}
         if is_read is not None:

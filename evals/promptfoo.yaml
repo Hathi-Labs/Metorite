@@ -1,4 +1,4 @@
-# CommandCenter skill golden cases — top-level CI gate (ADR-017, HH-1).
+# Metorite skill golden cases — top-level CI gate (ADR-017, HH-1).
 #
 # Aggregated, curated set spanning the skill domains. Per-skill suites live in
 # skills/<domain>/<skill>/evals/cases.yaml and share the same provider.
@@ -8,7 +8,7 @@
 #
 # Run locally:  npx promptfoo@latest eval --config evals/promptfoo.yaml
 
-description: CommandCenter harness golden cases
+description: Metorite harness golden cases
 
 providers:
   - id: file://_runner.py

@@ -50,7 +50,7 @@ __all__ = [
 ]
 
 DEFAULT_INSTRUCTIONS = (
-    "You are a CommandCenter agent. Use the provided tools to answer the "
+    "You are a Metorite agent. Use the provided tools to answer the "
     "user's request accurately, and cite a source URL whenever one is available."
 )
 

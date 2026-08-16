@@ -1,4 +1,4 @@
-# Pre-commit hooks for CommandCenter.
+# Pre-commit hooks for Metorite.
 #
 # Grandfather-and-ratchet philosophy: every hook here is diff-scoped —
 # pre-commit only runs against STAGED files, so legacy code is never

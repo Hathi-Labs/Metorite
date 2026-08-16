@@ -68,7 +68,7 @@ function explainError(raw: string): string {
   const e = raw.toLowerCase();
   if (e.includes("gateway unreachable")) {
     return (
-      "Couldn't reach the CommandCenter gateway (the request timed out or was " +
+      "Couldn't reach the Metorite gateway (the request timed out or was " +
       "refused). The call may not have been placed. Check the gateway is up — " +
       "`systemctl status acb-gateway` — and watch `journalctl -u acb-gateway -f` " +
       "while retrying."

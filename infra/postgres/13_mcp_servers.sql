@@ -1,4 +1,4 @@
--- CommandCenter — MCP Server Registry.
+-- Metorite — MCP Server Registry.
 -- Stores Model Context Protocol server configurations.
 -- MCP servers self-describe their tools at connection time;
 -- the executor queries this table at agent-run time and injects

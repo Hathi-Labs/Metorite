@@ -1,4 +1,4 @@
-# SaaS multi-tenancy — selling CommandCenter to other companies
+# SaaS multi-tenancy — selling Metorite to other companies
 
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
@@ -28,7 +28,7 @@ merged, box self-applied via pull timer)
 > correct move is to re-take the §1 decision first, in this document, with a date and a
 > reason — not to build one of them as a side effect of an app ticket."*
 >
-> **The reason: the business model changed.** CommandCenter is being sold to external
+> **The reason: the business model changed.** Metorite is being sold to external
 > customers, priced **per module, per user, per month**, plus metered AI. That price point
 > and one-VM-per-customer are arithmetically incompatible (§1.4). This document is the
 > re-take. `tenancy_and_visibility.md` §1/§6 are amended to point here; **everything else
@@ -129,17 +129,17 @@ silently serving another tenant's data in production.
 ## 0.9 THE TARGET, stated without reference to what exists
 
 Owner question, 2026-08-08: *disregarding the cost of migrating the current database — we
-can start a new one — what is the right multi-tenant architecture for CommandCenter?*
+can start a new one — what is the right multi-tenant architecture for Metorite?*
 
 Answered here **before** §1, because §1 onward reasons from the existing tree and a reader
 should be able to see the destination without the retrofit argument attached to it.
 
 ### 0.9.1 The thesis — the interesting boundary is not the database
 
-Almost every multi-tenancy discussion is a database discussion. **For CommandCenter that
+Almost every multi-tenancy discussion is a database discussion. **For Metorite that
 is the wrong emphasis, and it is wrong for a reason specific to this product:**
 
-| Ordinary SaaS (Slack, Notion, a CRM) | CommandCenter |
+| Ordinary SaaS (Slack, Notion, a CRM) | Metorite |
 |---|---|
 | Code paths are written by your engineers | **Agents execute model-generated tool calls** |
 | Input is typed by authenticated users | **Input arrives from email and WhatsApp** — adversarial by default, prompt injection is a routine event, not an exotic one |
@@ -317,7 +317,7 @@ Notably it is **not** a verdict on row-level security: Odoo already ships row-le
 filtering (`ir.rule` record rules) and trusts it to separate legal entities' books inside
 one database. It cannot share the metadata layer, which is a different problem.
 
-CommandCenter is the inverse and already demonstrates it. `155_projects_custom_fields.sql`
+Metorite is the inverse and already demonstrates it. `155_projects_custom_fields.sql`
 ships ClickUp-style custom fields with **definitions as rows** (`pm_custom_fields`) and
 **values as JSONB** on `pm_tasks` behind a `jsonb_path_ops` GIN index. Seven field types,
 per-project, and the schema never moves. Custom apps are the same shape — rows in
@@ -329,7 +329,7 @@ never as tenant code in the database.
 | **Odoo** | DDL + metadata rows in the tenant DB | Database per tenant | Its own implementation choice, not RLS's limits |
 | **Salesforce / ServiceNow / NetSuite** | Metadata rows + generic value storage | **Pooled, shared schema** | Deep customization is compatible with pooling — at the cost of a large metadata engine |
 | **SAP (BTP/CAP)** | Key-user extensions + side-by-side apps on stable APIs | Shared app, **HDI container (schema) per tenant** | Constrain *how* extension is expressed, not where data sits |
-| **CommandCenter** | Rows + JSONB (`pm_custom_fields`), apps as rows | **Pooled + FORCE RLS** (D15) | — |
+| **Metorite** | Rows + JSONB (`pm_custom_fields`), apps as rows | **Pooled + FORCE RLS** (D15) | — |
 
 #### What each one actually contributes
 
@@ -400,7 +400,7 @@ data) and wrong about the *mechanism*. Container-per-customer buys isolation aga
 threat that is not the real one, at a cost that breaks the price point.
 
 **The real leak vector in this system is the application, not the database engine.**
-CommandCenter's dangerous surfaces are an agent with broad tool access, a missing
+Metorite's dangerous surfaces are an agent with broad tool access, a missing
 predicate in one of 209 gateway files, a prompt injection arriving through an ingested
 email, and process-global credentials (§0). A separate Postgres container stops none of
 those. A tenant-scoped connection that the *database* refuses to widen stops the first
@@ -449,7 +449,7 @@ pooled:**
 > guarantee; a policy the database enforces is a stronger version, and it is the version
 > that survives a developer forgetting.
 
-**What this changes in this document.** RLS (§1.3) is CommandCenter's Zanzibar-analogue at
+**What this changes in this document.** RLS (§1.3) is Metorite's Zanzibar-analogue at
 its scale: one enforcement point, on the server, that no route can forget. **The second
 layer is missing and is now a Phase 5 item:**
 
@@ -623,7 +623,7 @@ version** over one physical table buys more room. That comfortably supports **tw
 adjacent versions over a window of weeks**. It does not support eighteen months of drift —
 that is case D.
 
-**Case C is already built, and this is the finding that matters most.** CommandCenter's
+**Case C is already built, and this is the finding that matters most.** Metorite's
 per-customer variation is **data, not code**, across the board:
 
 - **Custom Apps** — `114_custom_apps.sql` + `app_files`: apps are DB rows, not deployed code
@@ -662,7 +662,7 @@ should reach the customer:
 
 **When this overturns §1.** If D stops being the exception and becomes what most customers
 buy, the §1.4a test has genuinely flipped — the customer controls the cadence, and
-CommandCenter is on Hostinger's side of the line rather than WordPress.com's. **Re-take §1
+Metorite is on Hostinger's side of the line rather than WordPress.com's. **Re-take §1
 at that point.** Nothing in the phased plan (§5) is wasted if that happens: the silo
 customers of §5.1 are already the mechanism, and every silo running the pooled schema is
 what keeps both doors open.
@@ -673,14 +673,14 @@ Raised by the owner 2026-08-08, and worth recording because the intuition is com
 reasonable, and points the opposite way once followed through.
 
 Hostinger gives every WordPress install its own database. **That is correct for
-Hostinger and irrelevant to CommandCenter, because Hostinger is a host, not a SaaS.**
+Hostinger and irrelevant to Metorite, because Hostinger is a host, not a SaaS.**
 The determining question is:
 
 > **Who controls the schema and the upgrade cadence — you, or the customer?**
 
 | | Customer controls the app | **You** control the app |
 |---|---|---|
-| Examples | WordPress on shared hosting · self-hosted Odoo · Jira Data Center | Salesforce · Google Workspace · Slack · Zoho · **CommandCenter** |
+| Examples | WordPress on shared hosting · self-hosted Odoo · Jira Data Center | Salesforce · Google Workspace · Slack · Zoho · **Metorite** |
 | Consequence | The host cannot know or migrate the schema; customer A may run WP 5.8 while B runs 6.4; the customer installs arbitrary plugins that alter tables | You ship one version to everyone; customers cannot fork the schema or install plugins into your Postgres |
 | Correct model | **Database per install — mandatory** | **Pooled — the norm** |
 
@@ -694,7 +694,7 @@ Two things follow, and both support this document's decisions:
 
 1. **Same software, different business model, different answer.** Hostinger silos because
    the customer owns the install. WordPress.com pools because WordPress.com owns it. You
-   own CommandCenter. You are on the WordPress.com side of that line, not Hostinger's.
+   own Metorite. You are on the WordPress.com side of that line, not Hostinger's.
 2. **Multisite's per-site table prefix is schema-per-tenant in a different costume — and
    it hits exactly the failure §1.8 predicts.** Per-site table sets multiply the catalog
    (a 1,000-site network is tens of thousands of tables), which is *why* large networks
@@ -722,7 +722,7 @@ reference architecture calls this the catalog database; it is a standard compone
 invention.)
 
 **Tenant resolution — subdomain, bound to the session.**
-`acme.commandcenter.app` → workbench middleware resolves the slug → the **session** carries
+`acme.metorite.app` → workbench middleware resolves the slug → the **session** carries
 the tenant claim → the gateway reads it from the authenticated identity.
 
 > **Binding rule, extending `user_management_contract.md` rule 10** (*"never take the
@@ -879,7 +879,7 @@ backup matters more than onboarding speed, and the procurement conversation is e
 ### 1.8a Greenfield check — which arguments here are design, and which are retrofit
 
 Owner question, 2026-08-08: *would this still be the recommendation if it were not
-anchored to what CommandCenter already is?* Recorded because a reader two years from now
+anchored to what Metorite already is?* Recorded because a reader two years from now
 must be able to tell **"we chose this"** from **"we inherited this"**, and because the
 audit produced two changes to Phase 1.
 
@@ -929,7 +929,7 @@ now, both expensive later, and both therefore added to Phase 1:**
    exceed the benefit. **Decide deliberately rather than by default.**
 
 **The argument this document under-weighted, and it is independent of the codebase:**
-CommandCenter's agents execute model-generated tool calls over content ingested from
+Metorite's agents execute model-generated tool calls over content ingested from
 untrusted sources (email, WhatsApp). That is a **materially higher risk profile than
 ordinary SaaS**, and it is a real point in silo's favour that §1.1 waved past. It does not
 flip the decision — an injected agent already holds its own tenant's data, and RLS blocks
@@ -971,7 +971,7 @@ Postgres RLS protects Postgres. These do not run on Postgres:
 
 ### 2.1 Why the distinction is load-bearing
 
-CommandCenter already has a permission layer: `feature:whatsapp`, roles, per-user
+Metorite already has a permission layer: `feature:whatsapp`, roles, per-user
 overrides with deny-wins-by-specificity (`permissions.py`). That answers **"is this user
 allowed?"** and its owner is the *customer's* admin.
 
@@ -1201,10 +1201,10 @@ the `FEATURES` tuple is **invisible even to an owner holding `*`**. Keep the pin
 
 > ⚠️ **§3.1 IS REVERSED — D32.1 (owner, 2026-08-12).** Owning spec for the
 > replacement: **`specs/platform_control_plane.md` (WS-31)**. AI is now metered and
-> routed by a **central Control Plane service**; CommandCenter's `/v1` becomes a
+> routed by a **central Control Plane service**; Metorite's `/v1` becomes a
 > forwarder. **Do not build §3.1's "keep it all in the gateway" shape.**
 >
-> **What §3.1 got right and still binds:** CommandCenter must not grow a *second
+> **What §3.1 got right and still binds:** Metorite must not grow a *second
 > tenancy boundary*. It does not — the Router sits OUTSIDE CC as a supplier, never
 > sees a CC session and never resolves a tenant from request input.
 >
@@ -1468,7 +1468,7 @@ Two models, and the recommendation is to run both:
 Tax or the Razorpay equivalent), not to your app. Export to books (Zoho Books is the
 natural choice — you already integrate Zoho CRM) **nightly, not per transaction**.
 Deferred-revenue recognition on annual prepay lives in the accounting system, never in
-CommandCenter.
+Metorite.
 
 ---
 
@@ -2217,7 +2217,7 @@ planning, not measurements, and are cited as such:
 > carry state + gates only. The narrative below is preserved verbatim from the
 > final long-form row; the dated corrections after it win where they conflict.
 
-### WS-29 — Multi-tenancy — turning CommandCenter into a product sold to other companies
+### WS-29 — Multi-tenancy — turning Metorite into a product sold to other companies
 **State cell (as of the move):** ✅ **Phase 0 DONE** (MT-0a/0b/0c-1/0d) · ◐ **MT-1 partial** (1a schema · 1b generated-not-applied · 1c seam · 1e wrapper · 1i done) · 🔴 MT-0c-2 OWNER-GATE (D16) · ◐ MT-2…MT-5 blocked on owner inputs
 **Narrative (verbatim):** **Re-takes D11.** `tenancy_and_visibility.md` §1 set the tenant boundary at THE DEPLOYMENT and §6 put row-level tenancy, an org switcher and multi-org users out of scope. The business model changed — per module, per user, per month, plus metered AI — so §1/§6 are **superseded** by that spec's own re-take procedure. **§2–§5 of `tenancy_and_visibility.md` (the visibility ladder, the `group:` project grant, the gap table) are UNCHANGED and still binding**; tenancy is *which company*, visibility is *who inside it*. **The decision: tenant = `organization_id` enforced by Postgres RLS at the connection seam; the deployment is a placement, not a boundary.** Pooled standard tier, dedicated DB/stack as priced tiers. ⚠️ **The thesis is not a database thesis** (§0.9): agents execute model-generated tool calls over adversarial input, and the database can be defended by a policy that cannot be forgotten while the agent runtime cannot — so **the isolation budget belongs on the execution plane**, and MT-0c is the load-bearing ticket, not MT-1b. **Three findings that changed the plan:** (1) *"one engine, one `get_db()`"* was **wrong** — true of the request path, false of the process; §0.1 enumerates **eight** connection paths, two of which the seam ratchet never inspected (`acb_graph`'s sync `create_engine`; three raw `psycopg.connect` callers), which is why MT-1c also extends the ratchets. (2) **RLS fails closed** (unset `app.tenant_id` → NULL → zero rows) where `search_path` fails open — that property, not topology, is why schema-per-tenant was rejected (§1.8). (3) The customization layer that makes per-customer code forks unnecessary **already ships** — Custom Apps, Workflows (ADR-028), `dynamic_agents`, `pm_custom_fields`, `settings JSONB` (§1.4b). **Blockers before ANY second tenant, silo or pooled — process-level, not database-level:** MT-0a (integration credentials reach agents via process-global `os.environ`, `executor.py:4388`, flaw documented in-code at `:4364`) and MT-0b (self-mutation opens PRs against this monorepo — root `AGENTS.md` non-negotiable 3). **MT-0c is OWNER-GATE and inverts D10:** T2 is parked because *"the ladder must hold against trusted colleagues, not hostile users"* — selling externally replaces that threat model, so un-parking is the architecture, not optional hardening. **Rollout (§5.1): silo customers 1–5, build MT-1 in parallel, cut over at 8–12** — crossover is where silo's linear cost meets MT-1's one-time 4–5 weeks; every silo runs the pooled schema with `organization_id` + RLS from day one, or the bridge becomes a rewrite. **Absorbs WS-14a** as MT-1i: the three `org_group` slug-only joins were "wrong within one org, leaking in none" under D11 — **under D15 they leak**, and `_HAS_OWNER_SQL` (`access.py:522`, no org filter) is a **lockout RLS does not fix**. §11.2 is the week-one list.
 

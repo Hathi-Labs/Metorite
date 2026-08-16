@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Shared FilterPills component — CommandCenter Design System
+ * Shared FilterPills component — Metorite Design System
  *
  * Rounded pill buttons for filtering lists (agents, models, etc.).
  * Use this instead of ad-hoc rounded-full buttons for a consistent look.

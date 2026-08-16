@@ -3,7 +3,7 @@
 /**
  * /memory — Memory Manager
  *
- * Visualises every fact CommandCenter has learned about the signed-in user.
+ * Visualises every fact Metorite has learned about the signed-in user.
  * Supports semantic search and per-item deletion.
  */
 
@@ -258,7 +258,7 @@ export default function MemoryPage() {
           <div>
             <h1 className="text-xl font-semibold text-foreground">Memory</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Facts CommandCenter has learned about you from past conversations.
+              Facts Metorite has learned about you from past conversations.
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">{userId}</p>
           </div>
@@ -386,7 +386,7 @@ export default function MemoryPage() {
           <p className="text-muted-foreground text-xs mt-1">
             {query
               ? "Try a different query or clear the search."
-              : "CommandCenter will learn from your conversations as you chat."}
+              : "Metorite will learn from your conversations as you chat."}
           </p>
         </div>
       )}

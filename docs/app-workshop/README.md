@@ -5,7 +5,7 @@
 A chat-driven **app builder** ("the Workshop") plus an in-platform **deployment surface**
 ("Custom Apps") that lets anyone on the team build small HTML/JS/React tools by talking to
 an LLM agent — live preview on the left, build chat on the right — and then publish them
-*inside CommandCenter itself* for the rest of the team to use.
+*inside Metorite itself* for the rest of the team to use.
 
 This is **small software**: purpose-built tools that will only ever have one or a handful of
 users. Every team does things differently, and there is unlimited demand for bespoke tools —
@@ -27,7 +27,7 @@ Interactive mockups live alongside this doc:
 
 ## 1. TL;DR / Recommendation
 
-Build two thin surfaces over machinery CommandCenter mostly already has:
+Build two thin surfaces over machinery Metorite mostly already has:
 
 1. **The Workshop** (`/build/apps/{slug}/edit`) — a split view: sandboxed live preview on
    the left, a pinned `<AgentChat>` on the right talking to a new **`app-builder`** agent.
@@ -36,7 +36,7 @@ Build two thin surfaces over machinery CommandCenter mostly already has:
    edits, builds (esbuild → one self-contained `bundle.html`), and self-checks — every AI
    edit is a git checkpoint you can restore.
 2. **Custom Apps** (`/build/apps`) — the gallery + runtime. Publishing snapshots the draft
-   as an immutable version; teammates open the app full-page inside CommandCenter, rendered
+   as an immutable version; teammates open the app full-page inside Metorite, rendered
    through the existing hardened `SandboxedHtml` iframe. A small injected SDK —
    **`window.cc`** — gives apps identity, shared storage, LLM calls, and *declared*
    integration actions, all brokered by the platform with the **viewer's** identity and
@@ -189,9 +189,9 @@ Slack/Retool's admin approval + audit logging as the org guardrails.
 
 ---
 
-## 3. Mapping onto CommandCenter
+## 3. Mapping onto Metorite
 
-CommandCenter already has most of the runtime an app platform needs. The gap is the app
+Metorite already has most of the runtime an app platform needs. The gap is the app
 model, the build/publish pipeline, the runtime bridge, and the sharing UX.
 
 | App-platform concern | Already exists | Gap to build |
@@ -264,16 +264,16 @@ model, the build/publish pipeline, the runtime bridge, and the sharing UX.
 
 ### 4.0 The platform contract (non-negotiable)
 
-Custom apps are **CommandCenter-native by construction, not by convention**. The
+Custom apps are **Metorite-native by construction, not by convention**. The
 platform is the app's entire backend — identity, data, AI, and integrations all come
-from CommandCenter through `window.cc`, and there is no second path. This is what
+from Metorite through `window.cc`, and there is no second path. This is what
 keeps every app shareable, auditable, secure, and maintainable by whoever inherits it.
 Apps that "bring their own architecture" (direct API calls, external SDKs, their own
 backends or keys) are not supported — not as an option, not as an escape hatch.
 
 **The mapping is total** — every need an app has resolves to a platform capability:
 
-| App need | The CommandCenter way | Never |
+| App need | The Metorite way | Never |
 |---|---|---|
 | Data | `cc.storage` (shared app tables) | localStorage/IndexedDB as store, external DBs (Firebase/Supabase/…) |
 | AI | `cc.ai` → gateway `/v1` tiers | provider SDKs, embedded API keys, direct provider calls |
@@ -447,7 +447,7 @@ Design rules:
   generalization is overdue — treat it as the Phase 3+ trigger, not a Phase 2 requirement.
 - **The design system rides the same frame the SDK does — no second copy.**
   Apps render through `SandboxedHtml.tsx`, the SAME component that backs
-  CommandCenter's own reports and generative-UI cards, so `buildSrcDoc`
+  Metorite's own reports and generative-UI cards, so `buildSrcDoc`
   already injects the identical `--cc-*` tokens and `.cc-*` block-kit
   classes (`cc-card`, `cc-btn`, `cc-stats`, `cc-bars`, `cc-donuts`,
   `cc-table`, `cc-callout`/`cc-note`, `cc-chart`, …) into every app frame —
@@ -1050,7 +1050,7 @@ for portable content — `ui-styling` (shadcn/Radix/Tailwind) doesn't apply,
 since T2's esbuild pipeline has no PostCSS/Tailwind step and `@cc/ui`
 already covers the component-kit role; `ui-ux-pro-max`'s rule content
 surfaced one real, fixable gap: its documented 44×44px (iOS) / 48×48dp
-(Android) minimum touch target is CommandCenter's own established number
+(Android) minimum touch target is Metorite's own established number
 too (already used by the app shell's mobile nav bar), but the injected
 design-token CSS in `SandboxedHtml` had shipped at 36px — bumped to 44px,
 and `instructions.md`'s touch-target line now states the number instead of
@@ -1075,7 +1075,7 @@ watch (genUI Phase 3); app analytics; org-research permission model adoption.
   [`mockup-apps-home.html`](mockup-apps-home.html) ·
   [`mockup-app-run.html`](mockup-app-run.html)
 - Sibling RFC: [`docs/workflow-editor/README.md`](../workflow-editor/README.md)
-- CommandCenter internals this builds on:
+- Metorite internals this builds on:
   `workbench/control_plane/src/lib/nav.ts` (the declared `/build/apps` slot) ·
   `src/components/{AgentChat,SandboxedHtml,DocumentPane,SidePanelEditor}.tsx` ·
   `src/app/tasks/components/AssistantRail.tsx` (embed pattern) ·

@@ -1,6 +1,6 @@
 # CRM App — Master Plan (native CRM; Zoho CRM retirement path)
 
-> **Product:** CommandCenter · **Feature:** CRM (Sales Center's primary module) · **Created:** 2026-08-05
+> **Product:** Metorite · **Feature:** CRM (Sales Center's primary module) · **Created:** 2026-08-05
 > **Status:** 🟢 **WS-26a + WS-26b + WS-26c BUILT AND DEPLOYED** (2026-08-05/06) ·
 > 🟢 **WS-26d read half BUILT** (2026-08-06) · 🟢 **WS-26d-email BUILT, MERGED (PR #392)
 > AND DEPLOYED 2026-08-07** — the address index landed as migration 154, applied on prod.
@@ -359,7 +359,7 @@
 >   vocabularies, and workflow concepts below are unprotectable facts, reimplemented fresh.
 > - `trycompai/crm` @ main — **MIT: code may be copied**, but the stack (NestJS/tRPC/Prisma/
 >   Eve/Better Auth) doesn't survive translation; we take design patterns, not code.
-> - CommandCenter full-tree sweep — every Zoho touchpoint and app-convention anchor cited
+> - Metorite full-tree sweep — every Zoho touchpoint and app-convention anchor cited
 >   below was verified in-tree on the date above.
 
 ---
@@ -371,8 +371,8 @@ colleagues WS-24 will eventually admit. The company sells hardware (3D printers)
 service contracts (AMCs), and projects. Deals are INR, phone/email/WhatsApp-driven, modest
 volume (thousands of records, not millions).
 
-**What it replaces:** Zoho CRM. Today Zoho is the system of record and CommandCenter holds a
-read-only nightly mirror of it (§2). The native CRM inverts that: **CommandCenter becomes the
+**What it replaces:** Zoho CRM. Today Zoho is the system of record and Metorite holds a
+read-only nightly mirror of it (§2). The native CRM inverts that: **Metorite becomes the
 system of record, Zoho becomes an import source, then Zoho is retired.**
 
 **What "done" means (end state, Phase E):**
@@ -2103,7 +2103,7 @@ real prospect's leads, which is the same damage in the other direction.
 >    `routes/crm/records.py` was ruled OUT of scope.
 >
 > **`_annotate_risk(open_world=...)` is False, deliberately.** The vocabulary
-> means "the tool reaches outside CommandCenter", and these tools speak only to
+> means "the tool reaches outside Metorite", and these tools speak only to
 > the gateway; the Zoho hop is `sync_zoho`'s, on its own broker gate. D-CRM-9 is
 > still true — the row is born `zoho_dirty` — and it is said on the confirmation
 > card instead, where the person deciding can weigh it. ⚠️ **That note is the

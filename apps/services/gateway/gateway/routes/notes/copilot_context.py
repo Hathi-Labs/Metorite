@@ -49,7 +49,7 @@ _MAX_BRIEF_CHARS = 1200
 _MAX_SYSTEM_CHARS = 800
 _AGENT_TIMEOUT_S = 45.0
 
-# Which agent answers which question. Names match the CommandCenter agent
+# Which agent answers which question. Names match the Metorite agent
 # registry (/agents); a name that isn't registered simply yields nothing.
 _AGENT_QUERIES: tuple[tuple[str, str, str], ...] = (
     (

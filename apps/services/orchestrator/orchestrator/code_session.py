@@ -1,6 +1,6 @@
 """One-shot Copilot SDK coding session for the ``code_task`` platform skill.
 
-The Copilot SDK is CommandCenter's coding ENGINE (chat_agent_framework_review
+The Copilot SDK is Metorite's coding ENGINE (chat_agent_framework_review
 §2): native MAF agents delegate script authoring/editing to a bounded Copilot
 session through the ``code_task`` tool (acb_skills.code_tools) instead of
 being standalone Copilot agents themselves.
@@ -30,7 +30,7 @@ _log = get_logger("orchestrator.code_session")
 # surfaces to the calling agent as a tool error, not a hung turn.
 CODE_SESSION_TIMEOUT_SECONDS = 600.0
 
-_HARNESS_INSTRUCTIONS = """You are CommandCenter's coding engine, invoked as a \
+_HARNESS_INSTRUCTIONS = """You are Metorite's coding engine, invoked as a \
 bounded tool by another agent. You write, edit, run, and test scripts inside \
 THIS agent's workspace. You have NO memory of previous sessions — the \
 workspace is the memory. Follow this contract exactly:
@@ -86,7 +86,7 @@ async def run_copilot_code_session(
     unchanged whenever the sandbox fails to spawn or come up in time — the
     scope flag never turns a spawn failure into a hard error.
     """
-    from orchestrator.copilot_agent import CommandCenterCopilotAgent
+    from orchestrator.copilot_agent import MetoriteCopilotAgent
     from orchestrator.executor import _copilot_permission_handler
 
     settings = get_settings()
@@ -121,7 +121,7 @@ async def run_copilot_code_session(
         if sandbox_handle is not None:
             default_options["working_directory"] = CONTAINER_WORKSPACE
 
-    agent = CommandCenterCopilotAgent(
+    agent = MetoriteCopilotAgent(
         name="code-task",
         instructions=_HARNESS_INSTRUCTIONS,
         default_options=default_options,

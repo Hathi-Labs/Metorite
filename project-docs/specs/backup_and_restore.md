@@ -223,7 +223,7 @@ Kept below as the reference copy.
 [Unit]
 # BO-23 — nightly application-level Postgres backup.
 # See scripts/backup_db.sh for why the Hostinger VM image is not sufficient.
-Description=CommandCenter database backup (pg_dump + integrity check)
+Description=Metorite database backup (pg_dump + integrity check)
 # The dump talks to the acb-postgres container, so Docker must be up first.
 # Without this the unit races the Docker daemon on boot and exits 1 on
 # "container is not running" — a failure that looks like a broken backup
@@ -248,7 +248,7 @@ TimeoutStartSec=1800
 
 ```ini
 [Unit]
-Description=Nightly CommandCenter database backup
+Description=Nightly Metorite database backup
 Documentation=file:///opt/acb/app/project-docs/specs/backup_and_restore.md
 
 [Timer]

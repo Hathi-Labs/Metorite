@@ -1,7 +1,7 @@
 [project]
 name = "agent-orchestrator"
 version = "0.1.0"
-description = "CommandCenter orchestrator MAF agent"
+description = "Metorite orchestrator MAF agent"
 requires-python = ">=3.12"
 dependencies = []
 

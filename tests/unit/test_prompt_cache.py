@@ -203,7 +203,7 @@ def test_openai_without_cache_key_is_noop_extra() -> None:
 
 def test_stable_block_preserves_full_prefix_no_truncation() -> None:
     # The Anthropic minimum cacheable prefix is 1,024 tokens; the real
-    # CommandCenter stable prefix (instructions + tool addendum) is ~3.5k, well
+    # Metorite stable prefix (instructions + tool addendum) is ~3.5k, well
     # above it. The transform must never DROP any of the stable content — the
     # cached block must contain the entire stable prefix verbatim, so whatever
     # headroom the real prefix has is preserved through the transform.

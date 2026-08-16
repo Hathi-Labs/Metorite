@@ -1,18 +1,18 @@
-# CommandCenter Control Plane — Design System
+# Metorite Control Plane — Design System
 
 **The whole document in one sentence: never write a colour, an icon import, or a
 control's chrome by hand — every one of those is a theme decision, and the theme
 is a setting somebody can change for the entire company in one click.**
 
 This is the contract for every page in the Control Plane and every app built
-inside CommandCenter. `src/lib/theme/conformance.test.ts` enforces the parts a
+inside Metorite. `src/lib/theme/conformance.test.ts` enforces the parts a
 machine can check; the rest is here.
 
 ---
 
 ## 0. What "themed" actually means here
 
-CommandCenter ships four themes — RapidTool, Fluent, Material, Graphite —
+Metorite ships four themes — RapidTool, Fluent, Material, Graphite —
 switchable at **Settings → Appearance**, org-wide. They differ by far more than
 palette:
 

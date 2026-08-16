@@ -1,6 +1,6 @@
 # Postgres schema (`infra/postgres/`)
 
-The database schema for CommandCenter — chat history, the email subsystem, and
+The database schema for Metorite — chat history, the email subsystem, and
 the core business/infra tables. This directory is the **authoritative schema**:
 there is no ORM-managed schema; everything is plain SQL migrations.
 

@@ -1,4 +1,4 @@
-"""Inspect AI scenario harness for CommandCenter skills (ADR-017, HH-1).
+"""Inspect AI scenario harness for Metorite skills (ADR-017, HH-1).
 
 Scenario-level evals complementing the promptfoo golden cases: each sample is
 a full skill invocation (system prompt from SKILL.md + fixture entity data)

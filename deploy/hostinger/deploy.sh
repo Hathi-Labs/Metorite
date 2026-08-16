@@ -46,8 +46,8 @@ for _var in MICROSOFT_TENANT_ID AUTH_MICROSOFT_ENTRA_ID_TENANT GATEWAY_PUBLIC_UR
     case "$_var" in
       MICROSOFT_TENANT_ID)             echo "MICROSOFT_TENANT_ID=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
       AUTH_MICROSOFT_ENTRA_ID_TENANT)   echo "AUTH_MICROSOFT_ENTRA_ID_TENANT=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.commandcenter.fracktal.in" >> "$ENV_FILE" ;;
-      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://commandcenter.fracktal.in" >> "$ENV_FILE" ;;
+      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.fracktal.in" >> "$ENV_FILE" ;;
+      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://metorite.fracktal.in" >> "$ENV_FILE" ;;
     esac
     printf "    + added %s to .env\n" "$_var"
   fi

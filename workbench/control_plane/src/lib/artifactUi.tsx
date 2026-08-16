@@ -1,5 +1,5 @@
 /**
- * @cc/ui — the Command Center design kit as React components, for artifacts.
+ * @cc/ui — the Metorite design kit as React components, for artifacts.
  *
  * Agents importing this write `<Stat label="Revenue" value={18} unit="%" delta={12} />`
  * instead of six nested divs with exactly-right `cc-` class names. That is the

@@ -63,7 +63,7 @@ limitations). Do not add product specs to `docs/`.
 
 | Spec | Role |
 |---|---|
-| **`specs/saas_operations_doctrine.md`** | **HOW a SaaS platform is run (D33): the eight capability domains · the Indian GST/RBI-e-mandate/DPDP layer that changes product design, not just paperwork · the twelve-finding audit of what CommandCenter assumed as a personal brain · the gap table. §4's verdicts and §6's ordering BIND; §2 is advisory.** |
+| **`specs/saas_operations_doctrine.md`** | **HOW a SaaS platform is run (D33): the eight capability domains · the Indian GST/RBI-e-mandate/DPDP layer that changes product design, not just paperwork · the twelve-finding audit of what Metorite assumed as a personal brain · the gap table. §4's verdicts and §6's ordering BIND; §2 is advisory.** |
 | **`specs/engineering_practice.md`** | **HOW we build (D28): environments, deploy≠release + rings, expand/contract migrations, what a test is worth when an agent wrote it, agent work-partitioning, security once users are not colleagues, definition of done. Its binding rules are R6/R7/R8 in `work_plan.md` §1 — read those first if you read nothing else.** |
 | `specs/user_management_contract.md` | The rules every app must follow (identity, lifecycle, permissions) |
 | `specs/org_access_control.md` | The access model of record |

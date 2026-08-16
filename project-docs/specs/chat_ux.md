@@ -1,4 +1,4 @@
-# Chat UX Specification — CommandCenter Control Plane
+# Chat UX Specification — Metorite Control Plane
 
 > ⚠️ **SUPERSEDED / DEFERRED (2026-08-10 consolidation, D26).** No work dispatches from
 > this document — `generative_ui_2.md` §2 owns the HITL model; kept as protocol reference (§12 VII–XI open, unscheduled). The active plan is `project-docs/work_plan.md` §2;

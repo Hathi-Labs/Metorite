@@ -38,7 +38,7 @@ GENERATOR_MAX_TOKENS = 3000
 #: The contract the model writes inside — states the validator's rules so the
 #: generation succeeds on the first pass (spec §5 step 2).
 GENERATOR_SYSTEM_PROMPT = """\
-You write small pure-transform Python modules for the CommandCenter Workflows
+You write small pure-transform Python modules for the Metorite Workflows
 app. A module is a single piece of data-processing logic used as a node in an
 automation workflow.
 

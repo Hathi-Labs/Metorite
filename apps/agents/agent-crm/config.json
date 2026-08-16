@@ -2,7 +2,7 @@
   "name": "CRM Assistant",
   "description": "Works the native CRM — finds leads, deals, contacts and organizations, reads the pipeline by stage, opens a record and reads its history; and creates a lead, moves a deal between stages, logs a note/call/meeting/task and converts a lead into a deal. Every write asks the acting user to approve it first and does nothing if nobody is there to ask. It cannot delete a CRM record.",
   "version": "0.1.0",
-  "author": "CommandCenter",
+  "author": "Metorite",
   "tags": [
     "crm",
     "sales",

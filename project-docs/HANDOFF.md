@@ -181,6 +181,35 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
 - **Added:** 2026-08-14 · session that built WS-27bj
 
+### H-11 · Stand up Metorite deploy infra: domains, DNS/TLS, Actions secrets · [OWNER]
+- **Check:** `nslookup metorite.fracktal.in` → NXDOMAIN means still pending.
+  Also: repo Settings → Actions secrets in `Hathi-Labs/Metorite` → no
+  `HOSTINGER_*` secrets means still pending.
+- **Why:** The 2026-08-16 rebrand swapped every deploy target mechanically:
+  `commandcenter.fracktal.in` → `metorite.fracktal.in` in `deploy.yml`,
+  `vps-health.yml`, `deploy/hostinger/` and `scripts/vps_apply.sh`. Those
+  domains are **placeholders** — no DNS, no box, no secrets exist for this
+  fork. `deploy.yml` fires on push to `main` and will fail until secrets
+  exist; the scheduled `vps-health`/`vps-forensics` workflows will alarm
+  against a host that does not resolve. Owner decides the real domain
+  (fracktal.in subdomain or a Hathi-Labs domain), sets DNS/TLS, sets secrets,
+  or disables the workflows until infra exists.
+- **Authority:** `work_plan.md` §6 (deploy/VPS is owner-gated)
+- **Added:** 2026-08-16 · rebrand session (branch `rebrand/metorite`)
+
+### H-12 · Decide fate of FracktalWorks satellite-repo references · [OWNER]
+- **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`
+  → hits mean still pending.
+- **Why:** The rebrand moved this repo's slug to `Hathi-Labs/Metorite`, but
+  the satellite agent/skill repos (`FracktalWorks/agent-sales-assistant`,
+  `FracktalWorks/agent-*`, `FracktalWorks/skill-*`) referenced in
+  `agents.json`, `README.md` and `system_architecture.md` are separate real
+  repositories that were NOT forked. An agent cannot know whether they stay
+  upstream, get forked into Hathi-Labs, or get dropped — that is an org
+  decision.
+- **Authority:** CLAUDE.md §3 (never trust/invent external repo identity)
+- **Added:** 2026-08-16 · rebrand session (branch `rebrand/metorite`)
+
 ---
 
 # DONE — deleted, not archived

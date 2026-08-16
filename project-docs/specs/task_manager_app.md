@@ -1,6 +1,6 @@
 # Task Manager App — Project Plan (GTD philosophy)
 
-> **Product:** CommandCenter · **Feature:** Task Manager App (Getting Things Done) · **Updated:** 2026-08-02 · **Version:** 0.2 (planning — reviewed)
+> **Product:** Metorite · **Feature:** Task Manager App (Getting Things Done) · **Updated:** 2026-08-02 · **Version:** 0.2 (planning — reviewed)
 > **Status:** 🔄 build in progress on `main` — frontend slices 1–2.5 (Shell/Browse, Clarify, Inbox depth) **plus the capture/clarify backend**: migration `48_task_manager_gtd.sql`, the provider interface layer with the **ClickUp connector** (multi-workspace `task_accounts`), the **gateway `/tasks` API**, **`skill-task-gtd` + the rewritten `task-manager` agent**, and the frontend wired live (mock fallback when the gateway is absent). ~~Resume point: Slice 3 — Engage "Now" (F4) · sync-pull of existing provider tasks.~~ **Update 2026-08-01 (doc-truth pass):** that resume point is long past — `POST /tasks/sync` shipped 2026-07-03 (live in `apps/services/gateway/gateway/routes/tasks/sync.py`), `EngageView.tsx` exists, and the AssistantRail went live 2026-07-03. **§9.3 (dev runbook + "Next in line") is the authoritative status section of this doc**; work after it (prioritization matrix, calendar/timeboxing, HR epic, card actions) lives in its own specs.
 > **Update 2026-08-02 (WS-18, Waiting-For surfacing):** §9.1 slice 5 **Waiting-For** is now 🔄 — the *surfacing* half shipped: `ITEM_SELECT` projects `gtd_waiting.expected_by` / `last_nudged_at` (mig-48 columns that five INSERT sites wrote and nothing read), `GtdItemModel` carries them, and the `/tasks` **Waiting For** view is a dedicated surface grouped by WHO, each row rendering who / what / since-when with overdue (past `expected_by`, §6 line 540) and stale (>5 days, the same rule as `GET /tasks/insights`) flags. Predicates live in pure `workbench/control_plane/src/app/tasks/lib/waiting.ts`. The Waiting-For rows drop the flat list's per-row `TaskCard` context menu (Schedule / Change stage / Mark as Done / Eliminate) and its chips in exchange for the who/what/since-when grouping; the focus pane still has the full editor, and Sort is hidden on this view because the grouping re-derives its own order. **No migration** — the substrate has existed since mig 48. Still open in §6 and NOT built: follow-up nudge drafting/sending (owner-gated: real sends) and delegation write-back (blocked on the Action Broker, BO-1). Slices 4 (Weekly Review) and 6 (Plan / Horizons) are unchanged and remain under-specified — `gtd_reviews.summary` is untyped JSONB and `gtd_horizons` has no link column, so both need spec work before dispatch.
 > **CLOSED 2026-08-02 (WS-18 follow-up) — `expected_by` now means one thing: an explicit promise.** The stale-badge defect was caused by the column's *shape*, not by its immutability: four INSERT sites snapshotted the item's own `due_at` into `expected_by` and nothing ever revised the copy, so a moved deadline left the two disagreeing and the Overdue badge lied in both directions. **The semantics of record, which nothing may reintroduce a derived copy into:**
@@ -16,7 +16,7 @@
 
 ## 0. One-paragraph thesis
 
-The Task Manager app is the **"Getting Things Done" operating layer** on top of *whatever* project-management tool(s) the company connects — ClickUp, Asana, Jira, Linear, Monday, or anything that exposes an MCP server — through a single **provider interface layer** (§5.2). The app is the *methodology surface* — capture, clarify, organize, reflect, engage. The **`task-manager` MAF agent** is the *cognitive engine* — it does the GTD "clarify/organize" thinking a person normally does by hand (define the next action, detect projects, assign contexts, run the weekly review, draft delegation follow-ups). For **collaborative** work, ClickUp/Asana/Jira remain the **source of truth** (per CommandCenter constraint #8) and CommandCenter is a read-mostly mirror with approval-gated writes through the Action Broker; for **personal/solo** work, projects can be **LOCAL** — stored and owned entirely in CommandCenter Postgres — and both sources render in one unified interface (see §5.1). The relationship is exactly the email app's: *client UI + AI assistant + provider backend* — here the "providers" are PM tools instead of mailboxes, and "inbox zero" becomes **"mind like water."**
+The Task Manager app is the **"Getting Things Done" operating layer** on top of *whatever* project-management tool(s) the company connects — ClickUp, Asana, Jira, Linear, Monday, or anything that exposes an MCP server — through a single **provider interface layer** (§5.2). The app is the *methodology surface* — capture, clarify, organize, reflect, engage. The **`task-manager` MAF agent** is the *cognitive engine* — it does the GTD "clarify/organize" thinking a person normally does by hand (define the next action, detect projects, assign contexts, run the weekly review, draft delegation follow-ups). For **collaborative** work, ClickUp/Asana/Jira remain the **source of truth** (per Metorite constraint #8) and Metorite is a read-mostly mirror with approval-gated writes through the Action Broker; for **personal/solo** work, projects can be **LOCAL** — stored and owned entirely in Metorite Postgres — and both sources render in one unified interface (see §5.1). The relationship is exactly the email app's: *client UI + AI assistant + provider backend* — here the "providers" are PM tools instead of mailboxes, and "inbox zero" becomes **"mind like water."**
 
 ---
 
@@ -124,7 +124,7 @@ Each GTD step becomes a first-class surface in the app. This is the product's fe
 | # | Feature | What it does | Status | Needs |
 |---|---|---|---|---|
 | C1 | Quick capture | frictionless single-line add, Enter to file | ✅ built | — |
-| C2 | Ubiquitous capture (hotkey / palette) | open a capture box from any view via keyboard (`C`, `⌘/Ctrl-K`) | ✅ built *within Tasks* | app-wide across Command Center → **[plumbing]** persisted store + AppShell-level listener |
+| C2 | Ubiquitous capture (hotkey / palette) | open a capture box from any view via keyboard (`C`, `⌘/Ctrl-K`) | ✅ built *within Tasks* | app-wide across Metorite → **[plumbing]** persisted store + AppShell-level listener |
 | C3 | Brain-dump / Mind Sweep | multi-line box → parsed into candidate items | ✅ built (UI, mock) | AI atomization → **[plumbing]** (see pipeline below) |
 | C3b | **Sweep review gate** | write → **review** (edit/remove each parsed item) → add; nothing is filed until confirmed | ✅ built | — |
 | C4 | Trigger-list guided sweep | show the Incompletion Trigger List as memory-joggers during a sweep | ✅ built (static prompts) | conversational AI sweep → **[plumbing]** agent |
@@ -302,7 +302,7 @@ Injected tools (from executor): memory (Mem0/Graphiti), web_search, call_agent
   → hand-off to `email-assistant` (send a nudge), `sales`, etc.
 ```
 
-All writes (create/assign/move/close in the connected PM tool) flow through the **Action Broker** once it's live; until then they are **suggest-only** (draft the change, user applies) — consistent with C-04 and the email app's "create drafts, never auto-send" stance. Writes to **LOCAL** items/projects are direct (CommandCenter owns them).
+All writes (create/assign/move/close in the connected PM tool) flow through the **Action Broker** once it's live; until then they are **suggest-only** (draft the change, user applies) — consistent with C-04 and the email app's "create drafts, never auto-send" stance. Writes to **LOCAL** items/projects are direct (Metorite owns them).
 
 ---
 
@@ -443,13 +443,13 @@ The difference between the two sources is *where the project/task is stored and 
 
 | Source | Source of truth | When | Storage |
 |---|---|---|---|
-| **LOCAL** (GTD-only) | **CommandCenter Postgres** | Personal / solo work only *I* touch | `gtd_projects`/`gtd_items` with `source='LOCAL'`, no provider ref. Full CRUD locally. |
+| **LOCAL** (GTD-only) | **Metorite Postgres** | Personal / solo work only *I* touch | `gtd_projects`/`gtd_items` with `source='LOCAL'`, no provider ref. Full CRUD locally. |
 | **SYNCED** (mirrored) | **The connected PM tool** (whichever) | Collaborative work involving other people | The provider is authoritative; a local copy in `gtd_*` **auto-syncs** both ways through the interface layer. |
 
 Rules of the model (from the product owner):
 - **Default sync target by collaboration.** Anything collaborated on → **the connected PM tool**. Anything purely personal/solo → **LOCAL**. The agent applies this default; the user can override.
 - **Decide at add-time.** When a task or project is captured/created, the app resolves its **sync target** (LOCAL vs which connected provider). Captured *inbox* items can stay LOCAL until clarified, then commit to a target. If several PM tools are connected, the target includes *which* provider/workspace.
-- **Projects not in any connected tool are created and tracked locally** — they live entirely in Postgres and never leave CommandCenter unless promoted.
+- **Projects not in any connected tool are created and tracked locally** — they live entirely in Postgres and never leave Metorite unless promoted.
 - **Promotion (LOCAL → SYNCED).** A personal project that gains collaborators can be **pushed to a connected PM tool**: create it there (Action-Broker-gated), flip `source` to `SYNCED`, set `account_id` + `provider_ref`, and start two-way sync. (Demotion is possible but rare; not v1.)
 - **Unified queries.** Every list/view (`Inbox`, `Next`, `Projects`, `Waiting`, …) reads across all sources; `source`/provider is just a badge/filter, not a separate app.
 
@@ -473,7 +473,7 @@ A backend is plugged in by registering a **connector** plus a **provider descrip
 | Kind | How it connects | Implementation | Use when |
 |---|---|---|---|
 | **API connector** | The tool's REST API + OAuth/API-key | A per-tool adapter implementing `BaseTaskProvider` with `httpx` (ClickUp v2 reuses `skill-clickup-sync/core.py`; Asana, Jira, Linear, Monday … each add an adapter). | The tool has a documented REST API and we want full control / webhooks. |
-| **MCP connector** | The tool's **MCP server** | A single **generic `MCPTaskProvider`** that connects to the MCP endpoint, discovers its tools, and maps them onto the `BaseTaskProvider` methods (list/create/update/assign/members). Reuses CommandCenter's existing MCP plumbing (`mcp_servers=` config, ToolSearch). | The tool ships an MCP server, or we want zero-code onboarding of a new backend. |
+| **MCP connector** | The tool's **MCP server** | A single **generic `MCPTaskProvider`** that connects to the MCP endpoint, discovers its tools, and maps them onto the `BaseTaskProvider` methods (list/create/update/assign/members). Reuses Metorite's existing MCP plumbing (`mcp_servers=` config, ToolSearch). | The tool ships an MCP server, or we want zero-code onboarding of a new backend. |
 
 **Provider descriptor** (stored per connection in `task_accounts.capabilities` + `field_map`):
 - **`capabilities`** — what the backend supports: `{list, create, update, assign, custom_fields, members, others_tasks, webhooks, …}`. The layer reads this and **degrades gracefully** — e.g. a read-only or no-custom-fields backend still works as a GTD lens; missing capabilities just disable the corresponding write paths.
@@ -511,11 +511,11 @@ The GTD↔native mapping below is **illustrative**; the real mapping for each co
 
 ### 5.4 Why a canonical overlay (not raw pass-through)
 
-The GTD layer (`disposition`, `context`, `energy`, `next_action`, horizon links) is **not natively representable** the same way across tools — and we don't want to pollute the customer's workspace with CommandCenter-only fields beyond a couple of opt-in custom fields. So:
+The GTD layer (`disposition`, `context`, `energy`, `next_action`, horizon links) is **not natively representable** the same way across tools — and we don't want to pollute the customer's workspace with Metorite-only fields beyond a couple of opt-in custom fields. So:
 
 - **Canonical store (`gtd_items`) holds the GTD overlay.** The provider holds title/status/assignee/dates as source of truth (for SYNCED items).
 - **Two-way sync:** provider → canonical on every sync (status, assignee, dates); canonical → provider for the *few* fields we write back (a `gtd_disposition`/`@context` custom field if the user opts in, plus assignment on delegate, plus close/move on do/complete). All write-back is **Action-Broker-gated** and **capability-gated** (skipped if the backend doesn't support it).
-- **Graceful degradation:** if a backend forbids custom fields or is read-only, the GTD overlay stays purely in CommandCenter and we never write it back — the app still works as a GTD lens over read-only data (the existing `agent-task-manager` already does read-only).
+- **Graceful degradation:** if a backend forbids custom fields or is read-only, the GTD overlay stays purely in Metorite and we never write it back — the app still works as a GTD lens over read-only data (the existing `agent-task-manager` already does read-only).
 
 ### 5.5 The canonical contract (`BaseTaskProvider`, mirrors `BaseEmailProvider`)
 
@@ -1032,7 +1032,7 @@ wall-clock budget). Also this session: `web_search` is now SerpAPI-first
 | Decision | Rationale |
 |---|---|
 | **PM-agnostic interface layer; connect via API or MCP** | One `BaseTaskProvider` contract; a backend plugs in as an **API connector** (REST/OAuth adapter) or a generic **MCP connector** (talks to the tool's MCP server), described by a per-connection `capabilities`+`field_map`. Nothing upstream knows which tool is connected. ClickUp is the first connector, not the model. See §5.2. |
-| **Dual-source, one interface: LOCAL (Postgres SoT) vs SYNCED (mirrored)** | Personal/solo projects live only in CommandCenter; collaborative projects mirror whichever PM tool holds them. Sync target chosen at add-time, default by collaboration, promotable LOCAL→SYNCED. All sources render in one unified `/tasks` UI. See §5.1. |
+| **Dual-source, one interface: LOCAL (Postgres SoT) vs SYNCED (mirrored)** | Personal/solo projects live only in Metorite; collaborative projects mirror whichever PM tool holds them. Sync target chosen at add-time, default by collaboration, promotable LOCAL→SYNCED. All sources render in one unified `/tasks` UI. See §5.1. |
 | **GTD overlay in canonical Postgres; for synced projects, the PM tool = source of truth** | Same as email (`email_messages`): fast queries, FTS, offline, and GTD semantics that don't exist natively. Honors constraint #8 (read-mostly mirror) for SYNCED items; LOCAL items are wholly ours. |
 | **Mapping is config (`field_map`), not code** | Each connection declares how GTD fields map to its native schema, so new tools need no schema/UI/agent changes — just an adapter (or nothing, for MCP) + a default field-map. |
 | **Agent does Clarify/Organize cognition** | The GTD "thinking" (next action, project detection, context tagging) is exactly an LLM strength; user stays in approve/edit control — same posture as the email AI-rules engine. |

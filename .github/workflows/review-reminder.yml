@@ -99,7 +99,7 @@ jobs:
 
           **${COUNT} commits** have landed on \`main\` since the last review (${SINCE}).
 
-          Per the CommandCenter commit review cadence, do a pass over this batch before continuing:
+          Per the Metorite commit review cadence, do a pass over this batch before continuing:
 
           - [ ] List changed files: \`git diff --name-only ${RANGE}\`
           - [ ] Check comments for accuracy and staleness

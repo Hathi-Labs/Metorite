@@ -1,4 +1,4 @@
-# CommandCenter — CI/CD pipeline for Hostinger VPS deployment.
+# Metorite — CI/CD pipeline for Hostinger VPS deployment.
 #
 # Trigger: push to main (after PR merge) or manual dispatch.
 # Flow:    lint → test → SSH to VPS → git pull → docker compose up →
@@ -163,8 +163,8 @@ jobs:
     env:
       # Runner-reachable public URLs used to VERIFY the deploy by outcome
       # (see the deploy step's rationale).
-      GATEWAY_URL: https://api.commandcenter.fracktal.in
-      WORKBENCH_URL: https://commandcenter.fracktal.in
+      GATEWAY_URL: https://api.metorite.fracktal.in
+      WORKBENCH_URL: https://metorite.fracktal.in
     steps:
       # ── OUTCOME-VERIFIED DEPLOY ──────────────────────────────────────────
       # Why this shape: the remote deploy script runs to "Deployment complete"
@@ -295,7 +295,7 @@ jobs:
         # VPS. A flap here must not mark an otherwise-successful deploy failed.
         continue-on-error: true
         run: |
-          GATEWAY_URL="${GATEWAY_URL:-https://api.commandcenter.fracktal.in}"
+          GATEWAY_URL="${GATEWAY_URL:-https://api.metorite.fracktal.in}"
           echo "Hitting $GATEWAY_URL/health (with retries for cold start)..."
           # The 4GB VPS is still under heavy load right after deploy (the
           # Next.js rebuild pegs CPU/RAM), so the gateway can take a couple of

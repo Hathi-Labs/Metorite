@@ -47,10 +47,10 @@ not px.
 ## Every app renders through the theming engine — there are no app-local looks
 
 *(Owner directive, 2026-08-10: "I want the UI for the projects to match the
-theming configuration used in the Command Center… ensuring future development
+theming configuration used in the Metorite… ensuring future development
 considers it." It applies to every surface, not only Projects.)*
 
-An app inside CommandCenter is a **projection of one product**, not a product
+An app inside Metorite is a **projection of one product**, not a product
 with its own visual identity. `/projects`, `/tasks`, `/email`, `/notes`, `/crm`
 and everything after them draw from the same engine, so switching the org to
 Fluent or Material or Graphite repaints all of them together. The moment one
@@ -153,7 +153,7 @@ Five rules on top of the three above. Each one exists because it was broken:
 8. **A headless primitive is imported from `src/components/ui/`, never from the
    library.** D-PM-15 chose **Base UI** (`@base-ui/react`) as the one substrate
    for the primitive layer, on two conditions: every primitive arrives as a
-   CommandCenter wrapper carrying `.cc-control`, `<Icon name>` and semantic
+   Metorite wrapper carrying `.cc-control`, `<Icon name>` and semantic
    tokens, and there is exactly one substrate. `src/components/ui/Modal.tsx`
    (WS-27ak) is the worked example and the only file in the tree allowed to name
    the library. **A dialog is not a `fixed inset-0` div** — before that wrapper,

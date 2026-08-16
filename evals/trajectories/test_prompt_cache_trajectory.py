@@ -24,7 +24,7 @@ from acb_llm.prompt_cache import (
 # Mirrors how executor.py assembles the system prompt: stable prefix
 # (instructions + tool addendum) FIRST, sentinel, then the dynamic memory block.
 _STABLE_PREFIX = (
-    "You are CommandCenter, an autonomous agent.\n"
+    "You are Metorite, an autonomous agent.\n"
     "## Tools\n" + ("- call_agent / web_search / write_artifact ...\n" * 60)
 )
 _MEMORY = "## Relevant memories\n- The user prefers terse answers.\n"

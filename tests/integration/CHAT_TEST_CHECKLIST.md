@@ -1,4 +1,4 @@
-# CommandCenter Chat -- Manual UI Test Checklist
+# Metorite Chat -- Manual UI Test Checklist
 
 Run these tests in the Control Plane (http://187.127.179.143:3001) against both
 MAF agents (e.g. `task-manager`) and Copilot SDK agents (e.g. `agent-project-manager`).
@@ -132,7 +132,7 @@ Say hello in exactly 3 words.
 
 ### Tool call -- web search
 ```
-Search the web for 'CommandCenter orchestration platform' and tell me the first result title.
+Search the web for 'Metorite orchestration platform' and tell me the first result title.
 ```
 
 ### HITL -- ask_questions

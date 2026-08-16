@@ -527,7 +527,7 @@ async def emit_generative_ui(ui: str) -> dict:
     temporary or offer a file as "something more durable"; if a card is missing
     from an earlier turn, that is a bug to report, not expected behaviour.
 
-    All three modes follow the Command Center design language automatically
+    All three modes follow the Metorite design language automatically
     (blue primary, warm-orange accent, rounded cards, subtle motion). Templates
     and the component tree are on-brand by construction; custom HTML inherits the
     real design tokens as CSS variables (see mode 3), so lean on those.
@@ -643,7 +643,7 @@ async def emit_generative_ui(ui: str) -> dict:
        cookies, or the network, so inline everything — NO external CDNs, fonts, or
        images (use data: URIs). Optional ``props.height`` (px); omit to auto-size.
 
-       DESIGN — follow the Command Center look. The frame pre-defines CSS
+       DESIGN — follow the Metorite look. The frame pre-defines CSS
        variables from the app's real design tokens; USE THEM instead of
        hard-coding colors so your UI matches the product:
          --cc-primary (blue) · --cc-accent (warm orange) · --cc-fg · --cc-muted

@@ -1,6 +1,6 @@
 # 10 · MCP & Connecting to External Apps
 
-An agent is only as useful as the systems it can touch. CommandCenter connects to ClickUp, Zoho CRM,
+An agent is only as useful as the systems it can touch. Metorite connects to ClickUp, Zoho CRM,
 Gmail, Microsoft 365, WhatsApp, and more. There are **two complementary ways** it does this, and knowing
 when to use each is the point of this chapter:
 
@@ -25,7 +25,7 @@ without writing integration code.
 Think of it as **"USB for agent tools"**: a standard plug, so any compliant tool source works with any
 compliant agent runtime.
 
-### How CommandCenter uses it
+### How Metorite uses it
 
 The platform has an **MCP server registry** (Postgres `mcp_servers` table, managed via
 `/integrations/mcp` CRUD endpoints and a Control Plane UI). Each entry describes how to reach one server:
@@ -68,7 +68,7 @@ Python function or an MCP server's tool. **MCP changes where a tool comes from, 
 
 ### A related idea: OpenAI-style plugins
 
-CommandCenter also supports installing **plugins** from an `ai-plugin.json` manifest + an OpenAPI spec: it
+Metorite also supports installing **plugins** from an `ai-plugin.json` manifest + an OpenAPI spec: it
 fetches the OpenAPI document and *auto-generates* tool definitions from its paths. This is the same goal as
 MCP — turn an external API into agent tools without bespoke code — via a different standard (OpenAPI
 instead of MCP). Both are "adapters that manufacture tools from a description."

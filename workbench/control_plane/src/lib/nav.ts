@@ -1,4 +1,4 @@
-// ── Navigation structure for CommandCenter Control Plane ─────────────────
+// ── Navigation structure for Metorite Control Plane ─────────────────
 //
 // The sidebar is organised around the Centers model (one platform, many
 // projections — see project-docs/specs/org_access_control.md §5):

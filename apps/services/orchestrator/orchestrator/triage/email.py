@@ -37,7 +37,7 @@ RULE_CONFIDENCE_THRESHOLD: float = 0.75
 
 #: Domains we treat as "our company"; auto-classified as `internal_admin`
 #: unless a strong customer-facing rule fires first.
-INTERNAL_DOMAINS: set[str] = {"fracktal.in", "commandcenter.ai"}
+INTERNAL_DOMAINS: set[str] = {"fracktal.in", "metorite.ai"}
 
 #: Bot prefixes for noreply / automated mail.
 _BOT_LOCAL_PARTS: tuple[str, ...] = (

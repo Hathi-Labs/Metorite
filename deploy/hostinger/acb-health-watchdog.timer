@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the CommandCenter health watchdog
+Description=Run the Metorite health watchdog
 Documentation=file:///opt/acb/app/deploy/hostinger/health-watchdog.sh
 
 [Timer]

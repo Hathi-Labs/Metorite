@@ -9,7 +9,7 @@
 # positives. Real leaked credentials are NOT allowlisted — they must be rotated
 # and purged from history.
 
-title = "CommandCenter gitleaks config"
+title = "Metorite gitleaks config"
 
 [extend]
 useDefault = true

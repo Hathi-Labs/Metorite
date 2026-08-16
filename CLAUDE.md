@@ -1,6 +1,6 @@
-# CommandCenter — read this before your first tool call
+# Metorite — read this before your first tool call
 
-You are working on **CommandCenter**: an AI-driven company operating system,
+You are working on **Metorite**: an AI-driven company operating system,
 now also sold as multi-tenant SaaS. This file is loaded into every session,
 including cloud and headless ones. It is a **router plus the few facts you must
 know before reading anything else** — it deliberately duplicates nothing.

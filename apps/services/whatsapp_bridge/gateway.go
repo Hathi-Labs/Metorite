@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// GatewayClient posts inbound messages + pairing events to the CommandCenter
+// GatewayClient posts inbound messages + pairing events to the Metorite
 // gateway. The JSON shapes here are the exact contract the gateway's
 // parse_bridge_payload / bridge_paired handlers consume — keep them in sync with
 // apps/services/gateway/gateway/routes/whatsapp/transport/bridge.py.

@@ -1,7 +1,7 @@
 # LLM Prompt Caching + Memory System — Development Plan
 
 > **Status:** **Core implemented (2026-07-03)** — Phases 1–6 shipped; Phase 7 (email tool-surface reduction) is app-scoped and pending. See the "Implementation Status" section below.
-> **Owner:** CommandCenter Core
+> **Owner:** Metorite Core
 > **Created:** 2026-06-17
 > **ADR references:** ADR-008 (**implemented** 2026-07-03), ADR-012 (Phase 2 deferred)
 > **WBS reference:** WBS 2.6 (semantic cache + token compression)
@@ -12,7 +12,7 @@
 
 ## Implementation Status (2026-07-03)
 
-> **Key architecture correction vs the original plan:** CommandCenter talks to
+> **Key architecture correction vs the original plan:** Metorite talks to
 > providers through the **litellm SDK directly — there is NO LiteLLM proxy
 > process** (`v1_compat.py` and `client.py` both call `litellm.acompletion`).
 > So the plan's "LiteLLM proxy pre-call hook" (Phase 3.2) doesn't apply. The
@@ -55,7 +55,7 @@ classes today; the win materialises when Anthropic/OpenAI is in the tier.
 
 ## Why This Matters
 
-Every agent request processes the full system prompt from scratch. For a typical CommandCenter agent call:
+Every agent request processes the full system prompt from scratch. For a typical Metorite agent call:
 
 - **System prefix** (agent instructions + tool addendum): ~3,000–4,000 tokens — static, identical across all turns
 - **Tool schemas** (function-calling agents): a **separate** static `tools` array sent every request, on top of the system prefix. Small for most agents, but the **email-assistant sends ~63 tool schemas ≈ 6,500 tokens** here. The original plan overlooked this (it assumed all tools are described inside the system prompt) — see the revised Phase 3.3 and the new Phase 7.
@@ -259,7 +259,7 @@ litellm_settings:
 > do not apply — no proxy process exists (see header); shipped as part of the SDK-level
 > `apply_prompt_caching` transform (marks the last tool for Anthropic tiers).
 
-> The original plan assumed all CommandCenter tools are *described in the system-prompt addendum* — true for the orchestrator / Copilot-SDK agents. It is **not** true for native-MAF agents that pass real function-tools: the **email-assistant sends ~63 tool schemas (~6,500 tokens) as a separate top-level `tools` array on every request**, entirely outside the system prompt. None of it is cached today, and it's the single largest static block for that agent.
+> The original plan assumed all Metorite tools are *described in the system-prompt addendum* — true for the orchestrator / Copilot-SDK agents. It is **not** true for native-MAF agents that pass real function-tools: the **email-assistant sends ~63 tool schemas (~6,500 tokens) as a separate top-level `tools` array on every request**, entirely outside the system prompt. None of it is cached today, and it's the single largest static block for that agent.
 
 Anthropic caches in the order `tools` → `system` → `messages`, so the `tools` array is the FIRST cacheable block — caching it is the highest-value change for function-tool agents. Extend the Phase 3.2 LiteLLM hook to also mark the tool array:
 
@@ -439,7 +439,7 @@ The email-assistant is the acute case: **63 tools, all injected every request, b
 | MAF internal format conflicts with structured system blocks | Medium | Option A (LiteLLM hook) avoids touching MAF at all; MAF sees a pre-transformed request |
 | Graphiti episode filter false negatives | Low | Filter is conservative (passes anything uncertain); worst case is current behaviour |
 | Pre-warm loop adds startup latency | Low | Pre-warm is fire-and-forget (`asyncio.create_task`); startup does not block |
-| Cache workspace isolation (Anthropic Feb 2026 change) | None | CommandCenter uses a single API workspace — all agents share a pool, which is the desired behaviour |
+| Cache workspace isolation (Anthropic Feb 2026 change) | None | Metorite uses a single API workspace — all agents share a pool, which is the desired behaviour |
 
 ---
 

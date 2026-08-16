@@ -377,7 +377,7 @@ def _sanitize_messages_for_provider(
 # The provider's error string carries the ACTIONABLE reason (rate limit, bad
 # key, context-length, invalid model) but may also embed the api_base URL, a
 # Bearer token, or an ``sk-…`` key fragment. We surface the reason to the
-# operator (it's THEIR CommandCenter) but redact anything secret first.
+# operator (it's THEIR Metorite) but redact anything secret first.
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),          # OpenAI-style keys
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.I),  # bearer tokens

@@ -11,7 +11,7 @@ and the opt-in toggle must survive a page refresh, a navigation, or a gateway
 restart, so they live in Postgres (``live_session``).
 
 Powers:
-1. the global **"live now"** dock across Command Center,
+1. the global **"live now"** dock across Metorite,
 2. **reattaching** the copilot console to a running session by id,
 3. the per-session **copilot opt-in** (default OFF; Phase A stores the state,
    the Phase B orchestrator acts on it).

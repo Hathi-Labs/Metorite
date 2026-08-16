@@ -329,8 +329,8 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
             # Clones get the bot identity at clone time; this covers external
             # workspace_root repos that never went through the loader.
             commit_cmd = [
-                "-c", "user.name=commandcenter-bot",
-                "-c", "user.email=commandcenter-bot@users.noreply.github.com",
+                "-c", "user.name=metorite-bot",
+                "-c", "user.email=metorite-bot@users.noreply.github.com",
                 *commit_cmd,
             ]
         if _git(*commit_cmd).returncode != 0:

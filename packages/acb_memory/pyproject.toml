@@ -1,7 +1,7 @@
 [project]
 name = "acb-memory"
 version = "0.0.1"
-description = "Mem0 episodic memory + Graphiti bi-temporal KG for CommandCenter agents."
+description = "Mem0 episodic memory + Graphiti bi-temporal KG for Metorite agents."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "mem0ai>=1.0.11",

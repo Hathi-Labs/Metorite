@@ -2,7 +2,7 @@
 
 // Shared WhatsApp app shell — a persistent sub-navigation across every WhatsApp
 // route (inbox + Pulse + settings + Numbers). Responsive, matching the rest of
-// CommandCenter:
+// Metorite:
 //   • Desktop: a persistent LEFT column (like email's AccountSidebar / tasks'
 //     ListsSidebar) — icon rail that widens to labels at md.
 //   • Mobile: no in-page nav chrome. The section list lives in a slide-up

@@ -9,7 +9,7 @@
 --   task types are rows, not levels. There is deliberately no department table,
 --   no epic/story/subtask table, and no depth column.
 --
--- Why: CommandCenter becomes the system of record for work management and
+-- Why: Metorite becomes the system of record for work management and
 --   ClickUp becomes an import source, then retires (§7). The personal GTD store
 --   (gtd_projects/gtd_items, migration 48) is per-user by construction — 27
 --   `user_id = :` predicates in routes/tasks/items.py, a per-user task_accounts

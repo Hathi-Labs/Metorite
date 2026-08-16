@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The top-left of the app: the customer's logo, "powered by CommandCenter".
+ * The top-left of the app: the customer's logo, "powered by Metorite".
  *
  * There are two shells — the desktop sidebar and the mobile menu — and this
  * component exists so there is one lockup rather than two. The last time a

@@ -150,7 +150,7 @@ async def _mint_ephemeral_key(api_key: str) -> str:
         r = await client.post(
             f"{_DG_API}/projects/{project_id}/keys",
             json={
-                "comment": "commandcenter-notes-live (ephemeral)",
+                "comment": "metorite-notes-live (ephemeral)",
                 "scopes": ["usage:write"],
                 "time_to_live_in_seconds": _TOKEN_TTL_S,
             },

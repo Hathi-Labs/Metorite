@@ -1,13 +1,13 @@
 # AGENTS.md — Planning Folder Navigation Guide
 
 > **For AI agents:** Read this file first. It tells you what this project is and which file to read for each concern. **For what is built and what to do next, this file deliberately owns nothing:** `work_plan.md` §2 is the dispatch board; each owning spec's status header is the completion record (rule R4). A status table that lived here went stale and lied — it was retired on 2026-08-09 (work_plan.md §5 residual 1).
-> **Organisation:** Fracktal Works · **Project:** CommandCenter · **Last updated:** 2026-08-09
+> **Organisation:** Fracktal Works · **Project:** Metorite · **Last updated:** 2026-08-09
 
 ---
 
-## What CommandCenter Is
+## What Metorite Is
 
-CommandCenter is a **headless, self-mutating agent orchestration platform** for running a company — and, since 2026-08-08, **a product being prepared for sale to other companies** (WS-29, decision D15: tenant = `organization_id` row isolated by Postgres RLS; a deployment is a placement, not a tenant boundary; see `specs/saas_multitenancy.md`).
+Metorite is a **headless, self-mutating agent orchestration platform** for running a company — and, since 2026-08-08, **a product being prepared for sale to other companies** (WS-29, decision D15: tenant = `organization_id` row isolated by Postgres RLS; a deployment is a placement, not a tenant boundary; see `specs/saas_multitenancy.md`).
 
 When a company event fires (webhook from ClickUp/Zoho, cron schedule, or ambient signal), it:
 1. Resolves the target specialist agent (persistent local clone or in-repo `apps/agents/*`).
@@ -50,7 +50,7 @@ Status: 🟢 live/shipped · 🔄 in progress · 🔲 planned/not started. *(Ind
 
 | Spec | Concern | Status |
 |---|---|---|
-| [`saas_multitenancy.md`](specs/saas_multitenancy.md) | **⭐ SaaS multi-tenancy (WS-29)** — architecture of record for selling CommandCenter: tenancy = `organization_id` + RLS at the connection seam (D15), modules/entitlements, AI credit resale, billing; §6 blockers; §11 tickets MT-0…MT-5 | 🟢 architecture of record (2026-08-08); Phase 0 built; H1 scratch-verified 2026-08-09, prod apply = PR #404 |
+| [`saas_multitenancy.md`](specs/saas_multitenancy.md) | **⭐ SaaS multi-tenancy (WS-29)** — architecture of record for selling Metorite: tenancy = `organization_id` + RLS at the connection seam (D15), modules/entitlements, AI credit resale, billing; §6 blockers; §11 tickets MT-0…MT-5 | 🟢 architecture of record (2026-08-08); Phase 0 built; H1 scratch-verified 2026-08-09, prod apply = PR #404 |
 | [`saas_multitenancy_handover.md`](specs/saas_multitenancy_handover.md) | **⭐ WS-29 execution runbook** — H1→H8 with gates; §0 paste-ready brief; H2 (561 call sites) is the long pole; H2-before-H3 is non-negotiable | 🟢 in execution — H1 scratch gate passed 2026-08-09 |
 | [`saas_multitenancy_implementation.md`](specs/saas_multitenancy_implementation.md) | Multi-tenancy build shapes: RLS migration template, `tenant_session()` seam, ratchets, control-plane DDL, runbooks, ten-trap table | 🟢 binding build reference (2026-08-08) |
 | [`tenancy_and_visibility.md`](specs/tenancy_and_visibility.md) | **Visibility architecture of record (§2–§5)**: private → Center → org ladder, `group:` project grants, per-surface gap table. ⛔ §1/§6 tenancy half superseded 2026-08-08 by D15 | 🟢 for visibility; ⛔ §1+§6 superseded |
@@ -118,7 +118,7 @@ The authoritative list is **root `AGENTS.md` → Global Constraints (1–11)** �
 
 | Term | Meaning |
 |---|---|
-| **Core Engine** | The CommandCenter FastAPI gateway + MAF workflow engine + Dynamic Agent Loader. |
+| **Core Engine** | The Metorite FastAPI gateway + MAF workflow engine + Dynamic Agent Loader. |
 | **Dynamic Agent Loader** | `packages/acb_skills/acb_skills/loader.py` — pulls/imports `agents.py` at runtime, calling `build_agents()`. |
 | **Agent repo** | `agent-<name>` repo (or `apps/agents/*`): `config.json`, `agents.py`, `instructions.md`. No credentials, no skill implementations. |
 | **Skill repo** | `skill-<name>` pip-installable package with one well-typed entry function, surfaced as a tool or MCP server. |

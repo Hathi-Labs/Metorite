@@ -8,7 +8,7 @@ import { useSearchParams, useRouter } from "next/navigation";
  * Normalise the post-auth redirect target to a safe internal path.
  *
  * `redirect_after` arrives as the full URL the user came from (e.g.
- * "https://commandcenter.fracktal.in/integrations").  Reduce it to a
+ * "https://metorite.fracktal.in/integrations").  Reduce it to a
  * same-origin path so router.push() navigates correctly; reject anything
  * cross-origin or unparseable to avoid an open-redirect and the 404 that
  * results from pushing an absolute/encoded string as a relative path.

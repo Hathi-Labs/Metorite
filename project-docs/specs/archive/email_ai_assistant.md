@@ -6,7 +6,7 @@
 > success criterion is retired, and §8's gap list has been re-verified and absorbed into the
 > master plan. Kept for architecture detail, the provider capability matrix, and design rationale.
 >
-> **Product:** CommandCenter · **Feature:** Email AI Assistant App · **Updated:** 2026-06-29 · **Version:** 2.0
+> **Product:** Metorite · **Feature:** Email AI Assistant App · **Updated:** 2026-06-29 · **Version:** 2.0
 > **Status at archive time:** 🟢 Live on the VPS. Full email client (Gmail / Microsoft 365 / IMAP) with multi-account sync, two-way write-back, conversation/threading UI, a complete inbox-zero-parity automation suite (rules, Reply Zero, drafting, sender categorization, cold-email blocker, inbox cleaner, analytics, digests) and an agent-backed assistant chat.
 >
 > **Companion docs:**
@@ -17,7 +17,7 @@
 
 ## 1. Overview
 
-The Email AI Assistant is a **custom app** in the CommandCenter Control Plane that provides a full-featured, AI-assisted email client. It connects to multiple providers (Gmail, Microsoft 365 / Outlook, generic IMAP/SMTP), syncs mail into Postgres, presents a multi-panel UI (accounts · folders · list · conversation reader · automation scenes · assistant chat), and layers an inbox-zero-style automation suite plus a tool-using MAF agent on top.
+The Email AI Assistant is a **custom app** in the Metorite Control Plane that provides a full-featured, AI-assisted email client. It connects to multiple providers (Gmail, Microsoft 365 / Outlook, generic IMAP/SMTP), syncs mail into Postgres, presents a multi-panel UI (accounts · folders · list · conversation reader · automation scenes · assistant chat), and layers an inbox-zero-style automation suite plus a tool-using MAF agent on top.
 
 ### Key requirements (original intent)
 
@@ -286,7 +286,7 @@ Grouped by area. Detailed acceptance criteria and the inbox-zero parity audit li
 - ❌ **AI "Clean" flow** — AI-scored bulk inbox cleanup with a review queue (beyond rule-based age-sweep + cleaner).
 - ❌ **Attachment auto-filing** → Drive/OneDrive.
 - ❌ **Meeting briefs** (email + calendar context).
-- 🟡 **External MCP / CRM tools** in drafting context — approximated today via the sales/task-manager specialist agents; real MCP tools land with Command Center's MCP integrations.
+- 🟡 **External MCP / CRM tools** in drafting context — approximated today via the sales/task-manager specialist agents; real MCP tools land with Metorite's MCP integrations.
 - 🟡 Categorization **historical backfill with a date range** ("how far back") + a coverage report — today is limit-based / just-in-time.
 - 🟡 Learning is per-draft-edit; no learning from **bulk actions** (e.g. "always archive newsletters").
 

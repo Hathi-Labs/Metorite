@@ -1365,7 +1365,7 @@ function EmailTab() {
               </p>
               <p className="text-[11px] text-muted-foreground leading-relaxed mb-2">
                 To connect Gmail or Outlook accounts via OAuth, you need to
-                register CommandCenter as an app with Google and Microsoft first.
+                register Metorite as an app with Google and Microsoft first.
                 This is a one-time setup.
               </p>
               <div className="flex flex-wrap gap-1.5">
@@ -1798,7 +1798,7 @@ function McpsTab() {
           </div>
           <p className="text-sm text-muted-foreground mt-2 leading-relaxed max-w-xl">
             MCP is an open standard (by Anthropic) that lets agents connect to external tools. Register any MCP
-            server here and every agent in CommandCenter can automatically discover and use its tools at runtime.
+            server here and every agent in Metorite can automatically discover and use its tools at runtime.
           </p>
         </div>
       </div>
@@ -1867,7 +1867,7 @@ function McpsTab() {
 
       {/* How it works */}
       <div className="p-5 rounded-2xl border border-border bg-card space-y-4">
-        <div className="text-[10px] text-muted uppercase tracking-wider">How it works in CommandCenter</div>
+        <div className="text-[10px] text-muted uppercase tracking-wider">How it works in Metorite</div>
         <ol className="space-y-3">
           {[
             { n: "1", title: "Register a server", body: "Paste the MCP server URL (HTTP/SSE or stdio transport). Set a name and which agents may use it." },
@@ -2019,7 +2019,7 @@ const PLUGIN_EXAMPLES = [
   { name: "Document Analysis", icon: themedIcon("HardDrive"), desc: "Upload PDFs, spreadsheets, or images and let agents extract and reason over content." },
   { name: "Email Actions",     icon: themedIcon("Mail"),     desc: "Draft, send, and thread emails directly from agent workflows without extra API setup." },
   { name: "Calendar & Booking",icon: themedIcon("CheckSquare"), desc: "Check availability, schedule meetings, and create calendar events autonomously." },
-  { name: "Community Plugins", icon: themedIcon("Users"),    desc: "Install third-party plugins published by the CommandCenter community or build your own." },
+  { name: "Community Plugins", icon: themedIcon("Users"),    desc: "Install third-party plugins published by the Metorite community or build your own." },
 ];
 
 function PluginsTab() {

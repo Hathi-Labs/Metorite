@@ -3,7 +3,7 @@
 /**
  * Toast — THE confirmation channel (WS-27ak item 3, D-PM-15).
  *
- * A CommandCenter wrapper over `@base-ui/react`'s `toast`. **This file and
+ * A Metorite wrapper over `@base-ui/react`'s `toast`. **This file and
  * `Modal.tsx` are the only places in `src/` allowed to import that library**
  * (conformance rule 8): call sites import `useToast`, never the substrate, or
  * the library's own defaults quietly become a second design system —

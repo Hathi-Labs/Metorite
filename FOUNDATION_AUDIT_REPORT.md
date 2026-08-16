@@ -1,4 +1,4 @@
-# Foundation Architecture Review & Audit — CommandCenter
+# Foundation Architecture Review & Audit — Metorite
 
 **Date:** 2026-07-11
 **Scope:** Foundational infrastructure only — the AI orchestration platform (Microsoft Agent Framework), the LLM routing layer (LiteLLM), the shared `acb_*` packages, the gateway application shell, the event/ingestion plumbing, self‑mutation, observability, configuration, CI/CD, and infra. Application/business features (email assistant, tasks/GTD, sales, ClickUp/Zoho logic) are explicitly **out of scope** except where they reveal a foundational contract being violated.
@@ -12,7 +12,7 @@
 
 ## 1. Executive summary
 
-CommandCenter's foundation is **substantially real, not a scaffold** — the executor, event translator, stream relay, watchdog, dynamic agent loader, Copilot streaming wrapper, LiteLLM routing, prompt‑cache/compression pipeline, and mutation Docker sandbox are all genuine, working implementations with real test coverage. This is a capable platform.
+Metorite's foundation is **substantially real, not a scaffold** — the executor, event translator, stream relay, watchdog, dynamic agent loader, Copilot streaming wrapper, LiteLLM routing, prompt‑cache/compression pipeline, and mutation Docker sandbox are all genuine, working implementations with real test coverage. This is a capable platform.
 
 However, the audit surfaced a consistent and serious theme: **the platform's documented guarantees are materially ahead of what the code enforces.** The gap is concentrated in four areas that must be closed before more features are layered on top:
 

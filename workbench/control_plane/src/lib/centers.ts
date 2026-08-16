@@ -103,7 +103,7 @@ export const CENTERS: Center[] = [
       },
       {
         // WS-26c. The native CRM replaced the Zoho mirror as the destination:
-        // CommandCenter is becoming the system of record and Zoho the import
+        // Metorite is becoming the system of record and Zoho the import
         // source (specs/crm_app.md §1), so the tile names ours.
         label: "CRM",
         note: "Deals, leads, contacts and organizations — the pipeline the team works",

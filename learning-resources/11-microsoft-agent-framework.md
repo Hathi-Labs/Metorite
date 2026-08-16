@@ -1,7 +1,7 @@
 # 11 · Microsoft Agent Framework (MAF)
 
 MAF is the runtime that ties everything together — the concrete implementation of the "run loop" from
-chapter 07 and the multi-agent patterns from chapter 06. CommandCenter's founding constraint is that
+chapter 07 and the multi-agent patterns from chapter 06. Metorite's founding constraint is that
 **MAF is the sole agent execution runtime**: every agent, whether backed by a plain model or by the GitHub
 Copilot SDK, runs through MAF. This chapter is a practical tour of what MAF gives you and how the platform
 uses it.
@@ -20,7 +20,7 @@ MAF (`agent-framework-*` Python packages) is Microsoft's open agent framework. I
 - a **streaming protocol bridge** to the browser (AG-UI, chapter 13),
 - and **native OpenTelemetry** for observability.
 
-It's a meta-package with focused sub-packages, and CommandCenter pins specific ones:
+It's a meta-package with focused sub-packages, and Metorite pins specific ones:
 
 | Package | Role |
 |---|---|
@@ -60,7 +60,7 @@ directly; it goes through LiteLLM.
 
 **Streaming shape.** In stream mode, MAF yields `AgentResponseUpdate` objects whose `.contents` carry
 typed pieces: `text` (answer tokens), `text_reasoning` (thinking), `function_call` (a tool invocation),
-`function_result` (a tool's return). CommandCenter maps each of these onto an AG-UI SSE event (chapter 13)
+`function_result` (a tool's return). Metorite maps each of these onto an AG-UI SSE event (chapter 13)
 so the frontend can render text, thinking, and tool activity distinctly.
 
 ---
@@ -68,7 +68,7 @@ so the frontend can render text, thinking, and tool activity distinctly.
 ## 3. Tools in MAF
 
 MAF accepts **plain async functions** as tools and derives the JSON schema from the type hints + docstring
-(chapter 08). CommandCenter injects its shared toolbox by appending to the agent's tool list at load time.
+(chapter 08). Metorite injects its shared toolbox by appending to the agent's tool list at load time.
 For Copilot-SDK-backed agents the same functions are normalized to the SDK's `CopilotTool` format — MAF's
 `FunctionTool`s "auto-translate," which is precisely why the platform can run one tool set across both
 agent kinds.
@@ -88,7 +88,7 @@ GroupChatBuilder().add_agents([writer, reviewer]).build()     # agents converse
 ```
 
 `WorkflowBuilder` exists for explicit sequential/fan-out/fan-in pipelines when you want a *fixed* graph.
-In practice CommandCenter leans on **delegation-as-tool** (`call_agent`) for dynamic routing and reserves
+In practice Metorite leans on **delegation-as-tool** (`call_agent`) for dynamic routing and reserves
 the builders for known topologies — but they're all first-class MAF constructs.
 
 ---
@@ -136,7 +136,7 @@ with the append-only audit log, this is the platform's observability story.)
 
 ## 8. Why standardize on one runtime
 
-CommandCenter's global constraint — *MAF is the only agent runtime; the Copilot SDK is a mutation-sandbox /
+Metorite's global constraint — *MAF is the only agent runtime; the Copilot SDK is a mutation-sandbox /
 model-backend only* — is a deliberate anti-fragmentation choice. Earlier iterations had a separate Copilot
 SDK chat path *and* a MAF path, which meant two streaming implementations, two tool systems, two sets of
 bugs. Collapsing to one runtime (once `agent-framework-github-copilot` could wrap the Copilot SDK) means:

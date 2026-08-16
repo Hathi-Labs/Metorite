@@ -1,4 +1,4 @@
-# CommandCenter Control Plane (workbench/control_plane)
+# Metorite Control Plane (workbench/control_plane)
 
 Next.js 16 + React 19 + Tailwind v4 shell for the Skill Workbench.
 

@@ -699,7 +699,7 @@ function StepWebhook({
                 className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-[12px] outline-none focus:border-primary"
               />
               <p className="mt-1 text-[10.5px] text-muted-foreground">
-                The public HTTPS address of this CommandCenter gateway. (Set
+                The public HTTPS address of this Metorite gateway. (Set
                 <code className="mx-1">WHATSAPP_PUBLIC_URL</code>on the server to
                 skip this.)
               </p>

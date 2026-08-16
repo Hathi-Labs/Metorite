@@ -69,7 +69,7 @@ def _load_skill_prompt(skill: str) -> str:
 
     outputs = frontmatter.get("outputs", "")
     return (
-        "You are executing the CommandCenter skill "
+        "You are executing the Metorite skill "
         f"'{frontmatter.get('name', skill)}'.\n"
         f"Skill description: {frontmatter.get('description', '')}\n"
         f"{outputs and f'Declared outputs: {outputs}' or ''}\n\n"

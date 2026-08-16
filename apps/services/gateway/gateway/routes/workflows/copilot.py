@@ -40,7 +40,7 @@ COPILOT_MAX_TOKENS = 6000
 SHORTLIST_LIMIT = 12
 
 COPILOT_SYSTEM_PROMPT = """\
-You are the Workflow Copilot for CommandCenter's visual workflow editor. The
+You are the Workflow Copilot for Metorite's visual workflow editor. The
 maker chats; you edit their automation graph. You receive the current graph,
 a shortlist of relevant capabilities (found by semantic search over the org's
 agents, integration actions, and code modules), and the full name lists.

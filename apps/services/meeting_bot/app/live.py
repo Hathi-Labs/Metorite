@@ -38,7 +38,7 @@ PULSE_MONITOR = os.environ.get("PULSE_MONITOR", "meet.monitor")
 # into its sink so the meeting hears the bot.
 VIRTUAL_MIC_SINK = os.environ.get("VIRTUAL_MIC_SINK", "vmic")
 LIVE_ASR_URL = os.environ.get("LIVE_ASR_URL", "").strip()
-# Where to ask CommandCenter for streaming-ASR credentials when no self-hosted
+# Where to ask Metorite for streaming-ASR credentials when no self-hosted
 # LIVE_ASR_URL is set. This is the normal path: the key lives in Settings ->
 # Models, the gateway mints a short-lived token, and the worker never holds the
 # master key. Unset AND no LIVE_ASR_URL -> the bot records but has no captions.
@@ -170,7 +170,7 @@ async def _live_wanted(meeting_callback: str) -> bool:
 
 def live_enabled() -> bool:
     """Live streaming is possible when *some* streaming ASR is reachable —
-    either a self-hosted WebSocket, or CommandCenter's token endpoint (which
+    either a self-hosted WebSocket, or Metorite's token endpoint (which
     fronts whichever provider is keyed in Settings -> Models). The per-meeting
     callback (where segments go) is supplied at join time."""
     return bool(LIVE_ASR_URL or LIVE_TOKEN_URL)

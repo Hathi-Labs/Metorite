@@ -651,7 +651,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // and stored sessions can carry for it; normalise them to the registered slug
   // so the named-agent path resolves instead of 422-ing.
   // (agent_architecture.md §11.1.1 — retires the /copilot/chat branch.)
-  const ORCHESTRATOR_ALIASES = new Set(["orchestrator", "default", "commandcenter", ""]);
+  const ORCHESTRATOR_ALIASES = new Set(["orchestrator", "default", "metorite", ""]);
   const resolvedAgentName = ORCHESTRATOR_ALIASES.has(agentName.toLowerCase().trim())
     ? "orchestrator"
     : agentName;

@@ -1,4 +1,4 @@
--- CommandCenter — Dynamic Agent Registry.
+-- Metorite — Dynamic Agent Registry.
 -- Replaces agents.json — user-registered agents persist in Postgres
 -- so they survive git reset --hard, deploys, and reboots.
 -- The old agents.json file is kept for backward-compatible reads

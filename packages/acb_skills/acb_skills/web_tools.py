@@ -210,7 +210,7 @@ async def fetch_page(url: str, max_chars: int = 8000) -> str:
             import re as _re
             async with httpx.AsyncClient(
                 timeout=20.0, follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (CommandCenter fetch_page)"},
+                headers={"User-Agent": "Mozilla/5.0 (Metorite fetch_page)"},
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()

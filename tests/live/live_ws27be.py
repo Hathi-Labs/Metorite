@@ -46,7 +46,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
     "postgresql+asyncpg://postgres@/ccws27be?host=/var/tmp&port=55432",
 )
 # Derived from THIS file, not hard-coded: run from a git worktree, an absolute
-# `/home/user/CommandCenter/...` path silently imports the MAIN checkout's
+# `/home/user/Metorite/...` path silently imports the MAIN checkout's
 # gateway and the script then reports on code that is not under test.
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "apps" / "services" / "gateway"))

@@ -7,7 +7,7 @@ Tests three things:
 4. Tools are injectable into both MAF and GitHub Copilot agents
 
 Run:
-    cd c:/Users/VijayRaghavVarada/Documents/GitHub/CommandCenter
+    cd c:/Users/VijayRaghavVarada/Documents/GitHub/Metorite
     uv run python scripts/_test_memory_tools.py
 
 Prerequisites:
@@ -319,7 +319,7 @@ def test_gateway_user_context() -> bool:
 
 
 async def main() -> int:
-    print("CommandCenter Memory Tools — End-to-End Test")
+    print("Metorite Memory Tools — End-to-End Test")
     print(f"Workspace: {_WS_ROOT}")
     print()
 

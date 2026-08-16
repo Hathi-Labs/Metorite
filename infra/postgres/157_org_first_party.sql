@@ -6,7 +6,7 @@
 -- Root AGENTS.md non-negotiable 3 has said this since it was written:
 --
 --   "native MAF agents (local_path, no own remote) currently land approved
---    self-mutations by opening a PR against THIS Command Center monorepo …
+--    self-mutations by opening a PR against THIS Metorite monorepo …
 --    It MUST be swapped for a tenant-isolated mechanism before any
 --    multi-tenant/customer deployment — third parties must never push to the
 --    shared monorepo."
@@ -32,7 +32,7 @@ ALTER TABLE organization
 
 COMMENT ON COLUMN organization.first_party IS
     'MT-0b: may this org''s agents land self-mutations as PRs against the '
-    'CommandCenter monorepo? FALSE for every tenant except the operator''s own. '
+    'Metorite monorepo? FALSE for every tenant except the operator''s own. '
     'Read by orchestrator.mutation._self_mutation_permitted, which fails CLOSED.';
 
 -- The operator's own organization keeps the behaviour it has today. This is the

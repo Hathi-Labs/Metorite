@@ -5,7 +5,7 @@
 > the classification of record is `project-docs/INDEX.md`.
 
 
-> **Product:** CommandCenter · **Concern:** research appendix for the native project-management
+> **Product:** Metorite · **Concern:** research appendix for the native project-management
 > app (WS-27) · **Created:** 2026-08-05 · **Status:** 🟢 research complete — **reference-only,
 > owns no work and no status**; every adaptation verdict below is annealed into
 > `specs/project_management_app.md`, which is the owning spec · **Owner:** vjvarada
@@ -34,11 +34,11 @@ system of record), `services/realtime` (Socket.IO fan-out), `services/ai-agent`
 `apps/acp-bridge` (local Claude Code / Codex / Gemini CLI bridge). Postgres + Valkey
 (cache, pub/sub, and durable streams).
 
-Why it maps onto CommandCenter: it is the same architectural species — an event-driven
+Why it maps onto Metorite: it is the same architectural species — an event-driven
 platform where humans and agents share one store, one API, and one activity stream. Its
 task/project data model, its automation graph, and its assignment→agent dispatch chain are
 exactly the three things WS-27 needs. Its multi-service split is the part we **don't** need:
-CommandCenter already owns realtime (AG-UI/SSE), agent runtime (MAF), and an automation app
+Metorite already owns realtime (AG-UI/SSE), agent runtime (MAF), and an automation app
 (`/workflows`), so the adaptation is "absorb the data model and the patterns into the
 existing platform", never "stand up sibling services".
 
@@ -195,7 +195,7 @@ plugin types with no wide null-column set.
   panel; the dependency map is **derived** on read from active `predecessor_done` nodes,
   never separately maintained.
 
-**Verdict: adapt into `/workflows`, never build a sibling.** CommandCenter already has a
+**Verdict: adapt into `/workflows`, never build a sibling.** Metorite already has a
 graph automation app (WS-11: DB graphs compiled to MAF workflows, manual/webhook/cron
 triggers, run console) and ADR-028/D6 makes `workflows_app.md` the single owner of the
 engine. What Paca proves is the *binding*: task events feeding the trigger vocabulary,
@@ -305,7 +305,7 @@ adoption target (ADR-028: no second runtime).
 | 11 | MCP: few rich tools, per-item outcomes, lenient removes, no internal UUIDs | **Adopt** for the agent-facing tool surface |
 | 12 | Two Valkey transports (pub/sub vs streams), permission-once-at-join rooms | Already have equivalents; keep the separation principle |
 | 13 | Tags as a bare JSONB array | **Refuse** — weakest part of the model |
-| 14 | Sibling services for realtime/agents; WASM plugin runtime; BlockNote docs | **Refuse** — CommandCenter already owns these concerns |
+| 14 | Sibling services for realtime/agents; WASM plugin runtime; BlockNote docs | **Refuse** — Metorite already owns these concerns |
 
 Everything above is annealed into `specs/project_management_app.md` (WS-27), which owns all
 work, decisions, and status. This file is evidence, not a plan.

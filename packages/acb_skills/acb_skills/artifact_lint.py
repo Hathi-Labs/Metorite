@@ -309,7 +309,7 @@ def _check_slop(tree: _Tree) -> list[Finding]:
         out.append(Finding(
             "warning",
             "purple/violet gradient detected — a hallmark of generic AI-generated "
-            "design. Command Center is blue (--cc-primary) with one warm-orange "
+            "design. Metorite is blue (--cc-primary) with one warm-orange "
             "accent (--cc-accent); drop the gradient",
         ))
     if _SLOP_INTER.search(blob):
@@ -324,7 +324,7 @@ def _check_slop(tree: _Tree) -> list[Finding]:
     if centered >= 4:
         out.append(Finding(
             "warning",
-            f"{centered} centered blocks — Command Center reports are left-aligned; "
+            f"{centered} centered blocks — Metorite reports are left-aligned; "
             "reserve centering for stat tiles and gauges",
         ))
     return out

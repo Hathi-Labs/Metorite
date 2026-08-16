@@ -282,7 +282,7 @@ export default function MemberAccessPage() {
         <Section
           icon={<Icon name="LayoutGrid" size={14} />}
           title="Apps and features"
-          subtitle="Which parts of CommandCenter this person can open."
+          subtitle="Which parts of Metorite this person can open."
         >
           <DecisionTable
             decisions={data.features}

@@ -105,7 +105,7 @@ def require_internal(
     operator token is held by staff and used from consoles and scripts; this one
     is held by a service and used on the metering path. Sharing them would mean
     a leaked console credential could rewrite ledgers — and on the running
-    CommandCenter box, `GATEWAY_INTERNAL_TOKEN` being byte-identical to
+    Metorite box, `GATEWAY_INTERNAL_TOKEN` being byte-identical to
     `LITELLM_MASTER_KEY` is exactly that mistake, already recorded as an
     owner-gated defect (work_plan.md §6). Do not repeat it here.
     """

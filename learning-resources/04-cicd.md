@@ -1,6 +1,6 @@
 # 04 · CI/CD — Push-to-Deploy
 
-CommandCenter deploys by **merging to `main`**. There is no separate "deploy" button, no manual SSH, no
+Metorite deploys by **merging to `main`**. There is no separate "deploy" button, no manual SSH, no
 release ceremony. A GitHub Actions workflow (`.github/workflows/deploy.yml`) watches `main`, gates the
 change behind lint and tests, then SSHes into the VPS and updates it in place. This chapter walks the
 pipeline and the reasoning, so you can build the same for your own project.

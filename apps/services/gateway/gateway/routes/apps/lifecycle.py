@@ -108,7 +108,7 @@ def starter_index_html(name: str) -> str:
     design system, with a commented ``window.cc`` usage example (the bridge
     + the ``--cc-*`` tokens and ``.cc-*`` block-kit classes below are
     injected by the run/preview frame itself — ``lib/theme/sandbox-frame.ts``'s
-    ``buildSrcDoc``, the exact same styling every CommandCenter report and
+    ``buildSrcDoc``, the exact same styling every Metorite report and
     generative-UI card already uses. Never redeclare these — see RFC §4.1
     and ``apps/agents/agent-app-builder/instructions.md``'s Design section).
     """
@@ -137,10 +137,10 @@ def starter_index_html(name: str) -> str:
 <body>
   <!-- .cc-card is one of the platform's pre-styled, on-brand blocks (see
        the Design section of your instructions) — no colors/borders/radius
-       to hand-write, it already matches CommandCenter. -->
+       to hand-write, it already matches Metorite. -->
   <main class="cc-card">
     <h1>{safe}</h1>
-    <p>Built in the CommandCenter Workshop — describe changes in the build chat.</p>
+    <p>Built in the Metorite Workshop — describe changes in the build chat.</p>
   </main>
   <script>
     // The platform injects `window.cc` into this frame (identity, storage, AI).
@@ -159,8 +159,8 @@ def starter_index_html(name: str) -> str:
 def _git_init(workspace: Path) -> None:
     """Best-effort ``git init`` + baseline commit — never fails creation."""
     git_env = [
-        "-c", "user.name=Command-Center",
-        "-c", "user.email=command-center@local",
+        "-c", "user.name=Metorite",
+        "-c", "user.email=metorite@local",
     ]
     for args in (
         ["git", "init"],

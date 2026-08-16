@@ -15,7 +15,7 @@
 --                        directly access the full history of any file.
 --
 -- The same schema is portable to MAF agents on a second tenant deployment
--- (agent_name is the only tenant/agent key; no CommandCenter-specific coupling).
+-- (agent_name is the only tenant/agent key; no Metorite-specific coupling).
 
 -- ── Current content — one row per live file ────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_blob (

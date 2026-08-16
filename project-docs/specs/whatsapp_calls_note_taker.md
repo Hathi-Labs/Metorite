@@ -5,7 +5,7 @@
 > the classification of record is `project-docs/INDEX.md`.
 
 
-> **Product:** CommandCenter · **Feature:** extend the AI Note Taker (`/notes`) to WhatsApp voice calls, including group calls
+> **Product:** Metorite · **Feature:** extend the AI Note Taker (`/notes`) to WhatsApp voice calls, including group calls
 > **Created:** 2026-08-01 · **Updated:** 2026-08-02 · **Status:** 🔬 feasibility study (§0–§11, the design record) · ✅ **Surface C SHIPPED + DEPLOYED** — see §12. Place and answer 1:1 and group WhatsApp calls from `/whatsapp/calls` or a chat's Call button, **speak and listen** through the browser, and every call is recorded server-side. **Transcription is not wired yet** (§12.5) — the recording is produced but nothing consumes it.
 > **Siblings:** [`note_taker_app.md`](note_taker_app.md) (the note taker we're extending) · [`meeting_bot_platform_plan.md`](meeting_bot_platform_plan.md) (the bot-joins-a-call pattern) · [`whatsapp_message_manager.md`](whatsapp_message_manager.md) (the WhatsApp vertical we'd hang this off)
 > **Touches:** `apps/services/meeting_bot/` · `apps/services/whatsapp_bridge/` (Go + whatsmeow) · `gateway/routes/notes/meeting_bot.py` · `gateway/routes/whatsapp/`
@@ -175,7 +175,7 @@ Four answers, in order of how good they are:
 | **Call link with waiting room** | Create a link from `/notes`; notetaker joins and waits for approval. | ✅ Good for *planned* calls. Requires meowcaller's experimental link support. |
 | **Arm ahead of time** ("record the next call in this chat") | `CallOffer` event fires on the bridge → notetaker auto-joins/rings itself in. | ✅ Good for known-imminent calls; useless for surprises. |
 
-**Design consequence:** the note taker must be a **standing, always-available identity** — a contact in your address book named something like *"CommandCenter Notes"* — not a thing you dispatch per-meeting. That is a genuinely different mental model from `JoinCallModal`'s paste-a-link, and the UX below is built around it.
+**Design consequence:** the note taker must be a **standing, always-available identity** — a contact in your address book named something like *"Metorite Notes"* — not a thing you dispatch per-meeting. That is a genuinely different mental model from `JoinCallModal`'s paste-a-link, and the UX below is built around it.
 
 ---
 
@@ -216,7 +216,7 @@ Everything follows from §5. In `/notes` today you paste a link and dispatch a b
   ───────────                          ───────────────────
   /notes → Settings → WhatsApp    →    you're on a call
   pair the notetaker number (QR)  →    tap "Add participant"
-  name it, give it an avatar      →    pick "CommandCenter Notes"
+  name it, give it an avatar      →    pick "Metorite Notes"
   choose auto-join rules          →    it answers, announces itself,
                                        and the live transcript
                                        appears in /notes
@@ -229,7 +229,7 @@ A new tab in the existing `NotesSettingsModal`, mirroring `BotIdentitySection.ts
 - **Which number takes notes.** Two cards, side by side, honest about the trade:
   - **Business number** *(Recommended · Official)* — "Notes on calls to and from your Cloud API number. 1:1 only — WhatsApp doesn't allow group calls on business numbers." Status chip: `Calling enabled on WABA` / `Not enabled — ask Meta`.
   - **Personal notetaker number** *(Group calls · Unofficial)* — QR pairing, reusing the bridge's existing `POST /session` → `{status, qr}` flow and its `<img>` renderer. Carries the same warning the bridge README carries, verbatim in tone: *"This uses an unofficial WhatsApp client. The number can be banned at any time. Use a dedicated number you're willing to lose — never your main line."* Behind an "I understand" checkbox before the QR renders.
-- **Identity.** Display name (default *"CommandCenter Notes"*) + avatar. This is what everyone sees in the participant list — it is the consent surface, so it's mandatory and not editable to something misleading.
+- **Identity.** Display name (default *"Metorite Notes"*) + avatar. This is what everyone sees in the participant list — it is the consent surface, so it's mandatory and not editable to something misleading.
 - **Auto-join rules** (§7.4).
 - **Announcement** (§7.5).
 
@@ -239,7 +239,7 @@ A new tab in the existing `NotesSettingsModal`, mirroring `BotIdentitySection.ts
 
 1. The notetaker answers.
 2. It speaks the announcement (§7.5) into the call via the existing TTS→virtual-mic path.
-3. It posts a message into the chat: *"📝 Taking notes on this call — @Vijay started it. Notes land in CommandCenter when the call ends."*
+3. It posts a message into the chat: *"📝 Taking notes on this call — @Vijay started it. Notes land in Metorite when the call ends."*
 4. `/notes` opens a live meeting and the **existing `LiveDock`** lights up.
 
 **1:1 call:** identical — adding a third participant converts it to a group call. Worth saying out loud in the UI, because users will assume 1:1 can't be joined.
@@ -266,7 +266,7 @@ Recording other people is regulated (India: one-party consent; several jurisdict
 Three layers, all on by default, none silently disableable:
 
 1. **Visible identity** — the notetaker's name and avatar in the participant list. Can't be hidden.
-2. **Audible announcement** on join — TTS into the call: *"CommandCenter is taking notes on this call for Vijay."* Configurable text, language-aware (Hindi/English), but **cannot be set to silence** without an explicit admin override that is logged.
+2. **Audible announcement** on join — TTS into the call: *"Metorite is taking notes on this call for Vijay."* Configurable text, language-aware (Hindi/English), but **cannot be set to silence** without an explicit admin override that is logged.
 3. **A message in the chat thread** when recording starts and when notes are ready, so there's a durable record every participant can see.
 
 Plus: an **"I object" affordance.** Anyone can reply `STOP` in the chat and the notetaker leaves the call and discards the recording. This is cheap to build (we already parse inbound messages) and it's the difference between a tool people tolerate and one they resent.
@@ -340,7 +340,7 @@ Two refinements from review that change the recommended shape. They supersede th
 
 ### 10.1 Collapse it: one call surface in CC, two transports underneath
 
-Rather than "a notetaker contact you add to the call", the stronger model is **CommandCenter takes the call**. It unifies Phases A and B behind one UI:
+Rather than "a notetaker contact you add to the call", the stronger model is **Metorite takes the call**. It unifies Phases A and B behind one UI:
 
 | You answer on | Transport | Calls covered | Status |
 |---|---|---|---|

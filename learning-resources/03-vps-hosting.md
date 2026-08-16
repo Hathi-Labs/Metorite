@@ -1,6 +1,6 @@
 # 03 · Hosting on a VPS
 
-The entire CommandCenter production stack — backend, frontend, database, cache, and an optional graph
+The entire Metorite production stack — backend, frontend, database, cache, and an optional graph
 DB — runs on **one cheap Linux box** (a Hostinger KVM VPS, Ubuntu 24.04). No Kubernetes, no managed
 cloud services. This chapter explains that topology and *why it's a good default* for a small team.
 
@@ -44,7 +44,7 @@ where a lot of small-team pain comes from.
 
 ## 2. Why *not* containerize the apps too?
 
-A reasonable question. CommandCenter deliberately runs the gateway and workbench as native systemd
+A reasonable question. Metorite deliberately runs the gateway and workbench as native systemd
 services rather than Docker containers. The trade-off:
 
 - **Deploying** becomes `git pull && uv sync && systemctl restart` — seconds, no image build/push/pull.
@@ -62,17 +62,17 @@ For a two-person team on a single box, the operational simplicity wins. At large
 Two DNS A-records point at the VPS IP, and Caddy routes by hostname:
 
 ```
-commandcenter.fracktal.in       → localhost:3001   (the Next.js workbench)
-api.commandcenter.fracktal.in   → localhost:8080   (the FastAPI gateway)
+metorite.fracktal.in       → localhost:3001   (the Next.js workbench)
+api.metorite.fracktal.in   → localhost:8080   (the FastAPI gateway)
 ```
 
 A minimal Caddyfile for this is remarkably small — Caddy handles the certificates itself:
 
 ```
-commandcenter.fracktal.in {
+metorite.fracktal.in {
     reverse_proxy localhost:3001
 }
-api.commandcenter.fracktal.in {
+api.metorite.fracktal.in {
     reverse_proxy localhost:8080
 }
 ```
@@ -99,7 +99,7 @@ need:
 
 **Postgres initialization is just SQL files.** There's no migration *tool* — Postgres's Docker image
 runs every `.sql` file mounted into `/docker-entrypoint-initdb.d/` in alphabetical order on first boot.
-CommandCenter has 40+ numbered migrations (`01_schema.sql` … `40_email_assistant_fallback_model.sql`),
+Metorite has 40+ numbered migrations (`01_schema.sql` … `40_email_assistant_fallback_model.sql`),
 applied on the running box by `scripts/apply_migrations.sh` (which globs `*.sql | sort`). Numbering is
 the entire ordering strategy — see chapter 04 for how new migrations get applied on deploy.
 
@@ -137,7 +137,7 @@ Redis loses in-flight events, not durable facts.
 
 ## 7. Sizing
 
-CommandCenter targets a **Hostinger KVM 4** (4 vCPU / 16 GB / NVMe, ~$29/mo) and runs on as little as a
+Metorite targets a **Hostinger KVM 4** (4 vCPU / 16 GB / NVMe, ~$29/mo) and runs on as little as a
 KVM 2 (2 vCPU / 8 GB) with the memory profile off. The binding constraint is RAM during the Next.js
 production build (which the deploy caps with `NODE_OPTIONS=--max-old-space-size=1024`), not steady-state
 serving. This is a useful reference point: *a non-trivial multi-agent platform fits comfortably on a

@@ -1,4 +1,4 @@
-module github.com/fracktalworks/commandcenter/whatsapp_bridge
+module github.com/fracktalworks/metorite/whatsapp_bridge
 
 go 1.25.0
 

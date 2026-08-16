@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The mailbox DASHBOARD (formerly "Digest") — the command-center view of every
+ * The mailbox DASHBOARD (formerly "Digest") — the mission-control view of every
  * open loop: what you owe (needs reply), what's owed to you (waiting on them),
  * what you promised (commitments), and the day's traffic. Every row navigates
  * to its thread; the closing actions (Done / Snooze) live on the row so triage

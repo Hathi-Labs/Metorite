@@ -2,7 +2,7 @@
 
 **Status:** plan of record for the notetaker's *joining* layer
 **Written:** 2026-07-30
-**Scope:** how CommandCenter gets into a live meeting on Google Meet, Zoom, and
+**Scope:** how Metorite gets into a live meeting on Google Meet, Zoom, and
 Microsoft Teams without depending on a commercial meeting-bot vendor.
 **Not in scope:** the transcribe → diarize → summarize → action-item pipeline
 (already built and platform-agnostic — see `note_taker_app.md`), and the live
@@ -154,9 +154,9 @@ streams; and there is **no calendar layer**, so every join is manual.
 | **recallai/google-meet-meeting-bot** | **No licence** | ⛔ Read only; copying is legally unusable |
 
 Attendee has the best techniques *and* the most restrictive licence. Since
-CommandCenter is our internal tool (not a SaaS we resell), ELv2's use grant is
+Metorite is our internal tool (not a SaaS we resell), ELv2's use grant is
 satisfiable *[⚠️ 2026-08-09: this compliance argument rests on the retired D10
-premise — under WS-29 CommandCenter IS resold. Re-evaluate the ELv2 use-grant
+premise — under WS-29 Metorite IS resold. Re-evaluate the ELv2 use-grant
 (Attendee is ELv2, not OSS) before the first external tenant uses meeting-bot
 features; flag carried in work_plan.md WS-19.]* — but the safe engineering posture is: **treat Attendee as a
 research paper.** The techniques below are architectural facts about Chrome and
@@ -309,7 +309,7 @@ even needed.
 2. `POST /google-login` → verify `signed_in: true` persists across a container
    restart (the volume is `acb-meeting-bot-profile`).
 3. **Verify a real join end to end**, then set the display name to something
-   unambiguous ("CommandCenter Notetaker").
+   unambiguous ("Metorite Notetaker").
 4. Put the bot's address on a calendar invite and confirm the **waiting-room
    bypass** — the only fully unattended admission path that exists on Meet.
 5. Document the failure→remedy table from what actually happens.
@@ -574,7 +574,7 @@ preferences.
 1. **Real, invitable identity.** A dedicated signed-in account whose address
    users add to invites. Never the owner's personal account.
 2. **One login, persisted forever.** Never script repeated password logins.
-3. **Honest naming.** "CommandCenter Notetaker" — never a human's name, never
+3. **Honest naming.** "Metorite Notetaker" — never a human's name, never
    something that reads as a real person. Deceptive names get bots blocked.
 4. **Announce recording; honour opt-out.** Post an entry message on join
    (Fireflies won't join if someone opts out; Nylas posts to chat). A bot in the

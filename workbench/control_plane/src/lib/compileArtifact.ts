@@ -61,7 +61,7 @@ const ALLOWED_IMPORTS = new Set([
   "react/jsx-dev-runtime",
   "preact/jsx-runtime",
   "preact/jsx-dev-runtime",
-  // The Command Center design kit as components (lib/artifactUi.tsx). Bundled
+  // The Metorite design kit as components (lib/artifactUi.tsx). Bundled
   // from our own source, tree-shaken, so an artifact pays only for what it uses.
   UI_PACKAGE,
 ]);

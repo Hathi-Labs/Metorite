@@ -7,14 +7,14 @@
 
 > **Status:** Research & design proposal. **§4 (identity, membership, roles, permissions) is now IMPLEMENTED** — see [`org_access_control.md`](org_access_control.md), which also carries §8 credential scoping and part of §7 memory scoping. The rest (§5 modules, §9 entity-graph RLS, §16 data-heavy scoping, §17 SaaS) remains research, and the modules/session-sharing portion is owned by the **multiplayer agent collaboration** workstream — see that spec's §10 handoff contract before building from this document. **2026-08-08/09:** §9 and §17 were un-superseded and are now **input to `saas_multitenancy.md` (D15, WS-29)** — the decision of record, which adopts §17.2's pooled-first recommendation and **rejects §17.3's header-based tenant resolution by name**. Read §17 as background; build only from saas_multitenancy.md.  
 > **Created:** 2026-07-07  
-> **Scope:** How CommandCenter evolves from a single-tenant "internal company brain" into a multi-user organization account where personal data stays private, shared resources are selectively visible, and an administrator controls settings, modules, and agents.  
+> **Scope:** How Metorite evolves from a single-tenant "internal company brain" into a multi-user organization account where personal data stays private, shared resources are selectively visible, and an administrator controls settings, modules, and agents.  
 > **Companion docs:** [`project_plan.md`](../project_plan.md) · [`system_architecture.md`](../system_architecture.md) · [`learning-resources/05-auth-and-oauth.md`](../../learning-resources/05-auth-and-oauth.md) · [`specs/permissions_sandbox_b6.md`](permissions_sandbox_b6.md)
 
 ---
 
 ## 1. Why this matters now
 
-CommandCenter today is effectively **single-tenant with coarse RBAC**:
+Metorite today is effectively **single-tenant with coarse RBAC**:
 
 - One Microsoft Entra ID tenant gates sign-in (`@fracktal.in`).
 - `app_user` stores `email`, `display_name`, `avatar_url`, and a binary `role` (`executive` | `employee`).
@@ -22,7 +22,7 @@ CommandCenter today is effectively **single-tenant with coarse RBAC**:
 - `require_role(UserRole.EXECUTIVE)` guards sensitive routes.
 - Chat sessions, email accounts, task-manager GTD data, and reply memories are already keyed by `user_id` — but there is **no organization boundary**, no member lifecycle, no invitation flow, and no data-sharing model between users.
 
-The product roadmap explicitly lists *"RBAC beyond admin/operator/contributor"* as a non-goal for v2.0. This document does **not** change that scope. It is a research and design artifact so that when multi-user becomes a priority, the work is grounded in existing schemas, comparable products, and a phased plan that respects CommandCenter's agent-first architecture.
+The product roadmap explicitly lists *"RBAC beyond admin/operator/contributor"* as a non-goal for v2.0. This document does **not** change that scope. It is a research and design artifact so that when multi-user becomes a priority, the work is grounded in existing schemas, comparable products, and a phased plan that respects Metorite's agent-first architecture.
 
 ---
 
@@ -95,7 +95,7 @@ Clerk's organization model is the cleanest reference for a modern multi-user Saa
 - **Creator role** must have `manage members`, `read members`, `delete organization`.
 - **Authorization checks** happen server-side; system permissions are *not* in session claims.
 
-**Takeaway for CommandCenter:** separate the concepts of **organization**, **membership**, **role**, and **permission**. Do not overload `app_user.role` as both global role and org role.
+**Takeaway for Metorite:** separate the concepts of **organization**, **membership**, **role**, and **permission**. Do not overload `app_user.role` as both global role and org role.
 
 ### 3.2 Auth0 RBAC
 
@@ -118,7 +118,7 @@ AWS IAM is overkill for a UI but useful for naming the authorization primitives:
 - **Session policies** — temporary scoped-down credentials.
 - **Evaluation logic:** explicit deny overrides allow; union of allows.
 
-**Takeaway for CommandCenter:** a small policy engine (even a JSON allowlist) for agent/resource access is more future-proof than hard-coded role checks. The existing `tool_annotations` (`read_only`, `destructive`, `idempotent`, `open_world`) are a good seed for action-level permissions.
+**Takeaway for Metorite:** a small policy engine (even a JSON allowlist) for agent/resource access is more future-proof than hard-coded role checks. The existing `tool_annotations` (`read_only`, `destructive`, `idempotent`, `open_world`) are a good seed for action-level permissions.
 
 ### 3.4 Asana, Jira, ClickUp — workspace/project/role patterns
 
@@ -136,7 +136,7 @@ Common pattern:
 3. **Visibility** is per container: private, team-visible, org-visible.
 4. **Roles** are a separate axis from containers: a user can be admin of one project and viewer of another.
 
-**Takeaway for CommandCenter:** introduce an **organization** table and a **module** concept. Agents, integrations, and entity-graph data live inside modules. Visibility is set per module (private / team / org). Roles grant permissions; module visibility controls data access.
+**Takeaway for Metorite:** introduce an **organization** table and a **module** concept. Agents, integrations, and entity-graph data live inside modules. Visibility is set per module (private / team / org). Roles grant permissions; module visibility controls data access.
 
 ---
 
@@ -163,7 +163,7 @@ erDiagram
 
 #### `organization`
 
-The company/tenant boundary. One row per deployed CommandCenter account.
+The company/tenant boundary. One row per deployed Metorite account.
 
 ```sql
 CREATE TABLE organization (
@@ -180,7 +180,7 @@ CREATE TABLE organization (
 
 #### `user`
 
-Replaces/extends `app_user`. A user can belong to multiple organizations (future), but for CommandCenter v1 of multi-user, one active org at a time is sufficient.
+Replaces/extends `app_user`. A user can belong to multiple organizations (future), but for Metorite v1 of multi-user, one active org at a time is sufficient.
 
 ```sql
 CREATE TABLE user_account (
@@ -252,7 +252,7 @@ CREATE TABLE membership_role (
 );
 ```
 
-### 4.2 Default roles for CommandCenter
+### 4.2 Default roles for Metorite
 
 | Role | Key permissions | Notes |
 |---|---|---|
@@ -313,7 +313,7 @@ audit:admin
 
 ### 5.1 Why modules?
 
-CommandCenter is not just one app — it is a **platform of apps**: chat/orchestrator, email client, task manager, future sales/reconciler dashboards. Each app has different sharing expectations:
+Metorite is not just one app — it is a **platform of apps**: chat/orchestrator, email client, task manager, future sales/reconciler dashboards. Each app has different sharing expectations:
 
 - **Chat** is mostly private (my sessions, my model picks).
 - **Email** is private by default (my mailbox), but some mailboxes are shared (support@, sales@).
@@ -698,7 +698,7 @@ This is a **research proposal**, not a committed plan. If prioritized, suggested
 ## 13. Open questions
 
 1. **Single org vs. multi-org per user.** Should a `user_account` belong to exactly one organization (simpler) or many (future SaaS)? The schema above supports many; the UI can start with one active org.
-2. **Custom roles limit.** Clerk caps at 10 custom roles per instance. Should CommandCenter impose a limit?
+2. **Custom roles limit.** Clerk caps at 10 custom roles per instance. Should Metorite impose a limit?
 3. **Permission granularity.** Is the proposed permission vocabulary too fine, too coarse, or just right for an agent platform?
 4. **Agent ownership transfer.** When a user leaves, what happens to their private agents?
 5. **Shared mailboxes in email.** How does a user get access to `support@fracktal.in`? Via module membership or explicit mailbox sharing?
@@ -717,15 +717,15 @@ This is a **research proposal**, not a committed plan. If prioritized, suggested
 - AWS IAM Policies and Permissions: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html
 - Jira Permission Schemes: https://support.atlassian.com/jira-cloud-administration/docs/manage-project-permissions/
 - ClickUp User Roles: https://support.clickup.com/hc/en-us/articles/6310561022999-User-roles-and-permissions
-- CommandCenter `project_plan.md` — v2.0 non-goals include "RBAC beyond admin/operator/contributor"
-- CommandCenter `permissions_sandbox_b6.md` — current sandbox/permission workstream
-- CommandCenter `learning-resources/05-auth-and-oauth.md` — existing auth architecture
+- Metorite `project_plan.md` — v2.0 non-goals include "RBAC beyond admin/operator/contributor"
+- Metorite `permissions_sandbox_b6.md` — current sandbox/permission workstream
+- Metorite `learning-resources/05-auth-and-oauth.md` — existing auth architecture
 
 ---
 
 ## 15. Summary
 
-CommandCenter can become multi-user without replacing its architecture, but the change is **cross-cutting**: identity, auth, data model, agent execution, memory, integrations, entity graph, Action Broker, and UI all need to become organization-aware.
+Metorite can become multi-user without replacing its architecture, but the change is **cross-cutting**: identity, auth, data model, agent execution, memory, integrations, entity graph, Action Broker, and UI all need to become organization-aware.
 
 The key design decisions are:
 
@@ -744,7 +744,7 @@ This document is the starting point for a future design spec and implementation 
 
 ## 16. Data-heavy apps: email and task management
 
-Email and task management are the two most data-intensive modules in CommandCenter. They also have the sharpest privacy expectations: a user's mailbox is personal, but a `support@` mailbox is shared; a user's GTD inbox is private, but a project task board is team-visible. The multi-user model must work at volume without turning every list query into a cross-user scan.
+Email and task management are the two most data-intensive modules in Metorite. They also have the sharpest privacy expectations: a user's mailbox is personal, but a `support@` mailbox is shared; a user's GTD inbox is private, but a project task board is team-visible. The multi-user model must work at volume without turning every list query into a cross-user scan.
 
 ### 16.1 Volume and access-pattern reality
 
@@ -1050,9 +1050,9 @@ Example approval metadata:
 
 ---
 
-## 17. SaaS multi-tenancy: CommandCenter as a multi-customer platform
+## 17. SaaS multi-tenancy: Metorite as a multi-customer platform
 
-So far this document has treated "organization" as an internal company account (Fracktal Works and its employees). The next step is using CommandCenter as a **software-as-a-service platform** where many external organizations sign up, each with their own users, data, agents, integrations, and billing. This changes the architecture from "one big org on one VM" to "many isolated tenants on a scalable platform."
+So far this document has treated "organization" as an internal company account (Fracktal Works and its employees). The next step is using Metorite as a **software-as-a-service platform** where many external organizations sign up, each with their own users, data, agents, integrations, and billing. This changes the architecture from "one big org on one VM" to "many isolated tenants on a scalable platform."
 
 ### 17.1 Internal multi-user vs. SaaS multi-tenant
 
@@ -1070,7 +1070,7 @@ The internal multi-user model is a **prerequisite** for SaaS: the same `organiza
 
 ### 17.2 Tenant isolation models
 
-There are three classic multi-tenancy patterns. CommandCenter should start with **shared database, row-level isolation** and move to hybrid only when a tenant outgrows it.
+There are three classic multi-tenancy patterns. Metorite should start with **shared database, row-level isolation** and move to hybrid only when a tenant outgrows it.
 
 #### Option A: Shared database, row-level isolation (recommended starting point)
 
@@ -1120,7 +1120,7 @@ Each tenant gets their own Postgres database or even their own Kubernetes namesp
 
 **When to use:** Enterprise tier, regulated industries, or very large tenants.
 
-**Recommendation for CommandCenter:**
+**Recommendation for Metorite:**
 
 1. **Phase 1:** Shared DB + row-level isolation + RLS safety net.
 2. **Phase 2:** Offer schema-per-tenant as an enterprise option.
@@ -1136,8 +1136,8 @@ Every HTTP request must resolve a tenant. Options:
 
 | Method | Example | Best for |
 |---|---|---|
-| **Subdomain** | `fracktal.commandcenter.app` | Clean, supports custom domains later |
-| **Path prefix** | `commandcenter.app/o/fracktal/...` | Simple, works with static hosting |
+| **Subdomain** | `fracktal.metorite.app` | Clean, supports custom domains later |
+| **Path prefix** | `metorite.app/o/fracktal/...` | Simple, works with static hosting |
 | **Header** | `X-Organization-Id: <uuid>` | API-first, internal services |
 
 **Recommendation:** subdomain for the workbench, header for the gateway API. The Next.js middleware reads the subdomain and looks up the org slug.
@@ -1146,7 +1146,7 @@ Every HTTP request must resolve a tenant. Options:
 // middleware.ts
 export async function middleware(req: NextRequest) {
   const host = req.headers.get('host') || '';
-  const slug = host.replace('.commandcenter.app', '').split(':')[0];
+  const slug = host.replace('.metorite.app', '').split(':')[0];
   const org = await lookupOrgBySlug(slug);
   req.headers.set('X-Organization-Id', org.id);
   req.headers.set('X-Organization-Slug', org.slug);
@@ -1191,7 +1191,7 @@ For schema-per-tenant:
 
 ### 17.4 Scaling the compute layer
 
-CommandCenter today runs on a single Hostinger VPS with systemd services. For SaaS, move to container orchestration:
+Metorite today runs on a single Hostinger VPS with systemd services. For SaaS, move to container orchestration:
 
 #### Short term: single VM → multiple VMs
 
@@ -1250,11 +1250,11 @@ Scaling path:
 Agent workspaces, email attachments, meeting transcripts, and generated artifacts should move to S3-compatible storage (MinIO self-hosted or AWS S3):
 
 ```
-s3://commandcenter-tenants/<org_id>/agents/<agent_name>/inputs/
-s3://commandcenter-tenants/<org_id>/agents/<agent_name>/outputs/
-s3://commandcenter-tenants/<org_id>/agents/<agent_name>/agent-data/
-s3://commandcenter-tenants/<org_id>/email/attachments/
-s3://commandcenter-tenants/<org_id>/meetings/transcripts/
+s3://metorite-tenants/<org_id>/agents/<agent_name>/inputs/
+s3://metorite-tenants/<org_id>/agents/<agent_name>/outputs/
+s3://metorite-tenants/<org_id>/agents/<agent_name>/agent-data/
+s3://metorite-tenants/<org_id>/email/attachments/
+s3://metorite-tenants/<org_id>/meetings/transcripts/
 ```
 
 This removes the single-VM disk bottleneck and makes gateway workers stateless.
@@ -1274,7 +1274,7 @@ Scaling path:
 #### Self-service signup flow
 
 ```
-1. Visitor lands on commandcenter.app
+1. Visitor lands on metorite.app
 2. Clicks "Create organization"
 3. Enters company name, subdomain (slug), admin email
 4. Verifies email / completes OAuth (Google, Microsoft, SAML later)
@@ -1285,7 +1285,7 @@ Scaling path:
    - default roles (owner, admin, operator, viewer)
    - default modules (chat enabled, others trial/off)
    - seeded agent registry (orchestrator + a few starter agents)
-6. Redirects to https://<slug>.commandcenter.app
+6. Redirects to https://<slug>.metorite.app
 ```
 
 #### Trial and plan tiers
@@ -1311,14 +1311,14 @@ Store plan limits in `organization.settings`:
 
 #### Custom domains and branding (enterprise)
 
-- Allow `fracktal.com` → `fracktal.commandcenter.app` via CNAME + SSL (Caddy on-demand TLS).
+- Allow `fracktal.com` → `fracktal.metorite.app` via CNAME + SSL (Caddy on-demand TLS).
 - Optional white-label: custom logo, colors, email sender domain.
 
 ### 17.7 Billing and metering
 
 #### Metering dimensions
 
-CommandCenter has several billable axes:
+Metorite has several billable axes:
 
 1. **Seats** — number of active users per organization.
 2. **LLM usage** — tokens consumed, by tier/model.
@@ -1442,7 +1442,7 @@ For shared-DB:
 
 ### 17.10 Agent and integration marketplace
 
-A SaaS CommandCenter can offer a marketplace:
+A SaaS Metorite can offer a marketplace:
 
 - **Built-in agents:** orchestrator, task manager, email assistant.
 - **Community agents:** vetted agent repos from third parties.
@@ -1509,7 +1509,7 @@ flowchart TB
     Webhooks --> Caddy --> GW
 ```
 
-### 17.12 Scaling challenges specific to CommandCenter
+### 17.12 Scaling challenges specific to Metorite
 
 #### Agent runtime isolation
 
@@ -1615,7 +1615,7 @@ This assumes the internal multi-user model (§4–§16) is already in place.
 | **Hybrid** | Base platform fee + usage overage. | Most SaaS businesses end up here. |
 | **Enterprise** | Custom contract, dedicated infra, SLA. | Large customers with compliance needs. |
 
-Recommended starting model for CommandCenter:
+Recommended starting model for Metorite:
 
 - **Team/Business tiers:** per-seat subscription with included LLM credits and storage.
 - **Overage:** additional LLM tokens and storage billed monthly.

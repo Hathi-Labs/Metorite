@@ -121,7 +121,7 @@ def test_switch_on_renders_the_index_not_the_bodies(_index_on) -> None:
         assert heading not in text, (
             f"{heading} is still inline — the body did not defer"
         )
-    assert "## CommandCenter Platform Tools" in text
+    assert "## Metorite Platform Tools" in text
     for slug in ("core", "memory", "history", "coding"):
         assert sx.body_read_call(slug) in text
 

@@ -175,7 +175,7 @@ export function buildSrcDoc(
   mode: ThemeMode,
   icons: Record<string, string>,
 ): string {
-  // Base styling gives generated code the REAL Command Center design system —
+  // Base styling gives generated code the REAL Metorite design system —
   // the ACTIVE theme's tokens, not a frozen copy of one — so generated HTML is
   // on-brand by default without the agent needing to know a single colour
   // value. Generated <style> can override.
@@ -212,7 +212,7 @@ ${appTokenCss(theme, mode)}
      included) without changing the compact visual size — padding still
      controls how the control LOOKS, min-height only pads the hit area.
      44px matches Apple HIG / Material Design's minimum touch target size —
-     the same number CommandCenter's own mobile bottom-nav bar already uses
+     the same number Metorite's own mobile bottom-nav bar already uses
      (see globals.css), not a separate convention for built apps. */
   button, .cc-btn {
     font: inherit; cursor: pointer; border-radius: calc(var(--cc-radius) - 0.25rem);
@@ -257,7 +257,7 @@ ${appTokenCss(theme, mode)}
 
   /* ── Report design kit ────────────────────────────────────────────────
      Reusable, on-brand document blocks so an agent writes terse semantic
-     HTML and gets a polished Command Center report (matches the reference
+     HTML and gets a polished Metorite report (matches the reference
      proposal artifact). Every class is namespaced cc-*; agents compose them.
      Mono/utility face for eyebrows, section numbers, diagrams, and data. */
   .cc-report {

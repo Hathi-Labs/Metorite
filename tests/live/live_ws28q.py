@@ -28,7 +28,7 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://postgres@/cc?host=/var/tmp&port=55432",
 )
-sys.path.insert(0, "/home/user/CommandCenter/apps/services/gateway")
+sys.path.insert(0, "/home/user/Metorite/apps/services/gateway")
 
 from acb_auth import UserContext, UserRole, build_access
 from acb_common.db import bind_tenant, release_tenant

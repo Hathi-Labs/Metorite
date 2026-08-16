@@ -1,7 +1,7 @@
 """Regression tests for the disappearing HITL question cards.
 
 Root cause (two layers, same 5-minute fuse):
-  1. CommandCenterCopilotAgent._stream_updates raised "session stalled" after
+  1. MetoriteCopilotAgent._stream_updates raised "session stalled" after
      COPILOT_STREAM_STALL_TIMEOUT (300s) of silence — but a blocking
      ask_user/ask_questions parks the run on a Future while the HUMAN answers,
      which is legitimate silence. The killed run emitted RUN_FINISHED and the
@@ -63,7 +63,7 @@ def test_tool_stall_budget_exceeds_bare_fuse():
 
 def test_stall_branch_grants_tool_in_flight_grace():
     import inspect
-    src = inspect.getsource(copilot_agent.CommandCenterCopilotAgent._stream_updates)
+    src = inspect.getsource(copilot_agent.MetoriteCopilotAgent._stream_updates)
     assert "_tools_in_flight" in src, "stall loop must know about running tools"
     assert "_TOOL_STALL_TIMEOUT" in src
     # The counter must be maintained on BOTH tool event families (built-in

@@ -696,7 +696,7 @@ def test_memory_context_preserves_existing_copilot_system_message() -> None:
             "mode": "append",
             "content": (
                 "You are a sales assistant.\n\n"
-                "## CommandCenter Platform Tools\n"
+                "## Metorite Platform Tools\n"
                 "- call_agent: delegate to other agents\n"
                 "- web_search: search the web\n"
                 "- write_artifact: create files for download\n"

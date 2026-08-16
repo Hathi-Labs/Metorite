@@ -29,8 +29,8 @@ Two properties make it special for this platform:
 
 The platform is strict about where the Copilot SDK may appear (a global constraint):
 
-1. **As a model backend wrapped inside MAF.** `GitHubCopilotAgent` (and CommandCenter's subclass
-   `CommandCenterCopilotAgent`) makes the Copilot SDK look like an ordinary MAF agent. It participates in
+1. **As a model backend wrapped inside MAF.** `GitHubCopilotAgent` (and Metorite's subclass
+   `MetoriteCopilotAgent`) makes the Copilot SDK look like an ordinary MAF agent. It participates in
    handoffs, gets platform tools injected, and streams through AG-UI like any other agent. Here the
    Copilot SDK is *just another way to run an agent* — MAF is still the runtime (chapter 11).
 
@@ -41,9 +41,9 @@ It is **never** called directly by ordinary application code, and it is **not** 
 React UI) or LangChain. Keeping these boundaries crisp is what prevents the "which Copilot?" confusion from
 chapter 01.
 
-### The `CommandCenterCopilotAgent` subclass
+### The `MetoriteCopilotAgent` subclass
 
-To use the SDK as a MAF agent, CommandCenter subclasses `GitHubCopilotAgent` and adds two things at
+To use the SDK as a MAF agent, Metorite subclasses `GitHubCopilotAgent` and adds two things at
 runtime (monkey-patched onto loaded agents, so agent repos need zero changes):
 
 - **BYOK forwarding** — patches session creation to pass the `provider` block through to the SDK, routing

@@ -53,7 +53,7 @@ owner for "who can see what" (`work_plan.md` §4).
 
 > ### ⛔ **RE-TAKEN. Read `saas_multitenancy.md` §1 instead.** *(owner-requested 2026-08-08)*
 >
-> **The reason: the business model changed.** CommandCenter is being sold to external
+> **The reason: the business model changed.** Metorite is being sold to external
 > customers, priced per module, per user, per month, plus metered AI. §1.4 of that
 > document shows that price point and one-VM-per-customer are arithmetically
 > incompatible, and §1.3 shows why the cost objection recorded in §1.2 below no longer

@@ -1,17 +1,17 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Watchdog: keeps the CommandCenter gateway running.
+    Watchdog: keeps the Metorite gateway running.
     Run this script ONCE in its own terminal window — it will restart
     the gateway automatically if it crashes.
 
 .USAGE
-    pwsh -File "C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter\scripts\gateway_watchdog.ps1"
+    pwsh -File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\scripts\gateway_watchdog.ps1"
 
     Or right-click the file in Explorer → "Run with PowerShell"
 #>
 
-$Root = "C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter"
+$Root = "C:\Users\VijayRaghavVarada\Documents\Github\Metorite"
 $Port = 8001
 
 $env:PYTHONUTF8 = "1"

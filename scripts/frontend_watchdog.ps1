@@ -6,10 +6,10 @@
     the frontend automatically if it crashes.
 
 .USAGE
-    pwsh -File "C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter\scripts\frontend_watchdog.ps1"
+    pwsh -File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\scripts\frontend_watchdog.ps1"
 #>
 
-$FrontendDir = "C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter\workbench\control_plane"
+$FrontendDir = "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\workbench\control_plane"
 $Port = 3001
 
 Set-Location $FrontendDir

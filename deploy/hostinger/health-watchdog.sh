@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CommandCenter on-box health watchdog.
+# Metorite on-box health watchdog.
 #
 # Runs from a systemd timer (acb-health-watchdog.timer). Checks every service
 # that has to be up for the app to serve, restarts whatever is down, and
@@ -26,7 +26,7 @@ FORENSICS=$LOG_DIR/net-forensics.log
 mkdir -p "$LOG_DIR"
 
 # Gateway hostname as served by Caddy — see deploy/hostinger/caddy/Caddyfile.
-CADDY_VHOST="${CADDY_VHOST:-api.commandcenter.fracktal.in}"
+CADDY_VHOST="${CADDY_VHOST:-api.metorite.fracktal.in}"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { echo "$(ts) $*" | tee -a "$LOG"; }

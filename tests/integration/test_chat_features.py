@@ -1,5 +1,5 @@
 """
-Comprehensive integration test suite for the CommandCenter Chat application.
+Comprehensive integration test suite for the Metorite Chat application.
 
 Covers ALL chat features across MAF and GitHub Copilot SDK agents:
   - SSE Streaming (start, content, end, error)
@@ -296,7 +296,7 @@ class TestToolCalls:
 
         events = await _collect_sse_events(
             agent_name,
-            "Search the web for 'CommandCenter orchestration platform' and "
+            "Search the web for 'Metorite orchestration platform' and "
             "tell me the first result title.",
             timeout=120,
         )

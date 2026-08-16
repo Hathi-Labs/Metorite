@@ -1,5 +1,5 @@
 [Unit]
-# CommandCenter — whatsmeow WhatsApp bridge (personal-number QR transport).
+# Metorite — whatsmeow WhatsApp bridge (personal-number QR transport).
 # Pairs a personal number by QR and streams normalized messages to the gateway
 # at WHATSAPP_BRIDGE_GATEWAY_URL. Listens on localhost ONLY (127.0.0.1:8790) —
 # it is never exposed through Caddy; only the co-located gateway talks to it.
@@ -10,7 +10,7 @@
 # is actually paired via the app's QR flow. Disable with WHATSAPP_BRIDGE_ENABLED=0
 # in /opt/acb/app/.env (the deploy stops + disables it) or `systemctl disable
 # --now acb-whatsapp-bridge`.
-Description=CommandCenter WhatsApp Bridge (whatsmeow, personal-number QR)
+Description=Metorite WhatsApp Bridge (whatsmeow, personal-number QR)
 After=network-online.target acb-gateway.service
 Wants=network-online.target
 

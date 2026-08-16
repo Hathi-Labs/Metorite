@@ -20,7 +20,7 @@ be re-litigated here.
 ⚠️ **Name disambiguation, read once.** "Control plane" already means two things in
 this repo: **(a)** `workbench/control_plane/` — the tenant-side Next.js workbench,
 which keeps its name and is *not* this; **(b)** migration `159_control_plane.sql`
-— the tenant catalog inside each CommandCenter deployment, which under this spec
+— the tenant catalog inside each Metorite deployment, which under this spec
 becomes a **local projection** of the service defined here. This document means the
 **service**, and says "the Control Plane" for it throughout. Renaming (a) is
 explicitly out of scope (CLAUDE.md §5: do not refactor the tree to conform).
@@ -36,13 +36,13 @@ explicitly out of scope (CLAUDE.md §5: do not refactor the tree to conform).
 > across tenants.** It is the operator's view. Never holds tenant business data, so
 > a compromise exposes contracts, not customers' mail.
 
-That plane is currently **co-resident inside each CommandCenter deployment**
+That plane is currently **co-resident inside each Metorite deployment**
 (migration 159). With §5.1's silo rollout that means N copies, each knowing about
 exactly one customer, and no place that knows all of them. This spec extracts it
 into **one central service** and gives it the two jobs it did not previously have:
 **selling seats** and **metering AI**.
 
-Nothing about D15 changes. Tenancy inside CommandCenter remains
+Nothing about D15 changes. Tenancy inside Metorite remains
 `organization_id` + FORCE ROW LEVEL SECURITY bound at the `get_db()` seam; the
 deployment remains a *placement*. Whether a customer sits alone on a database or
 pooled with fifty others is a `tenant_placement` row, exactly as migration 159
@@ -60,7 +60,7 @@ deployments cannot.
    subscriptions, **seats purchased vs assigned vs available**, and the hard cap.
 4. The **AI Router**: tier→model binding, provider keys, the rate card,
    `usage_event`, the credit ledger, the balance gate, per-member caps.
-5. The **CommandCenter-side rework**: `/v1` becomes a forwarder; customer-facing
+5. The **Metorite-side rework**: `/v1` becomes a forwarder; customer-facing
    model selection is removed; tiers become the only model vocabulary.
 6. The **Operator Console** surfaces backing `saas_multitenancy.md` §4.1a.
 
@@ -70,8 +70,8 @@ deployments cannot.
 - The customer-facing billing UI — that is **WS-30** (`subscription_console.md`),
   which becomes a *client* of this service rather than a reader of CC-local tables.
 - Module entitlement *enforcement* — the `intersect()` seam, `ModuleGate` and the
-  402-vs-403 split stay in CommandCenter (MT-2). This service is authoritative on
-  what was **bought**; CommandCenter stays authoritative on what is **enforced**.
+  402-vs-403 split stay in Metorite (MT-2). This service is authoritative on
+  what was **bought**; Metorite stays authoritative on what is **enforced**.
 - The execution-plane sandbox (§0.9.3 / MT-0c) — untouched, still OWNER-GATE.
 - Any change to the D12 visibility ladder. Tenancy is *which company*; visibility
   is *who inside it*. Two axes, no third.
@@ -106,7 +106,7 @@ org_membership(organization_id UUID, user_identity_id UUID, role TEXT,
 
 `user_identity` and `org_membership` mirror migration 159's shapes deliberately.
 **159's tables are not dropped and not renamed** (R6): they remain in each
-CommandCenter deployment and become the **local projection** of this registry,
+Metorite deployment and become the **local projection** of this registry,
 refreshed on sign-in and cached. That is why 159 shipping "ADDITIVE AND INERT" is
 now an asset — the projection target already exists and nothing has to migrate.
 
@@ -228,7 +228,7 @@ Metering there costs one row write and no extra network hop. Metering anywhere e
 means either trusting a client's self-report or adding a synchronous round trip to
 every completion.
 
-More decisively: with §5.1's silo rollout, "meter inside CommandCenter" means the
+More decisively: with §5.1's silo rollout, "meter inside Metorite" means the
 meter, the rate card and the credit balance all live **on the customer's own box**.
 That is not a meter, it is a suggestion — and it puts your margin on hardware you do
 not control. This is the argument that reverses `saas_multitenancy.md` §3.1, and it
@@ -258,7 +258,7 @@ engineering.** `v1_compat.py` does real work that needs model knowledge:
 prompt-cache breakpoints in `acb_llm/prompt_cache.py`, and per-provider message
 sanitization (`:281`). If the Router picks the model and publishes nothing, the
 gateway silently loses the context window and long conversations start failing at
-the provider instead of degrading gracefully. Keep the fitting in CommandCenter —
+the provider instead of degrading gracefully. Keep the fitting in Metorite —
 it needs the messages — and drive it from this document.
 
 A pleasant consequence: **adding a tier later is a Router data change plus a
@@ -313,7 +313,7 @@ minutes, and this codebase has retry loops and a 32k default output ceiling
 (`v1_compat.py:_DEFAULT_MAX_OUTPUT_TOKENS`). A per-run spend ceiling is not
 optional.
 
-**Router unavailable ≠ CommandCenter down.** CommandCenter holds a short credit
+**Router unavailable ≠ Metorite down.** Metorite holds a short credit
 lease and settles against it, so a Router outage degrades to "spend continues
 against the lease, settlement catches up" rather than "the product stops". A
 platform whose every LLM call hard-depends on a second service has traded a billing
@@ -338,7 +338,7 @@ design once, serve both."* This spec is where that happens.
   concrete argument for keeping tiers rather than exposing models.
 - Soft-warn at 80%, per Phase E. Exec exemption is a cap absent, not a special case.
 
-## 5. What changes in CommandCenter
+## 5. What changes in Metorite
 
 ### 5.1 The LLM path
 
@@ -358,19 +358,19 @@ balance check. The LLM machinery itself is **moved**, not rewritten: it is today
 
 ### 5.2 Identity resolution and seat consumption (D32.4)
 
-CommandCenter **keeps issuing its own sessions** — NextAuth Google SSO in
+Metorite **keeps issuing its own sessions** — NextAuth Google SSO in
 `workbench/control_plane`, forwarding a verified `X-User-Email`, exactly as today. No
 authentication server is built and nothing on the live auth path is cut over.
 
 What changes is **who is authoritative for "this person exists and belongs here"**.
-On sign-in, CommandCenter resolves the person against the Control Plane:
+On sign-in, Metorite resolves the person against the Control Plane:
 
 ```
 POST /registry/resolve { org, email } → { identity_id, role, seats: [...], status }
                                       | 409 seat_cap_exceeded { buy_more: ... }
 ```
 
-CommandCenter caches the answer (TTL a config value) into migration 159's
+Metorite caches the answer (TTL a config value) into migration 159's
 `user_identity` / `org_membership` projection and proceeds. **This is what makes the
 seat cap real**: a person cannot become a user of an organization without the
 Control Plane allocating them a seat, because the box asks before admitting them.
@@ -472,7 +472,7 @@ problem, a failed call is a product problem, and the product problem is worse.
 The provider call sits behind `router.set_provider_call` so the pass-through is
 testable without a provider account — otherwise the only way to test it is to
 spend money at DeepSeek on every run, which means nobody does.
-Behind a flag, default **OFF** — CommandCenter can still call providers directly
+Behind a flag, default **OFF** — Metorite can still call providers directly
 (CLAUDE.md §4, ship dark). **Done when:** with the flag ON, a completion through
 CC `/v1` is byte-identical for the client to one with it OFF (the streaming path
 included — this is the choke point every agent runtime streams through); one
