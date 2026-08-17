@@ -128,15 +128,20 @@ def test_clamped_down_to_a_curated_models_real_cap() -> None:
 def test_a_stale_litellm_cap_never_clamps() -> None:
     """The whole bug, in one assertion.
 
-    litellm claims deepseek-v4-pro caps at 8192 output tokens; the live model
-    emits 10940. Clamping to a registry number we don't vouch for would
-    re-create the exact mid-JSON truncation this default was raised to fix.
+    At authoring, litellm claimed deepseek-v4-pro caps at 8192 output tokens
+    while the live model emitted 10940 — clamping to a registry number we
+    don't vouch for re-created the exact mid-JSON truncation the raised
+    default exists to fix. The registry pin below is the same TRIPWIRE as
+    `test_model_limits.test_curated_max_output_beats_stale_litellm`: it holds
+    litellm's CURRENT claim (393216 since the 2026-08-17 upstream refresh) so
+    the next drift forces a re-check that the clamp still resolves through the
+    curated table (384_000), never the registry.
     """
     from litellm import model_cost
 
-    assert model_cost["deepseek/deepseek-v4-pro"]["max_output_tokens"] == 8192
+    assert model_cost["deepseek/deepseek-v4-pro"]["max_output_tokens"] == 393_216
     got = v1_compat._clamp_max_tokens(32_000, "deepseek/deepseek-v4-pro")
-    assert got == 32_000, "must not clamp to litellm's stale 8192"
+    assert got == 32_000, "must not clamp to a registry number we don't vouch for"
 
 
 def test_unvetted_model_keeps_the_generous_ceiling() -> None:
