@@ -14,7 +14,7 @@ KVM 4 has enough headroom for Postgres + Redis + workbench. KVM 2 works for Phas
 1. Buy a VPS plan from <https://www.hostinger.com/vps-hosting>.
 2. In hPanel → VPS → **Operating system**, pick **Ubuntu 24.04 with Docker** (one-click template).
 3. Add your SSH public key under VPS → SSH keys (or set a strong root password).
-4. Note the public IP. Optionally point a subdomain (e.g. `metorite.fracktal.in`) A-record to it.
+4. Note the public IP. Optionally point a subdomain (e.g. `app.metorite.com`) A-record to it.
 5. Wait for provisioning (~3–5 min), then `ssh root@<ip>`.
 
 ## One-time: bootstrap

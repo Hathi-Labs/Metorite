@@ -82,14 +82,17 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   echo "    Disabled GRAPHITI (Neo4j) — saves ~500MB RAM"
 fi
 
-echo "==> Ensuring OAuth env vars"
-for _var in MICROSOFT_TENANT_ID AUTH_MICROSOFT_ENTRA_ID_TENANT GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
+echo "==> Ensuring public-URL env vars"
+# This block used to also seed MICROSOFT_TENANT_ID / AUTH_MICROSOFT_ENTRA_ID_TENANT
+# with one company's directory GUID — wrong on every deployment except that one
+# company's. Directory pinning is a per-deployment decision: set those keys by
+# hand in .env for a single-tenant silo; leave them unset for the multi-directory
+# default (`organizations`, see workbench auth.ts and email transport oauth.py).
+for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      MICROSOFT_TENANT_ID)             echo "MICROSOFT_TENANT_ID=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      AUTH_MICROSOFT_ENTRA_ID_TENANT)   echo "AUTH_MICROSOFT_ENTRA_ID_TENANT=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.fracktal.in" >> "$ENV_FILE" ;;
-      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://metorite.fracktal.in" >> "$ENV_FILE" ;;
+      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.com" >> "$ENV_FILE" ;;
+      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://app.metorite.com" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"
   fi

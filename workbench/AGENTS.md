@@ -141,7 +141,7 @@ the authenticated session; a subdomain is a *lookup to be verified against the
 session*, never an assertion to be trusted. See `saas_multitenancy.md` §1.5.
 
 **Never point the browser at the gateway.** A top-level navigation to
-`api.metorite.fracktal.in` carries **no** Bearer and **no** `X-User-Email`
+`api.metorite.com` carries **no** Bearer and **no** `X-User-Email`
 — session cookies live on the workbench origin and a navigation cannot add
 headers. `/email/oauth/{provider}/authorize` was reached that way and answered
 "Authentication required" to every user for six days.

@@ -156,6 +156,6 @@ registrar's NS delegation.
 
 ## Confirming the diagnosis in one minute
 
-Load `https://metorite.fracktal.in` on a phone with wifi **off** (mobile
+Load `https://app.metorite.com` on a phone with wifi **off** (mobile
 data). If it loads, the server is fine and the fault is the fixed-line ISP
 path. That single test is worth more than any further server-side inspection.

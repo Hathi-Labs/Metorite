@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     gateway_session_secret: str = "change-me-dev-only"
     allowed_email_domain: str = "fracktal.in"
     #: Public origin of the gateway itself, e.g.
-    #: "https://api.metorite.fracktal.in". Set this when the platform
+    #: "https://api.metorite.com". Set this when the platform
     #: hands an inbound URL to an external system (a workflow's webhook
     #: trigger): those callers must reach the gateway's own public route
     #: directly, NOT the control-plane proxy, which re-serializes bodies

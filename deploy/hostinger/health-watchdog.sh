@@ -26,7 +26,7 @@ FORENSICS=$LOG_DIR/net-forensics.log
 mkdir -p "$LOG_DIR"
 
 # Gateway hostname as served by Caddy — see deploy/hostinger/caddy/Caddyfile.
-CADDY_VHOST="${CADDY_VHOST:-api.metorite.fracktal.in}"
+CADDY_VHOST="${CADDY_VHOST:-api.metorite.com}"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { echo "$(ts) $*" | tee -a "$LOG"; }

@@ -10,7 +10,7 @@
 }
 
 # --- Gateway API (FastAPI) ---
-api.metorite.fracktal.in {
+api.metorite.com {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8080 {
         header_up X-Real-IP {remote_host}
@@ -18,7 +18,7 @@ api.metorite.fracktal.in {
 }
 
 # --- Control Plane UI (Next.js) ---
-metorite.fracktal.in {
+app.metorite.com {
     encode zstd gzip
     reverse_proxy 127.0.0.1:3001
 }
