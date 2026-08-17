@@ -413,7 +413,6 @@ describe("no raw Tailwind palette colours", () => {
     "app/notes/meeting/[id]/page.tsx": 3,
     "app/observability/page.tsx": 29,
     "app/settings/models/page.tsx": 3,
-    "app/signin/page.tsx": 5,
     "app/tasks/components/AssistantRail.tsx": 1,
     "app/tasks/components/ClarifyPanel.tsx": 5,
     "app/tasks/components/DeleteConfirmModal.tsx": 4,
