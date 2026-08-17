@@ -4,30 +4,16 @@ import { signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
+import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 
-export interface SignInProvider {
-  /** NextAuth provider id — must match a provider `src/auth.ts` registers. */
-  id: string;
-  label: string;
-}
+import { signInErrorMessage } from "./errorCopy";
 
-function Form({ providers }: { providers: SignInProvider[] }) {
+function Form({ providers }: { providers: ConfiguredProvider[] }) {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
-  const errorParam = searchParams.get("error");
+  const errorMessage = signInErrorMessage(searchParams.get("error"));
   const [pending, setPending] = useState<string | null>(null);
-
-  const errorMessage =
-    errorParam === "OAuthSignin"
-      ? "Could not start sign-in. Try again."
-      : errorParam === "OAuthCallback"
-        ? "Sign-in was cancelled or failed."
-        : errorParam === "AccessDenied"
-          ? "Your account isn't authorized for this workspace. Ask your admin for an invite."
-          : errorParam
-            ? `Authentication error: ${errorParam}`
-            : null;
 
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
@@ -74,7 +60,7 @@ function Form({ providers }: { providers: SignInProvider[] }) {
 export default function SignInForm({
   providers,
 }: {
-  providers: SignInProvider[];
+  providers: ConfiguredProvider[];
 }) {
   return (
     <Suspense

@@ -54,11 +54,37 @@ export interface AuthPosture {
  * `next build && next start` already sets production for every real deployment.
  */
 export function authPosture(env: AuthEnv): AuthPosture {
-  const isAuthConfigured = Boolean(
-    env.AUTH_MICROSOFT_ENTRA_ID_ID || env.AUTH_GOOGLE_ID,
-  );
+  const isAuthConfigured = configuredProviders(env).length > 0;
   const isDevBypass = !isAuthConfigured && env.NODE_ENV !== "production";
   return { isAuthConfigured, isDevBypass, isAuthEnabled: !isDevBypass };
+}
+
+/** One configured identity provider, as the signin surface renders it. */
+export interface ConfiguredProvider {
+  /** NextAuth provider id — must match what `auth.ts` registers. */
+  id: "google" | "microsoft-entra-id";
+  label: string;
+}
+
+/**
+ * The configured providers, in display order (Google first — D40.4).
+ *
+ * The ONE place "which IdPs exist" is derived from env: `auth.ts` registers
+ * providers from the same keys, {@link authPosture}'s `isAuthConfigured` is
+ * defined as "this list is non-empty", and the signin page renders exactly
+ * this list — so adding a third provider updates the 503 posture and the
+ * sign-in button in the same edit, instead of leaving a reachable sign-in
+ * page with no working button (the parallel-env-read defect this replaces).
+ */
+export function configuredProviders(env: AuthEnv): ConfiguredProvider[] {
+  const out: ConfiguredProvider[] = [];
+  if (env.AUTH_GOOGLE_ID) {
+    out.push({ id: "google", label: "Continue with Google" });
+  }
+  if (env.AUTH_MICROSOFT_ENTRA_ID_ID) {
+    out.push({ id: "microsoft-entra-id", label: "Continue with Microsoft" });
+  }
+  return out;
 }
 
 const posture = authPosture(process.env as AuthEnv);
