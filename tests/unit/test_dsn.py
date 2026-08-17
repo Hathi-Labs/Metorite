@@ -85,6 +85,33 @@ def test_empty_password_is_quoted_not_dropped() -> None:
     assert "password=''" in info
 
 
+def test_async_url_translates_sslmode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SQLAlchemy's asyncpg dialect passes query params as connect() kwargs,
+    and asyncpg spells the TLS knob ``ssl=`` — a surviving ``sslmode=`` makes
+    every async connection raise TypeError while /health stays green."""
+    import acb_common.db as db
+
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db?sslmode=require"
+    )
+    assert db.async_database_url() == (
+        "postgresql+asyncpg://u:p@h:5432/db?ssl=require"
+    )
+
+    # Other params survive untouched, in order.
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://u:p@h/db?application_name=acb&sslmode=verify-full",
+    )
+    assert db.async_database_url() == (
+        "postgresql+asyncpg://u:p@h/db?application_name=acb&ssl=verify-full"
+    )
+
+    # No query string: unchanged.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/db")
+    assert db.async_database_url() == "postgresql+asyncpg://u:p@h:5432/db"
+
+
 def test_statement_cache_connect_arg_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     """DB_STATEMENT_CACHE_SIZE=0 must reach asyncpg's connect args — that is
     the whole transaction-pooler story — and stay absent when unset."""

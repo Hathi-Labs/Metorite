@@ -18,12 +18,16 @@ share a schema.
 - `DATABASE_URL=postgresql+psycopg://postgres.<ref>:<password>@<pooler-host>:5432/postgres`
   — keep the `+psycopg` form (the sync engine uses it verbatim; the async seam
   coerces to asyncpg itself).
-- Query params (`?sslmode=require`) are supported since `acb_common/dsn.py`
-  replaced the four hand-rolled DSN regexes (fence: `tests/unit/test_dsn.py`).
-  Both drivers negotiate TLS by default, so params are optional.
+- `?sslmode=require` is supported on **both** engines: psycopg natively, and
+  the async seam renames it to asyncpg's `ssl=` (`acb_common/db.py`; fence:
+  `tests/unit/test_dsn.py`). Both drivers negotiate TLS by default, so it is
+  optional. **Nothing else belongs in the query string** — params are
+  forwarded as connection options, so a SQLAlchemy dialect-only arg (e.g.
+  `prepared_statement_cache_size`) fails the connect; use the env knobs
+  instead.
 - Also set `POSTGRES_USER` / `POSTGRES_DB` in `.env` to the managed values —
   the shell tooling (migration runner, preflight) reads those two keys, not
-  `DATABASE_URL`.
+  `DATABASE_URL`, and the runner's explicit `-U` outranks any `PGUSER` env.
 
 ## 2. One-time schema bootstrap
 
@@ -50,11 +54,16 @@ breaks every `uuid_generate_v4()` column default), verifies, then applies
 PG_MODE=local
 PGHOST=<pooler-host>
 PGPORT=5432
-PGUSER=postgres.<ref>
+POSTGRES_USER=postgres.<ref>
+POSTGRES_DB=postgres
 PGPASSWORD=<password>
 PGSSLMODE=require
 SKIP_PRE_MIGRATION_BACKUP=1
 ```
+
+(`POSTGRES_USER`/`POSTGRES_DB`, not `PGUSER`/`PGDATABASE`: the runner passes
+an explicit `-U "$PG_USER"` computed from those two keys, and an explicit
+`-U` outranks the `PG*` env vars.)
 
 `scripts/vps_apply.sh` lifts exactly those keys from `.env` into the runner's
 environment before it starts (the deploy delivers the script over stdin, so
@@ -63,9 +72,12 @@ environment before it starts (the deploy delivers the script over stdin, so
 `SKIP_PRE_MIGRATION_BACKUP=1` is a **deliberate, understood trade**
 (`apply_migrations.sh` spells out what it waives): the local backup path needs
 `pg_dumpall --globals-only` and `createdb` — superuser on the cluster, which a
-managed provider does not grant. The provider's PITR is the restore point.
-Turn PITR on before flipping this, and treat the nightly `acb-backup.timer`
-as not-applicable on such a box (owner act: `systemctl disable acb-backup.timer`).
+managed provider does not grant. The provider's PITR is the restore point —
+turn it on before flipping this. The apply script disables `acb-backup.timer`
+automatically when it lifts `PG_MODE=local` (and keeps it disabled on every
+run): the unit has no EnvironmentFile, would default to the local container,
+and a dump of that EMPTY container passes `--verify-restore` — a green false
+restore point.
 
 ## 4. Things that will bite (each verified in this tree)
 

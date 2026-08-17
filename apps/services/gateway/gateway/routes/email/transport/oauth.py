@@ -155,12 +155,13 @@ async def oauth_callback(
     gateway_public = os.environ.get("GATEWAY_PUBLIC_URL", "http://localhost:8000")
     workbench_url = os.environ.get("WORKBENCH_PUBLIC_URL")
     if not workbench_url:
-        # Auto-derive workbench URL from gateway: replace "api." → "" for subdomain,
-        # or swap :8000 → :3001 for local dev.
+        # Auto-derive workbench URL from gateway. Since D40 the workbench is a
+        # SIBLING subdomain (api.<apex> → app.<apex>), no longer the bare apex
+        # — stripping "api." would aim the OAuth return at the marketing root.
         if gateway_public == "http://localhost:8000":
             workbench_url = "http://localhost:3001"
-        elif ".a" in gateway_public or "api." in gateway_public:
-            workbench_url = gateway_public.replace("api.", "", 1)
+        elif "://api." in gateway_public:
+            workbench_url = gateway_public.replace("://api.", "://app.", 1)
         else:
             workbench_url = gateway_public
 

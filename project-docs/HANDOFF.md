@@ -181,23 +181,21 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-11 · Stand up Metorite production: DNS, VPS, Supabase, secrets · [OWNER]
-- **Check:** `nslookup app.metorite.com` → NXDOMAIN means still pending. Also:
-  repo Settings → Actions secrets in `Hathi-Labs/Metorite` → no `HOSTINGER_*`
-  secrets means still pending.
-- **Why:** Owner decisions taken 2026-08-17: domains are **app.metorite.com**
-  (workbench) + **api.metorite.com** (gateway), root reserved for a marketing
-  site; tenant DB = the owner's **Supabase** project (session pooler;
-  param-free DSN until the parser fix ships); control plane = a **second**
-  Supabase project (both planes define an `organization` table with different
-  shapes — they cannot share a schema). The repo now carries the real domains.
-  Still owner-only: DNS records, the VPS itself, GitHub `HOSTINGER_*` secrets,
-  the OAuth app registration (Google first, per 2026-08-17 decision), the box
-  `.env` (incl. `ACB_MASTER_KEY`), and re-enabling the
-  `deploy`/`vps-health`/`vps-forensics` workflows disabled 2026-08-17 while no
-  infra exists.
-- **Authority:** `work_plan.md` §6 (deploy/VPS is owner-gated)
-- **Added:** 2026-08-16 · updated 2026-08-17 · production-enablement session
+### H-11 · Stand up Metorite production: DNS, box, Supabase, secrets · [OWNER]
+- **Check:** ALL of: `nslookup app.metorite.com` resolves · Actions secrets in
+  `Hathi-Labs/Metorite` show `HOSTINGER_*` · `gh workflow list --all` shows
+  `deploy` enabled · the box `.env` carries `ACB_MASTER_KEY`. Any one missing
+  → still pending.
+- **Why:** Topology and identity are **D40** (`work_plan.md` §3); the ops
+  runbook is `docs/EXTERNAL_POSTGRES.md`. What remains is owner-only: DNS
+  records, the box itself, GitHub secrets, the Google OAuth app (redirect
+  `https://app.metorite.com/api/auth/callback/google`), the box `.env`, and
+  re-enabling the three workflows an agent turned off with
+  `gh workflow disable` on 2026-08-17 — GitHub-side state; re-derive with
+  `gh workflow list --all`, never from this file.
+- **Authority:** `work_plan.md` §6 · D40
+- **Added:** 2026-08-16 · updated 2026-08-17 (review round 1: decisions moved
+  out of this entry into D40 — this file must not restate state)
 
 ### H-13 · Apply the two plan-guard-gated patches (deploy.sh, .env.example) · [OWNER]
 - **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still

@@ -165,7 +165,10 @@ echo "==> Applying database migrations (02+ — init only mounts 00/01)"
 # the local dump path needs superuser and the provider's PITR replaces it
 # (docs/EXTERNAL_POSTGRES.md). Those keys live in .env, not this shell's
 # environment, so lift them across before the runner starts.
-for _k in PG_MODE PGHOST PGPORT PGUSER PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; do
+# PGUSER is deliberately NOT lifted: the runner passes -U "$PG_USER" computed
+# from POSTGRES_USER in .env, and an explicit -U outranks PGUSER anyway — set
+# POSTGRES_USER/POSTGRES_DB to the managed values instead.
+for _k in PG_MODE PGHOST PGPORT PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; do
   _v="$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
   if [ -n "$_v" ]; then export "${_k}=${_v}"; fi
 done
@@ -529,8 +532,19 @@ if [ "$UNITS_CHANGED" = "1" ]; then
 fi
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
-  sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
-    || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
+  tname="$(basename "$timer")"
+  # A managed-DB box (PG_MODE=local, lifted from .env above) must not run the
+  # nightly local dump: with no EnvironmentFile the unit defaults to
+  # PG_MODE=docker and dumps the EMPTY local container — which passes
+  # --verify-restore and becomes a green false restore point. Provider PITR
+  # is the restore path there (docs/EXTERNAL_POSTGRES.md).
+  if [ "$tname" = "acb-backup.timer" ] && [ "${PG_MODE:-docker}" = "local" ]; then
+    sudo systemctl disable --now "$tname" >/dev/null 2>&1 || true
+    echo "    $tname left disabled (managed database; provider PITR is the restore path)"
+    continue
+  fi
+  sudo systemctl enable --now "$tname" >/dev/null 2>&1 \
+    || echo "    !! could not enable $tname — check: systemctl status $tname"
 done
 systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
 

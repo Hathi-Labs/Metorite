@@ -18,12 +18,12 @@
 # database — CREATE DATABASE is its dashboard's job, not ours.
 #
 # ⚠️ Managed dashboards often pre-install extensions into an `extensions`
-# schema. 01_schema.sql's `uuid_generate_v4()` column defaults resolve only
-# if the function is reachable from `public`, so the extensions are created
-# here WITH SCHEMA public explicitly and verified before the schema applies.
-# If the verify step fails, the extension already lives elsewhere — run
-#   ALTER EXTENSION "uuid-ossp" SET SCHEMA public;
-# from the provider's SQL console and re-run this script.
+# schema, and `CREATE EXTENSION IF NOT EXISTS … WITH SCHEMA public` is a
+# documented NO-OP when the extension already exists elsewhere — the SCHEMA
+# clause is not applied to an existing installation. So every extension is
+# verified to actually live in `public` after the CREATEs; on failure the
+# script prints the exact ALTER EXTENSION to run in the provider's SQL
+# console, then re-run this script.
 #
 # Idempotent: 01_schema.sql is IF NOT EXISTS throughout; re-running is safe.
 set -euo pipefail
@@ -32,14 +32,27 @@ cd "$(dirname "$0")/.."
 PG_DB="${PG_DB:-${PGDATABASE:-postgres}}"
 command -v psql >/dev/null || { echo "ERROR: psql is not on PATH." >&2; exit 1; }
 
-run() { psql -v ON_ERROR_STOP=1 -d "$PG_DB" "$@"; }
+# -w: never prompt for a password — a missing PGPASSWORD must fail, not hang.
+run() { psql -w -v ON_ERROR_STOP=1 -d "$PG_DB" "$@"; }
 
 echo "==> Extensions (into public, explicitly)"
 run -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;'
 run -c 'CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;'
 run -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;'
 
-echo "==> Verifying uuid_generate_v4() resolves from public"
+echo "==> Verifying all three actually live in schema public"
+for ext in uuid-ossp vector pg_trgm; do
+  ns="$(run -tA -c "SELECT n.nspname FROM pg_extension e
+                    JOIN pg_namespace n ON n.oid = e.extnamespace
+                    WHERE e.extname = '$ext';")"
+  if [ "$ns" != "public" ]; then
+    echo "ERROR: extension '$ext' lives in schema '${ns:-<absent>}', not public." >&2
+    echo "       (CREATE EXTENSION IF NOT EXISTS does not move an existing one.)" >&2
+    echo "       Run in the provider's SQL console, then re-run this script:" >&2
+    echo "         ALTER EXTENSION \"$ext\" SET SCHEMA public;" >&2
+    exit 1
+  fi
+done
 run -c "SELECT public.uuid_generate_v4();" >/dev/null
 
 echo "==> Applying infra/postgres/01_schema.sql (core tables)"

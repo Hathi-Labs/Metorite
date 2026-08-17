@@ -29,8 +29,11 @@ class PostgresDsn:
     host: str
     port: int
     dbname: str
-    #: Query-string parameters, e.g. ``{"sslmode": "require"}``. On a
-    #: SQLAlchemy/psycopg URL these are libpq connection keywords by contract.
+    #: Query-string parameters, e.g. ``{"sslmode": "require"}``. Forwarded
+    #: verbatim into the conninfo, so ONLY libpq connection keywords belong in
+    #: ``DATABASE_URL``'s query string — a SQLAlchemy dialect-only arg (e.g.
+    #: ``prepared_statement_cache_size``) reaches psycopg as an invalid
+    #: connection option and fails the connect.
     params: dict[str, str] = field(default_factory=dict)
 
 
