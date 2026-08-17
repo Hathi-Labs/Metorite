@@ -62,17 +62,17 @@ For a two-person team on a single box, the operational simplicity wins. At large
 Two DNS A-records point at the VPS IP, and Caddy routes by hostname:
 
 ```
-metorite.fracktal.in       → localhost:3001   (the Next.js workbench)
-api.metorite.fracktal.in   → localhost:8080   (the FastAPI gateway)
+app.metorite.com       → localhost:3001   (the Next.js workbench)
+api.metorite.com   → localhost:8080   (the FastAPI gateway)
 ```
 
 A minimal Caddyfile for this is remarkably small — Caddy handles the certificates itself:
 
 ```
-metorite.fracktal.in {
+app.metorite.com {
     reverse_proxy localhost:3001
 }
-api.metorite.fracktal.in {
+api.metorite.com {
     reverse_proxy localhost:8080
 }
 ```

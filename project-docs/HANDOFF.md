@@ -181,21 +181,35 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-11 · Stand up Metorite deploy infra: domains, DNS/TLS, Actions secrets · [OWNER]
-- **Check:** `nslookup metorite.fracktal.in` → NXDOMAIN means still pending.
-  Also: repo Settings → Actions secrets in `Hathi-Labs/Metorite` → no
-  `HOSTINGER_*` secrets means still pending.
-- **Why:** The 2026-08-16 rebrand swapped every deploy target mechanically:
-  `commandcenter.fracktal.in` → `metorite.fracktal.in` in `deploy.yml`,
-  `vps-health.yml`, `deploy/hostinger/` and `scripts/vps_apply.sh`. Those
-  domains are **placeholders** — no DNS, no box, no secrets exist for this
-  fork. `deploy.yml` fires on push to `main` and will fail until secrets
-  exist; the scheduled `vps-health`/`vps-forensics` workflows will alarm
-  against a host that does not resolve. Owner decides the real domain
-  (fracktal.in subdomain or a Hathi-Labs domain), sets DNS/TLS, sets secrets,
-  or disables the workflows until infra exists.
-- **Authority:** `work_plan.md` §6 (deploy/VPS is owner-gated)
-- **Added:** 2026-08-16 · rebrand session (branch `rebrand/metorite`)
+### H-11 · Stand up Metorite production: DNS, box, Supabase, secrets · [OWNER]
+- **Check:** ALL of: `nslookup app.metorite.com` resolves · Actions secrets in
+  `Hathi-Labs/Metorite` show `HOSTINGER_*` · `gh workflow list --all` shows
+  `deploy` enabled · the box `.env` carries `ACB_MASTER_KEY`. Any one missing
+  → still pending.
+- **Why:** Topology and identity are **D40** (`work_plan.md` §3); the ops
+  runbook is `docs/EXTERNAL_POSTGRES.md`. What remains is owner-only: DNS
+  records, the box itself, GitHub secrets, the Google OAuth app (redirect
+  `https://app.metorite.com/api/auth/callback/google`), the box `.env`, and
+  re-enabling the three workflows an agent turned off with
+  `gh workflow disable` on 2026-08-17 — GitHub-side state; re-derive with
+  `gh workflow list --all`, never from this file.
+- **Authority:** `work_plan.md` §6 · D40
+- **Added:** 2026-08-16 · updated 2026-08-17 (review round 1: decisions moved
+  out of this entry into D40 — this file must not restate state)
+
+### H-13 · Apply the two plan-guard-gated patches (deploy.sh, .env.example) · [OWNER]
+- **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
+  pending. `rg -n "127.0.0.1:8000" .env.example` → a hit means still pending.
+- **Why:** plan-guard forbids agent writes under `deploy/` and to `.env*`, so
+  two fixes travel as ready-made blocks in the production-enablement PR
+  description instead of commits: (a) `deploy/hostinger/deploy.sh` still seeds
+  one company's Entra directory GUID into every fresh box
+  (`scripts/vps_apply.sh`, the CI path, is already fixed); (b) `.env.example`
+  ships `GATEWAY_BASE_URL` on port 8000 while the gateway listens on 8080,
+  lacks `ACB_MASTER_KEY` entirely (load-bearing — encrypts stored provider
+  keys), and carries the dead `AUTH_ALLOWED_DOMAIN` variable.
+- **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
+- **Added:** 2026-08-17 · production-enablement session
 
 ### H-12 · Decide fate of FracktalWorks satellite-repo references · [OWNER]
 - **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`

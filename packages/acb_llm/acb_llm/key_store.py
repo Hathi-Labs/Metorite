@@ -83,28 +83,18 @@ class ProviderKeyStore:
         """
         import asyncio
         import re as _re
-        from urllib.parse import unquote as _url_unquote
 
         import psycopg
         from psycopg.rows import dict_row
 
+        from acb_common.dsn import conninfo as _dsn_conninfo
+
         settings = get_settings()
         db_url = str(settings.database_url)
 
-        # Parse SQLAlchemy URL → psycopg conninfo string.
-        # Format: postgresql[+driver]://user:pass@host:port/dbname
-        m = _re.match(
-            r"postgresql(?:\+\w+)?://([^:]+):([^@]+)@([^:/]+):?(\d+)?/(.+)",
-            db_url,
-        )
-        if not m:
-            raise RuntimeError(f"Cannot parse database_url: {db_url[:50]}...")
-
-        user, password, host, port, dbname = m.groups()
-        conninfo = (
-            f"host={host} port={port or 5432} dbname={dbname} "
-            f"user={user} password={_url_unquote(password)}"
-        )
+        # SQLAlchemy URL → libpq conninfo via the shared parser: query params
+        # (sslmode=… on managed Postgres) must survive into the conninfo.
+        conninfo = _dsn_conninfo(db_url)
 
         # Convert :param style to %(param)s for psycopg
         pg_sql = _re.sub(r":(\w+)", r"%(\1)s", sql)

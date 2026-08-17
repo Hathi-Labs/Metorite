@@ -57,10 +57,37 @@ def async_database_url() -> str:
     settings = get_settings()
     db_url = os.environ.get("DATABASE_URL", settings.database_url)
     if "postgresql+psycopg" in db_url:
-        return db_url.replace("postgresql+psycopg", "postgresql+asyncpg")
-    if db_url.startswith("postgresql://"):
-        return db_url.replace("postgresql://", "postgresql+asyncpg://")
-    return db_url
+        db_url = db_url.replace("postgresql+psycopg", "postgresql+asyncpg")
+    elif db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://")
+    return _translate_sslmode_for_asyncpg(db_url)
+
+
+def _translate_sslmode_for_asyncpg(url: str) -> str:
+    """Rename a ``sslmode=`` query param to asyncpg's ``ssl=``.
+
+    SQLAlchemy's asyncpg dialect forwards URL query params verbatim as
+    ``asyncpg.connect()`` keyword arguments, and asyncpg spells the TLS knob
+    ``ssl=`` where libpq spells it ``sslmode=``. Left untranslated, a DSN like
+    ``…/db?sslmode=require`` — the exact form managed Postgres providers hand
+    out, and one psycopg accepts — makes EVERY async connection raise
+    ``TypeError: connect() got an unexpected keyword argument 'sslmode'``
+    while ``/health`` (which never touches the DB) stays green. asyncpg
+    accepts the libpq mode names as ``ssl`` string values, so the rename is
+    lossless. Fence: ``tests/unit/test_dsn.py``.
+    """
+    if "sslmode=" not in url:
+        return url
+    scheme, sep, rest = url.partition("://")
+    if not sep or "?" not in rest:
+        return url
+    base, _, query = rest.partition("?")
+    parts = [
+        ("ssl" + p[len("sslmode"):]) if p.startswith("sslmode=") else p
+        for p in query.split("&")
+        if p
+    ]
+    return f"{scheme}://{base}?{'&'.join(parts)}"
 
 
 #: Ceiling on how long one of OUR sessions may sit `idle in transaction`, in ms.
@@ -99,12 +126,19 @@ def engine_connect_args() -> dict[str, Any]:
       deliberate: ``pg_dump`` and the migration runner connect as the same role
       and must NOT inherit an app-tuned deadline.
     """
-    return {
-        "timeout": get_settings().db_connect_timeout,
+    settings = get_settings()
+    args: dict[str, Any] = {
+        "timeout": settings.db_connect_timeout,
         "server_settings": {
             "idle_in_transaction_session_timeout": _IDLE_IN_TXN_TIMEOUT_MS,
         },
     }
+    # Transaction-mode poolers (PgBouncer / Supabase :6543) break asyncpg's
+    # server-side prepared statements; DB_STATEMENT_CACHE_SIZE=0 disables the
+    # cache for exactly that topology. None = driver default, no override.
+    if settings.db_statement_cache_size is not None:
+        args["statement_cache_size"] = settings.db_statement_cache_size
+    return args
 
 
 def get_engine() -> Any:

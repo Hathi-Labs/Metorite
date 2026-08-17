@@ -82,14 +82,17 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   echo "    Disabled GRAPHITI (Neo4j) — saves ~500MB RAM"
 fi
 
-echo "==> Ensuring OAuth env vars"
-for _var in MICROSOFT_TENANT_ID AUTH_MICROSOFT_ENTRA_ID_TENANT GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
+echo "==> Ensuring public-URL env vars"
+# This block used to also seed MICROSOFT_TENANT_ID / AUTH_MICROSOFT_ENTRA_ID_TENANT
+# with one company's directory GUID — wrong on every deployment except that one
+# company's. Directory pinning is a per-deployment decision: set those keys by
+# hand in .env for a single-tenant silo; leave them unset for the multi-directory
+# default (`organizations`, see workbench auth.ts and email transport oauth.py).
+for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      MICROSOFT_TENANT_ID)             echo "MICROSOFT_TENANT_ID=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      AUTH_MICROSOFT_ENTRA_ID_TENANT)   echo "AUTH_MICROSOFT_ENTRA_ID_TENANT=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.fracktal.in" >> "$ENV_FILE" ;;
-      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://metorite.fracktal.in" >> "$ENV_FILE" ;;
+      GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.com" >> "$ENV_FILE" ;;
+      WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://app.metorite.com" >> "$ENV_FILE" ;;
     esac
     echo "    + added $_var to .env"
   fi
@@ -155,6 +158,20 @@ echo "==> Applying database migrations (02+ — init only mounts 00/01)"
 # STILL-RUNNING previous deployment and cannot tell it apart from a new one.
 # The trigger was a new ledger query (`-c "SELECT filename ..."`) — before it,
 # every psql call piped its own input and stdin was never touched.
+#
+# External-database seam: a box whose Postgres is managed elsewhere (e.g.
+# Supabase) sets PG_MODE=local — plus PGHOST/PGPORT/PGUSER/PGPASSWORD/
+# PGSSLMODE for libpq, and deliberately SKIP_PRE_MIGRATION_BACKUP=1, because
+# the local dump path needs superuser and the provider's PITR replaces it
+# (docs/EXTERNAL_POSTGRES.md). Those keys live in .env, not this shell's
+# environment, so lift them across before the runner starts.
+# PGUSER is deliberately NOT lifted: the runner passes -U "$PG_USER" computed
+# from POSTGRES_USER in .env, and an explicit -U outranks PGUSER anyway — set
+# POSTGRES_USER/POSTGRES_DB to the managed values instead.
+for _k in PG_MODE PGHOST PGPORT PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; do
+  _v="$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  if [ -n "$_v" ]; then export "${_k}=${_v}"; fi
+done
 APP_DIR="$APP_DIR" bash scripts/apply_migrations.sh < /dev/null
 
 echo "==> Syncing Python deps"
@@ -515,6 +532,17 @@ if [ "$UNITS_CHANGED" = "1" ]; then
 fi
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
+  # A managed-DB box (PG_MODE=local, lifted from .env above) must not run the
+  # nightly local dump: with no EnvironmentFile the unit defaults to
+  # PG_MODE=docker and dumps the EMPTY local container — which passes
+  # --verify-restore and becomes a green false restore point. Provider PITR
+  # is the restore path there (docs/EXTERNAL_POSTGRES.md). Actively disable
+  # rather than skip, or the next hand-enable survives every deploy.
+  if [ "$(basename "$timer")" = "acb-backup.timer" ] && [ "${PG_MODE:-docker}" = "local" ]; then
+    sudo systemctl disable --now acb-backup.timer >/dev/null 2>&1 || true
+    echo "    acb-backup.timer left disabled (managed database; provider PITR is the restore path)"
+    continue
+  fi
   sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
     || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done

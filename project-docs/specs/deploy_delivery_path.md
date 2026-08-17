@@ -257,8 +257,8 @@ git -C /opt/acb/app -c safe.directory=/opt/acb/app rev-parse HEAD
 git ls-remote https://github.com/Hathi-Labs/Metorite main
 
 # the app is serving, from OUTSIDE the box
-curl -s -o /dev/null -w '%{http_code}\n' https://api.metorite.fracktal.in/health
-curl -s -o /dev/null -w '%{http_code}\n' https://metorite.fracktal.in
+curl -s -o /dev/null -w '%{http_code}\n' https://api.metorite.com/health
+curl -s -o /dev/null -w '%{http_code}\n' https://app.metorite.com
 
 # recent deploy outcomes
 gh run list --workflow deploy.yml --limit 10

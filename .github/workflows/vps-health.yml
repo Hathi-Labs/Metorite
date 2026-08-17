@@ -49,8 +49,8 @@ jobs:
       - name: Probe gateway + workbench
         id: probe
         env:
-          GATEWAY_URL: https://api.metorite.fracktal.in/health
-          WORKBENCH_URL: https://metorite.fracktal.in
+          GATEWAY_URL: https://api.metorite.com/health
+          WORKBENCH_URL: https://app.metorite.com
         run: |
           HEALTHY=1
           REPORT=""

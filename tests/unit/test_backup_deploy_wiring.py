@@ -53,6 +53,23 @@ def test_the_live_delivery_path_enables_every_repo_timer() -> None:
     ), "vps_apply.sh must enable timers from the glob, not from a hand list"
 
 
+def test_the_backup_timer_is_excepted_on_managed_db_boxes() -> None:
+    """The ONE exception to the glob rule, named (R7). A PG_MODE=local box —
+    Postgres managed elsewhere, e.g. Supabase — must NOT arm the nightly local
+    dump: acb-backup.service has no EnvironmentFile, so it defaults to the
+    docker container and dumps the EMPTY local Postgres, which passes
+    --verify-restore and forges a green restore point (PR #4 review round 1).
+    The carve-out must actively DISABLE, not merely skip: a hand-enabled
+    timer would otherwise survive every subsequent deploy."""
+    lines = _executable_lines(_APPLY)
+    assert any(
+        "acb-backup.timer" in ln and "PG_MODE" in ln for ln in lines
+    ), "the managed-DB carve-out for acb-backup.timer is gone"
+    assert any(
+        "disable --now" in ln and "acb-backup.timer" in ln for ln in lines
+    ), "the carve-out must disable, not skip — a hand-enable would survive deploys"
+
+
 def test_the_live_delivery_path_never_restarts_services_from_the_sync_loop() -> None:
     """The loop syncs FILES and enables TIMERS only. Service restarts belong to
     the script's dedicated steps; a `systemctl restart` keyed off the unit glob
