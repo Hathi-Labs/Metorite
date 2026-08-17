@@ -532,19 +532,19 @@ if [ "$UNITS_CHANGED" = "1" ]; then
 fi
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
-  tname="$(basename "$timer")"
   # A managed-DB box (PG_MODE=local, lifted from .env above) must not run the
   # nightly local dump: with no EnvironmentFile the unit defaults to
   # PG_MODE=docker and dumps the EMPTY local container — which passes
   # --verify-restore and becomes a green false restore point. Provider PITR
-  # is the restore path there (docs/EXTERNAL_POSTGRES.md).
-  if [ "$tname" = "acb-backup.timer" ] && [ "${PG_MODE:-docker}" = "local" ]; then
-    sudo systemctl disable --now "$tname" >/dev/null 2>&1 || true
-    echo "    $tname left disabled (managed database; provider PITR is the restore path)"
+  # is the restore path there (docs/EXTERNAL_POSTGRES.md). Actively disable
+  # rather than skip, or the next hand-enable survives every deploy.
+  if [ "$(basename "$timer")" = "acb-backup.timer" ] && [ "${PG_MODE:-docker}" = "local" ]; then
+    sudo systemctl disable --now acb-backup.timer >/dev/null 2>&1 || true
+    echo "    acb-backup.timer left disabled (managed database; provider PITR is the restore path)"
     continue
   fi
-  sudo systemctl enable --now "$tname" >/dev/null 2>&1 \
-    || echo "    !! could not enable $tname — check: systemctl status $tname"
+  sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
+    || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done
 systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
 
