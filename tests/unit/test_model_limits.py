@@ -57,15 +57,23 @@ def test_curated_fills_gaps_litellm_does_not_know() -> None:
 def test_curated_max_output_beats_stale_litellm() -> None:
     """The bug this whole workstream came from.
 
-    litellm claims deepseek-v4-pro maxes at 8192 output tokens. The live model
-    emits 10940 in one completion, so 8192 is provably wrong — believing it
-    truncated a tool call's JSON arguments mid-string and the agent produced no
-    text at all. A number we maintain outranks a number litellm hasn't updated.
+    At authoring, litellm claimed deepseek-v4-pro maxes at 8192 output tokens
+    while the live model emitted 10940 in one completion — provably wrong, and
+    believing it truncated a tool call's JSON arguments mid-string so the
+    agent produced no text at all. A number we maintain outranks litellm's.
+
+    The pinned value below is a TRIPWIRE, not a constant: it holds litellm's
+    current claim so the next upstream drift fails here and forces a human
+    re-check. History: 8192 at authoring; 393216 since the 2026-08-17 upstream
+    data refresh. Re-checked 2026-08-17: curated (384_000) still wins by trust
+    order, and as the SMALLER claim it errs in this module's intended
+    direction — under-claiming trims a little sooner, over-claiming makes the
+    provider hard-reject the request.
     """
     from litellm import model_cost
 
     stale = model_cost["deepseek/deepseek-v4-pro"]["max_output_tokens"]
-    assert stale == 8192, "litellm changed; re-check whether curated still wins"
+    assert stale == 393_216, "litellm changed; re-check whether curated still wins"
 
     limits = get_limits("deepseek/deepseek-v4-pro")
     assert limits.max_output > 10_940, "must exceed what the model provably emits"
