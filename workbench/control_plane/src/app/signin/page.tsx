@@ -1,71 +1,26 @@
-"use client";
+import SignInForm, { type SignInProvider } from "./SignInForm";
 
-import { signIn } from "next-auth/react";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
-
-function SignInForm() {
-  const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") ?? "/";
-  const errorParam = searchParams.get("error");
-  const [loading, setLoading] = useState(false);
-
-  const errorMessage =
-    errorParam === "OAuthSignin"
-      ? "Could not start Microsoft sign-in. Try again."
-      : errorParam === "OAuthCallback"
-        ? "Microsoft sign-in was cancelled or failed."
-        : errorParam === "AccessDenied"
-          ? "Only @fracktal.in accounts are allowed."
-          : errorParam
-            ? `Authentication error: ${errorParam}`
-            : null;
-
-  return (
-    <div className="flex min-h-screen items-center justify-center p-10">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8 text-center">
-        <h1 className="text-xl font-semibold">Metorite Control Plane</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Sign in with your Fracktal Microsoft 365 account.
-        </p>
-
-        {errorMessage && (
-          <div className="mt-4 rounded-md border border-red-800 bg-red-950/50 px-4 py-3 text-sm text-red-300">
-            {errorMessage}
-          </div>
-        )}
-
-        <button
-          onClick={() => {
-            setLoading(true);
-            signIn("microsoft-entra-id", { callbackUrl });
-          }}
-          disabled={loading}
-          className="mt-6 w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium
-                     hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-colors"
-        >
-          {loading ? "Redirecting to Microsoft..." : "Sign in with Microsoft"}
-        </button>
-
-        <p className="mt-4 text-xs text-muted-foreground">
-          Only <code>@fracktal.in</code> addresses are accepted.
-        </p>
-      </div>
-    </div>
-  );
-}
-
+/**
+ * The sign-in page derives its buttons from the CONFIGURED providers — the
+ * same environment keys `src/auth.ts` registers providers from — so offering
+ * a customer's IdP is configuration, never a code change. This page used to
+ * hardcode a single Microsoft button (plus copy claiming a domain restriction
+ * that nothing enforced); as a SaaS product it could onboard exactly one
+ * customer that way.
+ *
+ * Server component on purpose: provider env vars are server-only, and the
+ * client half (`SignInForm`) receives the derived list as props.
+ */
 export default function SignIn() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center p-10">
-          <div className="text-muted-foreground text-sm">Loading...</div>
-        </div>
-      }
-    >
-      <SignInForm />
-    </Suspense>
-  );
+  const providers: SignInProvider[] = [];
+  if (process.env.AUTH_GOOGLE_ID) {
+    providers.push({ id: "google", label: "Continue with Google" });
+  }
+  if (process.env.AUTH_MICROSOFT_ENTRA_ID_ID) {
+    providers.push({
+      id: "microsoft-entra-id",
+      label: "Continue with Microsoft",
+    });
+  }
+  return <SignInForm providers={providers} />;
 }
