@@ -1,4 +1,4 @@
-# CommandCenter Theming Engine — Scoping Document
+# Metorite Theming Engine — Scoping Document
 
 **Status:** Built and shipped through the coverage work (phases 1–4 plus the
 full icon migration, org-default backend, contrast gate and third-party

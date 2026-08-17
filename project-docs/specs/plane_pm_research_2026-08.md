@@ -5,7 +5,7 @@
 > the classification of record is `project-docs/INDEX.md`.
 
 
-> **Product:** CommandCenter · **Concern:** second research appendix for the native
+> **Product:** Metorite · **Concern:** second research appendix for the native
 > project-management app (WS-27), beside `paca_pm_research_2026-08.md` · **Created:**
 > 2026-08-09 · **Status:** 🟢 research complete — **reference-only, owns no work and no
 > status**; adaptation verdicts are annealed into `specs/project_management_app.md` §11.19 and

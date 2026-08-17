@@ -9,7 +9,7 @@ clone cache.
 
 ## Ownership
 
-- Owner: CommandCenter Core team
+- Owner: Metorite Core team
 - Path: packages/acb_skills/
 
 ## Local Contracts
@@ -44,7 +44,7 @@ clone cache.
 - Local agents: _ensure_local_git_repo() syncs source to cache, git init if needed
 - Cache at {agents_clone_dir}/repos/{agent_name}/
 - agent_dir always points to the cache directory (isolated from source)
-- Bot git identity configured automatically (commandcenter-bot)
+- Bot git identity configured automatically (metorite-bot)
 - **Pull strategy (ADR-022):** ``_pull_latest()`` returns a dict with
   ``strategy`` and ``conflicts_resolved_by_llm`` fields.  On rebase
   conflicts, ``_resolve_rebase_conflicts()`` calls the tier-3 (powerful

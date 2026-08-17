@@ -15,7 +15,7 @@ agent able to:
    workspace), and
 2. **reuse** them forever (zero-LLM re-execution of a saved script),
 
-with the scripts stored durably — across operations, restarts, and CommandCenter
+with the scripts stored durably — across operations, restarts, and Metorite
 updates.
 
 ## 2. The two tiers
@@ -45,7 +45,7 @@ Enforced by the coding session's harness prompt (`_HARNESS_INSTRUCTIONS`):
 
 ## 3. Durability
 
-Scripts must survive operations, restarts, and CommandCenter updates:
+Scripts must survive operations, restarts, and Metorite updates:
 
 - The workspace lives **outside the app dir**, so deploy `git reset --hard`
   never touches it.

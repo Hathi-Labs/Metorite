@@ -1,4 +1,4 @@
-# Auth Manual Test Checklist — CommandCenter Control Plane
+# Auth Manual Test Checklist — Metorite Control Plane
 
 **Date:** 2026-06-10 | **M2.7 — WBS 1.7**
 

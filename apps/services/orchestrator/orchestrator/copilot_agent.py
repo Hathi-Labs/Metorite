@@ -77,7 +77,7 @@ def _hitl_pending() -> bool:
         return False
 
 
-class CommandCenterCopilotAgent(GitHubCopilotAgent):
+class MetoriteCopilotAgent(GitHubCopilotAgent):
     """GitHubCopilotAgent with BYOK provider forwarding and rich event streaming.
 
     Extends the standard GitHubCopilotAgent to:
@@ -639,7 +639,7 @@ class CommandCenterCopilotAgent(GitHubCopilotAgent):
 
             except Exception:
                 logger.exception(
-                    "Error in CommandCenterCopilotAgent event handler"
+                    "Error in MetoriteCopilotAgent event handler"
                 )
 
         copilot_session.on(_on_event)

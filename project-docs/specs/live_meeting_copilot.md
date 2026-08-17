@@ -18,10 +18,10 @@ An **opt-in agent that listens to a live conversation and helps in real time** �
 like a moderator sitting beside you. It watches the live transcript (from a
 Meet/Teams/Zoom **bot** *or* the in-browser **recorder**), and when a moment
 warrants it, surfaces a talking point, a fact from your business systems, or a
-question — **privately in Command Center by default**, and (opt-in) **spoken into
+question — **privately in Metorite by default**, and (opt-in) **spoken into
 the call** via the bot. It pulls context from your existing systems (email,
 ClickUp, CRM/Zoho, sales) under *your* permissions, and it can pull *more* context
-by asking you questions mid-call, which you answer by typing in Command Center or
+by asking you questions mid-call, which you answer by typing in Metorite or
 by simply saying it out loud. It is token-frugal by construction, isolated so it
 can never disrupt recording, and controllable live (on/off, mid-session).
 
@@ -39,7 +39,7 @@ can never disrupt recording, and controllable live (on/off, mid-session).
    cascade + a rolling compact meeting-state means most audio never reaches a big
    model. (See §4 — this is the crux.)
 4. **Private by default, public only on explicit opt-in.** Suggestions land in
-   *your* Command Center panel. Speaking into the call is a separate, explicit
+   *your* Metorite panel. Speaking into the call is a separate, explicit
    mode/action (consent-sensitive; bot sessions only).
 5. **Acts as you, sees what you see.** Business-context retrieval runs under the
    user's identity/scope — the agent can't read anything the user couldn't.
@@ -72,7 +72,7 @@ can never disrupt recording, and controllable live (on/off, mid-session).
                                               suggestions | questions | status
                                                     │ SSE
                                                     ▼
-                                        COMMAND CENTER — COPILOT CONSOLE
+                                        METORITE — COPILOT CONSOLE
                                    live transcript · suggestions · Q&A · controls
                                      │                         │
                           "speak into call" (opt-in)     answer questions /
@@ -256,7 +256,7 @@ steer it — mid-call.
 
 ---
 
-## 7. Command Center presence + console (the control surface)
+## 7. Metorite presence + console (the control surface)
 
 The user must *see* that a live session is running and *interact* with the agent —
 even if they're not personally in the meeting (bot case).
@@ -369,7 +369,7 @@ feed**.
   recording-start and end in the pipeline (success *and* failure paths, plus bot
   `failed`/`not_admitted`) so presence can't strand as "live".
   *Exit reached:* watch a live call's transcript, attributed by speaker, in
-  Command Center.
+  Metorite.
 - **Phase B — Passive copilot (private suggestions). BUILT.** `copilot_policy.py`
   holds the pure Stage 0/1 (windowing on speaker-turn/length; a no-LLM trigger
   gate for questions, objections, decisions and numbers, with debounce + a

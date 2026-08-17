@@ -178,7 +178,7 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
 # MT-0b — self-mutation is first-party-only
 # ---------------------------------------------------------------------------
 # Root ``AGENTS.md`` non-negotiable 3, verbatim: native MAF agents "land approved
-# self-mutations by opening a PR against THIS Command Center monorepo … It MUST
+# self-mutations by opening a PR against THIS Metorite monorepo … It MUST
 # be swapped for a tenant-isolated mechanism before any multi-tenant/customer
 # deployment — third parties must never push to the shared monorepo."
 #
@@ -261,7 +261,7 @@ async def _self_mutation_permitted(
     if not bool(row[0]):
         return False, (
             "this organization is not flagged first-party; a tenant's agent may "
-            "not open a pull request against the CommandCenter monorepo "
+            "not open a pull request against the Metorite monorepo "
             "(root AGENTS.md non-negotiable 3)"
         )
     return True, ""
@@ -496,7 +496,7 @@ def _build_telemetry(
     from pathlib import Path
 
     org = getattr(settings, "github_org", "FracktalWorks")
-    bot_name = getattr(settings, "github_bot_name", "commandcenter-bot")
+    bot_name = getattr(settings, "github_bot_name", "metorite-bot")
     bot_email = getattr(settings, "github_bot_email", "") or f"{bot_name}@users.noreply.github.com"
 
     # Locate the agent_repo_compatibility.md guide
@@ -584,12 +584,12 @@ def _build_incompatibility_prompt(telemetry: dict[str, Any]) -> str:
     repo = telemetry["local_clone_dir"] or telemetry["repo_url"]
     guide = telemetry.get("compat_guide", "")
     guide_section = (
-        f"\n## CommandCenter Agent Compatibility Guide\n\n{guide}\n"
+        f"\n## Metorite Agent Compatibility Guide\n\n{guide}\n"
         if guide else ""
     )
     return (
         f"You are a senior Python engineer tasked with making an agent repository "
-        f"compatible with CommandCenter.\n\n"
+        f"compatible with Metorite.\n\n"
         f"## Repository\n"
         f"Path: `{repo}`\n"
         f"Remote: {telemetry['repo_url']}\n\n"
@@ -597,7 +597,7 @@ def _build_incompatibility_prompt(telemetry: dict[str, Any]) -> str:
         f"```\n{telemetry['error']}\n```\n\n"
         f"## Your task\n"
         f"1. `cd {repo}` and inspect the repository structure.\n"
-        f"2. Read the compatibility guide below to understand what CommandCenter requires.\n"
+        f"2. Read the compatibility guide below to understand what Metorite requires.\n"
         f"3. Create or fix `agents.py` at the repo root so that:\n"
         f"   a. It exports `build_agents() -> list[Agent]` (synchronous, zero-arg, pure).\n"
         f"   b. `GitHubCopilotAgent` is instantiated inside `build_agents()` only.\n"
@@ -611,7 +611,7 @@ def _build_incompatibility_prompt(telemetry: dict[str, Any]) -> str:
         f"assert agents\"` to verify.\n"
         f"6. Run `pytest` if a `tests/` directory exists. Capture the summary line.\n"
         f"7. `git add agents.py` and commit on the **current branch** (do NOT create a new branch or push):\n"
-        f"   `git commit -m 'fix: generate compliant agents.py for CommandCenter'`\n"
+        f"   `git commit -m 'fix: generate compliant agents.py for Metorite'`\n"
         f"8. Print `COMMIT_SHA: <output of git rev-parse HEAD>` so the orchestrator records it.\n"
         f"9. Print `TEST_SUMMARY: <pytest summary or 'no tests'>` so the orchestrator records it.\n\n"
         f"**Commit author:** `{telemetry['bot_name']}` <`{telemetry['bot_email']}`>\n"
@@ -698,7 +698,7 @@ async def _stash_pull_before_mutation(
     # 1. Stash any uncommitted changes so pull is clean
     rc, stdout, stderr = await _git([
         "stash", "--include-untracked",
-        "-m", "commandcenter-mutation-auto-stash",
+        "-m", "metorite-mutation-auto-stash",
     ])
     stashed = rc == 0 and "No local changes" not in stdout
     if stashed:

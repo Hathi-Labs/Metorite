@@ -1,8 +1,8 @@
-# Agent Builder Guide — CommandCenter Framework
+# Agent Builder Guide — Metorite Framework
 
 > ⚠️ **Superseded premise (banner added 2026-08-09).** This guide (2026-06-19) describes the distributed agent-repo model; `specs/agent_architecture.md` supersedes that framing (single runtime, manifests + agent_defs). Use this file only for maintaining EXISTING agent repos; new agents follow agent_architecture.md.
 
-> **Audience:** AI coding agents and developers building new CommandCenter-compatible agents.
+> **Audience:** AI coding agents and developers building new Metorite-compatible agents.
 > **Reference implementation:** `sales-prospector` repo — the canonical pattern every new agent must follow.
 > **Framework:** DOE v2 — Skills (what to do) / Orchestration (decision making) / Execution (doing the work).
 > **Date:** 2026-06-19 · **Version:** 6.0
@@ -11,14 +11,14 @@
 
 ## Overview
 
-A CommandCenter agent is a Python repo with three required files at the root (`agents.py`, `config.json`, `AGENTS.md`) and a structured layout that separates concerns into skills, shared utilities, reference data, and campaign outputs. The same repo serves both **VS Code Copilot Chat** (via `.github/agents/<name>.agent.md`) and **CommandCenter** (via `build_agents()` in `agents.py`) without any code duplication.
+A Metorite agent is a Python repo with three required files at the root (`agents.py`, `config.json`, `AGENTS.md`) and a structured layout that separates concerns into skills, shared utilities, reference data, and campaign outputs. The same repo serves both **VS Code Copilot Chat** (via `.github/agents/<name>.agent.md`) and **Metorite** (via `build_agents()` in `agents.py`) without any code duplication.
 
 **Two modes, one source of truth:**
 
 | Mode                 | Entry point                      | System prompt loaded from                          |
 | -------------------- | -------------------------------- | -------------------------------------------------- |
 | VS Code Copilot Chat | `.github/agents/<name>.agent.md` | Inline in the `.agent.md` file                     |
-| CommandCenter        | `agents.py → build_agents()`     | `.github/prompts/system.md` + all `SKILL.md` files |
+| Metorite        | `agents.py → build_agents()`     | `.github/prompts/system.md` + all `SKILL.md` files |
 
 Both modes share the same `.github/skills/*/SKILL.md` instructions and `.github/skills/*/scripts/` executables.
 
@@ -26,7 +26,7 @@ Both modes share the same `.github/skills/*/SKILL.md` instructions and `.github/
 
 | File | Purpose | Who reads it |
 | --- | --- | --- |
-| `.github/prompts/system.md` | System prompt loaded by `agents.py` for CommandCenter mode | The LLM at runtime |
+| `.github/prompts/system.md` | System prompt loaded by `agents.py` for Metorite mode | The LLM at runtime |
 | `instructions.md` (repo root) | Agent purpose summary — read by the mutation sandbox during auto-repair to understand what the agent does | Mutation sandbox, humans |
 | `.github/agents/<name>.agent.md` | VS Code Copilot Chat agent definition with inline system prompt | VS Code Copilot Chat |
 | `.github/copilot-instructions.md` | Brief repo overview auto-loaded by GitHub Copilot in ALL contexts | GitHub Copilot (VS Code + chat) |
@@ -43,7 +43,7 @@ Every agent repo MUST use this exact layout:
 ```
 agent-<name>/
 ├── agents.py                    # MAF build_agents() entry point — REQUIRED
-├── config.json                  # CommandCenter contract — REQUIRED
+├── config.json                  # Metorite contract — REQUIRED
 ├── AGENTS.md                    # Human + AI orientation document — REQUIRED
 ├── pyproject.toml               # Package definition and pytest config
 ├── requirements.txt             # pip-installable dependency list
@@ -112,7 +112,7 @@ agent-<name>/
 ### Hard layout rules
 
 - Skills live in `.github/skills/<name>/` — NOT a top-level `skills/` folder.
-  - *(Internal CommandCenter agents use `skills/` at the repo root — this doc covers external agents only.)*
+  - *(Internal Metorite agents use `skills/` at the repo root — this doc covers external agents only.)*
 - System prompt lives in `.github/prompts/system.md` — NOT `instructions.md` at root.
 - `instructions.md` at repo root is optional but recommended: a 1-paragraph agent purpose summary the mutation sandbox reads during auto-repair.
 - Shared utilities live in `.tmp/scripts/` — NOT `scripts/` at root.
@@ -121,19 +121,19 @@ agent-<name>/
 - Campaign outputs go in `outputs/{slug}/` — NOT scattered at root.
 - `tests/` stays at the repo root — NOT in `.tmp/` or `agent-data/`.
 - `agents.py` and `config.json` MUST be at the repo root.
-- `graph.py` is NOT supported. CommandCenter only calls `build_agents()`.
-- No credentials anywhere in the repo. Local mode reads `.env`; CommandCenter injects from Integration Registry.
+- `graph.py` is NOT supported. Metorite only calls `build_agents()`.
+- No credentials anywhere in the repo. Local mode reads `.env`; Metorite injects from Integration Registry.
 
 ---
 
-## 2. `config.json` — CommandCenter Contract
+## 2. `config.json` — Metorite Contract
 
-This file is the machine-readable contract between the repo and CommandCenter. Every field matters.
+This file is the machine-readable contract between the repo and Metorite. Every field matters.
 
 ```json
 {
   "name": "my-agent",
-  "description": "One-line description with trigger keywords. CommandCenter routes requests using this.",
+  "description": "One-line description with trigger keywords. Metorite routes requests using this.",
   "version": "0.1.0",
   "skill_repos": [],
   "integrations": ["anthropic", "zoho-crm", "serpapi"],
@@ -161,11 +161,11 @@ This file is the machine-readable contract between the repo and CommandCenter. E
 | `mcp_servers` | — | MCP server config overrides (merged with MCP registry at runtime). Rarely needed — prefer registering MCP servers via the Control Plane UI. |
 | `icon` | — | Lucide icon name for the Control Plane agent picker (e.g. ``"Mail"``, ``"Bot"``, ``"ShoppingCart"``). Default: ``"Bot"``. |
 | `category` | — | Grouping key for the Control Plane UI (e.g. ``"sales"``, ``"ops"``, ``"external"``). |
-| `webhook_routes` | — | List of ``{"source": "...", "event_type": "..."}`` objects. When populated, CommandCenter routes matching webhooks to this agent (Phase 2 — currently hardcoded in the gateway). |
+| `webhook_routes` | — | List of ``{"source": "...", "event_type": "..."}`` objects. When populated, Metorite routes matching webhooks to this agent (Phase 2 — currently hardcoded in the gateway). |
 
 ### Fields NOT consumed by the runtime (reserved for future use)
 
-The following fields appear in older versions of this guide but are **not currently read** by the CommandCenter runtime. Include them if you want forward-compatibility, but they will not affect agent behaviour today:
+The following fields appear in older versions of this guide but are **not currently read** by the Metorite runtime. Include them if you want forward-compatibility, but they will not affect agent behaviour today:
 
 | Field | Status |
 | --- | --- |
@@ -175,20 +175,20 @@ The following fields appear in older versions of this guide but are **not curren
 
 ### How `agent_runtime` is determined
 
-You do NOT set `agent_runtime` in `config.json` — CommandCenter auto-determines it at registration time:
+You do NOT set `agent_runtime` in `config.json` — Metorite auto-determines it at registration time:
 
 | Registration method | `agent_runtime` | What it means |
 | --- | --- | --- |
 | GitHub repo URL (``owner/repo`` or full HTTPS URL) | ``"github-copilot"`` | Agent runs via the **GitHub Copilot SDK** (``GitHubCopilotAgent``). Gets Copilot-native features: built-in `sql`/todos tool, VS Code Copilot parity toolset. All platform-injected tools are also attached. |
 | Local path (dev mode) | ``"maf"`` | Agent runs as a plain **MAF Agent**. Lighter runtime — fewer built-in tools, but platform-injected tools are still attached. |
 
-> **For agent authors:** Your `agents.py` should use ``GitHubCopilotAgent`` as shown in §3. CommandCenter will import and run it correctly in both modes. The runtime mode is transparent to the agent code.
+> **For agent authors:** Your `agents.py` should use ``GitHubCopilotAgent`` as shown in §3. Metorite will import and run it correctly in both modes. The runtime mode is transparent to the agent code.
 
 ---
 
 ## 2a. Platform-Injected Tools (available to every agent)
 
-CommandCenter automatically attaches **15+ tools** to every agent at runtime via the executor's ``_inject_agent_tools()``. These tools are available to the LLM **without the agent author writing any code**. You do NOT wire them in `agents.py` — they are injected transparently.
+Metorite automatically attaches **15+ tools** to every agent at runtime via the executor's ``_inject_agent_tools()``. These tools are available to the LLM **without the agent author writing any code**. You do NOT wire them in `agents.py` — they are injected transparently.
 
 Knowing these tools exist is critical:
 - **Don't re-implement them.** If you need web search, use the injected `web_search` — don't build your own.
@@ -224,7 +224,7 @@ Knowing these tools exist is critical:
 Your `.github/prompts/system.md` should include a section like this so the LLM knows these tools exist:
 
 ```markdown
-## Platform Tools (injected by CommandCenter)
+## Platform Tools (injected by Metorite)
 
 You have access to these tools automatically — do NOT re-implement them:
 - `call_agent` / `call_agents_parallel` — delegate to other agents
@@ -265,7 +265,7 @@ Only the named tools will be injected. If `tool_scope` is omitted or `null`, ALL
 
 ## 3. `agents.py` — Canonical Template
 
-`build_agents()` is the **only entry point** CommandCenter calls. It must be synchronous, zero-argument, and return a non-empty `list[GitHubCopilotAgent]`. No I/O, no side effects at import time.
+`build_agents()` is the **only entry point** Metorite calls. It must be synchronous, zero-argument, and return a non-empty `list[GitHubCopilotAgent]`. No I/O, no side effects at import time.
 
 ```python
 """agent-<name> — MAF Agent definitions.
@@ -377,7 +377,7 @@ async def example_tool(action: str) -> str:
         str(SKILLS_DIR / "example-skill" / "scripts" / "main.py"), action])
 
 
-# ── LiteLLM provider (CommandCenter mode) ────────────────────────────────────
+# ── LiteLLM provider (Metorite mode) ────────────────────────────────────
 
 def _llm_provider() -> dict[str, Any]:
     base_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:8080")
@@ -422,7 +422,7 @@ __all__ = ["build_agents", "build_agent", "SYSTEM_PROMPT"]
 - `tools=[...]` must not be empty — an agent with no tools only apologises.
 - Every tool must be `async def` and return `str`. Raise `RuntimeError` on failure.
 - Use `sys.executable`, not `"python"`, in all subprocess calls.
-- Import `GitHubCopilotAgent` and `PermissionHandler` **inside** `build_agent()` — they are injected at runtime by CommandCenter and not available during local import/testing.
+- Import `GitHubCopilotAgent` and `PermissionHandler` **inside** `build_agent()` — they are injected at runtime by Metorite and not available during local import/testing.
 - `on_permission_request` must be `PermissionHandler.approve_all`.
 - Never instantiate `GitHubCopilotAgent` outside of `build_agents()`.
 
@@ -468,7 +468,7 @@ This file is read by both humans and AI coding agents to understand what the age
 
 ## 5. `.github/prompts/system.md` — System Prompt
 
-The primary prompt loaded by `agents.py` for CommandCenter mode. Keep under ~300 lines.
+The primary prompt loaded by `agents.py` for Metorite mode. Keep under ~300 lines.
 
 ```markdown
 # Agent Name — System Prompt
@@ -500,7 +500,7 @@ The primary prompt loaded by `agents.py` for CommandCenter mode. Keep under ~300
 
 ## 6. `.github/agents/<name>.agent.md` — VS Code Copilot Chat
 
-This file activates the agent in VS Code Copilot Chat. It is independent of CommandCenter.
+This file activates the agent in VS Code Copilot Chat. It is independent of Metorite.
 
 ```markdown
 ---
@@ -583,7 +583,7 @@ python .github/skills/<name>/scripts/main.py --input "..." --output "outputs/slu
 Writes to `outputs/{campaign-slug}/step_N_*.json`.
 ```
 
-Updating a `SKILL.md` takes effect on the next CommandCenter run — no changes to `agents.py` needed.
+Updating a `SKILL.md` takes effect on the next Metorite run — no changes to `agents.py` needed.
 
 ---
 
@@ -695,7 +695,7 @@ dependencies = [
     "python-dotenv",
     "requests",
     # Add skill-specific deps here
-    # agent-framework-github-copilot is injected by CommandCenter at runtime
+    # agent-framework-github-copilot is injected by Metorite at runtime
 ]
 
 [project.optional-dependencies]
@@ -710,18 +710,18 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 ```
 
-Note: `agent-framework-github-copilot` and `cb_llm` are **injected by CommandCenter at runtime** — do not add them to `dependencies`. The `build_agent()` function imports them inside the function body specifically to avoid import failures during local testing.
+Note: `agent-framework-github-copilot` and `cb_llm` are **injected by Metorite at runtime** — do not add them to `dependencies`. The `build_agent()` function imports them inside the function body specifically to avoid import failures during local testing.
 
 ---
 
 ## 12. `tests/` — Test Suite
 
-`tests/` lives at the repo root permanently. It is the CommandCenter CI gate.
+`tests/` lives at the repo root permanently. It is the Metorite CI gate.
 
 ### Required: `tests/test_agents.py`
 
 ```python
-"""CommandCenter CI gate — these three tests must pass for the agent to be registered."""
+"""Metorite CI gate — these three tests must pass for the agent to be registered."""
 import pytest
 
 def test_build_agents_importable():
@@ -787,12 +787,12 @@ Run the full suite: `python -m pytest tests/ -v`
 
 ## 13. Integration Credentials
 
-CommandCenter injects credentials from the Integration Registry as environment variables before running the agent. Scripts always use `os.getenv(...)` — this works identically in local (`.env`) and CommandCenter modes.
+Metorite injects credentials from the Integration Registry as environment variables before running the agent. Scripts always use `os.getenv(...)` — this works identically in local (`.env`) and Metorite modes.
 
 ### `.env.example` (commit this, not `.env`)
 
 ```bash
-# LiteLLM (local dev only — CommandCenter injects at runtime)
+# LiteLLM (local dev only — Metorite injects at runtime)
 LITELLM_BASE_URL=http://127.0.0.1:8080
 LITELLM_MASTER_KEY=sk-local
 
@@ -902,14 +902,14 @@ Use this checklist when creating a new agent from scratch.
 - [ ] 19. Import test: `python -c "from agents import SYSTEM_PROMPT; print(len(SYSTEM_PROMPT), 'chars')"`
 - [ ] 20. Tools test: `python -c "from agents import build_agents"` (must not raise)
 - [ ] 21. Review §18 (Agent Registration Flow) — verify your repo meets all registration requirements
-- [ ] 22. Register in CommandCenter: Control Plane → Agents → Add Agent → paste GitHub repo URL
+- [ ] 22. Register in Metorite: Control Plane → Agents → Add Agent → paste GitHub repo URL
 ```
 
 ---
 
 ## 16. Anti-Patterns
 
-These will cause registration failures, silent bugs, or CommandCenter rejection:
+These will cause registration failures, silent bugs, or Metorite rejection:
 
 | ❌ Anti-pattern                            | ✅ Correct                          |
 | ------------------------------------------ | ----------------------------------- |
@@ -936,7 +936,7 @@ These will cause registration failures, silent bugs, or CommandCenter rejection:
 
 ## 17. Self-Mutation and Auto-Repair
 
-CommandCenter monitors agent repos and applies auto-repairs under two conditions:
+Metorite monitors agent repos and applies auto-repairs under two conditions:
 
 **Proactive skill sync:** After every `git pull`, any script found in `.github/skills/*/scripts/` that is not wired as a tool in `agents.py` is automatically added as a stub `async def` tool function and committed.
 
@@ -958,10 +958,10 @@ To revert any auto-commit: `git revert <hash>` and push.
 
 ## 18. Agent Registration Flow
 
-When a user registers your agent in CommandCenter (Control Plane → Agents → Add Agent → paste GitHub repo URL), here's what happens:
+When a user registers your agent in Metorite (Control Plane → Agents → Add Agent → paste GitHub repo URL), here's what happens:
 
 1. **Name validation:** The agent name is checked against ``^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$``. Must be unique — no duplicate names allowed.
-2. **`config.json` fetch:** CommandCenter fetches your repo's `config.json` from GitHub (tries `main`, `master`, `HEAD` branches in order). Fields `description`, `tags`, `integrations`, and `optional_integrations` are auto-populated from `config.json` if left empty in the registration form.
+2. **`config.json` fetch:** Metorite fetches your repo's `config.json` from GitHub (tries `main`, `master`, `HEAD` branches in order). Fields `description`, `tags`, `integrations`, and `optional_integrations` are auto-populated from `config.json` if left empty in the registration form.
 3. **`agent_runtime` assignment:** If you provided a GitHub URL → `"github-copilot"`. If you provided a local path → `"maf"`.
 4. **Persistence:** The agent entry is saved to the `dynamic_agents` Postgres table (survives deploys and reboots).
 5. **Background clone:** A background task clones your repo into ``{agents_clone_dir}/repos/{agent_name}/`` so the agent is warm before its first run.
@@ -969,7 +969,7 @@ When a user registers your agent in CommandCenter (Control Plane → Agents → 
 
 ### Registration checklist for agent authors
 
-- [ ] Repo is public (or the CommandCenter GitHub token has access to your org)
+- [ ] Repo is public (or the Metorite GitHub token has access to your org)
 - [ ] `config.json` is at the repo root and is valid JSON
 - [ ] `agents.py` is at the repo root and exports `build_agents() -> list`
 - [ ] `build_agents()` returns at least one agent with a non-trivial system prompt and at least one tool

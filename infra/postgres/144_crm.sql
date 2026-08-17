@@ -7,7 +7,7 @@
 --   trycompai's single activity spine + `source` provenance + the denormalized
 --   `last_activity_at` column every write bumps.
 --
--- Why: CommandCenter becomes the system of record for sales and Zoho becomes an
+-- Why: Metorite becomes the system of record for sales and Zoho becomes an
 --   import source, then retires (§7). The Phase-0 graph tables
 --   (`person`/`customer`/`deal`, migration 01) are a cross-system
 --   entity-resolution MIRROR with different semantics — no statuses, no

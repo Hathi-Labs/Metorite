@@ -1,12 +1,12 @@
 # Fire-and-Forget Chat with Live Stream Reconnection
 
 > **Status:** Implemented (2026-06-11), rearchitected to detached execution (2026-06-12)
-> **Owner:** CommandCenter Core
+> **Owner:** Metorite Core
 > **Files:** `stream_relay.py`, `executor.py`, `agent.py`, `main.py`, `chat.py`, `route.ts`, `useAgentChat.ts`, `chatStore.ts`, `useActiveSessions.ts`
 
 ## Why We Built This
 
-CommandCenter agents run long tasks — research, multi-step tool calls, sub-agent delegation, self-mutation. A single run can take 2–5 minutes. Before this feature, **closing the browser tab meant losing the stream permanently.** The user would return to a frozen chat with no way to see what the agent did or if it was still running.
+Metorite agents run long tasks — research, multi-step tool calls, sub-agent delegation, self-mutation. A single run can take 2–5 minutes. Before this feature, **closing the browser tab meant losing the stream permanently.** The user would return to a frozen chat with no way to see what the agent did or if it was still running.
 
 We needed **fire-and-forget chat**: the agent keeps running in the cloud regardless of browser state, and when the user returns, they see everything that happened — reasoning, tool calls, sub-agent progress — and if the agent is still running, the stream resumes live.
 

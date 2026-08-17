@@ -36,14 +36,14 @@ import { useChatMemories } from "@/hooks/useChatMemories";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 
-// Agent names that receive the CommandCenter persona (general-purpose brain).
+// Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
 // regardless of agent type; memories are managed at /memory.
 const PERSONA_AGENTS = new Set(["orchestrator", "default"]);
 
-// CommandCenter persona injected as system context for the default agent.
-const COMMANDCENTER_PERSONA =
-  "You are CommandCenter, the AI operations brain for Fracktal Works. You help the team " +
+// Metorite persona injected as system context for the default agent.
+const METORITE_PERSONA =
+  "You are Metorite, the AI operations brain for Fracktal Works. You help the team " +
   "with tasks, project tracking, the sales pipeline, and company intelligence. You have " +
   "access to memories from past conversations — use them for continuity. When you take " +
   "actions that modify company data, confirm before proceeding. Be concise and direct.";
@@ -198,17 +198,17 @@ function AgentPickerModal({
         </div>
 
         <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
-        {/* Default — CommandCenter */}
+        {/* Default — Metorite */}
         <div className="mb-2">
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
             Default
           </div>
           <AgentPickerCard
             name="orchestrator"
-            displayName="CommandCenter"
+            displayName="Metorite"
             description="General-purpose AI company brain — tasks, projects, sales pipeline, and company intelligence."
             avatarId={agentAvatars["orchestrator"]}
-            onClick={() => onSelect("orchestrator", "CommandCenter — AI company brain")}
+            onClick={() => onSelect("orchestrator", "Metorite — AI company brain")}
           />
         </div>
 
@@ -1070,7 +1070,7 @@ function ChatPageInner() {
                 }
                 persona={
                   PERSONA_AGENTS.has(activeSession.agentName)
-                    ? COMMANDCENTER_PERSONA
+                    ? METORITE_PERSONA
                     : activeSession.agentName === "email-assistant"
                       ? emailAssistantPersona
                       : undefined

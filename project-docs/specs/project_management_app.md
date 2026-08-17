@@ -1,6 +1,6 @@
 # Projects App — Master Plan (native project management; ClickUp retirement path)
 
-> **Product:** CommandCenter · **Feature:** Projects (the People Center's primary work-management
+> **Product:** Metorite · **Feature:** Projects (the People Center's primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-11**
 > (**WS-27be built — §11.33, migration 170**; **WS-27ak's narrowed slice built — §11.31**;
 > **WS-27bc's one dispatchable slice built — §11.34**;
@@ -288,7 +288,7 @@
 > - `Paca-AI/paca` @ master (v0.11.0) — **Apache-2.0: patterns adopted, no code translated**
 >   (stack mismatch). Full findings + adopt/adapt/refuse verdicts:
 >   `specs/paca_pm_research_2026-08.md` (reference-only; this spec owns all work).
-> - CommandCenter full-tree sweep — every ClickUp touchpoint, `gtd_*` anchor, and Centers
+> - Metorite full-tree sweep — every ClickUp touchpoint, `gtd_*` anchor, and Centers
 >   convention cited below was verified in-tree on the date above.
 
 ---
@@ -296,15 +296,15 @@
 ## 1. Product vision and scope
 
 **Who this is for:** all of Fracktal Works. Today the company's work lives in ClickUp
-(departments as Spaces, projects as Folders/Lists, tasks/subtasks) and CommandCenter's
+(departments as Spaces, projects as Folders/Lists, tasks/subtasks) and Metorite's
 `/tasks` app is a *personal* GTD lens over it. This spec adds the missing middle: a native,
 org-level project-management system — **departments → projects → subprojects → tasks →
 subtasks**, ClickUp/Paca-grade — that lives in the People Center and projects scoped slices
 into every other Center.
 
 **What it replaces:** ClickUp. Today ClickUp is the system of record (root `AGENTS.md`
-constraint 8) and CommandCenter holds two mirrors of it (§2). The native Projects app
-inverts that in stages: **first two-way coexistence sync, then CommandCenter becomes the
+constraint 8) and Metorite holds two mirrors of it (§2). The native Projects app
+inverts that in stages: **first two-way coexistence sync, then Metorite becomes the
 system of record, then ClickUp is retired.** The inversion is deliberate and staged in §7 —
 a reviewer should read it as the same import-and-retire move WS-26 made for Zoho, with the
 extra middle phase two-way sync demands.
@@ -381,7 +381,7 @@ All tables in one migration at the **next free number at build time** (R1 — re
 regenerated (owner-run chore, per the WS-26a precedent).
 
 The spine is Paca's shape — two self-FKs for the whole hierarchy, statuses/types as data,
-per-view fractional ordering, one activity spine — with CommandCenter's provenance columns
+per-view fractional ordering, one activity spine — with Metorite's provenance columns
 (`source`, `clickup_id`) and actor strings (`email` or `agent:<name>`).
 
 ### 3.1 `pm_projects` — departments, projects, and subprojects are one table
@@ -629,7 +629,7 @@ rather than by synchronisation** — there is one row, and the personal view is 
 it (D-PM-6 revised). What follows describes the superseded mirror; it is kept for the
 reader who needs to know what was rejected. ~~Mechanism is the Tasks app's
 existing provider machinery mirrors `pm_tasks` where `lower(assignee) = user` into
-`gtd_items` as `source='SYNCED'` rows (internal provider `commandcenter`, no credentials,
+`gtd_items` as `source='SYNCED'` rows (internal provider `metorite`, no credentials,
 no broker gate — it is not an outward write). The GTD overlay (disposition, context,
 energy, refile) is **never clobbered on re-sync** — the discipline `sync.py` already
 enforces for ClickUp rows; completion state flows both ways (provider-of-record =
@@ -700,7 +700,7 @@ retires System A's ClickUp arm.
 
 **Constraint-8 amendment, stated plainly:** root `AGENTS.md` #8 ("source systems are
 authoritative") holds through WS-27a–c with ClickUp as the PM source of truth. WS-27g
-inverts it **for project management only** — CommandCenter becomes the system of record and
+inverts it **for project management only** — Metorite becomes the system of record and
 ClickUp is retired — the same recorded inversion `crm_app.md` §1 made for Zoho. The
 amendment lands in root `AGENTS.md` in the WS-27g PR, not before.
 
@@ -916,7 +916,7 @@ implement faithfully.
 
 ~~**D-PM-6 — The personal connection is the Tasks app's provider seam, run internally.**
 `DECISION (agent-proposed, owner may overrule).` §6.1's mechanism: `pm_tasks` mirrored into
-`gtd_items` as `source='SYNCED'` under an internal `commandcenter` provider…~~
+`gtd_items` as `source='SYNCED'` under an internal `metorite` provider…~~
 — **SUPERSEDED 2026-08-06.** Kept struck rather than deleted because the replacement is
 only legible against what it replaces: the mirror was the thing rejected, and a reader who
 finds `pm_task_personal` without this will wonder why the obvious answer was not taken.
@@ -2392,7 +2392,7 @@ a counterexample, not a model.
 >
 > **Three conditions this decision carries, each of which has already failed somewhere we can
 > point at:**
-> 1. **Every primitive gets a CommandCenter wrapper in `src/components/ui/`** carrying
+> 1. **Every primitive gets a Metorite wrapper in `src/components/ui/`** carrying
 >    `.cc-control`, resolving icons through `<Icon name>`, using only semantic tokens. Call
 >    sites import ours, never the library's, or the library's defaults become a second design
 >    system. **R7: the conformance suite gains a rule naming that import restriction, or the
@@ -2449,7 +2449,7 @@ parallel seam our own rules forbid**, so this is one choice made once.
 > the mechanism this decision exists to prevent, observed happening in someone else's tree. What it buys: a real focus trap,
 focus return, scroll-lock with scrollbar compensation, collision-aware positioning,
 roving tabindex, typeahead — the behaviours nobody hand-rolls correctly. Every primitive
-still gets a CommandCenter wrapper in `src/components/ui/` carrying `.cc-control`,
+still gets a Metorite wrapper in `src/components/ui/` carrying `.cc-control`,
 resolving icons through `<Icon name>`, using only semantic tokens; call sites import ours,
 never the library's, or the library's defaults become a second design system. **R7:** the
 conformance suite gains a rule naming the import restriction, or it is advisory.
@@ -6140,7 +6140,7 @@ gateway change, one new dependency. Verification at repair: `npx tsc --noEmit` e
 `npx vitest run` 85 files / 1916 tests, exit 0 · `npx next build` exit 0 ·
 `npx playwright test e2e/modal.spec.ts` **10 passed**, exit 0.
 
-**Built.** `workbench/control_plane/src/components/ui/Modal.tsx` — a CommandCenter wrapper over
+**Built.** `workbench/control_plane/src/components/ui/Modal.tsx` — a Metorite wrapper over
 `@base-ui/react@1.7.0`'s `dialog` (D-PM-15's substrate; installed under the **new** name, not the
 deprecated `@base-ui-components/react` whose `latest` is a release candidate). Semantic tokens
 only, `<Icon name>` for glyphs, every control a `<Button>`. Six `/projects` dialogs render it:

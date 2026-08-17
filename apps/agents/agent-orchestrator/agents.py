@@ -1,6 +1,6 @@
 """agent-orchestrator — wraps the orchestrator as a dynamically loadable agent.
 
-The orchestrator is the central routing agent for CommandCenter.  It:
+The orchestrator is the central routing agent for Metorite.  It:
 - Routes user requests to the appropriate specialist agent via MAF tools
 - Retrieves company data (ClickUp, Zoho, Odoo) through retrieval tools
 - Spawns Copilot SDK agents for creation/improvement tasks

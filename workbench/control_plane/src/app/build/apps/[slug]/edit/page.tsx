@@ -1581,7 +1581,7 @@ function Workshop({ slug }: { slug: string }) {
         ? files.map((f) => f.path).join(", ")
         : "(empty workspace)";
     return [
-      `You are the app-builder for the CommandCenter custom app "${app.name}" (slug: ${app.slug}).`,
+      `You are the app-builder for the Metorite custom app "${app.name}" (slug: ${app.slug}).`,
       `You are building the app in this workspace. Entry file: ${manifestEntry(app.manifest)}.`,
       `Workspace files: ${fileList}.`,
     ].join("\n");

@@ -18,7 +18,7 @@ block; prod apply rides **PR #404**, the owner's merge) · **Created:** 2026-08-
 ## 0. Paste this to your agent first
 
 ```
-You are executing WS-29 (multi-tenancy) on CommandCenter.
+You are executing WS-29 (multi-tenancy) on Metorite.
 
 READ IN THIS ORDER, FULLY, BEFORE TOUCHING ANYTHING:
   1. project-docs/specs/saas_multitenancy_handover.md   (this runbook — order + gates)

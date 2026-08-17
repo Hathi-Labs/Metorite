@@ -1,7 +1,7 @@
-"""Native-MAF mutation → CommandCenter monorepo PR (Part 1).
+"""Native-MAF mutation → Metorite monorepo PR (Part 1).
 
 ⚠️  DEV-ONLY MECHANISM — MUST BE REPLACED BEFORE PRODUCTION / MULTI-TENANCY.
-    Landing an agent's self-mutation as a PR against the SHARED Command Center
+    Landing an agent's self-mutation as a PR against the SHARED Metorite
     monorepo is acceptable only while every agent is first-party and Command
     Center is a work in progress. In a multi-tenant deployment, third-party /
     customer agents must NEVER push to the shared monorepo — this must be swapped
@@ -15,10 +15,10 @@ git remote. Approving its self-mutation therefore used to be a no-op — the com
 lived only in that throwaway clone and was clobbered on the next deploy re-seed.
 
 This module makes approval durable: it takes the agent's committed change and
-opens a **pull request against the CommandCenter monorepo** that edits the
+opens a **pull request against the Metorite monorepo** that edits the
 agent's source at ``apps/agents/agent-<name>/`` in place. Once merged, the fix is
 real source that ships on the next deploy — closing the clobber gap and, per the
-product intent, folding the agent's self-improvement back into Command Center.
+product intent, folding the agent's self-improvement back into Metorite.
 
 Flow (``open_monorepo_pr``):
   1. Resolve the agent's monorepo ``local_path`` from the registry.
@@ -99,7 +99,7 @@ def resolve_agent_local_path(agent_name: str) -> str | None:
 
 
 def _find_monorepo_root() -> Path | None:
-    """Locate the CommandCenter monorepo checkout on disk (the gateway runs in it).
+    """Locate the Metorite monorepo checkout on disk (the gateway runs in it).
 
     Walk up from this file until a directory containing both ``apps/`` and a
     ``.git`` (or the ``apps/agents`` tree) is found.
@@ -191,7 +191,7 @@ async def open_monorepo_pr(
     commit_sha: str,
     commit_message: str,
 ) -> MonorepoPRResult:
-    """Open a CommandCenter PR that lands the agent's mutation into its source.
+    """Open a Metorite PR that lands the agent's mutation into its source.
 
     Raises MonorepoPRError on any failure (config, git, or GitHub API). The
     caller (approve endpoint) catches it and surfaces the message to the operator.
@@ -213,7 +213,7 @@ async def open_monorepo_pr(
 
     monorepo_root = _find_monorepo_root()
     if monorepo_root is None:
-        raise MonorepoPRError("could not locate the CommandCenter monorepo checkout")
+        raise MonorepoPRError("could not locate the Metorite monorepo checkout")
 
     # Deterministic branch name from the commit so a retry reuses it rather than
     # spawning duplicates. (No timestamp — Date.now is fine here but the SHA is
@@ -221,7 +221,7 @@ async def open_monorepo_pr(
     branch = f"agent-mutation/{agent_name}/{commit_sha[:12]}"
     from acb_common import get_settings as _gs  # noqa: PLC0415
 
-    bot_name = getattr(_gs(), "github_bot_name", "Command-Center")
+    bot_name = getattr(_gs(), "github_bot_name", "Metorite")
     bot_email = (
         getattr(_gs(), "github_bot_email", "")
         or f"{bot_name}@users.noreply.github.com"
@@ -288,7 +288,7 @@ async def open_monorepo_pr(
         pr_body = (
             f"### Agent self-mutation → `{target_path}`\n\n"
             f"The **{agent_name}** agent proposed this fix to its own code while "
-            f"running. It was reviewed and approved in the Command Center "
+            f"running. It was reviewed and approved in the Metorite "
             f"approvals inbox, and is submitted here as a PR so it becomes durable "
             f"source that ships on the next deploy.\n\n"
             f"- Agent: `{agent_name}`\n"

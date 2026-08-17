@@ -1,4 +1,4 @@
--- CommandCenter — Unified credential store migration.
+-- Metorite — Unified credential store migration.
 -- Extends the existing provider_keys table (ADR-008, 08_provider_keys.sql)
 -- to store ALL API credentials — both LLM provider keys AND business
 -- integration credentials (Zoho, ClickUp, Apollo, Gmail, etc.).

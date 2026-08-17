@@ -28,14 +28,14 @@
 > - **§1.1's quoted code block was dead** — `_resolve_injected_scope` no longer
 >   has that body or that signature. Replaced with the current source.
 > - **C1 is built, and it is not this spec's work** — see the C1 update below.
-> - **Threat model restated (owner decision, 2026-08-03):** Command Center is an
+> - **Threat model restated (owner decision, 2026-08-03):** Metorite is an
 >   **internal Fracktal tool**. The team uses it; there are no external tenants.
 >   The ladder must hold up to **trusted colleagues, not hostile users**, which
 >   moves T2 from "before the Agent Workshop opens" to a **deprioritised
 >   sub-project**. See §1.3 and §1.5.
 >   *[⚠️ Premise re-scoped 2026-08-08/09 (D15/D16, WS-29): still true as a fact —
 >   no external tenant exists yet — but no longer the planning posture;
->   CommandCenter is being prepared for sale. T2 stays parked, with a NEW
+>   Metorite is being prepared for sale. T2 stays parked, with a NEW
 >   trigger: it is a precondition of the §5.1 pooled cutover
 >   (`saas_multitenancy.md`, MT-0c-2), not "a second org". See the §1.5 banner.]*
 
@@ -200,7 +200,7 @@ authority" — which is the failure mode this platform will actually hit.
 
 > ⚠️ **Update 2026-08-09 — the premise below expired, the parking survives (D15/D16).**
 > WS-29 (`saas_multitenancy.md`) retires "internal Fracktal tool, no external tenants"
-> as the planning posture: CommandCenter is being prepared for sale. **D16 re-takes the
+> as the planning posture: Metorite is being prepared for sale. **D16 re-takes the
 > un-park trigger**: T2 is now a **precondition of the §5.1 pooled cutover** (customer
 > 8–12) — the silo phase survives on this section's reasoning (one tenant per box means
 > an escaped agent reaches only data it already had), the pooled phase does not. The
@@ -212,7 +212,7 @@ authority" — which is the failure mode this platform will actually hit.
 near-term work, and the reason is a threat-model correction rather than a change of mind
 about isolation:
 
-- **Command Center is an internal Fracktal tool.** The team uses it. There are no external
+- **Metorite is an internal Fracktal tool.** The team uses it. There are no external
   tenants, no customer-authored agents, and no anonymous authorship path.
 - So the ladder must hold up to **trusted colleagues, not hostile users**. The failure modes
   that actually matter here are *mistakes and blast radius* — a runaway loop eating the 4GB

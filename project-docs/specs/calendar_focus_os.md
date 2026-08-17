@@ -170,7 +170,7 @@ Tap ▶ on any block (or the Now bar) → full-screen focus:
   the rest of the flexible day — no guilt, the plan reflows) · switch task
   (logged, so the review can show context-switch count).
 - **Focus Shield** (tips 5/15/26/84 — control your devices, kill alerts): while
-  a focus session runs, Command Center's own notifications (email pings, chat,
+  a focus session runs, Metorite's own notifications (email pings, chat,
   approvals) are *held* and released at the next break — batched, not lost.
   The shield state is visible ("6 held · released at your break"), which is the
   honest version of Do-Not-Disturb: nothing is missed, everything is deferred.
@@ -180,7 +180,7 @@ Tap ▶ on any block (or the Now bar) → full-screen focus:
   over `*.ts`/`*.tsx`/`*.py` returns **zero hits** repo-wide. So the Shield is
   two pieces of work, not one: (a) a notification hold/release primitive on the
   platform's own notification surface, and (b) the Focus-Mode UI that arms it.
-  **Both are AGENT-SAFE** — this touches only Command Center's own surfaces,
+  **Both are AGENT-SAFE** — this touches only Metorite's own surfaces,
   needs no OS/browser permission, no external credential and no deploy gate.
   It is blocked on being **specced**, not on an owner action; the earlier
   "blocked on a platform primitive" note overstated it. Neither piece has a
@@ -273,7 +273,7 @@ AI planner, is the unclaimed spot.
 
 ### 4.10 Email windows — the inbox gets an appointment
 Tips 10/11/83/91/98 all say the same thing: email (and social/chat) is checked
-compulsively unless it has *scheduled* time. Command Center owns the email app,
+compulsively unless it has *scheduled* time. Metorite owns the email app,
 so this can be real, not aspirational:
 - A recurring **Email window** batch block (default 2×/day, e.g. 11:30 + 16:00)
   is the sanctioned time to process mail. Outside it, the Focus Shield holds
@@ -345,7 +345,7 @@ No feature above is an island; each plugs into a surface that already exists:
 | New feature | Existing surface it builds on |
 |---|---|
 | Focus Mode | `TaskFocusModal` (detail card), Now/Next bar's `actualStart/End` focus timer, `openFocus` store action |
-| Focus Shield | Command Center notification/approvals surface (holds + batch-release); email app's unread state |
+| Focus Shield | Metorite notification/approvals surface (holds + batch-release); email app's unread state |
 | Capture-in-focus | `QuickCapture` + the global `C` hotkey in `page.tsx` — reused, not rebuilt |
 | Gap Filler | `EngageView`'s energy/time/context matching + `isTwoMinute` flag + Engage's `TIME_OPTS` |
 | Leverage lens / meter | `leveraged`/`important` flags + `priority.ts` matrix — display-only change on the grid |
@@ -613,7 +613,7 @@ Before dispatch, someone must spec: where held notifications queue, what
 session is abandoned. **Do not dispatch on §4.1 prose alone.**
 
 **Done when (draft, needs the design above first):** starting a focus session
-holds Command Center's own notifications; the Focus Mode header shows a live
+holds Metorite's own notifications; the Focus Mode header shows a live
 count ("6 held · released at your break"); ending the session or reaching a
 break releases them in one batch; nothing is dropped; and a crash or tab close
 releases the hold rather than stranding it.

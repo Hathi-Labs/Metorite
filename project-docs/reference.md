@@ -1,6 +1,6 @@
 # External Library & Architecture Reference
 
-> Consolidated reference for the runtime libraries and memory design CommandCenter depends on. Consult when implementing orchestration, Copilot agent wrappers, or memory wiring. For *why* decisions were made see [`system_architecture.md`](system_architecture.md) (ADRs); for *what/when* see [`project_plan.md`](project_plan.md).
+> Consolidated reference for the runtime libraries and memory design Metorite depends on. Consult when implementing orchestration, Copilot agent wrappers, or memory wiring. For *why* decisions were made see [`system_architecture.md`](system_architecture.md) (ADRs); for *what/when* see [`project_plan.md`](project_plan.md).
 > Last verified 2026-06-04; versions updated 2026-06-10. (Rewritten 2026-06-20 from the former `ref_maf.md` / `ref_copilot_sdk.md` / `ref_memory_architecture.md`, whose source bytes were corrupted.)
 > ⚠️ **Stale-warning 2026-08-09:** last verified 2026-06-04 — pins may lag `uv.lock` (e.g. agent-framework-core 1.8.1 is live per multi_agent_orchestration.md). `uv.lock` is the source of truth for versions; re-verify any claim here before relying on it.
 
@@ -10,7 +10,7 @@
 
 ## 1. Microsoft Agent Framework (MAF)
 
-The **sole agent execution runtime** for CommandCenter — background event runs and interactive chat both go through MAF. (See ADR-026 in `system_architecture.md`.)
+The **sole agent execution runtime** for Metorite — background event runs and interactive chat both go through MAF. (See ADR-026 in `system_architecture.md`.)
 
 ### Versions in use
 | Package | Version |
@@ -52,7 +52,7 @@ async for update in await agent.run("…", stream=True):   # streaming
 ```
 
 ### GitHubCopilotAgent (MAF + Copilot SDK bridge)
-A first-class MAF `BaseAgent` — participates in `HandoffBuilder`/`ConcurrentBuilder` like any agent. The Copilot SDK runs the internal reasoning/tool loop; MAF wraps it. In CommandCenter we subclass it as `CommandCenterCopilotAgent` (`apps/orchestrator/orchestrator/copilot_agent.py`) for BYOK forwarding + rich event streaming.
+A first-class MAF `BaseAgent` — participates in `HandoffBuilder`/`ConcurrentBuilder` like any agent. The Copilot SDK runs the internal reasoning/tool loop; MAF wraps it. In Metorite we subclass it as `MetoriteCopilotAgent` (`apps/orchestrator/orchestrator/copilot_agent.py`) for BYOK forwarding + rich event streaming.
 
 ```python
 from agent_framework_github_copilot import GitHubCopilotAgent
@@ -105,7 +105,7 @@ MAF has built-in OpenTelemetry — call `configure_otel_providers(OTEL_EXPORTER_
 
 ## 2. GitHub Copilot SDK
 
-`github-copilot-sdk` 1.0.0 (Python). Requires Python 3.11+ and the GitHub Copilot CLI on `PATH` (and `pwsh` 7.x on Linux for the shell tool). Used **only** inside `GitHubCopilotAgent`/`CommandCenterCopilotAgent` (MAF wrappers) and the mutation sandbox (`acb-mutation-runner`) — never called directly by application code (constraint C-08).
+`github-copilot-sdk` 1.0.0 (Python). Requires Python 3.11+ and the GitHub Copilot CLI on `PATH` (and `pwsh` 7.x on Linux for the shell tool). Used **only** inside `GitHubCopilotAgent`/`MetoriteCopilotAgent` (MAF wrappers) and the mutation sandbox (`acb-mutation-runner`) — never called directly by application code (constraint C-08).
 
 - **What it is:** a CLI-driven agent runtime (the Copilot CLI is the orchestrator) with built-in shell, file read/write, and MCP-server tools; streams reasoning, tool name/args/result, and partial output.
 - **MAF bridge:** the `agent-framework-github-copilot` 1.0.0rc1 release relaxed the SDK pin to `<2,>=1.0.0`, allowing full re-integration; MAF FunctionTools auto-translate to CopilotTools.

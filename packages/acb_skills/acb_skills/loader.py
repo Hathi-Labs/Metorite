@@ -1,4 +1,4 @@
-"""Resident Agent Cache — clone once, pull on demand (CommandCenter v2).
+"""Resident Agent Cache — clone once, pull on demand (Metorite v2).
 
 Design change from original v2:
   Previously, every event triggered a full ``git clone`` (~2–5 s latency).
@@ -191,7 +191,7 @@ def _install_push_guard(repo_dir: Path) -> None:
         hook_file.write_text(
             "#!/bin/sh\n"
             "echo 'Direct push blocked: commits are queued for human approval'\n"
-            "echo 'Approve via the CommandCenter Control Plane inbox.'\n"
+            "echo 'Approve via the Metorite Control Plane inbox.'\n"
             "exit 1\n",
             encoding="utf-8",
         )
@@ -202,7 +202,7 @@ def _install_push_guard(repo_dir: Path) -> None:
 
 
 def _configure_bot_identity(repo_dir: Path, settings: Any) -> None:
-    bot_name: str = getattr(settings, "github_bot_name", "commandcenter-bot")
+    bot_name: str = getattr(settings, "github_bot_name", "metorite-bot")
     bot_email: str = getattr(settings, "github_bot_email", "") or f"{bot_name}@users.noreply.github.com"
     _run_git(["config", "user.name", bot_name], cwd=repo_dir)
     _run_git(["config", "user.email", bot_email], cwd=repo_dir)
@@ -623,7 +623,7 @@ def _pull_latest(repo_dir: Path) -> dict[str, Any]:
     # Stash uncommitted changes (workspace dirt from a failed sandbox run),
     # reset to origin/HEAD, drop the stash.
     stash_result = _run_git(
-        ["stash", "--include-untracked", "-m", "commandcenter-auto-stash"],
+        ["stash", "--include-untracked", "-m", "metorite-auto-stash"],
         cwd=repo_dir, timeout=15,
     )
     stashed = stash_result.returncode == 0 and "No local changes" not in stash_result.stdout
@@ -721,7 +721,7 @@ def _ensure_local_git_repo(source_dir: Path, cache_dir: Path, settings: Any) -> 
         _log.info("loader.local_git_ready", agent=cache_dir.name)
 
 
-_WORKSPACE_GITIGNORE_MARKER = "# CommandCenter agent workspace (auto-managed)"
+_WORKSPACE_GITIGNORE_MARKER = "# Metorite agent workspace (auto-managed)"
 _WORKSPACE_GITIGNORE_BLOCK = f"""
 {_WORKSPACE_GITIGNORE_MARKER}
 # Agent-generated deliverables are runtime state, never source. Keeping them
@@ -857,7 +857,7 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
     if marker not in current:
         return  # unexpected structure — skip silently
 
-    auto_block = "\n# ── Auto-synced tools (added by CommandCenter) ──────────────────────────\n"
+    auto_block = "\n# ── Auto-synced tools (added by Metorite) ──────────────────────────\n"
     auto_block += "".join(tool_defs)
     updated = current.replace(marker, auto_block + marker, 1)
 
@@ -873,7 +873,7 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
     agents_file.write_text(updated, encoding="utf-8")
 
     # Commit locally (no push) — the pending_commit row will appear in the inbox
-    bot_name: str = getattr(settings, "github_bot_name", "commandcenter-bot")
+    bot_name: str = getattr(settings, "github_bot_name", "metorite-bot")
     bot_email: str = getattr(settings, "github_bot_email", "") or f"{bot_name}@users.noreply.github.com"
     _run_git(["config", "user.name", bot_name], cwd=agent_dir)
     _run_git(["config", "user.email", bot_email], cwd=agent_dir)
@@ -1025,7 +1025,7 @@ def _is_platform_dep(spec: str) -> bool:
     """True for first-party platform packages already present in the venv.
 
     These (``acb-*``, ``agent-framework-*``, ``copilot``) ship with the
-    CommandCenter workspace, so trying to ``pip install`` them from an agent's
+    Metorite workspace, so trying to ``pip install`` them from an agent's
     pyproject would fail (they're not on PyPI) — skip them.
     """
     import re  # noqa: PLC0415

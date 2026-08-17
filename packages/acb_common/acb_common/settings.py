@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     gateway_session_secret: str = "change-me-dev-only"
     allowed_email_domain: str = "fracktal.in"
     #: Public origin of the gateway itself, e.g.
-    #: "https://api.commandcenter.fracktal.in". Set this when the platform
+    #: "https://api.metorite.fracktal.in". Set this when the platform
     #: hands an inbound URL to an external system (a workflow's webhook
     #: trigger): those callers must reach the gateway's own public route
     #: directly, NOT the control-plane proxy, which re-serializes bodies
@@ -189,7 +189,7 @@ class Settings(BaseSettings):
     # -- Bot git identity (written into every local clone via git config) --
     # Commits and PRs opened by Self_Mutation_Node carry this identity.
     # Create a dedicated GitHub machine user (or use the GitHub App's identity).
-    github_bot_name: str = "Command-Center"
+    github_bot_name: str = "Metorite"
     github_bot_email: str = ""                # default: {github_bot_name}@users.noreply.github.com
 
     # OpenHands Self-Mutation Sandbox (v2 — ADR-021)
@@ -217,7 +217,7 @@ class Settings(BaseSettings):
 
     # Native-MAF mutation → monorepo PR (Part 1).
     # A native MAF agent (local_path, no git remote) can't push its self-mutation
-    # anywhere, so approving one opens a PR against the CommandCenter monorepo
+    # anywhere, so approving one opens a PR against the Metorite monorepo
     # that edits apps/agents/agent-<name>/ in place. These configure that flow.
     #
     # ⚠️ DEV-ONLY — REPLACE BEFORE PRODUCTION/MULTI-TENANCY. Keep
@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     #
     # The monorepo "owner/name" the PR is opened against. Leave blank to disable
     # the monorepo-PR path (native-MAF approvals then fall back to keep-local).
-    mutation_monorepo_repo: str = ""                 # e.g. "FracktalWorks/CommandCenter"
+    mutation_monorepo_repo: str = ""                 # e.g. "Hathi-Labs/Metorite"
     mutation_monorepo_base: str = "main"             # PR base branch
     # Dedicated token with push + pull-request scope on the monorepo. Kept
     # separate from github_token (which only needs clone/read on agent repos) so
@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     # into the container, parsed via stdout sentinels), this containerizes
     # ONLY the `copilot` CLI binary as a TCP JSON-RPC server (the SDK's own
     # `cli_url` transport — see copilot/client.py). All host-side
-    # orchestration — CommandCenterCopilotAgent, event streaming, permission
+    # orchestration — MetoriteCopilotAgent, event streaming, permission
     # handling — is unchanged; it just talks to a socket instead of a local
     # subprocess. See orchestrator/copilot_sandbox.py.
     #

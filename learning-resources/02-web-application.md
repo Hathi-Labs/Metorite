@@ -12,7 +12,7 @@ so the later chapters can focus on the agent-specific machinery.
 Everything lives in one Git repository with two language ecosystems side by side:
 
 ```
-CommandCenter/
+Metorite/
 ├── apps/                      # Deployable Python services (one process each)
 │   ├── gateway/               #   FastAPI — the HTTP/WS front door
 │   ├── orchestrator/          #   agent loader + MAF runner

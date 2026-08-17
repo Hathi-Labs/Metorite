@@ -1,4 +1,4 @@
-# Multi-tenancy — isolating organizations in CommandCenter
+# Multi-tenancy — isolating organizations in Metorite
 
 > ## ⚠️ SUPERSEDED FOR ARCHITECTURE (2026-08-09) — read `saas_multitenancy.md` first
 >
@@ -23,7 +23,7 @@
 > this branch's, and only **a** and **b** were built; the rest are superseded by MT-0/MT-1.
 
 > **Minted 2026-08-08** on the owner's notice that *"we are also going to be doing migrations
-> for a multi-tenant system so that multiple organizations can use the command center in an
+> for a multi-tenant system so that multiple organizations can use Metorite in an
 > isolated way."*
 >
 > **Everything below §1 is measured, not recalled** — read off the migration tree and checked
@@ -34,7 +34,7 @@
 
 ## 1. The measured state
 
-CommandCenter is **single-tenant with the beginnings of a tenant boundary already in place**,
+Metorite is **single-tenant with the beginnings of a tenant boundary already in place**,
 which is a better starting position than it sounds and a worse one than it looks.
 
 | | |

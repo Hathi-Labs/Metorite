@@ -1,6 +1,6 @@
 # whatsapp_bridge
 
-The **unofficial WhatsApp transport** for CommandCenter — pairs a **personal
+The **unofficial WhatsApp transport** for Metorite — pairs a **personal
 number** by QR code (via the [whatsmeow](https://github.com/tulir/whatsmeow)
 multi-device library) and streams its messages into the same WhatsApp app you
 already use for a Cloud API number. It exists so you can manage a personal line

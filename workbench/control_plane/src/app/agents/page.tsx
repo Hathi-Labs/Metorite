@@ -82,10 +82,10 @@ function PendingCommits({ agentName }: { agentName: string }) {
         setErrors((e) => ({ ...e, [id]: body.detail ?? body.error ?? `HTTP ${res.status}` }));
       } else {
         const body = await res.json().catch(() => ({}));
-        // Native-MAF approval opened a CommandCenter PR — point the operator to it.
+        // Native-MAF approval opened a Metorite PR — point the operator to it.
         if (action === "approve" && body.status === "pr_open" && body.pr_url) {
           setCascadeMsg(
-            `Opened a CommandCenter PR for ${body.target_path ?? "this agent"} — review and merge it on GitHub.`
+            `Opened a Metorite PR for ${body.target_path ?? "this agent"} — review and merge it on GitHub.`
           );
           setTimeout(() => setCascadeMsg(null), 8000);
         } else if (action === "approve" && typeof body.cascade_approved === "number" && body.cascade_approved > 0) {
@@ -1040,7 +1040,7 @@ function AddAgentModal({
           {step === "github" && githubStatus && (
             <div>
               <p className="mb-4 text-sm text-muted-foreground">
-                Connect GitHub so CommandCenter can clone{" "}
+                Connect GitHub so Metorite can clone{" "}
                 <span className="font-mono text-foreground">{form.repoUrl}</span> and access
                 private repositories.
               </p>

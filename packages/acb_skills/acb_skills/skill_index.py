@@ -147,7 +147,7 @@ def family_bodies(
 
 _HEADER = (
     "\n---\n"
-    "## CommandCenter Platform Tools (injected at runtime)\n"
+    "## Metorite Platform Tools (injected at runtime)\n"
     "Your platform tool families are indexed below. This prompt carries only "
     "the index — each family's FULL usage guidance (argument shapes, "
     "templates, conventions, worked patterns) lives in a file in your "
@@ -159,7 +159,7 @@ _HEADER = (
 
 _COMPACT_HEADER = (
     "\n---\n"
-    "## CommandCenter Platform Tools\n"
+    "## Metorite Platform Tools\n"
     "Index only — read a family's guide before first using its tools."
 )
 

@@ -3,7 +3,7 @@
 Extracted from ``executor.py`` (foundation maintainability refactor) — no
 behaviour change (log event strings + the KV-cache-stable addendum text are
 byte-preserved). This is the layer that, for any loaded agent (native MAF or
-GitHub Copilot SDK), injects the CommandCenter platform tools (call_agent,
+GitHub Copilot SDK), injects the Metorite platform tools (call_agent,
 web_search, write_artifact, memory, todo, HITL, diagnostics, …), gates each
 through the risk-aware permission policy, applies per-agent tool scoping
 (``tool_scope`` / ``own_tool_scope``), appends the tools system-prompt
@@ -362,13 +362,13 @@ def _build_injected_tools_addendum(
     is_sub_agent: bool = False,
     effective_scope: frozenset[str] | None = None,
 ) -> str:
-    """Return a system-prompt addendum describing the CommandCenter-injected tools.
+    """Return a system-prompt addendum describing the Metorite-injected tools.
 
     Appended to every GitHub Copilot agent's system message at run time so the
     LLM knows the injected tools exist, when to use them, and what valid agent
     names are.  MAF agents receive these instructions via the MAF instructions
     field directly; this is only needed for the Copilot SDK path where the agent's
-    own ``instructions.md`` was written without knowledge of CommandCenter injection.
+    own ``instructions.md`` was written without knowledge of Metorite injection.
 
     WS-23 S3: the prose is GENERATED — assembled by
     ``acb_skills.addendum.render_injected_tools_addendum`` from its ordered,
@@ -782,7 +782,7 @@ def _inject_agent_tools(
     # idempotency guard holds whichever one a given agent/sub-agent receives.
     _UI_DIRECTIVE_MARKER = "Rich UI by default"
     # Heads both the full and compact Copilot addendum → guards re-injection.
-    _ADDENDUM_MARKER = "## CommandCenter Platform Tools"
+    _ADDENDUM_MARKER = "## Metorite Platform Tools"
     # Present in BOTH output-discipline variants (the load_design_system
     # pointer) and vanishingly unlikely in a MAF agent's own instructions →
     # a safe idempotency marker for the native-MAF append below.
@@ -843,7 +843,7 @@ def _inject_agent_tools(
 
                 # Append tool guidance to the system message so the LLM knows
                 # these tools exist, what they do, and what agent names are valid.
-                # The agent's own instructions.md was written before CommandCenter
+                # The agent's own instructions.md was written before Metorite
                 # injection and has no mention of call_agent / web_search / etc.
                 #
                 # _default_options is a plain dict; system_message inside it has

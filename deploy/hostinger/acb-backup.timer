@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightly CommandCenter database backup
+Description=Nightly Metorite database backup
 Documentation=file:///opt/acb/app/project-docs/specs/backup_and_restore.md
 
 [Timer]

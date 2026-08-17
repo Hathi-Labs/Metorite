@@ -2,7 +2,7 @@
 
 A serious agent platform must not be married to one model provider. Prices change, a cheaper model
 appears, a provider has an outage, or different tasks want different capability/cost trade-offs.
-CommandCenter solves this with **LiteLLM** plus a thin routing layer (`packages/acb_llm`) that gives the
+Metorite solves this with **LiteLLM** plus a thin routing layer (`packages/acb_llm`) that gives the
 rest of the system *one* way to call *any* model. This chapter explains that layer: tiered routing,
 context-window fitting, model fallback, BYOK, and cost control.
 
@@ -12,7 +12,7 @@ context-window fitting, model fallback, BYOK, and cost control.
 
 **LiteLLM is one OpenAI-compatible API for ~100 model providers.** You call `litellm.acompletion(model=
 "anthropic/claude-…", messages=[…])` or `model="deepseek/deepseek-chat"` and it handles the
-provider-specific HTTP, auth, and response-shape differences. Crucially, CommandCenter uses the **Python
+provider-specific HTTP, auth, and response-shape differences. Crucially, Metorite uses the **Python
 SDK directly, in-process** — there is *no separate proxy container* to run and monitor. The gateway
 imports LiteLLM and calls providers itself.
 
@@ -94,7 +94,7 @@ It fits the input to the primary's window, calls it, and **on any failure retrie
 (re-fitting to the fallback's larger window). It skips the fallback if it resolves to the *same*
 underlying model (no pointless second call), and returns which model actually answered.
 
-CommandCenter layers a second trigger on top for the email assistant: **low-confidence escalation.** The
+Metorite layers a second trigger on top for the email assistant: **low-confidence escalation.** The
 drafting model is prompted to emit a `NO_DRAFT` sentinel when it isn't confident; the caller detects that
 (or an empty body) and re-runs on the more powerful `fallback_model`. So a draft escalates when the cheap
 model (a) overflows even after compression, (b) errors, *or* (c) declines. The interactive **chat**

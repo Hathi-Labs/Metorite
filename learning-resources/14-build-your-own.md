@@ -1,6 +1,6 @@
 # 14 · Build Your Own — A Minimal Blueprint
 
-You've seen the whole of CommandCenter. It's a lot — dynamic loading, self-mutation, five source-system
+You've seen the whole of Metorite. It's a lot — dynamic loading, self-mutation, five source-system
 integrations, a memory stack, HITL governance. **You do not need most of it to start.** This chapter
 distills the platform down to its irreducible core, then shows the order to add capabilities so each one
 earns its place.
@@ -73,7 +73,7 @@ Some choices are cheap to make now and expensive to retrofit:
 - **One durable store, audited.** Start with Postgres + an append-only audit log. The audit log is nearly
   free early and invaluable later — you cannot reconstruct history you didn't record.
 - **A thin agent contract.** If you'll ever have more than one agent, define the smallest possible
-  interface (CommandCenter's is one function, `build_agents()`), and make tools/memory/routing *platform
+  interface (Metorite's is one function, `build_agents()`), and make tools/memory/routing *platform
   services*, not per-agent code (chapter 07 §6).
 
 ---
@@ -111,7 +111,7 @@ If you want a checklist to actually begin:
    GitHub Actions pipeline that gates on tests and SSH-deploys.
 6. **Then** — add capabilities from the table in §2 as you hit their pain points.
 
-At the end of that you have, in miniature, the same architecture as CommandCenter: a streaming,
+At the end of that you have, in miniature, the same architecture as Metorite: a streaming,
 authenticated, audited, tool-calling agent app on the open internet. Everything else is depth.
 
 ---

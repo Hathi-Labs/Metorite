@@ -3,7 +3,7 @@
 Containerizes ONLY the `copilot` CLI binary (Dockerfile.copilot-sandbox) as a
 TCP JSON-RPC server, using the SDK's own ``cli_url`` transport
 (``copilot/client.py``'s ``_connect_via_tcp``). All host-side orchestration —
-``CommandCenterCopilotAgent``, event streaming, permission handling — is
+``MetoriteCopilotAgent``, event streaming, permission handling — is
 unchanged; a caller just points ``CopilotClient`` at this container's socket
 instead of a local subprocess. See ``code_session.py`` / ``executor.py`` for
 the two wired call sites (``code_task``, the App Workshop app-builder).

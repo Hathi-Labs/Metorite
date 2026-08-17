@@ -8,14 +8,14 @@ them from authoring time) · **Owner:** this spec · **Decisions:** **D33**
 engine; this document says *what a platform has to be able to do* and *which of our
 existing assumptions stop being true*.
 
-> ### `CommandCenter was designed as one company's brain. Every assumption that made that cheap is now a defect.`
+> ### `Metorite was designed as one company's brain. Every assumption that made that cheap is now a defect.`
 > ### `The question is never "does it work" — it is "does it work for a customer we have never met."`
 
 ---
 
 ## 1. Why this document exists
 
-CommandCenter was built as an **AI company brain for one company**: colleagues you
+Metorite was built as an **AI company brain for one company**: colleagues you
 trust, one Microsoft directory, one set of provider keys, one deployment, an
 operator who was also the user. Those assumptions were not mistakes — they were
 correct, and they made the product cheap to build.
@@ -28,7 +28,7 @@ a customer from onboarding, or let one customer see another.
 
 This document does three things: **§2** states what a managed SaaS platform must be
 able to do, **§3** states the Indian commercial and legal reality of charging for it,
-and **§4** is the measured audit of what CommandCenter currently assumes. §5 maps
+and **§4** is the measured audit of what Metorite currently assumes. §5 maps
 gaps to tickets.
 
 ## 2. The eight capability domains
@@ -227,7 +227,7 @@ purpose, versioned, timestamped, withdrawable, and queryable at export time. It 
 cheaper now than retrofitted onto populated tables, for the same reason envelope
 encryption is (`saas_multitenancy.md` MT-5).
 
-## 4. The audit — what CommandCenter currently assumes
+## 4. The audit — what Metorite currently assumes
 
 Measured 2026-08-12 against the working tree. **Every row is a personal-brain
 assumption that was correct then and is a defect now.** Verdict column: what replaces

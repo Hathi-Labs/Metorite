@@ -5,7 +5,7 @@ Four hints per tool, mirroring the MCP tool-annotation vocabulary:
     read_only    the tool observes only — no state mutation anywhere
     destructive  the effect is outward-facing or irreversible (send, delete)
     idempotent   repeating the call with the same args changes nothing more
-    open_world   the tool reaches outside CommandCenter (web, packages, email)
+    open_world   the tool reaches outside Metorite (web, packages, email)
 
 The registry is the single source of truth: the executor renders it into the
 injected-tools addendum so agents can reason about risk, and permission /
@@ -146,6 +146,6 @@ def risk_summary_block() -> str:
             f"user first): {', '.join(destructive)}"
         )
     lines.append(
-        f"- Open-world (reaches outside CommandCenter): {', '.join(open_world)}"
+        f"- Open-world (reaches outside Metorite): {', '.join(open_world)}"
     )
     return "\n".join(lines)

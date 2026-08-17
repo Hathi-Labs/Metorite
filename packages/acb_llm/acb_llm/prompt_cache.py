@@ -1,6 +1,6 @@
 """Provider-aware prompt-cache transform (specs/llm_caching_memory.md, Phase 2/3).
 
-CommandCenter talks to providers through the **litellm SDK directly** — there is
+Metorite talks to providers through the **litellm SDK directly** — there is
 no LiteLLM proxy process, so the plan's "proxy pre-call hook" doesn't apply.
 Instead this module is the single request-transform that BOTH completion paths
 call right before ``acompletion()``:

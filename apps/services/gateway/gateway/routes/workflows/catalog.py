@@ -28,7 +28,7 @@ NODE_TYPE_META = [
         "type": "agent",
         "category": "agent",
         "label": "Agent",
-        "description": "Run a registered CommandCenter agent with a message.",
+        "description": "Run a registered Metorite agent with a message.",
     },
     {
         "type": "tool",

@@ -1,4 +1,4 @@
-# CommandCenter test suite
+# Metorite test suite
 
 The app-wide automated test suite. Grows alongside features — every new
 capability should land with tests here.

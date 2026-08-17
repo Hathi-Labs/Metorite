@@ -31,7 +31,7 @@ whose contract allows two — mapped onto AGENT-SAFE (the doc action) + blocked 
 build). C3 additionally states that its migration is pre-provisioning with columns
 intentionally unread, and reproduces D3's column shape.
 
-The commitment this document records: **CommandCenter stays one deployment, and
+The commitment this document records: **Metorite stays one deployment, and
 departments get Centers — scoped projections of the same platform, never
 separate systems.** A "Sales Center" is the sales team's slice of the one
 platform's apps, agents, memory, and workflows; it is not a second product that
@@ -552,7 +552,7 @@ the filter is the small part.
 ## 4. Open questions
 
 1. ~~**"Pomad Centre."**~~ **Resolved 2026-08-01.** Owner confirmed the name
-   was a stray (should have read Command Center), not a planned venture. All
+   was a stray (should have read Metorite), not a planned venture. All
    twelve sites across eight files were rewritten as "a second tenant
    deployment" — preserving each sentence's meaning, including the T2
    security gate in `agent_platform_hardening_2026-07.md` §64. Decision

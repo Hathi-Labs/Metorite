@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Shared Tabs component — CommandCenter Design System
+ * Shared Tabs component — Metorite Design System
  *
  * Two variants:
  *   - "segmented" — pill-group style (like Settings > Models).

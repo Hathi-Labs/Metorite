@@ -6,7 +6,7 @@
  *
  * ## The two defects this pins
  *
- * CommandCenter was one company's brain, and `auth.ts` said so: *"the
+ * Metorite was one company's brain, and `auth.ts` said so: *"the
  * tenant-level app registration ensures only users in the Fracktal Microsoft 365
  * directory can sign in."* Two consequences, both fatal for a product sold to
  * other companies:

@@ -1,8 +1,8 @@
-"""CommandCenter Meeting Bot — a fully self-hosted meeting-joining worker.
+"""Metorite Meeting Bot — a fully self-hosted meeting-joining worker.
 
 A headless-Chrome (Playwright) participant that joins a meeting link, records
 the call's audio, and serves it back over a small vendor-neutral HTTP contract.
-CommandCenter's ``selfhosted`` bot provider (gateway
+Metorite's ``selfhosted`` bot provider (gateway
 ``routes/notes/meeting_bot.py``) drives this — so there is **no third-party
 cloud** in the loop; the only cost is the box this runs on.
 
@@ -51,7 +51,7 @@ logging.basicConfig(
 )
 _log = logging.getLogger("meeting_bot")
 
-app = FastAPI(title="CommandCenter Meeting Bot", version="0.1.0")
+app = FastAPI(title="Metorite Meeting Bot", version="0.1.0")
 
 
 class _Job:

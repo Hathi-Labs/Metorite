@@ -1,4 +1,4 @@
-// Command whatsapp_bridge is CommandCenter's unofficial WhatsApp transport: it
+// Command whatsapp_bridge is Metorite's unofficial WhatsApp transport: it
 // pairs a PERSONAL number by QR (via the whatsmeow multi-device library), holds
 // the session locally, and streams normalized messages to the gateway's
 // /whatsapp/bridge/ingest endpoint — where they flow through the exact same
@@ -45,7 +45,7 @@ func main() {
 	logger := waLog.Stdout("bridge", "INFO", true)
 	ctx := context.Background()
 
-	store.DeviceProps.Os = strPtr("CommandCenter")
+	store.DeviceProps.Os = strPtr("Metorite")
 	// Ask the phone for a larger on-link history sync (~1 year) instead of the
 	// default ~3-month recent window, so a freshly paired number backfills its
 	// recent history — the same payload WhatsApp Desktop receives on link.

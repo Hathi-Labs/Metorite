@@ -1,6 +1,6 @@
-# CommandCenter — Self-Anneal Agent
+# Metorite — Self-Anneal Agent
 
-This is the CommandCenter orchestration platform repository.  It runs as a
+This is the Metorite orchestration platform repository.  It runs as a
 headless, self-mutating multi-agent platform on MAF (Microsoft Agent Framework).
 
 ## Key facts
@@ -16,7 +16,7 @@ headless, self-mutating multi-agent platform on MAF (Microsoft Agent Framework).
 ## Entry points
 
 - `agents.py` — MAF agent definition (build_agents entry point)
-- `config.json` — CommandCenter agent contract
+- `config.json` — Metorite agent contract
 - `.github/prompts/system.md` — full system prompt
 - `AGENTS.md` — root DOX document (global constraints, conventions, child index)
 

@@ -1,6 +1,6 @@
 # Standalone compose for the self-hosted meeting-bot worker.
 #
-# Runs on its own (a separate box, or the upsized CommandCenter VPS) — NOT in
+# Runs on its own (a separate box, or the upsized Metorite VPS) — NOT in
 # the main infra/docker-compose.yml, because each bot is a full headless Chrome
 # (~1–3 GB RAM + up to 2 CPU per concurrent meeting) and should not share the
 # app's tight resource envelope. Point the gateway at it with:
@@ -10,7 +10,7 @@
 services:
   meeting-bot:
     build: .
-    image: commandcenter/meeting-bot:latest
+    image: metorite/meeting-bot:latest
     restart: unless-stopped
     ports:
       - "8080:8080"

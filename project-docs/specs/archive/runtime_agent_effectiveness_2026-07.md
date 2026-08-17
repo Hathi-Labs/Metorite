@@ -4,8 +4,8 @@
 > Motivation: building the portable `coding-agent-setup` kit (CodeGraph, RTK,
 > review/verify, project-instructions) forced us to articulate what makes a
 > codebase *agent-developable*. That articulation exposed an asymmetry: those
-> four capabilities are given to EXTERNAL agents building CommandCenter, but
-> CommandCenter's OWN runtime agents (chat, email, orchestrator, and the
+> four capabilities are given to EXTERNAL agents building Metorite, but
+> Metorite's OWN runtime agents (chat, email, orchestrator, and the
 > self-mutation loop) mostly lack them. This spec applies the kit's lessons
 > inward.
 > Source practices: [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering)
@@ -19,7 +19,7 @@
 
 ## Verdict
 
-CommandCenter gives external agents a symbol graph, output compression, and
+Metorite gives external agents a symbol graph, output compression, and
 review discipline — then runs its own agents with grep/read and full-size tool
 output. Closing that asymmetry is mostly *adoption of mechanisms that already
 exist*, not new infrastructure. Ranked by ROI:
@@ -105,9 +105,9 @@ CC's own agents. Today:
   SSE frame; `return result` hands the full object back to the model. The
   built-in shell tool doesn't even flow through that shim.
 
-**The seam (CommandCenter-owned, no SDK fork needed).** The SDK's built-in shell
+**The seam (Metorite-owned, no SDK fork needed).** The SDK's built-in shell
 emits `TOOL_EXECUTION_COMPLETE`, translated to a MAF `AgentResponseUpdate` in
-`CommandCenterCopilotAgent._on_event` at `copilot_agent.py:419-441`. Line 436
+`MetoriteCopilotAgent._on_event` at `copilot_agent.py:419-441`. Line 436
 reads the full stdout as `result=result_text or ""`. That argument is the exact
 insertion point. The parallel custom-tool path is `EXTERNAL_TOOL_COMPLETED` at
 `copilot_agent.py:465-490` (line 485). There is no PostToolUse hook — the SDK's

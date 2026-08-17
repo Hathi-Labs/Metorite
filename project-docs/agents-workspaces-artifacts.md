@@ -36,7 +36,7 @@ An agent can come from any of three places; the gateway merges them at read time
 | Source | Where | Examples | Notes |
 |---|---|---|---|
 | **Static `_AGENT_REGISTRY`** | hard-coded list in `agent.py` (~line 98) | task-manager, sales, delivery, triage, reconciler, billing, strategy, apis-config, email-assistant | All `agent_runtime: github-copilot`. A few set a **relative** `local_path` (`apps/agent-task-manager`), most have none. |
-| **Dynamic `dynamic_agents`** | Postgres table (`infra/postgres/15_dynamic_agents.sql`) | agent-sales-assistant, agent-project-manager, agent-startup-guru, commandcenter-dev | User-registered via the UI. `repo_name` stored as `org/repo` slug. Survives deploy/reboot. |
+| **Dynamic `dynamic_agents`** | Postgres table (`infra/postgres/15_dynamic_agents.sql`) | agent-sales-assistant, agent-project-manager, agent-startup-guru, metorite-dev | User-registered via the UI. `repo_name` stored as `org/repo` slug. Survives deploy/reboot. |
 | **`agents.json`** | `apps/gateway/agents.json` | (legacy, currently 1 entry) | Read-only fallback; synced into Postgres on load. Only written when Postgres is down. |
 
 - **List endpoint:** `GET /agent` (gateway) → proxied by Next.js `GET /api/agent/list`. Returns static (minus dynamic-overridden) + dynamic. `agent_runtime = "github-copilot" if (repo_name and not local_path) else "maf"`.
@@ -68,7 +68,7 @@ An agent can come from any of three places; the gateway merges them at read time
 
 This is the exact situation with `agent-sales-assistant`, `agent-startup-guru`,
 `agent-project-manager` (confirmed on the VPS — only `email-assistant` and
-`commandcenter-dev` had clones):
+`metorite-dev` had clones):
 
 1. **Never run as a primary agent** → never cloned → no workspace dir. They show in the agents page (registry) and as orchestrator specialist tools, but have no disk presence.
 2. **Eager clone failed or went to old `/tmp`** and was wiped on reboot.
@@ -93,7 +93,7 @@ This is the exact situation with `agent-sales-assistant`, `agent-startup-guru`,
 - Walks the entire clone working tree, **not** just `inputs/outputs/agent-data` — so Copilot agents' root-level files (reports, scripts, code) are visible.
 - **Pruned:** `_EXCLUDED_DIRS` (`.git`, `node_modules`, `.next`, `__pycache__`, `dist`, `build`, caches, …) and any dotdir.
 - **Hidden files:** `_is_hidden_or_secret_file` — dotfiles (`.env`, `.zoho_token_cache.json`), `*.pid/*.pem/*.key/*.pyc`, and names containing `token_cache`/`credential`/`secret`/`id_rsa`. The raw-file endpoints enforce the same via `_is_blocked_path` (so `?path=.env` 404s).
-- **Cap:** `_MAX_TREE_FILES` (4000) bounds whole-monorepo clones (e.g. `commandcenter-dev`).
+- **Cap:** `_MAX_TREE_FILES` (4000) bounds whole-monorepo clones (e.g. `metorite-dev`).
 - `_agent_workspace_dir` checks BOTH `{agents_clone_dir}/repos/` and the legacy `/tmp/acb_agents/repos/` (and `agent-` prefix variants), so clones stranded in `/tmp` are still found.
 - `_discover_agent_workspaces` falls back to `_canonical_workspace_dir` so **every live registered agent appears** in the viewer (with 3 empty folders) even before it has ever run/cloned. `_walk_agent_artifacts` always emits the 3 special folders first.
 

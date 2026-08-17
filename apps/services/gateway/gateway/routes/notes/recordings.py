@@ -206,7 +206,7 @@ async def start_recording(
             {"id": meeting_id},
         )
     _REC_SEQ[recording_id] = -1
-    # Register presence so this shows up as "live now" across Command Center and
+    # Register presence so this shows up as "live now" across Metorite and
     # the copilot console can attach to it. Additive + fail-safe.
     from gateway.routes.notes import live_session
 

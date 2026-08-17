@@ -339,7 +339,7 @@ def ensure_model_registered(model: str) -> str | None:
     isn't recognised (caller should warn the user).
 
     This keeps the model catalogue dynamic — new provider models work
-    immediately without waiting for a litellm or CommandCenter release.
+    immediately without waiting for a litellm or Metorite release.
     """
     from litellm import model_cost
 

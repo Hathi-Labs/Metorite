@@ -1,4 +1,4 @@
-# Evals — CommandCenter harness & skill evaluation (ADR-017, HH-1)
+# Evals — Metorite harness & skill evaluation (ADR-017, HH-1)
 
 Three complementary layers, from cheapest/most-deterministic to most realistic:
 

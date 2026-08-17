@@ -7,7 +7,7 @@
 
 > **Status:** Planned (annealed into the backlog **(2026-07-13; 'no code yet' is stale — BO-20a/20f built 2026-08-02, BO-20b slice 1 2026-08-03; per-item state lives in FOUNDATION_BUILDOUT_CHECKLIST.md)**) · **Created:** 2026-07-13
 > **Source:** [`/COMPETITIVE_COMPARISON.md`](../../COMPETITIVE_COMPARISON.md) — an evidence-based three-way
-> comparison of CommandCenter against the two most-visible self-hosted agent platforms of 2026:
+> comparison of Metorite against the two most-visible self-hosted agent platforms of 2026:
 > **Hermes Agent** (Nous Research — self-improving personal autonomous agent) and **OpenClaw**
 > (formerly Clawdbot — omnichannel personal assistant).
 > **Companions:** [`harness_hardening_2026-07.md`](harness_hardening_2026-07.md) (the awesome-harness-engineering
@@ -25,7 +25,7 @@ comparison exposed that were **not** yet tracked.
 ## Verdict (category framing — read this first)
 
 **Hermes and OpenClaw are not competitors in our category.** Both are *single-user personal autonomous agents*
-you run for yourself and talk to from chat apps. CommandCenter is a *governed, multi-agent, source-of-truth-mirroring
+you run for yourself and talk to from chat apps. Metorite is a *governed, multi-agent, source-of-truth-mirroring
 orchestration platform for a company*. That reframing decides what we copy and what we ignore:
 
 - **Copy their plumbing and their security engineering** — on the agent-loop / tool-execution / channel /

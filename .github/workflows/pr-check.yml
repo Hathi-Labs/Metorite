@@ -1,4 +1,4 @@
-# CommandCenter — PR validation (lint + test only, no deploy).
+# Metorite — PR validation (lint + test only, no deploy).
 #
 # Runs on every PR to main.  Fast feedback loop — catches regressions
 # before they land.  The full deploy workflow runs only on merge to main.

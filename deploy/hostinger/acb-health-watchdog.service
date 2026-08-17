@@ -1,7 +1,7 @@
 [Unit]
-# CommandCenter health watchdog — see health-watchdog.sh for the rationale.
+# Metorite health watchdog — see health-watchdog.sh for the rationale.
 # Oneshot unit driven by acb-health-watchdog.timer.
-Description=CommandCenter health watchdog (check + self-heal services)
+Description=Metorite health watchdog (check + self-heal services)
 After=network-online.target
 Wants=network-online.target
 

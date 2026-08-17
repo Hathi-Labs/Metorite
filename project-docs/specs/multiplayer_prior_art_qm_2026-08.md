@@ -39,7 +39,7 @@ the same posture we are in *(posture dated: true until WS-29's first external te
 **qm is the closest prior art to our multiplayer work that exists, and it is a genuinely different
 product shape.** In qm there is *one* company assistant, and a "scope" is a place — a person's DM, a
 Slack channel, a project. The scope owns everything: memory, files, sandbox, crons, keychain view,
-skills. In CommandCenter there is a *fleet* of named agents, and a room is a `chat_session` several
+skills. In Metorite there is a *fleet* of named agents, and a room is a `chat_session` several
 people stand in. That difference decides what transfers.
 
 - **Our memory model is a generation ahead.** Subject compartments express a case qm structurally

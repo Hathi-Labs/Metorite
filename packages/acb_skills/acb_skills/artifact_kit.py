@@ -195,7 +195,7 @@ async def load_artifact_kit(components: str = "") -> str:
 
     Call this BEFORE writing a React artifact (an ``emit_generative_ui``
     ``react`` node, or an ``outputs/*.jsx`` file). ``@cc/ui`` gives you the whole
-    Command Center design kit — stat tiles, bar/donut/trend charts, data tables,
+    Metorite design kit — stat tiles, bar/donut/trend charts, data tables,
     timelines, decision boxes, and buttons that talk back to you — as components,
     so you write ``<Stat label="Revenue" value={18} unit="%" delta={12} />``
     instead of six nested divs of exact class names.

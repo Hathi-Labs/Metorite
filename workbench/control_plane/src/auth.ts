@@ -4,14 +4,14 @@ import MicrosoftEntraId from "next-auth/providers/microsoft-entra-id";
 import Google from "next-auth/providers/google";
 
 /**
- * Sign-in for CommandCenter — **a platform, not one company's app** (WS-31 CP-0,
+ * Sign-in for Metorite — **a platform, not one company's app** (WS-31 CP-0,
  * decision D33.1).
  *
  * ## What this used to be, and why it had to change
  *
  * This file used to carry one provider and this comment: *"the tenant-level app
  * registration ensures only users in the Fracktal Microsoft 365 directory can
- * sign in — no domain check needed."* That was correct while CommandCenter was
+ * sign in — no domain check needed."* That was correct while Metorite was
  * one company's brain and every user was a colleague. It is a **defect** for a
  * SaaS product, for the plainest possible reason: **a paying customer's staff
  * are not in our directory.** As written it could onboard exactly one customer.

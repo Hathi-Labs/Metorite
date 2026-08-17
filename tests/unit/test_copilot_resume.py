@@ -1,10 +1,10 @@
-"""Test that CommandCenterCopilotAgent re-applies identity on session resume.
+"""Test that MetoriteCopilotAgent re-applies identity on session resume.
 
 Regression for the "agent says it is GitHub CLI after refresh" bug: the
 upstream GitHubCopilotAgent._resume_session drops system_message (the
 agent's instructions / identity), provider (BYOK) and model.  Resuming a
 stored session on page refresh / re-opening an old chat therefore lost the
-agent persona.  CommandCenterCopilotAgent._resume_session must forward them.
+agent persona.  MetoriteCopilotAgent._resume_session must forward them.
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ class _CapturingClient:
 
 @pytest.fixture
 def agent() -> Any:
-    from orchestrator.copilot_agent import CommandCenterCopilotAgent
+    from orchestrator.copilot_agent import MetoriteCopilotAgent
 
-    a = CommandCenterCopilotAgent(
+    a = MetoriteCopilotAgent(
         name="agent-sales-assistant",
         instructions="You are SALES ASSISTANT, a Fracktal Works sales agent.",
     )

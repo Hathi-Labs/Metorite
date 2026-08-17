@@ -24,7 +24,7 @@ the browser consumes it. Transport is **Server-Sent Events** (SSE) — a simple 
 
 ## 2. The AG-UI event vocabulary
 
-The events fall into a few families (CommandCenter emits these from `run_agent_stream`):
+The events fall into a few families (Metorite emits these from `run_agent_stream`):
 
 **Run lifecycle**
 ```
@@ -64,7 +64,7 @@ flattening everything into one text stream.
 
 ## 3. The frontend half — consuming the stream
 
-The browser opens the SSE stream and dispatches events to renderers. CommandCenter's homegrown hooks
+The browser opens the SSE stream and dispatches events to renderers. Metorite's homegrown hooks
 (chapter 02 §3) do this:
 
 - **`useAgentChat`** parses each SSE frame and accumulates messages, tool events, reasoning, and artifacts.
@@ -83,7 +83,7 @@ a naive SSE consumer that loses state on refresh is a common beginner mistake.
 ## 4. Generative UI — agents that render interactive components
 
 "Generative UI" means the agent doesn't just emit text — it emits **structured events that the frontend
-turns into interactive widgets**. Three uses in CommandCenter, all built on the `CUSTOM` / `STATE_*`
+turns into interactive widgets**. Three uses in Metorite, all built on the `CUSTOM` / `STATE_*`
 events:
 
 ### (a) Human-in-the-loop cards

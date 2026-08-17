@@ -148,7 +148,7 @@ async function measureLockup(page: Page) {
       : [];
     const caption = leaves.find((e) => {
       const t = e.textContent?.trim() ?? "";
-      return t.startsWith("powered by CommandCenter") || t === "Control Plane" || t === "Home";
+      return t.startsWith("powered by Metorite") || t === "Control Plane" || t === "Home";
     });
 
     return {
@@ -248,7 +248,7 @@ for (const theme of THEMES) {
       // 600×160 at 28px tall wants 105px. A square mark must NOT get a
       // wordmark's width, which is what makes this an equality not a bound.
       expect(m.logo).toEqual({ w: 105, h: 28 });
-      expect(m.text).toContain("powered by CommandCenter");
+      expect(m.text).toContain("powered by Metorite");
       // The customer's mark replaces ours; it does not sit next to it.
       expect(m.text).not.toContain("Control Plane");
 
@@ -272,7 +272,7 @@ for (const theme of THEMES) {
       // An org that has uploaded nothing gets our mark DELIBERATELY — the
       // failure this guards is an empty box where a logo would be.
       expect(m.logo, "no <img> for an org with no logo").toBeNull();
-      expect(m.text).toContain("CommandCenter");
+      expect(m.text).toContain("Metorite");
       expect(m.captionClipped).toBe(false);
       expect(m.lockupRight).toBeLessThanOrEqual(m.collapseLeft);
       expect(m.pageScrollsX).toBe(false);
@@ -326,6 +326,6 @@ test("a branding outage leaves the shell rendering, not broken", async ({ page }
   await page.waitForSelector("aside a[href='/']", { timeout: 30_000 });
 
   const m = await measureLockup(page);
-  expect(m.text).toContain("CommandCenter");
+  expect(m.text).toContain("Metorite");
   expect(m.pageScrollsX).toBe(false);
 });

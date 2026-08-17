@@ -314,7 +314,7 @@ def _print_table(results: list[CheckResult]) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="CommandCenter live feature check")
+    ap = argparse.ArgumentParser(description="Metorite live feature check")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--only", help="run a single check by name")
     args = ap.parse_args()

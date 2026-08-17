@@ -1481,7 +1481,7 @@ export function BulkUnsubscribeView({
       <div className="flex-shrink-0 flex items-center flex-wrap gap-2 px-3 sm:px-5 py-2 border-t border-border bg-card/40">
         <Icon name="Sparkles" size={12} className="text-primary flex-shrink-0" />
         <span className="text-[11px] text-muted-foreground">
-          Only mail synced to Command Center can be cleaned — fetch and
+          Only mail synced to Metorite can be cleaned — fetch and
           categorize older mail, without using AI
         </span>
         {backfillOpen ? (

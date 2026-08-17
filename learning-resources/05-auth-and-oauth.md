@@ -93,7 +93,7 @@ This is the hard one, and the part most tutorials skip. To read a user's Gmail o
 your platform needs an **OAuth 2.0 authorization-code** grant: the user consents once, you receive tokens,
 and you use (and refresh) those tokens for months afterward.
 
-CommandCenter has a **generic OAuth framework** (`gateway/routes/oauth.py`) driven by a provider
+Metorite has a **generic OAuth framework** (`gateway/routes/oauth.py`) driven by a provider
 registry. Adding a provider is mostly filling in a struct (authorize URL, token URL, scopes, which env
 vars hold the resulting tokens). Zoho, ClickUp, and Google are wired in.
 

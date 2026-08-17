@@ -135,7 +135,7 @@ async def _http_request(args: dict[str, Any], actor: str) -> dict[str, Any]:
     _assert_public_host(parsed.host)
     headers = args.get("headers") if isinstance(args.get("headers"), dict) else {}
     headers = {str(k): str(v) for k, v in headers.items()}
-    headers.setdefault("User-Agent", "CommandCenter-Workflows/1.0")
+    headers.setdefault("User-Agent", "Metorite-Workflows/1.0")
     body = args.get("body")
     kwargs: dict[str, Any] = {}
     if body is not None and method not in ("GET", "HEAD"):
@@ -265,7 +265,7 @@ register_tool(
     WorkflowToolSpec(
         action="notify.activity",
         label="Post notification",
-        description="Post a message to the CommandCenter activity feed.",
+        description="Post a message to the Metorite activity feed.",
         integration=None,
         read_only=False,
         destructive=False,

@@ -25,7 +25,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)/bootstrap-proof"
-REAL_PULL="/home/user/CommandCenter/scripts/vps_pull.sh"
+REAL_PULL="/home/user/Metorite/scripts/vps_pull.sh"
 rm -rf "$ROOT"; mkdir -p "$ROOT"
 export GIT_AUTHOR_NAME=proof GIT_AUTHOR_EMAIL=p@x GIT_COMMITTER_NAME=proof GIT_COMMITTER_EMAIL=p@x
 
@@ -98,7 +98,7 @@ echo "inode before: $(stat -c %i "$ROOT/box/scripts/vps_apply.sh")"
 echo "  A2| exit=${PIPESTATUS[0]}"
 
 # ═════════════════════════════════════════════════════════════════════════════
-hr "B — two-stage: the REAL /home/user/CommandCenter/scripts/vps_pull.sh"
+hr "B — two-stage: the REAL /home/user/Metorite/scripts/vps_pull.sh"
 build_world reset
 rm -f /tmp/acb-vps-pull.lock
 APP_DIR="$ROOT/box" RELEASE_REF=release STATE_DIR="$ROOT/state" \

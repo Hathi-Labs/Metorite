@@ -94,7 +94,7 @@ class ImportReport(BaseModel):
     #: Zoho stage/status names this run had to create natively (§7.1: the
     #: vocabulary flows DOWN, so an unseen stage becomes a lane here).
     statuses_created: int = 0
-    #: Zoho owner ids that matched no CommandCenter address, and therefore fell
+    #: Zoho owner ids that matched no Metorite address, and therefore fell
     #: back to the importing admin. Loud, because silently reassigning every
     #: record to whoever ran the import is a thing somebody must see.
     unmatched_owners: int = 0

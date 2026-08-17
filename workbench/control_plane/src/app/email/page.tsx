@@ -554,7 +554,7 @@ export default function EmailPage() {
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {oauthStatus.gmail && oauthStatus.microsoft
                         ? "Google + Microsoft OAuth are ready."
-                        : "Register CommandCenter with Google and Microsoft so you can sign in with Gmail or Outlook."}
+                        : "Register Metorite with Google and Microsoft so you can sign in with Gmail or Outlook."}
                     </p>
                     {(!oauthStatus.gmail || !oauthStatus.microsoft) && (
                       <a

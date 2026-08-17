@@ -510,7 +510,7 @@ function ThemeCard({
             style={{ background: c.primary, borderRadius: theme.shape.radius }}
           />
           <span className="text-[10px] font-semibold" style={{ color: c.foreground }}>
-            CommandCenter
+            Metorite
           </span>
         </div>
         <div className="space-y-1.5 p-2.5">

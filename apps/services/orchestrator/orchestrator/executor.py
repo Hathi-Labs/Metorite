@@ -1307,7 +1307,7 @@ async def _install_push_guard(agent_dir: str) -> None:
             pre_push.write_text(
                 "#!/bin/sh\n"
                 "echo 'Direct push blocked: commits are queued for human approval'\n"
-                "echo 'Approve via the CommandCenter Control Plane inbox, or tell the agent you approve and it will push with --no-verify.'\n"
+                "echo 'Approve via the Metorite Control Plane inbox, or tell the agent you approve and it will push with --no-verify.'\n"
                 "exit 1\n",
                 encoding="utf-8",
             )
@@ -3006,24 +3006,24 @@ async def run_agent_stream(
             # into the same queue while the main loop is waiting — giving
             # real-time visibility of sub-agent progress in the UI.
 
-            # ── GitHub Copilot path (MAF-wrapped via CommandCenterCopilotAgent) ─
+            # ── GitHub Copilot path (MAF-wrapped via MetoriteCopilotAgent) ─
             # Covers BOTH github-copilot-runtime agents and Copilot-SDK agents
             # registered as "maf" (e.g. email-assistant) so they get BYOK
             # provider forwarding instead of a native Copilot session.
             if _is_copilot_sdk:
-                from orchestrator.copilot_agent import CommandCenterCopilotAgent
+                from orchestrator.copilot_agent import MetoriteCopilotAgent
 
                 # Patch the loaded agent with enhanced BYOK + streaming methods.
-                agent.start = CommandCenterCopilotAgent.start.__get__(
+                agent.start = MetoriteCopilotAgent.start.__get__(
                     agent, type(agent)
                 )
-                agent._create_session = CommandCenterCopilotAgent._create_session.__get__(
+                agent._create_session = MetoriteCopilotAgent._create_session.__get__(
                     agent, type(agent)
                 )
-                agent._resume_session = CommandCenterCopilotAgent._resume_session.__get__(
+                agent._resume_session = MetoriteCopilotAgent._resume_session.__get__(
                     agent, type(agent)
                 )
-                agent._stream_updates = CommandCenterCopilotAgent._stream_updates.__get__(
+                agent._stream_updates = MetoriteCopilotAgent._stream_updates.__get__(
                     agent, type(agent)
                 )
 
@@ -3628,7 +3628,7 @@ async def run_agent_stream(
                 return
 
             # ── Tier 2: instrumented batch fallback ─────────────────────────
-            # (orphaned old code removed — see CommandCenterCopilotAgent path above)
+            # (orphaned old code removed — see MetoriteCopilotAgent path above)
 
             # ── Tier 2: instrumented batch fallback ─────────────────────────
             # Wrap every callable tool on the agent so it pushes tool events

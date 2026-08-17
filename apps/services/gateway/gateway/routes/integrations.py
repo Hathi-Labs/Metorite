@@ -203,7 +203,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "3. Click 'Generate token', paste the value (ghp_...) below.\n\n"
             "Option B — OAuth Device Flow (no token entry needed):\n"
             "1. Create a GitHub OAuth App (Settings → Developer Settings → OAuth Apps).\n"
-            "   Name: 'CommandCenter', Callback URL: http://localhost.\n"
+            "   Name: 'Metorite', Callback URL: http://localhost.\n"
             "2. Paste the Client ID and click 'Connect GitHub Account'.\n"
             "   Note: device-flow tokens may not include the `copilot` scope —\n"
             "   use Option A if you want Copilot model access."
@@ -270,7 +270,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "2. Click 'Create Credentials' → 'OAuth client ID'.\n"
             "3. Choose 'Web application'.\n"
             "4. Add Authorized redirect URI:\n"
-            "   https://api.commandcenter.fracktal.in/email/oauth/gmail/callback\n"
+            "   https://api.metorite.fracktal.in/email/oauth/gmail/callback\n"
             "   (or your gateway's public URL).\n"
             "5. Copy the Client ID and Client Secret below.\n"
             "6. Also enable the Gmail API under 'Enabled APIs & Services'."
@@ -292,15 +292,15 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
         "instructions": (
             "If you already have a sign-in app registration (AUTH_MICROSOFT_ENTRA_ID_*), "
             "you can reuse it — no separate registration needed. Just add these to it:\n\n"
-            "1. Go to Azure Portal → App registrations → your existing CommandCenter app.\n"
+            "1. Go to Azure Portal → App registrations → your existing Metorite app.\n"
             "2. Under 'Authentication', add Redirect URI (Web):\n"
-            "   https://api.commandcenter.fracktal.in/email/oauth/microsoft/callback\n"
+            "   https://api.metorite.fracktal.in/email/oauth/microsoft/callback\n"
             "3. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
             "   Mail.ReadWrite, User.Read\n"
             "4. Click 'Grant admin consent' if tenant-restricted.\n\n"
             "If you are NOT using the same app registration, create a new one:\n"
             "1. App registrations → New registration.\n"
-            "2. Name: 'CommandCenter Email'. Supported account types: 'Any organizational directory and personal Microsoft accounts'.\n"
+            "2. Name: 'Metorite Email'. Supported account types: 'Any organizational directory and personal Microsoft accounts'.\n"
             "3. Add Redirect URI (Web) as above.\n"
             "4. Copy the Application (client) ID below.\n"
             "5. Go to 'Certificates & secrets' → New client secret, copy it below.\n"
@@ -1703,7 +1703,7 @@ async def remove_plugin(
 
 
 def _openapi_to_tool_defs(plugin_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Convert OpenAPI paths to CommandCenter tool definitions.
+    """Convert OpenAPI paths to Metorite tool definitions.
 
     Each operation becomes a tool the agent can call.  Returns a list of
     dicts with {name, description, parameters (JSON Schema), method, path}.

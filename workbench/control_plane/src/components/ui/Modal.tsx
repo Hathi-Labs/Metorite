@@ -3,7 +3,7 @@
 /**
  * Modal — THE dialog primitive (WS-27ak item 1, D-PM-15).
  *
- * A CommandCenter wrapper over `@base-ui/react`'s `dialog`. **This file is the
+ * A Metorite wrapper over `@base-ui/react`'s `dialog`. **This file is the
  * only place in `src/` allowed to import that library** (conformance rule 8):
  * call sites import this, never the substrate, or the library's own defaults
  * quietly become a second design system — D-PM-15 condition 1, and condition 2
@@ -155,7 +155,7 @@ const CALLER_SETS_MAX_HEIGHT = /(?:^|\s)(?:[\w-]+:)*max-h-/;
 
 /**
  * The landmark focus lands on when the opener is gone. First in document
- * order, which on every CommandCenter page is `AppShell`'s own `<main>`.
+ * order, which on every Metorite page is `AppShell`'s own `<main>`.
  */
 const LANDMARK = "main, [role='main']";
 

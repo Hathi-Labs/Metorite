@@ -8,7 +8,7 @@ modules from the DB, best-effort), and a deterministic token/substring score
 ranks them — no index table, no embeddings, nothing to sync.
 
 **Semantic search is deferred to the platform, not bolted on here** —
-BO-22 in `FOUNDATION_BUILDOUT_CHECKLIST.md` tracks a CommandCenter-wide
+BO-22 in `FOUNDATION_BUILDOUT_CHECKLIST.md` tracks a Metorite-wide
 semantic-search service (one embedding + retrieval seam every app consumes:
 this catalog, email, notes, tasks, app content). When it lands, this module
 swaps its ranking backend and the API shape doesn't change.

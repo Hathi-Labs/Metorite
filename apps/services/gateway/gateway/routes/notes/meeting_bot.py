@@ -847,7 +847,7 @@ async def bot_join(
 
     async with _tenant_session() as db:
         await _set_bot(db, bot_row_id, provider_bot_id=provider_bot_id, status="joining")
-    # Register presence — a bot meeting shows as "live now" in Command Center
+    # Register presence — a bot meeting shows as "live now" in Metorite
     # from the moment it's dispatched, not just once audio starts flowing.
     from gateway.routes.notes import live_session
 

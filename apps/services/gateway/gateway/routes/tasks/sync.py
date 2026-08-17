@@ -2,7 +2,7 @@
 
 Until now sync was push-only: locally clarified items could be pushed to a
 connected workspace, but the tasks that ALREADY live there never appeared in
-CommandCenter. This module adds the pull:
+Metorite. This module adds the pull:
 
   POST /tasks/sync {account_id?, full?}
     → for one account (or every sync-enabled account of the user), pull the

@@ -25,7 +25,7 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
 
 | # | Item | Gate | State |
 |---|---|---|---|
-| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo; it replaces our mark top-left in every member's shell, above "powered by CommandCenter". | 🟢 AGENT-SAFE | ◐ built, unmerged |
+| **OI-1** | **Logo upload + the shell lockup.** Admin uploads a raster logo; it replaces our mark top-left in every member's shell, above "powered by Metorite". | 🟢 AGENT-SAFE | ◐ built, unmerged |
 | **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🔴 **BLOCKED on MT-1b** | 🔴 |
 | **OI-3a** | **No network wait.** The customer's mark renders from a local cache, revalidated behind it. | 🟢 AGENT-SAFE | ✅ built 2026-08-14 |
 | **OI-3b** | **True SSR branding.** The server-rendered HTML itself carries the mark. | 🟢 AGENT-SAFE | 🔴 |
@@ -38,7 +38,7 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
   our four. They do not get a custom palette, a custom font, or CSS. The
   theming engine is one product themed centrally (owner directive 2026-08-10);
   a per-tenant palette is the exact thing that directive forbids.
-- **Not white-labelling.** "Powered by CommandCenter" is not removable. If a
+- **Not white-labelling.** "Powered by Metorite" is not removable. If a
   reseller SKU is ever sold, that is a commercial decision (a D-number), not a
   settings toggle.
 - **Not vector art.** SVG is refused — see §3.

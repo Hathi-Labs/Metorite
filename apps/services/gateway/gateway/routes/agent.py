@@ -1,4 +1,4 @@
-"""Agent event routing endpoints (CommandCenter v2 — Core FastAPI router).
+"""Agent event routing endpoints (Metorite v2 — Core FastAPI router).
 
 Endpoints
 ---------
@@ -418,7 +418,7 @@ _AGENT_REGISTRY: list[dict] = [
         "description": "GTD task manager — capture, clarify, organize (Local or a connected PM workspace), and status/workload Q&A with citations.",
         "tags": ["tasks", "clickup", "project-management"],
         "status": "live",
-        # Runs through MAF (CommandCenterCopilotAgent wrapper) with BYOK model support.
+        # Runs through MAF (MetoriteCopilotAgent wrapper) with BYOK model support.
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
         "integrations": ["clickup"],
@@ -2780,7 +2780,7 @@ async def approve_pending_commit(
         else:
             # No git remote — a NATIVE MAF agent. Instead of the old no-op
             # "kept local" (which the next deploy re-seed would clobber), open a
-            # PR against the CommandCenter monorepo so the fix lands in the
+            # PR against the Metorite monorepo so the fix lands in the
             # agent's source (apps/agents/agent-<name>/) and becomes durable.
             from gateway.routes.monorepo_pr import (  # noqa: PLC0415
                 MonorepoPRError,
@@ -3346,7 +3346,7 @@ async def _git_push_with_rebase(
     # that block git rebase.  Stash them, rebase, then pop.
     stash_rc = await _git_exec(clone_dir, [
         "stash", "--include-untracked",
-        "-m", "commandcenter-approve-auto-stash",
+        "-m", "metorite-approve-auto-stash",
     ])
     stashed = stash_rc == 0
 

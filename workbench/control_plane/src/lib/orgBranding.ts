@@ -2,7 +2,7 @@
  * Organisation branding — the rules, the wording, and the lockup decision.
  *
  * A customer uploads their logo in Settings → Organization and it replaces our
- * mark in the top-left of the shell, with "powered by CommandCenter" beneath
+ * mark in the top-left of the shell, with "powered by Metorite" beneath
  * it. This module owns the parts of that with a right and a wrong answer, so
  * they can be tested without a browser or a gateway.
  *
@@ -100,7 +100,7 @@ export type Lockup =
   | { kind: "default"; title: string; caption: string };
 
 /** The caption under a customer's logo. One string, one place. */
-export const POWERED_BY = "powered by CommandCenter";
+export const POWERED_BY = "powered by Metorite";
 
 export function lockup(
   branding: OrgBranding | null | undefined,
@@ -108,7 +108,7 @@ export function lockup(
 ): Lockup {
   const logo = branding?.logo;
   if (!logo?.dataUri) {
-    return { kind: "default", title: "CommandCenter", caption: fallbackCaption };
+    return { kind: "default", title: "Metorite", caption: fallbackCaption };
   }
   return {
     kind: "org",

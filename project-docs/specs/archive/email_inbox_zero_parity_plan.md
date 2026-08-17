@@ -29,7 +29,7 @@ and Test tabs with inbox-zero depth. **All of these now exist** — remaining ga
 
 Legend: ✅ done · 🟡 partial · ❌ missing
 
-| Capability | inbox-zero | CommandCenter today | State |
+| Capability | inbox-zero | Metorite today | State |
 |---|---|---|---|
 | Rules: auto-run on new mail | yes | sync-loop hook **+ Outlook Graph webhook** (instant) | ✅ |
 | Rules: LLM "best rule" match (forced JSON) | yes | `engine.py` classifier, owner/To/Cc/about/date + guidelines | ✅ |

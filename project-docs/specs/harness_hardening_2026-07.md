@@ -6,12 +6,12 @@
 
 
 > **Status:** In progress · **Created:** 2026-07-02
-> Source: comprehensive comparison of the CommandCenter orchestrator against the practices catalogued in [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering) (agent loops, planning artifacts, context engineering, tool design, permissions, memory, evals, observability, HITL, sandboxing).
+> Source: comprehensive comparison of the Metorite orchestrator against the practices catalogued in [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering) (agent loops, planning artifacts, context engineering, tool design, permissions, memory, evals, observability, HITL, sandboxing).
 > Companions: [`archive/chat_implementation_review_2026-07.md`](archive/chat_implementation_review_2026-07.md) (streaming/HITL audit), [`llm_caching_memory.md`](llm_caching_memory.md) (caching plan), [`archive/email_tool_consolidation.md`](archive/email_tool_consolidation.md) (tool-surface plan).
 
 ## Verdict
 
-CommandCenter already matches or exceeds the reference practices on **streaming/reconnect** (detached runs + Redis Streams relay + AG-UI), **HITL** (blocking ask tools, HITL-aware watchdog, mutation-approval inbox), **memory** (Mem0 episodic + Graphiti KG + active tools + NOTES.md working memory), and **planning artifacts** (AGENTS.md contract, ADRs, per-feature specs). The material gaps, ranked by impact:
+Metorite already matches or exceeds the reference practices on **streaming/reconnect** (detached runs + Redis Streams relay + AG-UI), **HITL** (blocking ask tools, HITL-aware watchdog, mutation-approval inbox), **memory** (Mem0 episodic + Graphiti KG + active tools + NOTES.md working memory), and **planning artifacts** (AGENTS.md contract, ADRs, per-feature specs). The material gaps, ranked by impact:
 
 | # | Gap | Best practice (list) | Our state |
 |---|---|---|---|

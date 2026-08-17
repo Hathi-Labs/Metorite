@@ -73,7 +73,7 @@ const MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 const rapidtool: Theme = {
   id: "rapidtool",
   name: "RapidTool",
-  description: "The CommandCenter original — deep blue-gray surfaces, professional blue, soft glass.",
+  description: "The Metorite original — deep blue-gray surfaces, professional blue, soft glass.",
   iconPack: "lucide",
   typography: {
     app: `${GEIST}, ${SYSTEM_FALLBACK}`,

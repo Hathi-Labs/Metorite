@@ -15,7 +15,7 @@ import acb_skills.design_tools as dt
 def test_load_design_system_returns_the_real_doc():
     out = asyncio.run(dt.load_design_system())
     # Substantive content from the actual design.md body.
-    assert "Command Center" in out
+    assert "Metorite" in out
     assert "Visual theme & atmosphere" in out
     assert len(out) > 2000  # the real ~16KB doc, not the fallback string
 
@@ -26,7 +26,7 @@ def test_front_matter_is_stripped():
     assert "when_to_use:" not in out
     assert "summary:" not in out
     # …and the body should start at the H1, not a stray "---" fence.
-    assert out.lstrip().startswith("# Command Center")
+    assert out.lstrip().startswith("# Metorite")
 
 
 def test_doc_reader_is_cached_and_stable():

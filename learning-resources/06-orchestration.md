@@ -18,7 +18,7 @@ loop that makes it a production system:
 - **pausing** for human approval on risky actions,
 - and **recovering** when the agent's own code throws.
 
-In CommandCenter this lives in `apps/orchestrator` (the runner) and `packages/acb_skills` (the loader
+In Metorite this lives in `apps/orchestrator` (the runner) and `packages/acb_skills` (the loader
 and tools), fronted by the gateway's `/agent/*` routes.
 
 ---
@@ -98,7 +98,7 @@ even Copilot-SDK-backed agents run wrapped inside MAF (chapter 11/12).
 
 ## 5. Multi-agent orchestration
 
-A single agent is the common case, but MAF provides builders for coordinating several. CommandCenter's
+A single agent is the common case, but MAF provides builders for coordinating several. Metorite's
 primary mechanism is **agent-as-tool delegation**: the injected `call_agent(name, message)` /
 `call_agents_parallel(...)` tools let an orchestrator agent hand a subtask to a specialist and stream its
 progress back. MAF also offers declarative builders for fixed topologies:

@@ -1,4 +1,4 @@
-# Project Plan — CommandCenter v2
+# Project Plan — Metorite v2
 
 > **Org:** Fracktal Works · **Updated:** 2026-08-01 · **Version:** 3.1
 > Single source of truth for **what** we build (requirements), **when** (milestones), and **how much** (phased WBS). Absorbs the former `product_requirements.md` and `wbs.md`.
@@ -22,7 +22,7 @@
 
 A **headless, self-mutating, multi-agent orchestration platform** for running a company.
 
-When a company event fires (webhook from ClickUp/Zoho/Odoo, cron, or an ambient signal from email/WhatsApp/meetings), CommandCenter resolves the right specialist agent (or fans out to several), `git pull`s its persistent local clone, injects credentials from the Integration Registry, and executes it on the **Microsoft Agent Framework (MAF)** runtime. On failure, a researcher+editor **Copilot SDK mutation container** diagnoses and fixes the code, commits to the live clone, and opens a GitHub PR as the audit record — the next run picks up the fix automatically.
+When a company event fires (webhook from ClickUp/Zoho/Odoo, cron, or an ambient signal from email/WhatsApp/meetings), Metorite resolves the right specialist agent (or fans out to several), `git pull`s its persistent local clone, injects credentials from the Integration Registry, and executes it on the **Microsoft Agent Framework (MAF)** runtime. On failure, a researcher+editor **Copilot SDK mutation container** diagnoses and fixes the code, commits to the live clone, and opens a GitHub PR as the audit record — the next run picks up the fix automatically.
 
 Operators work through a thin **Control Plane** (Next.js browser UI): one unified VS Code Copilot-style chat over all agents (multi-agent fan-out, streaming tool calls), agent add/remove, integration config, LLM tier settings, an HITL approval inbox, and observability. **No in-app agent/skill editing** — all authoring is VS Code + Git.
 

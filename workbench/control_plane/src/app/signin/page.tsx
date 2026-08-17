@@ -24,7 +24,7 @@ function SignInForm() {
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
       <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8 text-center">
-        <h1 className="text-xl font-semibold">CommandCenter Control Plane</h1>
+        <h1 className="text-xl font-semibold">Metorite Control Plane</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Sign in with your Fracktal Microsoft 365 account.
         </p>

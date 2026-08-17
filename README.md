@@ -1,12 +1,12 @@
-# CommandCenter v2
+# Metorite v2
 
 > **Fracktal Works** — a headless, self‑mutating multi‑agent orchestration platform. Specialist agents live in their own GitHub repositories; skills are pip‑installable Python packages. The Core engine dynamically clones agent and skill repos at runtime, executes tasks on the **Microsoft Agent Framework (MAF)** runtime, and — when a repo is structurally broken — spawns an isolated GitHub Copilot SDK mutation container that patches the failing agent's own repo and stages the fix for human review.
 
 ---
 
-## What is CommandCenter?
+## What is Metorite?
 
-CommandCenter is the operating system for Fracktal Works. It coordinates a fleet of specialist AI agents (sales, triage, delivery, billing, reconciler, strategy, task‑manager, email‑assistant) over company data in ClickUp, Zoho CRM, Odoo ERP, Gmail/IMAP, and meetings — with human‑in‑the‑loop approval for outward writes.
+Metorite is the operating system for Fracktal Works. It coordinates a fleet of specialist AI agents (sales, triage, delivery, billing, reconciler, strategy, task‑manager, email‑assistant) over company data in ClickUp, Zoho CRM, Odoo ERP, Gmail/IMAP, and meetings — with human‑in‑the‑loop approval for outward writes.
 
 **Architecture in one sentence:** A FastAPI gateway receives chat / webhook / cron events, dynamically clones the target `agent-<name>` repository and its declared `skill-<name>` dependencies, imports the agent's `agents.py` at runtime via `importlib`, and runs it on the MAF runtime — either as a native MAF `ChatAgent` (routed through the gateway's own OpenAI‑compatible `/v1` endpoint via the LiteLLM SDK) or, for Copilot‑SDK‑backed agents, via `agent_framework_github_copilot`.
 
@@ -19,7 +19,7 @@ CommandCenter is the operating system for Fracktal Works. It coordinates a fleet
 ## Distributed repo layout
 
 ```
-FracktalWorks/CommandCenter          ← This repo: Core engine + infra
+Hathi-Labs/Metorite          ← This repo: Core engine + infra
 FracktalWorks/agent-task-manager     ← Agent: ClickUp task management
 FracktalWorks/agent-sales            ← Agent: Zoho CRM sales workflows
 FracktalWorks/agent-delivery         ← Agent: project delivery + push
@@ -78,7 +78,7 @@ Each **skill repo** is a Python package — pip‑installable, well‑typed entr
 
 ---
 
-## This repo layout (CommandCenter Core)
+## This repo layout (Metorite Core)
 
 ```
 project-docs/        # Planning docs — start with AGENTS.md

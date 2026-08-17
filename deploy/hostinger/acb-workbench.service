@@ -1,5 +1,5 @@
 [Unit]
-Description=CommandCenter Workbench (Next.js)
+Description=Metorite Workbench (Next.js)
 After=network-online.target acb-gateway.service
 Wants=network-online.target
 Requires=acb-gateway.service

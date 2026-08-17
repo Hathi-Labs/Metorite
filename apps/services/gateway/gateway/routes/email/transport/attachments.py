@@ -87,7 +87,7 @@ async def image_proxy(
                 resp = await client.get(
                     current,
                     headers={
-                        "User-Agent": "Mozilla/5.0 (CommandCenter image proxy)",
+                        "User-Agent": "Mozilla/5.0 (Metorite image proxy)",
                         "Accept": "image/*",
                     },
                 )

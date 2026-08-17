@@ -2,14 +2,14 @@
 
 Written 2026-07-28. Paste the body below into a Hostinger support ticket.
 
-> ## UPDATE 2026-07-28: this is an Airtel routing fault, and it is bigger than CommandCenter
+> ## UPDATE 2026-07-28: this is an Airtel routing fault, and it is bigger than Metorite
 >
 > Confirmed by the client: the site loads fine over 5G mobile data and fails on
 > Airtel fixed-line broadband. Follow-up testing from the Airtel connection:
 >
 > | Target | Prefix | Result |
 > | --- | --- | --- |
-> | `187.127.179.143` (CommandCenter VPS) | 187.127.179.0/24 | unreachable — trace dies at `182.79.20.133` (Airtel) |
+> | `187.127.179.143` (Metorite VPS) | 187.127.179.0/24 | unreachable — trace dies at `182.79.20.133` (Airtel) |
 > | `82.180.143.135` (**fracktal.in main website**) | 82.180.143.0/24 | unreachable — trace dies at `116.119.33.231` (Airtel) |
 > | `hostinger.com` (CDN-fronted) | — | HTTP 200 |
 >
@@ -19,7 +19,7 @@ Written 2026-07-28. Paste the body below into a Hostinger support ticket.
 > - Requesting a different IPv4 for the VPS will NOT help — a completely
 >   different Hostinger prefix is equally unreachable. Do not spend money or a
 >   change window on this.
-> - **The company's main website is affected too**, not just CommandCenter.
+> - **The company's main website is affected too**, not just Metorite.
 >   Establish blast radius first: have someone else on Airtel broadband (a
 >   colleague, another office) load `https://fracktal.in`. If it fails for them
 >   too, Airtel-connected customers cannot reach the company site, which is a
@@ -156,6 +156,6 @@ registrar's NS delegation.
 
 ## Confirming the diagnosis in one minute
 
-Load `https://commandcenter.fracktal.in` on a phone with wifi **off** (mobile
+Load `https://metorite.fracktal.in` on a phone with wifi **off** (mobile
 data). If it loads, the server is fine and the fault is the fixed-line ISP
 path. That single test is worth more than any further server-side inspection.

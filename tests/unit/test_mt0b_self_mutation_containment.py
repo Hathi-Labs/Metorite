@@ -2,7 +2,7 @@
 
 Root ``AGENTS.md`` non-negotiable 3 has said this since it was written: native
 MAF agents land approved self-mutations by opening a PR against **this**
-CommandCenter monorepo, and "third parties must never push to the shared
+Metorite monorepo, and "third parties must never push to the shared
 monorepo". Nothing enforced it, and ``work_plan.md`` WS-3 records why — no
 ``first_party`` field existed anywhere, "the phrase occurs only in comments and
 one test helper".

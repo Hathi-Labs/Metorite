@@ -1,6 +1,6 @@
 # WhatsApp Message Manager — plan & feature brainstorm
 
-> **Product:** CommandCenter · **Feature:** WhatsApp channel vertical (channel #2, after email)
+> **Product:** Metorite · **Feature:** WhatsApp channel vertical (channel #2, after email)
 > **Created:** 2026-07-23 · **Revised:** 2026-07-23 (v3 — calm-UI pass grounded in a prior-art
 > study; v2 — official WhatsApp Business Platform only, per founder decision; unofficial
 > linked-device routes dropped)
@@ -67,7 +67,7 @@ company actually transacts — still runs raw on a phone:
 
 The email vertical is the template; almost every hard part has a proven home.
 This is the single strongest argument for building WhatsApp *inside*
-CommandCenter rather than buying a WhatsApp inbox SaaS.
+Metorite rather than buying a WhatsApp inbox SaaS.
 
 | WhatsApp need | Existing machinery to mirror/reuse | Where |
 |---|---|---|

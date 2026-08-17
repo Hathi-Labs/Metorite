@@ -1,6 +1,6 @@
-"""commandcenter — Self-anneal agent for the CommandCenter platform.
+"""metorite — Self-anneal agent for the Metorite platform.
 
-A GitHub Copilot SDK agent that works on the CommandCenter repository itself.
+A GitHub Copilot SDK agent that works on the Metorite repository itself.
 Uses the Copilot SDK's native file operations, shell commands, and git tooling
 to read, edit, test, and improve the CC codebase.
 
@@ -28,7 +28,7 @@ else:
     SYSTEM_PROMPT = (
         _AGENTS_MD.read_text(encoding="utf-8", errors="replace")
         if _AGENTS_MD.exists()
-        else "You are the CommandCenter self-anneal agent."
+        else "You are the Metorite self-anneal agent."
     )
 
 
@@ -100,14 +100,14 @@ SYSTEM_PROMPT = _append_skills(SYSTEM_PROMPT)
 
 
 def build_agent():
-    """Return a GitHubCopilotAgent configured for the CommandCenter repo."""
+    """Return a GitHubCopilotAgent configured for the Metorite repo."""
     from agent_framework_github_copilot import GitHubCopilotAgent  # type: ignore[import]  # noqa: PLC0415
     from copilot.types import PermissionHandler  # type: ignore[import]  # noqa: PLC0415
 
     return GitHubCopilotAgent(
-        name="commandcenter",
+        name="metorite",
         description=(
-            "Self-anneal agent for the CommandCenter orchestration platform "
+            "Self-anneal agent for the Metorite orchestration platform "
             "— edit code, run tests, debug issues, review agent repos, "
             "and improve the CC platform itself."
         ),

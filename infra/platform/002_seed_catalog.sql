@@ -14,7 +14,7 @@
 -- moves by an operator write or a later migration, never by an edit to this
 -- file being re-run.
 --
--- ⚠️ Two packages below name Centers that CommandCenter does not yet register
+-- ⚠️ Two packages below name Centers that Metorite does not yet register
 -- (`rnd`, `support`). That is deliberate and visible: D22 put both on the Center
 -- roster of record, while `lib/centers.ts` + `EXPECTED_CENTER_SLUGS` still list
 -- six. The catalog is allowed to be ahead of the product — but they are seeded

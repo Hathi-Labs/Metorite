@@ -1,4 +1,4 @@
--- CommandCenter — Runtime-mutable model configuration.
+-- Metorite — Runtime-mutable model configuration.
 -- Replaces git-tracked files that `git reset --hard origin/main` wiped on every
 -- deploy (symptom: hidden models reappeared, tier assignments reverted):
 --   - infra/enabled_models.json        → key 'enabled_models'

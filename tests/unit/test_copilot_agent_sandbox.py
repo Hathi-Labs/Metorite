@@ -1,4 +1,4 @@
-"""`CommandCenterCopilotAgent.start()`'s BO-7 phase 2 sandbox branch.
+"""`MetoriteCopilotAgent.start()`'s BO-7 phase 2 sandbox branch.
 
 When `_sandbox_cli_url` is set (by code_session.py/executor.py after spawning
 a copilot_sandbox container), start() must connect via the SDK's `cli_url`
@@ -12,7 +12,7 @@ from typing import ClassVar
 
 import pytest
 from agent_framework_github_copilot import GitHubCopilotAgent
-from orchestrator.copilot_agent import CommandCenterCopilotAgent
+from orchestrator.copilot_agent import MetoriteCopilotAgent
 
 
 class _FakeCopilotClient:
@@ -45,7 +45,7 @@ async def test_sandbox_cli_url_uses_tcp_transport_not_token(monkeypatch):
     monkeypatch.delenv("GITHUB_COPILOT_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    agent = CommandCenterCopilotAgent(name="code-task", instructions="x")
+    agent = MetoriteCopilotAgent(name="code-task", instructions="x")
     agent._sandbox_cli_url = "127.0.0.1:54321"
 
     await agent.start()
@@ -69,7 +69,7 @@ async def test_no_sandbox_url_falls_back_to_existing_token_path(monkeypatch):
     monkeypatch.setattr(GitHubCopilotAgent, "start", _fake_base_start)
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-token")
 
-    agent = CommandCenterCopilotAgent(name="code-task", instructions="x")
+    agent = MetoriteCopilotAgent(name="code-task", instructions="x")
     # _sandbox_cli_url intentionally left unset (the normal, non-sandboxed case).
 
     await agent.start()

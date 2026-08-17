@@ -58,7 +58,7 @@
 > filter, `chat_session_agent`). Room memory compartments shipped 2026-07-30
 > ([`memory-clearance.md`](memory-clearance.md) §7).
 
-Turn CommandCenter agent sessions from a thousand private threads into **rooms** — shared,
+Turn Metorite agent sessions from a thousand private threads into **rooms** — shared,
 live, durable places where several people and one agent work the same problem together.
 Anyone on the team can drop into a running session to watch it work, redirect it, and hand
 it off, the way they would with a human teammate.
@@ -124,7 +124,7 @@ Interactive mockups live alongside this doc:
 
 **We are closer than it looks.** The hard part of multiplayer agents is not the UI — it is a
 durable, ordered, replayable event log per session; runs that survive the client that started
-them; and control commands that reach the right worker. CommandCenter already has all three,
+them; and control commands that reach the right worker. Metorite already has all three,
 and all three are **keyed by `thread_id`, not by user**. Nothing in the transport is
 single-player.
 
@@ -1157,7 +1157,7 @@ memory-clearance wins.
 ## 11. Summary
 
 The framing is right: agents are the one powerful new tool people still use alone. For
-CommandCenter the gap between here and multiplayer is smaller than it looks, because the
+Metorite the gap between here and multiplayer is smaller than it looks, because the
 substrate — a durable per-thread event log, detached runs, cross-worker control, replay from
 a cursor — was already built for reconnection and is user-agnostic.
 

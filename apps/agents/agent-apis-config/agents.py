@@ -1,6 +1,6 @@
 """agent-apis-config — API Configuration Assistant.
 
-Helps users discover, add, and configure API connections for CommandCenter.
+Helps users discover, add, and configure API connections for Metorite.
 Uses web_search (SerpAPI) to find accurate API documentation and authentication guides.
 
 Exports:
@@ -17,7 +17,7 @@ from agent_framework_github_copilot import GitHubCopilotAgent
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_FILE.exists() else (
-    "You are the CommandCenter API Configuration Assistant. "
+    "You are the Metorite API Configuration Assistant. "
     "Help users discover and configure API connections."
 )
 

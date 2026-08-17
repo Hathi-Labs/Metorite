@@ -1,9 +1,9 @@
-# CommandCenter vs. Hermes Agent vs. OpenClaw
+# Metorite vs. Hermes Agent vs. OpenClaw
 
-> Competitive analysis — where CommandCenter stands against the two most-visible
+> Competitive analysis — where Metorite stands against the two most-visible
 > self-hosted agent platforms of 2026, and what we should steal from each.
 >
-> Compiled 2026-07-12. CommandCenter facts are from an evidence-based code audit
+> Compiled 2026-07-12. Metorite facts are from an evidence-based code audit
 > (cross-checked against `FOUNDATION_AUDIT_REPORT.md` / `FOUNDATION_BUILDOUT_CHECKLIST.md`).
 > Competitor facts are from their GitHub repos, official docs, NVIDIA writeups, and
 > security reporting. Fast-moving figures (stars, skill counts, channel counts) are
@@ -15,7 +15,7 @@
 
 **We are not really competing with Hermes or OpenClaw — we're in an adjacent category.**
 Both of them are *self-hosted, single-user, personal autonomous agents* you talk to
-from your chat apps. CommandCenter is an *enterprise, multi-agent, source-of-truth-mirroring
+from your chat apps. Metorite is an *enterprise, multi-agent, source-of-truth-mirroring
 orchestration platform for running a company*, with human-in-the-loop approval as a
 first-class governance layer.
 
@@ -39,7 +39,7 @@ permission enforcement) using patterns they've already proven.
 
 ## 1. Category positioning
 
-| | **CommandCenter** | **Hermes Agent** (Nous Research) | **OpenClaw** (formerly Clawdbot) |
+| | **Metorite** | **Hermes Agent** (Nous Research) | **OpenClaw** (formerly Clawdbot) |
 |---|---|---|---|
 | **What it is** | Headless multi-agent orchestration platform for running a company | Self-hosted, always-on personal autonomous agent | Self-hosted personal AI assistant living in your chat apps |
 | **Primary user** | A company (team, multi-user, governed) | One power user / developer | One prosumer / developer |
@@ -61,7 +61,7 @@ foundation code where our own is thin."*
 
 Legend: ✅ real / mature · ◑ partial or default-off · ⚠️ designed-but-not-enforced · ✖ absent
 
-| Capability | CommandCenter | Hermes | OpenClaw |
+| Capability | Metorite | Hermes | OpenClaw |
 |---|---|---|---|
 | Agent execution runtime | ✅ MAF executor (real, but monolithic god-file) | ✅ unified `AIAgent` core | ✅ Gateway agent loop |
 | **BYO-LLM, many providers** | ✅ LiteLLM SDK (7+ providers + vLLM) | ✅ 300+ models, per-tool routing, MoA | ✅ provider/model + failover |
@@ -272,10 +272,10 @@ Ordered by leverage. Each ties to an existing audit item where one exists.
 
 | Dimension | Winner | Why |
 |---|---|---|
-| Enterprise governance (RBAC, HITL, audit, source-of-truth) | **CommandCenter** (by design) | Neither competitor attempts it — but ours is partly designed-not-enforced |
-| Eval / regression testing | **CommandCenter** | Only one of the three with a real harness |
-| Secrets at rest | **CommandCenter** | Fernet+PBKDF2 BYOK store |
-| Multi-agent orchestration (concept) | **CommandCenter**; (mechanics) **Hermes** | Our category, but Hermes's coordination is more built-out |
+| Enterprise governance (RBAC, HITL, audit, source-of-truth) | **Metorite** (by design) | Neither competitor attempts it — but ours is partly designed-not-enforced |
+| Eval / regression testing | **Metorite** | Only one of the three with a real harness |
+| Secrets at rest | **Metorite** | Fernet+PBKDF2 BYOK store |
+| Multi-agent orchestration (concept) | **Metorite**; (mechanics) **Hermes** | Our category, but Hermes's coordination is more built-out |
 | Security *as implemented* | **Hermes** | 7-layer, fail-closed, sandboxed — we're designed-not-enforced |
 | Local / on-prem model story | **Hermes** | NVIDIA RTX/DGX + Ollama/LM Studio/llama.cpp |
 | Self-improving skills | **Hermes** | The Curator loop is a real differentiator |
@@ -283,7 +283,7 @@ Ordered by leverage. Each ties to an existing audit item where one exists.
 | Channel breadth + ops robustness | **OpenClaw** | 26–29 channels + the best job queue |
 | Skill ecosystem size | **OpenClaw** | ClawHub — though ~12% malicious |
 | Out-of-the-box "it just works" | **OpenClaw / Hermes** | Ours needs infra + config before it does anything |
-| Not being a security liability | **CommandCenter** (design) / **Hermes** (impl) | OpenClaw is the cautionary tale |
+| Not being a security liability | **Metorite** (design) / **Hermes** (impl) | OpenClaw is the cautionary tale |
 
 **Bottom line:** we're building the right thing for a harder problem, and on paper we out-design both.
 The gap is execution on the foundation — security enforcement, channels/queue, and turning our own

@@ -1,4 +1,4 @@
-"""Test ASSISTANT_MESSAGE deduplication in CommandCenterCopilotAgent.
+"""Test ASSISTANT_MESSAGE deduplication in MetoriteCopilotAgent.
 
 Verifies that when the Copilot SDK fires both ASSISTANT_MESSAGE_DELTA
 (token-by-token) and ASSISTANT_MESSAGE (full content) during streaming,
@@ -66,10 +66,10 @@ class TestCopilotMessageDedup:
 
     @pytest.fixture
     def agent(self) -> Any:
-        """Create a CommandCenterCopilotAgent with mocked Copilot client."""
-        from orchestrator.copilot_agent import CommandCenterCopilotAgent
+        """Create a MetoriteCopilotAgent with mocked Copilot client."""
+        from orchestrator.copilot_agent import MetoriteCopilotAgent
 
-        agent = CommandCenterCopilotAgent(
+        agent = MetoriteCopilotAgent(
             name="test-agent",
             instructions="You are a test agent.",
         )
@@ -93,7 +93,7 @@ class TestCopilotMessageDedup:
         Events are fed in a background task so the stream can consume them.
         Returns the list of AgentResponseUpdate objects yielded.
         """
-        from orchestrator.copilot_agent import CommandCenterCopilotAgent
+        from orchestrator.copilot_agent import MetoriteCopilotAgent
 
         # Intercept on() to feed events in background after callback is set.
         _orig_on = _MockCopilotSession.on
@@ -136,12 +136,12 @@ class TestCopilotMessageDedup:
                 _MockCopilotSession, "on", _on_wrapper,
             ),
             patch.object(
-                CommandCenterCopilotAgent,
+                MetoriteCopilotAgent,
                 "_get_or_create_session",
                 _fake_get_or_create_session,
             ),
             patch.object(
-                CommandCenterCopilotAgent,
+                MetoriteCopilotAgent,
                 "_run_before_providers",
                 _fake_run_before_providers,
             ),

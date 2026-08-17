@@ -1070,7 +1070,7 @@ async def _maybe_classify_threads(account_id: str) -> None:
     projection of the rules and never a parallel classifier.
 
     Sent-last GAP threads mean a NEW outbound message arrived — whether sent via
-    Command Center OR the user's native email client. They get the SAME AI status
+    Metorite OR the user's native email client. They get the SAME AI status
     determination + label swap as a CC-initiated reply (``_mark_thread_replied``),
     so a reply sent from Gmail/Outlook directly still reaches Awaiting/Done and
     loses its "Reply" label — inbox-zero handleOutboundMessage parity. This is

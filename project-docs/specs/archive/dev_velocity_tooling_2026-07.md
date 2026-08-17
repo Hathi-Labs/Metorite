@@ -15,7 +15,7 @@
 
 ## Verdict
 
-CommandCenter's structural hygiene is already strong (DOX AGENTS.md hierarchy,
+Metorite's structural hygiene is already strong (DOX AGENTS.md hierarchy,
 uv workspace, per-package pyproject, tool_scope, eval trajectories). The gap is
 **enforcement pressure against complexity growth** and **structural code
 intelligence for agents**. Three layers, ranked by ROI:
@@ -115,7 +115,7 @@ and doesn't fit a shared-VPS runtime agent.
 **Shipped (config only — the tool install is one-time per developer):**
 - `.mcp.json` at repo root — Claude Code's project-scoped MCP config, so any
   coding agent in this repo gets the `codegraph_explore` tool automatically.
-- `codegraph.json` — CommandCenter-specific index excludes (generated SQL,
+- `codegraph.json` — Metorite-specific index excludes (generated SQL,
   migrations, `.next/`, learning-resources, `project-docs/`) on top of
   CodeGraph's defaults.
 - `.gitignore` — `.codegraph/` + db files (the local index is per-checkout,
@@ -135,7 +135,7 @@ dev can't install CodeGraph).
 The "periodic review for maintainability" philosophy, made durable, as a
 **measure → flag → plan → refactor → re-measure** loop with a *measurable*
 target (complexity/LOC/MI), not a vibe. Runs as **GitHub Actions**, not an
-in-app agent — the scout confirmed CommandCenter deliberately has "no in-app
+in-app agent — the scout confirmed Metorite deliberately has "no in-app
 cron for agents," and CI needs zero new runtime, secrets, or VPS process.
 
 **Shipped:**

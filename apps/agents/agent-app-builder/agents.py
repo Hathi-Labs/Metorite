@@ -22,7 +22,7 @@ _BUILD_SCRIPT = Path(__file__).parent / "build" / "build_t2.mjs"
 _INSTALL_SCRIPT = Path(__file__).parent / "build" / "install_t2_deps.mjs"
 
 _RAW_INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_FILE.exists() else (
-    "You are the CommandCenter App Workshop builder. "
+    "You are the Metorite App Workshop builder. "
     "Edit the app workspace's index.html; keep it valid after every round."
 )
 # The T2 (React) build/install commands are literal, concrete strings in the

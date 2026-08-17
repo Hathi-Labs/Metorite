@@ -8,17 +8,17 @@ from acb_skills import find_agent_md, load_agent_md, parse_agent_md
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_parse_real_commandcenter_agent_md() -> None:
-    """The repo's own .github/agents/commandcenter.agent.md parses fully."""
-    spec = load_agent_md(REPO_ROOT, "commandcenter")
+def test_parse_real_metorite_agent_md() -> None:
+    """The repo's own .github/agents/metorite.agent.md parses fully."""
+    spec = load_agent_md(REPO_ROOT, "metorite")
     assert spec is not None
-    assert spec.name == "CommandCenter"
+    assert spec.name == "Metorite"
     assert spec.model == "claude-sonnet-4-5"
     # tools frontmatter is the VS Code Copilot vocabulary (advisory).
     assert "editFiles" in spec.tools
     assert "terminal" in spec.tools
     # the markdown body becomes the agent's system prompt.
-    assert spec.body.startswith("# CommandCenter Self-Anneal Agent")
+    assert spec.body.startswith("# Metorite Self-Anneal Agent")
     assert "senior software engineer" in spec.body
 
 

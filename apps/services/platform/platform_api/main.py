@@ -74,7 +74,7 @@ from platform_api.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
 _log = logging.getLogger("platform.router")
 
 app = FastAPI(
-    title="CommandCenter Control Plane",
+    title="Metorite Control Plane",
     description=(
         "Organizations, seats, subscriptions and AI metering. Cross-tenant by "
         "design (saas_multitenancy.md §0.9.2) — never exposed to a tenant."

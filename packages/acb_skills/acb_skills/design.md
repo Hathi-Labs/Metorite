@@ -1,28 +1,28 @@
 ---
-name: Command Center design system (DESIGN.md)
+name: Metorite design system (DESIGN.md)
 when_to_use: >
   Load before writing a full-page HTML or Markdown report, or any bespoke
   custom HTML/CSS for an emit_generative_ui "html" node, so the output matches
-  the Command Center look. You do NOT need it for named emit_generative_ui
+  the Metorite look. You do NOT need it for named emit_generative_ui
   templates — those are already on-brand by construction.
 summary: >
   Palette tokens (--cc-*), typography, spacing, motion, dark/light theming, and
   the full-page report block kit (cc-report, cc-eyebrow, cc-grid, cc-compare…).
 ---
 
-# Command Center — DESIGN.md
+# Metorite — DESIGN.md
 
 This is the single source of truth for how any UI, document, report, or HTML you
 generate should look. Everything you render — a Markdown report, an HTML page, an
 `emit_generative_ui` card, a full-page interactive report — must follow this
-design language so it feels native to Command Center. When you write HTML/CSS,
+design language so it feels native to Metorite. When you write HTML/CSS,
 use these exact tokens instead of inventing colors or spacing.
 
 ---
 
 ## 1. Visual theme & atmosphere
 
-Command Center is a **dark-first, professional, technical control surface** —
+Metorite is a **dark-first, professional, technical control surface** —
 think a calm mission-control console, not a marketing page. It is precise,
 low-noise, and confident. Surfaces are deep blue-grey; content sits on subtly
 elevated cards; a single blue accent carries interactivity and a warm orange
@@ -40,7 +40,7 @@ variables (`var(--primary)` etc.); in generated HTML sandboxes they are
 pre-injected as `--cc-*` variables (see §9).
 
 ⚠️ **The HSL values in the table below are ONE theme's, and they are there to
-tell you what a role means — not to be copied.** CommandCenter is themed:
+tell you what a role means — not to be copied.** Metorite is themed:
 Settings → Appearance switches the whole org between RapidTool, Fluent, Material
 and Graphite, which disagree about palette, corner radius, icon set and control
 behaviour. The token resolves to whatever is active when your artifact is
@@ -356,7 +356,7 @@ listed here always exists, and one that exists is always listed.
 
 **Report design kit (USE THESE for full-page HTML documents & reports).** A set of
 pre-styled, on-brand building blocks is available — write terse semantic HTML with
-these class names and you get a polished Command Center report with zero custom CSS.
+these class names and you get a polished Metorite report with zero custom CSS.
 Wrap the whole document in `<div class="cc-report">…</div>`. Blocks:
 
 - `cc-eyebrow` — a mono uppercase kicker with a leading rule (section label).
@@ -457,5 +457,5 @@ plain-text chat reply.
   onto the dark app.
 
 The guiding test for anything you generate: **would it look at home dropped into
-the Command Center app?** If yes, ship it. If it looks like a generic Bootstrap
+the Metorite app?** If yes, ship it. If it looks like a generic Bootstrap
 page, rework it against this document.

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS organization (
 );
 
 COMMENT ON TABLE organization IS
-    'The customer company. One row per company that bought CommandCenter; the '
+    'The customer company. One row per company that bought Metorite; the '
     'authority for "which companies exist" that no single tenant deployment can '
     'answer (platform_control_plane.md §3.1).';
 

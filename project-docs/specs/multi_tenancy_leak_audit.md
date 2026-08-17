@@ -17,7 +17,7 @@
 
 The Projects retrofit is contained, WS-29a/b does it correctly (§3, S2-8), and it is contained
 for a reason that does not generalise: **Projects has one visibility seam and nothing else in
-CommandCenter does.** So the remaining leak surface is precisely the set of paths that never
+Metorite does.** So the remaining leak surface is precisely the set of paths that never
 build a `Visibility` at all — and they are the ones that matter most. The admin plane
 resolves its organization from a hard-coded slug; LLM and integration credentials are one row
 per provider for the whole deployment; the event bus fans every tenant's events into every

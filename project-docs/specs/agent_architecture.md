@@ -10,7 +10,7 @@
 > rebuild working code. §12.1 is the inventory; §12.2 is the ticket list that assumes it.
 
 How an agent is defined, what it can see at each layer, how its knowledge is authored, and how
-it gets permanently better — for agents that live **inside CommandCenter**: first-party agents
+it gets permanently better — for agents that live **inside Metorite**: first-party agents
 in `apps/agents/`, and agents built in-platform by the upcoming **Agent Workshop**
 (`/build/agents` — `department_centers.md` §1).
 
@@ -113,7 +113,7 @@ everyone.
 rows by `(table, key, user_scope)` where *"`user_scope` `''` = shared row, else a per-user
 partition."* That is exactly the instance key proposed for the blob store in
 [`memory_architecture.md`](memory_architecture.md) §6.1 — so it follows an existing
-CommandCenter convention rather than inventing one.
+Metorite convention rather than inventing one.
 
 ---
 
@@ -719,7 +719,7 @@ so the shape is visible; nobody should be sent at them until they are ticketed t
 §12.2 tickets A0/A1/A/B are. D and E additionally block on §13 Q1 (where a declarative
 agent's KB lives) — that is a decision this spec does not record, not a build.
 
-**On Phase C's priority.** Command Center is an **internal Fracktal tool**: the team uses it,
+**On Phase C's priority.** Metorite is an **internal Fracktal tool**: the team uses it,
 there are no external tenants. *[Premise dated 2026-08-09: true until the first external
 tenant — D15/WS-29; the Workshop's bounded-by-headcount value re-opens at MT-2.]* So the
 Agent Workshop's describe-to-create flow is about

@@ -1,5 +1,5 @@
 {
-  "//": "CodeGraph index config — see project-docs/specs/dev_velocity_tooling_2026-07.md (Phase 2). CodeGraph already excludes node_modules/.venv/dist/build/.next and respects .gitignore; these are the CommandCenter-specific additions so the symbol graph stays focused on the Python + TS source that coding agents actually edit.",
+  "//": "CodeGraph index config — see project-docs/specs/dev_velocity_tooling_2026-07.md (Phase 2). CodeGraph already excludes node_modules/.venv/dist/build/.next and respects .gitignore; these are the Metorite-specific additions so the symbol graph stays focused on the Python + TS source that coding agents actually edit.",
   "exclude": [
     "infra/postgres/schema.generated.sql",
     "**/migrations/**",

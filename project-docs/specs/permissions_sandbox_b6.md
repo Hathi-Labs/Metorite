@@ -515,7 +515,7 @@ An agent asked to "finish P5-b" builds **P5-b.2 only** and refuses this by name.
 > survives but the premise below is dated and the un-park trigger changed — it is the
 > **pooled cutover**, not "a second organisation".
 >
-> **Why this is parked, not cancelled.** Command Center is an **internal Fracktal
+> **Why this is parked, not cancelled.** Metorite is an **internal Fracktal
 > tool**. The team uses it; there are no external tenants and no customer-authored
 > agents. So the isolation ladder has to hold up to **trusted colleagues, not
 > hostile users** — and against that threat model the failure modes that matter

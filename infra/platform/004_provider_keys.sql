@@ -6,7 +6,7 @@
 -- ⚠️ **Why this is not `acb_llm.key_store`.** That store exists and works, and
 -- reusing it was the obvious move — but it reads the **tenant** database
 -- (`acb_llm/key_store.py` imports `acb_common`, and its rows are keyed
--- `(organization_id, provider)` inside each CommandCenter deployment). The
+-- `(organization_id, provider)` inside each Metorite deployment). The
 -- Router is on the other side of the boundary: it holds OUR provider accounts,
 -- centrally, and calls providers on behalf of every customer. Pointing it at a
 -- tenant database would put our Anthropic/DeepSeek credentials on a customer's
@@ -48,5 +48,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS provider_credential_live_uniq
 
 COMMENT ON TABLE provider_credential IS
     'The Router''s provider accounts. Distinct from acb_llm.key_store, which is '
-    'the TENANT-side store inside each CommandCenter deployment — these '
+    'the TENANT-side store inside each Metorite deployment — these '
     'credentials are ours and must never sit on a customer box.';

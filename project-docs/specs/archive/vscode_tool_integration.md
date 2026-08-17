@@ -7,9 +7,9 @@
 
 ## 1. Overview
 
-Integrate 6 VS Code Copilot Chat tools into CommandCenter to improve UX:
+Integrate 6 VS Code Copilot Chat tools into Metorite to improve UX:
 
-| Priority | Tool | VS Code Name | CommandCenter Name | Status |
+| Priority | Tool | VS Code Name | Metorite Name | Status |
 |---|---|---|---|---|
 | 🔴 High | HITL questions | `vscode_askQuestions` | `ask_questions` | ✅ Backend + Frontend |
 | 🔴 High | Error checking | `get_errors` | `get_errors` | ✅ Backend |

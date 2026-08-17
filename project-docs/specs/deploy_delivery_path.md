@@ -254,11 +254,11 @@ behaviour changes (#354, #355, #356). Rollback is the 09:29 dump, restored per
 ```bash
 # delivery works end to end
 git -C /opt/acb/app -c safe.directory=/opt/acb/app rev-parse HEAD
-git ls-remote https://github.com/FracktalWorks/CommandCenter main
+git ls-remote https://github.com/Hathi-Labs/Metorite main
 
 # the app is serving, from OUTSIDE the box
-curl -s -o /dev/null -w '%{http_code}\n' https://api.commandcenter.fracktal.in/health
-curl -s -o /dev/null -w '%{http_code}\n' https://commandcenter.fracktal.in
+curl -s -o /dev/null -w '%{http_code}\n' https://api.metorite.fracktal.in/health
+curl -s -o /dev/null -w '%{http_code}\n' https://metorite.fracktal.in
 
 # recent deploy outcomes
 gh run list --workflow deploy.yml --limit 10
@@ -388,7 +388,7 @@ identity-bearing health signal (commit SHA in `/health`) closes it.
 ```ini
 # /etc/systemd/system/acb-pull.service
 [Unit]
-Description=CommandCenter pull-based delivery (apply origin/release)
+Description=Metorite pull-based delivery (apply origin/release)
 After=network-online.target
 Wants=network-online.target
 
@@ -411,7 +411,7 @@ sudo mkdir -p /var/lib/acb && sudo chown acb:acb /var/lib/acb
 ```ini
 # /etc/systemd/system/acb-pull.timer
 [Unit]
-Description=Poll for released CommandCenter commits
+Description=Poll for released Metorite commits
 
 [Timer]
 OnBootSec=3min

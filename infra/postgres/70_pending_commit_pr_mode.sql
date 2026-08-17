@@ -1,7 +1,7 @@
 -- Native-MAF mutation → monorepo PR (Part 1).
 --
 -- ⚠️ DEV-ONLY MECHANISM — MUST BE REPLACED BEFORE PRODUCTION / MULTI-TENANCY.
--- Landing an agent's self-mutation as a PR against the shared Command Center
+-- Landing an agent's self-mutation as a PR against the shared Metorite
 -- monorepo is acceptable only while every agent is first-party and Command
 -- Center is a work in progress. Third parties / customers must NOT push to the
 -- shared monorepo. Swap for a tenant-isolated mechanism before production.
@@ -10,7 +10,7 @@
 -- A native MAF agent (runtime "maf", local_path only) runs from an isolated
 -- local-only clone with NO git remote, so approving its self-mutation used to
 -- be a no-op ("kept local") and the change was silently clobbered on the next
--- deploy re-seed. Instead, approval now opens a PR against the CommandCenter
+-- deploy re-seed. Instead, approval now opens a PR against the Metorite
 -- monorepo that edits apps/agents/agent-<name>/ in place — so an approved fix
 -- becomes durable, reviewable source that ships on the next deploy.
 --
@@ -20,7 +20,7 @@
 ALTER TABLE pending_commit
     -- 'push'   → agent has its own git remote; approve pushes there (Copilot,
     --            or a GitHub-sourced MAF agent). Existing behaviour.
-    -- 'monorepo_pr' → native MAF agent; approve opens a CommandCenter PR.
+    -- 'monorepo_pr' → native MAF agent; approve opens a Metorite PR.
     ADD COLUMN IF NOT EXISTS mutation_mode TEXT NOT NULL DEFAULT 'push'
         CHECK (mutation_mode IN ('push', 'monorepo_pr')),
     -- The monorepo path the agent's source lives at, e.g.

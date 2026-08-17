@@ -1,7 +1,7 @@
 # 07 · How an Agent Works
 
 Strip away the orchestration and an "agent" is a small, precise idea: **an LLM in a loop that can call
-tools.** This chapter dissects that idea — the anatomy of an agent, the run loop, and how CommandCenter
+tools.** This chapter dissects that idea — the anatomy of an agent, the run loop, and how Metorite
 expects agents to be structured — so you understand what's actually happening inside the "RUN" box of the
 core loop.
 
@@ -11,7 +11,7 @@ core loop.
 
 An agent is four things bound together:
 
-| Part | What it is | In CommandCenter |
+| Part | What it is | In Metorite |
 |---|---|---|
 | **Instructions** | The system prompt — identity, goals, rules, tone. | An `instructions.md` / built system prompt per agent. |
 | **Tools** | Functions the model may call to read/write the world. | Python functions declared by the agent + platform tools injected at load (chapter 08). |
@@ -107,7 +107,7 @@ no new primitive — it's the same run loop, nested.
 
 ## 5. What makes an agent *good* (hard-won practicalities)
 
-The CommandCenter codebase encodes several lessons that transfer to any agent you build:
+The Metorite codebase encodes several lessons that transfer to any agent you build:
 
 1. **Scope the tools.** More tools ≠ better. Past ~a dozen, model accuracy at *choosing* the right tool
    degrades. Agents declare a `tool_scope` whitelist so each gets only what it needs.

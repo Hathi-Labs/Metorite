@@ -1,4 +1,4 @@
-"""On-demand Command Center design system (generative_ui_2 §7 follow-up).
+"""On-demand Metorite design system (generative_ui_2 §7 follow-up).
 
 ``design.md`` is ~5.5k tokens. Injecting it into every prompt was the first
 mistake (fixed by making it a tool); returning ALL of it on every call was the
@@ -102,11 +102,11 @@ def _core() -> str:
 
 
 async def load_design_system(section: str = "") -> str:
-    """Load the Command Center design system (palette, type, motion, block kits).
+    """Load the Metorite design system (palette, type, motion, block kits).
 
     Call this BEFORE you write a full-page HTML or Markdown **report**, or any
     bespoke **custom HTML/CSS** for an ``emit_generative_ui`` ``html`` node, so
-    the result matches the Command Center look. You do NOT need it for named
+    the result matches the Metorite look. You do NOT need it for named
     ``emit_generative_ui`` templates — those are already on-brand — nor for a
     quick plain-text reply.
 

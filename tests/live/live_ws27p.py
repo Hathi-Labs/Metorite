@@ -13,7 +13,7 @@ import uuid
 os.environ["DATABASE_URL"] = (
     "postgresql+asyncpg://postgres@/cc?host=/var/tmp&port=55432"
 )
-sys.path.insert(0, "/home/user/CommandCenter/apps/services/gateway")
+sys.path.insert(0, "/home/user/Metorite/apps/services/gateway")
 
 from acb_auth import UserContext  # noqa: E402
 from gateway.db import get_db  # noqa: E402

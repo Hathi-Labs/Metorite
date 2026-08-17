@@ -88,7 +88,7 @@ async def github_search(
                 url,
                 headers={
                     "Accept": "application/vnd.github.v3+json",
-                    "User-Agent": "CommandCenter/1.0",
+                    "User-Agent": "Metorite/1.0",
                 },
             )
             resp.raise_for_status()
@@ -174,7 +174,7 @@ async def github_repo_search(repo: str, query: str = "") -> str:
                 url,
                 headers={
                     "Accept": "application/vnd.github.v3+json",
-                    "User-Agent": "CommandCenter/1.0",
+                    "User-Agent": "Metorite/1.0",
                 },
             )
             resp.raise_for_status()

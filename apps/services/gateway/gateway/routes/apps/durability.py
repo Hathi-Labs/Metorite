@@ -44,7 +44,7 @@ from sqlalchemy import text
 
 # Same identity + best-effort stance as lifecycle._git_init; checkpoints are
 # short-lived local ops so they get a tighter timeout than the scaffold.
-_GIT_IDENT = ("-c", "user.name=Command-Center", "-c", "user.email=command-center@local")
+_GIT_IDENT = ("-c", "user.name=Metorite", "-c", "user.email=metorite@local")
 _GIT_TIMEOUT_S = 10
 
 CHECKPOINT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")

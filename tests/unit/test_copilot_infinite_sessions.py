@@ -210,11 +210,11 @@ def test_off_flows_through_to_client(monkeypatch) -> None:
 # Every test above exercises the wrap in ISOLATION, which is why they all stayed
 # green while production silently bypassed the fix: `run_agent_stream` installs
 # the wrap via _inject_agent_tools, then REBINDS `agent._create_session` to
-# CommandCenterCopilotAgent's method (executor.py:2361) — discarding the wrap
+# MetoriteCopilotAgent's method (executor.py:2361) — discarding the wrap
 # before agent.run() ever calls it. So the Copilot backend kept running its
 # default 0.80/0.95 compaction against its wrong ~90K BYOK window guess.
 # The policy now lives in `effective_infinite_sessions` and is applied by the
-# CommandCenter session methods directly, so it survives any binding order.
+# Metorite session methods directly, so it survives any binding order.
 
 
 class _RebindFakeClient:
@@ -231,7 +231,7 @@ class _RebindFakeClient:
 
 
 class _RebindAgent:
-    """Shaped enough to run the REAL CommandCenterCopilotAgent session methods."""
+    """Shaped enough to run the REAL MetoriteCopilotAgent session methods."""
 
     def __init__(self, *, byok: bool = False) -> None:
         self._client = _RebindFakeClient()
@@ -250,11 +250,11 @@ class _RebindAgent:
 
 def _rebind(agent):
     """Reproduce executor.py:2361 — the clobber that discarded the wrap."""
-    from orchestrator.copilot_agent import CommandCenterCopilotAgent
-    agent._create_session = CommandCenterCopilotAgent._create_session.__get__(
+    from orchestrator.copilot_agent import MetoriteCopilotAgent
+    agent._create_session = MetoriteCopilotAgent._create_session.__get__(
         agent, type(agent)
     )
-    agent._resume_session = CommandCenterCopilotAgent._resume_session.__get__(
+    agent._resume_session = MetoriteCopilotAgent._resume_session.__get__(
         agent, type(agent)
     )
 

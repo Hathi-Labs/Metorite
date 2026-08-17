@@ -1,15 +1,15 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Start all CommandCenter dev services: gateway + Next.js frontend.
+    Start all Metorite dev services: gateway + Next.js frontend.
     Auto-selects a free port for the gateway and updates .env.local.
 
 .USAGE
-    cd C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter
+    cd C:\Users\VijayRaghavVarada\Documents\Github\Metorite
     .\scripts\start_dev.ps1
 #>
 
-$Root = "C:\Users\VijayRaghavVarada\Documents\Github\CommandCenter"
+$Root = "C:\Users\VijayRaghavVarada\Documents\Github\Metorite"
 $FrontendDir = "$Root\workbench\control_plane"
 $EnvLocal = "$FrontendDir\.env.local"
 

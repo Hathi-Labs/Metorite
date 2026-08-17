@@ -1,6 +1,6 @@
 """Deterministic compression of runtime tool OUTPUT before it re-enters context.
 
-The RTK ("Rust Token Killer") idea applied to CommandCenter's own runtime
+The RTK ("Rust Token Killer") idea applied to Metorite's own runtime
 agents: a coding/mutation agent runs ``pytest`` / ``git log`` / a build via the
 Copilot SDK's built-in shell tool, and the full multi-thousand-line output folds
 straight back into the conversation history that re-enters the model next turn.

@@ -41,7 +41,7 @@
  *    site in this tree already does.
  * 8. **The headless substrate is wrapped in `components/ui/`, and the wrappers
  *    stay wired.** D-PM-15 chose Base UI for the primitive layer and attached
- *    two conditions to the choice: every primitive arrives as a CommandCenter
+ *    two conditions to the choice: every primitive arrives as a Metorite
  *    wrapper in `components/ui/`, and there is **one** substrate. Both fail the
  *    same way — quietly, one call site at a time — because `@base-ui/react`
  *    ships its own unstyled-but-opinionated defaults, and a page that imports
@@ -834,7 +834,7 @@ describe("the headless substrate is wrapped, not imported", () => {
     );
     expect(
       offenders,
-      "Import the CommandCenter wrapper from `components/ui/`, not the " +
+      "Import the Metorite wrapper from `components/ui/`, not the " +
         "substrate. D-PM-15 condition 1: a call site that reaches past the " +
         "wrapper gets Base UI's own defaults — its scrim, its radius, its " +
         "focus behaviour — and the library becomes a second design system one " +

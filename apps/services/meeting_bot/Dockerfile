@@ -1,4 +1,4 @@
-# CommandCenter Meeting Bot — headless-Chrome meeting-joining worker.
+# Metorite Meeting Bot — headless-Chrome meeting-joining worker.
 # Based on Playwright's Python image (bundles Chromium + all its system libs),
 # plus PulseAudio + ffmpeg + Xvfb for the audio-capture pipeline.
 FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy

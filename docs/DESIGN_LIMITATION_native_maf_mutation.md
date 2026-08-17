@@ -1,6 +1,6 @@
 # ⚠️ DESIGN LIMITATION — native-MAF self-mutation via monorepo PR is DEV-ONLY
 
-**Status:** interim mechanism, in use while Command Center is a work in progress.
+**Status:** interim mechanism, in use while Metorite is a work in progress.
 **Must be replaced before:** any production / multi-tenant deployment where agents
 are run on behalf of third parties or customers. *(ticketed: saas_multitenancy.md
 MT-0b — built 2026-08-08, pending review; root AGENTS.md constraint 3 tracks it)*
@@ -14,7 +14,7 @@ A **native MAF agent** (runtime `maf`, registered by `local_path` only — e.g.
 `email-assistant`, `task-manager`) runs from an isolated local-only git clone with
 no remote of its own. When such an agent proposes a fix to its own code and an
 operator **approves** it in the Agents inbox, the gateway opens a **pull request
-against the Command Center monorepo** that edits the agent's source at
+against the Metorite monorepo** that edits the agent's source at
 `apps/agents/agent-<name>/` in place. Merging that PR makes the fix durable source
 that ships on the next deploy.
 
@@ -29,12 +29,12 @@ approving mutations.
 
 ## Why this CANNOT go to production as-is
 
-The mechanism routes an agent's self-improvement into **the shared Command Center
-monorepo**. That is unacceptable the moment Command Center is multi-tenant:
+The mechanism routes an agent's self-improvement into **the shared Metorite
+monorepo**. That is unacceptable the moment Metorite is multi-tenant:
 
 - **Third parties / customers would be pushing to our monorepo.** A customer-run
   MAF agent mutating itself must NOT open PRs against — let alone land code in —
-  the repository that is the source of truth for *everyone's* Command Center.
+  the repository that is the source of truth for *everyone's* Metorite.
 - **Blast radius.** A monorepo merge ships to every deploy. One tenant's agent fix
   cannot be allowed to alter the platform all tenants run on.
 - **Trust boundary.** Approval today is a single first-party operator. In
@@ -69,7 +69,7 @@ stays until MT-0b is merged and verified.
 - Keep `mutation_monorepo_repo` **pointed only at our own first-party monorepo**
   and only in first-party/dev environments.
 - Do **not** enable the monorepo-PR path for any agent that is not first-party.
-- Before shipping multi-tenant Command Center, replace this path per the design
+- Before shipping multi-tenant Metorite, replace this path per the design
   chosen above and delete this limitation once resolved. *(= merging MT-0b; see
   above)*
 

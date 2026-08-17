@@ -40,7 +40,7 @@ os.environ["DATABASE_URL"] = (
     "postgresql+asyncpg://postgres@/cc?host=/var/tmp&port=55432"
 )
 # ⚠️ Derived from THIS file, not hard-coded like the older harnesses: run from
-# a git worktree, an absolute `/home/user/CommandCenter/...` path silently
+# a git worktree, an absolute `/home/user/Metorite/...` path silently
 # imports the MAIN checkout's gateway and the script then reports on code that
 # is not the code under test. Measured, not theorised — it happened here first.
 sys.path.insert(0, str(

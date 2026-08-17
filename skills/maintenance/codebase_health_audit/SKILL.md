@@ -24,7 +24,7 @@ cases_seen_30d: 0
 # Codebase Health Audit
 
 ## Goal
-Keep CommandCenter developable by coding agents as it grows. The measurable
+Keep Metorite developable by coding agents as it grows. The measurable
 target is **agent drag** — the context an agent must load and the blast radius
 of an edit. Proxy metrics: per-function cyclomatic complexity, file LOC, and the
 maintainability index. The loop is **review -> plan -> refactor -> re-measure**,

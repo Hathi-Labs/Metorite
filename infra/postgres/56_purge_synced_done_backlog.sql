@@ -3,7 +3,7 @@
 -- "don't mirror completed tasks" default landed (55_gtd_mirror_done_tasks.sql).
 --
 -- What: DELETE mirrored rows that are already completed. Scoped strictly to
---       source <> 'LOCAL' (never touches tasks captured in CommandCenter) AND
+--       source <> 'LOCAL' (never touches tasks captured in Metorite) AND
 --       disposition = 'DONE'. gtd_waiting cascades (ON DELETE CASCADE); DONE
 --       rows carry no open waiting record anyway.
 -- Why:  ~500 completed ClickUp tasks were pushing the user's own LOCAL/open

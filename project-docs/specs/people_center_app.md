@@ -1,6 +1,6 @@
 # People Center — the person record, the directory, and the assignment seam
 
-> **Product:** CommandCenter · **Feature:** People Center (`/centers/people` and the
+> **Product:** Metorite · **Feature:** People Center (`/centers/people` and the
 > `/people` app behind it) · **Created:** 2026-08-06 · **Rewritten 2026-08-13**
 > · **Status:** ✅ **a + b + b-write BUILT** (2026-08-06/07) · ✅ **g BUILT** (2026-08-13)
 > · 🟢 **c–e, h–m dispatchable** · 🔴 **f owner-gate** · **Owner:** vjvarada

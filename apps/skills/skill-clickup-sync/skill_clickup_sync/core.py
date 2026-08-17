@@ -15,7 +15,7 @@ import httpx
 
 try:
     # MCP-style risk annotations (HH-2) — both tools are read-only probes of
-    # the ClickUp API (open-world: they leave CommandCenter over the network).
+    # the ClickUp API (open-world: they leave Metorite over the network).
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except Exception:  # pragma: no cover - platform package absent in isolation
     def _annotate_risk(**_hints):  # type: ignore[misc]

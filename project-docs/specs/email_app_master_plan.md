@@ -1,6 +1,6 @@
 # Email App — Master Plan (single source of truth)
 
-> **Product:** CommandCenter · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
+> **Product:** Metorite · **Feature:** Email AI Assistant App · **Created:** 2026-07-22
 > **Status:** 🟢 Live on the VPS, single Outlook account (`vjvarada@fracktal.in`), daily-driver. *(second mailbox Ishaanpilar@fracktal.in connected 2026-08-05 — re-verify §7's single-account premises at dispatch; noted 2026-08-09)*
 > **Last status change:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:

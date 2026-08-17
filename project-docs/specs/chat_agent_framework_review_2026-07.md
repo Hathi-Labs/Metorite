@@ -27,7 +27,7 @@ and `agents-workspaces-artifacts.md`.
    streaming. The actual difference is the *engine*: a thin LLM loop over the gateway `/v1`
    (native MAF) vs a Copilot-CLI subprocess with a built-in coding harness (shell, file edit,
    MCP, todo, compaction). Treat MAF as **the framework** and the Copilot SDK as **one engine,
-   reserved for coding-class agents** (self-mutation sandbox, `commandcenter`-dev coworker
+   reserved for coding-class agents** (self-mutation sandbox, `metorite`-dev coworker
    sessions). Specialist business agents should be native MAF.
 
 2. **Two agents are on the wrong engine today.** `task-manager` (15 `gtd_*` API tools) and
@@ -83,13 +83,13 @@ and `agents-workspaces-artifacts.md`.
 
 ### 2.1 What the split actually is
 
-| | Native MAF (`Agent`) | Copilot-SDK (`GitHubCopilotAgent` / `CommandCenterCopilotAgent`) |
+| | Native MAF (`Agent`) | Copilot-SDK (`GitHubCopilotAgent` / `MetoriteCopilotAgent`) |
 |---|---|---|
 | LLM loop | in-process, gateway `/v1` (LiteLLM SDK) | Copilot CLI subprocess over JSON-RPC, BYOK provider → gateway `/v1` |
 | Built-in tools | none — everything injected by `_tool_injection.py` | shell, file read/write/edit, MCP, todo, `ask_user`, session compaction |
 | Session state | thread history via `assemble_run_context` / Redis | server-side `service_session_id`, persisted in `chat_session` (`executor.py:4314-4422`) |
 | Stream path | Tier 1 (`executor.py:2138-2390`) | Tier 1.5 (`executor.py:2392-2993`) |
-| Exemplars | `orchestrator`, `email-assistant` | `commandcenter` (self-anneal), mutation sandbox, `task-manager`*, `apis-config`* |
+| Exemplars | `orchestrator`, `email-assistant` | `metorite` (self-anneal), mutation sandbox, `task-manager`*, `apis-config`* |
 
 \* mislabeled/misplaced — see 2.3.
 
@@ -122,7 +122,7 @@ agent moved off this path stops paying all of them at once.
    email-assistant `build_agents()` (`agent-email-assistant/agents.py:1909-1951`) is the
    template. After this, Tier 1.5 serves only genuinely coding-class agents.
 2. **Keep the Copilot engine for**: the mutation sandbox (`mutation_runner.py` — the one
-   sanctioned raw-SDK path), the `commandcenter` self-anneal/dev agent, and any future
+   sanctioned raw-SDK path), the `metorite` self-anneal/dev agent, and any future
    "dev coworker" agents users chat with about code.
 3. **Fix the runtime label.** `"runtime": "maf"` currently means two different things
    (executor path vs agent class) — `task-manager/config.json` says `maf` while

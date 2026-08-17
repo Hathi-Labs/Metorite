@@ -1,4 +1,4 @@
-# External health check for the CommandCenter VPS.
+# External health check for the Metorite VPS.
 #
 # This is the OUTSIDE half of a two-layer watchdog:
 #
@@ -49,8 +49,8 @@ jobs:
       - name: Probe gateway + workbench
         id: probe
         env:
-          GATEWAY_URL: https://api.commandcenter.fracktal.in/health
-          WORKBENCH_URL: https://commandcenter.fracktal.in
+          GATEWAY_URL: https://api.metorite.fracktal.in/health
+          WORKBENCH_URL: https://metorite.fracktal.in
         run: |
           HEALTHY=1
           REPORT=""
@@ -175,7 +175,7 @@ jobs:
 
           BODY_FILE="$(mktemp)"
           {
-            echo "The scheduled health check could not reach CommandCenter."
+            echo "The scheduled health check could not reach Metorite."
             echo
             printf '%s\n' "${REPORT}"
             echo "Checked at $(date -u '+%Y-%m-%dT%H:%M:%SZ') from a GitHub runner."
@@ -207,5 +207,5 @@ jobs:
       - name: Fail the run if unhealthy
         if: ${{ needs.probe.outputs.healthy != '1' }}
         run: |
-          echo "::error::CommandCenter is unreachable — see the vps-outage issue."
+          echo "::error::Metorite is unreachable — see the vps-outage issue."
           exit 1

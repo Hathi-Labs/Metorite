@@ -7,12 +7,12 @@ on a box or an arrow drawn here.
 
 ## 1. What problem is this shape solving?
 
-CommandCenter is "an operating system for a company": a fleet of specialist AI agents (sales, triage,
+Metorite is "an operating system for a company": a fleet of specialist AI agents (sales, triage,
 delivery, reconciler, task-management) act on company data living in ClickUp, Zoho CRM, Odoo, Gmail,
 and WhatsApp. The design is driven by a handful of hard constraints, and **those constraints explain
 every architectural choice** — so if you're building your own, start by deciding where you land on each:
 
-| Driver | CommandCenter's stance | Why it shapes the architecture |
+| Driver | Metorite's stance | Why it shapes the architecture |
 |---|---|---|
 | **Trust of external systems** | Source of truth is ClickUp/Zoho/Odoo; the platform is a *read-mostly mirror* and **every write is human-approved**. | Forces an Action Broker + approval-queue between agents and the outside world. |
 | **Independent evolution of agents** | Each agent and skill is its **own Git repo**, cloned at runtime. Core carries no agent logic. | Forces a *dynamic loader* instead of a monolith; agents update without redeploying Core. |
@@ -33,7 +33,7 @@ for the minimal subset.
      Browser ── HTTPS ──▶ │  Caddy (reverse proxy, auto-TLS)          │
                           └───────────────┬──────────────┬───────────┘
                                           │              │
-                        commandcenter.…   │              │  api.commandcenter.…
+                        metorite.…   │              │  api.metorite.…
                                           ▼              ▼
                           ┌───────────────────────┐   ┌────────────────────────────┐
                           │  Control Plane         │   │  Gateway (FastAPI)         │

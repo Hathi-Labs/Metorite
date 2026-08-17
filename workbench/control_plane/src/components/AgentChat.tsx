@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * AgentChat — chat UI for LangGraph agents routed via the CommandCenter gateway.
+ * AgentChat — chat UI for LangGraph agents routed via the Metorite gateway.
  *
  * Used by chat/page.tsx when session.agentName is set to a named agent.
  * Missing integrations are surfaced inline — users can configure them via chat
@@ -142,7 +142,7 @@ interface AgentChatProps {
   integrationStatuses?: IntegrationStatus[];
   /** Full agent list for mid-chat agent switching. If absent, fetched on mount. */
   availableAgents?: AgentEntry[];
-  /** Persona / system prompt injected as system context (e.g. CommandCenter brain). */
+  /** Persona / system prompt injected as system context (e.g. Metorite brain). */
   persona?: string;
   /** Persistent memory lines (Mem0) injected as system context. */
   memories?: string[];
@@ -332,9 +332,9 @@ export default function AgentChat({
   // regardless of the model selected. The model is forwarded as a hint for
   // BYOK provider injection in the executor. This ensures every agent gets
   // its tools + instructions even when using a custom model.
-  // The orchestrator (CommandCenter) still uses model-driven routing for
+  // The orchestrator (Metorite) still uses model-driven routing for
   // fast stateless chat when LiteLLM models are selected.
-  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "commandcenter";
+  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
   const effectiveRuntime = isOrchestrator ? currentRuntime : "copilot";
 
   // Documents the user currently has open in the side-panel editor — folded
@@ -996,7 +996,7 @@ export default function AgentChat({
     prevLoadingRef.current = isLoading;
   }, [isLoading, sendMessage]);
 
-  // Persist the conversation to Mem0 on unmount (default / CommandCenter agent).
+  // Persist the conversation to Mem0 on unmount (default / Metorite agent).
   useEffect(() => {
     return () => {
       if (!memoryUserId) return;
@@ -2106,7 +2106,7 @@ export default function AgentChat({
           {/* Disclaimer */}
           {!compact && (
             <p className="text-[9px] text-muted-foreground/50 text-center mt-1.5">
-              CommandCenter can make mistakes. Please verify important information.
+              Metorite can make mistakes. Please verify important information.
             </p>
           )}
         </div>

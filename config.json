@@ -1,6 +1,6 @@
 {
-  "name": "commandcenter",
-  "description": "Self-anneal agent for the CommandCenter orchestration platform — edit code, run tests, debug issues, review agent repos, and improve the CC platform itself. Full access to the CommandCenter codebase.",
+  "name": "metorite",
+  "description": "Self-anneal agent for the Metorite orchestration platform — edit code, run tests, debug issues, review agent repos, and improve the CC platform itself. Full access to the Metorite codebase.",
   "version": "0.1.0",
   "runtime": "github-copilot",
   "model_tier": "tier-balanced",
