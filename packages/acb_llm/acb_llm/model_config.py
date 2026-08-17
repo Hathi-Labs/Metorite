@@ -18,29 +18,17 @@ the URL-parsing approach in ``key_store.py``.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
-from urllib.parse import unquote
 
 from acb_common import get_logger, get_settings
+from acb_common.dsn import conninfo as dsn_conninfo
 
 _log = get_logger("model_config")
 
 
 def _conninfo() -> str:
     """Translate the SQLAlchemy ``database_url`` into a psycopg conninfo string."""
-    db_url = str(get_settings().database_url)
-    m = re.match(
-        r"postgresql(?:\+\w+)?://([^:]+):([^@]+)@([^:/]+):?(\d+)?/(.+)",
-        db_url,
-    )
-    if not m:
-        raise RuntimeError(f"Cannot parse database_url: {db_url[:50]}...")
-    user, password, host, port, dbname = m.groups()
-    return (
-        f"host={host} port={port or 5432} dbname={dbname} "
-        f"user={user} password={unquote(password)}"
-    )
+    return dsn_conninfo(str(get_settings().database_url))
 
 
 #: MT-0d — resolve the owning organization for a config read/write.

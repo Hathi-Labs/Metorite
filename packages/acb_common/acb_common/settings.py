@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 20
 
+    # asyncpg's prepared-statement cache size, passed through to the driver
+    # when set (acb_common.db.engine_connect_args). Leave None for the driver
+    # default. Set 0 when DATABASE_URL points at a TRANSACTION-mode pooler
+    # (PgBouncer / Supabase :6543): server-side prepared statements outlive
+    # the transaction there and collide across pooled clients. Session-mode
+    # pooling and direct connections need no override.
+    db_statement_cache_size: int | None = None
+
     # Redis (event bus)
     redis_url: str = "redis://localhost:6379/0"
 

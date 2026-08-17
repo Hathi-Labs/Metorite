@@ -158,6 +158,17 @@ echo "==> Applying database migrations (02+ — init only mounts 00/01)"
 # STILL-RUNNING previous deployment and cannot tell it apart from a new one.
 # The trigger was a new ledger query (`-c "SELECT filename ..."`) — before it,
 # every psql call piped its own input and stdin was never touched.
+#
+# External-database seam: a box whose Postgres is managed elsewhere (e.g.
+# Supabase) sets PG_MODE=local — plus PGHOST/PGPORT/PGUSER/PGPASSWORD/
+# PGSSLMODE for libpq, and deliberately SKIP_PRE_MIGRATION_BACKUP=1, because
+# the local dump path needs superuser and the provider's PITR replaces it
+# (docs/EXTERNAL_POSTGRES.md). Those keys live in .env, not this shell's
+# environment, so lift them across before the runner starts.
+for _k in PG_MODE PGHOST PGPORT PGUSER PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; do
+  _v="$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  if [ -n "$_v" ]; then export "${_k}=${_v}"; fi
+done
 APP_DIR="$APP_DIR" bash scripts/apply_migrations.sh < /dev/null
 
 echo "==> Syncing Python deps"

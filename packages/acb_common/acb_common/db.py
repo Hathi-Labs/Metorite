@@ -99,12 +99,19 @@ def engine_connect_args() -> dict[str, Any]:
       deliberate: ``pg_dump`` and the migration runner connect as the same role
       and must NOT inherit an app-tuned deadline.
     """
-    return {
-        "timeout": get_settings().db_connect_timeout,
+    settings = get_settings()
+    args: dict[str, Any] = {
+        "timeout": settings.db_connect_timeout,
         "server_settings": {
             "idle_in_transaction_session_timeout": _IDLE_IN_TXN_TIMEOUT_MS,
         },
     }
+    # Transaction-mode poolers (PgBouncer / Supabase :6543) break asyncpg's
+    # server-side prepared statements; DB_STATEMENT_CACHE_SIZE=0 disables the
+    # cache for exactly that topology. None = driver default, no override.
+    if settings.db_statement_cache_size is not None:
+        args["statement_cache_size"] = settings.db_statement_cache_size
+    return args
 
 
 def get_engine() -> Any:

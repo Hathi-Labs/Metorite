@@ -31,11 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from functools import lru_cache
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.dsn import parse_postgres_dsn
 
 from acb_memory.compartments import (
     AGENT_SCOPE_PREFIX,
@@ -96,18 +96,17 @@ class MemoryClient:
             from mem0 import Memory as _Mem0Memory  # noqa: PLC0415
 
             db_url: str = settings.database_url
-            # Parse postgres+psycopg:// → psycopg2-compatible pieces for Mem0's pgvector config
-            # mem0ai expects plain host/port/dbname dict, not a SQLAlchemy URL.
-            m = re.match(
-                r"postgresql(?:\+\w+)?://([^:]+):([^@]*)@([^:/]+):?(\d+)?/(.+)",
-                db_url,
-            )
-            if not m:
+            # mem0ai expects plain host/port/dbname pieces, not a SQLAlchemy
+            # URL — split through the shared parser (query params tolerated).
+            try:
+                dsn = parse_postgres_dsn(db_url)
+            except RuntimeError:
                 _log.warning("mem0.bad_db_url", url=db_url[:40])
                 return None
 
-            pg_user, pg_pass, pg_host, pg_port, pg_db = m.groups()
-            pg_port_int = int(pg_port) if pg_port else 5432
+            pg_user, pg_pass = dsn.user, dsn.password
+            pg_host, pg_db = dsn.host, dsn.dbname
+            pg_port_int = dsn.port
 
             litellm_url: str = settings.litellm_base_url
             litellm_key: str = settings.litellm_master_key
