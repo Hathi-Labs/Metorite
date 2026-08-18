@@ -1986,6 +1986,25 @@ lifecycle states of §4.1d are enforced with `suspended` keeping **login working
 while features lock; an org reaching `cancelled` retains data through a named
 export window.
 
+> ⚠️ **A second, larger gap — recorded 2026-08-19 as a dated correction rather
+> than silently, because CP-2a's ✅ and this fact contradict each other.**
+> **`POST /orgs/provision` does not write `org_placement`, and nothing else in
+> the tree does either.** Measured 2026-08-19: the route
+> (`customer_console/main.py:584-664`) writes `organization`, `user_identity`,
+> seats, `org_membership`, `org_subscription`, `provisioning_run` and an audit
+> row — and no placement. The only `INSERT INTO org_placement` anywhere is a test
+> fixture (`tests/unit/test_customer_console_resolve.py:232`), whose docstring
+> names the gap and correctly declares closing it a non-goal *of CP-2b*.
+> **The consequence composes with CP-2b's inner join** (`store.py:625`,
+> `JOIN org_placement p … WHERE p.deployment_id = :dep`): **an organization
+> provisioned through this route can never be resolved by any deployment key**,
+> so a provisioned customer's sign-in fails closed in a way that reads as a
+> Console outage. Under **D36.1** — Fracktal onboards through this same route —
+> that is customer zero's path. The ✅ stands for what shipped; the row is
+> **owed**, and its owner is **`saas_multitenancy.md` §11 MT-1j slice 4**
+> (minted 2026-08-19). Neither CP-2a nor CP-2b was wrong to leave it: each
+> disclaimed it to a ticket that, until that date, did not exist.
+>
 > ⚠️ **One acceptance clause is OWED, not met — recorded 2026-08-18 rather than
 > struck.** "a test kills it at each step" is **not implemented**.
 > `tests/unit/test_customer_console_lifecycle.py` proves *re-provision
@@ -3080,7 +3099,11 @@ split the tenant in half.
   the sign-in succeeds, the projection is untouched, and the warning fired once.
 - ⚠️ **Creating the local `organization` row is out of scope, by name.**
   It belongs to **provisioning** — CP-2a's lifecycle/`provisioning_run` path and
-  WS-29's tenant bootstrap — and inventing it here would put tenant creation in
+  **WS-29 `saas_multitenancy.md` §11 MT-1j slice 3** *(the referent this bullet
+  called "WS-29's tenant bootstrap"; it did not exist until it was minted
+  2026-08-19, and MT-1j slice 4 also owns the Console-side `org_placement` write
+  this ticket's inner join at `store.py:625` depends on)* — and inventing it here
+  would put tenant creation in
   a sign-in callback, which is both the wrong layer and an unauthenticated-ish
   write driven by whoever can reach the resolve route. Naming it out also keeps
   the R8 fixture honest: **the fixture creates the local `organization` row the

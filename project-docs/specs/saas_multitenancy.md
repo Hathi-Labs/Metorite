@@ -2,7 +2,16 @@
 
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
-working tree at `b09093a` · ⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
+working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
+⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED** — the
+ticket four specs and one migration were already disclaiming work to
+(`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
+`subscription_console.md` · `user_management_contract.md` §3 · `178:39-48`) and which
+**did not exist**, while D36.1 asserts customer zero onboards through `/orgs/provision`.
+Six slices, three agent-proposed defaults (**D43**), execution gated on H3. Three stale
+anchors corrected in the same pass: `_HAS_OWNER_SQL` `:522`→**`:572`**, the second
+`app_user` upsert `:509`→**`:550`**, and MT-0d's *"~20 call sites"*→**38** (measured). ·
+⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
 MT-3 is ABSORBED.** AI metering, per-org keys, the rate card and the credit ledger now
 live in a **central Control Plane service** — owning spec
 [`customer_console.md`](customer_console.md) (**WS-31**). §3.2–§3.5's design
@@ -1909,12 +1918,19 @@ ownerless rather than proceeding.
 
 **The untenanted resolution is the design decision worth reviewing.**
 `key_store._resolve_org(None)` resolves to *the sole organization* — literally
-`WHERE (SELECT count(*) FROM organization) = 1`. So the ~20 existing call sites keep
+`WHERE (SELECT count(*) FROM organization) = 1`. So the existing call sites keep
 working unchanged today, and **every one of them fails closed the moment a second
 organization exists**, which is exactly when MT-1 must supply a real tenant. A
 "default org" fallback would keep answering after tenant #2 and serve the operator's keys
 to a customer. Reads return `""`; **writes raise**, because a credential written with no
 owner is how a key ends up readable by the wrong tenant.
+
+> ⚠️ **The size of that surface, corrected 2026-08-19: it is 38 call sites, not "~20"** —
+> `grep -rn "get_key_store()" --include=*.py apps packages | grep -v tests/ | grep -v "def
+> get_key_store" | wc -l` → **38**, across 20 files, plus **10** `model_config`
+> `load_blob`/`save_blob` sites. Threading a tenant through them is **MT-1j slice 5**, and
+> that slice must not "fix" `_resolve_org` — `work_plan.md:844` records it as the one old
+> convenience that must NOT be repaired.
 
 ⚠️ **The in-memory cache was the other half, and correct SQL does not protect it.**
 `ProviderKeyStore._cache` was keyed by `provider` alone — the second tenant asking for
@@ -1941,10 +1957,16 @@ replays from `02_` upward, and a failure there fails the deploy.
 > **Built:** migration 159 (`tenant_placement`, `user_identity`, `org_membership`, seeded from
 > `app_user`) + `acb_common/placement.py`. **Additive and inert** — `app_user` is untouched and
 > still authoritative.
-> **NOT built — MT-1a-2:** cutting the auth path over. `acb_auth/access.py` carries two
-> `ON CONFLICT (email)` upserts on the live sign-in path (`:205`, `:509`), and a half-migrated
-> identity is worse than an unmigrated one. ⚠️ The spec cited those in `members.py`; measured,
-> they are not there — another stale anchor.
+> **NOT built — MT-1a-2:** cutting the auth path over. The live path still upserts on
+> `app_user.email`, and a half-migrated identity is worse than an unmigrated one.
+> ⚠️ **Anchors re-measured 2026-08-19 and they had drifted twice.** The two `ON CONFLICT
+> (email)` upserts are **`acb_auth/access.py:550`** (`_BOOTSTRAP_OWNER_SQL`) and
+> **`gateway/routes/admin/_common.py:599`** (`_PROVISION_MEMBER_SQL`) — *not* `:509`, and
+> **not `access.py:205`**, which is `access_request`'s upsert and already uses the correct
+> `ON CONFLICT (lower(email))` idiom. The spec before that cited them in `members.py`,
+> where they have never been. **Both are also broken against today's schema** — migration
+> 162 dropped `app_user_email_key` — which is **MT-1j slice 6**, a repair MT-1a-2 depends
+> on rather than performs.
 **Owner:** §1.5, §0.9.5
 
 **Done when:**
@@ -1953,10 +1975,14 @@ replays from `02_` upward, and a failure there fails the deploy.
    tables. It carries **no** tenant business data and is **not** under RLS.
 2. `user_identity(id, email UNIQUE, …)` + `org_membership(user_id, org_id, status, …)`
    replace `app_user`'s dual role. ⚠️ **`app_user.email` global uniqueness is depended on
-   by two `ON CONFLICT (email)` upserts — measured 2026-08-08 at `acb_auth/access.py:205`
-   and `:509`, NOT the `members.py:173`/`access.py:447` pair this line first published
-   (anchor corrected 2026-08-09; re-derive with grep at build time)** — both are rewritten
-   in this ticket, and a test pins that the same email can hold membership in two orgs.
+   by two `ON CONFLICT (email)` upserts — re-measured 2026-08-19 at
+   `acb_auth/access.py:550` and `gateway/routes/admin/_common.py:599`.** This line has now
+   published three different anchor pairs (`members.py:173`/`access.py:447`, then
+   `:205`/`:509`); **re-derive with grep at build time and trust nothing here.** Both are
+   rewritten in this ticket, and a test pins that the same email can hold membership in two
+   orgs. ⚠️ **They are additionally invalid today** — migration 162 dropped
+   `app_user_email_key` — and repairing them to the `lower(email)` idiom is **MT-1j slice
+   6**, which lands first.
 3. `tenant_placement(organization_id, target, region)` exists and is consulted, **even
    though every row resolves to the same target on day one.** A test asserts the resolver
    reads it rather than a constant.
@@ -2112,8 +2138,319 @@ costs one job here, not N databases.*
 **Done when:** the three `org_group` slug-only joins carry a derived org predicate
 (`tenancy_and_visibility.md` §2's done-when 1–5 apply **verbatim** and are not restated
 here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filtered; and
-`_HAS_OWNER_SQL` (`:522`) is org-filtered — **that last one is a lockout RLS does not fix**
+`_HAS_OWNER_SQL` (**`access.py:572`** — re-measured 2026-08-19; this line read `:522`
+from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
+
+#### MT-1j · Tenant-side organization provisioning · 🔲 **NOT BUILT — minted 2026-08-19, every anchor below verified against code that day**
+**Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
+🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
+registered in `work_plan.md` §6).
+**Owner:** this section. **No other document owns any part of this** — the four specs and
+one migration that disclaim it link here and add nothing (contract point 6).
+
+> **Why this ticket exists: four specs disclaimed the same work to a fifth that did
+> not exist.** Measured 2026-08-19:
+>
+> | Site | What it hands off |
+> |---|---|
+> | `saas_multitenancy_implementation.md` §7.1 step 3 · §8 trap 5 | *"that seeding must become a parameterised function, or org #2 has no roles and no owner"* |
+> | `customer_console.md` CP-2b §6(k) (`:3081-3089`) | creating the local `organization` row → *"CP-2a's lifecycle path and WS-29's tenant bootstrap"* |
+> | `subscription_console.md` (`:196`, `:987`) | `billing:purchase` born unheld in every org → *"the org-provisioning ticket that parameterises role seeding — not here"* |
+> | `user_management_contract.md` §3 (`:139`) | the same capability, *"which the org-provisioning ticket owns"* |
+> | `178_billing_purchase_permission.sql:39-48` (in-code) | *"owned by the org-provisioning ticket that parameterises role seeding"* |
+>
+> Each refusal is individually **correct** — none of those slices should have invented
+> per-org provisioning on the way past. The defect is that the referent was never minted.
+> Meanwhile **D36.1 is already asserted**: *"Fracktal signs up through the same
+> provisioning flow as any customer — same `/orgs/provision`, same trial, same seat cap."*
+> A disclaimer chain with no terminus is exactly how customer zero arrives at an
+> organization with **no roles, no owner and no placement**, and discovers it at the
+> checkout button.
+
+**Two planes, and the ticket spans both — say which one you mean at every line.**
+The **Customer Console** database (`infra/customer_console/`) has its own `organization`,
+`org_placement`, `user_identity`, `org_membership`. The **tenant** database
+(`infra/postgres/`) has its own `organization`, `tenant_placement`, `org_role`,
+`app_user`. They are different tables with the same names in different databases, and
+migration 159's comment says so (*"mirrors migration 159 in the tenant plane, which
+becomes the local projection of this table (D32.4)"*). Measured 2026-08-19: the tenant
+plane has **no production writer for either of its two rows** — the only
+`INSERT INTO organization` outside test fixtures is `130_org_access_control.sql:49`'s
+`default` seed, and the only `INSERT INTO tenant_placement` is `159`'s seed for that same
+org.
+
+**Scope — six slices, positively stated.**
+
+1. Extract migration 130's role seed into a **callable** so any organization can be
+   seeded with the system roles and their grants.
+2. Give the ownership bootstrap a path that is not `_BOOTSTRAP_ORG_SLUG`, **without**
+   changing what that constant does for a fresh box (D36.3).
+3. Create the tenant-plane `organization` + `tenant_placement` pair as **one idempotent
+   act**.
+4. Wire the Console↔tenant seam so a provisioned org **resolves** — including the
+   Console-side half: `POST /orgs/provision` never writes `org_placement`.
+5. Thread the tenant through the `key_store` / `model_config` call sites so a second
+   org's credentials resolve — **without** weakening any fail-closed contract.
+6. Repair the two `ON CONFLICT (email)` upserts that migration 162 invalidated.
+
+**Non-goals — named so a later agent does not widen this.**
+
+- **The commercial one-assignment act is MT-2's** (seat + membership + entitlements +
+  grants, D23.2). MT-1j is the substrate *beneath* it: an organization that exists, has
+  roles, has an owner, has a placement and can read its own keys. It sells nothing and
+  grants no entitlement.
+- **The self-serve signup form is CP-2a's** (`customer_console.md`). This ticket
+  consumes `POST /orgs/provision`; it does not build a UI.
+- **The identity cutover is MT-1a-2 / H6.** MT-1j fixes two upserts that are *broken
+  against today's schema*; it does not move sign-in onto `user_identity`.
+- **Not the RLS promotion (MT-1b / H3).** See Decision C: H3 gates *executing* this
+  against a real second org, and gates nothing about building or testing it.
+- **No second scoping doctrine, no second seeding doctrine** — 178's comment refused a
+  fourth looping seed for exactly this reason, and that refusal is honoured by Decision A,
+  not evaded.
+
+---
+
+**Slice 1 · Parameterised role seed.**
+**Anchors:** `130_org_access_control.sql:175-260` (the `DO $$` block: `owner`, `admin`,
+`manager`, `member`, `guest`, `agent_service` — **six** `org_role` rows, the five
+assignable ones plus the service principal) · its `slug='default'` lookup at `:180` ·
+the three later grant-adding seeds that replay the same shape:
+`131_integration_memory_permissions.sql:36`, `133_workflows_publish_permission.sql:34`,
+`178_billing_purchase_permission.sql:60`.
+
+Extract those four seeds' **data** — role rows and their permission arrays — into one
+callable keyed on `organization_id` (Decision A: a SQL function). The migration that
+introduces it takes **the next free number at build time** (R1; the ladder tops at **178**
+today — a measurement, not an instruction) and re-points `default`'s existing seed at the
+same callable so there is one statement of the grant set, not two.
+
+**Done when:** a two-org R8 test seeds a second organization through the callable and
+asserts org #2's `admin` holds `billing:purchase` and org #2's `owner` holds `*`; and
+`default`'s permission set is **byte-identical before and after** the re-point (the
+regression the extraction can actually cause).
+
+**Slice 2 · `_BOOTSTRAP_ORG_SLUG` stops being the only path to an owner.**
+**Anchors:** `packages/acb_auth/acb_auth/access.py:540` (`_BOOTSTRAP_ORG_SLUG =
+"default"`) · `:542-561` `_BOOTSTRAP_OWNER_SQL` · `:572-577` `_HAS_OWNER_SQL` ·
+`:580-642` `ensure_owner_bootstrap()`, which binds the literal into **both** queries at
+`:614` and `:630`.
+
+⚠️ **MT-1i's fix is why this is now a hard wall rather than a soft one.** Before it,
+`_HAS_OWNER_SQL` was unscoped — a lockout. MT-1i correctly scoped it *to a literal*, so
+the guard and the insert now agree about which organization they mean and that
+organization is always `default`. **Org #2 cannot bootstrap an owner at all.**
+
+⚠️ **Do not "fix" this by making the constant configurable.** **D36.3** is explicit: the
+`default` bootstrap org stays as the **fresh-box first-run path** and *"provisioning a
+customer organization never routes through that constant."* Pointing it at a customer is
+the first-party-bypass shape D36.2 forbids. The provisioning act names its organization
+and its owner **explicitly**; `ensure_owner_bootstrap()` keeps its existing job unchanged.
+
+**Done when:** provisioning organization #2 with a named owner leaves that address holding
+`owner` **in org #2**; `default`'s owner set is untouched by the operation; and
+`ensure_owner_bootstrap()`'s behaviour on a fresh box is unchanged (its existing tests in
+`tests/unit/test_owner_bootstrap.py` stay green without edit).
+
+**Slice 3 · `organization` + `tenant_placement`, one act, one transaction.**
+**Anchors:** `130_org_access_control.sql:36-52` (`organization` DDL + the `default` seed) ·
+`159_control_plane.sql:40-65` (`tenant_placement` DDL + its seed) ·
+`packages/acb_common/acb_common/placement.py` (the resolver; `_PLACEMENT_SQL:36-40`,
+`_SOLE_PLACEMENT_SQL:46-50`).
+
+Idempotent **on the slug**, for the reason `customer_console/main.py:588-591` already
+argues: the natural key is what a retrying signup form resends. Both rows in one
+transaction — an `organization` without a `tenant_placement` is a tenant whose data plane
+is unresolvable, and `placement.resolve_placement` refuses rather than guessing.
+
+**Done when:** re-running provisioning for the same slug yields **one** organization and
+**one** placement; and the set-difference *organizations without a placement* is **empty**
+in the tenant plane (fence:
+`test_every_organization_has_a_placement`).
+
+**Slice 4 · The Console↔tenant seam — and the Console-side half that is missing.**
+**Anchors:** `customer_console/main.py:584-664` (`POST /orgs/provision`: writes
+`organization`, `user_identity`, seats, `org_membership`, `org_subscription`,
+`provisioning_run`, an audit row — and **no `org_placement` row**) ·
+`customer_console/store.py:618-632`, whose resolve query **inner-joins**
+`org_placement` at `:625` with `WHERE … p.deployment_id = :dep` ·
+`infra/customer_console/001_customer_console.sql:96-106` (`org_placement` DDL) ·
+`customer_console/store.py:511-542` `issue_deployment_key` (capabilities default
+`'{resolve}'`; `006_deployment_key.sql:56`).
+
+⚠️ **Measured 2026-08-19: `org_placement` has no production writer anywhere.** The only
+`INSERT` is a test fixture (`tests/unit/test_customer_console_resolve.py:232`), whose
+docstring names the gap and correctly declares fixing it a non-goal *of CP-2b*. The
+consequence composes with the inner join: **an organization created through
+`/orgs/provision` can never be resolved by any deployment key** — CP-2b's resolve arm
+returns nothing for it, forever, and fails closed in a way that reads as "the Console is
+down".
+
+⚠️ **Flag the capability-set question; do not widen it silently.** If Decision B's pull
+direction needs the box to ask the Console for anything beyond `resolve`, the
+`{resolve}`-only capability set (`006_deployment_key.sql:53-56`, argued as *"a capability
+set of one is the only one that…"*) gains a sibling — which is a **credential-scope
+change** and belongs to the owner (§6 gate (f)), not to this ticket's implementer.
+
+**Done when** *(split 2026-08-19 at dispatch confirmation — "both real databases" named
+a two-ladder harness that does not exist; no module loads both ladders, and
+`test_deployment_resolve_cache.py:25-30`'s fixture sets `DATABASE_URL` in-process, which
+is exactly the collision that makes a two-engine harness go green against the wrong
+database)*, **two single-DB halves plus a reserved smoke:**
+- **(4a, Console DB):** a Console-side fence asserts `POST /orgs/provision` writes exactly
+  one `org_placement` row, idempotent on re-run, and that `POST /registry/resolve`'s
+  deployment arm returns the provisioned org — all against the Console ladder alone.
+- **(4b, tenant DB):** a fresh resolve answer writes the CP-2b projection rows — already
+  fenced in `test_deployment_resolve_cache.py`; this half asserts nothing new beyond the
+  provisioned-slug case.
+- **True end-to-end (both databases, live HTTP)** is reserved for the deployment smoke at
+  execution time (🔴 the §6 gate). If an implementer wants the in-process bridge anyway,
+  the harness is `httpx.ASGITransport` onto `customer_console.main.app` in a NEW module
+  that loads both ladders explicitly — named here so nobody invents it as an acceptance
+  criterion; it is optional hardening, not the done-when.
+
+**Slice 5 · `key_store` / `model_config` tenant threading.**
+**Anchors + measurement (2026-08-19):**
+
+```bash
+grep -rn "get_key_store()" --include=*.py apps packages \
+  | grep -v "tests/" | grep -v "def get_key_store" | wc -l      # 38  (across 20 files)
+grep -rnE "\b(load_blob|save_blob)\(" --include=*.py apps packages \
+  | grep -v "tests/" | grep -v "acb_llm/model_config.py" | wc -l # 10
+```
+
+Three copies of the same sole-org heuristic: `acb_llm/key_store.py:114-139`
+(`_resolve_org`, the `count(*) = 1` query at `:136-139`) · `acb_llm/model_config.py:40-48`
+· `acb_common/placement.py:46-50` — **the last has zero production callers** (measured:
+nothing in `apps/` or `packages/` imports the module), so it is a shape to keep consistent,
+not a live path to convert.
+
+🚫 **The fix is NEVER weakening `_resolve_org`'s fail-closed contract.** `work_plan.md` §3
+records it by name, in **D33's finding 3** (`:880` on 2026-08-19 — the *finding number*
+travels, the line does not): *"Not every old convenience is a defect, and one must NOT be
+'fixed'… Recorded so a future agent does not helpfully replace it with a silent default."* The two
+tests that pin it are `tests/unit/test_mt0d_per_org_credentials.py:163`
+(`test_untenanted_read_returns_nothing_once_a_second_org_exists`) and `:176`
+(`test_untenanted_write_raises_once_a_second_org_exists`). **The work is threading the
+tenant through the 38 + 10 call sites**, so that the moment a second org exists the sites
+are already supplying one and the fail-closed arm is never reached in production.
+
+**Done when:** those two pinned tests are green **unedited**, and a second organization's
+provider key and model config read correctly through the threaded sites while the first
+organization's reads are unchanged. **And a completion RATCHET holds (added 2026-08-19 at
+dispatch confirmation — without it this clause is satisfiable by threading three sites):**
+the pattern is `tests/unit/test_db_engine_seam.py:310`'s H2 bank-your-progress mechanism
+(`_GET_DB_CALL` + `H2_EXEMPT_FILES` + `H2_CONVERTED_PACKAGES`) — pin the starting counts
+**38 (`get_key_store()`) + 10 (`load_blob`/`save_blob`)** and assert they only go DOWN;
+a converted package is pinned at zero. Slice 5 may land across several PRs on this
+ratchet's cadence; each PR banks its progress.
+
+**Slice 6 · The `ON CONFLICT (email)` repair.**
+**Anchors:** `packages/acb_auth/acb_auth/access.py:550` (inside `_BOOTSTRAP_OWNER_SQL`) ·
+`apps/services/gateway/gateway/routes/admin/_common.py:599` (inside
+`_PROVISION_MEMBER_SQL`) — both still say `ON CONFLICT (email)`, while
+`162_app_user_email_case.sql` creates `app_user_email_lower_key ON app_user (lower(email))`
+and then **drops `app_user_email_key`**, the `UNIQUE` constraint `09_app_user.sql:15`
+created (`email TEXT UNIQUE NOT NULL` → the auto-generated name 162 drops). The correct
+idiom already exists twice in the tree — `acb_auth/access.py:205` and
+`acb_auth/console_resolve.py:440`, both `ON CONFLICT (lower(email))`.
+
+⚠️ **Predicted, not asserted: `42P10 there is no unique or exclusion constraint matching
+the ON CONFLICT specification`.** R8 makes confirming it the first step — **reproduce the
+failure RED against a real ladder-replayed database before writing the fix.** If it does
+*not* fail, the finding is wrong and this slice becomes a documentation correction; say so
+rather than "fixing" a working statement.
+
+**Done when:** both upserts are exercised against the real ladder on **both** paths —
+fresh insert *and* conflict — and the `DO UPDATE` arms behave identically to today.
+⚠️ `_PROVISION_MEMBER_SQL`'s trailing tenant fence (`_common.py:619-620`,
+`WHERE app_user.organization_id IS NULL OR … = EXCLUDED.organization_id`) is S1-1's
+write-leak repair and **must not change meaning** — its own comment block at `:572-593`
+explains why it lives on the `DO UPDATE` arm rather than in Python.
+
+---
+
+**Three decisions — `DECISION (agent-proposed, owner may overrule)`, 2026-08-19.**
+Recorded under the same label as **D16/D17** so they stay overrulable; carried on the
+board as **D43**.
+
+**A · One SQL function, not a role-template table.** Seed per-org at provision time via a
+single `provision_org_roles(org_id)` SQL function replaying 130/131/133/178's grants as
+data. *Why:* one seeding doctrine — 178's own comment rejects *"a second seeding doctrine"*
+and assumes the successor parameterises the existing one. A `role_template` table is the
+more general answer and buys nothing until customers edit system roles, which no ticket
+asks for. **Rejected alternative recorded so it is not re-proposed.**
+
+**B · Pull, not push — the box asks the Console which organizations it should host.**
+*Why:* symmetry with CP-2b's fail-closed resolve, which is already pull-shaped and already
+carries the deployment key. Push would make the Console hold a write credential into every
+tenant database — the largest new blast radius available. ⚠️ **The open sub-question is the
+capability set** (slice 4): if pull needs more than `{resolve}`, that is an owner act, not
+a widening.
+
+**C · H3 (RLS promotion) is a hard prerequisite for EXECUTING MT-1j against a real second
+organization — and blocks neither building nor R8-testing it.** *Why:* provisioning org #2
+before promotion produces a second tenant with **no database-level isolation** —
+`infra/postgres/generated/04_policies.sql` has never been replayed, and
+`tests/unit/test_tenancy_boundary.py:126`'s `BASELINE_UNSCOPED` names **114** tables that
+carry no `organization_id` at all (measured 2026-08-19). A scratch database can apply the
+generated phases inside the fixture, so the build and its fences are unblocked today.
+**Stated in scope AND in non-goals above; registered as an execution gate in
+`work_plan.md` §6.**
+
+---
+
+**Fences (R7).** A rule here names the test that makes breaking it fail, or it is advisory:
+
+| Fence | Binds |
+|---|---|
+| `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement |
+| `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service` |
+| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved |
+| a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited |
+
+**Rule exposure.** **R1** — the migration number is taken at build time (the ladder tops at
+178 today; that is a measurement). **R5** — no new persisted table is introduced by any
+slice; if one appears it faces `test_tenant_coverage.py`'s source gate, and no slice adds a
+DB-connection or Redis site outside the seam. **R6** — the role-seed extraction is
+expand/contract: add the callable and re-point, never rename in place; the deploy applies
+migrations *before* restarting services, so the old code must still meet the new schema.
+**R8 — mandatory and not satisfiable hermetically**: every slice's subject is a query, a
+migration, a constraint or a predicate, and §7.1's traps are precisely the hermetic-fake
+class.
+
+**Verification — both databases, both DSNs.** They are deliberately different names
+(`test_billing_purchase_capability.py` records why `DATABASE_URL` must not be used):
+
+```bash
+# Any ports work — the invariant is that the two DSNs must not name the same
+# database (5443 is the session's tenant-scratch; the Console scratch has run
+# on 5442 — reuse it, the 5444 here is illustrative, not documented anywhere):
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5443/acb_tenant
+export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5442/cc_platform
+
+# slices 1+2 — the new fences, plus the seeds they generalise
+uv run pytest tests/unit/test_org_provisioning.py \
+              tests/unit/test_billing_purchase_capability.py -v -rs
+# slice 2 — the fresh-box path must be untouched
+uv run pytest tests/unit/test_owner_bootstrap.py tests/unit/test_org_access_control.py -v -rs
+# slice 3 — placement
+uv run pytest tests/unit/test_tenant_placement.py -v -rs
+# slice 4 — the Console half and the resolve arm, end to end
+uv run pytest tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_lifecycle.py -v -rs
+# slice 5 — the standing tripwire, unedited
+uv run pytest tests/unit/test_mt0d_per_org_credentials.py -v -rs
+# slice 6 — both upsert paths against the real ladder
+uv run pytest tests/unit/test_app_user_upserts.py -v -rs
+```
+
+⚠️ **A skip is not a pass** — read the `-rs` block. The R8 suites above skip loudly
+without their DSN, and a green run that skipped them proves the SQL was written, not that
+it works. ⚠️ **`test_org_provisioning.py` and `test_app_user_upserts.py` do not exist
+yet** — they are this ticket's own deliverables, named here so the file names are decided
+once rather than per-slice. Everything else in the block exists today and must stay green.
 
 ---
 
@@ -2143,6 +2480,14 @@ Customers 1–5 shipped as silos (§5.1) ─────────────
 - **MT-1b before MT-1c.** Binding a tenant against tables with no policy proves nothing.
 - **MT-1a before MT-1b.** The org rows the FK points at must exist first.
 - **MT-1e–MT-1i are parallel** once MT-1c lands — five independent PRs.
+- **MT-1j is buildable now and executable only after H3** *(added 2026-08-19 with the
+  mint; Decision C)*. Nothing sequences before it — its six slices are repairs and
+  extractions against code that already ships — but **executing it against a real second
+  organization waits on the RLS promotion**, or that organization exists with no
+  database-level isolation. It is the substrate **MT-2's** one-assignment act assumes:
+  MT-2 assigns seats and entitlements *in* an organization that MT-1j is what creates,
+  with roles, an owner and a placement. Slice 6 also lands **before** MT-1a-2/H6, which
+  rewrites the same two upserts.
 - **MT-0 does not block selling.** §5.1's first five customers ship as silos *while* MT-1
   is built — but **MT-0a/b/d must be in before customer #2**, silo or not, because they
   are process-level not database-level defects.
