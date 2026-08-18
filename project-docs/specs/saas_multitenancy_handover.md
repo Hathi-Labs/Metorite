@@ -455,18 +455,24 @@ Migration 159 created `user_identity` + `org_membership` and seeded them. `app_u
 still authoritative and **nothing reads the new tables**.
 
 ⚠️ **The two upserts that block this — anchors re-measured 2026-08-19:**
-`acb_auth/access.py:550` (`_BOOTSTRAP_OWNER_SQL`) and
-`gateway/routes/admin/_common.py:599` (`_PROVISION_MEMBER_SQL`), both `ON CONFLICT
-(email)` on `app_user`. This line previously said `:205`/`:509`: **`:509` had drifted to
-`:550`**, and **`:205` was never one of the pair** — it is `access_request`'s upsert and
-already uses the correct `ON CONFLICT (lower(email))` idiom, which is the shape both of
-these must move to. **Re-derive every line number with grep**; the parent spec cited them
-in `members.py`, where they have never been.
+`acb_auth/access.py` (`_BOOTSTRAP_OWNER_SQL`) and
+`gateway/routes/admin/_common.py` (`_PROVISION_MEMBER_SQL`), both `app_user` upserts.
+Line numbers deliberately dropped here on 2026-08-19: they have now drifted three times
+(`members.py:173`/`access.py:447`, then `:205`/`:509`, then `:550`/`:599`) and MT-1j slice
+6 moved them again. **Re-derive with grep on the SQL constant names**; the parent spec
+once cited them in `members.py`, where they have never been. `access.py:205` was never one
+of the pair — it is `access_request`'s upsert.
 
-⚠️ **They do not merely block H6 — they are broken today.** Migration 162 dropped
-`app_user_email_key`, so `ON CONFLICT (email)` matches no unique index (predicted 42P10).
-That repair is **`saas_multitenancy.md` §11 MT-1j slice 6** (minted 2026-08-19) and lands
-**before** H6, which then rewrites the same two statements onto `org_membership`.
+⚠️ ~~**They do not merely block H6 — they are broken today.**~~ **REPAIRED 2026-08-19 —
+`saas_multitenancy.md` §11 MT-1j slice 6, which landed before H6 as planned.** Migration
+162 had dropped `app_user_email_key`, so `ON CONFLICT (email)` matched no unique index:
+the predicted **42P10** reproduced red on a ladder-replayed Postgres, and because Postgres
+resolves the arbiter at **plan** time it took out the fresh-insert path as well — meaning
+`ensure_owner_bootstrap()` could never bootstrap an owner (it swallowed the error) and
+every invite raised. Both statements now say `ON CONFLICT (lower(email))`; fence
+`tests/unit/test_app_user_upserts.py` (20 tests, R8, in `pr-check.yml`'s skip guard).
+**H6 still rewrites the same two statements onto `org_membership`** — slice 6 made them
+work against today's schema and moved no identity.
 
 ⚠️ **The invite path is an account-takeover primitive under two orgs** — an
 `INSERT … ON CONFLICT (email) DO UPDATE SET organization_id = …` moves a human between

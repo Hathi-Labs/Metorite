@@ -547,7 +547,18 @@ member AS (
     INSERT INTO app_user (email, display_name, role, status,
                           organization_id, joined_at)
     SELECT :email, :email, 'executive', 'active', org.id, now() FROM org
-    ON CONFLICT (email) DO UPDATE
+    -- `(lower(email))`, not `(email)`: migration 162 replaced `app_user`'s
+    -- byte-exact `app_user_email_key` with `app_user_email_lower_key ON
+    -- app_user (lower(email))`, and an `ON CONFLICT` target must name an index
+    -- that EXISTS. Against the post-162 ladder `(email)` raises 42P10 —
+    -- `there is no unique or exclusion constraint matching the ON CONFLICT
+    -- specification` — at PLAN time, so it took out the fresh-insert path too,
+    -- not just the conflict one, and `ensure_owner_bootstrap()`'s catch-all
+    -- turned that into a silent `ownership_bootstrap_failed`: an ownerless box
+    -- that never bootstraps and never says so. Reproduced red against a
+    -- ladder-replayed Postgres before this line changed (WS-29 MT-1j slice 6,
+    -- `saas_multitenancy.md` §11). Fence: `tests/unit/test_app_user_upserts.py`.
+    ON CONFLICT (lower(email)) DO UPDATE
         SET status = 'active',
             organization_id = COALESCE(app_user.organization_id,
                                        EXCLUDED.organization_id)

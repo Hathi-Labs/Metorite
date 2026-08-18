@@ -596,7 +596,18 @@ _PROVISION_MEMBER_SQL = """
                           status, invited_by, invited_at, joined_at)
     VALUES (:email, :name, CAST(:org AS uuid), :status, :by, now(),
             CASE WHEN :status = 'active' THEN now() END)
-    ON CONFLICT (email) DO UPDATE
+    -- `(lower(email))`, not `(email)`: migration 162 replaced the byte-exact
+    -- `app_user_email_key` with `app_user_email_lower_key ON app_user
+    -- (lower(email))`, and an `ON CONFLICT` target must name an index that
+    -- EXISTS. Against the post-162 ladder `(email)` raises 42P10 — `there is no
+    -- unique or exclusion constraint matching the ON CONFLICT specification` —
+    -- at PLAN time, so EVERY invite and every sign-in approval failed, the
+    -- fresh-address ones included. Reproduced red against a ladder-replayed
+    -- Postgres before this line changed (WS-29 MT-1j slice 6,
+    -- `saas_multitenancy.md` §11). The tenant fence below is unchanged and is
+    -- now reachable for a differently-cased address as well, which is the point
+    -- of the functional index. Fence: `tests/unit/test_app_user_upserts.py`.
+    ON CONFLICT (lower(email)) DO UPDATE
        SET organization_id = COALESCE(app_user.organization_id,
                                       EXCLUDED.organization_id),
            display_name    = COALESCE(NULLIF(EXCLUDED.display_name, ''),
@@ -625,24 +636,28 @@ _PROVISION_MEMBER_SQL = """
 #: boundary**, and it exists because the database's uniqueness and this
 #: package's matching disagree about what "the same address" means.
 #:
-#: ``app_user_email_key`` is ``UNIQUE (email)`` — **byte-exact**. Every lookup
-#: here matches ``lower(email)`` (R10). So a row stored as
-#: ``Casey@Alpha.Example`` does **not** conflict with the lower-cased address
-#: :func:`provision_member` inserts, and Postgres cheerfully writes a SECOND
-#: ``app_user`` row. Found by driving the real routes against a real Postgres:
-#: every hermetic test was green, because a fake dict keyed case-insensitively
-#: cannot reproduce a byte-exact index.
+#: ``app_user_email_key`` used to be ``UNIQUE (email)`` — **byte-exact** — while
+#: every lookup here matches ``lower(email)`` (R10). A row stored as
+#: ``Casey@Alpha.Example`` therefore did **not** conflict with the lower-cased
+#: address :func:`provision_member` inserts, and Postgres cheerfully wrote a
+#: SECOND ``app_user`` row. Found by driving the real routes against a real
+#: Postgres: every hermetic test was green, because a fake dict keyed
+#: case-insensitively cannot reproduce a byte-exact index.
 #:
-#: What that costs under D-MT-1 (a): the same human ends up with a row in two
-#: organizations, ``resolve_organization_id`` returns whichever the planner
-#: hands back first, and a person's tenant becomes non-deterministic. The
-#: ``ON CONFLICT`` fence cannot catch it — no conflict ever happens.
+#: What that cost under D-MT-1 (a): the same human ended up with a row in two
+#: organizations, ``resolve_organization_id`` returned whichever the planner
+#: handed back first, and a person's tenant became non-deterministic. The
+#: ``ON CONFLICT`` fence could not catch it — no conflict ever happened.
 #:
-#: The proper fix is ``UNIQUE (lower(email))``, which is a migration and is
-#: owned elsewhere this wave. Until then the check is here, it answers 404 like
-#: every other cross-tenant miss (R5, so this is not an oracle for the
-#: deployment's directory), and it returns the address's STORED spelling so the
-#: upsert conflicts the way it was always meant to.
+#: **Migration 162 landed the proper fix** (``app_user_email_lower_key ON
+#: app_user (lower(email))``, and it dropped the byte-exact constraint), so a
+#: differently-cased address now conflicts. This check stays anyway, and not
+#: as a leftover: the conflict it prevents is a CROSS-TENANT one, which the
+#: upsert's trailing ``WHERE`` fence skips **silently** — zero rows written and
+#: no error. Asking first is what turns that into an explicit 404, the same
+#: answer as every other cross-tenant miss (R5, so this is not an oracle for
+#: the deployment's directory). It still returns the address's STORED spelling,
+#: which is now belt-and-braces rather than the whole mechanism.
 _ADDRESS_TENANT_SQL = (
     "SELECT organization_id::text AS org, email FROM app_user "
     " WHERE lower(email) = :email"
