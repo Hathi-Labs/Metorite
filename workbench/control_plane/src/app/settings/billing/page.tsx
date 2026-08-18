@@ -23,6 +23,7 @@ import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import Button from "@/components/ui/Button";
 
+import Checkout from "./Checkout";
 import {
   type CreditSummary,
   type InvoiceRow,
@@ -199,11 +200,16 @@ function CreditPanel({ data }: { data: BillingPayload }) {
       ) : null}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
+        {/* SC-4a done-when 6 — THE flip point. `purchaseEnabled` comes from
+            `GET /me/billing` (`customer_console/main.py:1438`) and flipping it
+            is the OWNER's act, so the whole checkout ships dark behind this
+            one conditional. The entire purchase flow lives inside `<Checkout>`
+            and `<Checkout>` is mounted here and nowhere else — which is what
+            `lib/checkout.test.ts`'s source fence over this file asserts, since
+            "it ships dark" is exactly the kind of claim that quietly stops
+            being true. */}
         {data.purchaseEnabled ? (
-          <Button size="lg" layout="flex items-center">
-            <Icon name="Plus" size={15} />
-            Buy credits
-          </Button>
+          <Checkout />
         ) : (
           // Honest placeholder rather than a dead button. Self-serve checkout
           // is SC-4a and is deliberately sequenced after metering (D37.1);
