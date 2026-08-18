@@ -565,14 +565,26 @@ async def _record_answer(
     """Cache one admitted organization, and forget any this box no longer serves.
 
     ⚠️ **When no local ``organization`` row carries the slug: SKIP the write,
-    log ONE structured warning, and let the sign-in proceed on the fresh
-    answer.** Not an error, not a refusal, not an insert. Creating that row is
+    FORGET the organizations this box previously resolved them into, log ONE
+    structured warning, and let the sign-in proceed on the fresh answer.** Not
+    an error, not a refusal, not an insert. Creating that row is
     **provisioning's** act — CP-2a's lifecycle path and WS-29's tenant
     bootstrap — and inventing it here would put tenant creation in a sign-in
     callback, which is both the wrong layer and a write driven by whoever can
-    reach the resolve route. The box simply has no fallback cache for that
-    person until the row exists, which degrades to the uncached case, i.e.
-    fail-closed on the next Console outage — the safe direction.
+    reach the resolve route. The box then has no fallback cache for that person
+    until the row exists, which degrades to the uncached case, i.e. fail-closed
+    on the next Console outage — the safe direction.
+
+    ⚠️ **The forget is the half that was missing, and it made this docstring
+    false** (review finding P1-3, 2026-08-18). The branch used to `return`
+    before ``_forget_others``, so a person the Console had MOVED to an
+    organization placed here but not yet bootstrapped kept a live
+    ``resolved_at`` on the organization they LEFT — and was admitted back into
+    it for up to ``MAX_STALENESS`` on the next outage, into an org the registry
+    no longer places them in. "Nothing to cache" and "keep the last thing we
+    cached" are different answers; only the first degrades in the direction
+    §6(k) argues for. Fence:
+    ``test_a_move_to_an_unprovisioned_org_clears_the_OLD_admission``.
     """
     slug = org.get("slug") or ""
     capabilities = {
@@ -591,14 +603,21 @@ async def _record_answer(
                 await session.execute(text(_ORG_BY_SLUG_SQL), {"slug": slug})
             ).mappings().first()
             if org_row is None:
+                # Keep NOTHING: this answer places the person somewhere this
+                # box cannot record, so every organization it previously
+                # resolved them into is now the WRONG one to fall back on.
+                # `keep=set()` is §6(c)'s trigger (a) with an empty keep set.
+                await _forget_others(session, email, keep=set())
+                await session.commit()
                 _log.warning(
                     "console_resolve.unprovisioned_org",
                     slug=slug,
                     detail=(
                         "the Customer Console placed this person in an "
                         "organization this deployment has no local row for. "
-                        "Sign-in proceeds on the fresh answer and NOTHING is "
-                        "cached; creating the row is provisioning's act "
+                        "Sign-in proceeds on the fresh answer, NOTHING is "
+                        "cached and any earlier resolution is forgotten; "
+                        "creating the row is provisioning's act "
                         "(customer_console.md §6(k))."
                     ),
                 )

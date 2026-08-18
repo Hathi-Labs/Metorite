@@ -1324,6 +1324,54 @@ class TestProjectionUpsert:
         assert _identity_rows(db, email) == 0
         assert recorder.names().count("console_resolve.unprovisioned_org") == 1
 
+    async def test_a_move_to_an_unprovisioned_org_clears_the_OLD_admission(
+        self, wired, db
+    ):
+        """§6(c) trigger (a) fires even when there is nothing to write.
+
+        Repair of review finding **P1-3** (2026-08-18). The unprovisioned-slug
+        branch returned *before* ``_forget_others``, so a person the Console had
+        MOVED to an organization placed here but not yet bootstrapped kept a
+        live ``resolved_at`` on the org they left — and were admitted straight
+        back into it, for up to MAX_STALENESS, on the next Console outage. The
+        branch's own docstring claimed the opposite ("the box simply has no
+        fallback cache for that person").
+
+        "Nothing to cache" and "keep the last thing we cached" are different
+        answers, and only one of them degrades to the fail-closed direction
+        §6(k) argues for.
+        """
+        from acb_auth import console_resolve
+
+        email, left, joined = _email(), _slug(), _slug()
+        _provision_org(db, left)          # `joined` deliberately NOT provisioned
+        wired.answers(_answer(left))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+        assert _membership(db, email)[0]["resolved_at"] is not None
+
+        wired.answers(_answer(joined))
+        _expire(db, email)
+        console_resolve.invalidate()
+
+        moved = await console_resolve.resolve_for_signin(email)
+        assert moved.admit is True, "the fresh answer stopped admitting them"
+        assert moved.slug == joined
+
+        rows = _membership(db, email)
+        assert [r["slug"] for r in rows] == [left]
+        assert rows[0]["resolved_at"] is None, (
+            "the organization this person LEFT kept a live clock"
+        )
+
+        # The consequence, asserted rather than reasoned about: with no cache
+        # the next outage fails closed instead of admitting them into an
+        # organization the registry no longer places them in.
+        console_resolve.invalidate()
+        wired.goes_dark()
+        outage = await console_resolve.resolve_for_signin(email)
+        assert outage.admit is False
+        assert outage.code == console_resolve.CONSOLE_UNAVAILABLE
+
     async def test_an_unresolved_row_reads_as_never_resolved_not_as_a_state(
         self, wired, db
     ):
