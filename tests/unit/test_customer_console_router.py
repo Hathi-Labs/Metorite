@@ -38,6 +38,8 @@ pytestmark = pytest.mark.skipif(
 
 TOKEN = "test-operator-token"
 OP = {"Authorization": f"Bearer {TOKEN}"}
+#: The Router's own token — the only credential that may write the meter.
+INT = {"Authorization": "Bearer internal"}
 ENC_KEY = "test-encryption-key-not-a-real-one"
 
 
@@ -111,6 +113,78 @@ def org_key(client, db, monkeypatch):
             {"s": router_mod.encrypt_secret("sk-provider-secret")},
         )
     return slug, {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def org_id(db, org_key):
+    slug, _ = org_key
+    with db.begin() as c:
+        return str(c.execute(
+            text("SELECT id FROM organization WHERE slug = :s"), {"s": slug}
+        ).scalar_one())
+
+
+@pytest.fixture
+def priced_card(db):
+    """A rate card with real numbers, for the life of one test.
+
+    **The seeded card stays at zero.** Setting a real price for a real model is
+    the owner's commercial act (§8, D19.2) — a rate card set by an agent on
+    estimates is a rate card you change on customers who have already seen it.
+    So rating is proven against a fixture price and removed afterwards, and the
+    ``002_seed_catalog.sql`` rows are never touched.
+
+    2 / 6 / 0.5 credits per 1k (input / output / cached input) — the same shape
+    ``test_customer_console_credits.py`` rates against, so the arithmetic in one
+    place can be checked against the other.
+    """
+    model = "deepseek/deepseek-v4-pro"
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO model_rate_card (model, input_credits_per_1k, "
+            " output_credits_per_1k, cached_input_credits_per_1k, "
+            " effective_from) VALUES (:m, 2, 6, 0.5, now()) "
+            "ON CONFLICT (model, effective_from) DO NOTHING"), {"m": model})
+    yield model
+    with db.begin() as c:
+        # Only the fixture's row: the seed is priced at zero and stays.
+        c.execute(text(
+            "DELETE FROM model_rate_card WHERE model = :m "
+            "  AND (input_credits_per_1k <> 0 OR output_credits_per_1k <> 0)"),
+            {"m": model})
+
+
+@pytest.fixture
+def gate_on(monkeypatch):
+    """Turn the CP-6 refusals on. They ship OFF (CLAUDE.md §4, ship dark)."""
+    monkeypatch.setenv("CUSTOMER_CONSOLE_SPEND_GATE", "1")
+
+
+#: What one stubbed completion costs against `priced_card`:
+#: 1200 prompt of which 900 cached -> 300 fresh @2/1k = 0.60
+#:                                  + 900 cached @0.5/1k = 0.45
+#:                                  +  40 output  @6/1k = 0.24
+CALL_COST = Decimal("1.29")
+
+
+def _grant(client, slug: str, credits: str):
+    return client.post("/credits/grant", headers=OP,
+                       json={"org_slug": slug, "credits": credits})
+
+
+def _charge(client, organization_id: str, credits: str, run_id: str | None = None):
+    """Draw the balance down through the REAL metering path, not by editing it."""
+    return client.post("/usage/record", headers=INT, json={
+        "organization_id": organization_id,
+        "request_id": f"seed-{uuid.uuid4().hex}",
+        "billed_credits": credits, "run_id": run_id, "model": "m"})
+
+
+def _complete(client, key, **extra):
+    return client.post("/v1/chat/completions", headers={**key, **extra.pop(
+        "headers", {})}, json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "hi"}], **extra})
 
 
 # ── Tier resolution ─────────────────────────────────────────────────────────
@@ -574,3 +648,290 @@ class TestTheProviderSecretNeverReachesALog:
             if rec.exc_info:
                 haystack.append(str(rec.exc_info))
         assert "sk-provider-secret" not in "\n".join(haystack)
+
+
+# ── CP-6: rating and the ledger draw ────────────────────────────────────────
+
+class TestRatingOnTheRouterPath:
+    """*"CP-6 sets the rate card against the burn this slice measures."*
+
+    CP-4 wrote ``billed_credits = 0`` unconditionally. It now rates the
+    completion against the card in force and `record_usage` negates that into
+    `credit_ledger` in the same transaction as the usage row.
+    """
+
+    def test_a_priced_completion_draws_exactly_its_rated_cost(
+            self, client, org_key, org_id, db, priced_card):
+        slug, key = org_key
+        _grant(client, slug, "100")
+        ref = f"r-{uuid.uuid4().hex}"
+
+        assert _complete(client, key, client_ref=ref).status_code == 200
+
+        with db.begin() as c:
+            billed = c.execute(text(
+                "SELECT billed_credits FROM usage_event WHERE client_ref = :r"),
+                {"r": ref}).scalar_one()
+            drawn = c.execute(text(
+                "SELECT delta FROM credit_ledger WHERE organization_id = :o "
+                "  AND reason = 'usage'"), {"o": org_id}).scalar_one()
+            ledger_sum = c.execute(text(
+                "SELECT SUM(delta) FROM credit_ledger "
+                "WHERE organization_id = :o"), {"o": org_id}).scalar_one()
+
+        assert billed == CALL_COST
+        # The draw is the negation of the charge — one row, not a second
+        # opinion about what was spent.
+        assert drawn == -CALL_COST
+        # Acceptance clause 1: the balance the customer is shown IS the sum.
+        assert Decimal(client.get("/me", headers=key).json()["credit_balance"]) \
+            == ledger_sum == Decimal("100") - CALL_COST
+
+    def test_cached_tokens_are_billed_at_the_cache_rate_end_to_end(
+            self, client, org_key, db, priced_card):
+        # 900 of the 1200 prompt tokens were cache reads. At the full input
+        # rate the same call would cost 2.64; the discount we advertise has to
+        # be real all the way to the ledger row, not just in the pure function.
+        slug, key = org_key
+        _grant(client, slug, "100")
+        ref = f"r-{uuid.uuid4().hex}"
+        _complete(client, key, client_ref=ref)
+
+        with db.begin() as c:
+            billed = c.execute(text(
+                "SELECT billed_credits FROM usage_event WHERE client_ref = :r"),
+                {"r": ref}).scalar_one()
+
+        assert billed == CALL_COST < Decimal("2.64")
+
+    def test_an_unpriced_model_is_still_metered_at_zero_not_dropped(
+            self, client, org_key, db):
+        # No `priced_card` fixture: the seeded card is all zeros, so rating
+        # raises UnpricedModel. The completion must still be counted — the row
+        # is the evidence CP-6 prices against, and losing it to a pricing gap
+        # is how a month of burn disappears.
+        _, key = org_key
+        ref = f"r-{uuid.uuid4().hex}"
+
+        assert _complete(client, key, client_ref=ref).status_code == 200
+
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT billed_credits, prompt_tokens FROM usage_event "
+                "WHERE client_ref = :r"), {"r": ref}).first()
+
+        assert row == (Decimal("0.0000"), 1200)
+
+    def test_an_unpriced_model_writes_no_ledger_row_at_all(
+            self, client, org_key, org_id, db):
+        _, key = org_key
+        _complete(client, key)
+
+        with db.begin() as c:
+            rows = c.execute(text(
+                "SELECT count(*) FROM credit_ledger WHERE organization_id = :o"),
+                {"o": org_id}).scalar_one()
+
+        # A zero-delta row is noise in the one table a customer reads during a
+        # dispute.
+        assert rows == 0
+
+
+# ── CP-6: the balance gate ──────────────────────────────────────────────────
+
+class TestTheBalanceGate:
+    """Acceptance: *"a zero-balance org gets 402 with the top-up payload while
+    a non-AI endpoint on the same org still returns 200"*.
+
+    Under organization-key auth the non-AI endpoints are ``GET /me`` and
+    ``GET /me/billing`` — the surfaces a customer needs precisely when they are
+    out of credits, since a customer who cannot see their balance cannot top it
+    up.
+    """
+
+    def test_the_gate_ships_OFF_so_CP_4_behaviour_is_unchanged(
+            self, client, org_key):
+        # A newly provisioned org is `trial` with a zero balance, and how many
+        # credits a trial starts with is an OPEN OWNER INPUT (§9.2). Enforcing
+        # that today would refuse the first AI call of every new customer.
+        _, key = org_key
+        assert _complete(client, key).status_code == 200
+
+    def test_a_zero_balance_trial_org_gets_402_with_a_top_up_payload(
+            self, client, org_key, gate_on):
+        _, key = org_key
+
+        r = _complete(client, key)
+
+        assert r.status_code == 402, r.text
+        detail = r.json()["detail"]
+        assert detail["reason"] == "insufficient_credits"
+        # The payload the UI renders as "out of credits — top up".
+        assert detail["top_up"]["balance_credits"] == "0"
+        assert detail["top_up"]["is_trial"] is True
+        assert Decimal(detail["top_up"]["credits_required"]) > 0
+
+    def test_a_non_AI_endpoint_on_the_same_org_still_returns_200(
+            self, client, org_key, gate_on):
+        # The same key, the same organization, the same moment.
+        _, key = org_key
+        assert _complete(client, key).status_code == 402
+
+        assert client.get("/me", headers=key).status_code == 200
+        assert client.get("/me/billing", headers=key).status_code == 200
+
+    def test_the_provider_is_never_reached_when_the_gate_refuses(
+            self, client, org_key, calls, gate_on):
+        # The whole point of a PRE-flight: a gate after the provider call
+        # refuses a request we have already paid for.
+        _, key = org_key
+        before = len(calls)
+
+        _complete(client, key)
+
+        assert len(calls) == before
+
+    def test_a_refused_call_writes_no_usage_row(
+            self, client, org_key, db, gate_on):
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+
+        _complete(client, key)
+
+        assert TestMetering._count(db, slug) == before
+
+    def test_an_org_with_credits_passes_the_gate(
+            self, client, org_key, gate_on):
+        slug, key = org_key
+        _grant(client, slug, "100")
+
+        assert _complete(client, key).status_code == 200
+
+    def test_a_paid_org_at_zero_keeps_working_into_the_grace_overdraft(
+            self, client, org_key, gate_on):
+        # Edge one of the shipped OverdraftPolicy, over HTTP. A hard cut-off at
+        # exactly zero lands mid-workflow and costs more in support than the
+        # overdraft ever will.
+        slug, key = org_key
+        client.post("/orgs/lifecycle", headers=OP,
+                    json={"org_slug": slug, "target": "active"})
+
+        assert _complete(client, key).status_code == 200
+
+    def test_a_paid_org_is_refused_only_PAST_the_grace_floor(
+            self, client, org_key, org_id, gate_on):
+        # Edge two, over HTTP, against the shipped value of 100 credits.
+        slug, key = org_key
+        client.post("/orgs/lifecycle", headers=OP,
+                    json={"org_slug": slug, "target": "active"})
+
+        # Balance -99.9999: one quantum of grace left.
+        _charge(client, org_id, "99.9999")
+        assert _complete(client, key).status_code == 200
+
+        # Balance -100.0000 exactly: the floor is reached, the next call stops.
+        _charge(client, org_id, "0.0001")
+        assert _complete(client, key).status_code == 402
+
+    def test_a_trial_org_gets_no_grace_at_all(self, client, org_key, gate_on):
+        # An unpaid account is where overdraft turns into unrecoverable cost.
+        # The org fixture is `trial`, and one credit is enough to buy one call.
+        slug, key = org_key
+        _grant(client, slug, "1")
+
+        assert _complete(client, key).status_code == 200
+
+
+# ── CP-6: the per-run circuit breaker ───────────────────────────────────────
+
+class TestThePerRunCircuitBreaker:
+    """§4.4: *"An agent in a tool loop can burn a large amount in minutes… A
+    per-run spend ceiling is not optional."*
+
+    The run is `X-CC-Run`, D1's attribution unit — the same one an operator
+    debugs. Charges are seeded through `/usage/record` (the Router's own
+    internal token) rather than by running 388 completions, so the assertion is
+    about the ceiling rather than about the test's patience.
+    """
+
+    def test_a_run_at_the_ceiling_is_refused_403(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        _grant(client, slug, "10000")          # the BALANCE is not the issue
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        r = _complete(client, key, headers={"X-CC-Run": "run-hot"})
+
+        assert r.status_code == 403, r.text
+        detail = r.json()["detail"]
+        assert detail["reason"] == "run_ceiling_exceeded"
+        assert detail["run_id"] == "run-hot"
+        assert Decimal(detail["ceiling_credits"]) == Decimal("500")
+
+    def test_the_refusal_is_403_not_402_because_topping_up_would_not_help(
+            self, client, org_key, org_id, gate_on):
+        # The organization has 10,000 credits. Telling it "out of credits —
+        # top up" would be a lie the UI renders as a payment problem.
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        assert _complete(
+            client, key, headers={"X-CC-Run": "run-hot"}).status_code != 402
+
+    def test_a_runaway_loop_terminates(
+            self, client, org_key, org_id, db, gate_on, priced_card):
+        """The shape it exists to stop, through the real path.
+
+        The run is seeded just under the ceiling; the loop then keeps calling,
+        each completion adding its rated cost, until the Router stops it. What
+        is asserted is that the loop ENDS — and that it ends because the run
+        tripped, not because the test ran out of iterations.
+        """
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, str(Decimal("500") - CALL_COST), run_id="loop")
+
+        statuses = []
+        for _ in range(10):
+            r = _complete(client, key, headers={"X-CC-Run": "loop"})
+            statuses.append(r.status_code)
+            if r.status_code != 200:
+                break
+
+        assert statuses == [200, 403]
+        with db.begin() as c:
+            spent = c.execute(text(
+                "SELECT SUM(billed_credits) FROM usage_event "
+                "WHERE organization_id = :o AND run_id = 'loop'"),
+                {"o": org_id}).scalar_one()
+        assert spent == Decimal("500.0000")
+
+    def test_a_different_run_for_the_same_org_is_unaffected(
+            self, client, org_key, org_id, gate_on):
+        # A tripwire on one loop, not a budget on the customer.
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        assert _complete(
+            client, key, headers={"X-CC-Run": "run-cold"}).status_code == 200
+
+    def test_a_call_with_no_run_id_is_not_subject_to_the_breaker(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        assert _complete(client, key).status_code == 200
+
+    def test_the_breaker_is_off_with_the_gate_off(
+            self, client, org_key, org_id):
+        # One flag governs both refusals, so an owner enables spend enforcement
+        # once rather than discovering the second half later.
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        assert _complete(
+            client, key, headers={"X-CC-Run": "run-hot"}).status_code == 200

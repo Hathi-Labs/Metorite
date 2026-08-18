@@ -17,19 +17,45 @@ business decision made once by a human (§3.5).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 __all__ = [
+    "CREDIT_QUANTUM",
     "OverdraftPolicy",
     "RateCard",
+    "RunCeiling",
     "SpendDecision",
     "TokenUsage",
     "UnpricedModel",
     "balance_of",
     "decide_member_cap",
+    "decide_run_ceiling",
     "decide_spend",
+    "quantize_credits",
     "rate_call",
 ]
+
+#: The smallest amount the ledger can represent: ``credit_ledger.delta`` and
+#: ``usage_event.billed_credits`` are both ``NUMERIC(14, 4)``.
+#:
+#: Two jobs, both load-bearing. It is what a rated call is rounded to before it
+#: is written, so Python and Postgres agree on the number rather than Postgres
+#: silently rounding ours; and it is the probe the pre-flight gate spends
+#: (:func:`decide_spend`), because the true cost of a completion is unknowable
+#: before the provider answers and the only question we can honestly ask up
+#: front is *"is there any headroom left at all?"*.
+CREDIT_QUANTUM = Decimal("0.0001")
+
+
+def quantize_credits(credits: Decimal) -> Decimal:
+    """Round a rated cost to what the ledger stores.
+
+    Done here rather than left to Postgres so the number we bill is the number
+    we computed. A sub-quantum call rounds to zero and writes no ledger row at
+    all, which is right: a zero-delta row is noise in the one table a customer
+    reads during a dispute.
+    """
+    return credits.quantize(CREDIT_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 class UnpricedModel(Exception):
@@ -143,6 +169,29 @@ class OverdraftPolicy:
 
 
 @dataclass(frozen=True)
+class RunCeiling:
+    """The per-run spend ceiling — the circuit breaker of §4.4.
+
+    *"An agent in a tool loop can burn a large amount in minutes, and this
+    codebase has retry loops and a 32k default output ceiling. A per-run spend
+    ceiling is not optional."*
+
+    It is a **tripwire, not a budget**. Budgets are per member and per period
+    and belong to CP-7; this exists so that one runaway loop cannot spend a
+    month's credits in an afternoon while nobody is watching. That is why the
+    number is far above any legitimate agent run and far below a monthly
+    balance: a ceiling low enough to argue about is a ceiling that stops real
+    work, and then somebody raises it to infinity.
+    """
+
+    #: Absolute credits, per ``(organization, run)``. 500 credits is ₹5,000 of
+    #: customer-facing spend on one agent run at D19.2's ₹10 credit — an order
+    #: of magnitude above a long legitimate run and an order of magnitude below
+    #: a monthly balance.
+    max_credits: Decimal = Decimal(500)
+
+
+@dataclass(frozen=True)
 class SpendDecision:
     allowed: bool
     #: 402 Payment Required — the entitlement axis, distinct from the seat cap's
@@ -152,6 +201,10 @@ class SpendDecision:
     #: True once the org is spending into grace, so the UI can warn before the
     #: wall rather than at it.
     in_overdraft: bool = False
+    #: What the caller has to do about a 402, in the same shape the seat cap's
+    #: ``buy_more`` uses. Built here rather than at the HTTP surface so the
+    #: policy and the sentence it produces cannot drift apart.
+    top_up: dict | None = None
 
 
 def decide_spend(
@@ -184,8 +237,51 @@ def decide_spend(
             status=402,
             reason="insufficient_credits",
             in_overdraft=balance < 0,
+            top_up={
+                # Credits, never rupees. What a credit costs is a commercial
+                # question with an owner's answer (D19.2), and a price quoted
+                # from two places is a price that eventually disagrees.
+                "balance_credits": str(balance),
+                "grace_credits": str(grace),
+                # Enough to get back to zero, which is the number an admin can
+                # act on. Below zero the balance is already the debt.
+                "credits_required": str(max(Decimal(0), -projected)),
+                "is_trial": is_trial,
+            },
         )
     return SpendDecision(allowed=True, in_overdraft=projected < 0)
+
+
+def decide_run_ceiling(
+    spent_this_run: Decimal,
+    *,
+    ceiling: RunCeiling | None = None,
+) -> SpendDecision:
+    """Per-run circuit breaker: has this agent run spent enough to be stopped?
+
+    Called with ``SUM(usage_event.billed_credits)`` for one
+    ``(organization_id, run_id)`` — the run is the unit an operator debugs
+    (D1's attribution four-tuple), so it is also the unit a loop is broken at.
+
+    **403, not 402.** A 402 tells the UI "out of credits — top up", and topping
+    up does not help here: the organization may have a large balance and one
+    misbehaving run. **And not 429**, which invites the caller to retry with
+    backoff — a breaker that a retry loop can wait out is not a breaker.
+
+    Honest limit, stated so nobody mistakes this for a security control: the run
+    id is an attribution header the caller sets, so a caller that rotates it
+    escapes the ceiling. The balance gate is the backstop that does not depend
+    on anything the caller says; this stops the *accident*, which is what a
+    runaway loop is.
+    """
+    ceiling = ceiling or RunCeiling()
+    if spent_this_run >= ceiling.max_credits:
+        return SpendDecision(
+            allowed=False,
+            status=403,
+            reason="run_ceiling_exceeded",
+        )
+    return SpendDecision(allowed=True)
 
 
 def decide_member_cap(

@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -49,11 +50,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from customer_console import store
-from customer_console.auth import Internal, KeyCaller, Operator
+from customer_console.auth import Caller, Internal, KeyCaller, Operator
 from customer_console.credits import (
+    CREDIT_QUANTUM,
     OverdraftPolicy,
+    RunCeiling,
+    TokenUsage,
+    UnpricedModel,
     balance_of,
+    decide_run_ceiling,
     decide_spend,
+    quantize_credits,
+    rate_call,
 )
 from customer_console.db import get_engine
 from customer_console.keys import mint_key
@@ -63,9 +71,11 @@ from customer_console.lifecycle import (
     capabilities_of,
 )
 from customer_console.router import (
+    ExtractedUsage,
     TierUnknown,
     call_provider,
     provider_credential,
+    resolve_rate_card,
     resolve_tier,
     usage_from_response,
 )
@@ -254,6 +264,118 @@ def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any]) -> Non
         {"org": org_id, "actor": "operator", "action": action,
          "detail": json.dumps(detail)},
     )
+
+
+# ── CP-6: rating, the balance gate and the per-run breaker ──────────────────
+
+#: Ship dark (CLAUDE.md §4). With this unset — the state of every environment —
+#: the Router behaves exactly as CP-4 shipped it: it forwards, it counts, and it
+#: refuses nothing. With it set, the two CP-6 refusals below become live.
+#:
+#: It is a flag rather than always-on for one measured reason: a newly
+#: provisioned organization is `trial` with a zero balance, and **how many
+#: credits a trial starts with is an open owner input** (spec §9.2). Enforcing
+#: on that today would refuse the first AI call of every new customer, which is
+#: a product outage dressed as a billing control. Flipping it for a real
+#: customer is the owner's act, on the same footing as §8's gate 5.
+_SPEND_GATE_ENV = "CUSTOMER_CONSOLE_SPEND_GATE"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _spend_gate_enabled() -> bool:
+    return os.environ.get(_SPEND_GATE_ENV, "").strip().lower() in _TRUTHY
+
+
+def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
+    """Pre-flight: may this organization spend on this call? (§4.4)
+
+    Returns the refusal to raise, or ``None`` to proceed. Returned rather than
+    raised so the caller can leave the transaction cleanly — nothing here
+    writes, and an exception thrown through ``engine.begin()`` reads as if it
+    might have.
+
+    **The cost passed to the gate is one credit quantum, not an estimate.** The
+    true cost of a completion is unknowable until the provider answers, and an
+    estimate would either refuse calls the customer can afford (if we guessed
+    from the 32k output ceiling) or wave through the one that empties the
+    account. So the pre-flight asks the only question it can answer honestly —
+    *is there any headroom left at all?* — and the real draw happens at metering
+    against the tokens actually consumed. §4.4's soft-block does the rest: at
+    zero a paying organization keeps working into the grace overdraft and only
+    stops at the floor.
+    """
+    balance = balance_of(store.credit_deltas(conn, org_id=caller.organization_id))
+    decision = decide_spend(
+        balance,
+        CREDIT_QUANTUM,
+        policy=OverdraftPolicy(),
+        is_trial=(caller.organization_status == "trial"),
+    )
+    if not decision.allowed:
+        return HTTPException(
+            status_code=decision.status,
+            detail={"reason": decision.reason, "top_up": decision.top_up},
+        )
+
+    # The circuit breaker. Only a call that names a run can be part of a
+    # runaway loop, and only that run is stopped — a second run for the same
+    # organization is unaffected, because the ceiling is a tripwire on one
+    # loop, not a budget on the customer.
+    if caller.run_id:
+        spent = store.run_spend(
+            conn, org_id=caller.organization_id, run_id=caller.run_id
+        )
+        ceiling = RunCeiling()
+        if not decide_run_ceiling(spent, ceiling=ceiling).allowed:
+            _log.warning(
+                "router.run_ceiling_tripped",
+                extra={"cc_run_id": caller.run_id},
+            )
+            return HTTPException(
+                status_code=403,
+                detail={
+                    "reason": "run_ceiling_exceeded",
+                    "run_id": caller.run_id,
+                    "spent_credits": str(spent),
+                    "ceiling_credits": str(ceiling.max_credits),
+                },
+            )
+    return None
+
+
+def _rate_completion(conn, *, model: str, usage: ExtractedUsage) -> Decimal:
+    """Credits drawn by one completion. **Never raises.**
+
+    An unpriced model bills zero *loudly* rather than failing the call: the
+    completion has already happened and the customer already has it, so the
+    only choice left is whether we also lose the usage row. We do not — the row
+    is the evidence, and CP-6 sets prices against exactly this data.
+    ``002_seed_catalog.sql`` seeds the card at zero on purpose, so this warning
+    is the expected state until the owner prices it (a commercial act, §8).
+
+    ⚠️ **BYOK is not zero-rated here yet.** §3.4 says a BYOK organization is
+    metered but not charged for tokens; today this function does not know which
+    credential served the call, so a priced card would charge them. Harmless
+    while every card is zero, and it must be closed before any real price is
+    set — it is recorded in the spec's CP-6 note rather than left as a surprise.
+    """
+    try:
+        card = resolve_rate_card(conn, model)
+        return quantize_credits(
+            rate_call(
+                card,
+                TokenUsage(
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cached_tokens=usage.cached_tokens,
+                ),
+            )
+        )
+    except UnpricedModel:
+        # `router_model`, not `model`: a stdlib LogRecord already owns several
+        # short names and a collision raises inside the logging call itself.
+        _log.warning("router.unpriced_model", extra={"router_model": model})
+        return Decimal(0)
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -670,11 +792,20 @@ def whoami(caller: KeyCaller) -> dict[str, Any]:
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
-    """Proxy one completion, and count it. **Unpriced in this slice (CP-4).**
+    """Proxy one completion, gate it, and charge it.
 
     The organization comes from the API key, the model comes from the tier
     binding, and the usage row is written here — on our infrastructure, from
     numbers we observed — rather than reported by the party being metered.
+
+    **CP-6 added two refusals and one charge.** Before the provider call, the
+    balance gate (402 with a top-up payload) and the per-run circuit breaker
+    (403) may refuse; after it, the completion is rated against the rate card in
+    force and the cost is drawn from the ledger. The refusals are behind
+    ``CUSTOMER_CONSOLE_SPEND_GATE`` and ship OFF; the charge is always computed
+    and is **zero until the rate card is priced**, which is the owner's
+    commercial act (§8). The order is the point: a gate after the provider call
+    would refuse a request we had already paid for.
 
     Declared ``def``, not ``async def``: the engine is synchronous, so an async
     route would block the event loop for two round trips on what is by design
@@ -715,6 +846,15 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             _log.exception("router.credential_unavailable")
             raise HTTPException(
                 status_code=503, detail="provider credentials unavailable")
+
+        # CP-6. BEFORE the provider call, which is the only place a refusal is
+        # worth anything: after it we have already spent the money. Metering
+        # afterwards stays best-effort and never fails a completion — the GATE
+        # may refuse, the METER may not.
+        refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+
+    if refusal is not None:
+        raise refusal
 
     if credential is None:
         raise HTTPException(
@@ -773,13 +913,18 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     try:
         usage = usage_from_response(response)
         with get_engine().begin() as conn:
+            # CP-6: the draw. `record_usage` negates this into `credit_ledger`
+            # in the SAME transaction as the usage row, so a retried write that
+            # inserts nothing also charges nothing. Zero while the card is
+            # unpriced, which is the shipped state until the owner prices it.
+            billed = _rate_completion(conn, model=resolved.model, usage=usage)
             store.record_usage(
                 conn, org_id=org_id,
                 # SERVER-generated. The caller's id is correlation only — see
                 # migration 005 and CompletionRequest.client_ref.
                 request_id=f"rtr-{uuid.uuid4().hex}",
                 client_ref=req.client_ref,
-                billed_credits=Decimal(0),          # CP-4 is unpriced, on purpose
+                billed_credits=billed,
                 user_email=caller.member, agent=caller.agent,
                 module_slug=caller.module_slug, run_id=caller.run_id,
                 model=resolved.model, tier=resolved.tier,

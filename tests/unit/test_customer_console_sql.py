@@ -31,8 +31,14 @@ from sqlalchemy import create_engine, text  # noqa: E402
 from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
 from customer_console import store  # noqa: E402
-from customer_console.credits import balance_of  # noqa: E402
+from customer_console.credits import (  # noqa: E402
+    TokenUsage,
+    UnpricedModel,
+    balance_of,
+    rate_call,
+)
 from customer_console.keys import mint_key, verify_secret  # noqa: E402
+from customer_console.router import resolve_rate_card
 from customer_console.seats import decide_assignment, seat_counts  # noqa: E402
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -110,9 +116,16 @@ class TestSchema:
     def test_the_rate_card_ships_unpriced(self, conn):
         # Deliberate: CP-6 sets prices against measured burn, and rate_call()
         # raises UnpricedModel rather than billing a guess as free.
+        #
+        # Scoped to the SEEDED rows by their effective_from, because CP-6's
+        # suites insert fixture-priced cards at a later date to exercise rating.
+        # The claim being pinned is about `002_seed_catalog.sql` — that it ships
+        # zeros — and that is exactly what this now asks.
         assert conn.execute(
             text("SELECT count(*) FROM model_rate_card "
-                 "WHERE input_credits_per_1k <> 0 OR output_credits_per_1k <> 0")
+                 "WHERE effective_from = TIMESTAMPTZ '2026-01-01T00:00:00Z' "
+                 "  AND (input_credits_per_1k <> 0 "
+                 "       OR output_credits_per_1k <> 0)")
         ).scalar_one() == 0
 
 
@@ -253,6 +266,121 @@ class TestCreditsAndUsage:
                                   billed_credits=Decimal("0"), model="m") is True
 
         assert store.credit_deltas(conn, org_id=org) == []
+
+
+# ── CP-6: the rate card in force, and the per-run breaker's input ───────────
+
+class TestTheRateCardInForce:
+    """The read the Router does at metering (``router.resolve_rate_card``).
+
+    Same shape as ``resolve_tier`` — newest row whose ``effective_from`` has
+    passed — so a re-price is an INSERT with a later date and a past invoice is
+    never recomputed against today's card. Only a real server can answer the
+    ordering and the ``<= now()`` predicate honestly.
+    """
+
+    def test_the_seeded_card_resolves_but_is_unpriced(self, conn):
+        card = resolve_rate_card(conn, "deepseek/deepseek-v4-pro")
+
+        assert card.is_priced is False
+        # Not "bills zero" — raises. A model the card does not price is an
+        # operational mistake, and billing it confidently as free looks like
+        # revenue working while the margin leaks.
+        with pytest.raises(UnpricedModel):
+            rate_call(card, TokenUsage(prompt_tokens=1_000_000))
+
+    def test_the_newest_card_in_effect_wins(self, conn):
+        conn.execute(text(
+            "INSERT INTO model_rate_card (model, input_credits_per_1k, "
+            " output_credits_per_1k, cached_input_credits_per_1k, "
+            " effective_from) "
+            "VALUES ('deepseek/deepseek-v4-pro', 2, 6, 0.5, now())"))
+
+        card = resolve_rate_card(conn, "deepseek/deepseek-v4-pro")
+
+        assert card.is_priced is True
+        # 1000 fresh input @2 + 500 output @6 = 5 credits.
+        assert rate_call(
+            card, TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        ) == Decimal("5.0")
+
+    def test_a_future_dated_card_is_staged_not_live(self, conn):
+        # A re-price can be staged for the first of the month without taking
+        # effect the moment it is inserted.
+        conn.execute(text(
+            "INSERT INTO model_rate_card (model, input_credits_per_1k, "
+            " output_credits_per_1k, effective_from) "
+            "VALUES ('deepseek/deepseek-v4-pro', 99, 99, "
+            "        now() + interval '7 days')"))
+
+        assert resolve_rate_card(
+            conn, "deepseek/deepseek-v4-pro").is_priced is False
+
+    def test_a_model_with_no_card_row_raises_rather_than_billing_free(self, conn):
+        with pytest.raises(UnpricedModel):
+            resolve_rate_card(conn, "someprovider/never-priced")
+
+
+class TestRunSpend:
+    """``store.run_spend`` — what the per-run circuit breaker reads."""
+
+    def test_a_run_with_no_usage_sums_to_zero_not_none(self, conn, org):
+        # The empty-aggregate trap: SUM() over no rows is NULL, and a fake is
+        # perfectly happy to hand back 0 instead. Without COALESCE the breaker
+        # would raise on the FIRST call of every run.
+        assert store.run_spend(conn, org_id=org, run_id="run-never-used") \
+            == Decimal(0)
+
+    def test_it_sums_only_that_run(self, conn, org):
+        for run, cost in (("run-a", "3"), ("run-a", "4"), ("run-b", "10")):
+            store.record_usage(
+                conn, org_id=org, request_id=f"req-{uuid.uuid4().hex}",
+                billed_credits=Decimal(cost), run_id=run, model="m")
+
+        assert store.run_spend(conn, org_id=org, run_id="run-a") == Decimal("7")
+        assert store.run_spend(conn, org_id=org, run_id="run-b") == Decimal("10")
+
+    def test_it_never_crosses_organizations(self, conn, org):
+        # Two customers whose agents happen to use the same run id must not
+        # break each other's loop — the same class of defect migration 003 had
+        # to fix for request_id.
+        other = store.ensure_organization(
+            conn, slug=f"other-{uuid.uuid4().hex[:8]}", name="Other")
+        store.record_usage(
+            conn, org_id=other, request_id=f"req-{uuid.uuid4().hex}",
+            billed_credits=Decimal("500"), run_id="run-shared", model="m")
+
+        assert store.run_spend(conn, org_id=org, run_id="run-shared") \
+            == Decimal(0)
+        assert store.run_spend(conn, org_id=other, run_id="run-shared") \
+            == Decimal("500")
+
+
+class TestBalanceIsTheLedgerSumAfterAMeteredCall:
+    """CP-6 acceptance clause 1, the arithmetic half: *"balance equals
+    SUM(credit_ledger.delta) in a fixture"*.
+
+    The structural half — that no code path UPDATEs a balance column — is
+    ``test_customer_console_credits.py::TestNoCodePathUpdatesABalanceColumn``,
+    which needs no database and therefore cannot skip.
+    """
+
+    def test_the_draw_lands_and_the_balance_is_the_sum(self, conn, org):
+        store.add_credit(conn, org_id=org, delta=Decimal("1000"),
+                         reason="purchase")
+        store.record_usage(
+            conn, org_id=org, request_id=f"req-{uuid.uuid4().hex}",
+            billed_credits=Decimal("1.29"), model="m")
+
+        # Computed by the application...
+        assert balance_of(store.credit_deltas(conn, org_id=org)) \
+            == Decimal("998.71")
+        # ...and by the database, independently. There is no third answer
+        # stored anywhere, which is the property being pinned.
+        assert conn.execute(
+            text("SELECT SUM(delta) FROM credit_ledger "
+                 "WHERE organization_id = :o"), {"o": org}
+        ).scalar_one() == Decimal("998.71")
 
 
 # ── Keys ────────────────────────────────────────────────────────────────────

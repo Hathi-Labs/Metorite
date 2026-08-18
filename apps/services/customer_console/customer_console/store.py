@@ -32,6 +32,7 @@ __all__ = [
     "record_usage",
     "release_seat",
     "resolve_key",
+    "run_spend",
     "seat_rows",
     "try_assign_seat",
 ]
@@ -233,6 +234,34 @@ def credit_deltas(conn: Connection, *, org_id: str) -> list[Decimal]:
             {"org": org_id},
         )
     ]
+
+
+def run_spend(conn: Connection, *, org_id: str, run_id: str) -> Decimal:
+    """Credits already drawn by one agent run — the circuit breaker's input.
+
+    Summed in Postgres rather than by pulling rows into Python: a runaway loop
+    is exactly the case where the row count is large, and it is the case the
+    query exists for.
+
+    ``COALESCE`` because a run with no usage yet must be **0**, not ``None`` —
+    an empty aggregate returning NULL would make the breaker's comparison raise
+    on the first call of every run, i.e. on every run. Hermetic fakes are happy
+    to return either, which is why this is asserted against a real server (R8).
+
+    Matches the partial index ``usage_event_run_idx (organization_id, run_id)
+    WHERE run_id IS NOT NULL`` from migration 003, so the check stays an index
+    lookup on the hot path.
+    """
+    total = conn.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(billed_credits), 0) FROM usage_event
+            WHERE organization_id = :org AND run_id = :run
+            """
+        ),
+        {"org": org_id, "run": run_id},
+    ).scalar_one()
+    return Decimal(total)
 
 
 def add_credit(conn: Connection, *, org_id: str, delta: Decimal,

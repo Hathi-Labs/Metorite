@@ -93,8 +93,11 @@ ON CONFLICT (tier, effective_from) DO NOTHING;
 --
 -- Seeded at zero rather than at a guess: a zero here bills nothing and is
 -- obviously wrong, where a plausible-looking guess bills confidently and is
--- quietly wrong. `test_platform_credits.py` pins that a zero card is treated as
--- UNPRICED (raises) rather than as free.
+-- quietly wrong. `test_customer_console_credits.py` pins that a zero card is
+-- treated as UNPRICED (raises) rather than as free, and
+-- `test_customer_console_sql.py` pins that THESE seeded rows are still zero —
+-- scoped to this effective_from, since CP-6's suites insert fixture-priced
+-- cards at a later date to exercise rating without touching the seed.
 INSERT INTO model_rate_card
     (model, input_credits_per_1k, output_credits_per_1k,
      cached_input_credits_per_1k, effective_from) VALUES

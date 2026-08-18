@@ -33,6 +33,8 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from customer_console.credits import RateCard, UnpricedModel
+
 __all__ = [
     "ResolvedTier",
     "TierUnknown",
@@ -40,6 +42,7 @@ __all__ = [
     "decrypt_secret",
     "encrypt_secret",
     "provider_credential",
+    "resolve_rate_card",
     "resolve_tier",
     "set_provider_call",
     "usage_from_response",
@@ -86,6 +89,52 @@ def resolve_tier(conn: Connection, tier: str) -> ResolvedTier:
     if row is None:
         raise TierUnknown(f"no binding for tier {tier!r}")
     return ResolvedTier(tier=tier, model=row[0])
+
+
+# ── The rate card (CP-6) ────────────────────────────────────────────────────
+
+def resolve_rate_card(conn: Connection, model: str) -> RateCard:
+    """The rate card in force for one model, as of now.
+
+    Deliberately the same shape as :func:`resolve_tier`: newest row whose
+    ``effective_from`` has passed. Repricing is *"insert a row with a later
+    date"*, never *"edit the live one"*, so a past invoice is never recomputed
+    against today's card — rating happens once, at write time.
+
+    Raises:
+        UnpricedModel: no row is in effect for this model. Refusing is the
+            point (see :class:`customer_console.credits.UnpricedModel`): a model
+            the card does not price is an operational mistake, and billing it
+            confidently as free looks like revenue working while the margin
+            leaks. The *caller* on the metering path downgrades this to "bill
+            zero, loudly" — because a metering failure must never fail a
+            completion — but the decision is made there, visibly, not hidden
+            here behind a default of zero.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT input_credits_per_1k, output_credits_per_1k,
+                   cached_input_credits_per_1k
+            FROM model_rate_card
+            WHERE model = :model AND effective_from <= now()
+            ORDER BY effective_from DESC
+            LIMIT 1
+            """
+        ),
+        {"model": model},
+    ).first()
+    if row is None:
+        raise UnpricedModel(
+            f"{model!r} has no rate-card row in effect; refusing to bill it "
+            "as free"
+        )
+    return RateCard(
+        model=model,
+        input_per_1k=row[0],
+        output_per_1k=row[1],
+        cached_input_per_1k=row[2],
+    )
 
 
 # ── Provider credentials ────────────────────────────────────────────────────
