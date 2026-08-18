@@ -3804,7 +3804,9 @@ route, one store function, two fences, no migration: `GET /billing/catalog`
 `payments.paise` doing the one conversion. The suite is **117** tests, 0
 skipped, against a real Postgres 16; the Console block is **395** (the
 live-route parametrisation in `test_customer_console_resolve.py` picked the
-new route up on its own, 52 → 53 cases, and refuses a deployment key there).
+new route up on its own — 21 → 22 parametrised cases, measured by collection on
+both commits after the first write-up said "52 → 53", a hand-transcribed count
+the verifier caught — and refuses a deployment key there).
 Both fences shown red first — dropping `WHERE active` fails
 `test_the_catalog_read_never_boards_an_inactive_row`; emitting
 `int(price_inr)` instead of `payments.paise(...)` fails

@@ -293,6 +293,10 @@ def active_plans(conn: Connection) -> list[dict[str, Any]]:
     yet, and a catalog READ that leaves the filter to its caller is a catalog
     read that eventually offers R&D Center for sale.
 
+    The route converts ``price_inr`` with ``payments.paise()``, which raises on
+    NULL — safe only because ``plan_catalog.price_inr`` is ``NOT NULL``. A
+    migration that relaxes that constraint makes this read 500 catalog-wide.
+
     **Takes no organization, deliberately.** Prices are catalog data, the same
     for every customer (MT-2/SC-1a own per-org pricing and neither is built);
     a parameter this function does not have is a per-org price nobody can add
