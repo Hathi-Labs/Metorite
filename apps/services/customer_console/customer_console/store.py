@@ -25,6 +25,7 @@ from customer_console.credits import LEDGER_REASON_USAGE
 
 __all__ = [
     "activate_subscription",
+    "active_plans",
     "add_credit",
     "apply_discount_to_order",
     "capture_provider_refs",
@@ -281,6 +282,52 @@ def plan_price(conn: Connection, *, plan_slug: str) -> Decimal | None:
         text("SELECT price_inr FROM plan_catalog WHERE slug = :slug AND active"),
         {"slug": plan_slug},
     ).scalar_one_or_none()
+
+
+def active_plans(conn: Connection) -> list[dict[str, Any]]:
+    """Every catalog row a customer may be sold, in the catalog's own order.
+
+    ``active`` is in the WHERE clause for exactly :func:`priced_plan`'s reason
+    and it is the same rule stated once more rather than a caller's option:
+    `rnd` and `support` are seeded INACTIVE because their Centers do not exist
+    yet, and a catalog READ that leaves the filter to its caller is a catalog
+    read that eventually offers R&D Center for sale.
+
+    The route converts ``price_inr`` with ``payments.paise()``, which raises on
+    NULL — safe only because ``plan_catalog.price_inr`` is ``NOT NULL``. A
+    migration that relaxes that constraint makes this read 500 catalog-wide.
+
+    **Takes no organization, deliberately.** Prices are catalog data, the same
+    for every customer (MT-2/SC-1a own per-org pricing and neither is built);
+    a parameter this function does not have is a per-org price nobody can add
+    here by accident.
+
+    ``ORDER BY sort_order, slug`` — the tie-break is not decoration. Postgres
+    is free to return equally-ranked rows in any order, and ``sort_order``
+    carries no UNIQUE constraint and a ``DEFAULT 100``
+    (``001_customer_console.sql``), so every row inserted without a rank ties
+    with every other one. Ties are the default case rather than the exotic one,
+    and without the tie-break two reads of an unchanged catalog can disagree
+    about the ladder.
+
+    Rupees out, exactly like :func:`plan_price` and :func:`priced_plan`: the
+    ONE conversion to paise is ``payments.paise`` at the surface (§9.2), so
+    this module never becomes a second place money changes denomination.
+    """
+    return [
+        {"slug": r[0], "name": r[1], "kind": r[2], "price_inr": r[3],
+         "sort_order": r[4]}
+        for r in conn.execute(
+            text(
+                """
+                SELECT slug, name, kind, price_inr, sort_order
+                FROM plan_catalog
+                WHERE active
+                ORDER BY sort_order, slug
+                """
+            )
+        )
+    ]
 
 
 # ── Credits and usage ───────────────────────────────────────────────────────

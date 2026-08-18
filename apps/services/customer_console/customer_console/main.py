@@ -303,6 +303,36 @@ class OrderPageView(BaseModel):
     next: str | None = None
 
 
+class CatalogPlanView(BaseModel):
+    """One sellable catalog row (§6 item (f)).
+
+    ⚠️ **Five fields, and the money one is PAISE** — pinned exactly by
+    ``test_the_catalog_read_carries_no_per_org_state_and_paise_only``, for
+    ``OrderView``'s reason: a field nothing reads is a field somebody
+    eventually reads.
+
+    Two absences are the design. **No ``price_inr``:** a rupee field beside a
+    paise-denominated order API is precisely the ambiguity §9.2 exists to
+    prevent, and one denomination on the wire means the browser can only
+    format. **No per-org state** — no entitlement, no seat count, no
+    org-specific price. Prices are catalog data (MT-2/SC-1a own per-org
+    pricing and neither is built), and a catalog that answers differently per
+    customer is a pricing engine, which this is not.
+    """
+
+    slug: str
+    name: str
+    kind: str
+    price_paise: int
+    sort_order: int
+
+
+class CatalogView(BaseModel):
+    """The priced ladder, active rows only, in ``sort_order`` (§6 item (f))."""
+
+    plans: list[CatalogPlanView]
+
+
 class UsageRequest(BaseModel):
     """Written by the **Router**, which holds the internal token — never by the
     customer whose usage it describes.
@@ -1452,6 +1482,39 @@ def _no_such_order() -> HTTPException:
 
 def _no_such_code() -> HTTPException:
     return HTTPException(status_code=404, detail=_NO_SUCH_CODE)
+
+
+@app.get("/billing/catalog")
+def billing_catalog(_: PayingCaller) -> CatalogView:
+    """The priced ladder a customer may buy from (§6 item (f)).
+
+    **Why ``can_pay`` and not ``can_use_ai``**: this is the read a customer
+    makes on the way to paying us, so gating it on the AI door would shut it on
+    exactly the ``suspended`` organization who most needs it — §9.3(5)'s
+    measured defect, one route along. A ``deleted`` organization is refused,
+    like everywhere else.
+
+    **The caller is authenticated and then deliberately unused.** The catalog
+    is the same for every customer, so binding it to ``_`` is the structural
+    statement that no per-org answer is computable here: there is no
+    organization id in scope to compute one from. Per-org pricing is MT-2 /
+    SC-1a's and neither is built.
+
+    Rupees become paise through ``payments.paise`` — the ONE conversion (§9.2),
+    the same call ``_priced_basket`` makes, so what the ladder quotes and what
+    an order charges cannot drift into two denominations.
+    """
+    with get_engine().begin() as conn:
+        return CatalogView(plans=[
+            CatalogPlanView(
+                slug=plan["slug"],
+                name=plan["name"],
+                kind=plan["kind"],
+                price_paise=payments.paise(plan["price_inr"]),
+                sort_order=plan["sort_order"],
+            )
+            for plan in store.active_plans(conn)
+        ])
 
 
 def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:
