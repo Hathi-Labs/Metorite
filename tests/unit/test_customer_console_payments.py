@@ -516,6 +516,47 @@ class TestTheStateMachine:
             payments.assert_order_transition("captured", "created")
         assert "terminal" in str(exc.value)
 
+    def test_no_code_path_drives_an_order_to_failed(self):
+        """**Nothing writes `failed`** — the P0 repair, pinned structurally.
+
+        Added 2026-08-19. The state stays on §9.2's graph, because an explicit
+        customer cancel is a real order-level failure the surface half may add;
+        what the repair removed is the *webhook* driving it, which turned a
+        retryable attempt failure into a dead order. A behavioural fence
+        (``test_a_failed_attempt_then_a_successful_capture_fulfils``) proves the
+        webhook path; this one is what stops a second, quieter writer appearing
+        somewhere else in the package.
+
+        Read from the AST rather than by grep, and a computed ``target=`` is a
+        failure rather than an invisible pass — a fence that cannot see its
+        subject is the failure mode F5 named one round ago.
+        """
+        assert "failed" in payments.ORDER_STATES, (
+            "the STATE survives; only its writer was removed"
+        )
+        targets: set[str] = set()
+        for path in sorted(_PACKAGE.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = (node.func.attr
+                        if isinstance(node.func, ast.Attribute)
+                        else getattr(node.func, "id", ""))
+                if name != "transition_order":
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg != "target":
+                        continue
+                    assert isinstance(keyword.value, ast.Constant), (
+                        f"{path.name}: a COMPUTED transition target is "
+                        "exactly what this fence cannot see"
+                    )
+                    targets.add(keyword.value.value)
+        assert targets == {"captured", "abandoned"}, (
+            f"the only two states anything drives an order to; got {targets}"
+        )
+
 
 # ── Clause 3 — creating an order moves nothing ─────────────────────────────
 
@@ -1104,6 +1145,35 @@ class TestTheWebhook:
         assert r.status_code == 400
         assert _event_count(db) == before
 
+    def test_a_non_ascii_signature_header_is_refused_not_a_crash(
+        self, client, fake, db
+    ):
+        """P2, 2026-08-19. ``hmac.compare_digest`` on **str** is ASCII-only.
+
+        Starlette decodes header bytes as latin-1, so a byte above 0x7F in
+        ``x-razorpay-signature`` reaches the comparison as a non-ASCII ``str``
+        and ``compare_digest`` raises ``TypeError`` — an unhandled 500 on a
+        route that is, by design, reachable without a bearer token. It is
+        unreachable only while no credentials are configured.
+
+        A refusal is the only correct answer: the presented value cannot equal
+        a hex digest. Red-first evidence: against the str comparison this test
+        does not fail with 500, it **errors** with the raw ``TypeError``,
+        because ``TestClient`` re-raises server exceptions.
+        """
+        raw, headers = fake.capture_event(
+            provider_order_id="order_X", amount_paise=100,
+            event_id="evt_nonascii")
+        # Passed as BYTES: httpx encodes str header values as ASCII and would
+        # refuse to send this at the client, testing nothing.
+        hostile = dict(headers)
+        hostile["x-razorpay-signature"] = b"\xc3\xa9" + b"0" * 62
+        before = _event_count(db)
+        r = client.post("/billing/webhooks/razorpay", content=raw,
+                        headers=hostile)
+        assert r.status_code == 400, r.text
+        assert _event_count(db) == before, "nothing is recorded"
+
     def test_a_duplicate_delivery_of_one_event_id_is_a_no_op(
         self, client, fake, db, org
     ):
@@ -1219,15 +1289,126 @@ class TestTheWebhook:
         assert alert.provider_order_id == "order_ORPHAN"
         assert alert.provider_payment_id == "pay_ORPHAN01"
 
-    def test_a_failed_payment_marks_the_order_failed(
+    def test_a_failed_attempt_does_not_close_the_order(
+        self, client, fake, db, org, caplog
+    ):
+        """**A failed ATTEMPT is not a failed ORDER** (P0 repair, 2026-08-19).
+
+        Replaces ``test_a_failed_payment_marks_the_order_failed``, which pinned
+        the defect rather than the design: one Razorpay order accepts MANY
+        payment attempts until one captures, so a UPI timeout, a declined card
+        and an abandoned 3DS step are all **attempt**-level events. Driving the
+        ORDER to ``failed`` — a terminal state — made the retry that succeeded
+        thirty seconds later unfulfillable.
+
+        The receipt is still written, which is what makes SC-4a's *"a failed
+        payment says so"* buildable: it reads ``payment_event``, not a closed
+        order.
+        """
+        order = _order(client, org["key"])
+        with caplog.at_level("INFO"):
+            r = _capture(client, fake, db, order, kind="payment.failed")
+        assert r.json() == {"recorded": True, "fulfilled": False}
+        assert _status(db, order["id"]) == "created", (
+            "a failed attempt leaves the order OPEN for the next one"
+        )
+        assert _events_for(db, order["id"]) == 1, "the attempt IS recorded"
+        assert _grants_for(db, org["id"], "sales") == 0
+        assert any(rec.message == "payments.attempt_failed"
+                   for rec in caplog.records), caplog.text
+
+    def test_a_failed_attempt_then_a_successful_capture_fulfils(
         self, client, fake, db, org
     ):
-        """Which is what makes SC-4a's *"a failed payment says so"* buildable."""
+        """**THE P0.** Red against 5acad0c1; the whole reason for the fix above.
+
+        The sequence is the ordinary one, not an exotic race: the customer's
+        UPI collect times out, Razorpay sends ``payment.failed``, the customer
+        taps *retry* inside the **same** Checkout, the card captures and
+        ``payment.captured`` arrives for the **same provider order** with the
+        **correct amount**.
+
+        Against the shipped code that second event found an order in ``failed``
+        — terminal, ``_ORDER_TRANSITIONS["failed"] = frozenset()`` — so
+        ``fulfil`` raised ``TransitionRefused``, the ``except`` arm logged INFO
+        ``payments.already_fulfilled`` (a false line: nothing had been
+        fulfilled), and the route answered **200**, which is exactly what stops
+        Razorpay retrying. ₹1,416 taken, nothing granted, no alert.
+
+        Nothing in the 105-test suite delivered failed-then-captured for one
+        order, which is how it shipped green.
+        """
         order = _order(client, org["key"])
-        r = _capture(client, fake, db, order, kind="payment.failed")
+        first = _capture(client, fake, db, order, kind="payment.failed")
+        second = _capture(client, fake, db, order, kind="payment.captured")
+
+        assert first.json() == {"recorded": True, "fulfilled": False}
+        assert second.json() == {"recorded": True, "fulfilled": True}, (
+            "the retry that actually captured must fulfil"
+        )
+        assert _status(db, order["id"]) == "captured"
+        assert _grants_for(db, org["id"], "sales") == 1, "exactly one fulfil"
+        assert _events_for(db, order["id"]) == 2, "both receipts are kept"
+
+    def test_a_capture_after_abandonment_alerts_at_error(
+        self, client, fake, db, org, caplog
+    ):
+        """The OTHER half of the P0: not every ``TransitionRefused`` is benign.
+
+        One ``except TransitionRefused`` arm covered two situations that could
+        not be further apart:
+
+        * the order is ``captured`` — the SECOND event of one capture, the money
+          guard doing its job, correctly INFO;
+        * the order is terminal for any **other** reason — here ``abandoned``,
+          written by the TTL sweep that ``redeem`` runs — in which case a
+          signature-verified capture with the right amount has arrived and we
+          have granted **nothing**. That is the same class as
+          ``payments.webhook_unknown_order`` and it takes the same severity and
+          the same three structured fields, so the payment is findable at the
+          provider from the log line alone.
+
+        Red-first evidence: against the single INFO arm this fence fails on
+        ``payments.capture_after_terminal`` being absent *and* on the benign
+        line being present.
+        """
+        order = _order(client, org["key"])
+        with db.begin() as c:
+            c.execute(
+                text("UPDATE payment_order SET expires_at = now() - "
+                     "interval '1 minute' WHERE id = :i"), {"i": order["id"]})
+        # `abandoned` is written by the clock, observed at the next write that
+        # touches the order — here the redeem route's own expiry transaction.
+        code = _issue_code(client, org_slug=org["slug"], percent_bp=10000)
+        refused = client.post(f"/billing/orders/{order['id']}/redeem",
+                              headers=_headers(org["key"]),
+                              json={"code": code["code"]})
+        assert refused.status_code == 409, refused.text
+        assert _status(db, order["id"]) == "abandoned"
+
+        provider_order_id = _provider_order_id(db, order["id"])
+        with caplog.at_level("INFO"):
+            r = _capture(client, fake, db, order)
+        assert r.status_code == 200, r.text
         assert r.json() == {"recorded": True, "fulfilled": False}
-        assert _status(db, order["id"]) == "failed"
+        assert _events_for(db, order["id"]) == 1, "the receipt is KEPT"
         assert _grants_for(db, org["id"], "sales") == 0
+
+        assert [rec for rec in caplog.records
+                if rec.message == "payments.already_fulfilled"] == [], (
+            "an abandoned order is not the benign duplicate"
+        )
+        alerts = [rec for rec in caplog.records
+                  if rec.message == "payments.capture_after_terminal"]
+        assert len(alerts) == 1, caplog.text
+        alert = alerts[0]
+        assert alert.levelname == "ERROR", (
+            "money received with nothing granted is not an INFO line"
+        )
+        assert alert.amount_paise == order["total_paise"], "triage needs it"
+        assert alert.provider_order_id == provider_order_id
+        assert alert.provider_payment_id == "pay_FAKE0001"
+        assert alert.status == "abandoned"
 
     def test_a_capture_does_not_transition_the_organization(
         self, client, db, fake
@@ -1394,18 +1575,36 @@ class TestReadingAnOrderBack:
             "expires_at", "created_at", "terminal_at", "lines", "discount",
         }
 
-    def test_failed_and_abandoned_orders_are_visible(
-        self, client, fake, db, org
+    def test_a_terminal_order_is_visible_and_filterable(
+        self, client, db, org
     ):
-        """Done-when 14 — which is what makes SC-4a done-when 5 buildable."""
+        """Done-when 14 — which is what makes SC-4a done-when 5 buildable.
+
+        ⚠️ **Rewritten 2026-08-19 with the P0 repair**, and the rewrite is the
+        point rather than a fixture detail. It used to reach a terminal state by
+        delivering ``payment.failed``, which is exactly the transition the
+        repair removed: a failed **attempt** no longer closes the **order**.
+        Order-level failure is ``abandoned``, written by the clock, and that is
+        what a customer's orders page actually has to render. The acceptance
+        this fence carries — a non-open order is readable and filterable — is
+        unchanged.
+        """
         order = _order(client, org["key"])
-        _capture(client, fake, db, order, kind="payment.failed")
+        with db.begin() as c:
+            c.execute(
+                text("UPDATE payment_order SET expires_at = now() - "
+                     "interval '1 minute' WHERE id = :i"), {"i": order["id"]})
+        code = _issue_code(client, org_slug=org["slug"], percent_bp=10000)
+        client.post(f"/billing/orders/{order['id']}/redeem",
+                    headers=_headers(org["key"]),
+                    json={"code": code["code"]})
+
         read = client.get(f"/billing/orders/{order['id']}",
                           headers=_headers(org["key"])).json()
-        assert read["status"] == "failed"
+        assert read["status"] == "abandoned"
         assert read["terminal_at"] is not None
 
-        page = client.get("/billing/orders?status=failed",
+        page = client.get("/billing/orders?status=abandoned",
                           headers=_headers(org["key"])).json()
         assert order["id"] in {o["id"] for o in page["orders"]}
 
@@ -1707,16 +1906,50 @@ class TestDiscountCodes:
     ):
         """The signal a rate limiter would later be sized from (9.3(6))."""
         order = _order(client, org["key"])
-        token = mint_key(env=ENV_DISCOUNT).token
+        code = _issue_code(client, org_slug=org["slug"], percent_bp=5000)
         with caplog.at_level("INFO"):
-            client.post(f"/billing/orders/{order['id']}/redeem",
-                        headers=_headers(org["key"]), json={"code": token})
-        attempts = [r for r in caplog.records
-                    if r.message == "payments.redeem_attempt"]
-        assert attempts == [] or all(
-            token not in json.dumps(r.__dict__, default=str)
-            for r in attempts
+            r = client.post(f"/billing/orders/{order['id']}/redeem",
+                            headers=_headers(org["key"]),
+                            json={"code": code["code"]})
+        assert r.status_code == 200, r.text
+        attempts = [rec for rec in caplog.records
+                    if rec.message == "payments.redeem_attempt"]
+        assert len(attempts) == 1, caplog.text
+        assert attempts[0].code_prefix == code["prefix"]
+        assert code["code"] not in json.dumps(
+            attempts[0].__dict__, default=str)
+
+    def test_a_failing_redeem_attempt_is_logged_and_carries_no_secret(
+        self, client, org, caplog
+    ):
+        """P2, 2026-08-19. **The measured attempt rate was zero by construction.**
+
+        ``_log_redeem_attempt``'s own docstring says the line exists to supply
+        the MEASURED attempt rate that 9.3(6) defers the rate-limit decision
+        to. It sat *below* ``_verified_code``, which raises on all four refusal
+        shapes — malformed, unknown prefix, wrong secret, wrong org — so under
+        the only traffic anyone would size a limiter against (probing), the
+        counter never incremented at all. The one attempt it did record was the
+        successful redemption, i.e. the case a limiter is not for.
+
+        The fence above keeps the *success* case and the prefix-only rule; this
+        one covers the failing attempt. Red-first: the log list is empty.
+        """
+        order = _order(client, org["key"])
+        minted = mint_key(env=ENV_DISCOUNT)
+        with caplog.at_level("INFO"):
+            r = client.post(f"/billing/orders/{order['id']}/redeem",
+                            headers=_headers(org["key"]),
+                            json={"code": minted.token})
+        assert r.status_code == 404, r.text
+        attempts = [rec for rec in caplog.records
+                    if rec.message == "payments.redeem_attempt"]
+        assert len(attempts) == 1, (
+            "a REFUSED attempt is the one a limiter would be sized on"
         )
+        assert attempts[0].code_prefix == minted.prefix
+        assert minted.token not in json.dumps(
+            attempts[0].__dict__, default=str), "the SECRET must never land"
 
 
 # ── Clause 15 / SC-4g 2 — the two paths write identical records ────────────

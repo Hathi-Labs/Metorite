@@ -11,9 +11,36 @@ twice audited: migration `007_payments.sql`, `customer_console/payments.py`
 (the seam, the order state machine, integer paise, the one `fulfil`),
 `lifecycle.can_pay`, `credits.LEDGER_REASONS`, six routes, and **WS-30 SC-4g
 (i)–(v) server-side** — then **INDEPENDENTLY VERIFIED, FAILED on two blocking
-findings, and REPAIRED 2026-08-19**: **110** tests in
+findings, REPAIRED, then ADVERSARIALLY REVIEWED and REPAIRED AGAIN on a P0 and
+two P2s (2026-08-19)**: **115** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
-**0 skipped**, every load-bearing fence shown red first. **The five findings and
+**0 skipped**, every load-bearing fence shown red first.
+
+⚠️ **The 2026-08-19 review round, because its P0 was a money-losing defect that
+all 110 tests were green over.** **P0 — a failed payment ATTEMPT permanently
+bricked the ORDER.** One Razorpay order accepts many attempts until one
+captures, but `payment.failed` transitioned the order to `failed`, which is
+terminal — so the retry the customer made inside the same Checkout arrived, the
+capture succeeded, and `fulfil` refused: **₹1,416 taken, zero grants, a false
+`payments.already_fulfilled` info line, and a 200 that stopped Razorpay
+retrying**. Repaired in both halves: **(a)** a failed attempt is recorded and
+logged and transitions nothing (9.5; `failed` keeps its place on 9.2's graph
+with **no writer**, for a surface-half customer cancel), and **(b)** the single
+`except TransitionRefused` arm is split on the order's status — `captured` keeps
+the benign info line, **anything else is an ERROR** carrying the amount and both
+provider identifiers, which is the same class as
+`payments.webhook_unknown_order` and is now owned by **CP-8** alongside the
+NULL-`order_id` receipts. **P2-1** — the redeem-attempt log sat *below*
+`_verified_code`, so the "measured attempt rate" 9.3(6) defers the rate-limit
+decision to was **zero under probing**; it now runs first, prefix-only.
+**P2-2** — a non-ASCII byte in `x-razorpay-signature` reached
+`hmac.compare_digest(str, str)` and raised `TypeError`, i.e. an unhandled
+**500** on the one route with no bearer token; the comparison is over bytes.
+Five new fences, each shown red against `5acad0c1` first, including a structural
+`test_no_code_path_drives_an_order_to_failed` (mutation-proved). Three further
+findings are recorded rather than fixed (§6 CP-9).
+
+**The five findings of the 2026-08-19 verification round and
 where each is answered** (every behavioural probe had passed; these are fence,
 doc and severity defects): **F1** — clause 2's parametric transition test
 asserted nothing for the ten non-terminal source pairs, so three off-graph edges
@@ -1030,7 +1057,17 @@ provider order that a redemption replaced or detached (CP-9 §6 decision 2). The
 are kept, never cleaned up, because they are the only record that the money
 arrived; **CP-8 owns surfacing and clearing them**, and the webhook's `ERROR`
 line (`payments.webhook_unknown_order`, carrying the amount and both provider
-identifiers) is the interim alert until this console exists. The expiry sweep of
+identifiers) is the interim alert until this console exists.
+
+**Scope extended 2026-08-19 (adversarial-review P0(b)): the SECOND
+money-received-nothing-granted shape belongs here too — a capture that lands on
+an order this database has already **abandoned**.** The receipt *does* name an
+order in that case, so it is not a NULL-`order_id` row and a query written for
+those would miss it; what it has in common is the thing that matters, namely a
+signature-verified payment of the correct amount with no entitlement written.
+The interim alert is `payments.capture_after_terminal` at **ERROR**, carrying
+the same three fields plus the order's status (9.5 guard 2). CP-8 surfaces both
+shapes on one queue: `payment_event` rows that fulfilled nothing. The expiry sweep of
 `created` orders belongs here too — CP-9 enforces `expires_at` lazily on purpose,
 since a scheduler minted there would have no surface to report to.
 
@@ -1072,10 +1109,15 @@ documents already cited and nobody had written.
 > `AUTHENTICATING_DEPENDENCIES`) · six routes in `main.py`: `POST
 > /billing/orders`, `GET /billing/orders/{id}`, `GET /billing/orders`, `POST
 > /billing/orders/{id}/redeem`, `POST /billing/webhooks/razorpay`, `POST
-> /discounts` · **110 tests** in `tests/unit/test_customer_console_payments.py`
+> /discounts` · **115 tests** in `tests/unit/test_customer_console_payments.py`
 > (105 at the build, **+5 from the 2026-08-19 verification repair** — F1's
 > completed cross product, F2's paid-orphan fence, F5's two walk-depth fences
-> and F7's contents pin)
+> and F7's contents pin — **+5 from the 2026-08-19 adversarial-review repair**:
+> the failed-then-captured P0 fence, the failed-attempt-leaves-the-order-open
+> fence, the capture-after-abandonment ERROR fence, the failing-redeem-attempt
+> log fence and the structural `test_no_code_path_drives_an_order_to_failed`;
+> two existing fences were rewritten because they pinned the P0 rather than the
+> design)
 > against a real Postgres 16, **0 skipped**, joined to §7's command block and
 > to `pr-check.yml`'s skip-guard (6 Console suites → **7**) in this same
 > change. Every load-bearing fence was shown **red first** under a recorded
@@ -1233,6 +1275,13 @@ function refuses anything not on the graph, exactly as
 invent a second one**). `abandoned` is written by **expiry**, never by the
 customer: a customer who walks away tells you nothing, and an order that stays
 `created` forever is the state that makes "how many orders are open" unanswerable.
+
+⚠️ **`failed` has NO writer in this slice** *(2026-08-19, review P0(a) — see
+9.5)*. It is on the graph for an explicit customer **cancel** the surface half
+may add; a failed payment **attempt** is attempt-level and closes nothing,
+because one provider order accepts many attempts until one captures. Two states
+therefore sit on the graph unwritten today — `attempted` and `failed` — for the
+same reason: the edges exist now so SC-4a needs no graph change.
 
 **Every money column is integer paise, and the conversion happens once.**
 `plan_catalog.price_inr` stays `NUMERIC(12,2)` in rupees — prices are data and
@@ -1404,6 +1453,16 @@ answer that gives least:
    *measured* attempt rate — so the redeem route logs refusals with the
    presented **prefix only**, which is the signal a limiter would later be
    sized from.
+   ⚠️ **The log line therefore runs BEFORE the code is verified** *(corrected
+   2026-08-19, adversarial-review P2-1)*. As shipped it sat *below*
+   `_verified_code`, which raises on all four refusal shapes — malformed,
+   unknown prefix, wrong secret, wrong organization — so the "measured attempt
+   rate" this clause defers the decision to was **zero under exactly the
+   probing traffic a limiter would be sized against**; the only attempts
+   counted were the ones that succeeded. Prefix-only still binds: the secret
+   never lands in a log. **Fences:**
+   `test_a_redeem_attempt_logs_the_prefix_and_only_the_prefix` (the success
+   case) · `test_a_failing_redeem_attempt_is_logged_and_carries_no_secret`.
 7. **Every order route resolves the organization FROM THE KEY, and a foreign
    order is indistinguishable from a missing one** *(added 2026-08-18, B5 —
    there was no ownership predicate anywhere in this ticket)*.
@@ -1493,6 +1552,14 @@ runs, and here it is worse — nobody may *create* the account (9.7).
   anything but bytes.** Unsigned or mis-signed ⇒ **400**, logged, nothing read,
   nothing written. Never 200-and-ignore: a provider that receives 200 stops
   retrying, so "accept and drop" silently loses captured payments.
+  ⚠️ **The comparison is over BYTES, not over `str`** *(corrected 2026-08-19,
+  adversarial-review P2-2)*. `hmac.compare_digest` on two `str` arguments is
+  **ASCII-only** and raises `TypeError` otherwise, and Starlette decodes header
+  bytes as latin-1 — so a single byte above 0x7F in `x-razorpay-signature` was
+  an unhandled **500** on the one route that carries no bearer token by design
+  (reachable the moment credentials are configured). A hostile header is a
+  refusal, because a non-hex value cannot equal a hex digest. **Fence:**
+  `test_a_non_ascii_signature_header_is_refused_not_a_crash`.
 - ⚠️ **It must register its verifier in `auth.AUTHENTICATING_DEPENDENCIES`**
   (`auth.py:344-349`; the set is declared at `:344` and a new entry goes inside
   it, at `:345-348` — anchor re-measured 2026-08-18). The webhook is a door with
@@ -1516,6 +1583,20 @@ runs, and here it is worse — nobody may *create* the account (9.7).
      an already-`captured` order is a **no-op that returns 200** and logs at
      info. Both events are *recorded*; exactly one *fulfils*.
 
+     🔴 **The no-op clause is scoped to `captured` and to NOTHING else.**
+     *(Corrected 2026-08-19, adversarial-review P0(b). As written it said
+     "terminal", and the code took it literally: one `except TransitionRefused`
+     arm logged `payments.already_fulfilled` at **info** for every terminal
+     state.)* A fulfilment refused because the order is `captured` is the
+     benign duplicate. A fulfilment refused for **any other** reason means a
+     signature-verified payment of the correct amount arrived and **nothing was
+     granted** — the same class as the NULL-`order_id` receipt, and it takes
+     the same severity and the same three structured fields
+     (`amount_paise`, `provider_order_id`, `provider_payment_id`):
+     `payments.capture_after_terminal` at **ERROR**. Reachable today only via
+     `abandoned` — a capture landing after the TTL sweep ran. **Fence:**
+     `test_a_capture_after_abandonment_alerts_at_error`.
+
   Together these are what SC-4a's *"a duplicate webhook credits once"* actually
   rests on — the event-id key alone does not deliver it.
   **Fence:** `test_two_different_event_ids_for_one_order_fulfil_exactly_once` —
@@ -1524,10 +1605,39 @@ runs, and here it is worse — nobody may *create* the account (9.7).
   delivers the *same* event id twice does not test this at all, and is the
   fence this ticket would otherwise have shipped; keep both, they answer
   different questions.
+- 🔴 **A failed payment ATTEMPT is not a failed ORDER.** *(Added 2026-08-19,
+  adversarial-review P0(a) — the shipped code had it the other way and it was
+  a money-losing defect, not a wording one.)* **One Razorpay order accepts many
+  payment attempts until one captures**: a UPI collect that times out, a card
+  the issuer declines, a 3DS step the customer abandons. `payment.failed` is
+  therefore an **attempt-level** event — it is **recorded** (the receipt is what
+  SC-4a's *"a failed payment says so"* reads) and **logged at info**
+  (`payments.attempt_failed`), and it **transitions nothing**. The order stays
+  open for the next attempt until it is captured or the TTL abandons it.
+  **Order-level failure is `abandoned`, written by the clock** (9.2).
+  Consequently **nothing in this slice drives an order to `failed`**: the state
+  stays on 9.2's graph because an explicit *customer cancel* is a real
+  order-level failure the surface half (SC-4a) may add, and the edges exist now
+  so that slice needs no graph change — the same reason `attempted` has no
+  writer here. **Fences:**
+  `test_a_failed_attempt_then_a_successful_capture_fulfils` (the behaviour:
+  deliver `payment.failed` then a correct `payment.captured` for one provider
+  order → captured, granted, exactly once) ·
+  `test_a_failed_attempt_does_not_close_the_order` ·
+  `test_no_code_path_drives_an_order_to_failed` (AST over the package's
+  `transition_order` call sites; the only two targets anything writes are
+  `captured` and `abandoned`).
+  *What it cost as shipped:* the customer retried inside the same Checkout, the
+  capture succeeded, and the second webhook found a **terminal** order — ₹1,416
+  taken, zero grants, a false `payments.already_fulfilled` info line, and a
+  **200** that stopped Razorpay retrying. No test in the suite delivered
+  failed-then-captured for one order, which is how it shipped green.
 - **Order-state coupling:** a webhook for an order already in a terminal state
-  is a no-op. A capture whose amount disagrees with `payment_order.total_paise`
-  is **refused and alerted**, never fulfilled — an amount mismatch is either a
-  bug or an attack and it must not be resolved in the customer's favour silently.
+  fulfils nothing — and **which** terminal state decides whether that is benign
+  or an incident (guard 2 above). A capture whose amount disagrees with
+  `payment_order.total_paise` is **refused and alerted**, never fulfilled — an
+  amount mismatch is either a bug or an attack and it must not be resolved in
+  the customer's favour silently.
 
 **9.6 · Capture → the ONE fulfilment function.**
 `payments.fulfil(conn, *, order_id, reference)` — one function, one transaction,
@@ -1702,7 +1812,7 @@ default.)*
     `tests/unit/_customer_console_ladder.py`. The new suite
     (`tests/unit/test_customer_console_payments.py`) is added to §7's command
     block **and** to `pr-check.yml`'s hand-maintained skip-guard list in the
-    **same PR** — a skipped R8 test proves nothing (CP-3). — **110 tests, 0
+    **same PR** — a skipped R8 test proves nothing (CP-3). — **115 tests, 0
     skipped.** The suite additionally reads `pr-check.yml` and both owning
     specs and fails if its own name is ever dropped from them, which is the
     closest a hand-list gets to defending itself.
@@ -1790,6 +1900,25 @@ a comment**. *(All three ✅ made 2026-08-18 in the build.)*
    Console-side door; a deployment decides nothing with it).
 3. ✅ `tests/unit/test_customer_console_resolve.py` — the same count in a
    comment, same edit, same reason.
+
+**CP-9 findings recorded rather than fixed** — *2026-08-19, raised by the
+adversarial review that produced the P0/P2 repairs above. None is decided by any
+clause of this ticket, so none was decided in the repair; each is a line for the
+board rather than a drive-by.*
+
+1. **`store.activate_subscription` resets `current_period_start` on every
+   capture** — a second purchase **restarts** the term instead of extending it.
+   Which of the two is correct is a commercial call (SC-5's problem, and the
+   renewal/proration ticket is where it belongs); at one-customer volume with
+   one purchase there is no observable difference yet. *(2026-08-19)*
+2. **`CreateOrderRequest`'s `quantity` and `lines` are unbounded** — nothing
+   caps either, so a customer-authenticated route can be handed a quantity that
+   overflows `BIGINT` on the paise arithmetic and returns a **driver 500**
+   rather than a 400. No value moves (an order grants nothing) and the row is
+   never written, so it is a refusal-shape defect, not a money one. *(2026-08-19)*
+3. **`GET /billing/orders` runs `store.redemption_for_order` once per row** —
+   51 queries for a full page. Harmless at launch volume; it is on the list
+   before it becomes a page nobody can load. *(2026-08-19)*
 
 **Non-goals of CP-9:** the checkout **UI** (WS-30 SC-4a) · the **discount-code**
 tables and their semantics (WS-30 SC-4g — CP-9 consumes a validated redemption,

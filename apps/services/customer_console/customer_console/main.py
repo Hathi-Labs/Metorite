@@ -1717,8 +1717,13 @@ def redeem_discount_code(
                 detail={"reason": "order_not_open", "status": order["status"]},
             )
 
-        code = _verified_code(conn, parsed=parsed, org_id=org_id)
+        # ⚠️ **Above the verification, never below it** (moved 2026-08-19,
+        # review P2-1). `_verified_code` raises on all four refusal shapes, so
+        # below it this line recorded only the attempts that SUCCEEDED — the
+        # measured rate its docstring promises was zero under exactly the
+        # traffic a rate limiter would be sized against.
         _log_redeem_attempt(order_id, parsed)
+        code = _verified_code(conn, parsed=parsed, org_id=org_id)
 
         # BEFORE the count, never between the count and the insert — the seat
         # cap's lesson, one table along (`store.lock_seat_capacity`).
@@ -1778,6 +1783,12 @@ def _log_redeem_attempt(order_id: str, parsed) -> None:
     indistinguishable refusal, so it is neither an oracle nor a feasible
     search. What would change that call is a MEASURED attempt rate, which is
     exactly what this line is for.
+
+    ⚠️ **Therefore it must run BEFORE the code is verified**, and it did not
+    until 2026-08-19: every failing attempt — malformed, unknown prefix, wrong
+    secret, wrong organization — raised out of :func:`_verified_code` first, so
+    the only attempts counted were the ones that worked. Fence:
+    ``test_a_failing_redeem_attempt_is_logged_and_carries_no_secret``.
     """
     _log.info(
         "payments.redeem_attempt",
@@ -1884,6 +1895,16 @@ def razorpay_webhook(event: SignedWebhook) -> dict[str, Any]:
        :func:`payments.fulfil` refuses, this route logs at info and answers
        200. Both events are recorded; exactly one fulfils.
 
+       ⚠️ **That no-op is scoped to `captured` and to nothing else** (repaired
+       2026-08-19). A refusal against any *other* terminal state means a
+       verified payment arrived and nothing was granted — an ERROR, not an
+       info line; see :func:`_handle_webhook_event`.
+
+    **A failed payment ATTEMPT does not close the ORDER.** One provider order
+    accepts many attempts until one captures, so ``payment.failed`` is recorded
+    and logged and the order stays open for the retry. Order-level failure is
+    ``abandoned``, written by the clock (§9.2).
+
     A capture whose amount disagrees with ``total_paise`` is **refused and
     alerted**, never fulfilled: an amount mismatch is a bug or an attack, and
     it must not be resolved in the customer's favour silently. The refusal
@@ -1936,12 +1957,25 @@ def _handle_webhook_event(
     conn, *, event: payments.WebhookEvent, order: dict[str, Any]
 ) -> dict[str, Any]:
     """Decide what one verified, freshly recorded event does to its order."""
-    if event.kind in _FAILURE_EVENTS:
-        if order["status"] in payments.ORDER_TERMINAL_STATES:
-            return {"recorded": True, "fulfilled": False}
-        payments.transition_order(
-            conn, order_id=order["id"], current=order["status"],
-            target="failed",
+    if event.kind in _ATTEMPT_FAILURE_EVENTS:
+        # ⚠️ **A failed ATTEMPT is not a failed ORDER** (repaired 2026-08-19,
+        # review P0). One Razorpay order accepts MANY payment attempts until
+        # one captures: a UPI collect that times out, a card the issuer
+        # declines, a 3DS step the customer abandons. This arm used to
+        # transition the order to `failed` — TERMINAL, no edge leaves it — so
+        # the retry the customer made inside the same Checkout arrived at a
+        # dead order, `fulfil` refused, and the money-received-nothing-granted
+        # path opened with a 200 that stopped the provider retrying.
+        #
+        # The order stays OPEN until it is captured or the TTL abandons it.
+        # Order-level failure is 9.2's `abandoned`, written by the clock. The
+        # receipt is what makes the attempt visible — SC-4a's "a failed payment
+        # says so" reads `payment_event`, not a closed order.
+        _log.info(
+            "payments.attempt_failed",
+            extra={"order": order["id"], "event": event.event_id,
+                   "event_kind": event.kind, "status": order["status"],
+                   "provider_payment_id": event.provider_payment_id},
         )
         return {"recorded": True, "fulfilled": False}
 
@@ -1971,10 +2005,31 @@ def _handle_webhook_event(
             conn, order_id=order["id"], reference=f"order:{order['id']}",
         )
     except TransitionRefused:
-        # The SECOND event of one capture. Recorded, not fulfilled, 200 — the
-        # money guard doing exactly its job.
-        _log.info("payments.already_fulfilled",
-                  extra={"order": order["id"], "event": event.event_id})
+        # ⚠️ **TWO situations reach this arm and only ONE of them is benign**
+        # (split 2026-08-19, review P0(b)). Branching on the order's status is
+        # what tells them apart:
+        if order["status"] == "captured":
+            # The SECOND event of one capture (`payment.captured` and
+            # `order.paid` carry different ids). Recorded, not fulfilled,
+            # 200 — the money guard doing exactly its job.
+            _log.info("payments.already_fulfilled",
+                      extra={"order": order["id"], "event": event.event_id})
+            return {"recorded": True, "fulfilled": False}
+        # Any OTHER terminal state — `abandoned` today, reachable the moment a
+        # capture lands after the TTL sweep ran — means a signature-verified
+        # payment of the right amount arrived and we granted nothing. Same
+        # class as `payments.webhook_unknown_order`, so the same severity and
+        # the same three structured fields: the payment must be findable at the
+        # provider from the log line alone. CP-8's reconciliation owns these
+        # rows alongside the NULL-`order_id` receipts.
+        _log.error(
+            "payments.capture_after_terminal",
+            extra={"order": order["id"], "event": event.event_id,
+                   "status": order["status"],
+                   "provider_order_id": event.provider_order_id,
+                   "provider_payment_id": event.provider_payment_id,
+                   "amount_paise": event.amount_paise},
+        )
         return {"recorded": True, "fulfilled": False}
     return {"recorded": True, "fulfilled": True}
 
@@ -1982,7 +2037,13 @@ def _handle_webhook_event(
 #: Event kinds that mean money arrived. TWO of them, for ONE payment — which is
 #: why the terminal-state rule exists (§9.5, B8).
 _CAPTURE_EVENTS = frozenset({"payment.captured", "order.paid"})
-_FAILURE_EVENTS = frozenset({"payment.failed"})
+
+#: Event kinds that mean **one attempt** failed. ⚠️ Named `_ATTEMPT_` on
+#: purpose: they say nothing about the ORDER, which stays open for the next
+#: attempt. **Nothing in the tree drives an order to `failed`** — the state
+#: stays on 9.2's graph for an explicit customer cancel the surface half may
+#: add, and order-level failure today is `abandoned`, written by the clock.
+_ATTEMPT_FAILURE_EVENTS = frozenset({"payment.failed"})
 
 
 @app.post("/discounts")

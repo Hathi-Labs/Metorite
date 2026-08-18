@@ -18,7 +18,7 @@ discount with clamping, `POST /discounts` (Operator) and
 `credits.LEDGER_REASONS`. **Done-when 1–8 met; clause 9 — the test-mode capture
 rehearsal — is NOT met and is not claimed**, because creating a Razorpay
 account is owner-side even in test mode. Fences:
-`tests/unit/test_customer_console_payments.py` (**110** tests, real Postgres 16,
+`tests/unit/test_customer_console_payments.py` (**115** tests, real Postgres 16,
 0 skipped) — **independently verified, FAILED, and repaired 2026-08-19**; the
 finding that lands *here* is **F2**: done-when 1's *"harmless orphan"* residual
 was **false in one direction**. Detaching or replacing the provider order does
@@ -28,7 +28,28 @@ Restated in done-when 1, owned by `customer_console.md` **CP-8** (the
 NULL-`order_id` receipts), alerted at `ERROR` in the webhook, and answered on
 the surface by new **SC-4a done-when 5a**: never expose a replaced order's
 payment link. The other four findings (F1/F4/F5/F7) are fence and doc repairs
-inside WS-31's tree. **SC-4a's checkout UI and its two write proxies remain held back**
+inside WS-31's tree.
+
+⚠️ **Then ADVERSARIALLY REVIEWED and repaired again — 2026-08-19, one P0 and
+two P2s. What lands *here* is the P0, because it changes what SC-4a may
+assume.** **A failed payment ATTEMPT is not a failed ORDER.** One Razorpay order
+accepts many attempts until one captures, and the shipped webhook drove the
+order to `failed` — terminal — on the first `payment.failed`, so the customer's
+retry inside the same Checkout captured against a dead order: **₹1,416 taken,
+zero grants, a false info line and a 200 that stopped the provider retrying**.
+Two consequences SC-4a must build on: **(1)** an order that shows a failed
+attempt is still **open** and still payable — the surface renders the attempt
+from `payment_event`, never from a closed order (this is what SC-4a done-when 5's
+*"a failed payment says so"* now reads), and **nothing writes `failed`** at all,
+so the only terminal states a customer's page sees are `captured` and
+`abandoned`; **(2)** a capture landing on an already-`abandoned` order is the
+**second** money-received-nothing-granted shape, alerted at `ERROR`
+(`payments.capture_after_terminal`) and owned by **CP-8** beside the
+NULL-`order_id` receipts — so **SC-4a done-when 5a's rule extends**: never
+expose a payment link for an order this Console has abandoned, not only for one
+it replaced. The two P2s are WS-31-internal (the redeem-attempt log ran below
+its verifier; a non-ASCII signature header 500'd instead of 400'ing).
+**SC-4a's checkout UI and its two write proxies remain held back**
 behind B7's capability decision, which reaches the tenant plane's vocabulary
 and must not ride in on a payments PR.
 
@@ -309,14 +330,28 @@ credits nothing and says so.
    as CP-9 §9.3a *(2026-08-18, B6: as first specced nothing could read an order
    back, so this clause had no data source and would have been "met" by a page
    that guesses)*.
-5a. **The surface must never expose a replaced order's payment link.** *(Added
-   2026-08-18, CP-9 finding F2.)* A redemption **replaces** the provider order
-   (partial) or **detaches** it (₹0), and neither retracts order #1 at Razorpay:
-   paying the stale link is a capture the Console cannot attribute to any order
-   — money received with nothing granted. So the checkout re-reads the order
-   after every redemption and renders only the **current** `provider_order_id`;
-   a link captured in component state before the redeem call is the bug this
-   clause exists to name.
+   ⚠️ **A failed ATTEMPT is not a failed ORDER, and the page must not say it
+   is** *(corrected 2026-08-19, CP-9's review P0)*. One provider order takes
+   many attempts until one captures, so **`order.status` never becomes
+   `failed`** — nothing writes it. The attempt is read from CP-9's
+   `payment_event` receipt; the order beside it is still **open and still
+   payable**, and the correct copy is *"that attempt didn't go through — try
+   again"*, never *"this order failed, start a new one"*. The only terminal
+   states this page renders are `captured` and `abandoned` (the TTL).
+5a. **The surface must never expose a payment link for an order this Console
+   has replaced, detached or abandoned.** *(Added 2026-08-18 as CP-9 finding
+   F2; **extended 2026-08-19** with the review's P0(b).)* A redemption
+   **replaces** the provider order (partial) or **detaches** it (₹0), and the
+   TTL **abandons** an order the customer left open — none of the three
+   retracts the link at Razorpay. Paying a stale link is a capture the Console
+   either cannot attribute to any order or attributes to a **terminal** one:
+   money received with nothing granted, alerted at `ERROR` in both shapes and
+   owned by `customer_console.md` **CP-8**. So the checkout re-reads the order
+   after every redemption **and before every hand-off to the provider**, and
+   renders a link only while the order is open on the **current**
+   `provider_order_id`; a link captured in component state before the redeem
+   call, or left live on a page open past `expires_at`, is the bug this clause
+   exists to name.
 6. `purchaseEnabled` (`customer_console/main.py:1266`) is what flips the page
    from the contact prompt to the checkout (`page.tsx:202`) — **the flip is the
    owner's**, and its preconditions are the flip set below.
@@ -656,7 +691,7 @@ against the same recorded numbers.
 > that case**.
 
 **Done when:** *(clauses 1–8 **✅ MET 2026-08-18** by CP-9's substrate half —
-`tests/unit/test_customer_console_payments.py`, 110 tests against a real
+`tests/unit/test_customer_console_payments.py`, 115 tests against a real
 Postgres 16, 0 skipped. Clause 9 is the owner-gated rehearsal and is **NOT**
 met, as it says.)*
 1. ✅ A **100% code** takes an org from package selection to **active entitlements**
@@ -767,7 +802,7 @@ met, as it says.)*
 8. ✅ **R8** — the constraints, the uniqueness, the count-based cap and the
    fulfilment transaction run against a real Postgres 16 via
    `tests/unit/_customer_console_ladder.py`; the suite joins §7's command block
-   and `pr-check.yml`'s skip-guard in the same PR. — **110 tests, 0 skipped**;
+   and `pr-check.yml`'s skip-guard in the same PR. — **115 tests, 0 skipped**;
    the Console skip-guard hand-list went **6 → 7**, and the suite reads both
    the workflow and both owning specs so its own name cannot be dropped
    silently.

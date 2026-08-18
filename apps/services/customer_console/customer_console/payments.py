@@ -215,9 +215,15 @@ ORDER_TERMINAL_STATES: frozenset[str] = frozenset({
 
 _ORDER_TRANSITIONS: dict[str, frozenset[str]] = {
     # `created -> captured` exists for the Rs 0 path, which never reaches a
-    # provider and therefore never "attempts" anything; `created -> failed` for
-    # a provider reporting a failure against an order we never marked
-    # attempted. Without both, two real outcomes would be unreachable.
+    # provider and therefore never "attempts" anything.
+    #
+    # ⚠️ **The two `-> failed` edges have NO writer** (2026-08-19, review P0).
+    # They are kept because an explicit customer *cancel* is a real order-level
+    # failure the surface half may add — but a failed payment ATTEMPT is not
+    # one: one provider order accepts many attempts until one captures, and
+    # closing the order on the first UPI timeout made the retry that succeeded
+    # unfulfillable. Order-level failure today is `abandoned`, written by the
+    # clock. Fenced by `test_no_code_path_drives_an_order_to_failed`.
     "created": frozenset({"attempted", "captured", "failed", "abandoned"}),
     # ⚠️ Nothing in THIS slice writes `attempted`. It is written by the surface
     # half (SC-4a) when the customer opens the provider's checkout, and the
@@ -245,10 +251,10 @@ def transition_order(
 ) -> None:
     """Move an order, refusing every edge not on the graph. **The one writer.**
 
-    Every status write in this service goes through here — fulfilment, the
-    failed-payment webhook, expiry — so "is this move legal" is asked once
-    rather than at each site, and ``terminal_at`` is stamped by the same rule
-    that decides terminality. A free-form status write is what
+    Every status write in this service goes through here — fulfilment and
+    expiry, the only two callers — so "is this move legal" is asked once rather
+    than at each site, and ``terminal_at`` is stamped by the same rule that
+    decides terminality. A free-form status write is what
     ``POST /orgs/lifecycle`` refuses one plane up, for the same reason.
     """
     assert_order_transition(current, target)
@@ -476,12 +482,23 @@ class RazorpayProvider:
         its bytes verifies. A 200-and-ignore would be worse than a refusal —
         a provider that receives 200 stops retrying, so accepting and dropping
         silently loses captured payments.
+
+        ⚠️ **The comparison is over BYTES, and that is not a style choice**
+        (repaired 2026-08-19, review P2-2). ``hmac.compare_digest`` on two
+        ``str`` arguments is **ASCII-only** and raises ``TypeError`` otherwise;
+        Starlette decodes header bytes as latin-1, so a single byte above 0x7F
+        in the signature header turned this refusal into an unhandled **500**
+        on a route that carries no bearer token by design. Encoding both sides
+        keeps the constant-time comparison and makes a hostile header what it
+        always was — a value that cannot equal a hex digest.
         """
         presented = _header(headers, _SIGNATURE_HEADER)
         if not presented:
             return None
         expected = compute_signature(self._webhook_secret, raw_body)
-        if not hmac.compare_digest(presented, expected):
+        if not hmac.compare_digest(
+            presented.encode("utf-8"), expected.encode("utf-8")
+        ):
             return None
         return _parse_event(raw_body, headers)
 
