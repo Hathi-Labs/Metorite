@@ -26,9 +26,11 @@ from dataclasses import dataclass
 
 __all__ = [
     "ENV_DEPLOYMENT",
+    "ENV_DISCOUNT",
     "MintedKey",
     "hash_secret",
     "is_deployment_key",
+    "is_discount_code",
     "mint_key",
     "split_key",
     "verify_secret",
@@ -40,6 +42,19 @@ _ENV_LIVE = "live"
 #: the minting call, in the dispatch that decides which scheme is at the door,
 #: and in the tests, and a typo in any one of them is a silent auth change.
 ENV_DEPLOYMENT = "depl"
+#: The discount code's env segment — ``cc_disc_<prefix>_<secret>`` (SC-4g (i)).
+#:
+#: A third **value**, not a third implementation: a discount code is a bearer
+#: secret that grants value, so it is stored and verified by exactly this
+#: module. The spec first wrote the format as ``disc_<prefix>_<secret>``, which
+#: :func:`split_key` **rejects** — it requires the first segment to be exactly
+#: ``cc`` — so building it would have meant editing the shared key seam, i.e.
+#: doing the opposite of what "a value, not an implementation" asks.
+#:
+#: ⚠️ A discount code is NOT a credential: it opens no route and authenticates
+#: nobody. It is presented *inside* a request already authenticated by an
+#: organization key, and what it proves is pre-authorization by an operator.
+ENV_DISCOUNT = "disc"
 _PREFIX_BYTES = 6   # 12 hex chars — enough to be unique, short enough to show
 _SECRET_BYTES = 32  # 256 bits
 
@@ -72,17 +87,32 @@ def mint_key(*, env: str = _ENV_LIVE) -> MintedKey:
     )
 
 
-def is_deployment_key(stored_prefix: str) -> bool:
-    """True when a canonical prefix names the **deployment** scheme.
+def _names_env(stored_prefix: str, env: str) -> bool:
+    """True when a canonical prefix carries this env segment.
 
     Built from :func:`_canonical_prefix` rather than from a literal
     ``"cc_depl_"``, so the key format lives in exactly one place: change the
-    separator or the scheme word and this predicate follows, instead of
+    separator or the scheme word and every predicate below follows, instead of
     silently answering False for every key and routing deployments into the
     operator arm — which fails as *"invalid operator token"*, a message that
     sends the reader to the wrong half of the system.
     """
-    return stored_prefix.startswith(_canonical_prefix(ENV_DEPLOYMENT, ""))
+    return stored_prefix.startswith(_canonical_prefix(env, ""))
+
+
+def is_deployment_key(stored_prefix: str) -> bool:
+    """True when a canonical prefix names the **deployment** scheme (CP-2b)."""
+    return _names_env(stored_prefix, ENV_DEPLOYMENT)
+
+
+def is_discount_code(stored_prefix: str) -> bool:
+    """True when a canonical prefix names a **discount code** (SC-4g (i)).
+
+    A sibling of :func:`is_deployment_key` rather than a generalisation with a
+    parameter at the call site: the two answer different questions to different
+    readers, and the shared half is :func:`_names_env`.
+    """
+    return _names_env(stored_prefix, ENV_DISCOUNT)
 
 
 def hash_secret(secret: str) -> str:

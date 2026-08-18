@@ -21,6 +21,12 @@ from decimal import ROUND_HALF_UP, Decimal
 
 __all__ = [
     "CREDIT_QUANTUM",
+    "LEDGER_REASONS",
+    "LEDGER_REASON_ADJUSTMENT",
+    "LEDGER_REASON_DISCOUNT_REDEMPTION",
+    "LEDGER_REASON_GRANT",
+    "LEDGER_REASON_PURCHASE",
+    "LEDGER_REASON_USAGE",
     "OverdraftPolicy",
     "RateCard",
     "RunCeiling",
@@ -34,6 +40,47 @@ __all__ = [
     "quantize_credits",
     "rate_call",
 ]
+
+# ── The ledger vocabulary (SC-4g (v)) ───────────────────────────────────────
+#
+# `credit_ledger.reason` is bare TEXT and `POST /credits/grant` accepts any
+# string, so *"distinguishable a year later"* was a hope rather than a fence.
+# Defined ONCE here and imported by every writer, so the same event says the
+# same word wherever it is written — and, critically, so a `seat_grant.reason`
+# and a `credit_ledger.reason` describing one purchase agree on the day credit
+# packs arrive and both tables carry a row for it.
+#
+# ⚠️ Deliberately NOT a CHECK constraint in this slice, and the reason is R6:
+# `/credits/grant` accepts free-form reasons today, so an expand-phase
+# migration must not reject rows the running code can still write. Narrowing
+# `CreditGrantRequest.reason` to the enum comes first; the CHECK is a later
+# contract-phase migration. Recorded so the omission reads as a decision.
+
+#: The Router's meter — `ref` is the `request_id` (shipped, `store.record_usage`).
+LEDGER_REASON_USAGE = "usage"
+#: CP-9 fulfilment, PAID path — `ref` is `order:<uuid>`.
+LEDGER_REASON_PURCHASE = "purchase"
+#: CP-9 fulfilment, Rs 0 / partial path — `ref` is `redemption:<uuid>`.
+LEDGER_REASON_DISCOUNT_REDEMPTION = "discount_redemption"
+#: SC-4e goodwill — `ref` is the operator's note reference.
+LEDGER_REASON_ADJUSTMENT = "adjustment"
+#: `POST /credits/grant`, non-commercial grants — `ref` is operator-supplied.
+LEDGER_REASON_GRANT = "grant"
+
+#: Every reason a ledger row may carry. Fenced structurally by
+#: ``test_customer_console_payments.py`` over the CALL SITES of
+#: ``store.add_credit`` — a real fence in this slice, because it reads code
+#: rather than rows. (The *data* test that the three commercial reasons are
+#: pairwise distinguishable is scoped to when packs land: the subscription path
+#: writes zero ledger rows today, and a test over an empty table passes for the
+#: wrong reason — the disarmed-gate shape CP-3 already cost us once.)
+LEDGER_REASONS: frozenset[str] = frozenset({
+    LEDGER_REASON_USAGE,
+    LEDGER_REASON_PURCHASE,
+    LEDGER_REASON_DISCOUNT_REDEMPTION,
+    LEDGER_REASON_ADJUSTMENT,
+    LEDGER_REASON_GRANT,
+})
 
 #: The smallest amount the ledger can represent: ``credit_ledger.delta`` and
 #: ``usage_event.billed_credits`` are both ``NUMERIC(14, 4)``.

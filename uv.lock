@@ -986,6 +986,7 @@ source = { editable = "apps/services/customer_console" }
 dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "litellm" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy" },
@@ -995,6 +996,7 @@ dependencies = [
 requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
     { name = "sqlalchemy", specifier = ">=2.0" },

@@ -87,6 +87,17 @@ INT = {"Authorization": f"Bearer {INTERNAL}"}
 #: the board rather than a line of this suite.)*
 _UNAUTHENTICATED_ROUTES = frozenset({"/health"})
 
+#: Routes that authenticate by SIGNATURE rather than by a bearer token (WS-31
+#: CP-9 §9.5). They are **not** exempt from authentication — the verifier is
+#: registered in ``auth.AUTHENTICATING_DEPENDENCIES``, so the clause-1 fence
+#: below covers them exactly as it covers every other door. What differs is the
+#: shape of the refusal: no token is presented, so there is nothing to answer
+#: 401 about.
+#:
+#: ⚠️ Deliberately a set of ONE, named rather than derived, so adding a second
+#: signature-authenticated route is an edit somebody justifies in review.
+_SIGNATURE_AUTHENTICATED_ROUTES = frozenset({"/billing/webhooks/razorpay"})
+
 
 #: How to drive a freshly-provisioned organization (``trial``, ``001:56``) to
 #: each lifecycle state THROUGH THE REAL TRANSITION GRAPH — never a hand-written
@@ -307,6 +318,17 @@ class TestTheKeyReachesOneEndpoint:
         Not a hand-list of endpoints: a list would have to be remembered, and
         the failure mode of forgetting is a new cross-tenant surface silently
         opened to every deployment we have ever issued a key to.
+
+        ⚠️ **Amended 2026-08-18 by WS-31 CP-9**, and the amendment is narrower
+        than it looks. The property asserted is *"a deployment key is not
+        admitted"*; until CP-9 every door on this service was a **bearer-token**
+        door, so 401 expressed it exactly. The Razorpay webhook is not one — it
+        authenticates by **HMAC over the raw body** (§9.5), and its refusals are
+        503 (no credentials configured, the state of every environment today)
+        and 400 (unsigned or mis-signed). Answering 401 there would mean the
+        route had grown a token check it must not have. So the property is
+        asserted in that scheme's own vocabulary rather than relaxed to
+        *"anything but 2xx"*, which would have passed on a 500.
         """
         r = client.request(method, path, headers=_headers(box["key"]), json={})
 
@@ -314,6 +336,12 @@ class TestTheKeyReachesOneEndpoint:
             # Accepted at the door. (The empty body is then a 422 from the
             # model — which is the point: authentication happened.)
             assert r.status_code != 401, r.text
+        elif path in _SIGNATURE_AUTHENTICATED_ROUTES:
+            assert r.status_code in {400, 503}, (
+                f"{method} {path} -> {r.status_code}: a signature-authenticated "
+                "route must refuse a bearer token, and must refuse it as a "
+                "signature failure rather than as a credential failure"
+            )
         else:
             assert r.status_code == 401, f"{method} {path} -> {r.status_code}"
 
@@ -1082,9 +1110,13 @@ class TestResponseShape:
             "use_ai": expected.can_use_ai,
         }
         # The box's vocabulary is deliberately three fields, not
-        # OrgCapabilities' four: `data_retained` is a Console-side retention
-        # fact with no deployment behaviour behind it, and shipping a field
-        # nothing reads invites somebody to read it.
+        # OrgCapabilities' FIVE: `data_retained` is a Console-side retention
+        # fact with no deployment behaviour behind it, and `can_pay` (WS-31
+        # CP-9) is a Console-side DOOR — a deployment decides nothing with
+        # either, and shipping a field nothing reads invites somebody to read
+        # it. (Said "four" until CP-9 appended the fifth boolean; a count in a
+        # comment goes stale silently, which is why the next line asserts the
+        # absence rather than the arithmetic.)
         assert "data_retained" not in entry["capabilities"]
 
 

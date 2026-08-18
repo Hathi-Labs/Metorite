@@ -58,32 +58,41 @@ authority on who they are.
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
-from customer_console import store
+from customer_console import payments, store
 from customer_console.db import get_engine
 from customer_console.keys import is_deployment_key, split_key, verify_secret
-from customer_console.lifecycle import capabilities_of
+from customer_console.lifecycle import OrgCapabilities, capabilities_of
 
 __all__ = [
     "AUTHENTICATING_DEPENDENCIES",
+    "ORGANIZATION_KEY_DEPENDENCIES",
     "RESOLVE_CAPABILITY",
     "Caller",
     "DeploymentCaller",
     "Internal",
     "KeyCaller",
     "Operator",
+    "PayingCaller",
     "ResolveCaller",
+    "SignedWebhook",
     "deployment_or_operator",
+    "organization_for_payment",
     "organization_from_key",
+    "razorpay_webhook_event",
     "require_internal",
     "require_operator",
 ]
+
+_log = logging.getLogger("platform.auth")
 
 #: The one capability a deployment key carries today. Named once so the string
 #: that gates sign-in is not retyped at the mint site, the check and the tests.
@@ -161,24 +170,24 @@ def require_internal(
 # permissively is the one that gives away product.
 
 
-def organization_from_key(
-    authorization: Annotated[str | None, Header()] = None,
-    x_cc_member: Annotated[str | None, Header()] = None,
-    x_cc_agent: Annotated[str | None, Header()] = None,
-    x_cc_module: Annotated[str | None, Header()] = None,
-    x_cc_run: Annotated[str | None, Header()] = None,
+def _caller_from_key(
+    authorization: str | None, *, permits: Callable[[OrgCapabilities], bool],
 ) -> Caller:
-    """Resolve the calling organization from its API key.
+    """Resolve and gate an organization key. **One key resolution, two gates.**
 
-    Note what is deliberately absent: there is no ``X-CC-Org`` parameter and no
-    ``org_slug`` body field. The organization is a property of the credential,
-    full stop. If a caller sends ``X-CC-Org``, FastAPI ignores it — it is not
-    bound anywhere — which is the desired outcome and is pinned by a test rather
-    than left to a reader's confidence.
+    ``permits`` is the lifecycle question this door asks — never a second copy
+    of the state machine, and never a local frozenset of state names. Two
+    doors ask two different questions of the SAME machine:
+
+    * ``can_use_ai`` for the Router and ``/me`` — spending is the first thing
+      to go, because it is the thing that costs us money in real time;
+    * ``can_pay`` for the checkout — because ``can_use_ai`` is false for
+      exactly the ``suspended`` customer who most needs to pay, and shutting
+      the checkout on them was the measured defect CP-9 §9.3(5) records.
 
     Raises 401 for a missing, malformed, unknown or revoked key. The four cases
-    return the SAME message on purpose: distinguishing "no such key" from "wrong
-    secret" tells an attacker which half of their guess was right.
+    return the SAME message on purpose: distinguishing "no such key" from
+    "wrong secret" tells an attacker which half of their guess was right.
     """
     token = ""
     if authorization and authorization.startswith("Bearer "):
@@ -214,7 +223,7 @@ def organization_from_key(
     # (F4 — verification found a `cancelled` org metering happily). 403, not
     # 401: the credential is valid and the caller should be told the account is
     # the problem, not sent to re-authenticate in a loop.
-    if not capabilities_of(org_status).can_use_ai:
+    if not permits(capabilities_of(org_status)):
         raise HTTPException(
             status_code=403,
             detail=f"organization is {org_status}",
@@ -224,11 +233,54 @@ def organization_from_key(
         organization_id=organization_id,
         key_prefix=prefix,
         organization_status=org_status,
+    )
+
+
+def organization_from_key(
+    authorization: Annotated[str | None, Header()] = None,
+    x_cc_member: Annotated[str | None, Header()] = None,
+    x_cc_agent: Annotated[str | None, Header()] = None,
+    x_cc_module: Annotated[str | None, Header()] = None,
+    x_cc_run: Annotated[str | None, Header()] = None,
+) -> Caller:
+    """Resolve the calling organization from its API key, gated on ``can_use_ai``.
+
+    Note what is deliberately absent: there is no ``X-CC-Org`` parameter and no
+    ``org_slug`` body field. The organization is a property of the credential,
+    full stop. If a caller sends ``X-CC-Org``, FastAPI ignores it — it is not
+    bound anywhere — which is the desired outcome and is pinned by a test rather
+    than left to a reader's confidence.
+    """
+    caller = _caller_from_key(
+        authorization, permits=lambda caps: caps.can_use_ai
+    )
+    return replace(
+        caller,
         member=x_cc_member,
         agent=x_cc_agent,
         module_slug=x_cc_module,
         run_id=x_cc_run,
     )
+
+
+def organization_for_payment(
+    authorization: Annotated[str | None, Header()] = None,
+) -> Caller:
+    """The checkout's door: the same key, gated on ``can_pay`` (CP-9 §9.3(5)).
+
+    **Not a fifth scheme.** It reuses ``organization_from_key``'s resolution
+    verbatim — same table, same prefix lookup, same constant-time verify, same
+    identical refusal for the four bad-credential cases — and differs in
+    exactly one respect: which lifecycle question it asks. Measured 2026-08-18:
+    ``organization_from_key`` 403s a ``suspended`` organization, so the
+    customer who most needs to pay was the one the door was shut on.
+
+    ⚠️ It binds **no attribution headers**. ``X-CC-Member`` and friends refine
+    LLM usage attribution inside an organization; an order has no member and
+    inventing one from a header would be the first step towards a header that
+    decides something.
+    """
+    return _caller_from_key(authorization, permits=lambda caps: caps.can_pay)
 
 
 @dataclass(frozen=True)
@@ -320,9 +372,60 @@ def deployment_or_operator(capability: str):
     return _dependency
 
 
+async def razorpay_webhook_event(request: Request) -> payments.WebhookEvent:
+    """Authenticate a provider webhook **by its signature over the raw bytes**.
+
+    ⚠️ **This is an AUTHENTICATING dependency, not a validator**, and saying so
+    in :data:`AUTHENTICATING_DEPENDENCIES` is what keeps CP-2b clause 1's fence
+    (``test_the_unauthenticated_route_set_is_exactly_health``) meaningful. The
+    webhook is a door with no bearer token; expressed as anything else it would
+    make the route look unauthenticated — correctly, because a route whose
+    signature check is an ``if`` in the body is one refactor away from not
+    having one.
+
+    Three refusals, and the order is the acceptance criterion (§9.5):
+
+    1. **No credentials configured → 503.** The seam refuses rather than
+       accepting a body it cannot verify. Absence of credentials is how CP-9
+       ships dark, and it is observable rather than a flag nobody reads.
+    2. **Unsigned or mis-signed → 400**, logged, *nothing read* — the body is
+       not parsed as anything but bytes until the signature over those bytes
+       verifies. Never 200-and-ignore: a provider that receives 200 stops
+       retrying, so "accept and drop" silently loses captured payments.
+    3. **Verified but unusable → 400** (no event id, or a body that will not
+       parse). An event with no id has no transport dedup key.
+
+    Declared ``async`` so it can await the raw body. Starlette caches it, so
+    the route below sees the same bytes without a second read.
+    """
+    try:
+        provider = payments.provider()
+    except payments.ProviderUnconfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    raw = await request.body()
+    event = provider.verify_webhook(raw, request.headers)
+    if event is None:
+        # The prefix of nothing is logged: there is no credential here to name,
+        # and echoing an unverified body would put an attacker's bytes in our
+        # logs. The count is the signal a rate limiter would later be sized on.
+        _log.warning("payments.webhook_refused")
+        raise HTTPException(
+            status_code=400,
+            detail="webhook signature verification failed",
+        )
+    return event
+
+
 Operator = Annotated[None, Depends(require_operator)]
 Internal = Annotated[None, Depends(require_internal)]
 KeyCaller = Annotated[Caller, Depends(organization_from_key)]
+#: CP-9's checkout door. Same credential as :data:`KeyCaller`, different
+#: lifecycle gate — see :func:`organization_for_payment`.
+PayingCaller = Annotated[Caller, Depends(organization_for_payment)]
+SignedWebhook = Annotated[
+    payments.WebhookEvent, Depends(razorpay_webhook_event)
+]
 
 #: Built once at module scope rather than inline in the ``Annotated`` alias, so
 #: the callable has a stable identity that :data:`AUTHENTICATING_DEPENDENCIES`
@@ -345,5 +448,21 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     require_operator,
     require_internal,
     organization_from_key,
+    organization_for_payment,
+    razorpay_webhook_event,
     _resolve_dependency,
+})
+
+#: The dependencies a CUSTOMER's own ``cc_live_`` key opens — both of them.
+#:
+#: Derived from here by CP-9's transitive fence
+#: (``test_no_org_key_route_writes_an_entitlement_or_ledger_row``) rather than
+#: hand-listed in the test, for the reason every list in this tree gets derived:
+#: a third org-key door added later is covered on the day it lands, and one
+#: that forgets to register itself makes the routes it guards look unreachable
+#: by a customer — which fails loudly at the fence rather than passing quietly
+#: while the widest credential in the product reaches a grant writer.
+ORGANIZATION_KEY_DEPENDENCIES: frozenset = frozenset({
+    organization_from_key,
+    organization_for_payment,
 })

@@ -46,24 +46,29 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
-from customer_console import store
+from customer_console import payments, store
 from customer_console.auth import (
     Caller,
     DeploymentCaller,
     Internal,
     KeyCaller,
     Operator,
+    PayingCaller,
     ResolveCaller,
+    SignedWebhook,
 )
 from customer_console.credits import (
     CREDIT_QUANTUM,
+    LEDGER_REASON_PURCHASE,
+    LEDGER_REASONS,
     OverdraftPolicy,
     RunCeiling,
     TokenUsage,
@@ -75,7 +80,13 @@ from customer_console.credits import (
     rate_call,
 )
 from customer_console.db import get_engine
-from customer_console.keys import mint_key
+from customer_console.keys import (
+    ENV_DISCOUNT,
+    is_discount_code,
+    mint_key,
+    split_key,
+    verify_secret,
+)
 from customer_console.lifecycle import (
     TransitionRefused,
     assert_transition,
@@ -157,10 +168,35 @@ class SeatWriteRequest(BaseModel):
 
 
 class CreditGrantRequest(BaseModel):
+    """An operator's ledger write.
+
+    ⚠️ ``reason`` was free-form TEXT until CP-9, which is why *"a discounted
+    purchase is distinguishable a year later"* was a hope rather than a fence
+    (SC-4g (v)). It is now checked against :data:`credits.LEDGER_REASONS` — the
+    **expand-phase** half of that clause, and deliberately the only half in
+    this slice: a `CHECK` constraint on ``credit_ledger.reason`` would reject
+    rows the running code can still write, which is R6's whole subject. The
+    constraint is a later contract-phase migration.
+
+    Validated rather than typed as a ``Literal`` so the vocabulary has exactly
+    one definition — a Literal here would be a second copy, and a second copy
+    of a vocabulary is how two writers come to disagree about one event.
+    """
+
     org_slug: str
     credits: Decimal
-    reason: str = "purchase"
+    reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _known_reason(cls, value: str) -> str:
+        if value not in LEDGER_REASONS:
+            raise ValueError(
+                f"{value!r} is not a ledger reason; expected one of "
+                f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
+            )
+        return value
 
 
 class IssueKeyRequest(BaseModel):
@@ -171,6 +207,100 @@ class IssueKeyRequest(BaseModel):
 class RevokeKeyRequest(BaseModel):
     org_slug: str
     prefix: str
+
+
+class OrderLineRequest(BaseModel):
+    """One basket line. The PRICE is not here — the catalog decides it."""
+
+    plan_slug: str
+    quantity: int = Field(ge=1)
+
+
+class CreateOrderRequest(BaseModel):
+    """A basket. Deliberately carries no amount, no currency and no code.
+
+    A caller-supplied amount would be a caller-supplied price, and a checkout
+    that trusts the browser about what something costs is the oldest bug in
+    e-commerce. Every paisa comes from ``plan_catalog`` through
+    ``payments.paise`` (§9.2).
+    """
+
+    lines: list[OrderLineRequest] = Field(min_length=1)
+
+    model_config = {"extra": "forbid"}
+
+
+class RedeemRequest(BaseModel):
+    """The bearer code, whole. Only its PREFIX is ever stored or logged."""
+
+    code: str
+
+    model_config = {"extra": "forbid"}
+
+
+class IssueDiscountRequest(BaseModel):
+    """Operator-only. The pre-authorization a customer later presents."""
+
+    label: str
+    kind: str
+    #: NULL = an OPEN code any organization may present. Naming an org binds it.
+    org_slug: str | None = None
+    percent_bp: int | None = Field(default=None, ge=1, le=10000)
+    amount_paise: int | None = Field(default=None, ge=1)
+    max_redemptions: int = Field(default=1, ge=1)
+    expires_at: datetime | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class OrderLineView(BaseModel):
+    plan_slug: str
+    quantity: int
+    unit_price_paise: int
+
+
+class OrderDiscountView(BaseModel):
+    #: The code's clear prefix — NEVER its secret (SC-4g (i)).
+    code_prefix: str
+    discount_paise: int
+
+
+class OrderView(BaseModel):
+    """What a customer may read back about their own order (§9.3a).
+
+    ⚠️ **Deliberately absent: ``provider_order_id`` and any provider payload.**
+    The customer's browser has no use for the provider's identifiers, and a
+    field nothing reads is a field somebody eventually reads. Pinned
+    structurally by ``test_the_order_read_carries_no_provider_identifiers``, so
+    adding one has to argue with a red test rather than with a reviewer's
+    attention.
+
+    Integer paise on the wire, as everywhere else: the browser formats, it
+    never arithmetics.
+    """
+
+    id: str
+    status: str
+    provider: str
+    gross_paise: int
+    discount_paise: int
+    taxable_paise: int
+    gst_paise: int
+    total_paise: int
+    gst_split: str | None
+    expires_at: datetime
+    created_at: datetime
+    terminal_at: datetime | None
+    lines: list[OrderLineView] | None = None
+    discount: OrderDiscountView | None = None
+
+
+class OrderPageView(BaseModel):
+    """A page of orders. Same objects, without ``lines`` (§9.3a)."""
+
+    orders: list[OrderView]
+    #: The id to pass as ``cursor`` for the next page, or ``None`` at the end.
+    next: str | None = None
 
 
 class UsageRequest(BaseModel):
@@ -282,13 +412,21 @@ def _org_id(conn, slug: str) -> str:
     return str(row[0])
 
 
-def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any]) -> None:
+def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any],
+           *, actor: str = "operator") -> None:
+    """Write one audit row.
+
+    ``actor`` defaults to ``operator`` because that was every writer until CP-9;
+    the checkout is the first surface a CUSTOMER's own credential writes
+    through, and an audit trail that called those acts "operator" would
+    misattribute the one class of write we most need to tell apart later.
+    """
     conn.execute(
         text(
             "INSERT INTO control_audit (organization_id, actor, action, detail) "
             "VALUES (:org, :actor, :action, CAST(:detail AS jsonb))"
         ),
-        {"org": org_id, "actor": "operator", "action": action,
+        {"org": org_id, "actor": actor, "action": action,
          "detail": json.dumps(detail)},
     )
 
@@ -788,9 +926,13 @@ def _capability_block(status: str) -> dict[str, bool]:
     *today* because of a filter *upstream* is exactly the field to send
     explicitly rather than leave the reader to infer.
 
-    Three names, not ``OrgCapabilities``' four: ``data_retained`` is a
+    Three names, not ``OrgCapabilities``' **five**: ``data_retained`` is a
     Console-side retention fact with no deployment behaviour behind it, and
-    shipping a field nothing reads invites somebody to read it.
+    ``can_pay`` (CP-9) is a *Console-side door*, not a tenant one — a
+    deployment has nothing to decide with either, and shipping a field nothing
+    reads invites somebody to read it. *(Said "four" until CP-9 appended the
+    fifth boolean; a count in a comment goes stale silently, which is why the
+    dataclass is the authority and this sentence merely points at it.)*
 
     Added to the DEPLOYMENT arm only — adding it to the operator arm would
     change a shipped surface for no caller (clause 12).
@@ -1265,6 +1407,610 @@ def my_billing(caller: KeyCaller) -> dict[str, Any]:
         # button, while this is false.
         "purchaseEnabled": False,
     }
+
+
+# ══ CP-9 · the checkout: orders, redemption, and the money guard ════════════
+#
+# **The auth answer, in one paragraph, because it is the question the audit
+# stopped on.** There is NO fifth scheme. The organization key — read-only for
+# every route that shipped before this one — gains exactly two writes, chosen
+# because neither can move value by itself: creating a pending intent, and
+# PRESENTING a discount code somebody holding `Operator` issued. Value moves on
+# exactly two events, both carrying an authority the caller does not hold: a
+# provider webhook whose signature verifies, or the redemption of a valid
+# operator-issued code. The reads below (§9.3a) sit on a credential that
+# already reads, so they mint nothing.
+
+#: How long an unpaid order stays open. `abandoned` is written by EXPIRY, never
+#: by the customer (§9.2) — and expiry is observed at the next write that
+#: touches the order, because the operator-facing sweep belongs with CP-8's
+#: console rather than with a scheduler that has nowhere to report.
+_ORDER_TTL_MINUTES = 30
+
+#: A NAMED page size, never an unbounded `SELECT *` on a table a customer can
+#: grow without limit (9.3(6)'s named residual is exactly that).
+_ORDER_PAGE_SIZE = 50
+
+#: ONE refusal shape for "that order belongs to another organization" and "no
+#: such order" — same status, same body bytes, naming nothing (§9.3(7)). A
+#: 403-for-foreign / 404-for-unknown split is a membership oracle over other
+#: tenants' order ids. Contrast `_org_id`'s 404, which names the slug on
+#: purpose: the operator is cross-org BY DESIGN, and that is the contrast, not
+#: the precedent.
+_NO_SUCH_ORDER = "no such order"
+
+#: The collapsed half of SC-4g done-when 4's partition: {unknown, wrong-org}.
+#: A distinguishable "wrong org" answer confirms that a code exists and belongs
+#: to somebody, which is a membership test over other tenants' data run from a
+#: customer's own key.
+_NO_SUCH_CODE = "no such discount code"
+
+
+def _no_such_order() -> HTTPException:
+    return HTTPException(status_code=404, detail=_NO_SUCH_ORDER)
+
+
+def _no_such_code() -> HTTPException:
+    return HTTPException(status_code=404, detail=_NO_SUCH_CODE)
+
+
+def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:
+    """Shape one order for the customer's wire. Provider ids never board it."""
+    discount = store.redemption_for_order(conn, order_id=order["id"])
+    return OrderView(
+        id=order["id"],
+        status=order["status"],
+        provider=order["provider"],
+        gross_paise=order["gross_paise"],
+        discount_paise=order["discount_paise"],
+        taxable_paise=order["taxable_paise"],
+        gst_paise=order["gst_paise"],
+        total_paise=order["total_paise"],
+        gst_split=order["gst_split"],
+        expires_at=order["expires_at"],
+        created_at=order["created_at"],
+        terminal_at=order["terminal_at"],
+        lines=(
+            [OrderLineView(**line) for line in _lines_for(conn, order["id"])]
+            if with_lines else None
+        ),
+        discount=(
+            OrderDiscountView(
+                code_prefix=discount["code_prefix"],
+                discount_paise=discount["discount_paise"],
+            ) if discount else None
+        ),
+    )
+
+
+def _lines_for(conn, order_id: str) -> list[dict[str, Any]]:
+    return [
+        {"plan_slug": line["plan_slug"], "quantity": line["quantity"],
+         "unit_price_paise": line["unit_price_paise"]}
+        for line in store.order_lines(conn, order_id=order_id)
+    ]
+
+
+def _priced_basket(conn, lines: list[OrderLineRequest]) -> tuple[list, int]:
+    """Price a basket from the CATALOG. 400 for anything it will not sell.
+
+    An order line whose ``plan_slug`` is not an **active** catalog row is
+    refused, so the checkout cannot sell a thing the catalog does not price
+    (§9.1) — `rnd` and `support` are seeded INACTIVE precisely because their
+    Centers are not registered yet.
+    """
+    priced: list[dict[str, Any]] = []
+    gross = 0
+    for line in lines:
+        plan = store.priced_plan(conn, plan_slug=line.plan_slug)
+        if plan is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{line.plan_slug!r} is not an active plan; the checkout "
+                    "sells only priced, active catalog rows"
+                ),
+            )
+        unit = payments.paise(plan["price_inr"])
+        gross += unit * line.quantity
+        priced.append({
+            "plan_slug": plan["slug"], "quantity": line.quantity,
+            "unit_price_paise": unit,
+        })
+    return priced, gross
+
+
+@app.post("/billing/orders")
+def create_order(req: CreateOrderRequest, caller: PayingCaller) -> OrderView:
+    """Create a pending intent under the CUSTOMER's own key (§9.3(2)).
+
+    **It writes ``payment_order`` and ``payment_order_line`` and nothing else.**
+    No entitlement, no seat, no ledger row, no subscription change — which is
+    what makes a customer-authenticated write safe on a service whose customer
+    credential is read-only by design (CP-3's lesson). Done-when 3 asserts it
+    by snapshotting all four tables around this call.
+
+    Gated on ``can_pay``, not ``can_use_ai``: a **suspended** organization must
+    be able to buy its way out, and `auth.organization_from_key` shuts the door
+    on exactly that customer (§9.3(5)).
+
+    With no Razorpay credentials this is **503 naming the missing variables**
+    (done-when 10). Refusing early is honest — an order nobody could ever pay
+    is not an order — and it is half of how CP-9 ships dark, the other half
+    being ``purchaseEnabled: False`` on the surface the workbench renders.
+
+    ⚠️ **The provider order is created HERE, for the amount owed at this
+    moment**, and any later redemption that changes the amount replaces it
+    (see :func:`redeem_discount_code`). A provider order created once and then
+    discounted would collect the pre-discount amount — the customer would be
+    overcharged and the capture would fail our own amount check.
+    """
+    try:
+        provider = payments.provider()
+    except payments.ProviderUnconfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    org_id = caller.organization_id
+    with get_engine().begin() as conn:
+        priced, gross = _priced_basket(conn, req.lines)
+        billing = conn.execute(
+            text("SELECT gstin, billing_state FROM organization WHERE id = :i"),
+            {"i": org_id},
+        ).first()
+        gst_split = payments.gst_split_for(billing[1] if billing else None)
+        gst = payments.gst_for(gross)
+        total = gross + gst
+        if total == 0:
+            # An order that collects nothing is not a purchase. The Rs 0 path
+            # is reached by REDEEMING a code against a priced order, never by
+            # ordering only free rows (`company` is Rs 0 and is not sold).
+            raise HTTPException(
+                status_code=400,
+                detail="an order with nothing to pay is not a purchase",
+            )
+
+        order_id = store.create_order(
+            conn, org_id=org_id, provider="razorpay",
+            gross_paise=gross, discount_paise=0, taxable_paise=gross,
+            gst_paise=gst, total_paise=total, gst_split=gst_split,
+            customer_gstin=billing[0] if billing else None,
+            place_of_supply=billing[1] if billing else None,
+            expires_in_minutes=_ORDER_TTL_MINUTES, lines=priced,
+        )
+        # Inside the transaction on purpose: if the provider refuses, the local
+        # order rolls back with it. The orphan this can leave is the harmless
+        # direction — a provider order nobody pays, which expires there — and
+        # never the dangerous one, a local order the customer cannot pay.
+        created = provider.create_order(
+            amount_paise=total, receipt=order_id,
+            notes={"organization_id": org_id},
+        )
+        store.set_provider_order_id(
+            conn, order_id=order_id,
+            provider_order_id=created.provider_order_id,
+        )
+        _audit(conn, org_id, "order.create",
+               {"order_id": order_id, "total_paise": total,
+                "lines": [line["plan_slug"] for line in priced]},
+               actor="organization")
+        order = store.order_for_update(conn, order_id=order_id, org_id=org_id)
+        assert order is not None
+        return _order_view(conn, order, with_lines=True)
+
+
+@app.get("/billing/orders/{order_id}")
+def read_order(order_id: str, caller: PayingCaller) -> OrderView:
+    """One order — **own org only** (§9.3a, §9.3(7)'s predicate).
+
+    The organization comes from the key's resolution, never from the path, the
+    body or a header (R11). A foreign order and an unknown one answer one
+    byte-identical 404.
+    """
+    with get_engine().begin() as conn:
+        order = store.order_row(
+            conn, order_id=_valid_uuid(order_id),
+            org_id=caller.organization_id,
+        )
+        if order is None:
+            raise _no_such_order()
+        return _order_view(conn, order, with_lines=True)
+
+
+@app.get("/billing/orders")
+def list_orders(
+    caller: PayingCaller, status: str | None = None, cursor: str | None = None,
+) -> OrderPageView:
+    """That organization's orders, newest first (§9.3a).
+
+    ``status`` is validated against the state machine's own set — an unknown
+    value is **400, not silently ignored**, because a filter that quietly
+    matches everything reads as "there are no failed orders".
+    """
+    if status is not None and status not in payments.ORDER_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown status {status!r}; "
+                   f"expected one of {sorted(payments.ORDER_STATES)}",
+        )
+    with get_engine().begin() as conn:
+        rows = store.orders_page(
+            conn, org_id=caller.organization_id, limit=_ORDER_PAGE_SIZE,
+            status=status,
+            cursor=_valid_uuid(cursor) if cursor else None,
+        )
+        return OrderPageView(
+            orders=[_order_view(conn, r, with_lines=False) for r in rows],
+            next=rows[-1]["id"] if len(rows) == _ORDER_PAGE_SIZE else None,
+        )
+
+
+def _valid_uuid(value: str) -> str:
+    """A malformed id is *"no such order"*, never a 500 from the driver.
+
+    Postgres rejects a non-UUID literal for a UUID column with an error the
+    driver raises, which would surface as a 500 and — worse — would tell a
+    prober that "malformed" and "not yours" are different answers.
+    """
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError):
+        raise _no_such_order() from None
+
+
+@app.post("/billing/orders/{order_id}/redeem")
+def redeem_discount_code(
+    order_id: str, req: RedeemRequest, caller: PayingCaller,
+) -> OrderView:
+    """Present a discount code against one's own order (SC-4g, §9.3(2)).
+
+    **This route grants — and it is the only org-key route that may.** It is
+    the one allow-listed edge in
+    ``test_no_org_key_route_writes_an_entitlement_or_ledger_row``, written as
+    the PAIR ``("redeem_discount_code", "payments.fulfil")`` rather than as a
+    sentence like *"redeem may write seats"*: a sentence is a general licence,
+    a pair is not. What makes it safe is that **the code is the
+    pre-authorization** — the customer cannot mint one; somebody holding
+    ``Operator`` issued it. The org key still cannot move value on its own
+    authority.
+
+    The refusals PARTITION (done-when 4):
+
+    * ``expired`` / ``revoked`` / ``exhausted`` — three DISTINCT reasons, given
+      only for a code this organization is entitled to see at all. The caller
+      has already proven possession of the secret, so naming *why* it failed
+      tells them nothing they could not learn by asking us — and an admin told
+      "this code expired on the 3rd" does not file a support ticket.
+    * ``unknown`` / ``wrong-org`` — ONE indistinguishable shape, because a
+      distinguishable "wrong org" confirms a code exists and belongs to
+      somebody: a membership test over other tenants' data, run from a
+      customer's own key.
+
+    Idempotent: re-presenting the same code against the same order redeems once
+    (``UNIQUE (discount_code_id, order_id)``), and a concurrent double-redeem of
+    a ``max_redemptions = 1`` code yields one success and one refusal under
+    ``store.lock_discount_capacity``.
+    """
+    org_id = caller.organization_id
+    order_id = _valid_uuid(order_id)
+
+    # Expiry runs in its OWN transaction, ahead of the work: a refusal below
+    # rolls its transaction back, and an `abandoned` written in that
+    # transaction would roll back with it — leaving an order that reports
+    # itself open forever while refusing every attempt.
+    with get_engine().begin() as conn:
+        stale = store.order_for_update(conn, order_id=order_id, org_id=org_id)
+        if stale is not None:
+            payments.abandon_if_expired(conn, order=stale)
+
+    parsed = split_key(req.code.strip())
+
+    with get_engine().begin() as conn:
+        order = store.order_for_update(conn, order_id=order_id, org_id=org_id)
+        if order is None:
+            raise _no_such_order()
+        if order["status"] in payments.ORDER_TERMINAL_STATES:
+            # Not one of the five: this is a statement about the ORDER, not
+            # about the code. Naming it separately is what lets a page say
+            # "this order has expired, start again" rather than "bad code".
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": "order_not_open", "status": order["status"]},
+            )
+
+        code = _verified_code(conn, parsed=parsed, org_id=org_id)
+        _log_redeem_attempt(order_id, parsed)
+
+        # BEFORE the count, never between the count and the insert — the seat
+        # cap's lesson, one table along (`store.lock_seat_capacity`).
+        store.lock_discount_capacity(conn, code_id=code["id"])
+
+        existing = store.redemption_for_order(conn, order_id=order_id)
+        if existing is not None:
+            if existing["code_prefix"] != code["prefix"]:
+                # Stacking discounts is a commercial decision nobody has taken,
+                # so it is refused rather than invented here.
+                raise HTTPException(
+                    status_code=409,
+                    detail={"reason": "already_discounted"},
+                )
+            return _order_view(conn, order, with_lines=True)
+
+        if code["expired"]:
+            raise HTTPException(409, detail={"reason": "expired"})
+        if code["revoked"]:
+            raise HTTPException(409, detail={"reason": "revoked"})
+        if store.count_redemptions(conn, code_id=code["id"]) >= code[
+                "max_redemptions"]:
+            raise HTTPException(409, detail={"reason": "exhausted"})
+
+        return _apply_redemption(conn, order=order, code=code, org_id=org_id)
+
+
+def _verified_code(conn, *, parsed, org_id: str) -> dict[str, Any]:
+    """Resolve a presented code, or raise the ONE collapsed refusal.
+
+    Three cases collapse into one shape here — malformed, unknown prefix, wrong
+    secret — plus the fourth, a code bound to a different organization. What
+    the caller learns is identical in all four: nothing.
+    """
+    if parsed is None or not is_discount_code(parsed[0]):
+        raise _no_such_code()
+    prefix, secret = parsed
+    code = store.resolve_discount_code(conn, prefix=prefix)
+    if code is None:
+        # Verify against a dummy hash so both paths do the same work — the
+        # idiom `organization_from_key` uses, and with the same caveat: it is
+        # cheap defence in depth, not a proven constant-time property.
+        verify_secret(secret, "0" * 64)
+        raise _no_such_code()
+    if not verify_secret(secret, code["code_hash"]):
+        raise _no_such_code()
+    if code["organization_id"] not in (None, org_id):
+        raise _no_such_code()
+    return code
+
+
+def _log_redeem_attempt(order_id: str, parsed) -> None:
+    """Log the PREFIX only — never the secret (done-when 17).
+
+    Rate limiting on redemption is deliberately deferred (9.3(6)): a redeem
+    attempt is a guess at a 256-bit bearer secret answered by an
+    indistinguishable refusal, so it is neither an oracle nor a feasible
+    search. What would change that call is a MEASURED attempt rate, which is
+    exactly what this line is for.
+    """
+    _log.info(
+        "payments.redeem_attempt",
+        extra={"order": order_id, "code_prefix": parsed[0] if parsed else None},
+    )
+
+
+def _apply_redemption(
+    conn, *, order: dict[str, Any], code: dict[str, Any], org_id: str,
+) -> OrderView:
+    """Recompute the order's money, record the redemption, and — at zero — grant.
+
+    GST is recomputed on the DISCOUNTED base (SC-4g (iii)): that is standard
+    invoice practice and the only reading under which 100 percent off yields
+    taxable 0 -> GST 0 -> total 0, which is what D42 requires. Discount after
+    tax would leave GST payable on a zero-rupee sale.
+    """
+    discount = payments.discount_for(
+        gross_paise=order["gross_paise"], kind=code["kind"],
+        percent_bp=code["percent_bp"], amount_paise=code["amount_paise"],
+    )
+    taxable = order["gross_paise"] - discount
+    gst = payments.gst_for(taxable)
+    total = taxable + gst
+
+    redemption_id = store.write_redemption(
+        conn, code_id=code["id"], org_id=org_id, order_id=order["id"],
+        gross_paise=order["gross_paise"], discount_paise=discount,
+        net_paise=total,
+    )
+    if redemption_id is None:
+        # Lost a race with an identical submission; the winner's row stands and
+        # this call is the idempotent no-op done-when 5 requires.
+        return _order_view(conn, order, with_lines=True)
+
+    store.apply_discount_to_order(
+        conn, order_id=order["id"], discount_paise=discount,
+        taxable_paise=taxable, gst_paise=gst, total_paise=total,
+    )
+    _audit(conn, org_id, "discount.redeem",
+           {"order_id": order["id"], "code_prefix": code["prefix"],
+            "discount_paise": discount, "net_paise": total},
+           actor="organization")
+
+    if total == 0:
+        # The Rs 0 path: `provider='none'`, no provider identifier, and ZERO
+        # provider calls in this request. The order created earlier left an
+        # unpaid provider order behind, which expires there — the harmless
+        # orphan, named rather than discovered (SC-4g (iv)).
+        store.detach_provider(conn, order_id=order["id"])
+        payments.fulfil(
+            conn, order_id=order["id"],
+            reference=f"redemption:{redemption_id}",
+        )
+    else:
+        # A PARTIAL code routes the remainder through the provider path — one
+        # order, discount recorded, fulfilment on capture, no second flow. The
+        # provider order is REPLACED because its amount is now wrong, and a
+        # provider order that collects the pre-discount amount is a customer
+        # overcharged by us.
+        _replace_provider_order(conn, order_id=order["id"], total_paise=total,
+                                org_id=org_id)
+
+    fresh = store.order_row(conn, order_id=order["id"], org_id=org_id)
+    assert fresh is not None
+    return _order_view(conn, fresh, with_lines=True)
+
+
+def _replace_provider_order(
+    conn, *, order_id: str, total_paise: int, org_id: str
+) -> None:
+    """Re-create the provider order for the discounted amount."""
+    try:
+        provider = payments.provider()
+    except payments.ProviderUnconfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    created = provider.create_order(
+        amount_paise=total_paise, receipt=order_id,
+        notes={"organization_id": org_id},
+    )
+    store.set_provider_order_id(
+        conn, order_id=order_id, provider_order_id=created.provider_order_id,
+    )
+
+
+@app.post("/billing/webhooks/razorpay")
+def razorpay_webhook(event: SignedWebhook) -> dict[str, Any]:
+    """Capture, verified first and idempotent second (§9.5).
+
+    The signature check is not in this body — it is
+    :func:`auth.razorpay_webhook_event`, an **authenticating dependency**, so
+    the route is covered by the same fence that covers every other door on this
+    service and a refactor cannot quietly drop it.
+
+    **Two guards, and they are NOT the same guard:**
+
+    1. ``payment_event.provider_event_id`` (PRIMARY KEY) is **transport**
+       dedup. It makes the same delivery, delivered twice, a no-op. That is the
+       retry case and nothing more.
+    2. The **terminal-state rule** is the **money** guard. Razorpay sends
+       DIFFERENT event ids for one capture (``payment.captured`` and
+       ``order.paid``), so the primary key never sees them as duplicates. What
+       makes the second harmless is that ``captured`` is terminal:
+       :func:`payments.fulfil` refuses, this route logs at info and answers
+       200. Both events are recorded; exactly one fulfils.
+
+    A capture whose amount disagrees with ``total_paise`` is **refused and
+    alerted**, never fulfilled: an amount mismatch is a bug or an attack, and
+    it must not be resolved in the customer's favour silently. The refusal
+    rolls its own receipt back deliberately, so a corrected re-delivery is
+    evaluated afresh instead of being deduped into silence.
+    """
+    with get_engine().begin() as conn:
+        order = (
+            store.order_by_provider_id(
+                conn, provider_order_id=event.provider_order_id)
+            if event.provider_order_id else None
+        )
+        fresh = store.record_payment_event(
+            conn, provider_event_id=event.event_id,
+            order_id=order["id"] if order else None,
+            kind=event.kind, body=json.dumps(event.body),
+        )
+        if not fresh:
+            _log.info("payments.webhook_duplicate",
+                      extra={"event": event.event_id})
+            return {"recorded": False, "fulfilled": False}
+        if order is None:
+            # Recorded, not acted on, and 200 so the provider stops retrying a
+            # delivery we will never be able to resolve. An event for an order
+            # this database has never heard of is evidence, not an error.
+            _log.warning("payments.webhook_unknown_order",
+                         extra={"event": event.event_id})
+            return {"recorded": True, "fulfilled": False}
+
+        return _handle_webhook_event(conn, event=event, order=order)
+
+
+def _handle_webhook_event(
+    conn, *, event: payments.WebhookEvent, order: dict[str, Any]
+) -> dict[str, Any]:
+    """Decide what one verified, freshly recorded event does to its order."""
+    if event.kind in _FAILURE_EVENTS:
+        if order["status"] in payments.ORDER_TERMINAL_STATES:
+            return {"recorded": True, "fulfilled": False}
+        payments.transition_order(
+            conn, order_id=order["id"], current=order["status"],
+            target="failed",
+        )
+        return {"recorded": True, "fulfilled": False}
+
+    if event.kind not in _CAPTURE_EVENTS:
+        # Recorded and ignored. Razorpay sends many event types; acting on one
+        # we have not designed for is how a refund becomes a grant.
+        return {"recorded": True, "fulfilled": False}
+
+    if event.amount_paise != order["total_paise"]:
+        # THE alert. Refused, never fulfilled, and never resolved in the
+        # customer's favour: 409 rather than 200, so the provider's retries
+        # keep the discrepancy visible instead of letting one silent 200 close
+        # the incident.
+        _log.error(
+            "payments.amount_mismatch",
+            extra={"order": order["id"], "event": event.event_id,
+                   "expected_paise": order["total_paise"],
+                   "presented_paise": event.amount_paise},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="captured amount does not match the order total",
+        )
+
+    try:
+        payments.fulfil(
+            conn, order_id=order["id"], reference=f"order:{order['id']}",
+        )
+    except TransitionRefused:
+        # The SECOND event of one capture. Recorded, not fulfilled, 200 — the
+        # money guard doing exactly its job.
+        _log.info("payments.already_fulfilled",
+                  extra={"order": order["id"], "event": event.event_id})
+        return {"recorded": True, "fulfilled": False}
+    return {"recorded": True, "fulfilled": True}
+
+
+#: Event kinds that mean money arrived. TWO of them, for ONE payment — which is
+#: why the terminal-state rule exists (§9.5, B8).
+_CAPTURE_EVENTS = frozenset({"payment.captured", "order.paid"})
+_FAILURE_EVENTS = frozenset({"payment.failed"})
+
+
+@app.post("/discounts")
+def issue_discount(req: IssueDiscountRequest, _: Operator) -> dict[str, Any]:
+    """Mint a discount code. **The token is returned exactly once** (SC-4g (i)).
+
+    Only the hash is stored, so this response is the only moment the secret
+    exists anywhere — the same property `POST /keys` has, and for the same
+    reason: a recoverable discount code is a shared password in a database
+    somebody exports. A code that must be re-read later is re-issued.
+
+    🔴 Issuing a code against a **live** organization is OWNER-GATE
+    (`work_plan.md` §6(g), the SC-4e adjustment gate class). Authoring codes
+    against fixtures is agent-safe; this route is the API beneath the operator
+    surface CP-8 will render.
+    """
+    if req.kind not in ("percent", "fixed"):
+        raise HTTPException(status_code=400,
+                            detail="kind must be 'percent' or 'fixed'")
+    if (req.kind == "percent") != (req.percent_bp is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="a percent code needs percent_bp and nothing else")
+    if (req.kind == "fixed") != (req.amount_paise is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="a fixed code needs amount_paise and nothing else")
+
+    minted = mint_key(env=ENV_DISCOUNT)
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug) if req.org_slug else None
+        store.issue_discount_code(
+            conn, prefix=minted.prefix, code_hash=minted.key_hash,
+            label=req.label, kind=req.kind, org_id=org_id,
+            percent_bp=req.percent_bp, amount_paise=req.amount_paise,
+            max_redemptions=req.max_redemptions, expires_at=req.expires_at,
+            created_by="operator",
+        )
+        # The audit row records the PREFIX, never the token.
+        _audit(conn, org_id, "discount.issue",
+               {"prefix": minted.prefix, "label": req.label,
+                "kind": req.kind, "max_redemptions": req.max_redemptions})
+
+    return {"prefix": minted.prefix, "code": minted.token}
 
 
 @app.post("/usage/record")

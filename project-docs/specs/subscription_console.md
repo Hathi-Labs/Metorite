@@ -1,10 +1,27 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
-**Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout is
-specced and not built.** *(Header rewritten 2026-08-18 — R4. What stood here was
-wrong on three counts, each corrected below rather than quietly deleted: it
-called the billing view "unmerged" on a branch, it said "everything else …
-nothing built", and it said dispatch waits on MT-2's tables.)*
+**Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout's
+SERVER SIDE is BUILT and its SURFACE is not.** *(Header rewritten 2026-08-18 —
+R4. What stood here was wrong on three counts, each corrected below rather than
+quietly deleted: it called the billing view "unmerged" on a branch, it said
+"everything else … nothing built", and it said dispatch waits on MT-2's
+tables.)*
+
+**SC-4g (i)–(v) — server side — ✅ BUILT 2026-08-18** with CP-9's substrate
+half, in WS-31's tree because that is where the tables live: `discount_code` +
+`discount_redemption` (`infra/customer_console/007_payments.sql`),
+`cc_disc_<prefix>_<secret>` through the shared `keys.py` seam (`ENV_DISCOUNT`,
+a fourth env **value**, not a fourth implementation), the pre-GST basis-point
+discount with clamping, `POST /discounts` (Operator) and
+`POST /billing/orders/{id}/redeem` (the customer's own key, gated on
+`can_pay`), the ₹0 path through the **one** `payments.fulfil`, and
+`credits.LEDGER_REASONS`. **Done-when 1–8 met; clause 9 — the test-mode capture
+rehearsal — is NOT met and is not claimed**, because creating a Razorpay
+account is owner-side even in test mode. Fences:
+`tests/unit/test_customer_console_payments.py` (105 tests, real Postgres 16, 0
+skipped). **SC-4a's checkout UI and its two write proxies remain held back**
+behind B7's capability decision, which reaches the tenant plane's vocabulary
+and must not ride in on a payments PR.
 
 **What exists, verified against code 2026-08-18:**
 - **SC-1b/SC-5's billing view MERGED as `f1fcca4f`** *("feat(WS-30): the billing
@@ -621,16 +638,31 @@ against the same recorded numbers.
 > makes running the rails ahead of the document safe **in that case and only
 > that case**.
 
-**Done when:**
-1. A **100% code** takes an org from package selection to **active entitlements**
+**Done when:** *(clauses 1–8 **✅ MET 2026-08-18** by CP-9's substrate half —
+`tests/unit/test_customer_console_payments.py`, 105 tests against a real
+Postgres 16, 0 skipped. Clause 9 is the owner-gated rehearsal and is **NOT**
+met, as it says.)*
+1. ✅ A **100% code** takes an org from package selection to **active entitlements**
    with **zero provider calls** and a `discount_redemption` row carrying
    gross · discount · net; the order is `captured` with `provider='none'` and
-   `total_paise = 0`.
-2. `test_the_free_path_and_the_paid_path_write_identical_records` passes and
-   **goes red** under a deliberate mutation of either path (per (iv)).
-3. A **partial code** routes the remainder through CP-9's provider path — one
-   order, discount recorded, fulfilment on capture, not a second flow.
-4. **The refusals PARTITION — three distinct reasons and one collapsed shape.**
+   `total_paise = 0`. — `test_a_hundred_percent_code_completes_with_zero_provider_calls`
+   asserts the provider-call **count** does not move across the redemption,
+   that `provider_order_id` is NULL afterwards, and that the seat grant and
+   subscription actually landed. ⚠️ **Named residual:** the order created
+   *before* the code was presented did call the provider, so a Razorpay order
+   is left unpaid to expire there. That is unavoidable once an intent may be
+   discounted after creation, and it is the harmless orphan direction — the
+   argument is in CP-9's build box.
+2. ✅ `test_the_free_path_and_the_paid_path_write_identical_records` passes and
+   **goes red** under a deliberate mutation of either path (per (iv)). —
+   Red-first evidence: granting `quantity + 1` on the free path fails with a
+   third difference, `('seat_grant', 'quantity_purchased')`.
+3. ✅ A **partial code** routes the remainder through CP-9's provider path — one
+   order, discount recorded, fulfilment on capture, not a second flow. — And
+   the provider order is **replaced** for the discounted amount: one created
+   for the pre-discount total would collect it, overcharging the customer and
+   failing our own amount check.
+4. ✅ **The refusals PARTITION — three distinct reasons and one collapsed shape.**
    *(Rewritten 2026-08-18, B2. As written this clause demanded five distinct
    reasons **and** unknown ≡ wrong-org in the same sentence, which is a
    contradiction: an implementer satisfies one half and quietly drops the
@@ -652,12 +684,24 @@ against the same recorded numbers.
    three named reasons are distinct strings **and** that the unknown and
    wrong-org responses are byte-identical. Both halves in one test, so the
    contradiction cannot reappear by satisfying one of them.
-5. **Redemption is idempotent**: re-submitting the same code against the same
+   *Built 2026-08-18:* the collapsed shape is `404 {"detail": "no such
+   discount code"}` and it covers **four** cases, not two — malformed, unknown
+   prefix, wrong secret, wrong org — because a caller must not be able to tell
+   those apart either. Red-first evidence: naming the wrong-org case fails the
+   fence. ⚠️ **A sixth refusal exists and is deliberately outside the
+   partition:** presenting a *second, different* code against an order that
+   already carries one is `409 {"reason": "already_discounted"}`. Stacking is a
+   commercial decision nobody has taken, so it is refused rather than invented
+   — and it is a statement about the **order**, not about the code, which is
+   why it is not one of the five.
+5. ✅ **Redemption is idempotent**: re-submitting the same code against the same
    order redeems **once** (`UNIQUE (discount_code_id, order_id)`), and a
    concurrent double-redeem of a `max_redemptions = 1` code yields one success
    and one refusal — proven under the advisory lock with a real two-connection
-   race, not a mock (R8, and the CP-2b race precedent).
-6. **A discounted purchase is distinguishable from a paid purchase and from an
+   race, not a mock (R8, and the CP-2b race precedent). — Raced **ten times**,
+   two threads on a barrier, against two different orders: `sorted(status) ==
+   [200, 409]` and exactly one `discount_redemption` row each time.
+6. ✅ **A discounted purchase is distinguishable from a paid purchase and from an
    SC-4e adjustment — on `discount_redemption` + `seat_grant.reason`.**
    *(Re-pointed 2026-08-18, B3. This clause named the `credit_ledger`
    three-way and was **vacuous at launch**: CP-9 §9.6 writes **zero**
@@ -677,19 +721,34 @@ against the same recorded numbers.
    fence is real now; the *data* test that the three commercial reasons are
    pairwise distinguishable becomes meaningful with the first pack row and is
    part of that ticket, not this one.
-7. **Issue and redemption each land a `control_audit` row** naming the operator
+7. ✅ **Issue and redemption each land a `control_audit` row** naming the operator
    and the code's **prefix** — never its secret, asserted over the log/audit
-   record rather than by reading the code (CP-3's fence discipline).
-8. **R8** — the constraints, the uniqueness, the count-based cap and the
+   record rather than by reading the code (CP-3's fence discipline). — The two
+   rows carry **different actors**: `operator` on issue, `organization` on
+   redemption. `_audit`'s hard-coded `actor='operator'` would have
+   misattributed the first act a customer's own credential ever performed on
+   this service, which is the one class of write an audit trail most needs to
+   tell apart.
+8. ✅ **R8** — the constraints, the uniqueness, the count-based cap and the
    fulfilment transaction run against a real Postgres 16 via
    `tests/unit/_customer_console_ladder.py`; the suite joins §7's command block
-   and `pr-check.yml`'s skip-guard in the same PR.
-9. ⚠️ **Clause 2 of the policy above (the test-mode capture rehearsal) is
-   NOT met by an agent** — creating the Razorpay account is owner-side even in
-   test mode (`customer_console.md` §8 gate 3, CP-9 §9.7). The agent-reachable
-   half is the whole thing against CP-9's **fake provider with a real HMAC
-   signer**; the rehearsal is scripted and handed over. **A PR claiming this
-   clause met is claiming something it did not do.**
+   and `pr-check.yml`'s skip-guard in the same PR. — **105 tests, 0 skipped**;
+   the Console skip-guard hand-list went **6 → 7**, and the suite reads both
+   the workflow and both owning specs so its own name cannot be dropped
+   silently.
+9. 🔴 ⚠️ **NOT MET, and not claimed — Clause 2 of the policy above (the
+   test-mode capture rehearsal) is NOT met by an agent** — creating the
+   Razorpay account is owner-side even in test mode (`customer_console.md` §8
+   gate 3, CP-9 §9.7). The agent-reachable half is the whole thing against
+   CP-9's **fake provider with a real HMAC signer**; the rehearsal is scripted
+   and handed over. **A PR claiming this clause met is claiming something it
+   did not do.** *(2026-08-18: the substrate half was built and this clause is
+   the one thing in SC-4g it did not touch. What the owner needs, once an
+   account exists: set the three `CUSTOMER_CONSOLE_RAZORPAY_*` variables, POST
+   a real order, pay it in test mode, and confirm the webhook fulfils exactly
+   once — the same assertions
+   `test_two_different_event_ids_for_one_order_fulfil_exactly_once` makes
+   against the fake.)*
 
 🔴 **OWNER-GATE:** issuing a code against a **live** organization (`work_plan.md`
 §6(g), the SC-4e adjustment gate class). Authoring codes and running both paths
@@ -844,10 +903,12 @@ uv run pytest tests/unit/test_customer_console_seats.py \
               tests/unit/test_customer_console_sql.py \
               tests/unit/test_customer_console_api.py \
               tests/unit/test_customer_console_lifecycle.py
-# SC-4a/SC-4g's own suite, created with CP-9's build slice — add it to
-# `customer_console.md` §7 AND to pr-check.yml's hand-maintained skip-guard
-# list in the same PR (that list discovers nothing):
-#   tests/unit/test_customer_console_payments.py
+# SC-4g's own suite (and SC-4a's, when its surface lands), ✅ created with
+# CP-9's build slice 2026-08-18 and added to `customer_console.md` §7 AND to
+# pr-check.yml's hand-maintained skip-guard list in the same PR — that list
+# discovers nothing, so the suite additionally reads both and fails if its own
+# name is ever dropped:
+uv run pytest tests/unit/test_customer_console_payments.py
 
 # ⚠️ SECOND, DIFFERENT database for any tenant-side suite —
 # `TENANT_LADDER_DATABASE_URL`, deliberately NOT `DATABASE_URL`, which would arm

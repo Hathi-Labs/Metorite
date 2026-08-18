@@ -5,7 +5,23 @@ Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-6
-mechanism BUILT (refusals ship OFF)** — **CP-2b BUILT 2026-08-18 (both
+mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
+**CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
+twice audited: migration `007_payments.sql`, `customer_console/payments.py`
+(the seam, the order state machine, integer paise, the one `fulfil`),
+`lifecycle.can_pay`, `credits.LEDGER_REASONS`, six routes, and **WS-30 SC-4g
+(i)–(v) server-side** — **105** tests in
+`tests/unit/test_customer_console_payments.py` against a real Postgres 16,
+**0 skipped**, every load-bearing fence shown red first. Its **surface half
+remains held back** (SC-4a's UI and its two write proxies, the operator
+code-issue surface, the invoice document, the four-item flip set), and **no
+Razorpay account exists or may be created by an agent** — the whole seam runs
+against a fake provider carrying the real HMAC signer, so **SC-4g clause 2's
+test-mode capture rehearsal is NOT met and is not claimed**. Three build-time
+decisions no clause named — including **a declared deviation from 9.3(4)'s
+"exactly one edge"**, forced by CP-6's pre-existing metering draw on the
+org-key Router route — are recorded in the CP-9 ticket rather than in a commit
+message. · **CP-2b BUILT 2026-08-18 (both
 halves)**, the deployment half landing the same day the Console half did, after
 two audit rounds (B1–B7 + two drift items, then B-a…B-g + one mis-anchor) whose
 answers are in §6(d)–(k) — **271** Customer Console tests against a real
@@ -215,10 +231,11 @@ test is OWED** and **CP-1 clause 3 was unmeetable as written** (both dated
 **Date:** 2026-08-18 · **verified against code 2026-08-18 by WS-31 CP-6 audit**
 — the four §3.4 tables (`usage_event`, `credit_ledger`, `model_rate_card`,
 `usage_rollup`) and the rest of the commercial substrate all exist today in
-`infra/customer_console/001_customer_console.sql`; the ladder is 001–**006**
-(`006_deployment_key.sql` taken by CP-2b's Console half) and the next free
-number is **007** — R1 says list the directory at build time and re-check at
-merge rather than trusting this sentence. ⚠️ **`main.py` line anchors below
+`infra/customer_console/001_customer_console.sql`; the ladder is 001–**007**
+(`006_deployment_key.sql` taken by CP-2b's Console half, `007_payments.sql` by
+CP-9's substrate half on 2026-08-18) and the next free number is **008** — R1
+says list the directory at build time and re-check at merge rather than
+trusting this sentence. ⚠️ **`main.py` line anchors below
 moved again with CP-2b** (`resolve` gained a second scheme and two helper
 functions); re-derive them at dispatch. *(The previous header's "repo-wide grep: zero
 hits … none of the commercial substrate exists" was true at authoring on
@@ -1006,8 +1023,88 @@ drift between seat counts and subscription items; no route of the customer
 workbench can reach a cross-org read.
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
-🔲 **MINTED 2026-08-18** — the ticket three documents already cited and nobody
-had written. It is the seam D19.5 chose and `saas_multitenancy.md` §4.3
+◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
+documents already cited and nobody had written.
+
+> ### What is built, and what is deliberately not — 2026-08-18
+>
+> **Built (the substrate half the GO-NARROWED re-audit cleared):** migration
+> `007_payments.sql` (`payment_order`, `payment_order_line`, `payment_event`,
+> and SC-4g's `discount_code` + `discount_redemption` — one migration, because
+> a redemption references an order and splitting them would create a window in
+> which the FK has no target; number taken by listing the directory at build
+> time, R1) · `customer_console/payments.py` (the paise conversion, the order
+> state machine, the GST and discount arithmetic, the `PaymentProvider`
+> protocol, `RazorpayProvider` over `httpx` with **no SDK dependency**,
+> `FakeProvider` with the **real** HMAC-SHA256 signer, and the one
+> `fulfil()`) · `lifecycle.can_pay` appended **last** with `STATES` converted
+> to keyword construction · `credits.LEDGER_REASONS` · the order/discount SQL
+> in `store.py` · `auth.organization_for_payment` (**not** a fifth scheme —
+> the same key resolution, a different lifecycle gate) and
+> `auth.razorpay_webhook_event` (the signature verifier, registered in
+> `AUTHENTICATING_DEPENDENCIES`) · six routes in `main.py`: `POST
+> /billing/orders`, `GET /billing/orders/{id}`, `GET /billing/orders`, `POST
+> /billing/orders/{id}/redeem`, `POST /billing/webhooks/razorpay`, `POST
+> /discounts` · **105 tests** in `tests/unit/test_customer_console_payments.py`
+> against a real Postgres 16, **0 skipped**, joined to §7's command block and
+> to `pr-check.yml`'s skip-guard (6 Console suites → **7**) in this same
+> change. Every load-bearing fence was shown **red first** under a recorded
+> mutation.
+>
+> **Not built, and named rather than left to drift:** SC-4a's checkout UI and
+> its two write proxies · the operator code-issue *surface* (the API is here;
+> rendering it is CP-8) · the invoice document (SC-5b/5c) · the four-item flip
+> set. All four are the held-back surface half of §6's sequencing note.
+>
+> **Three decisions taken during the build that no clause named** — recorded
+> here rather than in a commit message, all three agent-proposed defaults the
+> owner may overrule (D16/D17):
+>
+> 1. ⚠️ **9.3(4)'s fence needed a SECOND exemption, and it is a deviation from
+>    "exactly ONE edge is permitted".** Built against the tree, the transitive
+>    fence is red on a **pre-existing** edge this ticket did not know about:
+>    `POST /v1/chat/completions` is organization-key authenticated (CP-3) and
+>    **CP-6 made it write the metering draw** — `chat_completions →
+>    store.record_usage → store.add_credit` → `credit_ledger`. That shipped on
+>    2026-08-12, six days before CP-9. It is **not** what CP-3's lesson forbids
+>    (there, the metered party *reported its own usage* and a negative figure
+>    minted 100,000 credits; here the customer's key opens the route but **our**
+>    infrastructure decides the amount, from tokens the Router counted). The
+>    fence was **not narrowed** — that is the CP-6 failure mode B1 names. The
+>    edge is exempted **by name**, in a **separate** constant
+>    (`METERING_EXEMPTION`) with its **own** count-and-contents fence, so
+>    `test_the_fulfil_allow_list_has_exactly_one_entry` still pins exactly one
+>    entry and the deviation is visible rather than smuggled into the list the
+>    ticket counts. A second fence asserts the exemption is still *needed*, so
+>    it is deleted rather than inherited when the draw moves behind the internal
+>    token. **A finding for the board**, in the sense CLAUDE.md §5 means:
+>    recorded, not refactored.
+> 2. **The provider order is created at `POST /billing/orders` and REPLACED by
+>    a partial redemption.** §9.4 requires the create route to 503 without
+>    credentials, which means it reaches the seam; SC-4g (iv) requires the ₹0
+>    path to make **zero provider calls**. Both hold: the redemption path calls
+>    the provider only when money is still owed (and then for the **discounted**
+>    amount — a provider order created once for the pre-discount total would
+>    collect it, overcharging the customer and failing our own amount check),
+>    and a 100% redemption calls nothing, sets `provider='none'` and NULLs
+>    `provider_order_id`. **Named residual:** a redemption that zeroes an order
+>    leaves an unpaid provider order to expire at Razorpay — the harmless
+>    orphan direction, and the only one available once an intent may be
+>    discounted after it is created. **Consequence worth stating:** because the
+>    create route 503s without credentials, even the ₹0 flow needs the three
+>    Razorpay variables set — which is an owner act (§8 gate 3).
+> 3. **`CreditGrantRequest.reason` is now validated against `LEDGER_REASONS`.**
+>    SC-4g (v) says the narrowing "comes first" and the `CHECK` constraint is a
+>    later contract-phase migration (R6); without the narrowing the structural
+>    call-site fence would have had a hole exactly where the free-form reason
+>    lives. Operator-only surface; every existing caller already passed a
+>    member. A non-member is now 422.
+>
+> Two smaller notes: `attempted` has **no writer in this slice** (the surface
+> half writes it when the customer opens the provider's checkout; the edges
+> exist now so that slice needs no graph change), and `expires_at` is enforced
+> **lazily**, at the next write that touches the order — the sweep belongs with
+> CP-8's console rather than with a scheduler that has nowhere to report. It is the seam D19.5 chose and `saas_multitenancy.md` §4.3
 designed; §2's non-goal that pointed at CP-8 for it is corrected there. Every
 decision below is an **agent-proposed default the owner may overrule** (the
 D16/D17 convention), taken 2026-08-18 against the code rather than from the
@@ -1423,90 +1520,169 @@ in an agent's reach**: build it green against the fake, then hand the owner a
 named, scripted rehearsal. Say so in the PR rather than reporting a rehearsal
 nobody ran.
 
-**Done when:**
-1. `payment_order`/`payment_order_line`/`payment_event` exist on the Customer
+**Done when:** *(every clause below is **✅ MET 2026-08-18** unless marked
+otherwise; the fence that carries each one is named beside it, and each
+load-bearing fence was shown red first under the mutation recorded in the PR.)*
+1. ✅ `payment_order`/`payment_order_line`/`payment_event` exist on the Customer
    Console ladder with the CHECK constraints above, the migration number taken
    at build time (R1); replaying the whole ladder twice is a no-op
-   (the `_schema` fixture's existing discipline).
+   (the `_schema` fixture's existing discipline). — `007_payments.sql`; the
+   ladder was 001–006 on disk and on every branch, so **007**, re-checked at
+   merge. Next free number: **008**. Fences: `TestTheSchema`,
+   `TestTheMigrationFile`. Three CHECKs beyond the sketch enforce the
+   arithmetic (`taxable = gross − discount`, `total = taxable + gst`,
+   `discount ≤ gross`) in the database.
 2. The transition function refuses every edge not on 9.2's graph, and **no edge
    leaves `captured`/`failed`/`abandoned`** — proven by parametrising over the
    state set, not by three examples.
-3. `POST /billing/orders` under the **organization key** creates an order for a
+3. ✅ `POST /billing/orders` under the **organization key** creates an order for a
    priced, **active** catalog line and **changes no balance, no subscription and
    no seat** — asserted by snapshotting `credit_ledger`, `seat_grant`,
    `seat_assignment` and `org_subscription` before and after and diffing.
-   A non-existent or inactive `plan_slug` is **400**.
-4. `test_no_org_key_route_writes_an_entitlement_or_ledger_row` — structural and
+   A non-existent or inactive `plan_slug` is **400**. — `TestCreatingAnOrder`;
+   `rnd`/`support` are in the parametrisation, since INACTIVE is the case a
+   slug-existence check would miss. An order whose total is **0** at creation
+   is also 400: the ₹0 path is reached by *redeeming*, never by ordering only
+   free rows.
+4. ✅ `test_no_org_key_route_writes_an_entitlement_or_ledger_row` — structural and
    **transitive** per 9.3(4), and it must go **red** under a deliberate mutation
    that points a grant-writing route at the key dependency. Its **one**
    allow-listed pair (`redeem_discount_code` → `payments.fulfil`) is pinned by
    `test_the_fulfil_allow_list_has_exactly_one_entry`, which goes **red** when a
-   second pair is added.
-5. A **suspended** organization can create an order; a **deleted** one is
+   second pair is added. — Red-first evidence: pointing `POST /billing/seats`
+   at the key dependency fails with
+   `[('assign_seat', ('main.assign_seat', 'store.try_assign_seat'))]` — **two
+   hops**, which a route-body scan would have missed; swapping the pair to
+   `("create_order", "payments.fulfil")` fails **both** fences.
+   ⚠️ **A SECOND exemption was needed and is a declared deviation** — CP-6's
+   pre-existing metering draw on `POST /v1/chat/completions`. It is named in a
+   separate constant with its own count-and-contents fence rather than added to
+   the allow-list this clause counts; the full argument is in the build box
+   above.
+5. ✅ A **suspended** organization can create an order; a **deleted** one is
    refused (9.3(5)), and `can_pay` lives in `lifecycle.py` with the rest —
    **appended LAST**, with `STATES` converted to keyword construction in the
-   same edit.
-6. **A mis-signed webhook is refused before its body is parsed** — proven by
+   same edit. — `TestTheLifecycleGate`, which also asserts the AI door is
+   *still shut* for the same key (one machine, two questions, and they must not
+   have converged) and reads the six rows' construction from the **source**,
+   because nothing behavioural can see a positional argument.
+6. ✅ **A mis-signed webhook is refused before its body is parsed** — proven by
    sending a body whose parsing would itself be observable (a malformed JSON
    payload that returns 400-for-signature, not 422-for-schema), with **no**
-   `payment_event` row written.
-7. **A duplicate webhook is a no-op**: two deliveries of one `provider_event_id`
+   `payment_event` row written. — plus a substitution case: a *correct*
+   signature over a *different* body is refused, which a fake signer returning
+   a constant would have passed.
+7. ✅ **A duplicate webhook is a no-op**: two deliveries of one `provider_event_id`
    ⇒ one `payment_event`, one fulfilment, one set of records. Re-delivered after
    the order is terminal ⇒ still one. **And the case that key does not cover
    (B8):** `payment.captured` **and** `order.paid` for one order ⇒ **two**
    `payment_event` rows, **one** fulfilment —
-   `test_two_different_event_ids_for_one_order_fulfil_exactly_once`.
-8. A **capture whose amount ≠ `total_paise`** does not fulfil and raises an alert.
-9. `payments.fulfil` is called from **exactly two** call sites (webhook capture,
+   `test_two_different_event_ids_for_one_order_fulfil_exactly_once`. — Both
+   fences kept, as the ticket asks. Red-first: deleting the terminal-state
+   check inside `fulfil` fails the second one and not the first.
+8. ✅ A **capture whose amount ≠ `total_paise`** does not fulfil and raises an alert.
+   — 409 with `payments.amount_mismatch` at ERROR, asserted over the log
+   record. The refusal deliberately rolls its own receipt back, so a corrected
+   re-delivery is evaluated afresh rather than deduped into silence.
+9. ✅ `payments.fulfil` is called from **exactly two** call sites (webhook capture,
    SC-4g redemption) — structural fence, so a third path cannot quietly appear.
-10. With **no Razorpay env set**, `POST /billing/orders` is **503** naming the
+   — `main._handle_webhook_event` and `main._apply_redemption`, asserted as an
+   exact list.
+10. ✅ With **no Razorpay env set**, `POST /billing/orders` is **503** naming the
     missing variables and the webhook is **503**; no code path invents a default
     endpoint or key. Fence at both positions.
-11. **R8** — 9.2's constraints, the partial/unique indexes, the idempotency key
+11. ✅ **R8** — 9.2's constraints, the partial/unique indexes, the idempotency key
     and the fulfilment transaction run against a **real Postgres 16** through
     `tests/unit/_customer_console_ladder.py`. The new suite
     (`tests/unit/test_customer_console_payments.py`) is added to §7's command
     block **and** to `pr-check.yml`'s hand-maintained skip-guard list in the
-    **same PR** — a skipped R8 test proves nothing (CP-3).
-12. `uv run ruff check .` clean; the existing Console suites stay green,
-    `test_the_unauthenticated_route_set_is_exactly_health` included.
+    **same PR** — a skipped R8 test proves nothing (CP-3). — **105 tests, 0
+    skipped.** The suite additionally reads `pr-check.yml` and both owning
+    specs and fails if its own name is ever dropped from them, which is the
+    closest a hand-list gets to defending itself.
+12. ✅ `uv run ruff check .` clean; the existing Console suites stay green,
+    `test_the_unauthenticated_route_set_is_exactly_health` included. — Ruff's
+    **blocking** selection (`F821,F601,F602,F502,F7,B006`, `pr-check.yml:51`)
+    passes repo-wide, and the full report gains **zero** new findings for the
+    touched files. All ten Console suites green: **382 tests**.
+    ⚠️ **One existing fence was AMENDED, minimally and with the argument in
+    place**: `test_a_deployment_key_reaches_resolve_and_nothing_else` asserted
+    **401** for every non-resolve route, which was exactly right while every
+    door was a bearer-token door. The webhook is not one — it authenticates by
+    HMAC over the raw body — so it is named in a
+    `_SIGNATURE_AUTHENTICATED_ROUTES` set of one and asserted to refuse as
+    `{400, 503}`. The property (*a deployment key is not admitted*) is
+    unchanged; relaxing it to "anything but 2xx" would have passed on a 500.
+    `test_the_unauthenticated_route_set_is_exactly_health` is untouched and
+    green — which is the point of registering the verifier in
+    `AUTHENTICATING_DEPENDENCIES`.
 
 *Clauses 13–17 added 2026-08-18 with the repair round's answers.*
 
-13. **Ownership is a predicate, not a convention (B5, 9.3(7)):** org A reading
+13. ✅ **Ownership is a predicate, not a convention (B5, 9.3(7)):** org A reading
     or redeeming against org B's order id and against a random UUID gets four
     responses that are **byte-identical** in status and body —
-    `test_a_foreign_order_and_an_unknown_order_refuse_identically`.
-14. **An order can be read back (B6, 9.3a):** `GET /billing/orders/{id}` and
+    `test_a_foreign_order_and_an_unknown_order_refuse_identically`. — A fifth
+    case rides along: a **malformed** id is the same 404, not a driver 500 and
+    not a third distinguishable shape. Red-first: resolving the order without
+    the org scope and 403-ing a foreign one fails the fence.
+14. ✅ **An order can be read back (B6, 9.3a):** `GET /billing/orders/{id}` and
     `GET /billing/orders` answer under the organization key, scoped to that org,
     carrying no provider identifiers, with `failed` and `abandoned` visible —
-    which is what makes WS-30 SC-4a done-when 5 buildable at all.
-15. **The ₹0 and paid paths differ in exactly two places (B4, 9.6):** the
+    which is what makes WS-30 SC-4a done-when 5 buildable at all. —
+    `test_the_order_read_carries_no_provider_identifiers` is structural over
+    `OrderView.model_fields` and pins the field set exactly, so an addition
+    argues with a red test.
+15. ✅ **The ₹0 and paid paths differ in exactly two places (B4, 9.6):** the
     `seat_grant.reason` prefix and `org_subscription`'s three provider columns.
     The excluded classes are surrogate ids and clock columns, expressed as
-    classes; a third difference fails.
-16. **Capture does not move the lifecycle (B9, 9.3(5)):** a `suspended` org
+    classes; a third difference fails. — Both classes are **predicates over the
+    value's type**, not name lists: a name rule would have swallowed
+    `provider_customer_id` and `provider_subscription_id`, the two columns the
+    fence exists to assert. Building it found a third clock column the ticket
+    did not list (`trial_ends_at`), which the class covers without an edit —
+    which is what stating classes buys. The two fixtures share one owner
+    identity so `seat_assignment.user_identity_id` is equal **by construction**
+    rather than by exclusion, and the period columns are asserted equal
+    separately so the excluded class cannot hide a difference in the term.
+    ⚠️ **Named residual on the paid path:** `provider_customer_id` carries
+    whatever the capture payload does. Razorpay sends `customer_id` only when a
+    Customer object exists there, so a real capture may write NULL and the
+    difference then narrows to two columns. Recorded rather than papered over
+    with an invented identifier — a payment id in a customer column is worse
+    than a NULL. `provider_subscription_id` carries the provider's **order**
+    id, since a one-time order sells the term and there is no Razorpay
+    Subscription object until SC-5f's mandates.
+16. ✅ **Capture does not move the lifecycle (B9, 9.3(5)):** a `suspended` org
     whose order is captured is **still `suspended`** afterwards — asserted
     directly on `organization.status` — and the only writer of that column
     remains `POST /orgs/lifecycle` under `Operator`.
-    `test_a_capture_does_not_transition_the_organization`.
-17. **A discount code is minted through `keys.py` and never stored in the
+    `test_a_capture_does_not_transition_the_organization`. — The test also
+    asserts the *purchased term* landed (`org_subscription.status = 'active'`):
+    the two rows disagreeing is the expected intermediate state, and the
+    two-step is the operator's.
+17. ✅ **A discount code is minted through `keys.py` and never stored in the
     clear** (SC-4g (i)): the issue response is the only place the token exists,
     and no audit row, log line or read route contains anything but the prefix.
+    — Asserted by feeding the issued token back through the shared
+    `split_key`/`hash_secret` seam and searching the stored row, the audit rows
+    and the read route's response for the secret.
 
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
-a comment**:
+a comment**. *(All three ✅ made 2026-08-18 in the build.)*
 
-1. `customer_console/lifecycle.py` — append `can_pay` **last**; convert the
-   six `STATES` rows (`:64-78`) to keyword construction (9.3(5)).
-2. `customer_console/main.py:791` — `_capability_block`'s docstring says
-   *"Three names, not `OrgCapabilities`' four"*. With `can_pay` the dataclass
-   carries **five**; the deployment arm still ships three, and the sentence must
-   say five to keep meaning what it means.
-3. `tests/unit/test_customer_console_resolve.py:1084-1085` — the same count in a
-   comment (*"deliberately three fields, not `OrgCapabilities`' four"*). Same
-   edit, same reason.
+1. ✅ `customer_console/lifecycle.py` — append `can_pay` **last**; convert the
+   six `STATES` rows (`:64-78`) to keyword construction (9.3(5)). The field
+   takes **no default**, so a state row that forgets it fails to construct
+   rather than inheriting the permissive answer; fenced by
+   `test_the_states_table_is_keyword_constructed`, which reads the source
+   because nothing behavioural can see a positional argument.
+2. ✅ `customer_console/main.py` — `_capability_block`'s docstring now says
+   **five**, and says why `can_pay` is not on the deployment's wire (it is a
+   Console-side door; a deployment decides nothing with it).
+3. ✅ `tests/unit/test_customer_console_resolve.py` — the same count in a
+   comment, same edit, same reason.
 
 **Non-goals of CP-9:** the checkout **UI** (WS-30 SC-4a) · the **discount-code**
 tables and their semantics (WS-30 SC-4g — CP-9 consumes a validated redemption,
@@ -3291,7 +3467,9 @@ supervisor's act, not this file's.)*
 re-audit returned **GO-NARROWED** on 2026-08-18; this is that narrowing, written
 down so the next agent does not have to infer it).*
 
-**🟢 The substrate half — dispatch this.** Everything server-side, all of it
+**🟢 The substrate half — dispatch this.** ✅ **BUILT 2026-08-18** (see the CP-9
+ticket's build box for what landed, and for the three decisions no clause
+named). Everything server-side, all of it
 reachable with a fake provider and a real Postgres 16: 9.2's three tables and
 the state machine · the paise conversion · 9.3's two writes, `can_pay`, the
 transitive fence and its one named carve-out, the ownership predicate · 9.3a's
@@ -3328,7 +3506,14 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_keys.py tests/unit/test_customer_console_sql.py \
               tests/unit/test_customer_console_api.py tests/unit/test_customer_console_key_auth.py \
               tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
-              tests/unit/test_customer_console_resolve.py
+              tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_payments.py
+# ⚠️ The last line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR THAT
+# CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
+# hand-list went 6 -> 7). It needs no Razorpay account: the seam runs against
+# `payments.FakeProvider`, which signs with the REAL HMAC-SHA256 algorithm, so
+# only the network is fake. It reads this file and the workflow and fails if
+# its own name is dropped from either.
 
 # CP-2b DEPLOYMENT half (added 2026-08-18 with the B3 answer, §6(i);
 # the VARIABLE NAME corrected the same day with the B-a answer).

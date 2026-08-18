@@ -21,24 +21,46 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from customer_console.credits import LEDGER_REASON_USAGE
+
 __all__ = [
+    "activate_subscription",
     "add_credit",
+    "apply_discount_to_order",
+    "capture_provider_refs",
+    "count_redemptions",
+    "create_order",
     "credit_deltas",
     "deployment_visible_orgs",
+    "detach_provider",
     "ensure_identity",
     "ensure_organization",
     "grant_seats",
     "has_live_seat",
     "issue_deployment_key",
+    "issue_discount_code",
+    "lock_discount_capacity",
     "lock_seat_capacity",
+    "order_by_provider_id",
+    "order_for_update",
+    "order_lines",
+    "order_row",
+    "orders_page",
     "plan_price",
+    "priced_plan",
+    "record_payment_event",
     "record_usage",
+    "redemption_for_order",
     "release_seat",
     "resolve_deployment_key",
+    "resolve_discount_code",
     "resolve_key",
     "run_spend",
     "seat_rows",
+    "set_order_status",
+    "set_provider_order_id",
     "try_assign_seat",
+    "write_redemption",
 ]
 
 
@@ -376,7 +398,7 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
     if billed_credits:
         add_credit(
             conn, org_id=org_id, delta=-billed_credits,
-            reason="usage", ref=request_id,
+            reason=LEDGER_REASON_USAGE, ref=request_id,
         )
     return True
 
@@ -561,6 +583,585 @@ def deployment_visible_orgs(
             {"email": email, "dep": deployment_id},
         )
     ]
+
+
+# ── Orders, events and discounts (CP-9 · SC-4g) ─────────────────────────────
+#
+# ⚠️ Every money value crossing this boundary is an INT of PAISE. Nothing here
+# multiplies, discounts or taxes — that is `payments.py`'s job, in pure
+# functions a test can run without a database. This module puts the integers in
+# and takes them out.
+
+def priced_plan(conn: Connection, *, plan_slug: str) -> dict[str, Any] | None:
+    """A catalog row a checkout may sell, or ``None``.
+
+    ``active`` is in the WHERE clause, not left to the caller: 9.1's rule is
+    that the checkout cannot sell a thing the catalog does not price, and
+    `rnd`/`support` are seeded INACTIVE precisely because their Centers do not
+    exist yet. A caller that had to remember the filter is a caller that
+    eventually sells R&D Center.
+    """
+    row = conn.execute(
+        text(
+            "SELECT slug, kind, price_inr FROM plan_catalog "
+            "WHERE slug = :slug AND active"
+        ),
+        {"slug": plan_slug},
+    ).first()
+    return (
+        {"slug": row[0], "kind": row[1], "price_inr": row[2]}
+        if row else None
+    )
+
+
+def create_order(
+    conn: Connection, *, org_id: str, provider: str,
+    gross_paise: int, discount_paise: int, taxable_paise: int,
+    gst_paise: int, total_paise: int, gst_split: str,
+    customer_gstin: str | None, place_of_supply: str | None,
+    expires_in_minutes: int,
+    lines: list[dict[str, Any]],
+) -> str:
+    """Write the order and its lines. **Writes nothing else, by design.**
+
+    No entitlement, no seat, no ledger row, no subscription change — which is
+    exactly what makes this reachable with the customer's own read-mostly
+    organization key (CP-9 §9.3(2)). If this function ever grows a second
+    table, the transitive fence
+    ``test_no_org_key_route_writes_an_entitlement_or_ledger_row`` goes red, and
+    that is the intended outcome rather than an obstacle.
+
+    ``expires_at`` is computed by the DATABASE (``make_interval``), not by the
+    app process: the two clocks differ by a measured fraction of a second, and
+    an expiry the app believes in but the database does not is a bug that only
+    appears near the boundary.
+    """
+    order_id = str(conn.execute(
+        text(
+            """
+            INSERT INTO payment_order
+                (organization_id, provider, gross_paise, discount_paise,
+                 taxable_paise, gst_paise, total_paise, gst_split,
+                 customer_gstin, place_of_supply, expires_at)
+            VALUES
+                (:org, :provider, :gross, :discount, :taxable, :gst, :total,
+                 :split, :gstin, :pos,
+                 now() + make_interval(mins => :ttl))
+            RETURNING id
+            """
+        ),
+        {"org": org_id, "provider": provider, "gross": gross_paise,
+         "discount": discount_paise, "taxable": taxable_paise,
+         "gst": gst_paise, "total": total_paise, "split": gst_split,
+         "gstin": customer_gstin, "pos": place_of_supply,
+         "ttl": expires_in_minutes},
+    ).scalar_one())
+
+    for line in lines:
+        conn.execute(
+            text(
+                """
+                INSERT INTO payment_order_line
+                    (order_id, plan_slug, quantity, unit_price_paise)
+                VALUES (:order, :plan, :qty, :unit)
+                """
+            ),
+            {"order": order_id, "plan": line["plan_slug"],
+             "qty": line["quantity"], "unit": line["unit_price_paise"]},
+        )
+    return order_id
+
+
+def set_provider_order_id(
+    conn: Connection, *, order_id: str, provider_order_id: str
+) -> None:
+    """Record the provider's id for an order we just created there."""
+    conn.execute(
+        text("UPDATE payment_order SET provider_order_id = :p WHERE id = :i"),
+        {"p": provider_order_id, "i": order_id},
+    )
+
+
+def detach_provider(conn: Connection, *, order_id: str) -> None:
+    """Make an order the Rs 0 path's own: ``provider='none'``, no provider id.
+
+    SC-4g (iv)'s recorded shape for a 100 percent redemption. The provider
+    order created when the intent was still priced is left to expire at the
+    provider — the harmless orphan — and this row stops pointing at it, so
+    nothing later mistakes an unpaid provider order for the reference of a
+    completed purchase.
+    """
+    conn.execute(
+        text(
+            "UPDATE payment_order SET provider = 'none', "
+            "       provider_order_id = NULL WHERE id = :i"
+        ),
+        {"i": order_id},
+    )
+
+
+#: Columns every order read returns. Named once so the two reads
+#: (`order_row`/`order_for_update` and `orders_page`) cannot drift into
+#: answering different questions — and so `provider_order_id` is absent from
+#: the *wire* by being absent from the view model, not by being filtered later.
+_ORDER_COLUMNS = """
+    id, organization_id, status, provider, provider_order_id,
+    gross_paise, discount_paise, taxable_paise, gst_paise, total_paise,
+    gst_split, customer_gstin, place_of_supply,
+    expires_at, created_at, terminal_at,
+    (expires_at <= now()) AS expired
+"""
+
+
+def _order_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "organization_id": str(row.organization_id),
+        "status": row.status,
+        "provider": row.provider,
+        "provider_order_id": row.provider_order_id,
+        "gross_paise": int(row.gross_paise),
+        "discount_paise": int(row.discount_paise),
+        "taxable_paise": int(row.taxable_paise),
+        "gst_paise": int(row.gst_paise),
+        "total_paise": int(row.total_paise),
+        "gst_split": row.gst_split,
+        "customer_gstin": row.customer_gstin,
+        "place_of_supply": row.place_of_supply,
+        "expires_at": row.expires_at,
+        "created_at": row.created_at,
+        "terminal_at": row.terminal_at,
+        # Evaluated by the DATABASE's clock, never by the app's. The two differ
+        # by a measured fraction of a second on our own containers, and an
+        # expiry decided on the wrong clock is a decision nobody can reproduce.
+        "expired": bool(row.expired),
+    }
+
+
+def order_row(
+    conn: Connection, *, order_id: str, org_id: str
+) -> dict[str, Any] | None:
+    """One order, **scoped to the owning organization** (CP-9 §9.3(7)).
+
+    ``organization_id`` is part of the predicate rather than something the
+    caller checks afterwards. A foreign order and a missing one therefore
+    return the same ``None`` here, which is what lets the route answer one
+    byte-identical 404 for both — a 403-for-foreign / 404-for-unknown split is
+    a membership oracle over other tenants' order ids.
+    """
+    row = conn.execute(
+        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
+             "WHERE id = :id AND organization_id = :org"),
+        {"id": order_id, "org": org_id},
+    ).first()
+    return _order_dict(row) if row else None
+
+
+def order_for_update(
+    conn: Connection, *, order_id: str, org_id: str | None = None
+) -> dict[str, Any] | None:
+    """One order, **row-locked** for the duration of the transaction.
+
+    ``FOR UPDATE`` is the concurrency half of the money guard: two capture
+    events for one order arriving at once are serialised here, so the second
+    reads the state the first COMMITTED (``captured``) rather than the state it
+    started from. Without it both transactions would see `created`, both would
+    pass the terminal check, and both would grant.
+
+    ``org_id`` is optional because the webhook has no organization to scope to
+    — it resolves an order from a provider identifier, and the authority it
+    carries is a verified signature rather than a key.
+    """
+    scope = " AND organization_id = :org" if org_id is not None else ""
+    row = conn.execute(
+        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
+             f"WHERE id = :id{scope} FOR UPDATE"),
+        {"id": order_id, "org": org_id} if org_id is not None
+        else {"id": order_id},
+    ).first()
+    return _order_dict(row) if row else None
+
+
+def order_by_provider_id(
+    conn: Connection, *, provider_order_id: str
+) -> dict[str, Any] | None:
+    """The order a webhook is about, row-locked. ``None`` when we do not know it."""
+    row = conn.execute(
+        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
+             "WHERE provider_order_id = :p FOR UPDATE"),
+        {"p": provider_order_id},
+    ).first()
+    return _order_dict(row) if row else None
+
+
+def orders_page(
+    conn: Connection, *, org_id: str, limit: int,
+    status: str | None = None, cursor: str | None = None,
+) -> list[dict[str, Any]]:
+    """One page of an organization's orders, newest first.
+
+    Keyset pagination on ``(created_at, id)`` rather than OFFSET: a customer
+    can grow this table without limit (9.3(6)'s named residual), and OFFSET on
+    a growing table both slows down and skips rows when a new one lands
+    mid-scan. The cursor is itself org-scoped in the sub-select, so a cursor
+    from another tenant's order selects nothing rather than paging into it.
+    """
+    clauses = ["organization_id = :org"]
+    params: dict[str, Any] = {"org": org_id, "limit": limit}
+    if status is not None:
+        clauses.append("status = :status")
+        params["status"] = status
+    if cursor is not None:
+        clauses.append(
+            "(created_at, id) < (SELECT created_at, id FROM payment_order "
+            " WHERE id = :cursor AND organization_id = :org)"
+        )
+        params["cursor"] = cursor
+    rows = conn.execute(
+        text(
+            f"SELECT {_ORDER_COLUMNS} FROM payment_order "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC, id DESC LIMIT :limit"
+        ),
+        params,
+    ).all()
+    return [_order_dict(r) for r in rows]
+
+
+def order_lines(conn: Connection, *, order_id: str) -> list[dict[str, Any]]:
+    """The order's lines, with the catalog ``kind`` joined in.
+
+    ``kind`` rides along because fulfilment branches on it (a pack writes the
+    ledger, a package writes a seat grant) and a second query per line would
+    make that branch N round trips.
+    """
+    return [
+        {"plan_slug": r[0], "quantity": int(r[1]),
+         "unit_price_paise": int(r[2]), "kind": r[3]}
+        for r in conn.execute(
+            text(
+                "SELECT l.plan_slug, l.quantity, l.unit_price_paise, p.kind "
+                "FROM payment_order_line l "
+                "JOIN plan_catalog p ON p.slug = l.plan_slug "
+                "WHERE l.order_id = :o ORDER BY l.plan_slug"
+            ),
+            {"o": order_id},
+        )
+    ]
+
+
+def set_order_status(
+    conn: Connection, *, order_id: str, status: str, terminal: bool
+) -> None:
+    """Write a state the caller has already checked against the graph.
+
+    ``terminal`` is passed in rather than derived here, so the terminal set
+    lives in exactly one place (``payments.ORDER_TERMINAL_STATES``) and this
+    module keeps its promise to decide nothing. ``terminal_at`` is stamped by
+    the database's clock for the same reason ``expired`` is read from it.
+    """
+    conn.execute(
+        text(
+            "UPDATE payment_order SET status = :s, "
+            "       terminal_at = CASE WHEN :terminal THEN now() "
+            "                          ELSE terminal_at END "
+            "WHERE id = :i"
+        ),
+        {"s": status, "i": order_id, "terminal": terminal},
+    )
+
+
+def activate_subscription(
+    conn: Connection, *, org_id: str, term_months: int,
+    provider: str | None, provider_customer_id: str | None,
+    provider_subscription_id: str | None,
+) -> None:
+    """Start (or renew) the purchased term.
+
+    ⚠️ ``provider`` is ``'razorpay'`` or **NULL**, never ``'none'``:
+    ``org_subscription.provider`` is ``CHECK (provider IN ('razorpay',
+    'manual'))`` and ``'none'`` — which is legitimate on
+    ``payment_order.provider`` — violates it. NULL is the honest record of "no
+    provider was involved", and it is the ONE difference between the Rs 0 and
+    paid paths that the equivalence fence asserts rather than excludes.
+
+    The period is computed by the database so both paths read one clock.
+
+    ⚠️ This writes ``org_subscription.status``, which is a different column
+    from ``organization.status`` and is deliberately the only one fulfilment
+    touches: a suspended organization that pays holds an active paid term and
+    is still suspended until an operator posts the transition (done-when 16).
+    The two rows disagreeing is the *expected* intermediate state, and CP-8's
+    queue is what renders it.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO org_subscription
+                (organization_id, status, current_period_start,
+                 current_period_end, provider, provider_customer_id,
+                 provider_subscription_id)
+            VALUES
+                (:org, 'active', now()::date,
+                 (now() + make_interval(months => :months))::date,
+                 :provider, :customer, :subscription)
+            ON CONFLICT (organization_id) DO UPDATE SET
+                status = 'active',
+                current_period_start = EXCLUDED.current_period_start,
+                current_period_end = EXCLUDED.current_period_end,
+                provider = EXCLUDED.provider,
+                provider_customer_id = EXCLUDED.provider_customer_id,
+                provider_subscription_id = EXCLUDED.provider_subscription_id,
+                updated_at = now()
+            """
+        ),
+        {"org": org_id, "months": term_months, "provider": provider,
+         "customer": provider_customer_id,
+         "subscription": provider_subscription_id},
+    )
+
+
+def record_payment_event(
+    conn: Connection, *, provider_event_id: str, order_id: str | None,
+    kind: str, body: str,
+) -> bool:
+    """Record one verified delivery. **False when we have seen this id before.**
+
+    ``ON CONFLICT DO NOTHING`` on the primary key is TRANSPORT dedup and only
+    that: it makes the same delivery, delivered twice, a no-op. It does not and
+    cannot stop a double grant, because one capture arrives as two events with
+    two different ids — that is the terminal-state rule's job.
+
+    In the SAME transaction as the fulfilment it guards, so a fulfilment that
+    rolls back takes its receipt with it and the provider's retry is evaluated
+    afresh rather than deduped into silence.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO payment_event
+                (provider_event_id, order_id, kind, body)
+            VALUES (:eid, :order, :kind, CAST(:body AS jsonb))
+            ON CONFLICT (provider_event_id) DO NOTHING
+            RETURNING provider_event_id
+            """
+        ),
+        {"eid": provider_event_id, "order": order_id, "kind": kind,
+         "body": body},
+    ).first()
+    return row is not None
+
+
+def capture_provider_refs(
+    conn: Connection, *, order_id: str
+) -> dict[str, Any]:
+    """Provider identifiers from the newest capture event for this order.
+
+    Read from ``payment_event.body`` rather than carried through the call
+    chain: the event is already recorded in this transaction, and a parameter
+    threaded through :func:`payments.fulfil` would have to be optional for the
+    Rs 0 path — an optional parameter that must be present on one path and
+    absent on the other is a second signature wearing one name.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT body #>> '{payload,payment,entity,customer_id}',
+                   body #>> '{payload,payment,entity,id}'
+            FROM payment_event
+            WHERE order_id = :o AND kind IN ('payment.captured', 'order.paid')
+            ORDER BY received_at DESC
+            LIMIT 1
+            """
+        ),
+        {"o": order_id},
+    ).first()
+    return {"customer_id": row[0], "payment_id": row[1]} if row else {}
+
+
+# ── Discount codes (SC-4g) ──────────────────────────────────────────────────
+
+def issue_discount_code(
+    conn: Connection, *, prefix: str, code_hash: str, label: str,
+    kind: str, org_id: str | None = None, percent_bp: int | None = None,
+    amount_paise: int | None = None, max_redemptions: int = 1,
+    expires_at: datetime | None = None, created_by: str = "operator",
+) -> str:
+    """Store a freshly minted code. The secret is never passed here.
+
+    Mirrors :func:`issue_key` and :func:`issue_deployment_key` deliberately
+    rather than generalising the three: they write different tables with
+    different owners and different lifetimes, and one function taking "which
+    kind" would put that decision at every call site.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO discount_code
+                (prefix, code_hash, label, organization_id, kind, percent_bp,
+                 amount_paise, max_redemptions, expires_at, created_by)
+            VALUES (:prefix, :hash, :label, :org, :kind, :bp, :amount,
+                    :max, :expires, :by)
+            RETURNING id
+            """
+        ),
+        {"prefix": prefix, "hash": code_hash, "label": label, "org": org_id,
+         "kind": kind, "bp": percent_bp, "amount": amount_paise,
+         "max": max_redemptions, "expires": expires_at, "by": created_by},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def resolve_discount_code(
+    conn: Connection, *, prefix: str
+) -> dict[str, Any] | None:
+    """Look up a code by its clear prefix. Returns the row, judges nothing.
+
+    ⚠️ Deliberately **no** filtering on ``expires_at``/``revoked_at`` here,
+    unlike :func:`resolve_key`'s ``revoked_at IS NULL``. The difference is the
+    acceptance criterion: SC-4g done-when 4 requires ``expired`` and
+    ``revoked`` to be told apart *for a code this organization may see*, so a
+    query that folded them into "not found" would make the partition
+    unimplementable. The route decides; this returns the facts.
+
+    ``expired`` is evaluated against the DATABASE clock for the same reason
+    every other clock question here is.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT id, prefix, code_hash, label, organization_id, kind,
+                   percent_bp, amount_paise, max_redemptions,
+                   (expires_at IS NOT NULL AND expires_at <= now()) AS expired,
+                   (revoked_at IS NOT NULL) AS revoked
+            FROM discount_code WHERE prefix = :prefix
+            """
+        ),
+        {"prefix": prefix},
+    ).first()
+    if row is None:
+        return None
+    return {
+        "id": str(row.id), "prefix": row.prefix, "code_hash": row.code_hash,
+        "label": row.label,
+        "organization_id": (str(row.organization_id)
+                            if row.organization_id else None),
+        "kind": row.kind, "percent_bp": row.percent_bp,
+        "amount_paise": (int(row.amount_paise)
+                         if row.amount_paise is not None else None),
+        "max_redemptions": int(row.max_redemptions),
+        "expired": bool(row.expired), "revoked": bool(row.revoked),
+    }
+
+
+def lock_discount_capacity(conn: Connection, *, code_id: str) -> None:
+    """Serialise the redemption-count decision for one code.
+
+    The seat cap's idiom, one table along (``lock_seat_capacity``, and its
+    docstring carries the measurement: 10 races, both winners, on a real
+    server). Without it ``max_redemptions`` is check-then-insert across two
+    DIFFERENT orders, which ``UNIQUE (discount_code_id, order_id)`` does not
+    cover — that index stops one order redeeming one code twice, which is a
+    different claim from N redemptions in total.
+
+    Transaction-scoped, so there is no unlock to forget on the refusal path.
+    The key is namespaced (``discount:<id>``) so it cannot collide with the
+    seat lock's ``<org>:<plan>`` space in ``hashtext``'s single keyspace.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"discount:{code_id}"},
+    )
+
+
+def count_redemptions(conn: Connection, *, code_id: str) -> int:
+    """``COUNT(discount_redemption)``, never a mutable ``times_used`` column.
+
+    The same append-only argument ``credit_ledger`` makes: the count and the
+    evidence for it are the same rows, so they cannot disagree.
+    """
+    return int(conn.execute(
+        text("SELECT count(*) FROM discount_redemption "
+             "WHERE discount_code_id = :c"),
+        {"c": code_id},
+    ).scalar_one())
+
+
+def write_redemption(
+    conn: Connection, *, code_id: str, org_id: str, order_id: str,
+    gross_paise: int, discount_paise: int, net_paise: int,
+) -> str | None:
+    """Record a redemption. **None when this order already redeemed this code.**
+
+    ``ON CONFLICT DO NOTHING`` on ``(discount_code_id, order_id)`` is what
+    makes re-submitting the same code against the same order redeem *once*
+    (done-when 5) — enforced by the index rather than by a prior SELECT, so a
+    concurrent double-submit loses at the database instead of racing past a
+    check.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO discount_redemption
+                (discount_code_id, organization_id, order_id, gross_paise,
+                 discount_paise, net_paise)
+            VALUES (:code, :org, :order, :gross, :discount, :net)
+            ON CONFLICT (discount_code_id, order_id) DO NOTHING
+            RETURNING id
+            """
+        ),
+        {"code": code_id, "org": org_id, "order": order_id,
+         "gross": gross_paise, "discount": discount_paise, "net": net_paise},
+    ).first()
+    return str(row[0]) if row else None
+
+
+def redemption_for_order(
+    conn: Connection, *, order_id: str
+) -> dict[str, Any] | None:
+    """The redemption applied to this order, with the code's PREFIX only.
+
+    ``code_hash`` is excluded at the SQL level rather than filtered afterwards,
+    exactly as :func:`list_keys` excludes it: a column that is never selected
+    cannot be leaked by a later caller that forgets to strip it.
+    """
+    row = conn.execute(
+        text(
+            "SELECT r.id, c.prefix, r.discount_paise "
+            "FROM discount_redemption r "
+            "JOIN discount_code c ON c.id = r.discount_code_id "
+            "WHERE r.order_id = :o ORDER BY r.created_at LIMIT 1"
+        ),
+        {"o": order_id},
+    ).first()
+    return (
+        {"id": str(row[0]), "code_prefix": row[1],
+         "discount_paise": int(row[2])}
+        if row else None
+    )
+
+
+def apply_discount_to_order(
+    conn: Connection, *, order_id: str, discount_paise: int,
+    taxable_paise: int, gst_paise: int, total_paise: int,
+) -> None:
+    """Write the recomputed money columns. The arithmetic happened in Python.
+
+    All four move together in one statement, because the table's CHECK
+    constraints relate them (``taxable = gross - discount``,
+    ``total = taxable + gst``) — a partial update would be rejected by the
+    database, which is the intended design rather than an inconvenience.
+    """
+    conn.execute(
+        text(
+            "UPDATE payment_order SET discount_paise = :d, "
+            "       taxable_paise = :t, gst_paise = :g, total_paise = :total "
+            "WHERE id = :i"
+        ),
+        {"d": discount_paise, "t": taxable_paise, "g": gst_paise,
+         "total": total_paise, "i": order_id},
+    )
 
 
 def resolve_key(conn: Connection, *, prefix: str
