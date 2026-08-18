@@ -6,8 +6,8 @@ path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-3 · CP-4 BUILT · CP-6 mechanism
 BUILT (refusals ship OFF) · CP-2b CONSOLE HALF BUILT 2026-08-18, deployment half
-OPEN** — 260 Customer Console tests against a real Postgres 16 per R8 (219 + the
-41 of `test_customer_console_resolve.py`) · CP-3 was **rejected by independent
+OPEN** — 264 Customer Console tests against a real Postgres 16 per R8 (219 + the
+45 of `test_customer_console_resolve.py`) · CP-3 was **rejected by independent
 verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
 **CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
 half of CP-4's done-when that was never met (`stream: true` returns 501) and
@@ -830,8 +830,9 @@ answering **two schemes with two response shapes chosen by the credential**
 `_resolve_for_deployment`, `_allocate_core_seat`), with the visibility predicate
 in `store.deployment_visible_orgs` and the key lookup in
 `store.resolve_deployment_key`. Fenced by
-`tests/unit/test_customer_console_resolve.py` (41 tests) against a real Postgres
-16, every fence below shown **red first** by reverting the behaviour it pins.
+`tests/unit/test_customer_console_resolve.py` (45 tests) against a real Postgres
+16, every fence below shown **red first** by reverting the behaviour it pins —
+including a real two-thread race against the seat cap.
 Clauses met: **1, 2, 3, 4, 5, 8 (Console half), 9 (Console half), 10, 12**, plus
 the two R7 fences this implementation itself owes.
 
@@ -847,12 +848,42 @@ consults** — a person becomes a user of a Metorite deployment without any seat
 being allocated, which is exactly the claim §5.2 rests on (*"the box asks before
 admitting them"*), still unbuilt.
 
-**Two findings recorded rather than fixed** (neither is decided by any clause,
-so neither was decided in the build): `org_membership.status` is **not**
-consulted by the visibility predicate — clause 4 states the criterion as *holds
-a membership* and clause 5 enumerates three invisible cases, none of which is
-"membership was removed", so a `removed` member still resolves; and
-`deployment.status` (`active|draining|retired`) does not affect its keys.
+**Findings recorded rather than fixed** (none is decided by any clause, so none
+was decided in the build): `org_membership.status` is **not** consulted by the
+visibility predicate — clause 4 states the criterion as *holds a membership* and
+clause 5 enumerates three invisible cases, none of which is "membership was
+removed", so a `removed` member still resolves; and `deployment.status`
+(`active|draining|retired`) does not affect its keys.
+
+⚠️ **Two pre-existing defects on shipped surfaces, found by the CP-2b review
+(2026-08-18) and deliberately NOT fixed here.** Both are inherited, both are
+recorded so the next reader does not discover them in a billing incident:
+
+1. **The operator arm of `POST /registry/resolve` ignores `can_write_seats`.**
+   `POST /billing/seats` refuses a `suspended`/`cancelled` organization with
+   403 (`main.py`, `capabilities_of(state).can_write_seats`); the operator
+   resolve does not, so it allocates NEW seats to an organization whose seats
+   are supposedly locked. Its current behaviour is pinned by
+   `test_customer_console_lifecycle.py:170`, so changing it is a behaviour
+   change to a shipped surface and wants its own ticket. **The CP-2b deployment
+   arm does consult it** — a suspended org returns `seat: "not_allocated"` and
+   writes nothing, login still open — fenced by
+   `test_a_suspended_org_allocates_no_new_seat_on_sign_in` and
+   `test_an_existing_seat_survives_suspension_reporting`. The two arms therefore
+   differ on purpose and the difference is this line.
+2. **`POST /billing/seats` does not take the seat-capacity advisory lock.** The
+   cap was check-then-insert everywhere: `seat_rows` reads at READ COMMITTED and
+   the partial unique index enforces one seat per *person*, not N per
+   *organization*, so two concurrent first assignments with one seat left both
+   landed (measured, 10 races on a real server). CP-2b adds
+   `store.lock_seat_capacity` — `pg_advisory_xact_lock` on
+   `(organization_id, plan_slug)`, taken before the count — and routes **both
+   arms of resolve** through the single `_allocate_core_seat` path that takes
+   it, fenced by
+   `test_two_concurrent_first_resolves_cannot_oversubscribe_the_cap`.
+   `POST /billing/seats` remains unserialised; closing it is one call and one
+   ticket, and `seats.py`'s `oversubscribed` docstring names the gap rather than
+   claiming a guarantee the tree does not have.
 
 The 2026-08-18 audit found **three undecided questions** blocking dispatch. Each
 is answered below as an **agent-proposed default, owner may overrule** — the
@@ -1374,10 +1405,8 @@ queries, migrations and predicates, so they are run against a real Postgres befo
 they are believed. *(CP-2b and CP-4b added 2026-08-18: both of their done-when
 lists already mandate R8 in their own words — CP-2b clause 10 and CP-4b's
 metering clause — so this line was simply behind them.)* CP-2b's new suite
-`tests/unit/test_customer_console_resolve.py` joins the command block **in the PR
-that creates it**, together with `pr-check.yml`'s skip-guard entry; it is not
-listed above because a verification command that names a file which does not
-exist fails for the wrong reason.
+`tests/unit/test_customer_console_resolve.py` joined the command block **in the
+PR that created it**, together with `pr-check.yml`'s skip-guard entry.
 **R1: migration numbers are taken at build time** — list the owning directory
 (`infra/customer_console/` for a Customer Console migration, `infra/postgres/`
 for a tenant one) and re-check at merge. *(The absolute that stood here, "highest

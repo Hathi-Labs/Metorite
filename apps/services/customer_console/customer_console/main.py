@@ -606,28 +606,23 @@ def _resolve_for_operator(req: ResolveRequest) -> dict[str, Any]:
             conn, email=req.email, display_name=req.display_name
         )
 
-        held = store.has_live_seat(
-            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG, identity_id=identity_id
+        # The SAME allocation path the deployment arm takes — one
+        # implementation of "may this person have a Core seat", so the two
+        # schemes cannot drift on the answer that costs money. It also carries
+        # the advisory lock that makes the cap hold under concurrency.
+        #
+        # ⚠️ `seats_locked=False` unconditionally, and that is a **recorded
+        # pre-existing gap, not a choice made here**: the shipped operator arm
+        # allocates seats to a `suspended` organization, which
+        # `POST /billing/seats` refuses with 403 (`capabilities_of(state).
+        # can_write_seats`). Its current behaviour is pinned by
+        # `test_customer_console_lifecycle.py:170` and changing it is a
+        # behaviour change to a shipped surface, so CP-2b records it in the
+        # spec rather than smuggling it into a refactor. The deployment arm
+        # passes the real answer.
+        _allocate_core_seat(
+            conn, org_id=org_id, identity_id=identity_id, seats_locked=False,
         )
-        grants, assigned = store.seat_rows(
-            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG
-        )
-        decision = decide_assignment(
-            seat_counts(CORE_PLAN_SLUG, grants, assigned),
-            already_assigned=held,
-            price_inr=store.plan_price(conn, plan_slug=CORE_PLAN_SLUG),
-        )
-        if not decision.allowed:
-            raise HTTPException(
-                status_code=decision.status,
-                detail={"reason": decision.reason, "buy_more": decision.buy_more},
-            )
-
-        if not held:
-            store.try_assign_seat(
-                conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
-                identity_id=identity_id, source="core",
-            )
 
         role = conn.execute(
             text(
@@ -728,14 +723,34 @@ def _resolve_for_deployment(
 
         seat_outcomes: dict[str, str] = {}
         if len(admissible) == 1:
-            seat_outcomes[admissible[0]["organization_id"]] = _allocate_core_seat(
-                conn, org_id=admissible[0]["organization_id"],
-                identity_id=identity_id,
+            org = admissible[0]
+            seat_outcomes[org["organization_id"]] = _allocate_core_seat(
+                conn, org_id=org["organization_id"], identity_id=identity_id,
+                # The lifecycle decides whether a seat may be WRITTEN, and it
+                # is a different question from whether this person may sign in
+                # — the state machine answers both, and this arm asks both.
+                seats_locked=not capabilities_of(org["status"]).can_write_seats,
             )
-        # More than one visible organization → allocate NOTHING. Allocating a
-        # seat in every organization a person can see would bill an admin for a
-        # login they did not make (clause 9). Choosing among them is the
-        # chooser, which is a named non-goal.
+        else:
+            # More than one visible organization → allocate NOTHING. Allocating
+            # a seat in every organization a person can see would bill an admin
+            # for a login they did not make (clause 9). Choosing among them is
+            # the chooser, which is a named non-goal.
+            #
+            # ⚠️ Allocating nothing is not the same as holding nothing. The
+            # seat token answers *does this person hold a seat here*, never
+            # *did this call allocate one* — a caller reading `not_allocated`
+            # for an org where the person already sits would conclude they are
+            # unseated and go buy a seat they already own.
+            for org in admissible:
+                seat_outcomes[org["organization_id"]] = (
+                    _SEAT_ALREADY_HELD
+                    if store.has_live_seat(
+                        conn, org_id=org["organization_id"],
+                        plan_slug=CORE_PLAN_SLUG, identity_id=identity_id,
+                    )
+                    else _SEAT_NOT_ALLOCATED
+                )
 
         return {
             "identity_id": identity_id,
@@ -745,24 +760,54 @@ def _resolve_for_deployment(
                     "slug": o["slug"],
                     "placement": o["placement"],
                     "status": o["status"],
-                    "seat": seat_outcomes.get(
-                        o["organization_id"], _SEAT_NOT_ALLOCATED
-                    ),
+                    "seat": seat_outcomes[o["organization_id"]],
                 }
                 for o in admissible
             ],
         }
 
 
-def _allocate_core_seat(conn, *, org_id: str, identity_id: str) -> str:
+def _allocate_core_seat(
+    conn, *, org_id: str, identity_id: str, seats_locked: bool
+) -> str:
     """Consume a Core seat for one person, idempotently. Raises 409 at the cap.
 
-    The same four calls the operator arm makes, in the same order, against the
-    same pure decision function — not a second seat implementation. Four
-    surfaces recomputing "how many seats are free" is how they come to
-    disagree, and the one that disagrees in the customer's favour is the one
-    that costs money (``seats.py`` module note).
+    **The one seat-allocation path both arms of resolve go through** — not two
+    copies of the same four calls. Four surfaces recomputing "how many seats
+    are free" is how they come to disagree, and the one that disagrees in the
+    customer's favour is the one that costs money (``seats.py`` module note).
+
+    Args:
+        seats_locked: the organization's lifecycle forbids seat WRITES
+            (``capabilities_of(state).can_write_seats`` is False, i.e.
+            ``suspended`` or ``cancelled``). Deliberately a **required**
+            keyword rather than a default: every caller has to state which
+            answer it is choosing, because the version of this function that
+            defaulted it to False is the version that allocated new seats to a
+            suspended customer on every sign-in.
+
+    Note what ``seats_locked`` does **not** do: it is not sign-in admission.
+    ``suspended`` and ``cancelled`` keep ``can_sign_in`` True on purpose (a
+    customer who cannot log in cannot pay you, and ``cancelled`` IS the export
+    window) while ``can_write_seats`` goes False. So the door stays open, the
+    person is told the truth about their seat, and **nothing is written**.
     """
+    if seats_locked:
+        # Report, never write. A member who already holds a seat keeps it —
+        # suspension locks the seat WRITER, it does not repossess seats — and
+        # a member who holds none is simply not given one, rather than being
+        # refused a login they are entitled to.
+        held = store.has_live_seat(
+            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
+            identity_id=identity_id,
+        )
+        return _SEAT_ALREADY_HELD if held else _SEAT_NOT_ALLOCATED
+
+    # BEFORE the count, not between the count and the insert — see the
+    # function's own note in `store.lock_seat_capacity`. Everything from here
+    # to the INSERT is one serialised critical section per (org, plan).
+    store.lock_seat_capacity(conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG)
+
     held = store.has_live_seat(
         conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG, identity_id=identity_id
     )

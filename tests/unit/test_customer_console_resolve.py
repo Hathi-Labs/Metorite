@@ -35,7 +35,9 @@ that does not exist.
 from __future__ import annotations
 
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -611,12 +613,36 @@ class TestIdempotence:
         ``lower(email)`` match belong to migration 159's projection, which is
         the deployment half and is held.
         """
-        for _ in range(5):
-            assert _resolve(client, box["key"],
-                            email=box["email"]).status_code == 200
+        answers = [
+            _resolve(client, box["key"], email=box["email"]) for _ in range(5)
+        ]
+        assert {a.status_code for a in answers} == {200}
+        first = answers[0].json()
+
         # And the case-varied form is the SAME human — CITEXT, 001:110.
-        assert _resolve(client, box["key"],
-                        email=box["email"].upper()).status_code == 200
+        #
+        # ⚠️ Asserted on the ANSWER, not on the status code. A 200 is what the
+        # broken behaviour returns too: an address that minted a second
+        # identity would resolve to a person with no memberships and answer
+        # `{"organizations": []}` — status 200, and the fence green while the
+        # property it names was gone.
+        upper = _resolve(client, box["key"], email=box["email"].upper())
+        assert upper.status_code == 200
+        assert upper.json()["identity_id"] == first["identity_id"]
+        assert (
+            [o["slug"] for o in upper.json()["organizations"]]
+            == [o["slug"] for o in first["organizations"]]
+            == [box["slug"]]
+        )
+
+        with db.begin() as c:
+            seats = c.execute(
+                text("SELECT count(*) FROM seat_assignment sa "
+                     "JOIN user_identity ui ON ui.id = sa.user_identity_id "
+                     "WHERE ui.email = :e AND sa.released_at IS NULL"),
+                {"e": box["email"]},
+            ).scalar_one()
+        assert seats == 1, "six resolves must not grow the seat count"
 
         with db.begin() as c:
             identities = c.execute(
@@ -658,6 +684,176 @@ class TestSeatSemantics:
                              headers=OP).json()
         core = next(s for s in summary["seats"] if s["plan_slug"] == "core")
         assert core["assigned"] == 2  # the owner, and this member once
+
+    def test_a_suspended_org_allocates_no_new_seat_on_sign_in(
+        self, client, db, box
+    ):
+        """Login open, seat writer locked — both answers from one state machine.
+
+        ``suspended``/``cancelled`` keep ``can_sign_in`` True and set
+        ``can_write_seats`` False (`lifecycle.py:72-75`), which
+        ``POST /billing/seats`` already enforces with a 403. The sign-in path
+        must consult the SAME capability before allocating, or a suspended
+        customer grows new seats on every sign-in while its seats are
+        supposedly locked — billable rows created by a customer who is
+        suspended precisely because they are not paying.
+        """
+        client.post("/orgs/lifecycle", headers=OP,
+                    json={"org_slug": box["slug"], "target": "suspended"})
+
+        answer = _resolve(client, box["key"], email=box["email"])
+
+        assert answer.status_code == 200  # the door stays open
+        entry = answer.json()["organizations"][0]
+        assert entry["status"] == "suspended"
+        assert entry["seat"] == "not_allocated"
+
+        with db.begin() as c:
+            mine = c.execute(
+                text("SELECT count(*) FROM seat_assignment sa "
+                     "JOIN user_identity ui ON ui.id = sa.user_identity_id "
+                     "WHERE ui.email = :e AND sa.released_at IS NULL"),
+                {"e": box["email"]},
+            ).scalar_one()
+            org_total = c.execute(
+                text("SELECT count(*) FROM seat_assignment WHERE "
+                     "organization_id = :o AND released_at IS NULL"),
+                {"o": box["org_id"]},
+            ).scalar_one()
+        assert mine == 0
+        assert org_total == 1, "only the owner's seat, unchanged"
+
+    def test_an_existing_seat_survives_suspension_reporting(
+        self, client, db, box
+    ):
+        """Suspension locks the seat WRITER; it does not repossess seats.
+
+        The distinction matters to the box reading this answer: a member who
+        holds a seat must keep reading ``already_held`` through a suspension,
+        or the deployment concludes they were unseated and the customer is
+        told to buy a seat they already own.
+        """
+        first = _resolve(client, box["key"], email=box["email"]).json()
+        assert first["organizations"][0]["seat"] == "allocated"
+
+        client.post("/orgs/lifecycle", headers=OP,
+                    json={"org_slug": box["slug"], "target": "suspended"})
+
+        after = _resolve(client, box["key"], email=box["email"])
+
+        assert after.status_code == 200
+        assert after.json()["organizations"][0]["seat"] == "already_held"
+        with db.begin() as c:
+            live = c.execute(
+                text("SELECT count(*) FROM seat_assignment sa "
+                     "JOIN user_identity ui ON ui.id = sa.user_identity_id "
+                     "WHERE ui.email = :e AND sa.released_at IS NULL"),
+                {"e": box["email"]},
+            ).scalar_one()
+        assert live == 1
+
+    def test_a_seated_person_in_the_multi_org_case_is_reported_already_held(
+        self, client, db, box
+    ):
+        """The seat token answers *holds*, never *this call allocated*.
+
+        Clause 9 says allocate nothing when several orgs are visible — it does
+        not say report everyone as seatless. A person seated in org A who later
+        becomes visible in B as well would otherwise flip from ``already_held``
+        to ``not_allocated`` for A without anything happening to their seat.
+        """
+        assert _resolve(client, box["key"], email=box["email"]).json()[
+            "organizations"][0]["seat"] == "allocated"
+
+        second = _new_org(client, "second")
+        second_id = _org_id(client, second)
+        _place(db, org_id=second_id, deployment_id=box["deployment_id"])
+        _member(db, org_id=second_id, email=box["email"])
+
+        answer = _resolve(client, box["key"], email=box["email"])
+
+        assert answer.status_code == 200
+        outcomes = {o["slug"]: o["seat"] for o in answer.json()["organizations"]}
+        assert outcomes == {box["slug"]: "already_held",
+                            second: "not_allocated"}
+
+        # ...and reporting it allocated nothing new.
+        with db.begin() as c:
+            live = c.execute(
+                text("SELECT count(*) FROM seat_assignment sa "
+                     "JOIN user_identity ui ON ui.id = sa.user_identity_id "
+                     "WHERE ui.email = :e AND sa.released_at IS NULL"),
+                {"e": box["email"]},
+            ).scalar_one()
+        assert live == 1
+
+    def test_two_concurrent_first_resolves_cannot_oversubscribe_the_cap(
+        self, client, db
+    ):
+        """The cap under CONCURRENCY — the half a single-threaded test cannot see.
+
+        Check-then-insert: ``seat_rows`` reads at READ COMMITTED and the INSERT
+        lands later. The partial unique index does **not** cover this — it
+        enforces one seat per PERSON, and these are two different people. So
+        two first sign-ins with one seat left both read ``available == 1`` and
+        both allocated, leaving ``assigned > purchased`` on a customer who
+        bought neither seat.
+
+        Raced for real against Postgres rather than reasoned about: two
+        threads, each its own ``TestClient``, released together by a barrier,
+        ten times. Ten iterations because a race that reproduces once in five
+        is still a race, and a green single run would prove only that the
+        machine was slow that second.
+        """
+        attempts = 10
+        for _ in range(attempts):
+            deployment = _new_deployment(db, "race")
+            # 2 purchased, the owner takes one -> exactly ONE seat left.
+            slug = _new_org(client, "race", core_seats=2)
+            org_id = _org_id(client, slug)
+            _place(db, org_id=org_id, deployment_id=deployment)
+            key = _depl_key(db, deployment_id=deployment)
+            racers = [
+                f"racer{n}-{uuid.uuid4().hex[:8]}@race.example" for n in (1, 2)
+            ]
+            for email in racers:
+                _member(db, org_id=org_id, email=email)
+
+            gate = threading.Barrier(2, timeout=30)
+
+            def _race(email: str, _key: str = key, _gate=gate):
+                c = TestClient(app)
+                _gate.wait()
+                return c.post("/registry/resolve", headers=_headers(_key),
+                              json={"email": email})
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [f.result() for f in
+                           [pool.submit(_race, e) for e in racers]]
+
+            assert sorted(r.status_code for r in results) == [200, 409], (
+                "exactly one racer may take the last seat; got "
+                f"{[r.status_code for r in results]}"
+            )
+
+            with db.begin() as c:
+                purchased = c.execute(
+                    text("SELECT COALESCE(SUM(quantity_purchased), 0) FROM "
+                         "seat_grant WHERE organization_id = :o "
+                         "AND plan_slug = 'core'"),
+                    {"o": org_id},
+                ).scalar_one()
+                assigned = c.execute(
+                    text("SELECT count(*) FROM seat_assignment WHERE "
+                         "organization_id = :o AND plan_slug = 'core' "
+                         "AND released_at IS NULL"),
+                    {"o": org_id},
+                ).scalar_one()
+            # The invariant itself, not a proxy for it.
+            assert assigned <= purchased, (
+                f"oversubscribed: {assigned} assigned of {purchased} purchased"
+            )
+            assert (purchased, assigned) == (2, 2)
 
     def test_the_deployment_at_cap_returns_the_shipped_buy_more_payload(
         self, client, db

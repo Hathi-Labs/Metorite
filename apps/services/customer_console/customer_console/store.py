@@ -30,6 +30,7 @@ __all__ = [
     "grant_seats",
     "has_live_seat",
     "issue_deployment_key",
+    "lock_seat_capacity",
     "plan_price",
     "record_usage",
     "release_seat",
@@ -148,6 +149,40 @@ def seat_rows(conn: Connection, *, org_id: str, plan_slug: str,
         {"org": org_id, "plan": plan_slug},
     ).scalar_one()
     return grants, int(assigned)
+
+
+def lock_seat_capacity(conn: Connection, *, org_id: str,
+                       plan_slug: str) -> None:
+    """Serialise the capacity decision for one ``(org, plan)`` pair.
+
+    ⚠️ **Without this, the seat cap is check-then-insert and the check does not
+    hold.** ``seat_rows`` reads at READ COMMITTED and
+    :func:`customer_console.seats.decide_assignment` then decides on a snapshot
+    that another transaction is free to invalidate before the INSERT lands. The
+    partial unique index (``seat_assignment_live_uniq``) does **not** close it:
+    that index enforces *one seat per person*, which is a different claim from
+    *N seats per organization*. Two concurrent first sign-ins for two different
+    people with one seat left therefore both saw ``available == 1`` and both
+    inserted — measured on a real server, 10 races, before this lock existed.
+
+    Transaction-scoped (``_xact_``), so it is released by COMMIT or ROLLBACK
+    and there is no unlock call to forget on the 409 path. Taken **before** the
+    count, not between the count and the insert: a lock acquired after the read
+    protects nothing, because the stale number is already in hand.
+
+    The key is ``hashtext(org:plan)``. A hash collision between two different
+    pairs costs one needless serialisation and is otherwise harmless — the
+    failure mode of this design is slowness, never an over-assignment.
+
+    **Who takes it, stated honestly:** both arms of ``POST /registry/resolve``,
+    via the single ``_allocate_core_seat`` path. ``POST /billing/seats``
+    (``main.py``) still does not, and its race is pre-existing — a finding
+    recorded in ``customer_console.md`` §6 CP-2b, not closed here.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"{org_id}:{plan_slug}"},
+    )
 
 
 def has_live_seat(conn: Connection, *, org_id: str, plan_slug: str,
