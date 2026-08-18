@@ -47,7 +47,11 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
-from acb_auth.console_resolve import resolve_for_signin
+from acb_auth.console_resolve import (
+    CONSOLE_UNAVAILABLE,
+    is_wired,
+    resolve_for_signin,
+)
 from acb_common import get_logger
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -83,9 +87,40 @@ async def resolve_sign_in(
     one call site whose whole job is telling those two apart, and the caller
     would render the wrong copy for both.
 
-    With the Console unwired this admits without a call, a query or a write, so
-    an unconfigured deployment behaves exactly as it did before CP-2b.
+    ⚠️ **Reaching this route AT ALL means somebody declared the box wired, so an
+    unwired box refuses here rather than admitting.** *(Repair of finding F5,
+    independent review 2026-08-18 — a P0.)* ``resolve_for_signin`` fails **open**
+    when ``is_wired()`` is false, and that is correct *for the module*: it is
+    what "ships dark" means for a deployment nobody configured. It is wrong for
+    this route, because the two switches sit in **different containers with
+    different env files** — Next's ``CUSTOMER_CONSOLE_RESOLVE_ENABLED`` and the
+    gateway's ``CUSTOMER_CONSOLE_URL`` / ``CUSTOMER_CONSOLE_DEPLOYMENT_KEY``. An
+    owner who flips the Next flag on a gateway whose env is empty would
+    otherwise have every sign-in admitted with no seat allocated, nothing asked
+    and, because the line below only fires on a refusal, **no log signal at
+    all**. §6(g) and ``auth.ts`` both promise the opposite in as many words;
+    this is where the promise is kept. Ship-dark is untouched — with the flag
+    off the BFF never calls this route.
+
+    Fence: ``tests/unit/test_signin_resolve_route.py``.
     """
+    if not is_wired():
+        _log.error(
+            "signin.resolve_unwired",
+            detail=(
+                "somebody asked this box to resolve a sign-in, so somebody "
+                "declared it wired — but CUSTOMER_CONSOLE_URL and "
+                "CUSTOMER_CONSOLE_DEPLOYMENT_KEY are not both set on the "
+                "gateway. Refusing: a half-provisioned deployment must not "
+                "silently admit (customer_console.md §6(g))."
+            ),
+        )
+        return {
+            "admit": False,
+            "code": CONSOLE_UNAVAILABLE,
+            "source": "unwired",
+        }
+
     decision = await resolve_for_signin(
         (user.email or "") if user else "",
         display_name=(req.display_name if req else ""),

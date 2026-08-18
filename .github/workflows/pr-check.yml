@@ -242,6 +242,7 @@ jobs:
             tests/unit/test_customer_console_resolve.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
+            tests/unit/test_signin_resolve_route.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -256,8 +257,13 @@ jobs:
           # The structural fences take NO database and must never report a
           # skip at all. One that did would mean somebody folded a DB gate into
           # them, which is how §6(i)(4)'s separation quietly dies.
-          if grep -q "SKIPPED.*test_console_dependency_boundary" /tmp/platform.txt; then
-            echo "::error::The dependency-boundary fences skipped — they take no database and must always run."
+          #
+          # test_signin_resolve_route.py joins them for the same reason: it is
+          # the ONLY test of the route's own refusal (finding F5's fence), it
+          # opens no session on purpose, and a DB gate leaking into it would
+          # disarm a P0 fence silently.
+          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route)" /tmp/platform.txt; then
+            echo "::error::A no-database fence skipped — the dependency-boundary and signin-route fences must always run."
             exit 1
           fi
 

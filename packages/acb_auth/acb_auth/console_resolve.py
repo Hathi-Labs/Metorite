@@ -101,6 +101,19 @@ here" no longer means "the product still behaves as it did before CP-2b" by
 implication — it means this function admits, while whether the hop is attempted
 at all is the flag's answer. Wiring a live deployment, and flipping that flag on
 one, are both 🔴 OWNER-GATE (§8 gate 7); declaring the settings is not.
+
+⚠️ **The fail-open branch below stops at this module's edge: the ROUTE refuses.**
+*(Repair of finding F5, 2026-08-18 — a P0 one hop down from F1.)* The two
+switches live in different containers with different env files, so "Next flag on,
+gateway env empty" is an ordinary provisioning slip rather than an exotic one —
+and passing this function's ``admit=True, source="unwired"`` through would admit
+every sign-in with no seat allocated and no log line. ``routes/signin.py``
+therefore checks :func:`is_wired` **itself** and answers ``ConsoleUnavailable``
+before calling this at all: reaching that route means somebody declared the box
+wired. This branch stays as it is for the module's own contract (and for a
+caller that is not the route); it is not the product's ship-dark guarantee, and
+reading it as one is what F5 was. Fence:
+``tests/unit/test_signin_resolve_route.py``.
 """
 
 from __future__ import annotations
