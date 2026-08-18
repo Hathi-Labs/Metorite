@@ -1208,6 +1208,18 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-31 CP-2b — the ONE site that asks the Customer Console whether a
+    # sign-in may proceed (customer_console.md §6 clause 11). Authenticated by
+    # the app-wide `require_authenticated` above and deliberately NOT in
+    # PUBLIC_ROUTES. Inert unless CUSTOMER_CONSOLE_URL and
+    # CUSTOMER_CONSOLE_DEPLOYMENT_KEY are both configured.
+    from gateway.routes.signin import router as _signin_router
+
+    app.include_router(_signin_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

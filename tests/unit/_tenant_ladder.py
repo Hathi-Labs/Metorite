@@ -147,6 +147,11 @@ def _exec_file(conn, path: str) -> None:
         cur.execute(sql)
 
 
+_IS_EMPTY_SQL = (
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+)
+
+
 def apply_ladder(conn) -> None:
     """Build the whole tenant schema on an open connection.
 
@@ -154,8 +159,19 @@ def apply_ladder(conn) -> None:
     transaction. Every numbered migration is written to be idempotent
     (``IF NOT EXISTS``), which is what lets a suite apply it twice to prove
     replay-safety against a real server instead of against our reading of the
-    DDL. ``01_schema.sql`` is **not** idempotent and is applied once, first.
+    DDL — and this function is therefore safe to call on every run.
+
+    ``01_schema.sql`` is the exception and is applied **only to an empty
+    database**, which is exactly when initdb would have applied it on a real
+    box. It is not re-runnable (that is why the shell replayer skips it
+    outright, leaving it to the container's entrypoint), so applying it to a
+    database that already carries the schema would fail — and failing there
+    would look like a migration bug rather than a fixture one.
     """
-    _exec_file(conn, INIT_SCHEMA)
+    with conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(_IS_EMPTY_SQL)
+        already_built = (cur.fetchone() or (0,))[0] > 0
+    if not already_built:
+        _exec_file(conn, INIT_SCHEMA)
     for path in ladder():
         _exec_file(conn, path)

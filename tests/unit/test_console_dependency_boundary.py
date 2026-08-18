@@ -189,3 +189,157 @@ def test_no_tenant_module_imports_customer_console() -> None:
           "venv installs customer-console for the root test suite, the "
           "gateway's own closure does not. See customer_console.md §6(d)."
     )
+
+
+# ── Clause 11 — one caller, and the seat cap depends on it staying one ───────
+
+#: The resolve client, and the ONE module allowed to reach it.
+#:
+#: A second call site is not a style problem: ``console_resolve`` allocates a
+#: SEAT. The proposed default for this ticket was to wire it behind
+#: ``acb_auth.access.resolve_access``, which has six production callers — one of
+#: them (``gateway/routes/rooms.py``) fanning it over every participant of a
+#: room. That would have fired one Console request and one seat allocation per
+#: participant per room load, which is exactly the farmable cap clause 11
+#: exists to prevent.
+_RESOLVE_CLIENT = "packages/acb_auth/acb_auth/console_resolve.py"
+_THE_ONE_CALLER = "apps/services/gateway/gateway/routes/signin.py"
+
+
+def _imports_console_resolve(path: Path) -> bool:
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Import):
+            if any(a.name == "acb_auth.console_resolve" for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == "acb_auth.console_resolve":
+                return True
+            if node.module == "acb_auth" and any(
+                a.name == "console_resolve" for a in node.names
+            ):
+                return True
+    return False
+
+
+def test_resolve_is_reachable_only_from_the_signin_path() -> None:
+    """``console_resolve`` has exactly ONE caller, and it is named here.
+
+    A structural fence is preferred to an example one (R7): the failure is a
+    second call site added later, which no runtime assertion sees until a
+    customer's seat cap is exhausted.
+
+    ⚠️ It is deliberately paired with a frontend fence. This one alone is
+    satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
+    ``signin.test.ts``'s *"resolve fires only from the signIn callback"* is
+    what closes that half, because the chain crosses a language boundary.
+    """
+    assert (_REPO / _RESOLVE_CLIENT).exists(), (
+        f"{_RESOLVE_CLIENT} moved — this fence is now vacuous"
+    )
+    assert (_REPO / _THE_ONE_CALLER).exists(), (
+        f"{_THE_ONE_CALLER} moved — clause 11's named caller is gone, and a "
+        "fence that pins 'exactly one' to an empty set pins nothing"
+    )
+
+    callers = sorted(
+        str(p.relative_to(_REPO)).replace("\\", "/")
+        for p in _python_files()
+        if _imports_console_resolve(p)
+    )
+    assert callers == [_THE_ONE_CALLER], (
+        f"console_resolve callers drifted: {callers}\n\n"
+        "It allocates a SEAT. Exactly one site may call it — the completion of "
+        "a sign-in, with a provider-verified email. Never `resolve_access` "
+        "(six callers, one of them a fan-out over a room's participants), "
+        "never `_with_resolved_access` (every authenticated request). "
+        "customer_console.md §6 clause 11."
+    )
+
+
+# ── Clause 6 / §6(j) — the box branches on the OUTCOME, never on a string ────
+
+#: The Customer Console's org-lifecycle vocabulary. It belongs to ONE state
+#: machine, ``customer_console.lifecycle``, and a tenant-side module that
+#: compared against any of these words would be a second copy of that machine
+#: spelled as an ``if`` — the exact thing §6(d) refuses.
+_LIFECYCLE_WORDS = frozenset(
+    {"trial", "active", "past_due", "suspended", "cancelled", "deleted"}
+)
+
+#: Scoped to the modules CP-2b OWNS rather than swept repo-wide, and the reason
+#: is a real pre-existing hit rather than convenience:
+#: ``gateway/routes/admin/members.py`` tests ``patch.status in ("suspended",
+#: "removed")`` — that is ``org_membership.status``, a MEMBERSHIP status
+#: (``invited|active|suspended|removed``, migration 159's CHECK), a different
+#: vocabulary that happens to share two words. A repo-wide sweep would be red on
+#: day one against correct code, and a fence that is red for the wrong reason
+#: gets an exemption list, and an exemption list is where the real violation
+#: eventually hides.
+_CP2B_TENANT_MODULES: tuple[str, ...] = (
+    _RESOLVE_CLIENT,
+    _THE_ONE_CALLER,
+)
+
+
+def _docstring_ids(tree: ast.Module) -> set[int]:
+    """Object ids of every docstring constant in *tree*.
+
+    Excluded from the scan below on purpose: this module's own prose has to be
+    able to EXPLAIN the rule — *"`deleted` is the only state that refuses
+    sign-in"* — and a scan that read its own documentation as the violation
+    would push the explanation out of the file, which is where the reason for
+    a rule goes to die.
+    """
+    out: set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ) or not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            out.add(id(first.value))
+    return out
+
+
+def test_the_deployment_never_branches_on_a_lifecycle_string() -> None:
+    """No CP-2b tenant module carries a lifecycle state as a string constant.
+
+    After §6(j) the branch inputs are (a) the HTTP status, (b)
+    ``len(organizations)`` and (c) three booleans. ``registry_status``'s only
+    reader anywhere is the word handed to refusal copy — never a comparison.
+
+    Constants, not text: a module that never spells the word cannot compare
+    against it, and it cannot build one to compare against either without an
+    obvious contrivance. Docstrings are excluded so the rule can be argued in
+    the file it binds.
+    """
+    offenders: list[str] = []
+    for rel in _CP2B_TENANT_MODULES:
+        path = _REPO / rel
+        assert path.exists(), f"{rel} moved — this fence is now vacuous"
+        tree = _tree(path)
+        skip = _docstring_ids(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in skip
+            ):
+                for word in sorted(_LIFECYCLE_WORDS):
+                    if word in node.value:
+                        offenders.append(f"{rel}:{node.lineno} → {word!r}")
+    assert offenders == [], (
+        "lifecycle state name(s) as string constants in CP-2b tenant code:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nThe box stores and applies the CAPABILITY BOOLEANS. A "
+          "deployment that reads a status word and decides is a second copy "
+          "of customer_console.lifecycle written as an `if`; a deployment "
+          "that reads `sign_in` cannot drift, because there is nothing to "
+          "drift from. customer_console.md §6(d) / §6(j)."
+    )
