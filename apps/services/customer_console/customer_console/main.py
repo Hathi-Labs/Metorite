@@ -1907,10 +1907,26 @@ def razorpay_webhook(event: SignedWebhook) -> dict[str, Any]:
             return {"recorded": False, "fulfilled": False}
         if order is None:
             # Recorded, not acted on, and 200 so the provider stops retrying a
-            # delivery we will never be able to resolve. An event for an order
-            # this database has never heard of is evidence, not an error.
-            _log.warning("payments.webhook_unknown_order",
-                         extra={"event": event.event_id})
+            # delivery we will never be able to resolve.
+            #
+            # ⚠️ **ERROR, not warning** (2026-08-18, verification finding F2).
+            # This arm is not only the benign "an event we never issued an
+            # order for" case. A `payment.captured` whose `order_id` matches no
+            # row here is **a customer charged with nothing granted** — and our
+            # 200 is precisely what makes the provider stop retrying it. The
+            # receipt row is kept with `order_id` NULL as the sole record that
+            # the money arrived, and CP-8's reconciliation OWNS those rows.
+            # The amount and both provider identifiers ride in the structured
+            # fields so the payment can be found at the provider from the log
+            # line alone. Fenced by
+            # `test_a_capture_with_no_matching_order_is_kept_and_alerted_at_error`.
+            _log.error(
+                "payments.webhook_unknown_order",
+                extra={"event": event.event_id, "event_kind": event.kind,
+                       "provider_order_id": event.provider_order_id,
+                       "provider_payment_id": event.provider_payment_id,
+                       "amount_paise": event.amount_paise},
+            )
             return {"recorded": True, "fulfilled": False}
 
         return _handle_webhook_event(conn, event=event, order=order)

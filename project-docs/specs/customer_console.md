@@ -10,9 +10,26 @@ mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
 (the seam, the order state machine, integer paise, the one `fulfil`),
 `lifecycle.can_pay`, `credits.LEDGER_REASONS`, six routes, and **WS-30 SC-4g
-(i)–(v) server-side** — **105** tests in
+(i)–(v) server-side** — then **INDEPENDENTLY VERIFIED, FAILED on two blocking
+findings, and REPAIRED 2026-08-19**: **110** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
-**0 skipped**, every load-bearing fence shown red first. Its **surface half
+**0 skipped**, every load-bearing fence shown red first. **The five findings and
+where each is answered** (every behavioural probe had passed; these are fence,
+doc and severity defects): **F1** — clause 2's parametric transition test
+asserted nothing for the ten non-terminal source pairs, so three off-graph edges
+were fenced nowhere; it now compares all 25 against a transcribed graph and the
+clause carries its mark (done-when 2) · **F2** *(blocking)* — the replaced
+provider order was recorded as *"the harmless orphan direction"* and **the
+orphan has a PAID direction**: a capture with no matching order is money
+received with nothing granted, restated in both specs, given an owner in **CP-8**
+and an `ERROR`-level alert in the code (§6 CP-9 decision 2) · **F4** — the
+declared `METERING_EXEMPTION` deviation is now an owner-ratification item (§9
+item 6) rather than an agent's standing amendment to §9.3(4) · **F5** — the
+transitive walk's **depth** was unfenced (narrowing it to one hop left all 105
+green); two fences now feed it graphs whose answer is known and non-empty ·
+**F7** — the allow-listed pair licenses the whole subtree under
+`payments.fulfil`, so that subtree's writer set is contents-pinned (§9.3(4)).
+Its **surface half
 remains held back** (SC-4a's UI and its two write proxies, the operator
 code-issue surface, the invoice document, the four-item flip set), and **no
 Razorpay account exists or may be created by an agent** — the whole seam runs
@@ -1005,7 +1022,17 @@ fires once, not per call.
 
 **CP-8 · Operator Console and reconciliation.** The §4.1a read surfaces (per company:
 plan and MRR, seats purchased vs assigned, credit balance and burn, trial expiry,
-last-login/actives) plus the nightly drift job.
+last-login/actives) plus the nightly drift job — **and the
+`payment_event` rows whose `order_id` is NULL** *(added 2026-08-18 with CP-9's
+finding F2)*. Those rows are **captures this database cannot attribute to an
+order**: money received with nothing granted, most plausibly a customer paying a
+provider order that a redemption replaced or detached (CP-9 §6 decision 2). They
+are kept, never cleaned up, because they are the only record that the money
+arrived; **CP-8 owns surfacing and clearing them**, and the webhook's `ERROR`
+line (`payments.webhook_unknown_order`, carrying the amount and both provider
+identifiers) is the interim alert until this console exists. The expiry sweep of
+`created` orders belongs here too — CP-9 enforces `expires_at` lazily on purpose,
+since a scheduler minted there would have no surface to report to.
 
 **Shape fixed by D35:** a **separate Next.js app** in this monorepo at its own
 hostname — not a gated route tree inside the workbench — so "shares tables, never
@@ -1045,7 +1072,10 @@ documents already cited and nobody had written.
 > `AUTHENTICATING_DEPENDENCIES`) · six routes in `main.py`: `POST
 > /billing/orders`, `GET /billing/orders/{id}`, `GET /billing/orders`, `POST
 > /billing/orders/{id}/redeem`, `POST /billing/webhooks/razorpay`, `POST
-> /discounts` · **105 tests** in `tests/unit/test_customer_console_payments.py`
+> /discounts` · **110 tests** in `tests/unit/test_customer_console_payments.py`
+> (105 at the build, **+5 from the 2026-08-19 verification repair** — F1's
+> completed cross product, F2's paid-orphan fence, F5's two walk-depth fences
+> and F7's contents pin)
 > against a real Postgres 16, **0 skipped**, joined to §7's command block and
 > to `pr-check.yml`'s skip-guard (6 Console suites → **7**) in this same
 > change. Every load-bearing fence was shown **red first** under a recorded
@@ -1087,12 +1117,42 @@ documents already cited and nobody had written.
 >    amount — a provider order created once for the pre-discount total would
 >    collect it, overcharging the customer and failing our own amount check),
 >    and a 100% redemption calls nothing, sets `provider='none'` and NULLs
->    `provider_order_id`. **Named residual:** a redemption that zeroes an order
->    leaves an unpaid provider order to expire at Razorpay — the harmless
->    orphan direction, and the only one available once an intent may be
->    discounted after it is created. **Consequence worth stating:** because the
->    create route 503s without credentials, even the ₹0 flow needs the three
->    Razorpay variables set — which is an owner act (§8 gate 3).
+>    `provider_order_id`.
+>
+>    🔴 **Named residual — and it is NOT harmless. Corrected 2026-08-18
+>    (verification finding F2).** This read *"an unpaid provider order to expire
+>    at Razorpay — the harmless orphan direction"*. **The orphan has a PAID
+>    direction**, and that sentence would have been read as reassurance by
+>    whoever builds SC-4a. Detaching or replacing a provider order does not
+>    retract it *at the provider*: order #1 keeps a live payment link, and a
+>    customer who pays it produces a signature-verified capture whose
+>    `order_id` matches **no row here** (the ₹0 path NULLs
+>    `provider_order_id`; a partial redemption overwrites it). Measured against
+>    the built code: webhook → **200** `{recorded: true, fulfilled: false}`, a
+>    `payment_event` row with `order_id` NULL, **nothing granted**, and the 200
+>    is precisely what stops Razorpay retrying. **A capture with no matching
+>    order is money received with nothing granted** — say it that way, because
+>    "orphan" makes it sound like a stray row.
+>
+>    Why it is nonetheless **unreachable in this slice**, stated so the severity
+>    is not over-read either: nothing writes `attempted`, there is no checkout
+>    UI, and no Razorpay account exists (§9.7). It becomes reachable the moment
+>    SC-4a renders a payment link. What answers it, in order:
+>    - **CP-8's reconciliation OWNS the NULL-`order_id` receipts** — added to
+>      its scope in §6 rather than left implied. They are the only record that
+>      the money arrived, so they are kept deliberately, never cleaned up.
+>    - **The webhook's unknown-order arm alerts at `ERROR`**, carrying the
+>      amount and both provider identifiers in its structured fields so the
+>      payment is findable at the provider from the log line alone. It logged at
+>      `warning` with only the event id until F2. Fence:
+>      `test_a_capture_with_no_matching_order_is_kept_and_alerted_at_error`.
+>    - **SC-4a must never expose a replaced order's payment link** — one
+>      sentence added to its ticket, because the surface is where this is
+>      actually prevented.
+>
+>    **Consequence worth stating:** because the create route 503s without
+>    credentials, even the ₹0 flow needs the three Razorpay variables set —
+>    which is an owner act (§8 gate 3).
 > 3. **`CreditGrantRequest.reason` is now validated against `LEDGER_REASONS`.**
 >    SC-4g (v) says the narrowing "comes first" and the `CHECK` constraint is a
 >    later contract-phase migration (R6); without the narrowing the structural
@@ -1251,6 +1311,34 @@ answer that gives least:
    a code, or capture a payment) so the next agent reads a decision rather
    than an obstacle. An allow-list that grows quietly is the fence deleting
    itself one entry at a time.
+
+   ⚠️ **The pair licenses a SUBTREE, so `fulfil`'s contents are pinned too**
+   *(added 2026-08-18, verification finding F7)*. The walk **stops descending**
+   at an allow-listed callee — that is what "permitted" means — so everything
+   reachable *inside* `payments.fulfil` is unfenced **from that route**: a
+   fourth entitlement writer added inside `fulfil` would land under the
+   customer's own key with no fence going red anywhere. Closed by a second
+   contents pin, `test_fulfil_reaches_exactly_the_three_named_writers`:
+   `fulfil`'s transitively reachable writer set is **exactly**
+   `{store.activate_subscription, store.add_credit, store.grant_seats}` — §9.6's
+   three, no more. Red-first evidence: a transient `store.release_seat` call
+   inside `fulfil` fails it with `store.release_seat` in the difference. If a
+   fourth is ever wanted, the question is not whether to widen the set; it is
+   whether a customer-presented discount code should be able to cause that
+   write.
+
+   ⚠️ **The walk's DEPTH is fenced separately** *(added 2026-08-18, finding
+   F5)*. The transitive claim rides one loop, and that loop's depth was
+   unfenced: narrowing it to direct callees left all 105 tests green, because
+   the fence above asserts an **empty** list and a walk that goes nowhere
+   returns one. Two fences now feed the walk graphs whose answer is known and
+   non-empty — `test_the_walk_reports_a_three_hop_chain_on_a_graph_we_built`
+   (three synthetic modules parsed by the real graph builder, writer three hops
+   out) and
+   `test_the_real_walk_crosses_intermediates_when_nothing_is_permitted` (the
+   real tree with the permitted set emptied, where both licensed edges reappear
+   through an intermediate). Both go red under the depth-1 narrowing; the fence
+   they defend does not.
 5. **The lifecycle gate for paying is NOT `can_use_ai`.** Measured 2026-08-18:
    `auth.organization_from_key` 403s when
    `lifecycle.capabilities_of(status).can_use_ai` is false
@@ -1520,9 +1608,13 @@ in an agent's reach**: build it green against the fake, then hand the owner a
 named, scripted rehearsal. Say so in the PR rather than reporting a rehearsal
 nobody ran.
 
-**Done when:** *(every clause below is **✅ MET 2026-08-18** unless marked
-otherwise; the fence that carries each one is named beside it, and each
-load-bearing fence was shown red first under the mutation recorded in the PR.)*
+**Done when:** *(**every clause below carries its own mark** — the fence that
+carries it is named beside it, and each load-bearing fence was shown red first
+under the mutation recorded in the PR. ⚠️ This read *"every clause is ✅ MET
+unless marked otherwise"* until 2026-08-19, and clause 2 was the one clause of
+17 with **no** mark: an unmarked clause then read as met, which is the reading
+finding F1 found to be false. An absent mark is now a defect in this list, not a
+default.)*
 1. ✅ `payment_order`/`payment_order_line`/`payment_event` exist on the Customer
    Console ladder with the CHECK constraints above, the migration number taken
    at build time (R1); replaying the whole ladder twice is a no-op
@@ -1532,9 +1624,23 @@ load-bearing fence was shown red first under the mutation recorded in the PR.)*
    `TestTheMigrationFile`. Three CHECKs beyond the sketch enforce the
    arithmetic (`taxable = gross − discount`, `total = taxable + gst`,
    `discount ≤ gross`) in the database.
-2. The transition function refuses every edge not on 9.2's graph, and **no edge
+2. ✅ The transition function refuses every edge not on 9.2's graph, and **no edge
    leaves `captured`/`failed`/`abandoned`** — proven by parametrising over the
-   state set, not by three examples.
+   state set, not by three examples. — `test_every_state_pair_agrees_with_the_specs_graph`,
+   over the **full 5 × 5 cross product**, each pair compared against
+   `SPEC_ORDER_GRAPH`: a transcription of this graph that lives in the test
+   module, so widening *or* narrowing the shipped dict goes red (reading
+   `payments._ORDER_TRANSITIONS` would assert the graph equals itself).
+   ⚠️ **This clause was the one clause of 17 carrying no mark, and the
+   preamble's *"every clause ✅ unless marked otherwise"* made that read as met
+   when it was not** *(repaired 2026-08-18, finding F1)*. As first built the
+   test asserted only inside `if state in ORDER_TERMINAL_STATES`, so the **ten**
+   pairs with a non-terminal source asserted **nothing** — `created → created`,
+   `attempted → created` and `attempted → attempted` were fenced nowhere in the
+   tree, and the parametrisation reported 25 green cases while testing 15.
+   Red-first evidence: admitting `created → created` in
+   `payments._ORDER_TRANSITIONS` now fails exactly `[created-created]`, and
+   nothing else.
 3. ✅ `POST /billing/orders` under the **organization key** creates an order for a
    priced, **active** catalog line and **changes no balance, no subscription and
    no seat** — asserted by snapshotting `credit_ledger`, `seat_grant`,
@@ -1596,7 +1702,7 @@ load-bearing fence was shown red first under the mutation recorded in the PR.)*
     `tests/unit/_customer_console_ladder.py`. The new suite
     (`tests/unit/test_customer_console_payments.py`) is added to §7's command
     block **and** to `pr-check.yml`'s hand-maintained skip-guard list in the
-    **same PR** — a skipped R8 test proves nothing (CP-3). — **105 tests, 0
+    **same PR** — a skipped R8 test proves nothing (CP-3). — **110 tests, 0
     skipped.** The suite additionally reads `pr-check.yml` and both owning
     specs and fails if its own name is ever dropped from them, which is the
     closest a hand-list gets to defending itself.
@@ -1604,7 +1710,8 @@ load-bearing fence was shown red first under the mutation recorded in the PR.)*
     `test_the_unauthenticated_route_set_is_exactly_health` included. — Ruff's
     **blocking** selection (`F821,F601,F602,F502,F7,B006`, `pr-check.yml:51`)
     passes repo-wide, and the full report gains **zero** new findings for the
-    touched files. All ten Console suites green: **382 tests**.
+    touched files. All ten Console suites green: **387 tests** (382 at the
+    build, **+5 from the 2026-08-19 verification repair**), **0 skipped**.
     ⚠️ **One existing fence was AMENDED, minimally and with the argument in
     place**: `test_a_deployment_key_reaches_resolve_and_nothing_else` asserted
     **401** for every non-resolve route, which was exactly right while every
@@ -3657,6 +3764,22 @@ Everything needed to build §6 is decided. These are commercial, not blocking:
    3. Not commercial-only: **it blocks the capture rehearsal**, so it is the one
    item on this list that gates an acceptance clause (SC-4g clause 2) rather
    than a price.
+6. **Ratify or overrule the `METERING_EXEMPTION`** *(added 2026-08-18 with
+   CP-9's finding F4 — the one item here that is not commercial)*. §9.3(4) says
+   **exactly one** edge may be allow-listed; the build needed a **second**, for
+   CP-6's pre-existing metering draw on the organization-key Router route
+   (`chat_completions → store.record_usage → store.add_credit`, shipped
+   2026-08-12), and exempted it **by name** in its own constant with its own
+   count-and-contents fence rather than narrowing the fence or growing the list
+   the ticket counts. Independent verification judged the deviation **sound and
+   minimal** and still recorded it here, because a deviation an agent declares
+   is not a rule an agent may change: the owner either ratifies it (and §9.3(4)
+   is amended to read "one carve-out plus one named pre-existing exemption") or
+   overrules it, in which case the draw moves behind the internal token — which
+   is what `/usage/record` had to become after verification minted 100,000
+   credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
+   goes red the day the draw moves, so the exemption is deleted rather than
+   inherited either way.
 
 ## 10. References
 

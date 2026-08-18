@@ -411,6 +411,29 @@ class TestTheSchema:
 
 # ── Clause 2 — the state machine, parametrised over the whole state set ─────
 
+#: §9.2's graph, transcribed HERE rather than read from
+#: ``payments._ORDER_TRANSITIONS``. Reading the module's own dict would make the
+#: fence below say *"the graph equals itself"* — the vacuous shape — so this is
+#: deliberately a **second copy**, and the only other copy is the ``CHECK``
+#: constraint in the migration (compared separately, against a real server).
+#:
+#: Two edges leave ``created`` that the spec's one-line chain
+#: (``created → attempted → captured|failed|abandoned``) does not draw, and both
+#: are load-bearing rather than slack: ``created → captured`` is SC-4g's ₹0 path,
+#: which never reaches a provider and therefore never *attempts* anything, and
+#: ``created → failed`` is a provider reporting a failure against an order we
+#: never marked attempted. ``created → abandoned`` is expiry, which §9.2 states
+#: outright. Widening this dict is how the fence stops meaning anything, so a
+#: fifth edge belongs in the ticket first.
+SPEC_ORDER_GRAPH: dict[str, frozenset[str]] = {
+    "created": frozenset({"attempted", "captured", "failed", "abandoned"}),
+    "attempted": frozenset({"captured", "failed", "abandoned"}),
+    "captured": frozenset(),
+    "failed": frozenset(),
+    "abandoned": frozenset(),
+}
+
+
 class TestTheStateMachine:
     def test_the_database_vocabulary_is_exactly_the_graphs(self, db):
         """The CHECK constraint and the graph are the only two copies, compared.
@@ -435,12 +458,53 @@ class TestTheStateMachine:
 
     @pytest.mark.parametrize("state", sorted(payments.ORDER_STATES))
     @pytest.mark.parametrize("target", sorted(payments.ORDER_STATES))
-    def test_no_edge_leaves_a_terminal_state(self, state, target):
-        """Parametrised over the state SET, never three examples (clause 2)."""
+    def test_every_state_pair_agrees_with_the_specs_graph(self, state, target):
+        """Clause 2, and **all 25 pairs assert** — repaired 2026-08-18 (F1).
+
+        As first written this test asserted only inside
+        ``if state in ORDER_TERMINAL_STATES``, so the ten pairs whose SOURCE is
+        non-terminal asserted **nothing at all**: ``created → created``,
+        ``attempted → created`` and ``attempted → attempted`` — the three
+        off-graph edges a non-terminal state could grow — were fenced nowhere in
+        the tree. A parametrisation with no assertion on 40 percent of its cases
+        is the shape that reports 25 green tests while testing 15.
+
+        Both halves of clause 2 now ride here, over the FULL cross product:
+
+        * the predicate equals :data:`SPEC_ORDER_GRAPH` — an independent
+          transcription of §9.2, so widening *or* narrowing the shipped graph
+          goes red;
+        * every pair off that graph is **refused by name** through
+          ``assert_order_transition``, which is the half a boolean check cannot
+          see, and a terminal source says so in the message.
+
+        Red-first evidence (run and reverted during the repair): admitting
+        ``created → created`` in ``payments._ORDER_TRANSITIONS`` fails exactly
+        one case — ``[created-created]`` — and nothing else.
+        """
+        expected = target in SPEC_ORDER_GRAPH[state]
+        assert payments.can_order_transition(state, target) is expected, (
+            f"{state!r} -> {target!r} disagrees with §9.2's graph"
+        )
+        if expected:
+            payments.assert_order_transition(state, target)
+            return
+        with pytest.raises(lifecycle.TransitionRefused) as exc:
+            payments.assert_order_transition(state, target)
         if state in payments.ORDER_TERMINAL_STATES:
-            assert not payments.can_order_transition(state, target)
-            with pytest.raises(lifecycle.TransitionRefused):
-                payments.assert_order_transition(state, target)
+            assert "terminal" in str(exc.value)
+
+    def test_the_graph_the_fence_reads_is_the_graph_the_module_ships(self):
+        """The transcription above is compared to the module's dict ONCE.
+
+        Kept separate from the parametrisation on purpose: this is the place a
+        renamed state or a fifth key is caught, and keeping it here means the
+        25 cases above never degrade into ``graph == graph``.
+        """
+        assert set(SPEC_ORDER_GRAPH) == payments.ORDER_STATES
+        assert {
+            state for state, targets in SPEC_ORDER_GRAPH.items() if not targets
+        } == payments.ORDER_TERMINAL_STATES
 
     def test_the_terminal_states_are_the_three_named(self):
         assert {
@@ -505,10 +569,17 @@ class TestCreatingAnOrder:
 # A route-body scan would pass while `redeem -> fulfil -> store.grant_seats`
 # wrote seats two hops down.
 
-def _package_modules() -> dict[str, ast.Module]:
+def _package_modules(package: Path = _PACKAGE) -> dict[str, ast.Module]:
+    """Parse a package's modules. ``package`` is a parameter for ONE reason.
+
+    The fence machinery below has to be testable against a graph whose shape we
+    chose, or its own depth is unfenced — which is exactly what finding F5
+    caught: narrowing the walk to depth 1 left all 105 tests green. The default
+    is the real package and every production caller uses it.
+    """
     return {
         path.stem: ast.parse(path.read_text(encoding="utf-8"))
-        for path in sorted(_PACKAGE.glob("*.py"))
+        for path in sorted(package.glob("*.py"))
         if path.stem != "__init__"
     }
 
@@ -536,11 +607,13 @@ _WRITE = re.compile(
 )
 
 
-def _call_graph() -> tuple[dict[str, set[str]], set[str]]:
+def _call_graph(
+    package: Path = _PACKAGE,
+) -> tuple[dict[str, set[str]], set[str]]:
     """``(edges, writers)`` over the whole package, by qualified name."""
     edges: dict[str, set[str]] = {}
     writers: set[str] = set()
-    trees = _package_modules()
+    trees = _package_modules(package)
     local: dict[str, set[str]] = {
         module: {
             node.name for node in ast.walk(tree)
@@ -601,17 +674,32 @@ def _org_key_routes() -> list[str]:
     ]
 
 
-def _violations() -> list[tuple[str, tuple[str, ...]]]:
-    edges, writers = _call_graph()
+def _walk(
+    edges: dict[str, set[str]],
+    writers: set[str],
+    routes: list[str],
+    permitted: frozenset[tuple[str, str]],
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Every ``(route, path-to-a-writer)`` reachable from ``routes``.
+
+    ⚠️ **The depth of this loop is the whole fence**, which is why it is a
+    named function taking its graph rather than a closure over the real one
+    (finding F5, 2026-08-18): narrowing it to direct callees left every one of
+    the 105 tests green, because
+    ``test_no_org_key_route_writes_an_entitlement_or_ledger_row`` asserts an
+    EMPTY list — and an empty list is what a walk that goes nowhere returns.
+    Two fences below feed it graphs whose answer is known and non-empty:
+    a synthetic 3-hop chain, and the real tree with nothing allow-listed.
+    """
     found: list[tuple[str, tuple[str, ...]]] = []
-    for route in _org_key_routes():
+    for route in routes:
         start = f"main.{route}"
         seen = {start}
         stack = [(start, (start,))]
         while stack:
             node, path = stack.pop()
             for callee in sorted(edges.get(node, ())):
-                if (route, callee) in PERMITTED_EDGES:
+                if (route, callee) in permitted:
                     continue
                 if callee in writers:
                     found.append((route, (*path, callee)))
@@ -619,6 +707,61 @@ def _violations() -> list[tuple[str, tuple[str, ...]]]:
                     seen.add(callee)
                     stack.append((callee, (*path, callee)))
     return found
+
+
+def _reachable(start: str, edges: dict[str, set[str]]) -> set[str]:
+    """Everything ``start`` can reach, transitively. Excludes ``start``."""
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        for callee in edges.get(stack.pop(), ()):
+            if callee not in seen:
+                seen.add(callee)
+                stack.append(callee)
+    return seen
+
+
+def _violations() -> list[tuple[str, tuple[str, ...]]]:
+    edges, writers = _call_graph()
+    return _walk(edges, writers, _org_key_routes(), PERMITTED_EDGES)
+
+
+#: Three modules whose only interesting property is a writer **three hops**
+#: from a route. Written as real source and parsed by the real
+#: :func:`_call_graph`, so the self-test below covers the graph builder's
+#: cross-module resolution as well as the walk — a hand-built ``edges`` dict
+#: would have tested the walk against our own idea of what the parser produces.
+#:
+#: The imports say ``customer_console`` because that is the package prefix
+#: :func:`_module_aliases` resolves; nothing here is ever imported, only parsed.
+_SYNTHETIC_PACKAGE: dict[str, str] = {
+    "main.py": (
+        "from customer_console import helpers\n"
+        "\n"
+        "\n"
+        "def synthetic_route():\n"
+        "    return helpers.helper()\n"
+    ),
+    "helpers.py": (
+        "from customer_console import store\n"
+        "\n"
+        "\n"
+        "def helper():\n"
+        "    return helper2()\n"
+        "\n"
+        "\n"
+        "def helper2():\n"
+        "    return store.grant_seats()\n"
+    ),
+    "store.py": (
+        "from sqlalchemy import text\n"
+        "\n"
+        "\n"
+        "def grant_seats():\n"
+        '    return text("INSERT INTO seat_grant (organization_id) '
+        'VALUES (:org)")\n'
+    ),
+}
 
 
 class TestNoOrgKeyRouteWritesAnEntitlement:
@@ -698,6 +841,105 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         assert "store.grant_seats" in writers
         assert "store.activate_subscription" in writers
         assert "store.add_credit" in writers
+
+    def test_the_walk_reports_a_three_hop_chain_on_a_graph_we_built(
+        self, tmp_path
+    ):
+        """A self-test of the fence MACHINERY (finding F5, 2026-08-18).
+
+        ``test_the_fence_actually_walks_into_the_store`` guards the *graph* —
+        that ``payments.fulfil -> store.grant_seats`` is an edge at all. It does
+        not guard the **walk**, and the two are different claims: narrowing
+        :func:`_walk` to direct callees left every one of the 105 tests green,
+        because the fence that rides it asserts an EMPTY list and a walk that
+        goes nowhere returns one.
+
+        So the walk is run against a graph whose answer is known and NOT empty:
+        three synthetic modules parsed by the real :func:`_call_graph`, with a
+        writer three hops from the route. A depth-1 walk finds nothing here and
+        this fence says so; the real tree can never make that argument, because
+        on the real tree the correct answer is ``[]``.
+        """
+        package = tmp_path / "synthetic_console"
+        package.mkdir()
+        for name, source in _SYNTHETIC_PACKAGE.items():
+            (package / name).write_text(source, encoding="utf-8")
+
+        edges, writers = _call_graph(package)
+        assert "store.grant_seats" in writers, (
+            "the synthetic writer must be detected, or the fence is vacuous"
+        )
+        assert _walk(edges, writers, ["synthetic_route"], frozenset()) == [(
+            "synthetic_route",
+            ("main.synthetic_route", "helpers.helper", "helpers.helper2",
+             "store.grant_seats"),
+        )]
+
+    def test_the_real_walk_crosses_intermediates_when_nothing_is_permitted(
+        self
+    ):
+        """The same claim, on the REAL tree (finding F5, 2026-08-18).
+
+        Emptying the permitted set turns the two licensed edges back into
+        findings — and both of them are reached through an **intermediate**, so
+        this is the real graph demonstrating that the walk descends:
+        ``redeem_discount_code`` reaches ``store.grant_seats`` only via
+        ``main._apply_redemption -> payments.fulfil`` (three hops), and
+        ``chat_completions`` reaches ``store.add_credit`` only via
+        ``store.record_usage`` (two). A walk narrowed to direct callees reports
+        **nothing at all** here, which is the mutation this fence exists to
+        fail on.
+
+        Asserted as containment plus a floor on path length rather than as an
+        exact list: what is being fenced is the walk's DEPTH, and pinning the
+        tree's exact shape here would duplicate
+        ``test_no_org_key_route_writes_an_entitlement_or_ledger_row`` while
+        going red for reasons that have nothing to do with depth.
+        """
+        edges, writers = _call_graph()
+        found = _walk(edges, writers, _org_key_routes(), frozenset())
+
+        assert ("redeem_discount_code",
+                ("main.redeem_discount_code", "main._apply_redemption",
+                 "payments.fulfil", "store.grant_seats")) in found, found
+        assert ("chat_completions",
+                ("main.chat_completions", "store.record_usage",
+                 "store.add_credit")) in found, found
+        assert found, "the licensed edges must reappear once nothing is allowed"
+        assert min(len(path) for _route, path in found) >= 3, (
+            "every finding here is reached through an intermediate; a "
+            f"depth-1 walk could not have produced {found}"
+        )
+
+    def test_fulfil_reaches_exactly_the_three_named_writers(self):
+        """The allow-list licenses a SUBTREE — so its contents are pinned too.
+
+        *(Finding F7, 2026-08-18. Observation closed rather than argued away.)*
+        The carve-out is a ``(route, callee)`` pair, and :func:`_walk` skips the
+        callee it names: on reaching ``payments.fulfil`` from
+        ``redeem_discount_code`` the walk stops descending. That is correct —
+        the pair is what licenses the grant — but it means **everything
+        reachable inside ``fulfil`` is unfenced from that route**, so a fourth
+        writer added inside it would land under the customer's own key with no
+        fence going red anywhere.
+
+        This pins ``fulfil``'s own reachable writer set by CONTENTS. The three
+        are the ones §9.6 names: the subscription, the seat grant, and the
+        credit-pack branch that has zero rows to write until packs are priced.
+        A fourth goes red here. Red-first evidence: a transient
+        ``store.release_seat`` call inside ``fulfil`` fails with
+        ``store.release_seat`` in the difference.
+
+        ⚠️ If you are here because you added one: the question is not whether
+        the fence should be widened. It is whether a customer-presented
+        discount code should be able to cause that write.
+        """
+        edges, writers = _call_graph()
+        assert _reachable("payments.fulfil", edges) & writers == {
+            "store.activate_subscription",
+            "store.add_credit",
+            "store.grant_seats",
+        }
 
     def test_the_allow_listed_route_really_does_reach_fulfil(self):
         """The carve-out is load-bearing, not decorative.
@@ -925,6 +1167,57 @@ class TestTheWebhook:
         r = client.post("/billing/webhooks/razorpay", content=raw,
                         headers=headers)
         assert r.json() == {"recorded": True, "fulfilled": False}
+
+    def test_a_capture_with_no_matching_order_is_kept_and_alerted_at_error(
+        self, client, fake, db, caplog
+    ):
+        """**Money received with nothing granted.** Added 2026-08-18 (F2).
+
+        The test above pins the RESPONSE. This one pins the two things that
+        make the response survivable, because the arm it covers is not the
+        benign case the corpus called it: a signature-verified ``captured``
+        payment whose ``order_id`` matches no row here is a customer charged
+        with no entitlement written, and our 200 is what stops Razorpay
+        retrying. The only two things standing between that and silence are:
+
+        1. the ``payment_event`` receipt is **kept**, with ``order_id`` NULL —
+           it is the sole record that the money arrived, and CP-8's
+           reconciliation is specified to start from exactly these rows;
+        2. the line is at **ERROR** and carries the **amount and both provider
+           identifiers** in its structured fields, so the operator can find the
+           payment at the provider from the log alone.
+
+        A WARNING here is the wrong severity for "we hold a customer's money
+        and granted nothing", and an alert without the amount is one that
+        cannot be triaged. Red-first evidence: the arm as first shipped logged
+        at ``warning`` with only ``event``, and this fence fails on both counts.
+        """
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
+        raw, headers = fake.capture_event(
+            provider_order_id="order_ORPHAN", amount_paise=141600,
+            event_id=event_id, payment_id="pay_ORPHAN01")
+        with caplog.at_level("ERROR"):
+            r = client.post("/billing/webhooks/razorpay", content=raw,
+                            headers=headers)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"recorded": True, "fulfilled": False}
+
+        with db.begin() as c:
+            row = c.execute(
+                text("SELECT order_id, kind FROM payment_event "
+                     "WHERE provider_event_id = :e"), {"e": event_id}).first()
+        assert row is not None, "the receipt is the only trace of the money"
+        assert row.order_id is None, "an orphan receipt names no order"
+        assert row.kind == "payment.captured"
+
+        alerts = [rec for rec in caplog.records
+                  if rec.message == "payments.webhook_unknown_order"]
+        assert len(alerts) == 1, caplog.text
+        alert = alerts[0]
+        assert alert.levelname == "ERROR", "a paid orphan is not a warning"
+        assert alert.amount_paise == 141600, "triage needs the AMOUNT"
+        assert alert.provider_order_id == "order_ORPHAN"
+        assert alert.provider_payment_id == "pay_ORPHAN01"
 
     def test_a_failed_payment_marks_the_order_failed(
         self, client, fake, db, org

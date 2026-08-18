@@ -18,8 +18,17 @@ discount with clamping, `POST /discounts` (Operator) and
 `credits.LEDGER_REASONS`. **Done-when 1–8 met; clause 9 — the test-mode capture
 rehearsal — is NOT met and is not claimed**, because creating a Razorpay
 account is owner-side even in test mode. Fences:
-`tests/unit/test_customer_console_payments.py` (105 tests, real Postgres 16, 0
-skipped). **SC-4a's checkout UI and its two write proxies remain held back**
+`tests/unit/test_customer_console_payments.py` (**110** tests, real Postgres 16,
+0 skipped) — **independently verified, FAILED, and repaired 2026-08-19**; the
+finding that lands *here* is **F2**: done-when 1's *"harmless orphan"* residual
+was **false in one direction**. Detaching or replacing the provider order does
+not retract it at Razorpay, and paying the stale link is a capture the Console
+cannot attribute to any order — **money received with nothing granted**.
+Restated in done-when 1, owned by `customer_console.md` **CP-8** (the
+NULL-`order_id` receipts), alerted at `ERROR` in the webhook, and answered on
+the surface by new **SC-4a done-when 5a**: never expose a replaced order's
+payment link. The other four findings (F1/F4/F5/F7) are fence and doc repairs
+inside WS-31's tree. **SC-4a's checkout UI and its two write proxies remain held back**
 behind B7's capability decision, which reaches the tenant plane's vocabulary
 and must not ride in on a payments PR.
 
@@ -300,6 +309,14 @@ credits nothing and says so.
    as CP-9 §9.3a *(2026-08-18, B6: as first specced nothing could read an order
    back, so this clause had no data source and would have been "met" by a page
    that guesses)*.
+5a. **The surface must never expose a replaced order's payment link.** *(Added
+   2026-08-18, CP-9 finding F2.)* A redemption **replaces** the provider order
+   (partial) or **detaches** it (₹0), and neither retracts order #1 at Razorpay:
+   paying the stale link is a capture the Console cannot attribute to any order
+   — money received with nothing granted. So the checkout re-reads the order
+   after every redemption and renders only the **current** `provider_order_id`;
+   a link captured in component state before the redeem call is the bug this
+   clause exists to name.
 6. `purchaseEnabled` (`customer_console/main.py:1266`) is what flips the page
    from the contact prompt to the checkout (`page.tsx:202`) — **the flip is the
    owner's**, and its preconditions are the flip set below.
@@ -639,7 +656,7 @@ against the same recorded numbers.
 > that case**.
 
 **Done when:** *(clauses 1–8 **✅ MET 2026-08-18** by CP-9's substrate half —
-`tests/unit/test_customer_console_payments.py`, 105 tests against a real
+`tests/unit/test_customer_console_payments.py`, 110 tests against a real
 Postgres 16, 0 skipped. Clause 9 is the owner-gated rehearsal and is **NOT**
 met, as it says.)*
 1. ✅ A **100% code** takes an org from package selection to **active entitlements**
@@ -648,11 +665,29 @@ met, as it says.)*
    `total_paise = 0`. — `test_a_hundred_percent_code_completes_with_zero_provider_calls`
    asserts the provider-call **count** does not move across the redemption,
    that `provider_order_id` is NULL afterwards, and that the seat grant and
-   subscription actually landed. ⚠️ **Named residual:** the order created
-   *before* the code was presented did call the provider, so a Razorpay order
-   is left unpaid to expire there. That is unavoidable once an intent may be
-   discounted after creation, and it is the harmless orphan direction — the
-   argument is in CP-9's build box.
+   subscription actually landed.
+
+   🔴 **Named residual — and it is NOT harmless. Corrected 2026-08-18
+   (verification finding F2).** This read *"a Razorpay order is left unpaid to
+   expire there … the harmless orphan direction"*. The order created *before*
+   the code was presented **did** call the provider, and detaching it here does
+   not retract it **at Razorpay**: order #1 keeps a live payment link. **The
+   orphan has a PAID direction.** A customer who pays it produces a
+   signature-verified capture whose `order_id` matches no row in the Console —
+   measured against the built code: **200** `{recorded: true, fulfilled:
+   false}`, a `payment_event` row with `order_id` NULL, **nothing granted**, and
+   the 200 stops Razorpay retrying. **A capture with no matching order is money
+   received with nothing granted.**
+
+   Unreachable in the substrate slice (nothing writes `attempted`, there is no
+   checkout UI, no Razorpay account exists), and reachable the moment **SC-4a**
+   renders a payment link — which is why the answer is split three ways:
+   `customer_console.md` **CP-8's reconciliation owns the NULL-`order_id`
+   receipts**; the webhook's unknown-order arm alerts at **ERROR** with the
+   amount and both provider identifiers
+   (`test_a_capture_with_no_matching_order_is_kept_and_alerted_at_error`); and
+   **SC-4a must never expose a replaced order's payment link** (stated in its
+   done-when). The full argument is in CP-9's build box, decision 2.
 2. ✅ `test_the_free_path_and_the_paid_path_write_identical_records` passes and
    **goes red** under a deliberate mutation of either path (per (iv)). —
    Red-first evidence: granting `quantity + 1` on the free path fails with a
@@ -732,7 +767,7 @@ met, as it says.)*
 8. ✅ **R8** — the constraints, the uniqueness, the count-based cap and the
    fulfilment transaction run against a real Postgres 16 via
    `tests/unit/_customer_console_ladder.py`; the suite joins §7's command block
-   and `pr-check.yml`'s skip-guard in the same PR. — **105 tests, 0 skipped**;
+   and `pr-check.yml`'s skip-guard in the same PR. — **110 tests, 0 skipped**;
    the Console skip-guard hand-list went **6 → 7**, and the suite reads both
    the workflow and both owning specs so its own name cannot be dropped
    silently.
