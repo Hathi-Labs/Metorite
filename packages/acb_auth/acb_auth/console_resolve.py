@@ -302,14 +302,16 @@ def _age_seconds(record: _Record) -> float:
 #: How far into the future a ``resolved_at`` may sit and still be read as
 #: "now" rather than as a broken clock.
 #:
-#: ⚠️ **A tolerance is required, and the number was measured rather than
-#: guessed.** The two clocks above are genuinely different machines in the
-#: ordinary deployment (app container vs database container): against the
-#: pgvector container this suite runs on, ``now()`` came back **0.40 seconds
-#: ahead** of ``datetime.now(UTC)``, reproducibly. With a hard ``0.0`` floor
-#: every freshly-written record is therefore born "in the future", reads as
-#: stale, and the read-through cache silently stops working — one extra Console
-#: round trip per sign-in, and a TTL that never applies to anybody.
+#: ⚠️ **A tolerance is required because two clocks exist**, not because of any
+#: one measured offset. ``resolved_at`` is stamped by the DATABASE's ``now()``
+#: while the freshness comparison uses the APP process's ``datetime.now(UTC)``
+#: — different machines in the ordinary deployment (app container vs database
+#: container), so some skew in either direction is a standing condition, and
+#: observed magnitudes vary run to run (samples on the local scratch container
+#: ranged from ~0.01s to ~0.4s across sessions — do not treat either figure as
+#: a property of the system). With a hard ``0.0`` floor a DB clock running
+#: ahead makes freshly-written records read "born in the future" = stale,
+#: silently disabling the read-through cache for as long as the skew holds.
 #:
 #: 60 seconds is 1/15th of the default TTL and 1/1440th of the ceiling, so what
 #: a skew can buy is negligible against both; a stamp further out than this is
