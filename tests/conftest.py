@@ -15,6 +15,24 @@ import pytest
 # this line runs ahead of any litellm import.
 os.environ.setdefault("_ACB_DATABASE_URL_AT_LAUNCH", os.environ.get("DATABASE_URL", ""))
 
+# The same idiom, one variable along (WS-31 CP-2b, customer_console.md §6(i)).
+# `tests/unit/test_deployment_resolve_cache.py` is R8-gated on the TENANT
+# database, which answers to TENANT_LADDER_DATABASE_URL and deliberately NEVER
+# to DATABASE_URL: setting the latter for a `tests/unit/` run would arm
+# test_tenant_coverage.py's two DB-gated tests, which fail by construction on a
+# freshly-replayed ladder (one wants FORCE-RLS policies that live only in
+# infra/postgres/generated/04_policies.sql, never replayed; the other wants a
+# non-superuser app role). Both are WS-29 MT-1b/MT-1c's gates, not CP-2b's.
+#
+# One idiom, two variables; never a raw os.environ read at module scope. The
+# snapshot exists for the identical reason the first one does — litellm's
+# import-time load_dotenv() must not be able to point an R8 gate at whatever a
+# dev machine's .env happens to name.
+os.environ.setdefault(
+    "_ACB_TENANT_LADDER_URL_AT_LAUNCH",
+    os.environ.get("TENANT_LADDER_DATABASE_URL", ""),
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_write_artifact_context():

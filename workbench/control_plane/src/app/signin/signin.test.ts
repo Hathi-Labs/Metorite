@@ -15,7 +15,9 @@
  *      third provider added to the seam but not here would leave a reachable
  *      sign-in page with no working button on a correctly configured box.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -24,6 +26,47 @@ import { authPosture, configuredProviders } from "@/authPosture";
 import { signInErrorMessage } from "./errorCopy";
 
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf-8");
+
+// ── WS-31 CP-2b (customer_console.md §6(g), clause 11) ─────────────────────
+//
+// Source-level over `auth.ts`, in this file's established style, because the
+// subject is WHERE a call may appear rather than what it returns. The Python
+// fence (`tests/unit/test_console_dependency_boundary.py`) pins that
+// `console_resolve` has exactly one caller; on its own that is satisfied by a
+// BFF calling `POST /signin/resolve` from anywhere, which is what these close.
+//
+// ⚠️ **Source-regex is not a preference here, it is the only option, and the
+// F1 repair did not change that** (measured 2026-08-18): vitest in this tree is
+// node-env, and `import("@/auth")` dies inside `next-auth/lib/env.js` with
+// *"Cannot find module …/node_modules/next/server"* before any callback can be
+// called. So the gate below is pinned by its SHAPE. What no test in this tree
+// can prove is that the shape behaves — that the flag being off issues no
+// fetch — and the F1 finding is exactly what that blind spot cost once, so it
+// is a review check and it is written down rather than assumed away.
+const authSrc = readFileSync(new URL("../../auth.ts", import.meta.url), "utf-8");
+
+/** The source of one `callbacks:` entry, from its name to the next one. */
+function callbackBody(src: string, name: string): string {
+  const start = src.indexOf(`async ${name}(`);
+  if (start < 0) return "";
+  const rest = src.slice(start + 1);
+  const nextIdx = ["async signIn(", "async jwt(", "async session("]
+    .map((marker) => rest.indexOf(marker))
+    .filter((i) => i >= 0)
+    .sort((a, b) => a - b)[0];
+  return nextIdx === undefined ? rest : rest.slice(0, nextIdx);
+}
+
+const API_DIR = fileURLToPath(new URL("../api", import.meta.url));
+
+function routeFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) routeFiles(full, out);
+    else if (entry === "route.ts") out.push(full);
+  }
+  return out;
+}
 
 describe("the signin segment", () => {
   it("is dynamic — env is read per request, never baked at build", () => {
@@ -80,5 +123,159 @@ describe("error copy speaks Auth.js v5", () => {
       "Authentication error: SomethingNew",
     );
     expect(signInErrorMessage(null)).toBeNull();
+  });
+
+  it("errorCopy speaks the two CP-2b codes", () => {
+    const unavailable = signInErrorMessage("ConsoleUnavailable");
+    const chooser = signInErrorMessage("WorkspaceChooserRequired");
+
+    expect(unavailable).toBeTruthy();
+    expect(chooser).toBeTruthy();
+
+    // D33.1: never blame the person for a state they did not create. A person
+    // refused because a service is down has not been denied access, and a
+    // person in two organizations has not failed an authorization check —
+    // which is exactly what Auth.js's own `AccessDenied` copy would say, and
+    // why these are custom codes rather than reused types.
+    for (const copy of [unavailable, chooser]) {
+      expect(copy).not.toMatch(/access denied|isn't authorized/i);
+    }
+
+    // Each names its own cause, so the two are distinguishable to a reader and
+    // not merely to a switch statement.
+    expect(unavailable).toMatch(/temporarily unavailable/i);
+    expect(unavailable).toMatch(/not with your account/i);
+    expect(chooser).toMatch(/more than one organization/i);
+
+    // The multi-org copy names the CAUSE, never the COUNT: errorCopy maps a
+    // code to a STATIC string, so a count would have to ride the query string
+    // — a second field on a public URL for a number nobody can act on.
+    expect(chooser).not.toMatch(/\b\d+\b/);
+  });
+});
+
+describe("the sign-in resolve hop (CP-2b)", () => {
+  it("resolve fires only from the signIn callback", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).toContain("/signin/resolve");
+
+    // Not from a callback that cannot refuse. `jwt` runs AFTER the decision is
+    // made and has no return value that produces a renderable error code, so a
+    // resolve there could satisfy clauses 6, 7 and 9 only by pretending to.
+    expect(callbackBody(authSrc, "jwt")).not.toContain("/signin/resolve");
+    expect(callbackBody(authSrc, "session")).not.toContain("/signin/resolve");
+
+    // And from no route file: the Python fence pins ONE Python caller, and a
+    // BFF route calling this endpoint would be a second door to the same
+    // seat-allocating call that fence exists to keep singular.
+    const offenders = routeFiles(API_DIR).filter((p) =>
+      readFileSync(p, "utf8").includes("/signin/resolve"),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("the resolve email comes from the provider profile, never from request input", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).toContain("profile?.email");
+
+    // R11. There is no request in a `signIn` callback to take an identity
+    // from, and the point of this assertion is that there must never be one
+    // reached for — no headers(), no cookies(), no searchParams.
+    for (const forbidden of [
+      "searchParams",
+      "headers()",
+      "cookies()",
+      "req.",
+      "request.",
+      "NextRequest",
+    ]) {
+      expect(signIn).not.toContain(forbidden);
+    }
+  });
+
+  it("goes through headersActingAs, minting no bearer of its own", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).toContain("headersActingAs(email");
+
+    // `gatewayHeaders()` calls auth() and would find nothing — this callback
+    // fires before a session exists. And inlining the internal token here is
+    // the forbidden way around the auth.ts ⇄ lib/gateway.ts cycle; it is
+    // fenced from the other side too, by gateway.test.ts's widened sweep.
+    expect(signIn).not.toContain("gatewayHeaders(");
+    expect(authSrc).not.toContain("GATEWAY_INTERNAL_TOKEN");
+    expect(authSrc).not.toContain("CUSTOMER_CONSOLE_DEPLOYMENT_KEY");
+  });
+
+  it("is inert until CUSTOMER_CONSOLE_RESOLVE_ENABLED is exactly \"true\"", () => {
+    // Ships dark. The gate is read FIRST, before anything else in the
+    // callback, so a deployment that has not opted in signs people in with no
+    // fetch, no latency and no new failure mode — byte-identical to the
+    // behaviour before CP-2b. Flipping the flag on a live box is OWNER-GATE
+    // (§8 gate 7).
+    //
+    // ⚠️ The gate is an EQUALITY against "true", not a truthiness test: an
+    // operator who writes `CUSTOMER_CONSOLE_RESOLVE_ENABLED=false` while
+    // debugging a sign-in outage must get OFF, and every truthy-string reading
+    // of that value arms the hop instead.
+    const signIn = callbackBody(authSrc, "signIn");
+    const gate = signIn.indexOf("process.env.CUSTOMER_CONSOLE_RESOLVE_ENABLED");
+    const call = signIn.indexOf("/signin/resolve");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(call);
+    expect(signIn).toMatch(
+      /if \(process\.env\.CUSTOMER_CONSOLE_RESOLVE_ENABLED !== "true"\) return true;/,
+    );
+  });
+
+  it("does not arm itself off CUSTOMER_CONSOLE_URL (F1)", () => {
+    // The repair of finding F1 (independent verification, 2026-08-18), and the
+    // reason this ticket has a flag of its own rather than the obvious
+    // one-liner.
+    //
+    // The gate used to be `if (!process.env.CUSTOMER_CONSOLE_URL) return true;`
+    // — ONE variable, where the gateway's `is_wired()` requires TWO (URL *and*
+    // deployment key). `CUSTOMER_CONSOLE_URL` is already a live Next-side
+    // variable on any Console-connected box (the billing proxy reads it,
+    // `app/api/billing/summary/route.ts`), so "URL set, key unset" is exactly
+    // what this deployment looks like the moment the hop merges: measured, that
+    // combination issued one fetch and — with the gateway unreachable, i.e. an
+    // ordinary deploy window — returned "/signin?error=ConsoleUnavailable".
+    // The hop armed itself, and refused sign-in, with nobody flipping anything.
+    //
+    // Checking the deployment KEY here instead is forbidden (§6(f): that
+    // credential is gateway-only and must never reach the browser tier — the
+    // fence for it is three assertions up). So the callback reads ONE variable
+    // and it is the flag; `CUSTOMER_CONSOLE_URL` keeps serving the billing
+    // surface and is not an input to this decision at all.
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).not.toContain("CUSTOMER_CONSOLE_URL");
+  });
+
+  it("refuses with the two codes and never with a bare false", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    // Returning `false` yields Auth.js's `AccessDenied` and nothing else,
+    // which is the copy D33.1 forbids for both of these cases. The string
+    // return is the mechanism that carries a distinguishable reason.
+    expect(signIn).toContain('"/signin?error=ConsoleUnavailable"');
+    expect(signIn).toContain("/signin?error=${encodeURIComponent(");
+    expect(signIn).not.toMatch(/\breturn false\b/);
+  });
+
+  it("encodes the code it puts in the redirect URL", () => {
+    // Review note 1 (2026-08-18). `answer.code` is a value from ANOTHER
+    // service interpolated straight into a URL: unencoded, a code carrying
+    // `&`, `#` or a space either truncates the query string or arrives as a
+    // second parameter, and `signInErrorMessage` then renders the wrong copy
+    // (or the raw fallback) for a refusal the person cannot act on anyway.
+    // The three codes we ship are alphanumeric, so this is about the day the
+    // Console adds a fourth — which is exactly when nobody is looking here.
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).toMatch(
+      /\/signin\?error=\$\{encodeURIComponent\(\s*answer\?\.code/,
+    );
+    // And no OTHER interpolation into that URL slips past unencoded.
+    for (const interpolated of signIn.matchAll(/\/signin\?error=\$\{([^}]*)/g)) {
+      expect(interpolated[1]).toContain("encodeURIComponent(");
+    }
   });
 });

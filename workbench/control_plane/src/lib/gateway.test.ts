@@ -151,6 +151,32 @@ const ROUTES = routeFiles(API_DIR).map((path) => ({
   src: readFileSync(path, "utf8"),
 }));
 
+/**
+ * The sweep for the two BEARER checks is wider than the route surface, and
+ * WS-31 CP-2b is why.
+ *
+ * `auth.ts` now reaches the gateway (its `signIn` callback resolves the person
+ * against the Customer Console through `headersActingAs`), and `auth.ts` is
+ * outside `src/app/api/**` — so both bearer checks below were blind to it. The
+ * tempting way to back away from the `auth.ts ⇄ lib/gateway.ts` import cycle is
+ * to inline `GATEWAY_INTERNAL_TOKEN` in `auth.ts`; it works, and nothing here
+ * could see it. `proxy.ts` joins for the same reason: it pulls `auth.ts` into
+ * the proxy bundle and is the other module outside the route tree that sits on
+ * the auth path.
+ *
+ * The thing being fenced is a SECOND BEARER READER, not the directory it lives
+ * in — hence the test name below, and hence this list rather than the route
+ * sweep. The remaining checks stay on ROUTES on purpose: `force-dynamic` and
+ * "every handler establishes who is asking" are statements about route
+ * handlers, and demanding them of `auth.ts` would be nonsense.
+ */
+const NON_ROUTE_GATEWAY_CALLERS = ["../auth.ts", "../proxy.ts"].map((rel) => {
+  const path = fileURLToPath(new URL(rel, import.meta.url));
+  return { path, rel: rel.replace("../", "src/"), src: readFileSync(path, "utf8") };
+});
+
+const BEARER_SWEEP = [...ROUTES, ...NON_ROUTE_GATEWAY_CALLERS];
+
 describe("the route surface", () => {
   it("has routes to check", () => {
     // Guards the sweep itself: a broken path would make every assertion below
@@ -158,11 +184,25 @@ describe("the route surface", () => {
     expect(ROUTES.length).toBeGreaterThan(80);
   });
 
-  it("mints no gateway bearer of its own", () => {
-    // lib/gateway.ts is the only module that may read this. A route that
+  it("sweeps auth.ts and proxy.ts too, not just the route tree", () => {
+    // Guards the WIDENING itself. A renamed or moved auth.ts would make the
+    // two bearer checks below silently narrow again — back to exactly the
+    // blind spot CP-2b widened them to cover.
+    expect(NON_ROUTE_GATEWAY_CALLERS.map((f) => f.rel)).toEqual([
+      "src/auth.ts",
+      "src/proxy.ts",
+    ]);
+    expect(BEARER_SWEEP.length).toBe(ROUTES.length + 2);
+  });
+
+  it("no module outside lib/gateway.ts mints a gateway bearer", () => {
+    // lib/gateway.ts is the only module that may read this. A module that
     // reintroduces its own copy also reintroduces the choice to omit the
-    // identity, which is the whole bug.
-    const offenders = ROUTES.filter((r) => r.src.includes("GATEWAY_INTERNAL_TOKEN"));
+    // identity, which is the whole bug — and in auth.ts's case it would also
+    // be the sanctioned-looking way around an import cycle.
+    const offenders = BEARER_SWEEP.filter((r) =>
+      r.src.includes("GATEWAY_INTERNAL_TOKEN")
+    );
     expect(offenders.map((r) => r.rel)).toEqual([]);
   });
 
@@ -188,9 +228,14 @@ describe("the route surface", () => {
     //
     // Allow-listed by name rather than matched loosely, so a FOURTH inline
     // bearer fails this test and has to justify itself.
+    //
+    // ⚠️ `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` is deliberately NOT here and must
+    // never be added: that credential is read on the GATEWAY and never in
+    // Next. A fourth entry naming it would mean the deployment key had reached
+    // the browser tier, and this test failing is the correct alarm (§6(f)).
     const ALLOWED = /^(LITELLM_KEY|githubToken|CUSTOMER_CONSOLE_ORG_KEY)$/;
     const offenders: string[] = [];
-    for (const r of ROUTES) {
+    for (const r of BEARER_SWEEP) {
       for (const [, name] of r.src.matchAll(/Authorization:\s*`Bearer \$\{(\w+)/g)) {
         if (!ALLOWED.test(name)) offenders.push(`${r.rel} → ${name}`);
       }

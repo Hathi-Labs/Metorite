@@ -123,8 +123,45 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # WS-31 CP-2b. A SECOND, DIFFERENT database: the TENANT one. CP-2b's
+      # deployment half writes migration 159's projection plus the three
+      # columns 177 adds, and those live nowhere near the Customer Console's
+      # schema. `tests/unit/_tenant_ladder.py` builds it from infra/postgres/.
+      #
+      # ⚠️ The image is pgvector/pgvector:pg16, NOT postgres:16 — the stock
+      # image cannot build this schema at all: infra/postgres/01_schema.sql
+      # runs CREATE EXTENSION "uuid-ossp" AND CREATE EXTENSION vector, and
+      # stock Postgres ships neither pgvector nor a vector type. The
+      # `migrations` job below already names this image for exactly this file.
+      tenant-postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: acb
+          POSTGRES_PASSWORD: acb
+          POSTGRES_DB: acb_tenant
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U acb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
+      # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
+      # This step runs the WHOLE tests/unit/ directory. Setting DATABASE_URL
+      # here would arm test_tenant_coverage.py's two DB-gated tests, which fail
+      # BY CONSTRUCTION against a freshly-replayed ladder:
+      #   * test_live_catalog_has_column_force_and_policy wants FORCE-RLS
+      #     policies that live only in infra/postgres/generated/04_policies.sql,
+      #     which the ladder deliberately never replays (that file's own header
+      #     calls promoting it "a cliff", taken in a maintenance window); and
+      #   * test_app_role_cannot_bypass_rls wants a non-superuser application
+      #     role, and a service container's POSTGRES_USER *is* the superuser.
+      # Both are WS-29 MT-1b/MT-1c's gates, not CP-2b's. They skip here today
+      # and must keep skipping exactly as today. Hence a separate name that
+      # nothing else in the tree reads. See customer_console.md §6(i)(2).
+      TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
       - uses: actions/checkout@v5
 
@@ -153,6 +190,32 @@ jobs:
               print("customer console db:", c.execute(text("select version()")).scalar_one())
           PY
 
+      # The twin of the step above, and it needs to exist for the same reason:
+      # one DSN proven reachable says NOTHING about the other, and a tenant
+      # service container that failed to come up would put this job straight
+      # back to silently skipping CP-2b's whole deployment half.
+      #
+      # It also asserts pgvector is present, because that is the specific way
+      # the wrong image fails — and it fails deep inside 01_schema.sql, as a
+      # migration error, rather than as "the image is wrong".
+      - name: Assert the tenant ladder database is reachable and has pgvector
+        run: |
+          uv run python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["TENANT_LADDER_DATABASE_URL"]
+          with create_engine(url).begin() as c:
+              print("tenant ladder db:", c.execute(text("select version()")).scalar_one())
+              names = [r[0] for r in c.execute(text(
+                  "select name from pg_available_extensions "
+                  "where name in ('vector', 'uuid-ossp')"))]
+              assert "vector" in names, (
+                  "no pgvector on the tenant service container — "
+                  "infra/postgres/01_schema.sql cannot build. Use "
+                  "pgvector/pgvector:pg16, not postgres:16.")
+              print("extensions available:", sorted(names))
+          PY
+
       - name: Run unit tests
         run: uv run python -m pytest tests/unit/ -x -v
 
@@ -164,15 +227,43 @@ jobs:
       # above — and still SKIPS silently there when the database variable is
       # missing, which is the exact failure this step exists to catch. Add the
       # file in the same commit that creates it (CP-2b clause 10 did).
+      #
+      # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
+      # -coded to the Console suites' skip string — so a suite gated on a
+      # DIFFERENT variable could be added to the file list above, skip every
+      # test, and leave this step green. That is the CP-3 failure class
+      # reintroduced one layer up. Every gate variable named in the file list
+      # needs its own line here.
       - name: Assert the R8-gated platform suites actually ran
         run: |
           uv run python -m pytest tests/unit/test_customer_console_sql.py \
             tests/unit/test_customer_console_key_auth.py tests/unit/test_customer_console_api.py \
             tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
             tests/unit/test_customer_console_resolve.py \
+            tests/unit/test_deployment_resolve_cache.py \
+            tests/unit/test_console_dependency_boundary.py \
+            tests/unit/test_signin_resolve_route.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::Platform suites skipped — R8 gate is disarmed."
+            echo "::error::Customer Console suites skipped — R8 gate is disarmed."
+            exit 1
+          fi
+          # CP-2b's tenant-side suite answers to its OWN variable and would
+          # skip with a wholly different message.
+          if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
+            echo "::error::Deployment-resolve suite skipped — the tenant R8 gate is disarmed."
+            exit 1
+          fi
+          # The structural fences take NO database and must never report a
+          # skip at all. One that did would mean somebody folded a DB gate into
+          # them, which is how §6(i)(4)'s separation quietly dies.
+          #
+          # test_signin_resolve_route.py joins them for the same reason: it is
+          # the ONLY test of the route's own refusal (finding F5's fence), it
+          # opens no session on purpose, and a DB gate leaking into it would
+          # disarm a P0 fence silently.
+          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route)" /tmp/platform.txt; then
+            echo "::error::A no-database fence skipped — the dependency-boundary and signin-route fences must always run."
             exit 1
           fi
 

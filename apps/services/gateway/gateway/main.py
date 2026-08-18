@@ -1208,6 +1208,25 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-31 CP-2b — the ONE site that asks the Customer Console whether a
+    # sign-in may proceed (customer_console.md §6 clause 11). Authenticated by
+    # the app-wide `require_authenticated` above and deliberately NOT in
+    # PUBLIC_ROUTES.
+    #
+    # ⚠️ Mounted always, and it is NOT inert when the Console settings are
+    # missing: it REFUSES (`ConsoleUnavailable`). Reaching it means the BFF's
+    # own flag was flipped, i.e. somebody declared this box wired, and a
+    # half-provisioned box that admitted would be the fail-open posture CP-0
+    # removed — finding F5, 2026-08-18. Ship-dark lives in the BFF's
+    # CUSTOMER_CONSOLE_RESOLVE_ENABLED, which decides whether the route is
+    # called at all.
+    from gateway.routes.signin import router as _signin_router
+
+    app.include_router(_signin_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
