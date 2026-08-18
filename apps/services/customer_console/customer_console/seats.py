@@ -59,10 +59,22 @@ class SeatCounts:
     def oversubscribed(self) -> bool:
         """True when more seats are assigned than were bought.
 
-        Not reachable through the API, and precisely why it is worth surfacing:
-        it means someone edited the database or reduced a seat count under live
-        assignments, and the operator console should say so rather than let
-        ``available == 0`` hide it.
+        Worth surfacing because ``available == 0`` would otherwise hide it: it
+        means someone edited the database, reduced a seat count under live
+        assignments — or that a capacity check raced.
+
+        ⚠️ **This used to say "not reachable through the API", and that was
+        false.** :func:`decide_assignment` decides on a count another
+        transaction is free to invalidate before the INSERT lands, and the
+        partial unique index enforces *one seat per person*, not *N per
+        organization* — so two concurrent first sign-ins with one seat left
+        both allocated. Measured on a real server. What keeps it unreachable
+        now is :func:`customer_console.store.lock_seat_capacity`, a
+        transaction-scoped advisory lock on ``(organization_id, plan_slug)``
+        taken **before** the count, and the claim is exactly as strong as the
+        set of writers that take it: **both arms of ``POST /registry/resolve``
+        do, via one shared path; ``POST /billing/seats`` does not yet** — a
+        pre-existing race recorded in ``customer_console.md`` §6 CP-2b.
         """
         return self.assigned > self.purchased
 

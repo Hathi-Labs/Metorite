@@ -158,11 +158,18 @@ jobs:
 
       # A guard against the R8 gate quietly disarming again: if the platform
       # suites report themselves as skipped, fail the job.
+      #
+      # ⚠️ This list is HAND-MAINTAINED and nothing discovers it. A new R8-gated
+      # Customer Console suite that is not named here still runs in the step
+      # above — and still SKIPS silently there when the database variable is
+      # missing, which is the exact failure this step exists to catch. Add the
+      # file in the same commit that creates it (CP-2b clause 10 did).
       - name: Assert the R8-gated platform suites actually ran
         run: |
           uv run python -m pytest tests/unit/test_customer_console_sql.py \
             tests/unit/test_customer_console_key_auth.py tests/unit/test_customer_console_api.py \
             tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
+            tests/unit/test_customer_console_resolve.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Platform suites skipped — R8 gate is disarmed."

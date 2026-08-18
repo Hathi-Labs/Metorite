@@ -24,9 +24,22 @@ import hmac
 import secrets
 from dataclasses import dataclass
 
-__all__ = ["MintedKey", "hash_secret", "mint_key", "split_key", "verify_secret"]
+__all__ = [
+    "ENV_DEPLOYMENT",
+    "MintedKey",
+    "hash_secret",
+    "is_deployment_key",
+    "mint_key",
+    "split_key",
+    "verify_secret",
+]
 
 _ENV_LIVE = "live"
+#: The deployment scheme's env segment — ``cc_depl_<prefix>_<secret>`` (CP-2b).
+#: A named constant rather than a literal in three files: the string appears in
+#: the minting call, in the dispatch that decides which scheme is at the door,
+#: and in the tests, and a typo in any one of them is a silent auth change.
+ENV_DEPLOYMENT = "depl"
 _PREFIX_BYTES = 6   # 12 hex chars — enough to be unique, short enough to show
 _SECRET_BYTES = 32  # 256 bits
 
@@ -57,6 +70,19 @@ def mint_key(*, env: str = _ENV_LIVE) -> MintedKey:
         key_hash=hash_secret(secret),
         token=f"{stored_prefix}_{secret}",
     )
+
+
+def is_deployment_key(stored_prefix: str) -> bool:
+    """True when a canonical prefix names the **deployment** scheme.
+
+    Built from :func:`_canonical_prefix` rather than from a literal
+    ``"cc_depl_"``, so the key format lives in exactly one place: change the
+    separator or the scheme word and this predicate follows, instead of
+    silently answering False for every key and routing deployments into the
+    operator arm — which fails as *"invalid operator token"*, a message that
+    sends the reader to the wrong half of the system.
+    """
+    return stored_prefix.startswith(_canonical_prefix(ENV_DEPLOYMENT, ""))
 
 
 def hash_secret(secret: str) -> str:

@@ -24,13 +24,17 @@ from sqlalchemy.engine import Connection
 __all__ = [
     "add_credit",
     "credit_deltas",
+    "deployment_visible_orgs",
     "ensure_identity",
     "ensure_organization",
     "grant_seats",
     "has_live_seat",
+    "issue_deployment_key",
+    "lock_seat_capacity",
     "plan_price",
     "record_usage",
     "release_seat",
+    "resolve_deployment_key",
     "resolve_key",
     "run_spend",
     "seat_rows",
@@ -145,6 +149,40 @@ def seat_rows(conn: Connection, *, org_id: str, plan_slug: str,
         {"org": org_id, "plan": plan_slug},
     ).scalar_one()
     return grants, int(assigned)
+
+
+def lock_seat_capacity(conn: Connection, *, org_id: str,
+                       plan_slug: str) -> None:
+    """Serialise the capacity decision for one ``(org, plan)`` pair.
+
+    ⚠️ **Without this, the seat cap is check-then-insert and the check does not
+    hold.** ``seat_rows`` reads at READ COMMITTED and
+    :func:`customer_console.seats.decide_assignment` then decides on a snapshot
+    that another transaction is free to invalidate before the INSERT lands. The
+    partial unique index (``seat_assignment_live_uniq``) does **not** close it:
+    that index enforces *one seat per person*, which is a different claim from
+    *N seats per organization*. Two concurrent first sign-ins for two different
+    people with one seat left therefore both saw ``available == 1`` and both
+    inserted — measured on a real server, 10 races, before this lock existed.
+
+    Transaction-scoped (``_xact_``), so it is released by COMMIT or ROLLBACK
+    and there is no unlock call to forget on the 409 path. Taken **before** the
+    count, not between the count and the insert: a lock acquired after the read
+    protects nothing, because the stale number is already in hand.
+
+    The key is ``hashtext(org:plan)``. A hash collision between two different
+    pairs costs one needless serialisation and is otherwise harmless — the
+    failure mode of this design is slowness, never an over-assignment.
+
+    **Who takes it, stated honestly:** both arms of ``POST /registry/resolve``,
+    via the single ``_allocate_core_seat`` path. ``POST /billing/seats``
+    (``main.py``) still does not, and its race is pre-existing — a finding
+    recorded in ``customer_console.md`` §6 CP-2b, not closed here.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"{org_id}:{plan_slug}"},
+    )
 
 
 def has_live_seat(conn: Connection, *, org_id: str, plan_slug: str,
@@ -397,6 +435,130 @@ def list_keys(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
                 "WHERE organization_id = :org ORDER BY created_at DESC"
             ),
             {"org": org_id},
+        )
+    ]
+
+
+def issue_deployment_key(
+    conn: Connection, *, deployment_id: str, prefix: str, key_hash: str,
+    label: str | None = None, created_by: str | None = None,
+    capabilities: list[str] | None = None,
+) -> str:
+    """Store a freshly minted **deployment** key. Only the hash is passed here.
+
+    Mirrors :func:`issue_key` deliberately rather than generalising it: the two
+    write different tables with different owners (an ``organization`` there, a
+    ``deployment`` here), and a single function taking "which kind" would put
+    that decision at every call site.
+
+    ⚠️ CP-2b ships **no HTTP route that calls this** — no done-when specifies
+    one, and issuing a real ``cc_depl_`` key into a live deployment is
+    OWNER-GATE (§8 gate 7). It exists so fixtures and, later, an operator
+    surface have one implementation of the write.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO deployment_key
+                (deployment_id, prefix, key_hash, label, created_by,
+                 capabilities)
+            VALUES (:dep, :prefix, :hash, :label, :by,
+                    COALESCE(CAST(:caps AS TEXT[]), '{resolve}'))
+            RETURNING id
+            """
+        ),
+        {"dep": deployment_id, "prefix": prefix, "hash": key_hash,
+         "label": label, "by": created_by, "caps": capabilities},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def resolve_deployment_key(
+    conn: Connection, *, prefix: str
+) -> tuple[str, str, list[str]] | None:
+    """Look up a live deployment key → ``(deployment_id, key_hash, caps)``.
+
+    ``revoked_at IS NULL`` is resolved here rather than left to the caller, for
+    the same reason :func:`resolve_key` does it: "did you also check…" is
+    exactly the step a second call site forgets.
+
+    Deliberately **no join to `deployment`** and no status filter on it. A
+    deployment's own ``status`` (``active|draining|retired``) is an operational
+    fact about a box, and nothing in CP-2b decides what a ``draining`` box's
+    key should do; inventing an answer here would make sign-in for a whole
+    customer depend on a column no ticket has specified. The credential's own
+    ``revoked_at`` is the revocation channel.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT deployment_id, key_hash, capabilities
+            FROM deployment_key
+            WHERE prefix = :prefix AND revoked_at IS NULL
+            """
+        ),
+        {"prefix": prefix},
+    ).first()
+    return (str(row[0]), row[1], list(row[2])) if row else None
+
+
+def deployment_visible_orgs(
+    conn: Connection, *, deployment_id: str, email: str
+) -> list[dict[str, Any]]:
+    """Every organization this deployment may see for this email.
+
+    **The predicate IS the acceptance criterion** (CP-2b clause 4): a
+    deployment key resolves an email *if and only if* that email holds a
+    membership in an organization whose **current** ``org_placement.
+    deployment_id`` equals the key's deployment. *Placement is the boundary,
+    not the organization* — which is what makes the pooled case work rather
+    than falsify it: re-place an org onto this deployment and the same key
+    starts resolving it, with no key change.
+
+    Three consequences worth stating, because each is a decision:
+
+    * ``org_placement`` is joined, not left-joined. An organization with no
+      placement row is placed **nowhere**, and nowhere is not here.
+    * ``user_identity.email`` is ``CITEXT`` (001:110), so ``Ada@Corp.com`` and
+      ``ada@corp.com`` are one person without a ``lower()`` on either side —
+      and therefore without defeating the unique index. (The *tenant* plane's
+      projection is plain ``TEXT`` with a ``lower(email)`` index and needs the
+      opposite care; that half is CP-2b's deployment side, not this one.)
+    * ``org_membership.status`` is **not** consulted. Clause 4 states the
+      criterion as *holds a membership*, and clause 5 enumerates exactly three
+      invisible cases, none of which is "membership was removed". Filtering
+      here would answer a question no clause asks — and would do it in the
+      restrictive direction, silently. Recorded as a finding, not decided here.
+
+    ``ORDER BY o.slug`` so the answer is stable: a caller comparing two
+    responses, and a fence asserting a list, must not depend on the planner.
+    """
+    return [
+        {
+            "organization_id": str(r[0]),
+            "slug": r[1],
+            "status": r[2],
+            #: `org_placement.database_target` is nullable with no default
+            #: (001:104) — day one every row resolves to the same target and
+            #: the INDIRECTION is the point. NULL is a legitimate answer and
+            #: reaches the wire as `null`, never as an invented string.
+            "placement": r[3],
+            "identity_id": str(r[4]),
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT o.id, o.slug, o.status, p.database_target, ui.id
+                FROM user_identity ui
+                JOIN org_membership m ON m.user_identity_id = ui.id
+                JOIN organization o ON o.id = m.organization_id
+                JOIN org_placement p ON p.organization_id = o.id
+                WHERE ui.email = :email AND p.deployment_id = :dep
+                ORDER BY o.slug
+                """
+            ),
+            {"email": email, "dep": deployment_id},
         )
     ]
 
