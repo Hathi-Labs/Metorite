@@ -5,15 +5,28 @@ Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-3 · CP-4 BUILT · CP-6 mechanism
-BUILT (refusals ship OFF)** — 219 Customer Console tests against a real
-Postgres 16 per R8 · CP-3 was **rejected by independent verification once** and
-rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only · **CP-2b (sign-in
-resolve wiring) and CP-4b (streaming pass-through) MINTED 2026-08-18, spec only**
-— CP-4b carries the half of CP-4's done-when that was never met (`stream: true`
-returns 501) and CP-4's ✅ is amended accordingly; CP-2b is §5.2's wiring, which
-**has no caller in the tree** and is the highest-leverage unbuilt work here ·
-⚠️ **CP-2b was re-audited the same day and returned NO-GO for dispatch; five
-blocking corrections C1–C5 landed 2026-08-18** and it is **dispatchable now**:
+BUILT (refusals ship OFF) · CP-2b CONSOLE HALF BUILT 2026-08-18, deployment half
+OPEN** — 260 Customer Console tests against a real Postgres 16 per R8 (219 + the
+41 of `test_customer_console_resolve.py`) · CP-3 was **rejected by independent
+verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
+**CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
+half of CP-4's done-when that was never met (`stream: true` returns 501) and
+CP-4's ✅ is amended accordingly ·
+⚠️ **CP-2b is HALF built and the split is the important part.** The **Customer
+Console side is BUILT** — the fourth auth scheme (`cc_depl_…`, capability set
+exactly `{resolve}`, `auth.py`), migration `006_deployment_key.sql`, and
+`POST /registry/resolve` answering **two schemes with two shapes** chosen by the
+credential (`main.py`), fenced by `tests/unit/test_customer_console_resolve.py`
+against a real Postgres 16 (clauses 1–5, 8's Console half, 9's Console half, 10,
+12, plus the two R7 fences the implementation itself owes). The **deployment
+side is UNBUILT and still has no caller in the tree**: the `acb_auth` entry
+point, the resolve cache with its TTL/`MAX_STALENESS` pair, the two projection
+columns and the multi-org refusal copy — i.e. **clauses 6, 7, 11, clause 8's
+`resolved_at` half and clause 9's deployment-side refusal** — remain open, so
+*the seat cap is enforced by the Console and still not consulted by the product*.
+Issuing a real `cc_depl_` key into a live deployment stays OWNER-GATE (§8 gate
+7). Its earlier re-audit history, kept because it is what made the ticket
+dispatchable — **five blocking corrections C1–C5 landed 2026-08-18**:
 the freshness bound was restated honestly as a **pair** (TTL while the Console is
 reachable, `MAX_STALENESS` while it is not) with a cached **dead state** applying
 immediately at any freshness (clauses 6/7) · seat allocation is fenced to the
@@ -34,8 +47,12 @@ test is OWED** and **CP-1 clause 3 was unmeetable as written** (both dated
 **Date:** 2026-08-18 · **verified against code 2026-08-18 by WS-31 CP-6 audit**
 — the four §3.4 tables (`usage_event`, `credit_ledger`, `model_rate_card`,
 `usage_rollup`) and the rest of the commercial substrate all exist today in
-`infra/customer_console/001_customer_console.sql`; the ladder is 001–005 and
-the next free number is 006. *(The previous header's "repo-wide grep: zero
+`infra/customer_console/001_customer_console.sql`; the ladder is 001–**006**
+(`006_deployment_key.sql` taken by CP-2b's Console half) and the next free
+number is **007** — R1 says list the directory at build time and re-check at
+merge rather than trusting this sentence. ⚠️ **`main.py` line anchors below
+moved again with CP-2b** (`resolve` gained a second scheme and two helper
+functions); re-derive them at dispatch. *(The previous header's "repo-wide grep: zero
 hits … none of the commercial substrate exists" was true at authoring on
 2026-08-12 and false from CP-1 onward; likewise "CP-2 … spec only" — CP-2 is
 **✅ BUILT**: `main.py:603` `GET /billing/summary`, `:635` `POST /billing/seats`,
@@ -424,8 +441,11 @@ POST /registry/resolve      Authorization: Bearer <operator token>
   | 409 { reason: "seat_cap_exceeded", buy_more: {...} }
   | 403 "organization is deleted"
 
-# Deployment scheme — CP-2b, UNBUILT. A box asking about a person it has just
-# authenticated. It names no org: the org is the ANSWER, not the assertion (R11).
+# Deployment scheme — CP-2b. The CONSOLE side is BUILT and answers this shape
+# (main.py `_resolve_for_deployment`); the CALLER — the box that presents the
+# key — is the deployment half and is still unbuilt, so nothing sends it yet.
+# A box asking about a person it has just authenticated. It names no org: the
+# org is the ANSWER, not the assertion (R11).
 POST /registry/resolve      Authorization: Bearer cc_depl_<prefix>_<secret>
      { email, display_name? }              # an org_slug field here is 400
   → 200 { identity_id, organizations: [ { organization_id, slug, placement,
@@ -795,16 +815,44 @@ export window.
 > Deliberately not struck: an acceptance criterion that turns out to be
 > unbuilt is evidence about the build, and deleting it deletes the evidence.
 
-**CP-2b · Sign-in resolve: the product calls the registry.** 🔲 **MINTED
-2026-08-18.** §5.2's wiring — the half that has existed as prose since
-2026-08-12 and as code in nobody. `POST /registry/resolve` is built
-(`main.py:525`) and **has no caller anywhere in the tree**: a repo-wide search
-on 2026-08-18 returns the endpoint itself and two test files, nothing else.
-Until this lands, **the seat cap is a number the Customer Console keeps and the
-product never consults** — a person becomes a user of a Metorite deployment
-without any seat being allocated, which is exactly the claim §5.2 rests on
-(*"the box asks before admitting them"*), unbuilt. It is the highest-leverage
-unbuilt work in this spec and it had no ticket.
+**CP-2b · Sign-in resolve: the product calls the registry.** ◐ **CONSOLE HALF
+BUILT 2026-08-18 · DEPLOYMENT HALF OPEN.** §5.2's wiring — the half that has
+existed as prose since 2026-08-12 and as code in nobody.
+
+**What is built (this side of the wire).** The fourth auth scheme
+`cc_depl_<prefix>_<secret>` beside the three that existed, with a capability set
+of exactly `{resolve}` enforced as a dependency
+(`customer_console/auth.py` — `DeploymentCaller`, `deployment_or_operator`,
+`AUTHENTICATING_DEPENDENCIES`); the sibling table
+`infra/customer_console/006_deployment_key.sql`; and `POST /registry/resolve`
+answering **two schemes with two response shapes chosen by the credential**
+(`customer_console/main.py` — `_resolve_for_operator`,
+`_resolve_for_deployment`, `_allocate_core_seat`), with the visibility predicate
+in `store.deployment_visible_orgs` and the key lookup in
+`store.resolve_deployment_key`. Fenced by
+`tests/unit/test_customer_console_resolve.py` (41 tests) against a real Postgres
+16, every fence below shown **red first** by reverting the behaviour it pins.
+Clauses met: **1, 2, 3, 4, 5, 8 (Console half), 9 (Console half), 10, 12**, plus
+the two R7 fences this implementation itself owes.
+
+**What is NOT built, and it is the half that makes the cap real.** There is
+still **no caller anywhere in the tree** — no `acb_auth` entry point, no resolve
+cache, no `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS` /
+`…_MAX_STALENESS_SECONDS` settings, no `org_membership.resolved_at` /
+`organization.registry_status` projection columns, and no multi-org refusal
+copy. **Clauses 6, 7, 11, clause 8's `resolved_at` half and clause 9's
+deployment-side refusal are open.** Until they land, **the seat cap is a number
+the Customer Console keeps, can now answer, and the product still never
+consults** — a person becomes a user of a Metorite deployment without any seat
+being allocated, which is exactly the claim §5.2 rests on (*"the box asks before
+admitting them"*), still unbuilt.
+
+**Two findings recorded rather than fixed** (neither is decided by any clause,
+so neither was decided in the build): `org_membership.status` is **not**
+consulted by the visibility predicate — clause 4 states the criterion as *holds
+a membership* and clause 5 enumerates three invisible cases, none of which is
+"membership was removed", so a `removed` member still resolves; and
+`deployment.status` (`active|draining|retired`) does not affect its keys.
 
 The 2026-08-18 audit found **three undecided questions** blocking dispatch. Each
 is answered below as an **agent-proposed default, owner may overrule** — the
@@ -852,12 +900,14 @@ deployment_key(id UUID PK, deployment_id UUID NOT NULL REFERENCES deployment(id)
                created_by TEXT, created_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ);
 ```
 
-⚠️ **R1 — take the migration number at build time.** The Customer Console ladder
-is `001`–`005` on 2026-08-18, so the next free number is **006**; list
-`infra/customer_console/` at build time and re-check at merge rather than
-trusting this sentence. The migration is **not written now**. Nothing has to be
-added to any suite's ladder list — `tests/unit/_customer_console_ladder.py`
-reads the directory.
+⚠️ **R1 — take the migration number at build time.** ✅ **Written as
+`infra/customer_console/006_deployment_key.sql`**, the number taken by listing
+`infra/customer_console/` at build time (`001`–`005` on disk) and re-checked at
+commit; the ladder's own duplicate-number guard
+(`tests/unit/_customer_console_ladder.py:62-71`) is the tripwire. Nothing had to
+be added to any suite's ladder list — that module reads the directory. The next
+free number is **007**, and the next ticket must re-derive it rather than trust
+this sentence.
 
 **(b) The R11 shape — the request carries the EMAIL and the KEY, and no org.**
 The deployment has already run its own OAuth flow and verified the address
@@ -1159,7 +1209,15 @@ will fence it (R7); the tests are created by this ticket:
 8. **Idempotent projection upsert.** Resolving the same person five times leaves
    exactly **one** `user_identity` row (matched on `lower(email)`) and **one**
    `org_membership` row, with `resolved_at` moved and nothing else rewritten.
-   Fence: `test_resolving_five_times_writes_one_projection_row`.
+   ◐ **Console half MET, projection half OPEN.** The two halves live in two
+   databases and only one exists: the Console's own `user_identity` is `CITEXT
+   UNIQUE` (`001:110`) and `store.ensure_identity` is `ON CONFLICT … DO UPDATE`,
+   so five resolves leave one row and one membership — fence
+   `test_resolving_five_times_writes_one_console_identity_row` *(renamed from
+   `…_one_projection_row`, which named the tenant plane's table and would have
+   read as green for a thing nobody built)*. The `resolved_at` clock and the
+   `lower(email)` match belong to migration 159's projection and land with the
+   deployment half.
 9. **Seat semantics unchanged, and multi-org allocates nothing.** Exactly one
    visible organization → a Core seat is allocated on first resolve and **not
    re-burned** on the next, and the cap still returns **409** with the buy-more
@@ -1296,7 +1354,8 @@ same change.)*
 uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer_console_credits.py \
               tests/unit/test_customer_console_keys.py tests/unit/test_customer_console_sql.py \
               tests/unit/test_customer_console_api.py tests/unit/test_customer_console_key_auth.py \
-              tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py
+              tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
+              tests/unit/test_customer_console_resolve.py
 
 # The seam and tenancy ratchets this must not regress
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py

@@ -2,7 +2,7 @@
 
 WS-31 CP-1/CP-3 · spec ``project-docs/specs/customer_console.md`` §6.
 
-**Three authentication schemes, and which one an endpoint takes is a design
+**Four authentication schemes, and which one an endpoint takes is a design
 statement** (see :mod:`customer_console.auth`):
 
   * ``Operator`` — a staff token, for cross-organization surfaces: provisioning,
@@ -13,6 +13,10 @@ statement** (see :mod:`customer_console.auth`):
     organization**; nothing under key auth takes an organization from request
     input, because that would make the caller the authority on which customer
     they are (``user_management_contract.md`` R11).
+  * ``ResolveCaller`` — CP-2b's ``cc_depl_…`` deployment key, which reaches
+    exactly one endpoint (``POST /registry/resolve``) with a capability set of
+    exactly ``{resolve}``. That endpoint takes **both** it and ``Operator``:
+    one endpoint, two schemes, two response shapes chosen by the credential.
 
 ⚠️ The customer key deliberately cannot write the meter. It briefly could, and
 verification found that let a negative ``billed_credits`` mint credits — and,
@@ -50,7 +54,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from customer_console import store
-from customer_console.auth import Caller, Internal, KeyCaller, Operator
+from customer_console.auth import (
+    Caller,
+    DeploymentCaller,
+    Internal,
+    KeyCaller,
+    Operator,
+    ResolveCaller,
+)
 from customer_console.credits import (
     CREDIT_QUANTUM,
     OverdraftPolicy,
@@ -117,7 +128,23 @@ class LifecycleRequest(BaseModel):
 
 
 class ResolveRequest(BaseModel):
-    org_slug: str
+    """One body, two schemes — and ``org_slug`` is what tells them apart.
+
+    ⚠️ It is **optional here and mandatory in neither direction by pydantic**,
+    on purpose. Under the operator scheme it is required; under a deployment
+    key it is refused with a **400**. Both rules are enforced in the handler
+    rather than by the model, because a model can only express one of them, and
+    the one it would express (``str``, required) is the shape CP-2b's clause 2
+    exists to forbid for the caller it is about.
+
+    A missing operator ``org_slug`` therefore answers **400** and not pydantic's
+    422 — pinned by ``test_an_operator_without_an_org_slug_is_refused``, because
+    relaxing a model is exactly how a required field silently becomes optional.
+    """
+
+    #: Absent under a deployment key. **Present is 400, never ignored** — an
+    #: ignored field is a caller who believes it worked (clause 2).
+    org_slug: str | None = None
     email: str
     display_name: str | None = None
 
@@ -523,16 +550,45 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
 
 
 @app.post("/registry/resolve")
-def resolve(req: ResolveRequest, _: Operator) -> dict[str, Any]:
+def resolve(req: ResolveRequest, caller: ResolveCaller) -> dict[str, Any]:
     """Resolve a person against the registry at sign-in, consuming a Core seat.
 
     **This is what makes the seat cap real.** A person cannot become a user of
     an organization without the Customer Console allocating them a seat, because
     the deployment asks before admitting them (D32.4/D32.5).
 
+    **One endpoint, two schemes, two response shapes chosen by the credential**
+    (CP-2b clauses 3 and 12). A second endpoint was refused for root
+    ``CLAUDE.md`` §5's reason: it would be a second way to do an existing thing.
+
+      * **Operator** — a staff act on a **named** customer. Unchanged, down to
+        the response keys; the operator credential has no tenant of its own, so
+        naming one in the body is not R11's violation, it is the act itself.
+      * **Deployment key** — a box asking about a person it has just
+        authenticated. It names **no** org: the org is the ANSWER, not the
+        assertion, which is R11 at its strongest available reading — the caller
+        makes no tenant claim at all.
+
     Returns 409 with a buy-more payload when the organization is full — never an
     auto-upgrade, and never a silent admit.
     """
+    if caller is not None:
+        return _resolve_for_deployment(req, caller)
+    return _resolve_for_operator(req)
+
+
+def _resolve_for_operator(req: ResolveRequest) -> dict[str, Any]:
+    """The shipped operator shape, unchanged (CP-2b clause 3's regression)."""
+    if req.org_slug is None:
+        # Refused HERE rather than by the model. `org_slug` became optional so
+        # the deployment arm could refuse it; without this line that relaxation
+        # would silently make the operator's own subject optional, and an
+        # operator call with no org named is a request with no target.
+        raise HTTPException(
+            status_code=400,
+            detail="org_slug is required under the operator scheme",
+        )
+
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         state = conn.execute(
@@ -598,6 +654,141 @@ def resolve(req: ResolveRequest, _: Operator) -> dict[str, Any]:
         "status": role[1] if role else "active",
         "seats": seats,
     }
+
+
+#: The seat outcome vocabulary of the deployment answer (CP-2b clause 12).
+#: Three words, named once: a caller branches on them, and a fourth invented at
+#: a call site would be a vocabulary nobody agreed to.
+_SEAT_ALLOCATED = "allocated"
+_SEAT_ALREADY_HELD = "already_held"
+_SEAT_NOT_ALLOCATED = "not_allocated"
+
+
+def _resolve_for_deployment(
+    req: ResolveRequest, caller: DeploymentCaller
+) -> dict[str, Any]:
+    """A box asking about a person it has just authenticated (CP-2b).
+
+    What this answer may carry is bounded to what sign-in needs: org id, slug,
+    placement target, lifecycle status, and the seat outcome for the presented
+    email. **Never a balance, never a credit figure, never an invoice, and
+    never a `role`** — ``org_membership.role`` is registry/billing vocabulary,
+    the tenant's permission vocabulary is ``org_role`` plus the ladder
+    ``acb_auth/access.py`` resolves, and a second grant vocabulary is forbidden
+    by name (D12, root ``CLAUDE.md`` §5).
+    """
+    if req.org_slug is not None:
+        # 400, never ignored. An ignored field is a caller who believes it
+        # worked — and what it believes worked here is naming its own tenant.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a deployment key may not name an organization; the org is "
+                "derived from membership and placement"
+            ),
+        )
+
+    with get_engine().begin() as conn:
+        visible = store.deployment_visible_orgs(
+            conn, deployment_id=caller.deployment_id, email=req.email
+        )
+
+        # Partitioned by the ONE state machine, never by a local frozenset of
+        # state names: `deleted` is the only state with can_sign_in=False, and
+        # `suspended`/`cancelled` stay open deliberately (a customer who cannot
+        # log in cannot pay you, and `cancelled` IS the export window).
+        admissible = [
+            o for o in visible if capabilities_of(o["status"]).can_sign_in
+        ]
+        refused = [
+            o for o in visible if not capabilities_of(o["status"]).can_sign_in
+        ]
+
+        if not admissible:
+            if refused:
+                # Named, not hidden. This deployment already serves that
+                # customer, so the state reveals nothing it does not have —
+                # and it needs the state to refuse correctly. Same shape the
+                # operator arm has always returned.
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"organization is {refused[0]['status']}",
+                )
+            # The three invisible cases — no membership anywhere, membership
+            # only on another deployment, no such organization — are ONE
+            # answer, byte for byte. A distinguishable negative IS a cross-org
+            # existence oracle (clause 5, CP-3's `recorded:false` lesson).
+            # In particular: no `identity_id`, which would otherwise say
+            # whether this email is known to the Console at all.
+            return {"organizations": []}
+
+        identity_id = store.ensure_identity(
+            conn, email=req.email, display_name=req.display_name
+        )
+
+        seat_outcomes: dict[str, str] = {}
+        if len(admissible) == 1:
+            seat_outcomes[admissible[0]["organization_id"]] = _allocate_core_seat(
+                conn, org_id=admissible[0]["organization_id"],
+                identity_id=identity_id,
+            )
+        # More than one visible organization → allocate NOTHING. Allocating a
+        # seat in every organization a person can see would bill an admin for a
+        # login they did not make (clause 9). Choosing among them is the
+        # chooser, which is a named non-goal.
+
+        return {
+            "identity_id": identity_id,
+            "organizations": [
+                {
+                    "organization_id": o["organization_id"],
+                    "slug": o["slug"],
+                    "placement": o["placement"],
+                    "status": o["status"],
+                    "seat": seat_outcomes.get(
+                        o["organization_id"], _SEAT_NOT_ALLOCATED
+                    ),
+                }
+                for o in admissible
+            ],
+        }
+
+
+def _allocate_core_seat(conn, *, org_id: str, identity_id: str) -> str:
+    """Consume a Core seat for one person, idempotently. Raises 409 at the cap.
+
+    The same four calls the operator arm makes, in the same order, against the
+    same pure decision function — not a second seat implementation. Four
+    surfaces recomputing "how many seats are free" is how they come to
+    disagree, and the one that disagrees in the customer's favour is the one
+    that costs money (``seats.py`` module note).
+    """
+    held = store.has_live_seat(
+        conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG, identity_id=identity_id
+    )
+    grants, assigned = store.seat_rows(
+        conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG
+    )
+    decision = decide_assignment(
+        seat_counts(CORE_PLAN_SLUG, grants, assigned),
+        already_assigned=held,
+        price_inr=store.plan_price(conn, plan_slug=CORE_PLAN_SLUG),
+    )
+    if not decision.allowed:
+        # Byte-compatible with the shipped seats path, because a caller that
+        # learned the payload from one scheme must not have to relearn it.
+        raise HTTPException(
+            status_code=decision.status,
+            detail={"reason": decision.reason, "buy_more": decision.buy_more},
+        )
+
+    if held:
+        return _SEAT_ALREADY_HELD
+    store.try_assign_seat(
+        conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
+        identity_id=identity_id, source="core",
+    )
+    return _SEAT_ALLOCATED
 
 
 @app.get("/billing/summary")

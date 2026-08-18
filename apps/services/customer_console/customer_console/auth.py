@@ -1,7 +1,8 @@
-"""Three authentication schemes, deliberately separate.
+"""Four authentication schemes, deliberately separate.
 
-Spec: ``project-docs/specs/customer_console.md`` §4.3 (CP-3) ·
-``user_management_contract.md`` R11 ("never trust a tenant from request input").
+Spec: ``project-docs/specs/customer_console.md`` §4.3 (CP-3) · §6 CP-2b (the
+fourth) · ``user_management_contract.md`` R11 ("never trust a tenant from
+request input").
 
   * **Operator** — a shared staff token. Reaches cross-organization surfaces:
     provisioning, seat writes, credit grants, key issuance, the console.
@@ -10,6 +11,20 @@ Spec: ``project-docs/specs/customer_console.md`` §4.3 (CP-3) ·
   * **Organization key** — ``cc_live_<prefix>_<secret>``, one per customer.
     **Read-only.** Identifies the caller and reports their balance; it cannot
     write a ledger row.
+  * **Deployment key** — ``cc_depl_<prefix>_<secret>``, one per *deployment*.
+    Reaches ``POST /registry/resolve`` and nothing else, with a capability set
+    of exactly ``{resolve}``. It is the credential that lets a box ask *"this
+    person just signed in — do you know them, and may they have a seat?"*
+
+⚠️ **Why the fourth scheme rather than reusing one of the three.** The operator
+token is cross-organization and staff-held, and this service already argues in
+its own words that a tenant deployment must not hold it. The internal token is
+the Router's and is equally cross-organization. The organization key is
+org-scoped, which is right for ``/me`` and wrong here: a **pooled** deployment
+must resolve *any* email to *its* org, and the org is not known before the
+answer. So the deployment key's subject is a ``deployment``, and what it may
+learn is bounded by ``org_placement`` — never a balance, never an invoice, and
+never the existence of an organization it does not serve (CP-2b clauses 4-5).
 
 ⚠️ **Why the customer key cannot write the meter, and why that was a real bug.**
 CP-3 first shipped ``/usage/record`` under organization-key auth. Independent
@@ -52,18 +67,27 @@ from fastapi import Depends, Header, HTTPException
 
 from customer_console import store
 from customer_console.db import get_engine
-from customer_console.keys import split_key, verify_secret
+from customer_console.keys import is_deployment_key, split_key, verify_secret
 from customer_console.lifecycle import capabilities_of
 
 __all__ = [
+    "AUTHENTICATING_DEPENDENCIES",
+    "RESOLVE_CAPABILITY",
     "Caller",
+    "DeploymentCaller",
     "Internal",
     "KeyCaller",
     "Operator",
+    "ResolveCaller",
+    "deployment_or_operator",
     "organization_from_key",
     "require_internal",
     "require_operator",
 ]
+
+#: The one capability a deployment key carries today. Named once so the string
+#: that gates sign-in is not retyped at the mint site, the check and the tests.
+RESOLVE_CAPABILITY = "resolve"
 
 
 @dataclass(frozen=True)
@@ -207,6 +231,119 @@ def organization_from_key(
     )
 
 
+@dataclass(frozen=True)
+class DeploymentCaller:
+    """A verified deployment key holder — CP-2b's fourth scheme.
+
+    Note what is **not** here: no ``organization_id``. A deployment is not a
+    tenant (D15 — a deployment is a *placement*), and which organizations this
+    caller may see is a live property of ``org_placement``, resolved per
+    request. Caching an org list on the credential would make a re-placement
+    take effect whenever the key was last minted.
+    """
+
+    deployment_id: str
+    key_prefix: str
+    #: Exactly ``{resolve}`` today. Checked in the dependency below, before the
+    #: route body runs — never by an ``if`` inside an endpoint.
+    capabilities: frozenset[str] = frozenset({RESOLVE_CAPABILITY})
+
+
+def deployment_or_operator(capability: str):
+    """Build the dependency for an endpoint **both** schemes may open.
+
+    One endpoint, two schemes, and the *credential* chooses which
+    (``customer_console.md`` §6 CP-2b clause 3, clause 12). Two endpoints would
+    be a second way to do an existing thing, which root ``CLAUDE.md`` §5
+    forbids by name.
+
+    **The token's shape dispatches, and it is not a fallback ladder.** A token
+    whose canonical prefix names the deployment env goes to the deployment arm
+    and is refused there or nowhere — it is never retried as an operator token.
+    Anything else goes to :func:`require_operator`, unchanged, including its
+    **503 when the operator token is unconfigured**: this endpoint must not
+    become the one door that opens on a box where the rest of the service fails
+    closed.
+
+    A consequence worth stating, because it is a property and not an accident:
+    an operator token that happens to be *shaped* like a deployment key is
+    refused. That is the same rule
+    ``test_a_key_shaped_operator_token_is_still_not_a_key`` already pins for
+    the organization key, and the reason is identical — a credential's scheme
+    must be decided by what it is, not by trying each comparison until one
+    passes.
+    """
+
+    def _dependency(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> DeploymentCaller | None:
+        """Return the deployment caller, or ``None`` for the operator arm."""
+        token = ""
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.removeprefix("Bearer ").strip()
+
+        parsed = split_key(token) if token else None
+        if parsed is None or not is_deployment_key(parsed[0]):
+            require_operator(authorization)
+            return None
+
+        prefix, secret = parsed
+        with get_engine().begin() as conn:
+            resolved = store.resolve_deployment_key(conn, prefix=prefix)
+
+        # Same shape as `organization_from_key`: verify against a dummy hash on
+        # the unknown-prefix path so both rejections do the same work, and
+        # return the SAME body either way — "no such key" told apart from
+        # "wrong secret" tells an attacker which half of a guess was right.
+        if resolved is None:
+            verify_secret(secret, "0" * 64)
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        deployment_id, key_hash, capabilities = resolved
+        if not verify_secret(secret, key_hash):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        if capability not in capabilities:
+            # 403, not 401: the credential is valid and the caller should be
+            # told what it lacks rather than sent to re-authenticate in a loop.
+            raise HTTPException(
+                status_code=403,
+                detail=f"deployment key lacks the {capability!r} capability",
+            )
+
+        return DeploymentCaller(
+            deployment_id=deployment_id,
+            key_prefix=prefix,
+            capabilities=frozenset(capabilities),
+        )
+
+    return _dependency
+
+
 Operator = Annotated[None, Depends(require_operator)]
 Internal = Annotated[None, Depends(require_internal)]
 KeyCaller = Annotated[Caller, Depends(organization_from_key)]
+
+#: Built once at module scope rather than inline in the ``Annotated`` alias, so
+#: the callable has a stable identity that :data:`AUTHENTICATING_DEPENDENCIES`
+#: — and therefore the clause-1 fence — can recognise.
+_resolve_dependency = deployment_or_operator(RESOLVE_CAPABILITY)
+
+#: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
+#: deployment arm. The route reads the credential's identity, never the header.
+ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
+
+#: Every dependency in this module that authenticates somebody.
+#:
+#: This exists so CP-2b clause 1's fence
+#: (``test_the_unauthenticated_route_set_is_exactly_health``) can DERIVE which
+#: routes authenticate nothing instead of comparing one hand-list against
+#: another. A fifth scheme added here is covered on the day it lands; one that
+#: forgets to register itself makes every route it guards look unauthenticated,
+#: which fails loudly rather than passing quietly.
+AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
+    require_operator,
+    require_internal,
+    organization_from_key,
+    _resolve_dependency,
+})
