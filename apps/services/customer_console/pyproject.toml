@@ -12,6 +12,12 @@ dependencies = [
     # store reads the TENANT database, which is the wrong side of the boundary.
     "litellm>=1.0",
     "cryptography>=42",
+    # CP-9's payment seam talks to Razorpay over its HTTP API. Deliberately
+    # NOT the `razorpay` SDK: the integration is two endpoints and one HMAC,
+    # and adding a package to a CROSS-TENANT service is a supply-chain
+    # decision rather than a convenience (customer_console.md §6 CP-9 §9.4).
+    # Same pin as `packages/acb_auth`, which took httpx for CP-2b's client.
+    "httpx>=0.27",
 ]
 
 [build-system]

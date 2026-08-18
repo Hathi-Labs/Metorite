@@ -58,23 +58,68 @@ class OrgCapabilities:
     can_write_seats: bool
     #: Customer data still exists and is exportable.
     data_retained: bool
+    #: Create an order, read your own orders, redeem a discount code (CP-9
+    #: §9.3(5)). **True for every state except `deleted`**, and that breadth is
+    #: the whole point: `can_use_ai` is the WRONG gate for paying, because it is
+    #: false for exactly the `suspended` and `cancelled` customers who most need
+    #: to pay — the same argument this module's own note makes about login.
+    #:
+    #: What it does NOT buy: capture never transitions `organization.status`
+    #: (CP-9 done-when 16). A suspended org that pays is still suspended, and
+    #: reinstatement stays an operator act through `POST /orgs/lifecycle` —
+    #: letting an unattended webhook drive a state machine whose whole value is
+    #: that a human is on every edge is how a replayed capture reinstates an
+    #: account nobody decided to reinstate.
+    #:
+    #: ⚠️ **APPENDED LAST, and the next field must be too.** `STATES` below is
+    #: built with KEYWORDS for this reason: when it was positional, a field
+    #: inserted anywhere but last silently re-mapped every row's booleans —
+    #: `suspended` would have become AI-enabled while every existing test kept
+    #: passing. Keywords make that class of edit impossible rather than
+    #: discouraged (CP-9 §9.3(5), repair-round nit 3). No default, for the same
+    #: reason: a state row that forgets this field must fail to construct, not
+    #: quietly inherit the permissive answer.
+    can_pay: bool
 
 
 #: The states, and what each permits. Ordered as the lifecycle runs.
+#:
+#: **Keyword construction, deliberately** — see `OrgCapabilities.can_pay`. The
+#: six rows below were positional until CP-9 added a fifth boolean; the cost of
+#: getting that wrong is silent and permissive, which is the worst pair.
 STATES: dict[str, OrgCapabilities] = {
-    "trial": OrgCapabilities("trial", True, True, True, True),
-    "active": OrgCapabilities("active", True, True, True, True),
+    "trial": OrgCapabilities(
+        state="trial", can_sign_in=True, can_use_ai=True,
+        can_write_seats=True, data_retained=True, can_pay=True,
+    ),
+    "active": OrgCapabilities(
+        state="active", can_sign_in=True, can_use_ai=True,
+        can_write_seats=True, data_retained=True, can_pay=True,
+    ),
     # Grace. Everything still works — a customer cut off at the first missed
     # payment does not pay, they churn. Warnings are the product surface here,
     # not restrictions.
-    "past_due": OrgCapabilities("past_due", True, True, True, True),
-    # Features locked, door open, data kept.
-    "suspended": OrgCapabilities("suspended", True, False, False, True),
+    "past_due": OrgCapabilities(
+        state="past_due", can_sign_in=True, can_use_ai=True,
+        can_write_seats=True, data_retained=True, can_pay=True,
+    ),
+    # Features locked, door open, data kept — and the checkout OPEN, which is
+    # the state this whole distinction exists for.
+    "suspended": OrgCapabilities(
+        state="suspended", can_sign_in=True, can_use_ai=False,
+        can_write_seats=False, data_retained=True, can_pay=True,
+    ),
     # The export window. Sign-in deliberately still works, or the export the
     # window exists for is impossible.
-    "cancelled": OrgCapabilities("cancelled", True, False, False, True),
+    "cancelled": OrgCapabilities(
+        state="cancelled", can_sign_in=True, can_use_ai=False,
+        can_write_seats=False, data_retained=True, can_pay=True,
+    ),
     # Terminal. Reached only from `cancelled`, i.e. only after a window.
-    "deleted": OrgCapabilities("deleted", False, False, False, False),
+    "deleted": OrgCapabilities(
+        state="deleted", can_sign_in=False, can_use_ai=False,
+        can_write_seats=False, data_retained=False, can_pay=False,
+    ),
 }
 
 #: The transition graph. Anything not listed is refused — a state machine with
