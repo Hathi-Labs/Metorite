@@ -99,12 +99,22 @@ async def tenant_engine_scope(url: str):
     The engine is disposed **inside the test's own event loop** — asyncpg
     connections belong to the loop that opened them, so a synchronous teardown
     running after the loop closed would leak them for the length of the run.
+
+    ⚠️ **Setup DISPOSES what it drops** *(review note 2, 2026-08-18)*. It used
+    to set ``_ENGINE = None`` and walk away, orphaning an engine an earlier
+    suite had built with its pool still holding live sockets — once per suite,
+    for the length of the run. Teardown always disposed; setup only forgot,
+    which is the harder half to notice. Fence:
+    ``test_the_scope_disposes_the_engine_it_finds_ALREADY_built``.
     """
     from acb_common import db as shared
 
     prior = os.environ.get("DATABASE_URL")
+    stranded = shared._ENGINE
     shared._ENGINE = None
     shared._SESSION_FACTORY = None
+    if stranded is not None:
+        await stranded.dispose()
     os.environ["DATABASE_URL"] = url
     try:
         yield
@@ -1573,6 +1583,38 @@ class TestTheWireAndTheDsn:
             get_settings.cache_clear()
             assert console_resolve.is_wired() is False
         get_settings.cache_clear()
+
+    async def test_the_scope_disposes_the_engine_it_finds_ALREADY_built(self):
+        """Setup drops the singletons — and must CLOSE what it drops.
+
+        Review note 2 (2026-08-18). The setup half set ``_ENGINE = None``
+        without disposing it, so an engine an earlier suite in this process had
+        built (against any DSN) was orphaned with its pool still holding live
+        sockets, for the length of the run. Teardown always disposed; setup
+        only forgot, which is the harder leak to see and the one that
+        accumulates once per suite.
+
+        Exercised against the SAME context manager the fixture uses, nested, so
+        this is a fence on the mechanism rather than a restatement of it: a
+        disposed engine gets a fresh pool object, and the assertion is that the
+        stranded one did.
+        """
+        from acb_common import db as shared
+        from acb_common.db import get_session_factory
+
+        async with tenant_engine_scope(_URL):
+            factory = get_session_factory()
+            async with factory() as session:
+                await session.execute(text("SELECT 1"))
+            stranded = shared._ENGINE
+            assert stranded is not None
+            pool_before = stranded.pool
+
+            async with tenant_engine_scope(_URL):
+                assert stranded.pool is not pool_before, (
+                    "the engine the setup dropped was never disposed — its "
+                    "pool still holds the connections it opened"
+                )
 
     async def test_the_ladder_dsn_does_not_leak_out_of_this_suite(self):
         """§6(i): the in-process ``DATABASE_URL`` is scoped to the fixture.

@@ -257,7 +257,25 @@ describe("the sign-in resolve hop (CP-2b)", () => {
     // which is the copy D33.1 forbids for both of these cases. The string
     // return is the mechanism that carries a distinguishable reason.
     expect(signIn).toContain('"/signin?error=ConsoleUnavailable"');
-    expect(signIn).toContain("/signin?error=${answer?.code");
+    expect(signIn).toContain("/signin?error=${encodeURIComponent(");
     expect(signIn).not.toMatch(/\breturn false\b/);
+  });
+
+  it("encodes the code it puts in the redirect URL", () => {
+    // Review note 1 (2026-08-18). `answer.code` is a value from ANOTHER
+    // service interpolated straight into a URL: unencoded, a code carrying
+    // `&`, `#` or a space either truncates the query string or arrives as a
+    // second parameter, and `signInErrorMessage` then renders the wrong copy
+    // (or the raw fallback) for a refusal the person cannot act on anyway.
+    // The three codes we ship are alphanumeric, so this is about the day the
+    // Console adds a fourth — which is exactly when nobody is looking here.
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).toMatch(
+      /\/signin\?error=\$\{encodeURIComponent\(\s*answer\?\.code/,
+    );
+    // And no OTHER interpolation into that URL slips past unencoded.
+    for (const interpolated of signIn.matchAll(/\/signin\?error=\$\{([^}]*)/g)) {
+      expect(interpolated[1]).toContain("encodeURIComponent(");
+    }
   });
 });

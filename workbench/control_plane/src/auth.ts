@@ -188,7 +188,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           code?: string | null;
         };
         if (answer?.admit) return true;
-        return `/signin?error=${answer?.code || "ConsoleUnavailable"}`;
+        // `code` comes from ANOTHER service and lands in a URL, so it is
+        // encoded rather than trusted to be URL-safe: a code carrying `&`,
+        // `#` or a space would otherwise truncate the query string or arrive
+        // as a second parameter, and the sign-in page would render the wrong
+        // copy for a refusal the person cannot act on anyway. The three codes
+        // shipped today are alphanumeric; this is for the fourth.
+        return `/signin?error=${encodeURIComponent(
+          answer?.code || "ConsoleUnavailable",
+        )}`;
       } catch {
         // The gateway is unreachable from here. The person has done nothing
         // wrong and the copy says so; "access denied" would be a lie that
