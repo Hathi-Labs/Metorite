@@ -1964,9 +1964,13 @@ replays from `02_` upward, and a failure there fails the deploy.
 > **`gateway/routes/admin/_common.py:599`** (`_PROVISION_MEMBER_SQL`) — *not* `:509`, and
 > **not `access.py:205`**, which is `access_request`'s upsert and already uses the correct
 > `ON CONFLICT (lower(email))` idiom. The spec before that cited them in `members.py`,
-> where they have never been. **Both are also broken against today's schema** — migration
-> 162 dropped `app_user_email_key` — which is **MT-1j slice 6**, a repair MT-1a-2 depends
-> on rather than performs.
+> where they have never been. ~~**Both are also broken against today's schema**~~ —
+> **REPAIRED 2026-08-19 by MT-1j slice 6**: migration 162 had dropped `app_user_email_key`
+> and both statements raised **42P10 at plan time**, so neither the conflict path nor the
+> fresh-insert path worked at all. Both now say `ON CONFLICT (lower(email))`; fence
+> `tests/unit/test_app_user_upserts.py`. **MT-1a-2 still rewrites these two statements**
+> onto `org_membership` — slice 6 made them work against today's schema, it did not move
+> identity.
 **Owner:** §1.5, §0.9.5
 
 **Done when:**
@@ -1980,9 +1984,9 @@ replays from `02_` upward, and a failure there fails the deploy.
    published three different anchor pairs (`members.py:173`/`access.py:447`, then
    `:205`/`:509`); **re-derive with grep at build time and trust nothing here.** Both are
    rewritten in this ticket, and a test pins that the same email can hold membership in two
-   orgs. ⚠️ **They are additionally invalid today** — migration 162 dropped
-   `app_user_email_key` — and repairing them to the `lower(email)` idiom is **MT-1j slice
-   6**, which lands first.
+   orgs. ⚠️ ~~**They are additionally invalid today**~~ — **repaired 2026-08-19**: both now
+   use the `lower(email)` idiom (**MT-1j slice 6**, which landed first, as planned). They
+   are still `app_user` upserts, which is what this line is about.
 3. `tenant_placement(organization_id, target, region)` exists and is consulted, **even
    though every row resolves to the same target on day one.** A test asserts the resolver
    reads it rather than a constant.
@@ -2142,7 +2146,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · 🔲 **NOT BUILT — minted 2026-08-19, every anchor below verified against code that day**
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICE 6 BUILT 2026-08-19 · slices 1–5 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2193,6 +2197,8 @@ org.
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
 6. Repair the two `ON CONFLICT (email)` upserts that migration 162 invalidated.
+   ✅ **BUILT 2026-08-19** — the predicted 42P10 reproduced red on a real ladder first, and
+   it took out the fresh-insert path too, not just the conflict one (slice 6 below).
 
 **Non-goals — named so a later agent does not widen this.**
 
@@ -2252,6 +2258,21 @@ and its owner **explicitly**; `ensure_owner_bootstrap()` keeps its existing job 
 `owner` **in org #2**; `default`'s owner set is untouched by the operation; and
 `ensure_owner_bootstrap()`'s behaviour on a fresh box is unchanged (its existing tests in
 `tests/unit/test_owner_bootstrap.py` stay green without edit).
+
+⚠️ **That last clause cannot be satisfied as written, and slice 6 measured why
+(2026-08-19).** `test_owner_bootstrap.py` gates on `DATABASE_URL` reachability, which no
+CI job sets — **it skips everywhere**, which is exactly how slice 6's 42P10 reached main.
+Pointed at a ladder-replayed database it is **4 passed, 1 failed**: its own fixture
+executes `INSERT INTO app_user … ON CONFLICT (email) DO NOTHING`, the same idiom migration
+162 invalidated, so `test_an_existing_owner_makes_it_a_noop` raises 42P10 in setup. Slice
+6 deliberately did **not** touch it (the clause above says *without edit*, and the ticket's
+anchors name two production sites); **slice 2 owns the call**: repair the fixture's
+conflict target and re-word this clause, or move the suite onto
+`TENANT_LADDER_DATABASE_URL` so it stops being a fence that never runs. Evidence the
+production half is now right: with slice 6's fix,
+`test_empty_deployment_bootstraps_the_owner` **passes** against the real ladder and fails
+without it (`ownership_bootstrap_failed`, same error). The `tests/` tree is for that
+reason **not** scanned by slice 6's ratchet — see its `_SCANNED_TREES` comment.
 
 **Slice 3 · `organization` + `tenant_placement`, one act, one transaction.**
 **Anchors:** `130_org_access_control.sql:36-52` (`organization` DDL + the `default` seed) ·
@@ -2346,28 +2367,67 @@ the pattern is `tests/unit/test_db_engine_seam.py:310`'s H2 bank-your-progress m
 a converted package is pinned at zero. Slice 5 may land across several PRs on this
 ratchet's cadence; each PR banks its progress.
 
-**Slice 6 · The `ON CONFLICT (email)` repair.**
-**Anchors:** `packages/acb_auth/acb_auth/access.py:550` (inside `_BOOTSTRAP_OWNER_SQL`) ·
-`apps/services/gateway/gateway/routes/admin/_common.py:599` (inside
-`_PROVISION_MEMBER_SQL`) — both still say `ON CONFLICT (email)`, while
+**Slice 6 · The `ON CONFLICT (email)` repair. · ✅ BUILT 2026-08-19 — the prediction held,
+and it was WORSE than predicted.**
+**Anchors (as dispatched):** `packages/acb_auth/acb_auth/access.py:550` (inside
+`_BOOTSTRAP_OWNER_SQL`) · `apps/services/gateway/gateway/routes/admin/_common.py:599`
+(inside `_PROVISION_MEMBER_SQL`) — both said `ON CONFLICT (email)`, while
 `162_app_user_email_case.sql` creates `app_user_email_lower_key ON app_user (lower(email))`
 and then **drops `app_user_email_key`**, the `UNIQUE` constraint `09_app_user.sql:15`
 created (`email TEXT UNIQUE NOT NULL` → the auto-generated name 162 drops). The correct
-idiom already exists twice in the tree — `acb_auth/access.py:205` and
-`acb_auth/console_resolve.py:440`, both `ON CONFLICT (lower(email))`.
+idiom already existed twice in the tree — `acb_auth/access.py:205` and
+`acb_auth/console_resolve.py:440`, both `ON CONFLICT (lower(email))`. Both statements now
+name `(lower(email))`; nothing else in either SQL string changed.
 
-⚠️ **Predicted, not asserted: `42P10 there is no unique or exclusion constraint matching
-the ON CONFLICT specification`.** R8 makes confirming it the first step — **reproduce the
-failure RED against a real ladder-replayed database before writing the fix.** If it does
-*not* fail, the finding is wrong and this slice becomes a documentation correction; say so
-rather than "fixing" a working statement.
+**The repro, measured before the fix** (fresh database on the tenant-scratch container,
+schema built by `tests/unit/_tenant_ladder.py`'s replayer; the live catalog showed
+`app_user_email_lower_key` + `app_user_email_idx` and **no** unique index on the bare
+column). Verbatim:
 
-**Done when:** both upserts are exercised against the real ladder on **both** paths —
+```
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.InvalidColumnReference)
+there is no unique or exclusion constraint matching the ON CONFLICT specification
+                                                              -- sqlstate 42P10
+```
+
+⚠️ **It was not a conflict-path bug. Postgres resolves the `ON CONFLICT` arbiter at PLAN
+time, so all six calls failed — the three fresh-insert ones included** (`_BOOTSTRAP_OWNER_SQL`
+× {fresh, repeat, mixed-case} and `_PROVISION_MEMBER_SQL` × the same three); `app_user`
+ended the red run **empty**. What that cost while it shipped: `ensure_owner_bootstrap()`
+catches every exception, so an ownerless box logged `ownership_bootstrap_failed` and served
+on with no owner and no inviter — the 2026-07-30 lockout re-armed — and every
+`POST /admin/members` invite and every sign-in approval raised. After the fix the same six
+calls pass and a mixed-case second insert **updates** the existing row: two addresses, two
+rows, zero duplicates.
+
+**Done when** *(met)*: both upserts exercised against the real ladder on **both** paths —
 fresh insert *and* conflict — and the `DO UPDATE` arms behave identically to today.
-⚠️ `_PROVISION_MEMBER_SQL`'s trailing tenant fence (`_common.py:619-620`,
-`WHERE app_user.organization_id IS NULL OR … = EXCLUDED.organization_id`) is S1-1's
-write-leak repair and **must not change meaning** — its own comment block at `:572-593`
-explains why it lives on the `DO UPDATE` arm rather than in Python.
+⚠️ `_PROVISION_MEMBER_SQL`'s trailing tenant fence
+(`WHERE app_user.organization_id IS NULL OR … = EXCLUDED.organization_id`) is S1-1's
+write-leak repair and **must not change meaning** — its own comment block above the
+statement explains why it lives on the `DO UPDATE` arm rather than in Python. It is
+unchanged, and `test_the_tenant_fence_still_refuses_another_organization` now drives it
+with a **differently-cased** address too, which is an input that could not reach it before
+(no conflict ever happened, so nothing was refused — it wrote a second row instead).
+
+**Fences (R7), all in `tests/unit/test_app_user_upserts.py` — 20 tests, 0 skips:**
+`test_no_un_allow_listed_site_names_the_bare_email_column` (whitespace-proof
+`ON\s+CONFLICT\s*\(\s*email\s*\)` ratchet over `packages/` + `apps/`; allow-list is **one
+entry with a reason** — `customer_console/store.py`, the *Console* plane, where
+`user_identity.email` is `CITEXT NOT NULL UNIQUE` and the bare target is correct — and
+`test_the_allow_listed_site_really_has_a_bare_email_constraint` checks that reason against
+the Console DDL rather than believing the comment, while
+`test_the_allow_list_carries_no_dead_entry` stops it accumulating) ·
+`test_the_old_conflict_target_still_raises_42P10` (the red preserved, so the suite cannot
+go vacuous if somebody "fixes" a future violation by re-adding the byte-exact constraint —
+the move 162's own comment refuses) · `test_app_user_carries_no_unique_index_on_the_bare_column`
+(asserted from `pg_indexes`, since that is what an arbiter resolves against) ·
+`test_the_functional_index_and_the_drop_ship_in_one_migration` (finds 162 **by content**,
+R1) · plus both statements × {fresh, conflict, mixed-case} and the `DO UPDATE` arms
+(`invited → active`, `removed` never reactivated, `display_name` never blanked, the owner
+grant landing exactly once). Mutation-proved: reverting the `access.py` conflict target
+alone turns **6** of the 20 red. The suite is named in `pr-check.yml`'s R8 skip guard and
+reuses the existing `TENANT_LADDER_DATABASE_URL unset` grep line.
 
 ---
 
@@ -2448,9 +2508,11 @@ uv run pytest tests/unit/test_app_user_upserts.py -v -rs
 
 ⚠️ **A skip is not a pass** — read the `-rs` block. The R8 suites above skip loudly
 without their DSN, and a green run that skipped them proves the SQL was written, not that
-it works. ⚠️ **`test_org_provisioning.py` and `test_app_user_upserts.py` do not exist
-yet** — they are this ticket's own deliverables, named here so the file names are decided
-once rather than per-slice. Everything else in the block exists today and must stay green.
+it works. ⚠️ **`test_org_provisioning.py` does not exist yet** — it is this ticket's own
+deliverable, named here so the file name is decided once rather than per-slice.
+**`test_app_user_upserts.py` now exists** (slice 6, 2026-08-19: 20 tests, 0 skips, named
+in `pr-check.yml`'s R8 skip guard). Everything else in the block exists today and must
+stay green.
 
 ---
 
