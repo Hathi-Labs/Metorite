@@ -219,6 +219,19 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
 - **Added:** 2026-08-17 · production-enablement session
 
+### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
+- **Check:** ask the owner whether a Razorpay test account exists; on the box or
+  in CI, `env | grep -c CUSTOMER_CONSOLE_RAZORPAY` → `3` means done. (No repo
+  command can see this — it is an external account plus deployment env.)
+- **Why:** CP-9's provider seam fails closed: `POST /billing/orders` answers 503
+  until `CUSTOMER_CONSOLE_RAZORPAY_KEY_ID` / `_KEY_SECRET` / `_WEBHOOK_SECRET`
+  are set — **and the ₹0 discount path also goes through order creation**, so
+  Fracktal's free onboarding purchase (D42) is blocked on this account existing.
+  Test-mode keys suffice for the whole rehearsal; live keys stay §6(b). Creating
+  any external account is owner-side (`customer_console_infrastructure.md` §7).
+- **Authority:** `work_plan.md` §6(b) · `customer_console.md` §9.4/§8 gate 3
+- **Added:** 2026-08-19 · CP-9 substrate session
+
 ### H-12 · Decide fate of FracktalWorks satellite-repo references · [OWNER]
 - **Check:** `rg -n "FracktalWorks/" apps/services/gateway/agents.json README.md`
   → hits mean still pending.
