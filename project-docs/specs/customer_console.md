@@ -120,8 +120,13 @@ answer: **(e)** the browser→provider **hand-off** (`SC-4h`, jointly owned) —
 Checkout's `key_id` + `order_id` are exposed by no route, `OrderView` being
 pinned to an exact 14-name set; and **(f)** a small **customer-key read of the
 priced `plan_catalog`**, without which SC-4a's launch done-when 1 has no data
-source. Neither is built here; both are named so the next WS-31 slice does not
-have to rediscover them ·
+source. Both were named so the next WS-31 slice would not have to rediscover
+them — and **(f) is now ✅ BUILT, 2026-08-19**: `GET /billing/catalog` on the
+`can_pay` door, active rows only, integer paise through the one
+`payments.paise`, two red-first fences, **no migration**, carried by **done-when
+18**. The suite is **117** against a real Postgres 16, **0 skipped**; the
+ten-suite Console block **395**. **(e) stays held back** — it needs a
+capability decision and the owner-gated Razorpay account ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -1306,8 +1311,9 @@ builds an amount from a `float`.
 neither of which can move value.** This is the question the audit stopped on —
 `main.py:5-24` declares four schemes, the `cc_live_` organization key is
 **read-only by design** (it reaches `/me` and `/me/billing`), every write route
-takes `Operator`, and `main.py:1355-1366` (*re-anchored 2026-08-19 from
-`:1213-1224`*) forbids the workbench from holding the operator token. A checkout is a customer write, so something had to give. The
+takes `Operator`, and `main.py:1386-1397` (*re-anchored 2026-08-19 from
+`:1213-1224`, and again the same day when §6 item (f)'s route landed above
+it*) forbids the workbench from holding the operator token. A checkout is a customer write, so something had to give. The
 answer that gives least:
 
 1. **The org key stays read-only for every existing route.** Nothing already
@@ -1504,6 +1510,13 @@ no scheme, need no carve-out, and touch 9.3's "exactly two writes" not at all.)*
 |---|---|---|
 | `GET /billing/orders/{id}` | organization key, `can_pay` | one order — **own org only**, 9.3(7)'s predicate |
 | `GET /billing/orders` | organization key, `can_pay` | that org's orders, newest first |
+| `GET /billing/catalog` | organization key, `can_pay` | the **active** catalog rows, `sort_order` — §6 item (f), built 2026-08-19 |
+
+*(The third row is §6 item **(f)**'s catalog read, not an order read. It lives
+in this table because this is where the customer-key **read** surface is
+written down, and a second table would be a mirror. Same credential, same
+`can_pay` door, same "mints no scheme" argument; its shape and its two fences
+are in item (f) itself.)*
 
 **Response shape — the single order.** `{ id, status, provider, gross_paise,
 discount_paise, taxable_paise, gst_paise, total_paise, gst_split, expires_at,
@@ -1544,8 +1557,9 @@ Credentials come from env with **no defaults** —
 D41.1's naming — and **absent means the seam REFUSES**: `POST /billing/orders`
 returns **503** naming what is missing (the `route.ts:34-36` posture, not a
 localhost default), and the webhook route 503s rather than accepting a body it
-cannot verify. That, plus `purchaseEnabled` staying `False` at `main.py:1408`
-(*re-anchored 2026-08-19 from `:1266`*),
+cannot verify. That, plus `purchaseEnabled` staying `False` at `main.py:1438`
+(*re-anchored 2026-08-19 from `:1266`, then again the same day for §6 item
+(f)'s route*),
 is how this ships dark: **absence of credentials and absence of a UI**, both
 observable, neither a flag nobody reads (CP-4's amendment is the precedent).
 
@@ -1895,6 +1909,28 @@ default.)*
     — Asserted by feeding the issued token back through the shared
     `split_key`/`hash_secret` seam and searching the stored row, the audit rows
     and the read route's response for the secret.
+
+*Clause 18 added 2026-08-19 with §6 item (f)'s build — the held-back item that
+turned out to be this ticket's, and the only one of the six a fake provider and
+a real Postgres can close on their own.*
+
+18. ✅ **A customer credential can read the priced catalog (§6 item (f)):**
+    `GET /billing/catalog` answers the **active** `plan_catalog` rows as
+    `slug · name · kind · price_paise · sort_order` under the organization key
+    on the `can_pay` door — so WS-30 SC-4a's launch done-when 1 (*no hard-coded
+    price ladder in TypeScript*) has a data source, and a **suspended**
+    organization can read the thing it must buy. — Two fences, both shown red
+    first: `test_the_catalog_read_never_boards_an_inactive_row` (a seeded
+    inactive row plus the two seeded INACTIVE Centers are absent, and three
+    active slugs are present so an empty answer cannot pass) and
+    `test_the_catalog_read_carries_no_per_org_state_and_paise_only` (the field
+    set pinned exactly on the model *and* on the wire; `price_paise` compared
+    against the NUMERIC rupees in the database, not a constant; two different
+    organizations get a byte-identical answer; a `deleted` org 403s).
+    `active` sits in `store.active_plans`'s WHERE clause, not in the caller —
+    `priced_plan`'s rule stated once more — and the ONE `payments.paise` does
+    the conversion, so quote and charge cannot drift into two denominations.
+    **No migration:** a read over tables 001 and 007 already ship.
 
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
@@ -3726,7 +3762,9 @@ two reads · 9.4's `PaymentProvider` seam, `RazorpayProvider` over `httpx`, the
 (i)–(v) server-side**: `discount_code` + `discount_redemption`, the split-key
 storage, percent-against-the-pre-GST-base, the redeem route and the ₹0 path ·
 every fence named in this ticket. Its acceptance is CP-9 done-when 1–17 and
-SC-4g done-when 1–8.
+SC-4g done-when 1–8. *(Item **(f)** below was then built on 2026-08-19 as its
+own small slice and carries **done-when 18** — the list is 1–18, and the
+substrate half's own acceptance is unchanged at 1–17.)*
 
 **🔴 The surface half — held back, and named rather than left to drift.**
 **(a)** WS-30 **SC-4a's checkout UI** and its two write proxies, **because
@@ -3759,10 +3797,24 @@ inventing a hand-off inside a UI PR. Gated behind `work_plan.md` §6(b) (the
 Razorpay account, owner-side even in test mode).
 
 **(f) One SMALL prerequisite the same audit found, and it belongs to this
-service:** *no route exposes the priced `plan_catalog` to a customer
-credential.* `GET /billing/summary` (`main.py:1017`) is `Operator`, cross-org,
+service** — ✅ **BUILT 2026-08-19 (WS-31, branch `ws-31-catalog-read`)**, one
+route, one store function, two fences, no migration: `GET /billing/catalog`
+(`main.py::billing_catalog`) under `PayingCaller`, over
+`store.active_plans`, shaped by `CatalogPlanView`'s exact five fields with
+`payments.paise` doing the one conversion. The suite is **117** tests, 0
+skipped, against a real Postgres 16; the Console block is **395** (the
+live-route parametrisation in `test_customer_console_resolve.py` picked the
+new route up on its own, 52 → 53 cases, and refuses a deployment key there).
+Both fences shown red first — dropping `WHERE active` fails
+`test_the_catalog_read_never_boards_an_inactive_row`; emitting
+`int(price_inr)` instead of `payments.paise(...)` fails
+`…_carries_no_per_org_state_and_paise_only` on `600 == 60000`, and adding an
+`organization_id` field to `CatalogPlanView` fails its field-set equality.
+*The finding as recorded:* *no route exposes the priced `plan_catalog` to a
+customer credential.* `GET /billing/summary` (`main.py:1048`) is `Operator`, cross-org,
 and returns only slugs the org already holds seats on; `GET /me/billing`
-(`:1355`) and `GET /me` (`:1181`) carry no catalog. SC-4a launch done-when 1
+(`:1386`) and `GET /me` (`:1212`) carry no catalog. *(All three re-anchored
+2026-08-19 by the build itself — the new models and route sit above them.)* SC-4a launch done-when 1
 forbids a hard-coded ladder in TypeScript, so **without a customer-key catalog
 read the launch slice cannot meet it honestly.** Recorded here as WS-31's, not
 built by WS-30. *(Made buildable 2026-08-19 after the dispatch confirmation

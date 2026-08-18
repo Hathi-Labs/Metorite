@@ -1623,6 +1623,134 @@ class TestReadingAnOrderBack:
         assert page["next"] is None  # fewer than a full page
 
 
+# ── §6 item (f) — the customer-key catalog read ────────────────────────────
+#
+# The one thing WS-30 SC-4a's launch slice could not get honestly: its
+# done-when 1 forbids a hard-coded price ladder in TypeScript, and until this
+# route existed no credential a customer holds could read the priced catalog.
+# `GET /billing/summary` is Operator and cross-org; `/me/billing` and `/me`
+# carry no catalog at all.
+
+class TestTheCatalogRead:
+    def test_the_catalog_read_never_boards_an_inactive_row(
+        self, client, db, org
+    ):
+        """§6 item (f) — ``active`` is in the WHERE clause, not in the caller.
+
+        `rnd` and `support` are seeded INACTIVE because their Centers are not
+        registered yet (`002_seed_catalog.sql`), so a catalog read that boards
+        them offers a customer a package the product cannot deliver. A row
+        seeded HERE covers the case where somebody later flips the seed: the
+        fence must not depend on a particular pair of slugs still being off.
+
+        Mutation evidence (run and reverted during the build): dropping
+        ``WHERE active`` from ``store.active_plans`` fails this test on the
+        seeded slug and on both seeded ones, and nothing else in the suite
+        notices.
+        """
+        hidden = f"hidden-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO plan_catalog (slug, name, kind, price_inr, "
+                     "active, sort_order) VALUES (:s, 'Not For Sale', "
+                     "'center', 999.00, FALSE, 99)"),
+                {"s": hidden},
+            )
+            # The seeded pair, asserted to BE inactive rather than assumed:
+            # a fence whose subject silently became active would otherwise
+            # pass by testing nothing.
+            off = {
+                r[0] for r in c.execute(
+                    text("SELECT slug FROM plan_catalog WHERE NOT active")
+                )
+            }
+        assert {hidden, "rnd", "support"} <= off, off
+
+        r = client.get("/billing/catalog", headers=_headers(org["key"]))
+        assert r.status_code == 200, r.text
+        slugs = [p["slug"] for p in r.json()["plans"]]
+
+        assert hidden not in slugs
+        assert "rnd" not in slugs and "support" not in slugs
+        # Non-vacuous: an empty catalog would satisfy every assertion above.
+        assert {"core", "sales", "complete"} <= set(slugs), slugs
+
+    def test_the_catalog_read_carries_no_per_org_state_and_paise_only(
+        self, client, db
+    ):
+        """§6 item (f) — the field set, the denomination, and both doors.
+
+        Four properties in one fence because they are one decision — *what a
+        customer credential may learn from the catalog*:
+
+        1. the field set is **exactly** five names, structurally over the
+           response model AND over the wire, so a per-org field (seats held,
+           entitlement state, an org-specific price) argues with a red test;
+        2. money is **paise**, asserted against the NUMERIC rupees in the
+           database rather than against a constant, so emitting ``price_inr``
+           or dropping the conversion is red;
+        3. two different organizations get a **byte-identical** answer — the
+           real statement of "no per-org pricing";
+        4. the door is ``can_pay``: a **suspended** org reads it (that is the
+           whole reason it is not ``KeyCaller``), a **deleted** one is 403.
+
+        Mutation evidence (run and reverted): emitting ``int(price_inr)``
+        instead of ``payments.paise(...)`` fails on 2; adding an
+        ``organization_id`` field to ``CatalogPlanView`` fails on 1.
+        """
+        from customer_console.main import CatalogPlanView
+
+        expected = {"slug", "name", "kind", "price_paise", "sort_order"}
+        assert set(CatalogPlanView.model_fields) == expected
+        assert not any(
+            "org" in name or "seat" in name or "entitle" in name
+            for name in CatalogPlanView.model_fields
+        )
+
+        slug = _new_org(client, "cat")
+        key = _org_key(client, slug)
+        _lifecycle(client, slug, "suspended")
+
+        r = client.get("/billing/catalog", headers=_headers(key))
+        assert r.status_code == 200, r.text
+        plans = r.json()["plans"]
+        assert plans, "the seeded catalog is never empty"
+        assert all(set(p) == expected for p in plans), plans
+
+        # ...and the AI door is still shut for the same key, so the two
+        # questions have not converged into one.
+        assert client.get("/me", headers=_headers(key)).status_code == 403
+
+        with db.begin() as c:
+            rupees = {
+                r_[0]: r_[1] for r_ in c.execute(
+                    text("SELECT slug, price_inr FROM plan_catalog "
+                         "WHERE active")
+                )
+            }
+        for plan in plans:
+            assert plan["price_paise"] == int(rupees[plan["slug"]] * 100)
+        # An anchor a reader can check by eye: Core is Rs 600.00.
+        core = next(p for p in plans if p["slug"] == "core")
+        assert core["price_paise"] == 60000
+
+        # Deterministic, and it is the catalog's own order.
+        assert [p["sort_order"] for p in plans] == sorted(
+            p["sort_order"] for p in plans
+        )
+
+        other = _org_key(client, _new_org(client, "cat-other"))
+        assert client.get(
+            "/billing/catalog", headers=_headers(other)
+        ).json() == r.json()
+
+        _lifecycle(client, slug, "cancelled")
+        _lifecycle(client, slug, "deleted")
+        dead = client.get("/billing/catalog", headers=_headers(key))
+        assert dead.status_code == 403, dead.text
+        assert dead.json()["detail"] == "organization is deleted"
+
+
 # ── SC-4g — discount codes, the refusal partition, and the Rs 0 path ───────
 
 class TestDiscountCodes:
