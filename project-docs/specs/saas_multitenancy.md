@@ -2293,10 +2293,22 @@ direction needs the box to ask the Console for anything beyond `resolve`, the
 set of one is the only one that…"*) gains a sibling — which is a **credential-scope
 change** and belongs to the owner (§6 gate (f)), not to this ticket's implementer.
 
-**Done when:** an organization provisioned through `POST /orgs/provision` resolves
-end-to-end through `POST /registry/resolve`'s deployment arm, proven **R8 against both
-real databases** (Console + tenant); and a Console-side fence asserts provisioning writes
-exactly one `org_placement` row and is idempotent on re-run.
+**Done when** *(split 2026-08-19 at dispatch confirmation — "both real databases" named
+a two-ladder harness that does not exist; no module loads both ladders, and
+`test_deployment_resolve_cache.py:25-30`'s fixture sets `DATABASE_URL` in-process, which
+is exactly the collision that makes a two-engine harness go green against the wrong
+database)*, **two single-DB halves plus a reserved smoke:**
+- **(4a, Console DB):** a Console-side fence asserts `POST /orgs/provision` writes exactly
+  one `org_placement` row, idempotent on re-run, and that `POST /registry/resolve`'s
+  deployment arm returns the provisioned org — all against the Console ladder alone.
+- **(4b, tenant DB):** a fresh resolve answer writes the CP-2b projection rows — already
+  fenced in `test_deployment_resolve_cache.py`; this half asserts nothing new beyond the
+  provisioned-slug case.
+- **True end-to-end (both databases, live HTTP)** is reserved for the deployment smoke at
+  execution time (🔴 the §6 gate). If an implementer wants the in-process bridge anyway,
+  the harness is `httpx.ASGITransport` onto `customer_console.main.app` in a NEW module
+  that loads both ladders explicitly — named here so nobody invents it as an acceptance
+  criterion; it is optional hardening, not the done-when.
 
 **Slice 5 · `key_store` / `model_config` tenant threading.**
 **Anchors + measurement (2026-08-19):**
@@ -2326,7 +2338,13 @@ are already supplying one and the fail-closed arm is never reached in production
 
 **Done when:** those two pinned tests are green **unedited**, and a second organization's
 provider key and model config read correctly through the threaded sites while the first
-organization's reads are unchanged.
+organization's reads are unchanged. **And a completion RATCHET holds (added 2026-08-19 at
+dispatch confirmation — without it this clause is satisfiable by threading three sites):**
+the pattern is `tests/unit/test_db_engine_seam.py:310`'s H2 bank-your-progress mechanism
+(`_GET_DB_CALL` + `H2_EXEMPT_FILES` + `H2_CONVERTED_PACKAGES`) — pin the starting counts
+**38 (`get_key_store()`) + 10 (`load_blob`/`save_blob`)** and assert they only go DOWN;
+a converted package is pinned at zero. Slice 5 may land across several PRs on this
+ratchet's cadence; each PR banks its progress.
 
 **Slice 6 · The `ON CONFLICT (email)` repair.**
 **Anchors:** `packages/acb_auth/acb_auth/access.py:550` (inside `_BOOTSTRAP_OWNER_SQL`) ·
@@ -2390,7 +2408,7 @@ generated phases inside the fixture, so the build and its fences are unblocked t
 | `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement |
 | `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service` |
 | `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved |
-| a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited |
+| a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited |
 
 **Rule exposure.** **R1** — the migration number is taken at build time (the ladder tops at
 178 today; that is a measurement). **R5** — no new persisted table is introduced by any
@@ -2406,8 +2424,11 @@ class.
 (`test_billing_purchase_capability.py` records why `DATABASE_URL` must not be used):
 
 ```bash
+# Any ports work — the invariant is that the two DSNs must not name the same
+# database (5443 is the session's tenant-scratch; the Console scratch has run
+# on 5442 — reuse it, the 5444 here is illustrative, not documented anywhere):
 export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5443/acb_tenant
-export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5444/acb_console
+export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5442/cc_platform
 
 # slices 1+2 — the new fences, plus the seeds they generalise
 uv run pytest tests/unit/test_org_provisioning.py \
