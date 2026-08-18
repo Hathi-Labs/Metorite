@@ -339,6 +339,17 @@ def _expire(db, email: str) -> None:
     _backdate(db, email, get_settings().customer_console_resolve_ttl_seconds + 60)
 
 
+def _future_seconds() -> float:
+    """Far enough into the future to be a broken clock, not jitter.
+
+    Read from the module's own named tolerance rather than hard-coded, so
+    changing that number changes this suite's INPUT and not its meaning.
+    """
+    from acb_auth import console_resolve
+
+    return console_resolve._CLOCK_SKEW_TOLERANCE_SECONDS + 60
+
+
 def _email() -> str:
     return f"person-{uuid.uuid4().hex[:10]}@customer.example"
 
@@ -460,6 +471,12 @@ class TestFailClosedDegradeBounded:
         Driven by a **403** — the only outcome that can produce
         ``sign_in: false`` — and then asserted inside *and* outside the TTL,
         with the Console unreachable, with no further request made.
+
+        ⚠️ **Bounded by the staleness ceiling since the P1-2 repair
+        (2026-08-18)**, so the ages swept here stop just short of it. Past the
+        ceiling the record is re-consulted rather than believed forever — see
+        ``TestTheDeadStateIsBoundedByTheCeiling`` for why that is not a
+        relaxation.
         """
         from acb_auth import console_resolve
         from acb_common.settings import get_settings
@@ -475,8 +492,13 @@ class TestFailClosedDegradeBounded:
         assert (await console_resolve.resolve_for_signin(email)).admit is False
         asked = len(wired.requests)
 
+        settings = get_settings()
         wired.goes_dark()
-        for age in (0, get_settings().customer_console_resolve_ttl_seconds + 60):
+        for age in (
+            0,
+            settings.customer_console_resolve_ttl_seconds + 60,
+            settings.customer_console_resolve_max_staleness_seconds - 60,
+        ):
             _backdate(db, email, age)
             console_resolve.invalidate()
             decision = await console_resolve.resolve_for_signin(email)
@@ -512,10 +534,22 @@ class TestFailClosedDegradeBounded:
     async def test_staleness_never_relaxes_a_cached_state(self, wired, db):
         """Expiry may only make the cache MORE restrictive, never less.
 
-        The dead record is aged well past the ceiling — the point at which an
-        ordinary cached admission would be refused — and it still refuses with
-        the dead-state code rather than falling through to "unavailable", let
-        alone to an admit.
+        Two ages, because the P1-2 repair (2026-08-18) changed the WORD without
+        changing the direction, and pretending otherwise would make this fence
+        a lie:
+
+        * **inside the ceiling** the dead record still refuses with the
+          dead-state code, without asking anybody; and
+        * **past the ceiling** the record is re-consulted — but the Console is
+          unreachable and the record is beyond the ceiling, so the uncached path
+          refuses anyway, now with ``ConsoleUnavailable``.
+
+        Either way **nothing is admitted by getting older**, which is what this
+        fence has always been about. *(It previously asserted ``AccessDenied``
+        at ten times the ceiling. That assertion is what pinned an unrecoverable
+        state in place: the short-circuit ran ahead of every freshness bound at
+        any age forever, and the only thing that could clear it was a 200 the
+        short-circuit itself prevented — see the class below.)*
         """
         from acb_auth import console_resolve
         from acb_common.settings import get_settings
@@ -529,16 +563,20 @@ class TestFailClosedDegradeBounded:
         console_resolve.invalidate()
         await console_resolve.resolve_for_signin(email)
 
-        _backdate(
-            db, email,
-            get_settings().customer_console_resolve_max_staleness_seconds * 10,
-        )
-        console_resolve.invalidate()
+        ceiling = get_settings().customer_console_resolve_max_staleness_seconds
         wired.goes_dark()
 
-        decision = await console_resolve.resolve_for_signin(email)
-        assert decision.admit is False
-        assert decision.code == console_resolve.ACCESS_DENIED
+        _backdate(db, email, ceiling - 60)
+        console_resolve.invalidate()
+        inside = await console_resolve.resolve_for_signin(email)
+        assert inside.admit is False
+        assert inside.code == console_resolve.ACCESS_DENIED
+
+        _backdate(db, email, ceiling * 10)
+        console_resolve.invalidate()
+        past = await console_resolve.resolve_for_signin(email)
+        assert past.admit is False, "age alone admitted a refused person"
+        assert past.code == console_resolve.CONSOLE_UNAVAILABLE
 
     async def test_a_403_records_only_the_fact_it_proved(self, wired, db):
         """``{"sign_in": false}`` and nothing else.
@@ -678,6 +716,275 @@ class TestTheFourOutcomes:
         assert decision.admit is False
         assert decision.code == console_resolve.ACCESS_DENIED
         assert _membership(db, email) == []
+
+
+# ══ The dead state is bounded by the CEILING, and self-heals ═════════════════
+#
+# Repair of review finding **P1-2** (2026-08-18). The 403 writes a PERSON fact
+# (`{"sign_in": false}`) onto an ORG row — the org this box previously resolved
+# that person into, which may be an unrelated, perfectly live organization —
+# and `_READ_SQL` then serves that org-scoped refusal to EVERY member with a
+# non-NULL `resolved_at`. The short-circuit ran ahead of every freshness bound
+# at ANY age, forever, and the only thing that could clear it was a successful
+# 200 the short-circuit itself prevented. Recovery was a manual UPDATE on the
+# tenant database. (Amplifier: `lifecycle.capabilities_of` answers
+# `STATES["deleted"]` for any UNRECOGNISED status string, so a typo in the
+# Console's column 403s a live customer.)
+#
+# The bound: the short-circuit applies while the record is inside
+# MAX_STALENESS. Past it the record is re-consulted like any other. That is not
+# a relaxation — with the Console unreachable a past-ceiling record refuses on
+# the uncached path anyway, and a genuinely dead organization 403s again and
+# re-arms the record. What it buys is that a wrong one heals within 24 hours
+# instead of never.
+
+class TestTheDeadStateIsBoundedByTheCeiling:
+    async def _make_dead(self, console, db, email: str, slug: str) -> None:
+        """Admit once, then take a 403 — the only path that writes the state."""
+        from acb_auth import console_resolve
+
+        console.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+        console.refuses("deleted")
+        _expire(db, email)
+        console_resolve.invalidate()
+        assert (await console_resolve.resolve_for_signin(email)).admit is False
+        assert _org_row(db, slug)["registry_capabilities"] == {"sign_in": False}
+
+    async def test_a_dead_record_past_the_ceiling_is_re_consulted_and_heals(
+        self, wired, db
+    ):
+        """The 403 was wrong (or the organization came back). 24h, not never.
+
+        Console reachable and answering 200 → the person is admitted and the
+        org row's capabilities are rewritten from the wire, so the next member
+        through is not refused either.
+        """
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        await self._make_dead(wired, db, email, slug)
+
+        ceiling = get_settings().customer_console_resolve_max_staleness_seconds
+        _backdate(db, email, ceiling + 60)
+        console_resolve.invalidate()
+        wired.answers(_answer(slug))
+        asked = len(wired.requests)
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert len(wired.requests) == asked + 1, "it never asked again"
+        assert decision.admit is True
+        assert decision.source == "console"
+        assert _org_row(db, slug)["registry_capabilities"]["sign_in"] is True
+
+    async def test_a_dead_record_past_the_ceiling_still_refuses_with_no_console(
+        self, wired, db
+    ):
+        """Re-consulting is not admitting. A box that cannot ask still refuses.
+
+        This is what keeps "staleness only ever restricts" true after the
+        bound: past the ceiling the record buys nothing at all, so the uncached
+        path answers — and it fails closed.
+        """
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        await self._make_dead(wired, db, email, slug)
+
+        ceiling = get_settings().customer_console_resolve_max_staleness_seconds
+        _backdate(db, email, ceiling + 60)
+        console_resolve.invalidate()
+        wired.goes_dark()
+
+        decision = await console_resolve.resolve_for_signin(email)
+        assert decision.admit is False
+        assert decision.code == console_resolve.CONSOLE_UNAVAILABLE
+
+    async def test_a_dead_record_past_the_ceiling_re_arms_on_a_second_403(
+        self, wired, db
+    ):
+        """A genuinely dead organization is refused again, and recorded again.
+
+        The bound does not forgive anything; it only stops the box believing an
+        unverifiable fact forever.
+        """
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        await self._make_dead(wired, db, email, slug)
+
+        ceiling = get_settings().customer_console_resolve_max_staleness_seconds
+        _backdate(db, email, ceiling + 60)
+        console_resolve.invalidate()
+
+        decision = await console_resolve.resolve_for_signin(email)
+        assert decision.admit is False
+        assert decision.code == console_resolve.ACCESS_DENIED
+        assert decision.source == "console-refused"
+        assert _org_row(db, slug)["registry_capabilities"] == {"sign_in": False}
+
+    async def test_one_persons_403_does_not_lock_their_COLLEAGUES_out_forever(
+        self, wired, db
+    ):
+        """The finding's actual shape: a person fact written on an ORG row.
+
+        Two members of one organization. One takes a 403 — which writes
+        ``{"sign_in": false}`` onto the organization — and the other, who was
+        admitted minutes earlier and has a live ``resolved_at``, is refused by
+        it. Before the bound that was permanent for **every** member and
+        recoverable only by hand; now it clears on the first re-consult past the
+        ceiling.
+        """
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        colleague, refused, slug = _email(), _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(colleague)).admit
+        await self._make_dead(wired, db, refused, slug)
+
+        # The colleague is collateral: their own row is fresh, the org's is not.
+        console_resolve.invalidate()
+        assert (
+            await console_resolve.resolve_for_signin(colleague)
+        ).source == "cache-dead"
+
+        ceiling = get_settings().customer_console_resolve_max_staleness_seconds
+        _backdate(db, colleague, ceiling + 60)
+        console_resolve.invalidate()
+        wired.answers(_answer(slug))
+
+        decision = await console_resolve.resolve_for_signin(colleague)
+        assert decision.admit is True, (
+            "a colleague of a refused person is locked out permanently"
+        )
+
+
+# ══ A backwards clock must not manufacture freshness ═════════════════════════
+#
+# Repair of review finding **P2** (2026-08-18). `_age_seconds` floored the age
+# at zero and its comment claimed the floor was the fail-CLOSED choice — *"a
+# server whose clock steps backwards would otherwise produce a negative age
+# that reads as fresher than now"*. It is the fail-OPEN one: floored to `0.0`,
+# a record stamped in the future reads as **maximally fresh** and is served
+# from the cache without anybody being asked. The comment described the bug as
+# the fix.
+#
+# `resolved_at` is the DATABASE's `now()` while the comparison happens against
+# the APP process's clock, so the two are genuinely different clocks and a skew
+# is a real state, not a hypothetical one.
+
+class TestABackwardsClockDoesNotMakeARecordFRESH:
+    async def test_a_record_stamped_in_the_future_is_not_treated_as_fresh(
+        self, wired, db
+    ):
+        """Negative age = STALE, i.e. past-ceiling semantics.
+
+        Console unreachable and the record unusable → refuse, which is the same
+        answer this box gives for any record it cannot trust.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+
+        _backdate(db, email, -_future_seconds())          # an hour into the FUTURE
+        console_resolve.invalidate()
+        wired.goes_dark()
+
+        decision = await console_resolve.resolve_for_signin(email)
+        assert decision.admit is False, "a clock skew admitted a stale record"
+        assert decision.code == console_resolve.CONSOLE_UNAVAILABLE
+
+    async def test_a_record_stamped_in_the_future_is_RE_CONSULTED(
+        self, wired, db
+    ):
+        """And with the Console up, nobody is punished for the skew.
+
+        Treating it as stale means *ask again*, not *refuse* — the refusal
+        above is only what happens when asking is impossible.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+
+        _backdate(db, email, -_future_seconds())
+        console_resolve.invalidate()
+        asked = len(wired.requests)
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert len(wired.requests) == asked + 1, "it answered from a future row"
+        assert decision.admit is True
+        assert decision.source == "console"
+
+    async def test_ordinary_sub_minute_skew_does_not_disable_the_cache(
+        self, wired, db
+    ):
+        """The other half of the bound, and it is why a TOLERANCE exists.
+
+        ⚠️ **Measured, not hypothetical**: against the pgvector container this
+        suite runs on, ``now()`` came back **0.40 s ahead** of
+        ``datetime.now(UTC)``, reproducibly — app and database are different
+        machines in the ordinary deployment. With a hard zero floor every
+        freshly-written record is born "in the future", reads as stale, and the
+        read-through cache silently stops working: one extra Console round trip
+        per sign-in and a TTL nobody ever gets.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+
+        _backdate(db, email, -console_resolve._CLOCK_SKEW_TOLERANCE_SECONDS + 5)
+        console_resolve.invalidate()
+        wired.goes_dark()
+
+        decision = await console_resolve.resolve_for_signin(email)
+        assert decision.admit is True, "a sub-minute skew emptied the cache"
+        assert decision.source == "cache-fresh"
+
+    async def test_a_DEAD_record_stamped_in_the_future_still_refuses(
+        self, wired, db
+    ):
+        """The skew may not relax a refusal either — in either direction.
+
+        The dead-state short-circuit is bounded by the ceiling now, so a future
+        stamp takes the record out of it; what must not happen is that the
+        person is then *admitted*. They are not: the box re-consults, cannot,
+        and refuses.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+        wired.refuses("deleted")
+        _expire(db, email)
+        console_resolve.invalidate()
+        assert (await console_resolve.resolve_for_signin(email)).admit is False
+
+        _backdate(db, email, -_future_seconds())
+        console_resolve.invalidate()
+        wired.goes_dark()
+
+        assert (await console_resolve.resolve_for_signin(email)).admit is False
 
 
 # ══ §6(j) row v — a TRANSPORT failure is not an authorization failure ════════

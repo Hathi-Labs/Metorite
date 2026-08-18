@@ -67,8 +67,18 @@ everyone at once, because the rows still carry the answer.
   copy, never "access denied": the person has done nothing wrong, and a
   wrong-looking denial generates a support ticket and a password reset that fix
   nothing (D33.1).
-* A cached ``sign_in: false`` overrides all three and refuses **immediately**,
-  at any freshness. Staleness may only ever make the cache MORE restrictive.
+* A cached ``sign_in: false`` outranks the TTL and refuses **immediately**,
+  Console reachable or not — but it stops at ``MAX_STALENESS`` like every other
+  record. Unbounded it was an **unrecoverable lockout of every member of the
+  organization** (finding P1-2): the 403 writes a person fact onto an ORG row,
+  the read serves it to everyone with a resolution, and the only thing that
+  could clear it was a 200 the short-circuit itself prevented. Past the ceiling
+  the record is re-consulted; nothing is relaxed by that, because an
+  unreachable Console then refuses on the uncached path anyway. Staleness may
+  only ever make the cache MORE restrictive.
+* Freshness is measured with :func:`_within`, so a record stamped in the
+  **future** (two clocks: the database's ``now()`` vs this process's) is stale,
+  never maximally fresh (finding P2).
 
 ## It branches on the OUTCOME, never on a lifecycle string
 
@@ -268,16 +278,62 @@ def _cache_put(key: str, record: _Record) -> None:
 
 
 def _age_seconds(record: _Record) -> float:
-    """How stale the record is, in seconds, floored at zero.
+    """How stale the record is, in seconds. **May be NEGATIVE.**
 
-    Floored because a server whose clock steps backwards would otherwise
-    produce a negative age that reads as "fresher than now" — which is the one
-    direction a freshness bound must never be wrong in.
+    ⚠️ It used to be floored at zero, with a comment claiming the floor was the
+    fail-CLOSED choice. It was the fail-OPEN one, and the comment described the
+    bug as the fix (review finding P2, 2026-08-18): floored to ``0.0``, a
+    record stamped in the FUTURE read as *maximally fresh* and was served from
+    the cache without anybody being asked — precisely the direction a freshness
+    bound must never be wrong in. Callers use :func:`_within`, which reads a
+    negative age as **stale**.
+
+    ⚠️ Two clocks, honestly: ``resolved_at`` is the DATABASE's ``now()`` and
+    the comparison is against this app process's, so a skew between them is a
+    real state rather than a hypothetical one — which is why the sign matters
+    at all.
     """
     stamped = record.resolved_at
     if stamped.tzinfo is None:
         stamped = stamped.replace(tzinfo=UTC)
-    return max(0.0, (datetime.now(UTC) - stamped).total_seconds())
+    return (datetime.now(UTC) - stamped).total_seconds()
+
+
+#: How far into the future a ``resolved_at`` may sit and still be read as
+#: "now" rather than as a broken clock.
+#:
+#: ⚠️ **A tolerance is required, and the number was measured rather than
+#: guessed.** The two clocks above are genuinely different machines in the
+#: ordinary deployment (app container vs database container): against the
+#: pgvector container this suite runs on, ``now()`` came back **0.40 seconds
+#: ahead** of ``datetime.now(UTC)``, reproducibly. With a hard ``0.0`` floor
+#: every freshly-written record is therefore born "in the future", reads as
+#: stale, and the read-through cache silently stops working — one extra Console
+#: round trip per sign-in, and a TTL that never applies to anybody.
+#:
+#: 60 seconds is 1/15th of the default TTL and 1/1440th of the ceiling, so what
+#: a skew can buy is negligible against both; a stamp further out than this is
+#: not jitter, it is a clock that stepped, and such a record is treated as
+#: STALE (re-consult; refuse if the Console cannot be reached).
+_CLOCK_SKEW_TOLERANCE_SECONDS = 60.0
+
+
+def _within(record: _Record, bound_seconds: float) -> bool:
+    """Whether *record* is inside *bound_seconds* of now, failing closed on skew.
+
+    An age below ``-_CLOCK_SKEW_TOLERANCE_SECONDS`` (``resolved_at`` materially
+    in the FUTURE) is **outside every bound** — the same treatment as
+    past-ceiling: re-consult, and if the Console cannot be reached, refuse
+    rather than admit on a record no clock in the system agrees about. Fence:
+    ``test_a_record_stamped_in_the_future_is_not_treated_as_fresh``.
+
+    ⚠️ The residual, stated rather than implied: a clock that steps BACKWARDS
+    shifts every age down together, so it lengthens every bound by however far
+    it stepped. Nothing in a process without a trusted monotonic anchor to the
+    row's clock can fix that; what this stops is the unbounded version, where
+    any future stamp whatsoever read as maximally fresh.
+    """
+    return -_CLOCK_SKEW_TOLERANCE_SECONDS <= _age_seconds(record) <= bound_seconds
 
 
 # ── The HTTP hop ────────────────────────────────────────────────────────────
@@ -703,16 +759,38 @@ async def resolve_for_signin(
         if cached is not None:
             _cache_put(key, cached)
 
-    # ── The dead-state rule, and it outranks every freshness bound ──────────
+    settings = get_settings()
+    ceiling = settings.customer_console_resolve_max_staleness_seconds
+
+    # ── The dead-state rule: it outranks the TTL, and stops at the CEILING ──
     # A cached answer more restrictive than "admit" applies at once, without
     # re-consulting and without any grace: Console reachable or not, inside the
     # TTL or outside it. Staleness may only ever make the cache MORE
     # restrictive — a record is relaxed by a successful re-consult, never by
-    # expiry. The only outcome that writes this is a 403, and the only state
-    # that produces a 403 is terminal, so refusing forever is the correct
-    # answer rather than a trap; `invalidate()` plus a cleared row is the
-    # escape hatch if that ever stops being true.
-    if cached is not None and cached.capabilities.get("sign_in") is False:
+    # expiry.
+    #
+    # ⚠️ **Bounded by MAX_STALENESS, 2026-08-18 (review finding P1-2), and the
+    # unbounded version was an unrecoverable lockout.** `_record_refusal`
+    # writes a PERSON fact (`{"sign_in": false}`) onto an ORG row — the org this
+    # box last resolved that person into, possibly an unrelated live one — and
+    # `_READ_SQL` then hands it to EVERY member with a non-NULL `resolved_at`.
+    # Unbounded, that refused every member of that organization forever, at any
+    # freshness, and the only thing that could clear it was a successful 200
+    # this very branch prevented from ever being requested. Recovery was a
+    # manual UPDATE on the tenant database. (`capabilities_of` returning
+    # `STATES["deleted"]` for any UNRECOGNISED status string is the amplifier: a
+    # typo Console-side 403s a paying customer.)
+    #
+    # Past the ceiling the record is re-consulted like any other, which is NOT
+    # a relaxation: with the Console unreachable a past-ceiling record buys
+    # nothing on the fallback path either, so it still refuses; a genuinely
+    # dead organization 403s again and re-arms the record. The whole change is
+    # that a WRONG record heals within 24h instead of never.
+    if (
+        cached is not None
+        and cached.capabilities.get("sign_in") is False
+        and _within(cached, ceiling)
+    ):
         return ResolveDecision(
             admit=False,
             code=ACCESS_DENIED,
@@ -722,17 +800,15 @@ async def resolve_for_signin(
             source="cache-dead",
         )
 
-    settings = get_settings()
-    if cached is not None and _age_seconds(cached) <= (
-        settings.customer_console_resolve_ttl_seconds
+    if cached is not None and _within(
+        cached, settings.customer_console_resolve_ttl_seconds
     ):
         return _admit(cached, "cache-fresh")
 
     try:
         status_code, body = await _post_resolve(key, display_name)
     except _Unreachable as exc:
-        ceiling = settings.customer_console_resolve_max_staleness_seconds
-        if cached is not None and _age_seconds(cached) <= ceiling:
+        if cached is not None and _within(cached, ceiling):
             _log.warning(
                 "console_resolve.degraded_to_cache",
                 error=str(exc), age_seconds=int(_age_seconds(cached)),
