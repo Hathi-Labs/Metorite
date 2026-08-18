@@ -2,7 +2,7 @@
  * Whether authentication is configured, bypassed, or enforced — as a pure
  * function of the environment.
  *
- * Spec: `project-docs/specs/platform_control_plane.md` CP-0 ·
+ * Spec: `project-docs/specs/customer_console.md` CP-0 ·
  * `project-docs/specs/saas_operations_doctrine.md` §4 findings 1–2 · D33.1.
  *
  * ## Why this is its own module

@@ -283,7 +283,7 @@ export const NAV_SECTIONS: NavSection[] = [
       // reachable by URL, but the Control Plane it reads from is undeployed
       // ("where it runs is an open owner decision", work_plan.md §2 WS-31), so
       // the page fails closed with "Billing is not configured for this
-      // deployment (CONTROL_PLANE_URL / CONTROL_PLANE_ORG_KEY)". Promoting it
+      // deployment (CUSTOMER_CONSOLE_URL / CUSTOMER_CONSOLE_ORG_KEY)". Promoting it
       // into the sidebar hands every customer admin a menu item that always
       // errors, in our internal environment-variable vocabulary.
       //

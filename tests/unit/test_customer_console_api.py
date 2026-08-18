@@ -1,6 +1,6 @@
-"""The Control Plane HTTP surface, end to end against a real Postgres.
+"""The Customer Console HTTP surface, end to end against a real Postgres.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §6 CP-1/CP-2.
+Spec: ``project-docs/specs/customer_console.md`` §6 CP-1/CP-2.
 
 Covers the three things that decide whether this service is safe to run at all:
 the door is shut by default, the seat cap actually refuses, and a retried usage
@@ -18,14 +18,14 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 
-from tests.unit._platform_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
-_URL = os.environ.get("CONTROL_PLANE_DATABASE_URL", "").strip()
+_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
     not _URL,
     reason=(
-        "CONTROL_PLANE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+        "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
         "A skip here is not a pass; CI must set it."
     ),
 )
@@ -45,9 +45,9 @@ def _schema():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("CONTROL_PLANE_OPERATOR_TOKEN", TOKEN)
-    monkeypatch.setenv("CONTROL_PLANE_INTERNAL_TOKEN", INTERNAL)
-    from platform_api.main import app
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", INTERNAL)
+    from customer_console.main import app
     return TestClient(app)
 
 
@@ -81,8 +81,8 @@ class TestTheDoor:
     def test_an_unconfigured_service_refuses_everything(self, monkeypatch):
         # Fails CLOSED, not open. This is D33.1's lesson applied from the first
         # line rather than retrofitted after a box was left public.
-        monkeypatch.delenv("CONTROL_PLANE_OPERATOR_TOKEN", raising=False)
-        from platform_api.main import app
+        monkeypatch.delenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", raising=False)
+        from customer_console.main import app
         r = TestClient(app).get("/billing/summary?org_slug=x", headers=AUTH)
         assert r.status_code == 503
 
@@ -179,7 +179,7 @@ class TestCreditsOverHttp:
         # CP-3 (as revised after verification): the METER is written by the
         # Router's internal token, never by the customer's own key — the metered
         # party must not be the reporter of its own usage. Cross-org and
-        # negative-value rejection are pinned in test_platform_key_auth.py.
+        # negative-value rejection are pinned in test_customer_console_key_auth.py.
         org_id = client.post("/orgs/provision", headers=AUTH, json={
             "slug": org, "name": "Acme Pumps",
             "owner_email": f"owner@{org}.com"}).json()["organization_id"]

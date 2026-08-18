@@ -1,7 +1,7 @@
 /**
  * The two enforcement points refuse a misconfigured production deployment.
  *
- * Spec: `platform_control_plane.md` CP-0 · `saas_operations_doctrine.md` §4
+ * Spec: `customer_console.md` CP-0 · `saas_operations_doctrine.md` §4
  * finding 2 · decision D33.1. Companion to `src/authPosture.test.ts`, which pins
  * the predicates themselves; this file pins what the *callers* do with them.
  *

@@ -1,6 +1,6 @@
 """Seat accounting — purchased, assigned, available — and the cap decision.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §3.3 · decisions D19.3
+Spec: ``project-docs/specs/customer_console.md`` §3.3 · decisions D19.3
 (the hard cap, carried verbatim) and D32.5 (the three counts, defined once).
 
 **Why this module is pure.** Every surface wants these numbers: the customer's

@@ -31,9 +31,9 @@ import { currentIdentity } from "@/lib/gateway";
 export const dynamic = "force-dynamic";
 
 /** Where the Control Plane lives. No default: see the note below. */
-const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL ?? "";
+const CUSTOMER_CONSOLE_URL = process.env.CUSTOMER_CONSOLE_URL ?? "";
 /** This deployment's own `cc_live_…` organization key. */
-const CONTROL_PLANE_ORG_KEY = process.env.CONTROL_PLANE_ORG_KEY ?? "";
+const CUSTOMER_CONSOLE_ORG_KEY = process.env.CUSTOMER_CONSOLE_ORG_KEY ?? "";
 
 export async function GET() {
   const identity = await currentIdentity();
@@ -44,20 +44,20 @@ export async function GET() {
   // Fail CLOSED and say what is missing. A default pointing at localhost would
   // let a misconfigured production deployment appear to work while reading
   // nothing — the same shape of defect as CP-0's fail-open auth (D33.1).
-  if (!CONTROL_PLANE_URL || !CONTROL_PLANE_ORG_KEY) {
+  if (!CUSTOMER_CONSOLE_URL || !CUSTOMER_CONSOLE_ORG_KEY) {
     return NextResponse.json(
       {
         detail:
-          "Billing is not configured for this deployment (CONTROL_PLANE_URL / CONTROL_PLANE_ORG_KEY).",
+          "Billing is not configured for this deployment (CUSTOMER_CONSOLE_URL / CUSTOMER_CONSOLE_ORG_KEY).",
       },
       { status: 503 },
     );
   }
 
   try {
-    const res = await fetch(`${CONTROL_PLANE_URL.replace(/\/$/, "")}/me/billing`, {
+    const res = await fetch(`${CUSTOMER_CONSOLE_URL.replace(/\/$/, "")}/me/billing`, {
       headers: {
-        Authorization: `Bearer ${CONTROL_PLANE_ORG_KEY}`,
+        Authorization: `Bearer ${CUSTOMER_CONSOLE_ORG_KEY}`,
         // Attribution only — it refines within the organization the key already
         // pinned and can never move the read to another one.
         "X-CC-Member": identity.email,

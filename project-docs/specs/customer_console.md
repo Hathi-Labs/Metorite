@@ -1,10 +1,14 @@
-# Platform Control Plane — the subscription, seat and AI-metering engine (WS-31)
+# Customer Console — the subscription, seat and AI-metering engine (WS-31)
+
+*(Authored 2026-08-12 as the "Platform Control Plane"; renamed **Customer
+Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
+path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2a · CP-3 · CP-4 BUILT** (2026-08-12/13) — 172
 platform tests against a real Postgres 16 per R8 · CP-3 was
 **rejected by independent verification once** and rebuilt (see its ticket) ·
 CP-2a ✅ · CP-2 · CP-5…CP-8 spec only · **where it runs is an open owner decision —
-[`control_plane_infrastructure.md`](control_plane_infrastructure.md)** ·
+[`customer_console_infrastructure.md`](customer_console_infrastructure.md)** ·
 **Date:** 2026-08-12 · **verified against code 2026-08-12** (repo-wide grep: zero hits for `usage_event`, `credit_ledger`,
 `model_rate_card`, `usage_rollup`, `module_catalog`, `org_module_entitlement`
 — none of the commercial substrate exists; `llm_api_key`'s eight hits are all
@@ -14,16 +18,19 @@ the *setting* `settings.llm_api_key`, not a table. Highest migration on disk:
 in session). D15, D19.2, D19.3, D22, D23, D24 are carried unchanged and must not
 be re-litigated here.
 
-> ### `The Control Plane is one central service. Tenancy is still a ROW.`
+> ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
 
-⚠️ **Name disambiguation, read once.** "Control plane" already means two things in
-this repo: **(a)** `workbench/control_plane/` — the tenant-side Next.js workbench,
-which keeps its name and is *not* this; **(b)** migration `159_control_plane.sql`
-— the tenant catalog inside each Metorite deployment, which under this spec
-becomes a **local projection** of the service defined here. This document means the
-**service**, and says "the Control Plane" for it throughout. Renaming (a) is
-explicitly out of scope (CLAUDE.md §5: do not refactor the tree to conform).
+⚠️ **Name disambiguation, read once.** Three near-neighbours are NOT this
+system: **(a)** `workbench/control_plane/` — the tenant-side Next.js workbench,
+whose directory name predates this service and deliberately keeps its path
+(D41.1; renaming it is out of scope — CLAUDE.md §5: do not refactor the tree to
+conform); **(b)** migration `159_control_plane.sql` — the tenant catalog inside
+each Metorite deployment, which under this spec becomes a **local projection**
+of the service defined here (an applied migration is never renamed);
+**(c)** WS-30's **Subscription Console** — the *customer-facing* billing
+surface, a client of this service. This document means the operator-side
+**service**, and says "the Customer Console" for it throughout.
 
 ---
 
@@ -53,7 +60,7 @@ deployments cannot.
 ## 2. Scope and non-goals
 
 **In scope.**
-1. The Control Plane service — a new deployable in this monorepo.
+1. The Customer Console service — a new deployable in this monorepo.
 2. The **organization registry**: orgs, deployments, placement, and the global
    `user_identity` / `org_membership` authority.
 3. The **subscription engine**: plan catalog (Center packages per D23/D24),
@@ -82,9 +89,9 @@ deployments cannot.
 
 | Question | Answer lives in | Authoritative |
 |---|---|---|
-| *Which companies exist, and where does each one's data sit?* | `organization`, `deployment`, `org_placement` | Control Plane |
-| *How many seats did they buy, how many are used, how many are free?* | `plan_catalog`, `org_subscription`, `seat_grant`, `seat_assignment` | Control Plane |
-| *How much AI have they burned, and what is left?* | `usage_event`, `credit_ledger`, `model_rate_card` | Control Plane |
+| *Which companies exist, and where does each one's data sit?* | `organization`, `deployment`, `org_placement` | Customer Console |
+| *How many seats did they buy, how many are used, how many are free?* | `plan_catalog`, `org_subscription`, `seat_grant`, `seat_assignment` | Customer Console |
+| *How much AI have they burned, and what is left?* | `usage_event`, `credit_ledger`, `model_rate_card` | Customer Console |
 
 ### 3.2 Registry and placement
 
@@ -363,7 +370,7 @@ Metorite **keeps issuing its own sessions** — NextAuth Google SSO in
 authentication server is built and nothing on the live auth path is cut over.
 
 What changes is **who is authoritative for "this person exists and belongs here"**.
-On sign-in, Metorite resolves the person against the Control Plane:
+On sign-in, Metorite resolves the person against the Customer Console:
 
 ```
 POST /registry/resolve { org, email } → { identity_id, role, seats: [...], status }
@@ -373,7 +380,7 @@ POST /registry/resolve { org, email } → { identity_id, role, seats: [...], sta
 Metorite caches the answer (TTL a config value) into migration 159's
 `user_identity` / `org_membership` projection and proceeds. **This is what makes the
 seat cap real**: a person cannot become a user of an organization without the
-Control Plane allocating them a seat, because the box asks before admitting them.
+Customer Console allocating them a seat, because the box asks before admitting them.
 
 Honest cost: deprovisioning is as fast as the cache TTL, not instantaneous. That is
 a config value, not an architectural limit, and it buys not having to build and
@@ -401,16 +408,16 @@ fail the new test before the fix); the docstring names the mechanism actually in
 🔴 OWNER-GATE** — build against fixtures and hand it over.
 
 **CP-1 · The service skeleton and registry.** ✅ **BUILT 2026-08-12.**
-`infra/platform/001_control_plane.sql` (its OWN migration ladder — not
+`infra/customer_console/001_customer_console.sql` (its OWN migration ladder — not
 `infra/postgres/`, which `apply_migrations.sh` replays into the *tenant*
 database and `gen_tenant_migration.py` scans to demand RLS; both would be wrong
 for a deliberately cross-tenant plane) · `002_seed_catalog.sql` (the D23/D24
 catalog as data, with `rnd`/`support` seeded INACTIVE because their Centers are
 not registered yet, and the rate card seeded UNPRICED so `rate_call` raises
-rather than billing a guess as free) · `apps/services/platform/` ·
+rather than billing a guess as free) · `apps/services/customer_console/` ·
 `tests/unit/test_platform_{seats,credits,keys,sql,api}.py`. The new engine site
 is declared in `test_db_engine_seam.py::_ALLOWED_SYNC` with its reason (R5(b)). New deployable
-`apps/services/platform/` following the existing service pattern (FastAPI, `uv`
+`apps/services/customer_console/` following the existing service pattern (FastAPI, `uv`
 workspace member, `infra/docker-compose.yml` entry beside `gateway`). Its own
 database, no RLS (§0.9.2 — it reads across tenants by design). Tables from §3.2.
 **Done when:** the service starts under compose and answers `/health`; a two-org
@@ -451,7 +458,7 @@ a revoked key 401s; the key secret is never logged (assert over the log record, 
 by reading the code).
 
 **CP-4 · The Router, pass-through only.** ✅ **BUILT 2026-08-12.**
-`POST /v1/chat/completions` on the Control Plane, authenticated by the
+`POST /v1/chat/completions` on the Customer Console, authenticated by the
 organization key: resolves the tier from `tier_binding`, calls the provider,
 returns the response **unchanged**, and writes one `usage_event` with
 `billed_credits = 0`.
@@ -514,12 +521,12 @@ exists for surfaces customers see. Both exemptions are recorded in D35.3/D35.4
 precisely because a later agent would otherwise read them as defects and "fix"
 them.
 
-**Done when:** the console renders from the Control Plane alone with no
+**Done when:** the console renders from the Customer Console alone with no
 per-deployment round trip on the request path; the reconciler alerts on a seeded
 drift between seat counts and subscription items; no route of the customer
 workbench can reach a cross-org read.
 
-**CP-2a · Signup and provisioning.** ✅ **BUILT 2026-08-13** — lifecycle state machine (`platform_api/lifecycle.py`), `POST /orgs/lifecycle` (transitions only, never free-form status writes), trial subscription + resumable `provisioning_run` at provision, and lifecycle enforcement on sign-in, seat writes and the AI path. ⚠️ **Fracktal signs up through this same flow (D36)** — there is no first-party bypass, because a bypass makes the customer path the one nobody tests. Still open: the self-serve signup *form* (this is the API beneath it) and certified deletion. *(Added by D33 — §4 finding 4: no signup route
+**CP-2a · Signup and provisioning.** ✅ **BUILT 2026-08-13** — lifecycle state machine (`customer_console/lifecycle.py`), `POST /orgs/lifecycle` (transitions only, never free-form status writes), trial subscription + resumable `provisioning_run` at provision, and lifecycle enforcement on sign-in, seat writes and the AI path. ⚠️ **Fracktal signs up through this same flow (D36)** — there is no first-party bypass, because a bypass makes the customer path the one nobody tests. Still open: the self-serve signup *form* (this is the API beneath it) and certified deletion. *(Added by D33 — §4 finding 4: no signup route
 exists anywhere in the app tree; the only way in is `ensure_owner_bootstrap()` promoting
 an `EXECUTIVE_EMAILS` address.)* Self-serve signup creating the org, its first owner, its
 placement and its trial, plus **GST fields captured at signup** (GSTIN + registered
@@ -539,13 +546,13 @@ a rate card you change on customers.
 ## 7. Verification
 
 ```bash
-# Control Plane. ⚠️ These need a REAL Postgres or they SKIP THEMSELVES (R8) —
+# Customer Console. ⚠️ These need a REAL Postgres or they SKIP THEMSELVES (R8) —
 # a skipped R8 test proves nothing:
-#   export CONTROL_PLANE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1/cc_platform
-uv run pytest tests/unit/test_platform_seats.py tests/unit/test_platform_credits.py \
-              tests/unit/test_platform_keys.py tests/unit/test_platform_sql.py \
-              tests/unit/test_platform_api.py tests/unit/test_platform_key_auth.py \
-              tests/unit/test_platform_router.py tests/unit/test_platform_lifecycle.py
+#   export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1/cc_platform
+uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer_console_credits.py \
+              tests/unit/test_customer_console_keys.py tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_api.py tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py
 
 # The seam and tenancy ratchets this must not regress
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py
@@ -572,7 +579,7 @@ surface, against fixtures.
 **🔴 OWNER-GATE — refuse by name, build the thing and hand it over:**
 1. **Splitting `GATEWAY_INTERNAL_TOKEN` from `LITELLM_MASTER_KEY`** (§4.3) — a
    credential rotation via redeploy. Existing gate, work_plan §6.
-2. **Deploying the Control Plane anywhere**, and any VPS reach.
+2. **Deploying the Customer Console anywhere**, and any VPS reach.
 3. **Live Razorpay credentials**, and any real payment configuration.
 4. **Editing any live organization's entitlements, seats or credit balance** — same
    gate the Subscription Console's fulfilment already carries.

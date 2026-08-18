@@ -30,7 +30,7 @@ def test_migration_numeric_prefixes_are_unique():
     assert not dupes, f"duplicate migration number(s): {dupes}"
 
 
-# ── The Control Plane ladder (infra/platform) ───────────────────────────────
+# ── The Customer Console ladder (infra/customer_console) ────────────────────
 #
 # A second ladder, applied to a different database (D34: Supabase), so it needs
 # the same collision guard. It also needs one the app ladder does not, because
@@ -40,7 +40,7 @@ def test_migration_numeric_prefixes_are_unique():
 # exist` — in an assertion about billing, several steps from the missing
 # migration. Root CLAUDE.md §5: mirrors go stale and then lie.
 
-_PLATFORM = Path(__file__).resolve().parents[2] / "infra" / "platform"
+_PLATFORM = Path(__file__).resolve().parents[2] / "infra" / "customer_console"
 
 
 def test_control_plane_migration_numbers_are_unique():
@@ -50,7 +50,7 @@ def test_control_plane_migration_numbers_are_unique():
         if m:
             by_num[int(m.group(1))].append(f.name)
     dupes = {n: names for n, names in by_num.items() if len(names) > 1}
-    assert not dupes, f"duplicate Control Plane migration number(s): {dupes}"
+    assert not dupes, f"duplicate Customer Console migration number(s): {dupes}"
 
 
 def test_the_shared_ladder_finds_every_control_plane_migration():
@@ -61,7 +61,7 @@ def test_the_shared_ladder_finds_every_control_plane_migration():
     `006_*.sql` keeps it true and deleting one keeps it true, while a discovery
     that silently missed a file fails here rather than four suites later.
     """
-    from tests.unit._platform_ladder import ladder
+    from tests.unit._customer_console_ladder import ladder
 
     found = [Path(p).name for p in ladder()]
     on_disk = sorted(
@@ -69,15 +69,16 @@ def test_the_shared_ladder_finds_every_control_plane_migration():
         key=lambda n: int(_NN.match(n).group(1)),  # type: ignore[union-attr]
     )
     assert found == on_disk
-    assert found, "the Control Plane ladder is empty"
+    assert found, "the Customer Console ladder is empty"
 
 
 def test_no_platform_suite_transcribes_the_ladder_by_hand():
     """The fence for the defect itself (R7).
 
-    Mutation-checked: paste `"infra/platform/001_control_plane.sql"` back into
-    any of these suites and this test fails. Without it, a re-transcribed list
-    is invisible until it goes stale, which is exactly how the last one shipped.
+    Mutation-checked: paste `"infra/customer_console/001_customer_console.sql"`
+    back into any of these suites and this test fails. Without it, a
+    re-transcribed list is invisible until it goes stale, which is exactly how
+    the last one shipped.
 
     The set of suites is **globbed, not listed**. An earlier draft of this test
     carried a five-name tuple of the suites to check, which is the same mirror
@@ -87,11 +88,11 @@ def test_no_platform_suite_transcribes_the_ladder_by_hand():
     """
     here = Path(__file__).resolve().parent
     offenders = sorted(
-        f.name for f in here.glob("test_platform_*.py")
-        if "infra/platform/" in f.read_text(encoding="utf-8")
+        f.name for f in here.glob("test_customer_console_*.py")
+        if "infra/customer_console/" in f.read_text(encoding="utf-8")
     )
     assert not offenders, (
         f"{offenders} name migration files directly — use "
-        "`from tests.unit._platform_ladder import apply_ladder` so the ladder "
-        "cannot go stale"
+        "`from tests.unit._customer_console_ladder import apply_ladder` so the "
+        "ladder cannot go stale"
     )

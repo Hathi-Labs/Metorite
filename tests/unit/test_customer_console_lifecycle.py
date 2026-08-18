@@ -1,6 +1,6 @@
 """CP-2a — the organization lifecycle, and what each state permits.
 
-Spec: ``platform_control_plane.md`` §4.1d · ``saas_operations_doctrine.md`` §2.1.
+Spec: ``customer_console.md`` §4.1d · ``saas_operations_doctrine.md`` §2.1.
 
 Two properties carry most of the weight:
 
@@ -21,12 +21,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
-from platform_api import lifecycle
+from customer_console import lifecycle
 from sqlalchemy import create_engine, text
 
-from tests.unit._platform_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
-_URL = os.environ.get("CONTROL_PLANE_DATABASE_URL", "").strip()
+_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 TOKEN = "test-operator-token"
 OP = {"Authorization": f"Bearer {TOKEN}"}
 
@@ -90,7 +90,7 @@ class TestTheStateMachine:
 
 pytestmark_db = pytest.mark.skipif(
     not _URL,
-    reason=("CONTROL_PLANE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+    reason=("CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
             "A skip here is not a pass; CI must set it."),
 )
 
@@ -106,9 +106,9 @@ def _schema():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("CONTROL_PLANE_OPERATOR_TOKEN", TOKEN)
-    monkeypatch.setenv("CONTROL_PLANE_INTERNAL_TOKEN", "internal")
-    from platform_api.main import app
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", "internal")
+    from customer_console.main import app
     return TestClient(app)
 
 

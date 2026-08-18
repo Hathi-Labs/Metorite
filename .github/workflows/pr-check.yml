@@ -102,8 +102,8 @@ jobs:
     name: "Unit tests"
     runs-on: ubuntu-latest
     needs: lint
-    # WS-31 CP-3. The Control Plane's suites are R8-gated: they skip themselves
-    # unless CONTROL_PLANE_DATABASE_URL points at a real Postgres, because
+    # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
+    # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
     # verification found this job running WITHOUT that variable, so all 53
     # DB-gated platform tests — including every CP-3 cross-tenant fence — were
@@ -124,7 +124,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      CONTROL_PLANE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
+      CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
     steps:
       - uses: actions/checkout@v5
 
@@ -143,14 +143,14 @@ jobs:
       # runs. Without this the job would go back to silently skipping the moment
       # the service container failed to come up — the same failure mode, one
       # layer down.
-      - name: Assert the Control Plane database is reachable
+      - name: Assert the Customer Console database is reachable
         run: |
           uv run python - <<'PY'
           import os
           from sqlalchemy import create_engine, text
-          url = os.environ["CONTROL_PLANE_DATABASE_URL"]
+          url = os.environ["CUSTOMER_CONSOLE_DATABASE_URL"]
           with create_engine(url).begin() as c:
-              print("control plane db:", c.execute(text("select version()")).scalar_one())
+              print("customer console db:", c.execute(text("select version()")).scalar_one())
           PY
 
       - name: Run unit tests
@@ -160,11 +160,11 @@ jobs:
       # suites report themselves as skipped, fail the job.
       - name: Assert the R8-gated platform suites actually ran
         run: |
-          uv run python -m pytest tests/unit/test_platform_sql.py \
-            tests/unit/test_platform_key_auth.py tests/unit/test_platform_api.py \
-            tests/unit/test_platform_router.py tests/unit/test_platform_lifecycle.py \
+          uv run python -m pytest tests/unit/test_customer_console_sql.py \
+            tests/unit/test_customer_console_key_auth.py tests/unit/test_customer_console_api.py \
+            tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
-          if grep -q "CONTROL_PLANE_DATABASE_URL unset" /tmp/platform.txt; then
+          if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Platform suites skipped — R8 gate is disarmed."
             exit 1
           fi

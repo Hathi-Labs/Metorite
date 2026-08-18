@@ -1,6 +1,6 @@
 """CP-3 — the key resolves the tenant, and it may not move the ledger.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §4.3 / CP-3 ·
+Spec: ``project-docs/specs/customer_console.md`` §4.3 / CP-3 ·
 ``user_management_contract.md`` R11 · D32.3.
 
 Acceptance, verbatim: *"a request bearing org A's key and a forged
@@ -30,17 +30,17 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
-from platform_api.keys import split_key
+from customer_console.keys import split_key
 from sqlalchemy import create_engine, text
 
-from tests.unit._platform_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
-_URL = os.environ.get("CONTROL_PLANE_DATABASE_URL", "").strip()
+_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
     not _URL,
     reason=(
-        "CONTROL_PLANE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+        "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
         "A skip here is not a pass; CI must set it."
     ),
 )
@@ -61,9 +61,9 @@ def _schema():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("CONTROL_PLANE_OPERATOR_TOKEN", TOKEN)
-    monkeypatch.setenv("CONTROL_PLANE_INTERNAL_TOKEN", INTERNAL)
-    from platform_api.main import app
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", INTERNAL)
+    from customer_console.main import app
     return TestClient(app)
 
 
@@ -380,17 +380,17 @@ class TestRejection:
     def test_a_key_shaped_operator_token_is_still_not_a_key(self, client, monkeypatch):
         # Guards the parser rather than the comparison: a staff token that
         # happens to look like a key must not be parsed as one.
-        monkeypatch.setenv("CONTROL_PLANE_OPERATOR_TOKEN",
+        monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN",
                            "cc_live_deadbeefcafe_supersecret")
-        from platform_api.main import app
+        from customer_console.main import app
         c = TestClient(app)
         assert c.get("/me", headers={
             "Authorization": "Bearer cc_live_deadbeefcafe_supersecret"}
         ).status_code == 401
 
     def test_an_unconfigured_internal_token_fails_closed(self, client, monkeypatch):
-        monkeypatch.delenv("CONTROL_PLANE_INTERNAL_TOKEN", raising=False)
-        from platform_api.main import app
+        monkeypatch.delenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", raising=False)
+        from customer_console.main import app
         r = TestClient(app).post("/usage/record", headers=INT, json={
             "organization_id": "00000000-0000-0000-0000-000000000000",
             "request_id": "y"})

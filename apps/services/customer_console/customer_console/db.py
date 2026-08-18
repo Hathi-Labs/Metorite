@@ -1,4 +1,4 @@
-"""The Control Plane's own database handle.
+"""The Customer Console's own database handle.
 
 ⚠️ **This is deliberately NOT ``acb_common.db``, and that is not a shortcut.**
 
@@ -8,7 +8,7 @@ LEVEL SECURITY underneath so a query that forgets its tenant returns zero rows.
 Every rule in R5 exists to keep that seam single and unforgettable.
 
 This module connects to a **different database on a different plane**
-(``saas_multitenancy.md`` §0.9.2). The Control plane is *cross-tenant by design*
+(``saas_multitenancy.md`` §0.9.2). The Customer Console is *cross-tenant by design*
 — it has to answer "how many customers do we have and what do they owe us",
 which is the exact question RLS exists to make unanswerable. Routing it through
 the tenant seam would either bind a tenant (and return one customer's row where
@@ -20,12 +20,12 @@ this file and this reason, which is exactly the "cited reason a reviewer is
 expected to challenge" that R5 asks for.
 
 Isolation for this plane is a **network and credential boundary** — a separate
-database, separate credentials, reachable only from the Control Plane service —
+database, separate credentials, reachable only from the Customer Console service —
 not a row predicate. Nothing here holds tenant business data, so the blast
 radius of that choice is contracts and usage counts, never customers' content.
 
 Sync engine on purpose: the endpoints are declared ``def`` (not ``async def``),
-so FastAPI runs them in its threadpool. A control plane serves operators and
+so FastAPI runs them in its threadpool. A customer console serves operators and
 sign-ins, not a token-rate hot path; the async complexity would buy nothing and
 cost a second connection idiom.
 """
@@ -44,11 +44,11 @@ __all__ = ["control_plane_url", "get_engine"]
 #: env var that silently falls back to the tenant DSN would make that mistake
 #: invisible — the service would start, queries would succeed, and the control
 #: plane's tables would quietly be in the customer's database.
-_ENV_VAR = "CONTROL_PLANE_DATABASE_URL"
+_ENV_VAR = "CUSTOMER_CONSOLE_DATABASE_URL"
 
 
 def control_plane_url() -> str:
-    """The Control Plane DSN, or raise.
+    """The Customer Console DSN, or raise.
 
     Fails closed with a named variable rather than defaulting to localhost: a
     default that happens to work in development is how a misconfigured
@@ -57,8 +57,8 @@ def control_plane_url() -> str:
     url = os.environ.get(_ENV_VAR, "").strip()
     if not url:
         raise RuntimeError(
-            f"{_ENV_VAR} is not set. The Control Plane uses its OWN database, "
-            "separate from the tenant one (platform_control_plane.md §3, "
+            f"{_ENV_VAR} is not set. The Customer Console uses its OWN database, "
+            "separate from the tenant one (customer_console.md §3, "
             "saas_multitenancy.md §0.9.2) — there is deliberately no default."
         )
     return url
@@ -66,7 +66,7 @@ def control_plane_url() -> str:
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    """The process-wide Control Plane engine."""
+    """The process-wide Customer Console engine."""
     return create_engine(
         control_plane_url(),
         pool_pre_ping=True,

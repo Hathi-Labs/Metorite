@@ -26,7 +26,7 @@ customer-facing.
 > ⚠️ **Substrate moved — D32.2 (2026-08-12).** The tables this console reads
 > (`org_module_entitlement`, `user_module_seat`, `credit_ledger`, `usage_rollup`,
 > `invoice`) now live in the **central Control Plane service**, not in each
-> Metorite deployment: **`specs/platform_control_plane.md` (WS-31)**. This
+> Metorite deployment: **`specs/customer_console.md` (WS-31)**. This
 > console becomes a **client** of that service rather than a reader of CC-local
 > tables. **D35 (2026-08-12) confirms the split and fixes the other half:** this
 > console stays **inside Metorite** at `/settings/billing`, while the
@@ -138,7 +138,7 @@ entitlements directly.
 ### SC-4 — Buying credits, and running out *(specced 2026-08-13, D37)*
 
 Razorpay-only (D19.5) behind the `payment_provider` seam. The mechanics of the
-ledger are `platform_control_plane.md` §3.4; this is the part a customer touches.
+ledger are `customer_console.md` §3.4; this is the part a customer touches.
 
 **SC-4a · Fixed packs, self-serve (D37.1).** A short ladder of pre-priced packs
 rather than a free-text amount. Three reasons, in order of importance:

@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 003_metering_integrity.sql — two integrity holes found by CP-3 verification
 -- ============================================================================
--- Spec: platform_control_plane.md §3.4 · found by independent verification of
+-- Spec: customer_console.md §3.4 · found by independent verification of
 -- CP-3 (findings F1 and F3), both MEASURED against a live database rather than
 -- reasoned about.
 --

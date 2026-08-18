@@ -4,7 +4,7 @@
 **Date:** 2026-08-12 · **verified against code 2026-08-12** (every finding in §4
 carries the file it was measured in; re-verify anchors at dispatch, never trust
 them from authoring time) · **Owner:** this spec · **Decisions:** **D33**
-(work_plan.md §3) · **Companion:** `platform_control_plane.md` (WS-31) builds the
+(work_plan.md §3) · **Companion:** `customer_console.md` (WS-31) builds the
 engine; this document says *what a platform has to be able to do* and *which of our
 existing assumptions stop being true*.
 
@@ -117,7 +117,7 @@ Four separable stages. Merging any two is a bug you find at invoice time:
 
 Non-negotiables: the ledger is **append-only** and balance is `SUM(delta)`; raw
 events are retained ~90 days and **rollups forever**; and the meter runs where the
-metered party cannot host it (see `platform_control_plane.md` §4.1).
+metered party cannot host it (see `customer_console.md` §4.1).
 
 ### 2.5 Billing and revenue operations
 
@@ -273,7 +273,7 @@ a November 2026 date on it) and per-tenant restore (finding 9).
 
 1. **CP-0 comes before everything.** Multi-directory auth and fail-closed defaults are
    not hardening — without them there is no customer #1. This is *new* and it
-   re-orders `platform_control_plane.md` §6.
+   re-orders `customer_console.md` §6.
 2. **Capture GST fields at signup** (§3.1), in the same slice that creates the org.
    Retrofitting a GSTIN onto invoiced orgs is a customer conversation, not a migration.
 3. **Cap default auto-top-up below ₹15,000** (§3.2) and treat a failed mandate as the
@@ -310,7 +310,7 @@ customer's data, entitlements or credits · the D10/MT-0c threat-model un-parkin
 
 ## 9. References
 
-**Internal (binding):** `platform_control_plane.md` (WS-31 — the engine) ·
+**Internal (binding):** `customer_console.md` (WS-31 — the engine) ·
 `saas_multitenancy.md` §0.9.2/§5.1/§6 · `work_plan.md` §1 R1–R8, §3 D15/D32/**D33**,
 §6 gates · `engineering_practice.md` · `user_management_contract.md` R11/R3 ·
 `org_access_control.md` · `colleague_onboarding.md` (**internal staff only** — not the

@@ -24,10 +24,10 @@ dependencies = [
     "ingestion",
     "reconciler",
     "action-broker",
-    # WS-31 — the platform Control Plane. Same reason as the skill packages
-    # below: the root test suite imports `platform_api`, so it must be installed
+    # WS-31 — the platform Customer Console. Same reason as the skill packages
+    # below: the root test suite imports `customer_console`, so it must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError.
-    "platform-api",
+    "customer-console",
     # Skill packages imported by the root test suite / evals — must be installed
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError
     # (they resolve locally only because a dev venv already has them editable).
@@ -85,7 +85,7 @@ orchestrator  = { workspace = true }
 ingestion     = { workspace = true }
 reconciler    = { workspace = true }
 action-broker  = { workspace = true }
-platform-api   = { workspace = true }
+customer-console   = { workspace = true }
 email-ingestion = { workspace = true }
 whatsapp-ingestion = { workspace = true }
 skill-task-gtd  = { workspace = true }

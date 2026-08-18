@@ -1,6 +1,6 @@
 """Seat accounting: purchased, assigned, available, and the hard cap.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §3.3 · D19.3 (the cap,
+Spec: ``project-docs/specs/customer_console.md`` §3.3 · D19.3 (the cap,
 carried verbatim) · D32.5 (the counts, defined once).
 
 The cases that matter are the ones where money or access leaks:
@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import pytest
 
-from platform_api.seats import (
+from customer_console.seats import (
     CORE_PLAN_SLUG,
     decide_assignment,
     seat_counts,

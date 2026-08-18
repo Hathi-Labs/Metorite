@@ -1,6 +1,6 @@
 """The AI Router — tier resolution and provider pass-through (CP-4).
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §4 · D32.1 / D32.7.
+Spec: ``project-docs/specs/customer_console.md`` §4 · D32.1 / D32.7.
 
 **This slice deliberately does not price anything.** It forwards, it counts, and
 it writes a ``usage_event`` with ``billed_credits = 0``. The rate card is set in
@@ -93,10 +93,10 @@ def resolve_tier(conn: Connection, tier: str) -> ResolvedTier:
 def _fernet():
     from cryptography.fernet import Fernet
 
-    raw = os.environ.get("CONTROL_PLANE_ENCRYPTION_KEY", "").strip()
+    raw = os.environ.get("CUSTOMER_CONSOLE_ENCRYPTION_KEY", "").strip()
     if not raw:
         raise RuntimeError(
-            "CONTROL_PLANE_ENCRYPTION_KEY is not set. Provider secrets are "
+            "CUSTOMER_CONSOLE_ENCRYPTION_KEY is not set. Provider secrets are "
             "encrypted at rest and there is deliberately no default — a default "
             "key is the same as no encryption, while looking like encryption."
         )

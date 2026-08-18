@@ -1,13 +1,13 @@
 """CP-4 — the Router forwards, resolves tiers, and counts. It does not price.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §6 CP-4 · D32.1 / D32.7.
+Spec: ``project-docs/specs/customer_console.md`` §6 CP-4 · D32.1 / D32.7.
 
 Acceptance: *"Forwards to the same providers using today's machinery, writes
 ``usage_event``, no pricing and no gate. Done when: a completion through the
 Router is byte-identical for the client; one ``usage_event`` row exists per
 completion; a retried ``request_id`` writes one row, not two."*
 
-The provider call is stubbed through :func:`platform_api.router.set_provider_call`.
+The provider call is stubbed through :func:`customer_console.router.set_provider_call`.
 That seam exists because the alternative is a test that spends money at DeepSeek
 on every run, which means in practice nobody runs it.
 """
@@ -21,17 +21,17 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
-from platform_api import router as router_mod
+from customer_console import router as router_mod
 from sqlalchemy import create_engine, text
 
-from tests.unit._platform_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
-_URL = os.environ.get("CONTROL_PLANE_DATABASE_URL", "").strip()
+_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
     not _URL,
     reason=(
-        "CONTROL_PLANE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+        "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
         "A skip here is not a pass; CI must set it."
     ),
 )
@@ -82,10 +82,10 @@ def calls():
 
 @pytest.fixture
 def client(monkeypatch, calls):
-    monkeypatch.setenv("CONTROL_PLANE_OPERATOR_TOKEN", TOKEN)
-    monkeypatch.setenv("CONTROL_PLANE_INTERNAL_TOKEN", "internal")
-    monkeypatch.setenv("CONTROL_PLANE_ENCRYPTION_KEY", ENC_KEY)
-    from platform_api.main import app
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", "internal")
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
+    from customer_console.main import app
     return TestClient(app)
 
 
@@ -97,7 +97,7 @@ def db():
 @pytest.fixture
 def org_key(client, db, monkeypatch):
     """A provisioned org, a live key, and a platform DeepSeek credential."""
-    monkeypatch.setenv("CONTROL_PLANE_ENCRYPTION_KEY", ENC_KEY)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
     slug = f"router-{uuid.uuid4().hex[:8]}"
     client.post("/orgs/provision", headers=OP, json={
         "slug": slug, "name": "N", "owner_email": f"o@{slug}.com"})
@@ -311,7 +311,7 @@ class TestMetering:
         # An unmetered call is a revenue problem; a failed call is a product
         # problem, and the product problem is worse.
         _, key = org_key
-        from platform_api import main as main_mod
+        from customer_console import main as main_mod
 
         def _boom(*a, **k):
             raise RuntimeError("ledger unavailable")
@@ -363,7 +363,7 @@ class TestUsageExtraction:
 class TestProviderCredentials:
     def test_secrets_round_trip_and_are_not_stored_in_the_clear(
             self, db, monkeypatch):
-        monkeypatch.setenv("CONTROL_PLANE_ENCRYPTION_KEY", ENC_KEY)
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
         enc = router_mod.encrypt_secret("sk-very-secret")
 
         assert "sk-very-secret" not in enc
@@ -373,7 +373,7 @@ class TestProviderCredentials:
             self, client, db, monkeypatch):
         # §3.4: BYOK is a tier, not an exception — such an org is metered but
         # not charged for tokens, which also caps our exposure on big accounts.
-        monkeypatch.setenv("CONTROL_PLANE_ENCRYPTION_KEY", ENC_KEY)
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
         slug = f"byok-{uuid.uuid4().hex[:8]}"
         org_id = client.post("/orgs/provision", headers=OP, json={
             "slug": slug, "name": "N",
@@ -538,7 +538,7 @@ class TestFailureShapes:
         # F11: this raised from inside the request and surfaced as a 500, which
         # reads as a bug rather than as "this deployment is misconfigured".
         _, key = org_key
-        monkeypatch.setenv("CONTROL_PLANE_ENCRYPTION_KEY", "a-different-key")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", "a-different-key")
 
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": "tier-balanced", "messages": [{"role": "user", "content": "x"}]})
