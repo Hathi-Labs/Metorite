@@ -6,7 +6,8 @@ path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-3 · CP-4 BUILT · CP-6 mechanism
 BUILT (refusals ship OFF) · CP-2b CONSOLE HALF BUILT 2026-08-18, deployment half
-OPEN** — 264 Customer Console tests against a real Postgres 16 per R8 (219 + the
+OPEN and now DISPATCHABLE — seven blockers B1–B7 + two drift items answered
+2026-08-18** — 264 Customer Console tests against a real Postgres 16 per R8 (219 + the
 45 of `test_customer_console_resolve.py`) · CP-3 was **rejected by independent
 verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
 **CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
@@ -25,7 +26,15 @@ columns and the multi-org refusal copy — i.e. **clauses 6, 7, 11, clause 8's
 `resolved_at` half and clause 9's deployment-side refusal** — remain open, so
 *the seat cap is enforced by the Console and still not consulted by the product*.
 Issuing a real `cc_depl_` key into a live deployment stays OWNER-GATE (§8 gate
-7). Its earlier re-audit history, kept because it is what made the ticket
+7). **The deployment half was then audited for dispatch on 2026-08-18 and came
+back NO-GO on seven blockers (B1–B7) plus two status-drift items — all nine are
+answered in §6(d)–(i) and in the clauses themselves, as agent-proposed defaults
+the owner may overrule (the D16/D17 convention). Two consequences a reader
+should see from here: clause 12 drops from ✅ to ◐, because the resolve response
+gains a `capabilities` block that does not exist yet and the deployment-half
+slice therefore carries a small additive Console-side commit; and clause 10's ✅
+was true of the Console ladder only, so it is split per half.** Its earlier
+re-audit history, kept because it is what made the ticket
 dispatchable — **five blocking corrections C1–C5 landed 2026-08-18**:
 the freshness bound was restated honestly as a **pair** (TTL while the Console is
 reachable, `MAX_STALENESS` while it is not) with a cached **dead state** applying
@@ -444,20 +453,35 @@ POST /registry/resolve      Authorization: Bearer <operator token>
 # Deployment scheme — CP-2b. The CONSOLE side is BUILT and answers this shape
 # (main.py `_resolve_for_deployment`); the CALLER — the box that presents the
 # key — is the deployment half and is still unbuilt, so nothing sends it yet.
-# A box asking about a person it has just authenticated. It names no org: the
+# A box asking about a person it is authenticating. It names no org: the
 # org is the ANSWER, not the assertion (R11).
 POST /registry/resolve      Authorization: Bearer cc_depl_<prefix>_<secret>
      { email, display_name? }              # an org_slug field here is 400
   → 200 { identity_id, organizations: [ { organization_id, slug, placement,
-                                          status, seat } ] }   # never `role`
+                                          status, seat,
+                                          capabilities: {sign_in, write_seats,
+                                                         use_ai} } ] }
+                                           # never `role`
   | 200 { "organizations": [] }            # invisible — exactly this body
   | 409 { reason: "seat_cap_exceeded", buy_more: {...} }
   | 403 "organization is <state>"
 ```
 
+*(`capabilities` added 2026-08-18 with CP-2b's B1 answer — §6(d). It is the
+**open** part of this block: the three booleans come from the one
+`lifecycle.capabilities_of()` Console-side, and the box stores and applies
+**them**, never the `status` string, because `capabilities_of` lives in the
+Console package and the tenant deployable must not depend on it. `status` rides
+along for refusal copy only. The Console-side commit that emits the field is part
+of CP-2b's deployment-half slice.)*
+
 Metorite caches the answer into migration 159's `user_identity` /
-`org_membership` projection — **that projection is the cache of record** — and
-proceeds. **This is what makes the seat cap real**: a person cannot become a user
+`org_membership` projection — **that projection is the cache of record *for this
+entry point's fallback decision***, and for nothing wider: `159:107-109` keeps
+`app_user` authoritative for identity at large until WS-29 MT-1 **H6** cuts the
+general path over, and CP-2b does not touch `_ACCESS_SQL` or `resolve_identity`
+(§6(h), scoped 2026-08-18). Then it proceeds. **This is what makes the seat cap
+real**: a person cannot become a user
 of an organization without the Customer Console allocating them a seat, because
 the box asks before admitting them.
 
@@ -833,20 +857,41 @@ in `store.deployment_visible_orgs` and the key lookup in
 `tests/unit/test_customer_console_resolve.py` (45 tests) against a real Postgres
 16, every fence below shown **red first** by reverting the behaviour it pins —
 including a real two-thread race against the seat cap.
-Clauses met: **1, 2, 3, 4, 5, 8 (Console half), 9 (Console half), 10, 12**, plus
-the two R7 fences this implementation itself owes.
+Clauses met: **1, 2, 3, 4, 5, 8 (Console half), 9 (Console half), 10 (Console
+ladder only — split per half 2026-08-18, see the clause)**, plus the two R7
+fences this implementation itself owes. **Clause 12 was listed here as met and
+is now ◐** — the shipped response shape is correct as far as it goes, and
+§6(d) adds one field to it (`capabilities`) that does not exist yet.
 
 **What is NOT built, and it is the half that makes the cap real.** There is
 still **no caller anywhere in the tree** — no `acb_auth` entry point, no resolve
 cache, no `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS` /
 `…_MAX_STALENESS_SECONDS` settings, no `org_membership.resolved_at` /
 `organization.registry_status` projection columns, and no multi-org refusal
-copy. **Clauses 6, 7, 11, clause 8's `resolved_at` half and clause 9's
-deployment-side refusal are open.** Until they land, **the seat cap is a number
+copy. **Clauses 6, 7, 11, clause 8's `resolved_at` half, clause 9's
+deployment-side refusal, clause 10's tenant half and clause 12's `capabilities`
+block are open.** Until they land, **the seat cap is a number
 the Customer Console keeps, can now answer, and the product still never
 consults** — a person becomes a user of a Metorite deployment without any seat
 being allocated, which is exactly the claim §5.2 rests on (*"the box asks before
 admitting them"*), still unbuilt.
+
+**The deployment half's artifacts, each with a path** *(named 2026-08-18 in
+answer to blocker B6 — "primary artifacts homeless" is not a dispatchable
+ticket)*:
+
+| Artifact | Path | New or changed |
+|---|---|---|
+| Resolve client + cache | `packages/acb_auth/acb_auth/console_resolve.py` | **new module**; adds `httpx>=0.27` to `packages/acb_auth/pyproject.toml` — §6(e) |
+| The one caller | `apps/services/gateway/gateway/routes/signin.py`, `POST /signin/resolve` | **new route module**, mounted in `gateway/main.py` beside the others; authenticated by the app-wide `require_authenticated` and **not** added to `PUBLIC_ROUTES` (`main.py:487`) — §6(e) |
+| Tenant-side config | `packages/acb_common/acb_common/settings.py` — `customer_console_url`, `customer_console_deployment_key`, `customer_console_resolve_ttl_seconds`, `customer_console_resolve_max_staleness_seconds` | **four new fields** — §6(f) |
+| Projection columns | a **tenant** migration in `infra/postgres/`, number taken at build time (R1) | `org_membership.resolved_at`, `organization.registry_status` |
+| BFF hop | `workbench/control_plane/src/auth.ts` — a **new `signIn` callback** | §6(g) |
+| Refusal copy | `workbench/control_plane/src/app/signin/errorCopy.ts` | two new keys — §6(g) |
+| R8 suite (tenant DB) | `tests/unit/test_deployment_resolve_cache.py` | **new**, + `tests/unit/_tenant_ladder.py` — §6(i) |
+| Structural fences (no DB) | `tests/unit/test_console_dependency_boundary.py` | **new** — §6(d) |
+| Frontend fence | `workbench/control_plane/src/app/signin/signin.test.ts` (extended) | §6(g) |
+| CI | `.github/workflows/pr-check.yml` — a second Postgres service exporting `DATABASE_URL`, plus a skip-guard entry | §6(i) |
 
 **Findings recorded rather than fixed** (none is decided by any clause, so none
 was decided in the build): `org_membership.status` is **not** consulted by the
@@ -885,11 +930,18 @@ recorded so the next reader does not discover them in a billing incident:
    ticket, and `seats.py`'s `oversubscribed` docstring names the gap rather than
    claiming a guarantee the tree does not have.
 
-The 2026-08-18 audit found **three undecided questions** blocking dispatch. Each
-is answered below as an **agent-proposed default, owner may overrule** — the
+The 2026-08-18 audit found **three undecided questions** blocking dispatch, and
+the **second** audit that day — of the deployment half alone, after the Console
+half shipped — found **seven blockers B1–B7**. All ten are answered below as
+**agent-proposed defaults, owner may overrule** — the
 D16/D17 convention (`work_plan.md` §3: *"proposed defaults, adopted unless the
 owner objects"*). They are named as proposals because each has a defensible
 alternative; none of them is a commercial call, so none needs to wait.
+**(a)–(c) answer the first audit; (d)–(i) answer B1–B7 and are dated
+2026-08-18.** Where a proposed default was *overturned* during the write-up
+because the code contradicted it, the argument is in the text rather than in a
+commit message — there are two, in (e) and (g), and both are flagged
+⚠️ **DEVIATION**.
 
 **(a) Which credential — a FOURTH scheme: the deployment key (`cc_depl_…`).**
 The endpoint is Operator-auth today (`main.py:526`, `_: Operator`), and the
@@ -1015,14 +1067,17 @@ existed to remove.
     module exists to prevent, in the restrictive direction.
   - Fences: `test_a_cached_dead_org_refuses_without_asking_the_console`
     (`deleted`, Console unreachable, inside *and* outside the TTL — refused in
-    both), `test_a_cached_suspended_org_locks_features_without_asking_the_console`
-    (login still works, `can_use_ai` false), and
-    `test_staleness_never_relaxes_a_cached_state`.
+    both), `test_a_cached_suspended_org_keeps_login_and_loses_write_seats`
+    (login still works, `use_ai`/`write_seats` false), and
+    `test_staleness_never_relaxes_a_cached_state`. *(Second fence renamed
+    2026-08-18 from `…_locks_features_without_asking_the_console`: the box
+    records the booleans, it does not lock features — B5, clause 7.)*
 - **So the honest bound is a pair, not a number.** **Console reachable →
   `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS`.** **Console unreachable →
   `CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS`**, with the dead-state rule
   above cutting the `deleted` case to *immediate* even then. §5.2 states the
-  same pair; the two must be edited together.
+  same pair; the two must be edited together. The two TTLs are **settings
+  fields, not bare env reads** — see (f) for their names.
 - **Org re-placement is an explicit `invalidate()` trigger.** Moving an
   organization off this deployment must revoke promptly rather than wait out a
   ceiling, so the resolve cache exposes `invalidate(email=None)` in the same
@@ -1037,15 +1092,358 @@ existed to remove.
   `test_invalidate_drops_a_cached_resolution`,
   `test_an_org_no_longer_placed_here_is_dropped_from_the_cache`.
 
+---
+
+**(d) The response carries CAPABILITY BOOLEANS; the box never interprets a
+status string.** *(2026-08-18 — answers **B1**, and **B5** with it.)* Clause 6
+mandated `lifecycle.capabilities_of()` as the one state machine, and
+`capabilities_of` lives in `customer_console/lifecycle.py:101` — inside the
+Console package. The deployment must **not** import it, so as written the clause
+mandated something with no buildable path: either a second copy of the state
+machine (forbidden by name in clause 6) or a dependency the tenant deployable
+must not have.
+
+*The answer, and it is the one that keeps the single state machine:* the
+capability decision is made **where the state machine is**, and only its
+**result** crosses the wire. Clause 12's per-organization entry gains
+
+```json
+"capabilities": {"sign_in": true, "write_seats": false, "use_ai": false}
+```
+
+computed Console-side by the one `capabilities_of()` (`lifecycle.py:64-78` is
+the table; `:72-75` is `suspended`/`cancelled`). The box **stores the three
+booleans and applies them**. `status` stays in the response, and its only job on
+the deployment is **refusal copy** — it is the word the person is shown, never
+the input to a decision. A deployment that branched on the string would be a
+second copy of the state machine spelled as an `if`, which is exactly what
+clause 6 forbids; a deployment that branches on `sign_in` cannot drift, because
+there is nothing to drift from.
+
+*This is an ADDITIVE change to a surface that shipped hours earlier the same
+day,* and the deployment-half slice therefore carries a **small Console-side
+commit**: `_resolve_for_deployment` in `customer_console/main.py` adds the block,
+and `tests/unit/test_customer_console_resolve.py` gains its fence. Clause 12's
+schema block below is updated now and dated, so the two halves cannot be built
+against different shapes. Additive because every existing key keeps its meaning
+and no consumer exists yet outside the fences.
+
+⚠️ **B5, answered here because it is the same mistake in the other direction.**
+Clause 7 promised that a cached `suspended` *"locks features on the
+deployment"*, and the non-goals two screens below forbid *"**enforcing** seats
+or lifecycle in product surfaces beyond sign-in"*. Both cannot be true, and
+there is no enforcement point on the box to make the first one true. **The
+deployment RECORDS the booleans and its SIGN-IN behaviour follows them; nothing
+else on the box reads them in this ticket.** Feature enforcement stays MT-2's
+`intersect()` seam (§2), unchanged and still a non-goal. The words "locks
+features" are struck from clause 7's deployment side.
+
+**A new fence, and it is the one that keeps the dependency honest**
+(`tests/unit/test_console_dependency_boundary.py`, R7):
+
+1. **The tenant deployable's dependency closure excludes the Console.** Read
+   `apps/services/gateway/pyproject.toml` and `packages/acb_auth/pyproject.toml`
+   as TOML and fail on a `customer-console` requirement.
+   Fence: `test_the_gateway_does_not_depend_on_the_customer_console`.
+2. **No module under `packages/` or `apps/services/gateway/` imports
+   `customer_console`.** A source-level scan in the established style of
+   `tests/unit/test_db_engine_seam.py` — the failure mode is a *new* import,
+   which no runtime assertion sees until the container is built.
+   Fence: `test_no_tenant_module_imports_customer_console`.
+
+Both are **ratchets** in the established style of `test_db_engine_seam.py`, so
+they pass on day one — that is the point, and it is not evidence they work.
+Show each **red first** the way this spec's other fences were: add the offending
+`customer-console` requirement (and the offending `import customer_console`),
+watch it fail, take it back out.
+
+⚠️ **Why a fence at all, when the import would obviously fail at runtime — the
+root-venv trap, recorded so the fence's reason survives.** It would **not**
+fail. `pyproject.toml:27-30` installs `customer-console` into the **root**
+workspace venv on purpose (*"the root test suite imports `customer_console`, so
+it must be installed into the shared venv by `uv sync` or CI fails with
+ModuleNotFoundError"*). So `from customer_console.lifecycle import
+capabilities_of` inside `acb_auth` is **green in pytest and broken in the
+deployable** — the gateway image installs the gateway's own closure, which does
+not contain it. That is the single most likely way this ticket gets built wrong,
+and it is invisible to every test that does not look at the packaging.
+
+**(e) The resolve client is `packages/acb_auth/acb_auth/console_resolve.py`,
+and it has exactly one caller.** *(2026-08-18 — answers **B6(i)**.)* Identity
+resolution is `acb_auth`'s job: the seam that already owns *"somebody is
+knocking at the front door"* is that package, and putting the decision in a
+gateway-service module would place an identity decision outside the identity
+seam. The module owns the HTTP call, the read-through cache, the
+`invalidate(email=None)` escape hatch and the projection read/write. `httpx>=0.27`
+is added to `packages/acb_auth/pyproject.toml` — today that package declares
+only `fastapi`, `acb-common` and `sqlalchemy` and pulls **no** HTTP client, so
+this is a real dependency addition and not a transitive freebie. (The gateway
+service already has `httpx>=0.27`; relying on that would make `acb_auth`
+importable-but-broken anywhere else, which is the same class of trap as (d).)
+
+⚠️ **DEVIATION from the proposed default, and the code is why.** The default
+offered to this ticket read *"wired behind `resolve_access` at
+`access.py:249`"*. **Refused.** `resolve_access` is not the sign-in path — it
+has **six** production call sites, and one of them is
+`gateway/routes/rooms.py:215`, `{e: await resolve_access(e) for e in emails}`,
+which fans it over every participant of a room. The others are
+`gateway/routes/chat.py:605`, `orchestrator/executor.py:1644`,
+`access.py:466`, `access.py:526` (`resolve_session_access`, folding over session
+subjects) and `deps.py:281`. Hanging a seat-allocating cross-service call there
+would fire one Console request **and one seat allocation** per participant per
+room load — precisely the farmable cap clause 11 exists to prevent, and
+precisely what the module's own docstring warns about for `record_request`
+(`access.py:258-271`: *"neither is somebody knocking at the front door"*). So:
+`console_resolve` is called from `apps/services/gateway/gateway/routes/signin.py`
+and from nowhere else; `resolve_access`, `_with_resolved_access` and `_ACCESS_SQL`
+are **untouched**.
+
+*What "the resolve cache extends `access.py`'s rather than duplicating it"
+means, now that it has to be built.* Not the same dict: `_cache`
+(`access.py:47`) maps email → `EffectiveAccess`, and a second value type in it
+would break `_cache_get`. It means the same **idiom and the same escape hatch** —
+a module-level dict keyed on `lower(email)` with a monotonic deadline and a
+public `invalidate(email=None)` in the shape of `access.py:73-98` — living in
+`console_resolve.py`, with the **projection row as the authoritative store** and
+the dict as a read-through in front of it. These are two caches of two different
+things, on the two axes D12 already separates: `access._cache` caches *what this
+person may do inside a tenant*; `console_resolve`'s caches *which tenant, and
+what the registry last said about it*. One cache for both would be the second
+scoping doctrine root `AGENTS.md` §11 forbids.
+
+**(f) Tenant-side config: four fields in `acb_common/settings.py`, no bare env
+reads.** *(2026-08-18 — answers **B6(ii)**.)* `Settings` declares **no**
+`env_prefix` (`settings.py:15-20` — `env_file`, `env_file_encoding`, `extra`,
+`case_sensitive` and nothing else), so a field name maps directly to the
+upper-cased environment variable:
+
+| Field | Env var | Default |
+|---|---|---|
+| `customer_console_url: str = ""` | `CUSTOMER_CONSOLE_URL` | `""` — unset means *not wired*, and the box says so rather than guessing a host |
+| `customer_console_deployment_key: str = ""` | `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` | `""` |
+| `customer_console_resolve_ttl_seconds: int = 900` | `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS` | 15 minutes, per (c) |
+| `customer_console_resolve_max_staleness_seconds: int = 86400` | `CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS` | 24 hours, per (c) |
+
+They sit beside the existing `crm_auto_lead: bool = False` shape (`:140`), so a
+test pins a default by **reading the field**, not by re-deriving the number.
+
+`CUSTOMER_CONSOLE_URL` is **deliberately the same name the BFF already uses**
+(`workbench/control_plane/src/app/api/billing/summary/route.ts:34`) — one
+Console, one address, two readers. The **key** is a different name from the
+BFF's `CUSTOMER_CONSOLE_ORG_KEY` (`route.ts:36`) because it is a different
+credential with a different scheme and a different blast radius: `cc_live_` is
+org-scoped and read-only, `cc_depl_` is deployment-scoped with capability
+`{resolve}`. Reusing one name for two credentials is how a deployment ends up
+presenting the wrong one and getting a 401 nobody can explain.
+`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` is read on the **gateway**, never in Next, so
+`workbench/control_plane/src/lib/gateway.test.ts:191`'s allow-list gains
+**nothing** — a fourth entry there would mean the key had reached the browser
+tier, and that test failing is the correct alarm.
+
+**(g) The BFF hop is a NEW `signIn` callback in `auth.ts`, and it carries the
+refusal.** *(2026-08-18 — answers **B4** and **B6(iii)**.)*
+
+⚠️ **DEVIATION from the proposed default, and again the code is why.** The
+default named the **`jwt`** callback's `account`-present branch
+(`workbench/control_plane/src/auth.ts:85-93`, verified exact). That branch does
+fire once per fresh sign-in — but it **cannot refuse**. It runs *after* the
+sign-in decision is already made, and there is no return value from it that
+produces an error code the sign-in page can render. Clauses 6, 7 and 9 all end
+in a refusal with **honest copy**; a call site that cannot refuse cannot satisfy
+them, and the fallback (return `null` from `jwt` to invalidate the session)
+drops the person back on the sign-in page with no explanation at all — the
+wrong-looking denial D33.1 exists to remove.
+
+*Re-verified against the installed version, as the default instructed.*
+`next-auth@5.0.0-beta.31` / `@auth/core@0.41.2`. The `signIn` callback's type is
+`(params: {user, account, profile, email, credentials}) => Awaitable<boolean |
+string>` (`@auth/core/index.d.ts:177-197`), its doc comment says *"Returning a
+string will redirect the user to the specified URL"* (`:161`), and the
+implementation confirms it: `handleAuthorized`
+(`@auth/core/lib/actions/callback/index.js:393-409`) returns `await redirect({
+url: authorized, baseUrl: config.url.origin })` when the callback returned a
+string, and throws `AccessDenied` when it returned falsey. **The mechanism is
+available**, so it is what this ticket writes.
+
+`auth.ts` today has **no** `signIn` callback — only `jwt` and `session`
+(`auth.ts:84-103`, verified 2026-08-18). The ticket adds one, and it is the
+right home on four counts, each of which the `jwt` branch gets only partially:
+
+- It runs **only** in the sign-in flow, never on a token refresh — structurally,
+  not by an `if (account)` condition somebody can widen later.
+- It receives the provider-verified `profile.email`, the same value the existing
+  `jwt` callback already trusts (`auth.ts:86-88`, `if (profile?.email)`). Never
+  request input — `user_management_contract.md` R11.
+- It is the **only** callback whose return value can both admit and refuse, so
+  the resolve call and the decision it drives are one function rather than two
+  that have to agree.
+- It fires **before** a session exists, which settles how it reaches the
+  gateway: `gatewayHeaders()` (`lib/gateway.ts:160`) calls `auth()` and would
+  find nothing. The correct existing seam is **`headersActingAs(email)`**
+  (`lib/gateway.ts:137-152`) — *"Internal bearer + identity headers for an
+  ALREADY-VERIFIED member … for library code that was handed an email by a route
+  which established it"*, which is exactly this case. No new bearer is minted,
+  so `gateway.test.ts`'s two fences (the no-second-`GATEWAY_INTERNAL_TOKEN`-reader
+  test and the `:191` allow-list) stay green untouched.
+
+**The two new refusal codes**, carried as `/signin?error=<code>` in the string
+the callback returns, with copy added to
+`workbench/control_plane/src/app/signin/errorCopy.ts` — the one refusal-copy
+seam, keyed on the `?error=` value and already carrying a `default` arm, so an
+unmapped code degrades to `Authentication error: <code>` rather than crashing:
+
+| Code | When | Copy (D33.1: never blame the person) |
+|---|---|---|
+| `ConsoleUnavailable` | clause 6 — Console unreachable and nothing cached, or cached past `MAX_STALENESS` | *"Sign-in is temporarily unavailable. This is a problem on our side, not with your account — please try again in a few minutes."* |
+| `WorkspaceChooserRequired` | clause 9 — the resolve returned more than one visible organization | *"Your account belongs to more than one organization on this deployment, and there is no way to choose between them yet. Please contact your operator."* |
+
+*(Minor deviation, stated rather than smuggled: the proposed default asked the
+multi-org copy to **name the organizations count**. `errorCopy.ts` maps a code
+to a **static** string and the count would have to ride the query string to
+reach it — a second field on a public URL, for a number that changes nothing the
+person can act on. The copy names the **cause** instead, which is what D33.1
+actually asks for. If the owner wants the count, it is one more query parameter
+and a signature change to `signInErrorMessage`.)*
+
+⚠️ **Auth.js's own vocabulary is fixed, and that is why these are custom codes
+rather than reused types.** v5 emits error **types** — `OAuthCallbackError`,
+`Configuration`, `AccessDenied` — and returning `false` from `signIn` produces
+`AccessDenied` and nothing else. `AccessDenied`'s shipped copy is *"Your account
+isn't authorized for this workspace. Ask your admin for an invite."*
+(`errorCopy.ts`), which is **the exact phrasing D33.1 forbids for both of these
+cases**: a person refused because a service is down has not been denied access,
+and a person in two organizations has not failed an authorization check. Two
+distinguishable reasons therefore need two codes Auth.js does not define, and
+the string-return path is the mechanism that carries them. `deleted` (clause 6's
+dead state) keeps `AccessDenied` — there the copy is true.
+
+Fences (extend `workbench/control_plane/src/app/signin/signin.test.ts`, which
+already reads a sibling as source and already tests `signInErrorMessage` — a new
+file would be a second home for one subject):
+`"resolve fires only from the signIn callback"` (source-level over `auth.ts`:
+the resolve call appears inside the `signIn` callback and in neither `jwt` nor
+`session`, and appears in no route file), `"the resolve email comes from the
+provider profile, never from request input"`, and `"errorCopy speaks the two
+CP-2b codes"` asserting neither new string matches
+`/access denied|isn't authorized/i`.
+
+**(h) This entry point reads the projection ITSELF; `app_user` stays
+authoritative everywhere else.** *(2026-08-18 — answers **B2** and status-drift
+item 2.)* The audit is right that migration 159's tables are a shadow copy
+nothing reads, and that the sign-in decision path reads `app_user`
+(`access.py:191`, `_ACCESS_SQL` ends `FROM app_user u`; `access.py:369-372`,
+`resolve_identity` queries `app_user`). 159 says so in its own words at
+`159:107-109`: *"app_user remains authoritative until MT-1a-2 cuts the auth path
+over; **this is a shadow copy, not a replacement**."*
+
+The scope that makes this buildable without colliding with WS-29:
+
+- **CP-2b writes the projection** (`user_identity`, `org_membership.resolved_at`,
+  `organization.registry_status`) on every fresh answer from the Console, and
+  **reads it only on its own fallback path** — Console unreachable, or inside
+  the TTL window — to answer *one* question: *may this sign-in proceed, and with
+  what capabilities*.
+- **CP-2b does not touch `_ACCESS_SQL`, `resolve_identity`, or any general
+  identity read.** After this ticket, `app_user` is still what
+  `resolve_identity` returns and still what every authenticated request
+  resolves against.
+- **The general cutover is WS-29 MT-1 H6 and stays there, by name.** Wiring the
+  projection into the identity path at large is H6's ticket, it is open, and
+  this ticket must not pre-empt it. One owner per topic (`work_plan.md` §4).
+
+⚠️ **Status-drift item 2, fixed.** The heading below named 159's projection *"the
+CACHE OF RECORD"* full stop, while 159 itself declares those tables a shadow
+copy — the spec and the migration disagreed about which table decides sign-in.
+They do not disagree any more, because the claim is now scoped: **"cache of
+record" means *the store against which THIS entry point's freshness bounds and
+fallback decision are evaluated*, and nothing wider.** It is not a claim about
+identity, it is not a claim about `app_user`, and it does not move the authority
+159 reserves for H6.
+
+**(i) Clause 10 splits per half, and the tenant half has a named mechanism.**
+*(2026-08-18 — answers **B3** and status-drift item 1.)* Clause 10 was marked
+met, and it was met **for the Console ladder only**: its mechanism is
+`tests/unit/_customer_console_ladder.py`, which reads `infra/customer_console/`
+and can never build a tenant schema. `pr-check.yml` provisions **one** Postgres
+(`platform-postgres`, `:113`) exporting **one** DSN
+(`CUSTOMER_CONSOLE_DATABASE_URL`, `:127`); `DATABASE_URL` is set **nowhere** in
+that job, so a tenant-side R8 suite written today would skip in CI and report
+green — the CP-3 disarmed-gate failure class, which is the one thing this spec
+has already been burned by once. Four things, all in the build slice:
+
+1. **`tests/unit/_tenant_ladder.py`** — the tenant analogue of
+   `_customer_console_ladder.py`, discovered and never transcribed: list
+   `infra/postgres/`, match `^(\d+)_.*\.sql$`, sort on the **leading integer**
+   (not the string — `010` sorts before `002` lexically), and carry the same two
+   R1 refusals, `RuntimeError` on an empty ladder and `RuntimeError` on a
+   duplicate number (`_customer_console_ladder.py:56`, `:63-71`).
+   ⚠️ **Two differences from the Console ladder, both load-bearing.** The tenant
+   ladder is 176 numbered files, and `00_create_databases.sql` /
+   `01_schema.sql` are **init-only and not re-runnable** — `apply_migrations.sh`
+   skips them for exactly that reason (`:195-201`, `:224-226`) because initdb
+   lays them down on first boot. So `apply_ladder(conn)` applies `01_schema.sql`
+   once against the empty database, then `02+` in numeric order. And
+   `schema.generated.sql` must **never** be replayed (a raw `pg_dump` snapshot,
+   non-idempotent) — the numbered-prefix regex already excludes it, and the
+   `generated/` subdirectory is not read.
+   *Rejected alternative, named so it is not re-proposed:* seeding CI from
+   `schema.generated.sql` is faster and proves the **snapshot**, not the
+   migrations — and the column this ticket adds arrives in a file newer than any
+   snapshot, so the suite would test a schema without it.
+2. **A second Postgres service in `pr-check.yml`'s `test` job**, exporting
+   `DATABASE_URL`. The job's `env:` block gains it beside
+   `CUSTOMER_CONSOLE_DATABASE_URL` (`:126-127`), and the reachability assertion
+   (`:146-154`) gains its twin — that step exists because *"the job would go
+   back to silently skipping the moment the service container failed to come
+   up"*, and one DSN proven reachable says nothing about the other. The suite
+   gates on `_ACB_DATABASE_URL_AT_LAUNCH` (`tests/conftest.py:16`), the
+   established idiom pinned by `test_tenant_coverage.py:194-205`, **not** a raw
+   `os.environ["DATABASE_URL"]` — `import litellm` calls `load_dotenv()`
+   mid-collection and would otherwise point the gate at a dev machine's database.
+3. **A skip-guard entry.** The R8 assertion step (`pr-check.yml:167-178`) is
+   hand-maintained and says so in its own comment (*"⚠️ This list is
+   HAND-MAINTAINED and nothing discovers it … Add the file in the same commit
+   that creates it"*). `tests/unit/test_deployment_resolve_cache.py` is added
+   there, and its skip reason must be greppable the same way the Console suites'
+   is.
+4. **The suites are NAMED.** `tests/unit/test_deployment_resolve_cache.py` is
+   the R8, tenant-Postgres-gated suite (clauses 6, 7, 8's `resolved_at` half, 9's
+   deployment half, 12's `capabilities` half). The structural fences of (d) and
+   (g) live in `tests/unit/test_console_dependency_boundary.py` and
+   `signin.test.ts` **and take no database**, deliberately: folded into the R8
+   suite they would skip whenever the DSN is unset, which is the failure this
+   whole clause is about.
+
+§7's command block is updated in the same change with the suite and the second
+DSN.
+
+*(**B7** — four Console-side anchors this ticket's own Console half moved under
+it were refreshed in the clauses below on 2026-08-18, each re-derived against
+the tree rather than copied from the audit: `main.py:542-547` → the dead-org
+gate is now `main.py:598-603` (`:542` is the `/orgs/lifecycle` response's
+`capabilities_of` call); `main.py:594-600` → the operator response shape is now
+`main.py:645-651`; `seats.py:135-146` → the buy-more payload is now
+`seats.py:147-158`; `seats.py:129-130` → the `already_assigned` no-op is now
+`seats.py:141-142` (`:129-130` is docstring prose about it).
+`lifecycle.py:64-78` and `:72-75` were re-verified and are unchanged.)*
+
+---
+
 **Where the cache lives — migration 159's projection tables are the CACHE OF
-RECORD.** *(Named explicitly 2026-08-18.)* Every bound above — `resolved_at`,
+RECORD *for this entry point's fallback decision*.** *(Named explicitly
+2026-08-18; **scoped** the same day by (h) above — `159:107-109` keeps
+`app_user` authoritative for identity at large, and this ticket does not move
+that.)* Every bound above — `resolved_at`,
 the TTL, the staleness ceiling, the last-seen lifecycle state — is evaluated
 against **rows**, because a 24-hour ceiling is unenforceable in a per-process
 dict: `acb_auth`'s `_cache` is an in-process dictionary with a **60-second** TTL
 (`access.py:37`, `CACHE_TTL_SECONDS = 60.0`), per **worker**, wiped on every
 restart. That dict stays exactly what it is — a **read-through** in front of the
 projection, not a second store — and the resolve cache extends it rather than
-duplicating it (`access.py:73-98`). Consequences to build to: two workers may
+duplicating it (`access.py:73-98`). *(What "extends" means concretely — the same
+idiom and the same `invalidate()` escape hatch in `console_resolve.py`, **not**
+a second value type inside `access._cache`, which would break `_cache_get` — is
+argued in §6(e), 2026-08-18.)* Consequences to build to: two workers may
 each hold a copy for up to 60s, so `invalidate()` is per-process and the
 authoritative revocation is the row; and a restart clears the dict but **must
 not** re-consult the Console for everyone at once, because the rows still carry
@@ -1139,11 +1537,21 @@ customer's remedy is to buy seats they did not need. So the resolve fires from
 session — never from a header a caller chose.
 
 Concretely, and kept deliberately small: this ticket adds **one** gateway-side
-entry point whose only job is *"a sign-in just completed for this address"*, and
+entry point whose only job is *"a sign-in is completing for this address"*, and
 it is the only thing in the tree that holds the `cc_depl_` key or calls the
 resolve client. The BFF reaches it from the sign-in callback and nothing else
 does; `_with_resolved_access` keeps doing exactly what it does today and gains
 nothing. A **second** caller is what clause 11's fence exists to fail.
+
+⚠️ **Both ends of that sentence now have a path** *(2026-08-18, B6/B4)*: the
+entry point is `apps/services/gateway/gateway/routes/signin.py`
+(`POST /signin/resolve`), the client it calls is
+`packages/acb_auth/acb_auth/console_resolve.py`, and the BFF end is a **new
+`signIn` callback** in `workbench/control_plane/src/auth.ts` reaching it through
+`headersActingAs()`. See (e) and (g) — including why the client is **not** wired
+behind `resolve_access` as first proposed, and why *"a sign-in just completed"*
+became *"is completing"*: the resolve has to be able to **refuse**, so it runs
+inside the decision rather than after it.
 
 **Done when** — each clause is separately testable, and each names the test that
 will fence it (R7); the tests are created by this ticket:
@@ -1202,7 +1610,10 @@ will fence it (R7); the tests are created by this ticket:
    deployment** whose lifecycle is `suspended`, `cancelled` or `deleted`. The
    deployment already serves that customer, so telling it the state reveals
    nothing it does not have, and it needs the state to refuse correctly — the
-   existing 403-on-`deleted` (`main.py:542-547`) is the right shape and stays.
+   existing 403-on-`deleted` (`main.py:598-603`, the `capabilities_of(state)`
+   gate and its raise; **re-derived 2026-08-18** — `:542-547` was written before
+   the Console half moved it and now points at the `/orgs/lifecycle` response)
+   is the right shape and stays.
    Fence: `test_a_dead_org_placed_here_is_named_not_hidden`.
 6. **Fail closed, degrade bounded — both TTLs pinned.** With the Customer
    Console unreachable: an uncached email is **refused** with the
@@ -1215,28 +1626,59 @@ will fence it (R7); the tests are created by this ticket:
    reading the named config value, so changing the default changes the test's
    input and not its meaning.
    ⚠️ **And a cached dead state overrides all three** *(added 2026-08-18)*: an
-   answer already carrying `deleted` refuses sign-in **immediately**, Console
-   reachable or not, inside the TTL or outside it — a dead state in the cache is
-   a fact, not a stale hint, and staleness may only make the cache more
-   restrictive, never less. `suspended`/`cancelled` land their **feature** locks
-   the same way while login stays open, because `lifecycle.capabilities_of()` is
+   answer already carrying `sign_in: false` refuses sign-in **immediately**,
+   Console reachable or not, inside the TTL or outside it — a dead state in the
+   cache is a fact, not a stale hint, and staleness may only make the cache more
+   restrictive, never less. `suspended`/`cancelled` cache
+   `write_seats: false` / `use_ai: false` the same way while `sign_in` stays
+   true, because `lifecycle.capabilities_of()` is
    the one state machine and this ticket does not mint a second copy of it.
+   ⚠️ **The box caches and applies the BOOLEANS, never the status string**
+   *(2026-08-18, §6(d) — B1)*. `capabilities_of` lives in the Console package
+   (`lifecycle.py:101`) and the tenant deployable must not depend on it, so the
+   decision is made Console-side and only its result crosses the wire.
+   `status` is cached too, and its **only** use on the box is the word shown in
+   refusal copy. A deployment that reads `status == "deleted"` and decides is a
+   second copy of the state machine written as an `if`; a deployment that reads
+   `sign_in` cannot drift.
    Fences: `test_a_cached_dead_org_refuses_without_asking_the_console`,
-   `test_a_cached_suspended_org_locks_features_without_asking_the_console`,
-   `test_staleness_never_relaxes_a_cached_state`.
-7. **A lifecycle change lands within the stated bound — and the bound is a
-   pair.** *(Corrected 2026-08-18: this clause read "lands within the TTL",
-   which contradicted clause 6 and overstated what a partitioned box can
-   promise.)* **Console reachable** → an organization moved to `suspended` locks
-   features on the deployment no later than `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS`,
-   with login still working (§4.1d, `lifecycle.py:72-75`). **Console
+   `test_a_cached_suspended_org_keeps_login_and_loses_write_seats`,
+   `test_staleness_never_relaxes_a_cached_state`,
+   `test_the_deployment_never_branches_on_a_lifecycle_string` (the structural
+   half, in `tests/unit/test_console_dependency_boundary.py`: no tenant-side
+   module compares against `"suspended"`/`"cancelled"`/`"deleted"`).
+   *(Fence renamed 2026-08-18 from `…_locks_features_without_asking_the_console`
+   — the box does not lock features, see clause 7 and B5.)*
+7. **A lifecycle change is RECORDED on the deployment within the stated bound —
+   and the bound is a pair.** *(Corrected twice on 2026-08-18. First: this clause
+   read "lands within the TTL", which contradicted clause 6 and overstated what a
+   partitioned box can promise. Second, **answering B5**: it read "**locks
+   features** on the deployment", which contradicted the non-goals below —
+   *"enforcing seats or lifecycle in product surfaces beyond sign-in"* — and
+   there is no enforcement point on the box to make it true. The verb is now
+   **records**, and the only behaviour that follows the record in this ticket is
+   sign-in.)* **Console reachable** → an organization moved to `suspended` has
+   `write_seats: false` / `use_ai: false` stored on the deployment no later than
+   `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS`, with `sign_in` still true and login
+   still working (§4.1d, `lifecycle.py:72-75`). **Console
    unreachable** → the change lands no later than
    `CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS`, because a box that cannot
-   ask cannot learn — *unless* it already holds the dead state, in which case
-   clause 6's rule fires at once. `deleted` refuses sign-in (`capabilities_of`
-   is the only place that decides which states do). Fences:
-   `test_a_suspension_reaches_the_deployment_within_the_ttl`,
-   `test_a_partitioned_deployment_refuses_a_cached_person_at_the_ceiling`.
+   ask cannot learn — *unless* it already holds `sign_in: false`, in which case
+   clause 6's rule fires at once. `deleted` is the only state that refuses
+   sign-in, and `capabilities_of` is the only place that decides that
+   (`lifecycle.py:64-78`).
+   ⚠️ **What this clause does NOT promise.** No product surface on the
+   deployment consults `use_ai` or `write_seats` after this ticket. **Feature
+   enforcement stays MT-2's `intersect()` seam** (§2) and remains a non-goal
+   below. Anyone reading this clause as "suspension disables the AI on the box"
+   is reading the thing B5 removed. Fences (and they assert the record and the
+   sign-in decision, nothing more):
+   `test_a_suspension_is_recorded_on_the_deployment_within_the_ttl`,
+   `test_a_partitioned_deployment_refuses_a_cached_person_at_the_ceiling`,
+   `test_a_recorded_suspension_changes_no_product_surface`.
+   *(First fence renamed 2026-08-18 from
+   `test_a_suspension_reaches_the_deployment_within_the_ttl` for the same
+   reason — "reaches" was ambiguous between arriving and being enforced.)*
 8. **Idempotent projection upsert.** Resolving the same person five times leaves
    exactly **one** `user_identity` row (matched on `lower(email)`) and **one**
    `org_membership` row, with `resolved_at` moved and nothing else rewritten.
@@ -1248,7 +1690,15 @@ will fence it (R7); the tests are created by this ticket:
    `…_one_projection_row`, which named the tenant plane's table and would have
    read as green for a thing nobody built)*. The `resolved_at` clock and the
    `lower(email)` match belong to migration 159's projection and land with the
-   deployment half.
+   deployment half — in `tests/unit/test_deployment_resolve_cache.py`, against a
+   real **tenant** Postgres (§6(i)), fence
+   `test_resolving_five_times_writes_one_projection_row_and_moves_resolved_at`.
+   ⚠️ `159:67-79`'s `user_identity.email` is `TEXT` with `UNIQUE INDEX ON
+   (lower(email))`, **not** the Console's `CITEXT` (`001:110`): the projection
+   upsert matches on `lower(email)` or a UPN case change mints a second human
+   (R10). And the person column is `org_membership.user_id` (`159:85`) where the
+   Console calls the same thing `user_identity_id` (`001:123`) — two names, one
+   thing, named in the mapping code or it is a silent no-op.
 9. **Seat semantics unchanged, and multi-org allocates nothing.** Exactly one
    visible organization → a Core seat is allocated on first resolve and **not
    re-burned** on the next, and the cap still returns **409** with the buy-more
@@ -1273,29 +1723,82 @@ will fence it (R7); the tests are created by this ticket:
      please contact your operator"* — the same rule as clause 6's
      service-unavailable copy: never "access denied" for a state the person did
      not create.
+     ⚠️ **The mechanism, named 2026-08-18 (B6(iii)).** The refusal is carried by
+     the `signIn` callback returning `"/signin?error=WorkspaceChooserRequired"`,
+     with the copy in `errorCopy.ts`; clause 6's unavailable case returns
+     `"/signin?error=ConsoleUnavailable"`. Two distinguishable reasons need two
+     codes, and **Auth.js v5's vocabulary is fixed** — returning `false` yields
+     `AccessDenied` and nothing else, whose shipped copy (*"Your account isn't
+     authorized for this workspace"*) is the phrasing D33.1 forbids for both of
+     these. See §6(g) for the version check that says the string-return path
+     exists.
    Choosing among them is the **chooser**, which is a non-goal below and stays
    one. Fences: `test_a_multi_org_resolve_allocates_no_seat`,
-   `test_a_multi_org_person_is_refused_sign_in_and_told_why`.
-10. **R8 — proven against a real Postgres.** Every clause in this list that reads
-    or writes runs against a real Postgres 16 via
-    `tests/unit/_customer_console_ladder.py`; the new suite
-    (`tests/unit/test_customer_console_resolve.py`) is added to §7's command
-    list **and** to `pr-check.yml`'s skip-guard, because CP-3's finding was that
-    CI skipped every DB-gated fence while reporting green.
+   `test_a_multi_org_person_is_refused_sign_in_and_told_why`,
+   `"errorCopy speaks the two CP-2b codes"` (`signin.test.ts`).
+10. **R8 — proven against a real Postgres.** ◐ **Console half MET, deployment
+    half OPEN — split 2026-08-18 (B3 + status-drift item 1: this clause was
+    listed among "clauses met", which was true of the Console ladder and of
+    nothing else).**
+    - ✅ **Console half.** Every clause above that reads or writes the *Console*
+      database runs against a real Postgres 16 via
+      `tests/unit/_customer_console_ladder.py`;
+      `tests/unit/test_customer_console_resolve.py` is in §7's command list
+      **and** in `pr-check.yml`'s skip-guard (`:167-178`), because CP-3's finding
+      was that CI skipped every DB-gated fence while reporting green.
+    - ☐ **Deployment half, and it needs machinery that does not exist.**
+      `_customer_console_ladder.py` reads `infra/customer_console/` and can never
+      build a **tenant** schema; `pr-check.yml`'s `test` job provisions **one**
+      Postgres (`:113`) and exports **one** DSN (`:127`), with `DATABASE_URL` set
+      nowhere — so a tenant-side R8 suite written today skips in CI and reports
+      green. Mandated, all in the build slice and specified in §6(i):
+      (i) `tests/unit/_tenant_ladder.py`, reading `infra/postgres/` sorted on the
+      leading integer with the same two R1 refusals (empty ladder, duplicate
+      number) and the init-only 00/01 split `apply_migrations.sh:195-201,224-226`
+      already makes; (ii) a **second Postgres service** in `pr-check.yml`'s
+      `test` job exporting `DATABASE_URL`, with the reachability assertion
+      (`:146-154`) given its twin; (iii) a **skip-guard entry** so the new suite
+      failing to run fails the job; (iv) the suite **named**:
+      `tests/unit/test_deployment_resolve_cache.py`, gated on
+      `_ACB_DATABASE_URL_AT_LAUNCH` (`tests/conftest.py:16`) like
+      `test_tenant_coverage.py:194-205`, never a raw `os.environ` read.
+      The structural fences of §6(d) and §6(g) take **no** database and live
+      outside this suite on purpose — folded in, they would skip with it.
 11. **Resolve is called from the sign-in path and from nowhere else, with a
-    session-derived email.** *(Added 2026-08-18 — without it the seat cap is
-    farmable, see the ⚠️ above.)* The email passed to resolve comes from the
-    **completed** sign-in (the NextAuth callback that fires with an `account`
-    present, i.e. a fresh sign-in rather than a token refresh —
-    `workbench/control_plane/src/auth.ts:85-93`), forwarded once to the single
-    gateway-side caller. It is **never** taken from `X-User-Email` on an
+    provider-verified email.** *(Added 2026-08-18 — without it the seat cap is
+    farmable, see the ⚠️ above. **Both ends named 2026-08-18, B4/B6:** the clause
+    described a hop that had no route, no module and no fence.)* The chain, end
+    to end, and nothing else may appear in it:
+
+    | Hop | Where | What carries the email |
+    |---|---|---|
+    | 1 | `workbench/control_plane/src/auth.ts` — a **new `signIn` callback** | `profile.email`, provider-verified. Never request input (R11) |
+    | 2 | `lib/gateway.ts` `headersActingAs(email)` (`:137-152`) | the existing "already-verified member" seam; `gatewayHeaders()` cannot be used, `auth()` returns nothing before a session exists |
+    | 3 | `apps/services/gateway/gateway/routes/signin.py` — `POST /signin/resolve` | the one route; the only holder of `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` |
+    | 4 | `packages/acb_auth/acb_auth/console_resolve.py` | the client, the cache, the projection write |
+
+    ⚠️ **The proposed default named the `jwt` callback's `account`-present branch
+    (`auth.ts:85-93`) and this ticket overturns it** — that branch runs *after*
+    the sign-in decision and cannot refuse, so it cannot satisfy clauses 6, 7 or
+    9. §6(g) carries the argument and the version check.
+    The email is **never** taken from `X-User-Email` on an
     ordinary request, and resolve is **never** hung off
-    `_with_resolved_access`, which runs per request (`deps.py:391`, `:435`).
-    Fence: `test_resolve_is_reachable_only_from_the_signin_path` — a
-    **structural** fence is acceptable and preferred here (R7 prefers structural
-    to example): assert over the tree that the resolve client has exactly one
-    caller and name it, so a second call site added later fails rather than
-    quietly doubling the seat surface.
+    `_with_resolved_access`, which runs per request (`deps.py:391`, `:435`), nor
+    behind `resolve_access` (`access.py:249`), which has six production callers
+    including one that fans it over a list of emails (`rooms.py:215` — §6(e)).
+    Fences — a **structural** fence is acceptable and preferred here (R7 prefers
+    structural to example), and there are now two because the chain crosses a
+    language boundary:
+    - `test_resolve_is_reachable_only_from_the_signin_path`
+      (`tests/unit/test_console_dependency_boundary.py`): assert over the tree
+      that `console_resolve` has exactly **one** caller and name it, so a second
+      call site added later fails rather than quietly doubling the seat surface.
+    - `"resolve fires only from the signIn callback"` (`signin.test.ts`):
+      source-level over `auth.ts` — the call appears inside `signIn` and in
+      neither `jwt` nor `session`, and in no route file — plus `"the resolve
+      email comes from the provider profile, never from request input"`. Without
+      the second fence the Python one is satisfied by a BFF that calls the route
+      from anywhere.
     🔓 **Named accepted risk, pre-existing and NOT inherited silently:** the
     gateway trusts `X-User-Email` when it arrives with the internal Bearer, by
     design and in the code's own words — *"still trust Next.js"* (`deps.py:393`)
@@ -1307,19 +1810,42 @@ will fence it (R7); the tests are created by this ticket:
     reduces the surface from *every authenticated request* to *one call site*;
     it does not remove it, and nothing in this ticket does. The residual is
     bounded by seat idempotence (`decide_assignment(already_assigned=True)` is a
-    no-op that succeeds, `seats.py:129-130`), so the cost is one seat per
+    no-op that succeeds, `seats.py:141-142`; **re-derived 2026-08-18** —
+    `:129-130` is the docstring prose *about* that branch, not the branch), so
+    the cost is one seat per
     **distinct** address, which is cheap for an attacker who already holds the
     box's internal token. **This risk predates CP-2b and is a property of the
     internal-token design (§4.3's `GATEWAY_INTERNAL_TOKEN` split is the gate
     that narrows it, work_plan §6).** Recorded here so the next reader does not
     discover it inside a billing incident.
 12. **The deployment-key response schema is exactly this, and it carries no
-    `role`.** *(Added 2026-08-18 — the shape was unspecified, and §5.2's code
-    block still documented the forbidden one until the same change.)*
+    `role`.** ◐ **Shipped shape MET; the `capabilities` block below is OPEN.**
+    *(Added 2026-08-18 — the shape was unspecified, and §5.2's code
+    block still documented the forbidden one until the same change. **Amended
+    the same day (B1)**: the entry gains `capabilities`, so the clause drops from
+    ✅ to ◐ and the deployment-half slice carries a small additive Console-side
+    commit. All four line anchors below were **re-derived 2026-08-18** — three
+    had moved under the Console half's own edits.)*
     - **Success:** `200` with `identity_id` and an `organizations` array; each
       entry carries `organization_id`, `slug`, the **placement target** it
-      resolves to, the **lifecycle status**, and the **seat outcome**
-      (`allocated` | `already_held` | `not_allocated`). **No `role` field, ever
+      resolves to, the **lifecycle status**, the **seat outcome**
+      (`allocated` | `already_held` | `not_allocated`), and — **new, open** —
+      **`capabilities`**:
+
+      ```json
+      {"organization_id": "…", "slug": "acme", "placement": "primary",
+       "status": "suspended", "seat": "already_held",
+       "capabilities": {"sign_in": true, "write_seats": false, "use_ai": false}}
+      ```
+
+      The three booleans are computed Console-side by the one
+      `lifecycle.capabilities_of()` (`lifecycle.py:101`, table at `:64-78`) and
+      are **what the deployment stores and applies**; `status` is present for
+      refusal copy and is never a decision input on the box (§6(d) — B1). The
+      names are the box's vocabulary, deliberately not `OrgCapabilities`'
+      four-field shape: `data_retained` is a Console-side retention fact with no
+      deployment behaviour behind it, and shipping a field nothing reads invites
+      somebody to read it. **No `role` field, ever
       —** `org_membership.role` (`001_customer_console.sql:124`,
       `owner|admin|member`) is *registry/billing* vocabulary; the tenant's
       permission vocabulary is `org_role` plus the ladder `acb_auth/access.py`
@@ -1332,28 +1858,49 @@ will fence it (R7); the tests are created by this ticket:
     - **At cap:** `409` with the buy-more payload, byte-compatible with the
       shipped seats path — `{"reason": "seat_cap_exceeded", "buy_more":
       {plan_slug, purchased, assigned, additional_seats_required, price_inr}}`
-      (`seats.py:135-146`; pinned today at `test_customer_console_api.py:142`).
+      (`seats.py:147-158`, the `decide_assignment` cap return; pinned today at
+      `test_customer_console_api.py:142`. **Re-derived** — `:135-146` is
+      docstring).
       Reachable only in the single-visible-org case, since clause 9 allocates
       nothing when there are several.
     - **Dead org placed here:** `403` with the existing shape,
-      `{"detail": "organization is <state>"}` (`main.py:542-547`) — named, not
+      `{"detail": "organization is <state>"}` (`main.py:598-603` — the
+      `capabilities_of(state)` gate and its raise. **Re-derived** — `:542-547`
+      now points at the `/orgs/lifecycle` response). Named, not
       hidden, per clause 5's ⚠️.
     - **The operator scheme keeps its current shape unchanged**
       (`identity_id`, `organization_id`, `role`, `status`, `seats`,
-      `main.py:594-600`). One endpoint, two schemes, two response shapes chosen
-      by the credential — and the regression for that is clause 3's.
+      `main.py:645-651`. **Re-derived** — `:594-600` is now the deployment arm's
+      lifecycle capability gate). One endpoint, two schemes, two response shapes
+      chosen by the credential — and the regression for that is clause 3's.
+      **`capabilities` is added to the DEPLOYMENT arm only**; adding it to the
+      operator arm would change a shipped surface for no caller.
     Fences: `test_the_deployment_answer_never_carries_a_role`,
     `test_the_empty_answer_carries_nothing_but_an_empty_list`,
     `test_the_deployment_at_cap_returns_the_shipped_buy_more_payload`,
-    `test_the_operator_response_shape_is_unchanged`.
+    `test_the_operator_response_shape_is_unchanged` (which now also proves the
+    operator arm did **not** gain `capabilities`), and — new —
+    `test_the_deployment_answer_carries_capability_booleans_from_the_one_state_machine`
+    in `tests/unit/test_customer_console_resolve.py`, parametrised over
+    `lifecycle.STATES` so a state added later is covered without anyone
+    remembering.
 
 **Gate split.** 🟢 **AGENT-SAFE:** the fourth scheme, the migration, the
 endpoint change, the projection columns, the gateway-side caller, every fence,
-and the whole thing exercised dark against fixtures. 🔴 **OWNER-GATE — refuse by
+and the whole thing exercised dark against fixtures. *(Re-stated 2026-08-18 for
+the deployment half: the `capabilities` addition to the Console response, the
+new `signIn` callback, `console_resolve.py`, `routes/signin.py`, the four
+settings fields, the tenant migration, `_tenant_ladder.py`, the second Postgres
+service in `pr-check.yml` and every fence named above are **all inside the
+agent-safe half** — none of them mints a real credential, reaches a live box or
+flips anything. Minting `cc_depl_` keys **against fixtures** is agent-safe and
+§8 gate 7 says so.)* 🔴 **OWNER-GATE — refuse by
 name:** **issuing a real `cc_depl_` key and setting it in a live deployment's
 env** (registered as §8 gate 7). It is a credential issuance plus a deployment
 env write, i.e. two existing gate classes at once, and a deployment key is the
-credential that lets a box ask about people.
+credential that lets a box ask about people. **Setting
+`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` or `CUSTOMER_CONSOLE_URL` in a live
+deployment's env is the same gate** — declaring the settings fields is not.
 
 **Non-goals** (each is a later ticket, named so this one does not grow):
 placement **heartbeat** on the deployment key — plausibly the second capability
@@ -1388,6 +1935,19 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
               tests/unit/test_customer_console_resolve.py
 
+# CP-2b DEPLOYMENT half (added 2026-08-18 with the B3 answer, §6(i)).
+# ⚠️ A SECOND, DIFFERENT database: the tenant one. The suite below builds its
+# schema from infra/postgres/ via tests/unit/_tenant_ladder.py and gates on
+# DATABASE_URL *as pytest was launched with it* (tests/conftest.py:16) —
+# CUSTOMER_CONSOLE_DATABASE_URL does NOT satisfy it and never should:
+#   export DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1/acb_tenant
+uv run pytest tests/unit/test_deployment_resolve_cache.py
+
+# CP-2b's structural fences. Deliberately NEED NO DATABASE, so they must never
+# move into the suite above — folded in, they would skip with it, which is the
+# CP-3 disarmed-gate failure this ticket is built to avoid:
+uv run pytest tests/unit/test_console_dependency_boundary.py
+
 # The seam and tenancy ratchets this must not regress
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_db_engine_seam.py
 
@@ -1396,7 +1956,8 @@ uv run pytest tests/unit/test_v1_compat_telemetry.py tests/unit/test_v1_compat_m
               tests/unit/test_llm_usage_telemetry.py tests/unit/test_model_limits.py \
               tests/unit/test_byok_default.py
 
-# Frontend
+# Frontend — carries CP-2b's signIn-callback and refusal-copy fences
+# (workbench/control_plane/src/app/signin/signin.test.ts)
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 
@@ -1407,6 +1968,15 @@ lists already mandate R8 in their own words — CP-2b clause 10 and CP-4b's
 metering clause — so this line was simply behind them.)* CP-2b's new suite
 `tests/unit/test_customer_console_resolve.py` joined the command block **in the
 PR that created it**, together with `pr-check.yml`'s skip-guard entry.
+⚠️ **CP-2b binds R8 against TWO databases, and the second one does not exist in
+CI yet** *(recorded 2026-08-18 with the B3 answer)*. The Console half runs on
+`CUSTOMER_CONSOLE_DATABASE_URL`; the deployment half's projection, `resolved_at`
+clock and `registry_status` column live in the **tenant** database and answer to
+`DATABASE_URL`, which `pr-check.yml`'s test job sets **nowhere** — it provisions
+one Postgres service (`:113`) and exports one DSN (`:127`). A tenant-side R8
+suite merged before that second service exists would skip in CI and report
+green. The build slice adds the service, the DSN, the reachability assertion and
+the skip-guard entry **in the same PR as the suite**; clause 10 mandates it.
 **R1: migration numbers are taken at build time** — list the owning directory
 (`infra/customer_console/` for a Customer Console migration, `infra/postgres/`
 for a tenant one) and re-check at merge. *(The absolute that stood here, "highest
