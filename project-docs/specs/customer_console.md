@@ -17,6 +17,16 @@ verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec on
 **CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
 half of CP-4's done-when that was never met (`stream: true` returns 501) and
 CP-4's ✅ is amended accordingly ·
+⚠️ **CP-2b's deployment half then FAILED independent verification on one
+blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
+ship-dark guarantee was false in the half-configured case — the `signIn`
+callback gated on `CUSTOMER_CONSOLE_URL` alone while `is_wired()` requires that
+*and* the deployment key, and `CUSTOMER_CONSOLE_URL` is already set on any
+Console-connected box for the billing surface, so the hop would have armed
+itself at merge and refused sign-ins during ordinary deploy windows. The repair
+is a **dedicated Next-side flag, `CUSTOMER_CONSOLE_RESOLVE_ENABLED`, default
+unset = OFF**, which the callback now gates on alone (§6(f)/§6(g); flipping it
+on a live deployment joins §8 gate 7). Every other acceptance probe passed. ·
 ✅ **CP-2b is BUILT on both sides of the wire (2026-08-18), and the split is
 still the thing to understand.** The **Customer Console side**: the fourth auth
 scheme (`cc_depl_…`, capability set exactly `{resolve}`, `auth.py`), migration
@@ -37,11 +47,31 @@ at build time per R1 — the next free number is now **178**).
 **Every done-when clause is met**; 8, 10 and 12 were split per half by the
 audits and both halves of each are now closed. *The seat cap is consulted by
 the product*: the box asks before admitting anybody.
-**The whole path SHIPS DARK** — with `CUSTOMER_CONSOLE_URL` or
-`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` unset it admits without an HTTP call, a query
-or a write, byte-identically to the behaviour before this ticket, and two fences
-pin that. Issuing a real `cc_depl_` key, or writing either variable into a live
-deployment's env, remains 🔴 **OWNER-GATE** (§8 gate 7).
+**The whole path SHIPS DARK, and each side has its OWN switch** *(rewritten
+2026-08-18 — repair of finding **F1**; the previous sentence claimed one
+guarantee for two halves that did not have the same one)*:
+- **Next side** — the `signIn` callback gates on **`CUSTOMER_CONSOLE_RESOLVE_ENABLED`
+  alone**, default unset = OFF. Anything but the exact string `"true"` returns
+  `true` before doing anything at all: no fetch, no latency, no new failure
+  mode, **regardless of what `CUSTOMER_CONSOLE_URL` is set to** — that variable
+  keeps serving the billing surface and is not read by the callback at all.
+- **Gateway side** — `console_resolve.is_wired()` still requires **both**
+  `CUSTOMER_CONSOLE_URL` and `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`, and with either
+  unset `resolve_for_signin` admits without a call, a query or a write.
+
+Four fences pin it: `test_half_configured_is_not_wired` and
+`test_an_unwired_deployment_admits_without_asking_anything` (Python), and
+`signin.test.ts`'s *"is inert until `CUSTOMER_CONSOLE_RESOLVE_ENABLED` is
+exactly `true`"* plus *"does not arm itself off `CUSTOMER_CONSOLE_URL` (F1)"*.
+**Flag ON is a claim that the box is wired, so it fails CLOSED like one:** every
+transport or provisioning failure — the gateway unreachable during a deploy
+window, or the gateway's own env half-filled — refuses with
+`ConsoleUnavailable`. A deployment that says it is wired while half-provisioned
+is a provisioning error, and silently admitting there would give back exactly
+the fail-open posture CP-0 removed. Issuing a real `cc_depl_` key, writing
+either gateway variable into a live deployment's env, **or flipping
+`CUSTOMER_CONSOLE_RESOLVE_ENABLED` on a live deployment**, remains 🔴
+**OWNER-GATE** (§8 gate 7).
 *(The deployment half was audited for dispatch twice on 2026-08-18 — NO-GO on
 B1–B7 plus two status-drift items, then GO-NARROWED on B-a…B-g plus one
 mis-anchor. All fifteen are answered in §6(d)–(k) and in the clauses, as
@@ -941,7 +971,7 @@ ticket; ✅ marks what landed)*:
 | The one caller | `apps/services/gateway/gateway/routes/signin.py`, `POST /signin/resolve` | ✅ **new route module**, mounted in `gateway/main.py` beside the others; authenticated by the app-wide `require_authenticated` and **not** added to `PUBLIC_ROUTES` (`main.py:487`) — §6(e). The existing `test_default_deny_auth.py` sweep covers it without a new entry, which is what "auth by construction" is for |
 | Tenant-side config | `packages/acb_common/acb_common/settings.py` — `customer_console_url`, `customer_console_deployment_key`, `customer_console_resolve_ttl_seconds`, `customer_console_resolve_max_staleness_seconds` | ✅ **four new fields**, beside `crm_auto_lead` — §6(f) |
 | Projection columns | ✅ **`infra/postgres/177_console_resolve_projection.sql`** — number taken by listing `infra/postgres/` at build time (R1; `176_people_skills.sql` was the highest on disk) and re-checked at commit. **Next free number: 178** | `org_membership.resolved_at`, `organization.registry_status`, and — **added 2026-08-18 by §6(j)** — `organization.registry_capabilities JSONB`, because B-d's cached outcome needs a durable carrier and a *string* must never be one. All three nullable with **no default**; zero rows added to `gen_tenant_migration.EXEMPT` |
-| BFF hop | `workbench/control_plane/src/auth.ts` — a **new `signIn` callback** | ✅ §6(g) |
+| BFF hop | `workbench/control_plane/src/auth.ts` — a **new `signIn` callback**, gated by **`CUSTOMER_CONSOLE_RESOLVE_ENABLED`** (Next-side env, read by the workbench only — **not** an `acb_common` settings field; default unset = OFF, and only the exact string `"true"` arms it) | ✅ §6(g), flag added 2026-08-18 by the F1 repair |
 | Refusal copy | `workbench/control_plane/src/app/signin/errorCopy.ts` | ✅ two new keys — §6(g) |
 | R8 suite (tenant DB) | `tests/unit/test_deployment_resolve_cache.py` | ✅ **new (31 tests)**, + `tests/unit/_tenant_ladder.py`, + one line in `tests/conftest.py` beside `:16` snapshotting `TENANT_LADDER_DATABASE_URL` at launch — §6(i) |
 | Structural fences (no DB) | `tests/unit/test_console_dependency_boundary.py` | ✅ **new (4 tests)** — §6(d) manifest + import scan, §6(e)/clause 11's single-caller ratchet, §6(j)'s no-lifecycle-string scan |
@@ -1320,6 +1350,32 @@ presenting the wrong one and getting a 401 nobody can explain.
 **nothing** — a fourth entry there would mean the key had reached the browser
 tier, and that test failing is the correct alarm.
 
+⚠️ **A fifth variable exists and it is deliberately NOT in the table above:
+`CUSTOMER_CONSOLE_RESOLVE_ENABLED`** *(added 2026-08-18 by the F1 repair;
+agent-proposed default, owner may overrule — D16/D17)*. It is a **Next-side
+environment variable read by the workbench only** — `auth.ts`'s `signIn`
+callback and nothing else — so it is not an `acb_common` settings field and
+must not become one: `acb_common.Settings` describes the **gateway's**
+configuration, and a field there would be a second, silent switch for a
+decision the workbench makes. Default **unset = OFF**, and the gate is an
+equality against the exact string `"true"`, so
+`CUSTOMER_CONSOLE_RESOLVE_ENABLED=false` — what an operator writes while
+debugging a sign-in outage — is OFF rather than a truthy string.
+
+**Why it had to exist**, stated once so nobody re-derives the one-liner it
+replaces: the callback's original gate was `CUSTOMER_CONSOLE_URL` alone, while
+`is_wired()` requires **two** variables. `CUSTOMER_CONSOLE_URL` is *already* a
+live Next-side variable on any Console-connected deployment (the billing proxy
+reads it, `app/api/billing/summary/route.ts:34`), so **"URL set, key unset" is
+what this deployment looks like the moment the hop merges** — measured, that
+combination issued a fetch and, with the gateway momentarily unreachable,
+refused sign-in with `ConsoleUnavailable` where the pre-CP-2b code admitted.
+The hop armed itself during an ordinary deploy window with nobody flipping
+anything. **Reading the deployment KEY in `auth.ts` is the other obvious fix
+and is forbidden** by this section and by `signin.test.ts`'s
+`not.toContain("CUSTOMER_CONSOLE_DEPLOYMENT_KEY")`: that credential is
+gateway-only. Hence one variable in the callback, and it is the flag.
+
 **(g) The BFF hop is a NEW `signIn` callback in `auth.ts`, and it carries the
 refusal.** *(2026-08-18 — answers **B4** and **B6(iii)**.)*
 
@@ -1427,15 +1483,51 @@ distinguishable reasons therefore need two codes Auth.js does not define, and
 the string-return path is the mechanism that carries them. `deleted` (clause 6's
 dead state) keeps `AccessDenied` — there the copy is true.
 
+⚠️ **The Next side ships dark on its OWN flag, `CUSTOMER_CONSOLE_RESOLVE_ENABLED`**
+*(2026-08-18 — repair of finding **F1**, raised by independent verification;
+agent-proposed default, owner may overrule per D16/D17)*. The callback gates on
+**that variable alone**: unset, or anything but the exact string `"true"`, and
+it returns `true` as its first statement — no fetch, no latency, today's
+behaviour byte for byte, **whatever `CUSTOMER_CONSOLE_URL` holds**. The full
+argument for a dedicated flag (rather than gating on the URL, or on the
+gateway-only deployment key) is in §6(f) under the settings table.
+
+**Flag ON is a claim, and the box is held to it.** With the flag on, every
+failure fails **closed** with the D33.1-compliant `ConsoleUnavailable` copy —
+that is the intended behaviour of a deliberately-wired deployment, clause 6's
+contract unchanged, and it **includes the deploy-window case** where the
+gateway is briefly unreachable. It also includes the *half-provisioned* case:
+flag on in Next while the gateway's own `CUSTOMER_CONSOLE_URL` /
+`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` are missing, where `/signin/resolve` cannot
+answer. **That is a provisioning error and it refuses like any other transport
+failure** — a box that claims to be wired while it is half-provisioned must not
+silently admit, because "admit when unsure" is precisely the fail-open posture
+CP-0 removed. The consequence is stated plainly so nobody is surprised by it:
+turning this flag on is an act with an availability cost, which is why it is
+🔴 OWNER-GATE (§8 gate 7).
+
 Fences (extend `workbench/control_plane/src/app/signin/signin.test.ts`, which
 already reads a sibling as source and already tests `signInErrorMessage` — a new
 file would be a second home for one subject):
 `"resolve fires only from the signIn callback"` (source-level over `auth.ts`:
 the resolve call appears inside the `signIn` callback and in neither `jwt` nor
 `session`, and appears in no route file), `"the resolve email comes from the
-provider profile, never from request input"`, and `"errorCopy speaks the two
+provider profile, never from request input"`, `"errorCopy speaks the two
 CP-2b codes"` asserting neither new string matches
-`/access denied|isn't authorized/i`.
+`/access denied|isn't authorized/i`, `"is inert until
+CUSTOMER_CONSOLE_RESOLVE_ENABLED is exactly \"true\""` (the flag is read FIRST,
+before the call, and by equality not truthiness) and — the F1 repair's own
+fence — `"does not arm itself off CUSTOMER_CONSOLE_URL (F1)"`, a scan of the
+callback's body for the arming-by-accident channel.
+
+⚠️ **All of these are source-regex fences, and that is forced rather than
+chosen** *(measured 2026-08-18)*: vitest in `workbench/control_plane` is
+node-env, and `import("@/auth")` fails inside `next-auth/lib/env.js` — *"Cannot
+find module …/node_modules/next/server"* — before any callback can be invoked.
+So **no test in this tree executes the callback**; what is pinned is the gate's
+shape. F1 is what that blind spot cost once (a shape that read plausibly and
+armed itself), so the behavioural half is a **review** check and is recorded
+here as one rather than left to look covered.
 
 **(h) This entry point reads the projection ITSELF; `app_user` stays
 authoritative everywhere else.** *(2026-08-18 — answers **B2** and status-drift
@@ -2430,6 +2522,11 @@ env write, i.e. two existing gate classes at once, and a deployment key is the
 credential that lets a box ask about people. **Setting
 `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` or `CUSTOMER_CONSOLE_URL` in a live
 deployment's env is the same gate** — declaring the settings fields is not.
+**And, added 2026-08-18 with the F1 repair: setting
+`CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` on a live deployment is the same gate
+too** — it is the Next-side switch that arms the hop, and arming it makes every
+Console or gateway outage a sign-in refusal by design. Declaring the flag,
+defaulting it OFF and fencing both positions is agent-safe.
 
 **Non-goals** (each is a later ticket, named so this one does not grow):
 placement **heartbeat** on the deployment key — plausibly the second capability
@@ -2555,6 +2652,13 @@ surface, against fixtures.
 7. **Issuing a `cc_depl_` deployment key and setting it in a live deployment's
    env** (CP-2b, added 2026-08-18) — a credential issuance *and* a deployment env
    write. Minting keys against fixtures is AGENT-SAFE; a real one is not.
+   **And, extended 2026-08-18 by the F1 repair: setting
+   `CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` on a live deployment.** It is the
+   Next-side switch that arms the sign-in hop, and turning it on converts every
+   Console/gateway outage into a sign-in refusal (by design — §6(g)), so it is
+   a deliberate availability trade nobody but the owner may take. *Declaring
+   the flag, defaulting it OFF and testing both positions is AGENT-SAFE;
+   writing it into a running box is not.*
 
 *All seven are registered in `work_plan.md` §6 as of 2026-08-18 — a gate that
 lives only in a spec is a gate the dispatch board cannot enforce.*

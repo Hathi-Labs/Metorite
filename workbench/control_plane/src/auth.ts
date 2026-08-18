@@ -122,18 +122,45 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
      * session cookie is written), which is what carries a distinguishable
      * reason. Returning `false` would yield `AccessDenied` and nothing else.
      *
-     * ⚠️ **Ships dark.** With `CUSTOMER_CONSOLE_URL` unset this returns `true`
-     * before doing anything at all, so an unwired deployment signs people in
-     * exactly as it did before CP-2b — no fetch, no latency, no new failure
-     * mode. The deployment KEY is read on the gateway and never here, which is
-     * why `gateway.test.ts`'s bearer allow-list gains nothing.
+     * ⚠️ **Ships dark, behind a flag of its own —
+     * `CUSTOMER_CONSOLE_RESOLVE_ENABLED`, default unset = OFF.** Anything but
+     * the exact string `"true"` returns `true` before doing anything at all,
+     * so a deployment that has not opted in signs people in exactly as it did
+     * before CP-2b: no fetch, no latency, no new failure mode.
+     *
+     * ⚠️ **Why a dedicated flag rather than the obvious one-liner** (repair of
+     * finding F1, independent verification 2026-08-18; `customer_console.md`
+     * §6(g)). The gate used to be `CUSTOMER_CONSOLE_URL` alone, where the
+     * gateway's `console_resolve.is_wired()` requires **both** that URL and the
+     * deployment key. But `CUSTOMER_CONSOLE_URL` is already a live Next-side
+     * variable — the billing proxy (`app/api/billing/summary/route.ts`) reads
+     * it — so "URL set, key unset" is what a Console-connected box looks like
+     * the moment this merges, and measured, that combination fetched and then
+     * refused sign-in (`ConsoleUnavailable`) whenever the gateway was
+     * momentarily unreachable. The hop armed itself with nobody flipping
+     * anything. Checking the deployment **key** here is the other obvious fix
+     * and is FORBIDDEN by §6(f): that credential is gateway-only and must
+     * never be readable from the browser tier. Hence one variable, and it is
+     * the flag. `CUSTOMER_CONSOLE_URL` keeps serving the billing surface and
+     * is **not read by this callback at all** — fenced by
+     * `signin.test.ts`'s *"does not arm itself off CUSTOMER_CONSOLE_URL (F1)"*,
+     * which scans this callback's BODY, which is why the variable may be named
+     * in this comment while the deployment key may not be named anywhere in
+     * this file.
+     *
+     * ⚠️ **Flag ON means the refusals are intended, including during a deploy
+     * window.** A box that says it is wired fails CLOSED on every transport or
+     * provisioning failure — gateway unreachable, or gateway env half-filled —
+     * because a box claiming to be wired while half-provisioned is a
+     * provisioning error and must not silently admit. Flipping the flag on a
+     * live deployment is 🔴 OWNER-GATE (§8 gate 7).
      *
      * ⚠️ The email comes from the **provider-verified profile**, never from
      * request input (R11) — the same value the `jwt` callback below already
      * trusts.
      */
     async signIn({ profile, user }) {
-      if (!process.env.CUSTOMER_CONSOLE_URL) return true;
+      if (process.env.CUSTOMER_CONSOLE_RESOLVE_ENABLED !== "true") return true;
 
       const email =
         (typeof profile?.email === "string" && profile.email) ||

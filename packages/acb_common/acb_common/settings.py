@@ -145,12 +145,20 @@ class Settings(BaseSettings):
     # `Settings` declares no `env_prefix`, so each field name maps directly to
     # its upper-cased environment variable.
     #
-    # ⚠️ SHIPS DARK. With `customer_console_url` OR
-    # `customer_console_deployment_key` unset the resolve path is INERT and
-    # sign-in behaves exactly as it did before CP-2b — no HTTP call, no
-    # projection write, no refusal. Wiring a live deployment (writing either
-    # value into its env) is 🔴 OWNER-GATE (§8 gate 7); declaring the fields is
-    # not.
+    # ⚠️ SHIPS DARK — **this half of it**. With `customer_console_url` OR
+    # `customer_console_deployment_key` unset the GATEWAY's resolve path is
+    # INERT: no HTTP call, no projection write, no refusal. Wiring a live
+    # deployment (writing either value into its env) is 🔴 OWNER-GATE (§8 gate
+    # 7); declaring the fields is not.
+    #
+    # ⚠️ It is NOT the whole ship-dark guarantee, and reading it as one was
+    # finding F1 (2026-08-18). The BFF hop that CALLS this path lives in Next
+    # and has its own switch, `CUSTOMER_CONSOLE_RESOLVE_ENABLED` (default unset
+    # = OFF, read only by `workbench/control_plane/src/auth.ts`). These two
+    # fields say nothing about whether the browser tier asks; that is the
+    # flag's job, deliberately, because `CUSTOMER_CONSOLE_URL` is also the
+    # billing surface's variable and gating the hop on it armed sign-in the
+    # moment a Console address existed. See customer_console.md §6(f)/§6(g).
     #
     # `CUSTOMER_CONSOLE_URL` is deliberately the SAME name the workbench BFF
     # already reads (`app/api/billing/summary/route.ts`) — one Console, one

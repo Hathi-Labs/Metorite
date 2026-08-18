@@ -34,6 +34,15 @@ const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf-8");
 // fence (`tests/unit/test_console_dependency_boundary.py`) pins that
 // `console_resolve` has exactly one caller; on its own that is satisfied by a
 // BFF calling `POST /signin/resolve` from anywhere, which is what these close.
+//
+// ⚠️ **Source-regex is not a preference here, it is the only option, and the
+// F1 repair did not change that** (measured 2026-08-18): vitest in this tree is
+// node-env, and `import("@/auth")` dies inside `next-auth/lib/env.js` with
+// *"Cannot find module …/node_modules/next/server"* before any callback can be
+// called. So the gate below is pinned by its SHAPE. What no test in this tree
+// can prove is that the shape behaves — that the flag being off issues no
+// fetch — and the F1 finding is exactly what that blind spot cost once, so it
+// is a review check and it is written down rather than assumed away.
 const authSrc = readFileSync(new URL("../../auth.ts", import.meta.url), "utf-8");
 
 /** The source of one `callbacks:` entry, from its name to the next one. */
@@ -197,17 +206,49 @@ describe("the sign-in resolve hop (CP-2b)", () => {
     expect(authSrc).not.toContain("CUSTOMER_CONSOLE_DEPLOYMENT_KEY");
   });
 
-  it("is inert until CUSTOMER_CONSOLE_URL is configured", () => {
+  it("is inert until CUSTOMER_CONSOLE_RESOLVE_ENABLED is exactly \"true\"", () => {
     // Ships dark. The gate is read FIRST, before anything else in the
-    // callback, so an unwired deployment signs people in with no fetch, no
-    // latency and no new failure mode — byte-identical to the behaviour
-    // before CP-2b. Wiring a live box is OWNER-GATE (§8 gate 7).
+    // callback, so a deployment that has not opted in signs people in with no
+    // fetch, no latency and no new failure mode — byte-identical to the
+    // behaviour before CP-2b. Flipping the flag on a live box is OWNER-GATE
+    // (§8 gate 7).
+    //
+    // ⚠️ The gate is an EQUALITY against "true", not a truthiness test: an
+    // operator who writes `CUSTOMER_CONSOLE_RESOLVE_ENABLED=false` while
+    // debugging a sign-in outage must get OFF, and every truthy-string reading
+    // of that value arms the hop instead.
     const signIn = callbackBody(authSrc, "signIn");
-    const gate = signIn.indexOf("process.env.CUSTOMER_CONSOLE_URL");
+    const gate = signIn.indexOf("process.env.CUSTOMER_CONSOLE_RESOLVE_ENABLED");
     const call = signIn.indexOf("/signin/resolve");
     expect(gate).toBeGreaterThan(-1);
     expect(gate).toBeLessThan(call);
-    expect(signIn).toMatch(/if \(!process\.env\.CUSTOMER_CONSOLE_URL\) return true;/);
+    expect(signIn).toMatch(
+      /if \(process\.env\.CUSTOMER_CONSOLE_RESOLVE_ENABLED !== "true"\) return true;/,
+    );
+  });
+
+  it("does not arm itself off CUSTOMER_CONSOLE_URL (F1)", () => {
+    // The repair of finding F1 (independent verification, 2026-08-18), and the
+    // reason this ticket has a flag of its own rather than the obvious
+    // one-liner.
+    //
+    // The gate used to be `if (!process.env.CUSTOMER_CONSOLE_URL) return true;`
+    // — ONE variable, where the gateway's `is_wired()` requires TWO (URL *and*
+    // deployment key). `CUSTOMER_CONSOLE_URL` is already a live Next-side
+    // variable on any Console-connected box (the billing proxy reads it,
+    // `app/api/billing/summary/route.ts`), so "URL set, key unset" is exactly
+    // what this deployment looks like the moment the hop merges: measured, that
+    // combination issued one fetch and — with the gateway unreachable, i.e. an
+    // ordinary deploy window — returned "/signin?error=ConsoleUnavailable".
+    // The hop armed itself, and refused sign-in, with nobody flipping anything.
+    //
+    // Checking the deployment KEY here instead is forbidden (§6(f): that
+    // credential is gateway-only and must never reach the browser tier — the
+    // fence for it is three assertions up). So the callback reads ONE variable
+    // and it is the flag; `CUSTOMER_CONSOLE_URL` keeps serving the billing
+    // surface and is not an input to this decision at all.
+    const signIn = callbackBody(authSrc, "signIn");
+    expect(signIn).not.toContain("CUSTOMER_CONSOLE_URL");
   });
 
   it("refuses with the two codes and never with a bare false", () => {

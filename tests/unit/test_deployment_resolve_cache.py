@@ -1083,6 +1083,15 @@ class TestTheWireAndTheDsn:
 
         It is a misconfiguration, and the fail-open reading of it — guess the
         rest — is the posture CP-0 existed to remove.
+
+        ⚠️ **This proves the PYTHON half only, and reading it as the whole
+        ship-dark guarantee was finding F1** (2026-08-18). Whether the browser
+        tier even asks is decided in Next, by `CUSTOMER_CONSOLE_RESOLVE_ENABLED`
+        (default unset = OFF); its fences are `signin.test.ts`'s *"is inert
+        until CUSTOMER_CONSOLE_RESOLVE_ENABLED is exactly 'true'"* and *"does
+        not arm itself off CUSTOMER_CONSOLE_URL (F1)"*. Two switches, two
+        fences, because they are on opposite sides of a language boundary —
+        `customer_console.md` §6(f)/§6(g).
         """
         from acb_auth import console_resolve
         from acb_common.settings import get_settings

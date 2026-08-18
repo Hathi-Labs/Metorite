@@ -87,12 +87,20 @@ branch. ``registry_status`` is stored, and its ONLY use anywhere is the word a
 person is shown; a box that read it and decided would be a second copy of the
 state machine spelled as an ``if``.
 
-## Ships dark
+## Ships dark — this half of it
 
 With ``CUSTOMER_CONSOLE_URL`` or ``CUSTOMER_CONSOLE_DEPLOYMENT_KEY`` unset,
-:func:`resolve_for_signin` admits without a call, a query or a write, and
-sign-in behaves exactly as it did before CP-2b. Wiring a live deployment is
-🔴 OWNER-GATE (§8 gate 7); declaring the settings is not.
+:func:`resolve_for_signin` admits without a call, a query or a write.
+
+⚠️ That is a statement about **this module**, not about sign-in end to end, and
+the difference was finding F1 (2026-08-18). The browser tier decides
+separately whether to ask at all: the BFF's ``signIn`` callback
+(``workbench/control_plane/src/auth.ts``) gates on its own Next-side flag,
+``CUSTOMER_CONSOLE_RESOLVE_ENABLED``, default unset = OFF. So "half-configured
+here" no longer means "the product still behaves as it did before CP-2b" by
+implication — it means this function admits, while whether the hop is attempted
+at all is the flag's answer. Wiring a live deployment, and flipping that flag on
+one, are both 🔴 OWNER-GATE (§8 gate 7); declaring the settings is not.
 """
 
 from __future__ import annotations
