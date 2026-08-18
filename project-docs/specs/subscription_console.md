@@ -207,6 +207,33 @@ correct after the 90-day raw retention window. **Done when:** the statement
 totals equal the period's ledger consumption; an org with BYOK sees consumption
 labelled "not billed — your key" (§3.4).
 
+**SC-4g · Discount codes, and the ₹0 checkout *(owner directive 2026-08-18,
+D42)*.** Customer zero (Fracktal, D36) must complete the ENTIRE purchase flow —
+package selection, checkout, invoice, entitlement/credit grant — while paying
+nothing, and the mechanism is a real product feature, not a test backdoor: an
+operator-issued **discount code** applied at checkout. Mechanics that follow
+from the rails rather than from preference: **(1)** Razorpay cannot capture ₹0,
+so a 100%-off checkout completes **without a provider order** while writing
+exactly the records a paid one writes — the same subscription/`credit_ledger`
+rows, referenced to the coupon **redemption id** where a paid purchase carries
+the payment id; **(2)** the capture leg itself is rehearsed with Razorpay
+**test-mode keys**, never with the coupon — the coupon path deliberately never
+reaches the provider, so the two together cover the whole flow and neither
+alone does; **(3)** the tax invoice shows the discount as a line (gross ·
+discount · ₹0 net) rather than suppressing the document — the paper trail is
+the point of the exercise (SC-5b's mandatory fields still apply); **(4)** codes
+are operator-issued in the Customer Console and scoped — org, expiry, max
+redemptions, percent-or-fixed — with an audit row on issue and on redemption,
+and redemption idempotency sits beside SC-4a's webhook idempotency (append-only
+ledger, idempotent on the reference). 🔴 **Issuing a code against a live org is
+the same owner gate as SC-4e's adjustments.** **Done when:** a 100% code takes
+an org from package selection to active entitlements and a credited ledger with
+**zero provider calls** and one invoice showing the discount; a partial code
+(e.g. 50%) routes the REMAINDER through the normal SC-4a provider path; an
+expired, exhausted or wrong-org code refuses with a reason; and the ledger row
+from a discounted purchase is distinguishable from both a paid purchase and an
+SC-4e adjustment a year later.
+
 ### SC-5 — Billing management: the documents, and who issues them *(D38, 2026-08-13)*
 
 > ⚠️ **This section corrects a wrong assumption carried since §1.** The non-goals
