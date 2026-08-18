@@ -65,6 +65,53 @@ export function notConfigured(): NextResponse {
 
 export interface Purchaser {
   email: string;
+  /** The caller's own organization slug — the one the key was checked against. */
+  organization: string;
+}
+
+/**
+ * The organization this deployment's key belongs to, cached per process.
+ *
+ * ⚠️ **The cache is per WORKER and the key is fixed by process env**, so a key
+ * rotated to a different organization needs a restart to be seen here.
+ */
+const KEY_ORGANIZATION = new Map<string, string>();
+
+/** Test seam: each fence case scripts its own whoami and must start clean. */
+export function resetKeyOrgCache(): void {
+  KEY_ORGANIZATION.clear();
+}
+
+/**
+ * Whose key this is, from the Console's own read-only whoami (`main.py:1211`).
+ *
+ * `null` means *we could not establish it* — an unreachable Console, a rotated
+ * or revoked key (401), a payload without a slug. Never cached: one blip must
+ * not leave a live deployment permanently unable to buy.
+ */
+async function keyOrganization(config: {
+  url: string;
+  key: string;
+}): Promise<string | null> {
+  const cacheKey = `${config.url}|${config.key}`;
+  const cached = KEY_ORGANIZATION.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(`${config.url}/me`, {
+      headers: { Authorization: `Bearer ${config.key}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { slug?: unknown };
+    const slug = typeof body?.slug === "string" ? body.slug : "";
+    if (!slug) return null;
+    KEY_ORGANIZATION.set(cacheKey, slug);
+    return slug;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -98,6 +145,24 @@ export interface Purchaser {
  * and the safe answer to that is no. The read path's habit of degrading to
  * `NO_ACCESS` and rendering (`api/auth/me/route.ts`) is right for deciding
  * what to draw and wrong for deciding whether to spend.
+ *
+ * ## 4. The caller's organization must BE the key's *(added 2026-08-19)*
+ *
+ * The capability answers *"may this person buy?"*; the credential decides
+ * *"whose account is charged"* — and `org_placement` is **N organizations to
+ * one deployment**, so those are two different organizations until something
+ * compares them. Nothing did. The day capability seeding parameterizes (B7
+ * clause 2's org-provisioning ticket), an admin of org B passes this gate and
+ * buys **into org A**: seats granted to the key's organization, from a person
+ * with no standing in it, and no refusal anywhere on the path.
+ *
+ * So the caller's slug (`/auth/me`'s `organization.slug` — the CALLER's, per
+ * `admin/me.py:112-133`) is compared against the key's, learned from the
+ * Console's read-only whoami. Mismatch is a **403 naming the caller's own
+ * organization** and never the key's: which tenant owns this deployment's
+ * billing account is a cross-tenant fact the caller has no need for. An
+ * unresolvable key organization is the **unavailable 503** — never a pass, and
+ * never an admission of what the deployment is or is not wired to.
  */
 export async function requirePurchaser(): Promise<Purchaser | NextResponse> {
   const identity = await currentIdentity();
@@ -132,7 +197,44 @@ export async function requirePurchaser(): Promise<Purchaser | NextResponse> {
     );
   }
 
-  return { email: identity.email };
+  // Everything below runs only for a HOLDER, which is why the configuration
+  // 503 can appear here at all: a member without the capability has already
+  // been refused and cannot learn whether this deployment is wired to a
+  // Console.
+  const config = consoleConfig();
+  if (!config) return notConfigured();
+
+  const callerOrg =
+    typeof access?.organization?.slug === "string"
+      ? access.organization.slug
+      : "";
+  if (!callerOrg) {
+    // `admin/me.py:135-140` degrades to `organization: {}` when the tenant
+    // lookup fails. Right for rendering the app; wrong for spending.
+    return NextResponse.json(
+      {
+        detail:
+          "We could not confirm which organization you belong to, so this purchase was refused.",
+      },
+      { status: 403 },
+    );
+  }
+
+  const keyOrg = await keyOrganization(config);
+  if (!keyOrg) return consoleUnavailable();
+
+  if (keyOrg !== callerOrg) {
+    return NextResponse.json(
+      {
+        detail:
+          `Purchases made here are billed to a different organization than yours (${callerOrg}), ` +
+          "so this purchase was refused. Ask an owner to check this deployment's billing key.",
+      },
+      { status: 403 },
+    );
+  }
+
+  return { email: identity.email, organization: callerOrg };
 }
 
 /**
@@ -160,12 +262,31 @@ export const RELAYED_STATUSES: ReadonlySet<number> = new Set([400, 404, 409]);
  *
  * JSON in both directions: every route here is JSON-only (unlike the CSV
  * proxies, whose bytes matter — see `src/lib/export.test.ts`).
+ *
+ * ⚠️ **An upstream 401 is never relayed as a 401** *(added 2026-08-19)*. The
+ * Console issues 401 for a missing, malformed, unknown or revoked **API key**
+ * (`customer_console/auth.py:188-220`) — this deployment's own credential, held
+ * by this server and not by the person at the keyboard. Passed through, it
+ * reaches `redeemRefusal`'s `unauthenticated` arm and tells a signed-in
+ * purchaser to *sign in* for a fault they cannot see and cannot fix, while the
+ * real cause (a rotated key) goes unreported. It becomes a **502**, which is
+ * exactly the conclusion the sibling read proxy reached first and carries the
+ * argument for: `summary/route.ts:73` maps upstream 401||403 the same way. One
+ * policy, mirrored rather than extracted because that route is merged code with
+ * a known-open board finding on it; `checkout.test.ts` asserts the two still
+ * agree, so the mirror cannot go stale silently.
  */
 export async function relayConsole(res: Response): Promise<NextResponse> {
   const body = await res.json().catch(() => null);
   if (res.ok) return NextResponse.json(body ?? {}, { status: res.status });
   if (RELAYED_STATUSES.has(res.status) && body !== null) {
     return NextResponse.json(body, { status: res.status });
+  }
+  if (res.status === 401) {
+    return NextResponse.json(
+      { detail: "Billing is temporarily unavailable." },
+      { status: 502 },
+    );
   }
   return NextResponse.json(
     { detail: `Could not reach billing (${res.status})` },

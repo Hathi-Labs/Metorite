@@ -8,9 +8,14 @@ behind `purchaseEnabled`. Launch done-whens 1, 2, 5a, 6, 7, 8 and 9 are met;
 because there is no browser→provider hand-off anywhere in the tree. F-I's
 prerequisite CLOSED the same day — WS-31 shipped `GET /billing/catalog` (§6 item
 (f)), so done-when 1 has a data source and the page renders the ladder from it
-rather than from TypeScript.** *(Header rewritten 2026-08-18 — R4 — extended
-2026-08-19 with the NO-GO answer, and again the same day when the launch slice
-landed. What stood here before 08-18 was wrong on three counts, each corrected
+rather than from TypeScript. The slice was then INDEPENDENTLY VERIFIED and
+ADVERSARIALLY REVIEWED, FAILED on one blocker plus 2×P1 + 3×P2, and REPAIRED on
+the same branch the same day — see the repair-round box below. No done-when mark
+moved: the repairs close a cross-tenant purchase path, a misleading 401 and
+three smaller defects, none of which un-met anything already claimed.**
+*(Header rewritten 2026-08-18 — R4 — extended
+2026-08-19 with the NO-GO answer, again the same day when the launch slice
+landed, and again for the repair round. What stood here before 08-18 was wrong on three counts, each corrected
 below rather than quietly deleted: it called the billing view "unmerged" on a
 branch, it said "everything else … nothing built", and it said dispatch waits on
 MT-2's tables.)*
@@ -46,6 +51,81 @@ architectural order rather than the diff order:
   done-when 9's refusal partition). 106 vitest files / 2305 tests green.
 - **NOT built, and not claimed:** any provider hand-off, any payment link, any
   capture. The read proxy's board finding below is untouched by design.
+
+**⚠️ REPAIR ROUND — 2026-08-19, on the same branch.** Independent verification
+FAILED the slice on one blocker and adversarial review returned two P1s and
+three P2s. All six are fixed; **no done-when mark changes** — nothing above
+regressed, and every clause the repairs touch is now held by a fence that was
+shown red first.
+- **V1 (blocking, verification) — the tenant fence was red from Git Bash on the
+  primary dev box**, i.e. from the exact `export TENANT_LADDER_DATABASE_URL=…`
+  form this suite's own docstring and §5's command block document.
+  `test_the_seed_is_on_the_replayable_ladder` compared a path built with
+  `Path(__file__).resolve()` (Windows canonicalises the drive to `C:`) against
+  paths built with `os.path.abspath` (`_tenant_ladder.py:65`, which inherits the
+  launching shell's case — `c:` from bash). Green from PowerShell and in CI,
+  red from bash: *`assert 'C:\…\178_billing_purchase_permission.sql' in {'c:\…'}`*.
+  Both sides now go through **`os.path.normcase`**, a no-op on POSIX, so the
+  assertion stays an exact **whole-path** comparison — the "a file the ladder
+  does not pick up is a seed that never runs" property is unchanged, and it is
+  still a path and not a name. Proven from **both shells**: 10 passed / 0
+  skipped each.
+- **P1 · The BFF gated the CALLER and bound the DEPLOYMENT's key, and never
+  compared the two organizations.** `org_placement` is N organizations to one
+  deployment; the capability answers *"may this person buy"* while the key
+  decides *"whose account is charged"*. The day B7 clause 2's org-provisioning
+  ticket parameterizes capability seeding, org B's admin passes
+  `requirePurchaser` and buys **into org A** — seats granted in a tenant the
+  buyer has no standing in. `requirePurchaser` now keeps the caller's
+  `organization.slug` from the gateway `/auth/me` payload (the CALLER's org,
+  `admin/me.py:112-133`) and learns the key's from the Console's read-only
+  whoami `GET /me` (`main.py:1211-1234`, which returns `slug`), compares them,
+  and refuses **403 before the money route** on a mismatch. The copy names the
+  caller's own organization and **never the key's** — which tenant owns this
+  deployment's billing account is a cross-tenant fact the caller has no need
+  for. An unresolvable whoami (unreachable, 401 on a rotated key, no slug) is
+  the existing **unavailable 503**, never a pass and never an admission; a
+  failed resolution is **not cached**, so one blip is not a dead deployment.
+  The successful one is cached module-level — **per worker**, and a key rotated
+  to another organization needs a restart. Red-first: *`expected 200 to be 403`*
+  on all three gated routes.
+- **P1 · An upstream 401 was relayed as a 401**, so a signed-in purchaser was
+  told *"Sign in to continue"* when the fault was **this deployment's** key
+  being rotated or revoked (`customer_console/auth.py:188-220` — 401 is always
+  about the API key). `relayConsole` maps upstream 401 → **502** with
+  *"Billing is temporarily unavailable."*, which is the conclusion
+  `summary/route.ts:73` reached first; it is mirrored rather than extracted
+  because that route is merged code carrying the board finding below, and
+  `checkout.test.ts` asserts the two policies still agree so the mirror cannot
+  go stale in silence. Red-first: *`expected 401 to be 502`*. The BFF's **own**
+  401 still means sign in, and a case pins that too.
+- **P2 · The gated list now has a completeness sweep.** `checkout.test.ts` walks
+  `src/app/api/billing/**` for `route.ts`, subtracts the two exclusions **by
+  name with their reasons**, and asserts the remainder IS the gated set — so the
+  fifth billing route cannot arrive unnoticed, which is the property an explicit
+  list otherwise gives up (recorded above as given up; now bought back in the
+  only form a list can have it). Red-first: a transient `probe/route.ts` failed
+  with *`- "probe/route.ts"`*.
+- **P2 · `Checkout.tsx`'s `initialFocus` ternary could never fire** — `Modal`
+  reads that prop when the dialog mounts, and at that moment the step is always
+  `pick`, so the code field did not exist. Replaced by an effect on `step`,
+  and the dead prop dropped.
+- **P2 · Stale anchor.** `purchaseEnabled` is `main.py:**1438**`, not `:1408` —
+  in this file twice, in `page.tsx`'s flip-point comment, and in F-G's own
+  re-anchor line, which claimed to have fixed exactly this while being 30 lines
+  short. F-G's other two are re-measured in the same edit.
+- **Advisory, recorded not fixed (two).** *(1)* `lib/checkout.ts:259`'s 404
+  discriminator is `detail.includes("order")` — coupled to the Console's copy
+  **across a repository boundary with no fence**: it reads `_NO_SUCH_ORDER =
+  "no such order"` and `_NO_SUCH_CODE = "no such discount code"`
+  (`customer_console/main.py:1470,1476`). Reword either and a missing ORDER
+  silently renders the CODE sentence. The honest fix is a machine-readable
+  discriminator in the Console's 404 bodies — a CP-9 change, not a surface one.
+  *(2)* `OrderPanel` multiplies `unit_price_paise × quantity` for the per-line
+  display, so the header's *"it never computes a total"* was an overstatement;
+  it now reads **the browser never NAMES a price to the server, and the display
+  arithmetic is integer-exact** — paise are integers, it is never summed into a
+  basket and never sent.
 
 **SC-4g (i)–(v) — server side — ✅ BUILT 2026-08-18** with CP-9's substrate
 half, in WS-31's tree because that is where the tables live: `discount_code` +
@@ -138,8 +218,9 @@ pre-existing defect class, `saas_multitenancy_implementation.md` §7.1 step 3 /
   `ModuleGate`, the 402-vs-403 split) — which gates the *entitlement* surfaces,
   not this console's reads.
 - **The checkout is the hole, and it is now specced.** `GET /me/billing` returns
-  `"purchaseEnabled": False` (`customer_console/main.py:1408` — *re-anchored
-  2026-08-19 from `:1266`, F-G*) and the page
+  `"purchaseEnabled": False` (`customer_console/main.py:1438` — *re-anchored
+  2026-08-19 from `:1266`, F-G; corrected the same day from `:1408`, which was
+  30 lines short and claimed to be re-anchored while it was not*) and the page
   renders a contact prompt instead of a button on that branch
   (`page.tsx:202`). That flag is the landing site for SC-4a.
 
@@ -506,12 +587,18 @@ creates it") is answered by the seed, which is why B7's clause 2 exists and why
 F-C had to make it correct.
 
 **F-G · Anchors re-measured 2026-08-19** (the corpus already carries ~12 wrong
-citations; these were four more). `purchaseEnabled` **1266 → 1408**;
-`GET /me/billing` **1213 → 1355** (`my_billing`); `GET /billing/summary`
-**875 → 1017** (`billing_summary`, `Operator`). Handler names now travel beside
-the numbers, per the §6(c) convention. `work_plan.md` §6(c)'s four are corrected
-in the same change: `grant_credits` 963 → **1104**, `assign_seat` 908 → **1049**,
-`release_seat` 948 → **1089**, `set_lifecycle` 500 → **637**.
+citations; these were four more). `purchaseEnabled` **1266 → 1438**;
+`GET /me/billing` **1213 → 1386** (`my_billing`); `GET /billing/summary`
+**875 → 1048** (`billing_summary`, `Operator`). Handler names now travel beside
+the numbers, per the §6(c) convention.
+⚠️ **Re-measured AGAIN in the repair round the same day, because the first
+re-anchor was itself stale**: it was taken against a `main.py` that had since
+grown ~30 lines, so `:1408` / `:1355` / `:1017` were all short while the prose
+claimed to have fixed exactly that. The three numbers above are the measured
+ones (`def` lines, `grep -n`). `work_plan.md` §6(c)'s four —
+`grant_credits` **1135**, `assign_seat` **1080**, `release_seat` **1120**,
+`set_lifecycle` **668** — are stale in the same direction and are **left for
+that file's owner**: this branch does not touch `work_plan.md`.
 
 **F-H · Non-blocking residual: the write routes discard WHO bought.** The read
 proxy sends `X-CC-Member: identity.email`
@@ -701,8 +788,9 @@ it.
    the re-read-before-hand-off half is **carried forward to SC-4h**; the re-read
    and terminal-state halves are **live now** and testable against the shipped
    read.
-6. ✅ **MET 2026-08-19.** `purchaseEnabled` (`customer_console/main.py:1408` —
-   *re-anchored 2026-08-19 from `:1266`, F-G*) is what flips the page from the
+6. ✅ **MET 2026-08-19.** `purchaseEnabled` (`customer_console/main.py:1438` —
+   *re-anchored 2026-08-19 from `:1266`, F-G; the re-anchor itself was wrong by
+   30 lines and is corrected here the same day*) is what flips the page from the
    contact prompt to the checkout (`page.tsx:211` — *re-anchored from `:202` by
    the build*) — **the flip is the owner's**, and its
    preconditions are the flip set below.
@@ -758,6 +846,13 @@ it.
    fails with *`expected [ Array(1) ] to deeply equal []`* naming
    `https://console.invalid/billing/catalog` — which is precisely the "403
    issued after the money route was hit" bug the clause exists to catch.
+   ⚠️ **The gate has a SECOND half since the repair round** *(2026-08-19)*: the
+   capability says who may buy, the key says whose account is charged, and
+   `requirePurchaser` now compares the caller's organization against the key's
+   before either write is reached. The clause-4 fences below are joined by six
+   org-binding cases per gated route (mismatch, unresolvable caller org,
+   whoami non-200, whoami unreachable, no failed-resolution caching, and the
+   matching-slug pass), each asserting the **money route was never fetched**.
    ⚠️ **The literal wording of clause 4 — "assert the fetch mock was never
    called" — is met in spirit and not in letter, deliberately.** The gate
    itself resolves the caller through the gateway's `/auth/me`, so `fetch` **is**

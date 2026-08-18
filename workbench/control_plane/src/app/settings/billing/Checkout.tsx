@@ -24,9 +24,15 @@
  * behind `work_plan.md` §6(b)'s Razorpay account. So a remaining balance is
  * reported honestly here and nothing pretends it can be paid on this screen.
  *
- * **It never computes a total.** Prices are integer paise from the Console and
- * are formatted, never summed (§9.2). Every figure below the picker is a field
- * of the order the Console priced, re-read from the server.
+ * **It never NAMES a price to the server, and it computes no total the server
+ * will ever read.** Prices are integer paise from the Console; every figure the
+ * page branches on — subtotal, discount, GST, total — is a field of the order
+ * the Console priced and re-read from it, and the proxy rebuilds the basket as
+ * slug+quantity so a page field cannot become a wire field (§9.2). *(Reworded
+ * 2026-08-19: `OrderPanel` does multiply `unit_price_paise × quantity` for the
+ * per-line display, which the old "never computes a total" overstated away. It
+ * is integer paise throughout — no float, no rounding — it is display only, and
+ * it is never summed into a basket nor sent anywhere.)*
  *
  * **It never names a price.** Done-when 1 forbids a hard-coded ladder in
  * TypeScript — a price change is a database row (D23/D24's rule), so a surface
@@ -105,6 +111,15 @@ export default function Checkout() {
     if (!open || plans !== null) return;
     void loadCatalog();
   }, [open, plans, loadCatalog]);
+
+  // Focus follows the STEP, not the dialog's opening. `Modal`'s `initialFocus`
+  // is read when the dialog mounts, and at that moment the step is always
+  // "pick" — the code field does not exist yet and never will while that prop
+  // is being consulted, so the ternary that named it could not fire. The field
+  // appears on a later render, which is what this effect waits for.
+  useEffect(() => {
+    if (step === "code") codeField.current?.focus();
+  }, [step]);
 
   function reset() {
     setStep("pick");
@@ -231,7 +246,6 @@ export default function Checkout() {
         icon="ShoppingCart"
         size="xl"
         description="Choose what your organization needs. You will see the exact amount before anything is charged."
-        initialFocus={step === "code" ? codeField : undefined}
         className="max-h-[85vh] flex flex-col"
       >
         <div className="flex-1 overflow-y-auto">
@@ -394,6 +408,10 @@ function OrderPanel({ order }: { order: Order }) {
               {line.plan_slug} × {line.quantity}
             </span>
             <span className="text-foreground">
+              {/* DISPLAY only, and integer-exact: paise are integers, so this
+                  multiplication cannot drift the way a float total would. It
+                  is never summed, never held, and never sent — the amounts the
+                  purchase acts on are the order's own fields below. */}
               {formatPaise(line.unit_price_paise * line.quantity)}
             </span>
           </div>

@@ -256,6 +256,15 @@ export function redeemRefusal(status: number, body: unknown): Refusal {
   if (status === 404) {
     // Two different objects, two different sentences — and the Console's own
     // wording is the discriminator, so this hop invents no vocabulary.
+    //
+    // ⚠️ ADVISORY, recorded 2026-08-19: that makes this line **coupled to the
+    // Console's copy across a repository boundary with no fence** — it reads
+    // `_NO_SUCH_ORDER = "no such order"` and `_NO_SUCH_CODE = "no such discount
+    // code"` (`customer_console/main.py:1470,1476`). Reword either constant and
+    // this discriminator silently falls through to the code sentence for a
+    // missing ORDER; both are 404 and nothing here can tell. Deliberately not
+    // fixed in this round: the honest fix is a machine-readable discriminator
+    // in the Console's own 404 bodies, which is a CP-9 change.
     if (typeof detail === "string" && detail.includes("order")) {
       return {
         kind: "no_such_order",

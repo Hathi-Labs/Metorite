@@ -121,8 +121,23 @@ class TestTheVocabulary:
         assert f"'{CAPABILITY}'" in _seed_migration().read_text(encoding="utf-8")
 
     def test_the_seed_is_on_the_replayable_ladder(self):
-        """A file the ladder does not pick up is a seed that never runs."""
-        assert str(_seed_migration()) in {str(Path(p)) for p in ladder()}
+        """A file the ladder does not pick up is a seed that never runs.
+
+        ⚠️ **Compared through ``os.path.normcase``, and that is not cosmetic.**
+        This side builds its path from ``Path(__file__).resolve()``, which
+        canonicalises the drive letter to ``C:``; ``ladder()`` builds its from
+        ``os.path.abspath`` (``_tenant_ladder.py:65``), which inherits whatever
+        case the launching shell used — ``c:`` from Git Bash, which is the very
+        ``export …`` form this module's docstring documents. Green from
+        PowerShell, red from bash, for a seed that is on the ladder either way.
+        ``normcase`` is a no-op on POSIX, so the comparison stays an exact whole
+        path on Linux and in CI; it is still a **path** comparison and not a
+        name one, so a same-named file in some other directory could not
+        satisfy it — the property here is that THIS file is what the replayer
+        will pick up.
+        """
+        found = {os.path.normcase(str(Path(p))) for p in ladder()}
+        assert os.path.normcase(str(_seed_migration())) in found
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """The hand-list discovers NOTHING (pr-check.yml's own warning).

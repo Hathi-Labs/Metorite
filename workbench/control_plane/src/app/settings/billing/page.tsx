@@ -201,7 +201,7 @@ function CreditPanel({ data }: { data: BillingPayload }) {
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
         {/* SC-4a done-when 6 — THE flip point. `purchaseEnabled` comes from
-            `GET /me/billing` (`customer_console/main.py:1408`) and flipping it
+            `GET /me/billing` (`customer_console/main.py:1438`) and flipping it
             is the OWNER's act, so the whole checkout ships dark behind this
             one conditional. The entire purchase flow lives inside `<Checkout>`
             and `<Checkout>` is mounted here and nowhere else — which is what
