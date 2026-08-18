@@ -1145,11 +1145,15 @@ answer that gives least:
    switch somebody flips under deadline.
 
    **The carve-out's own fence:**
-   `test_the_fulfil_allow_list_has_exactly_one_entry` — mutating the list to
-   add **any** second path goes **red**, and its failure message names the two
-   authorised ways to move value (issue a code, or capture a payment) so the
-   next agent reads a decision rather than an obstacle. An allow-list that
-   grows quietly is the fence deleting itself one entry at a time.
+   `test_the_fulfil_allow_list_has_exactly_one_entry` — it asserts the count
+   **and the pair's contents** (exactly `("redeem_discount_code",
+   "payments.fulfil")` — a count-only assertion would pass on a swapped pair
+   such as `("create_order", "payments.fulfil")`; hardening added 2026-08-18
+   at re-audit). Mutating the list to add **any** second path goes **red**,
+   and its failure message names the two authorised ways to move value (issue
+   a code, or capture a payment) so the next agent reads a decision rather
+   than an obstacle. An allow-list that grows quietly is the fence deleting
+   itself one entry at a time.
 5. **The lifecycle gate for paying is NOT `can_use_ai`.** Measured 2026-08-18:
    `auth.organization_from_key` 403s when
    `lifecycle.capabilities_of(status).can_use_ai` is false
@@ -1166,10 +1170,10 @@ answer that gives least:
    ⚠️ **HOW `can_pay` is added matters, and the trap is positional** *(recorded
    2026-08-18, repair-round nit 3)*. `lifecycle.STATES` is built with
    **positional** arguments — `OrgCapabilities("trial", True, True, True, True)`,
-   seven rows at `lifecycle.py:64-78`. A field inserted anywhere but **last**
+   six rows at `lifecycle.py:64-78`. A field inserted anywhere but **last**
    silently re-maps every existing row's booleans, and every existing test keeps
    passing while `suspended` quietly becomes AI-enabled. **Rule: append
-   `can_pay` LAST in the dataclass AND convert the seven `STATES` rows to
+   `can_pay` LAST in the dataclass AND convert the six `STATES` rows to
    keyword construction in the same edit**, so the field after this one cannot
    be added wrongly. Two comments in the tree count *"four booleans"* and go
    stale the moment it lands; they are listed under *Build-slice edits* below.
@@ -1495,7 +1499,7 @@ so the implementer does not have to rediscover them, and because **nothing tests
 a comment**:
 
 1. `customer_console/lifecycle.py` — append `can_pay` **last**; convert the
-   seven `STATES` rows (`:64-78`) to keyword construction (9.3(5)).
+   six `STATES` rows (`:64-78`) to keyword construction (9.3(5)).
 2. `customer_console/main.py:791` — `_capability_block`'s docstring says
    *"Three names, not `OrgCapabilities`' four"*. With `can_pay` the dataclass
    carries **five**; the deployment arm still ships three, and the sentence must
