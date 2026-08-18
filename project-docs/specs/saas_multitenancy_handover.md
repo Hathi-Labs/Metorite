@@ -3,6 +3,12 @@
 **Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09** (see H1's result
 block; prod apply rides **PR #404**, the owner's merge) · **Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
+⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
+`saas_multitenancy.md` §11 **MT-1j · Tenant-side organization provisioning**.** It is not
+a reordering: MT-1j is buildable and R8-testable **now**, independently of H1–H8, but
+**executing it against a real second organization waits on H3** (D43-C — before the RLS
+promotion, org #2 has no database-level isolation). Its slice 6 lands **before H6**, which
+rewrites the same two upserts. H6's anchors below were re-measured in the same pass.
 **Board row:** WS-29 · **Parent:** [`saas_multitenancy.md`](saas_multitenancy.md) ·
 **Shapes:** [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md)
 
@@ -59,6 +65,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-1c binding seam | ◐ | `tenant_session()` built; **561 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
+| MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
 | MT-0c-2 container tier | ⏸ | OWNER-GATE, parked by D16 until the pooled cutover |
 
 **Test baseline** — everything below should still pass when you finish:
@@ -447,10 +454,19 @@ recorded.
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
 
-⚠️ **The two upserts that block this:** `acb_auth/access.py:205`
-(`ON CONFLICT (lower(email))`) and `:509` (`ON CONFLICT (email)`). Both are on the live
-sign-in path. **Re-derive both line numbers with grep** — the parent spec cited them in
-`members.py`, where they are not.
+⚠️ **The two upserts that block this — anchors re-measured 2026-08-19:**
+`acb_auth/access.py:550` (`_BOOTSTRAP_OWNER_SQL`) and
+`gateway/routes/admin/_common.py:599` (`_PROVISION_MEMBER_SQL`), both `ON CONFLICT
+(email)` on `app_user`. This line previously said `:205`/`:509`: **`:509` had drifted to
+`:550`**, and **`:205` was never one of the pair** — it is `access_request`'s upsert and
+already uses the correct `ON CONFLICT (lower(email))` idiom, which is the shape both of
+these must move to. **Re-derive every line number with grep**; the parent spec cited them
+in `members.py`, where they have never been.
+
+⚠️ **They do not merely block H6 — they are broken today.** Migration 162 dropped
+`app_user_email_key`, so `ON CONFLICT (email)` matches no unique index (predicted 42P10).
+That repair is **`saas_multitenancy.md` §11 MT-1j slice 6** (minted 2026-08-19) and lands
+**before** H6, which then rewrites the same two statements onto `org_membership`.
 
 ⚠️ **The invite path is an account-takeover primitive under two orgs** — an
 `INSERT … ON CONFLICT (email) DO UPDATE SET organization_id = …` moves a human between

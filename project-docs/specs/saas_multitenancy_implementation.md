@@ -2,7 +2,11 @@
 
 **Status:** 🟢 Binding build reference · **Created:** 2026-08-08 · **Owner:** vjvarada ·
 **Board row:** WS-29 · **Parent spec:** [`saas_multitenancy.md`](saas_multitenancy.md) ·
-**Verified against code:** 2026-08-08, working tree at `b09093a`
+**Verified against code:** 2026-08-08, working tree at `b09093a`; **§7.1 and §8 trap 5
+re-verified 2026-08-19** · ⚠️ **Updated 2026-08-19:** §7.1's *"until MT-1i lands"* warning
+was **stale in its reason and still true in its conclusion** — MT-1i landed and step 3
+still produces an ownerless org. Both §7.1 step 3 and §8 trap 5 now name their owner:
+**`saas_multitenancy.md` §11 MT-1j**, minted the same day.
 
 > **This document owns SHAPES, not DECISIONS.** Every decision it implements is owned by
 > `saas_multitenancy.md` and is cited, never re-argued here:
@@ -530,9 +534,13 @@ must never become the isolation boundary.
 ```
 1. INSERT organization (slug, display_name)          -- slug = subdomain
 2. INSERT tenant_placement (tier='pool', target='primary')
-3. Seed org_role + org_role_permission (the 5 system roles) FOR THAT ORG
+3. Seed org_role + org_role_permission FOR THAT ORG
    ⚠️ 130_org_access_control.sql seeds by `slug='default'` — that seeding must
       become a parameterised function, or org #2 has no roles and no owner.
+      OWNED BY: saas_multitenancy.md §11 MT-1j slice 1 (minted 2026-08-19).
+      (130 seeds SIX org_role rows — the five assignable roles plus
+      `agent_service`; three later migrations, 131/133/178, add grants to the
+      same `default`-keyed rows and are part of the same extraction.)
 4. INSERT user_identity (if new) + org_membership (owner)
 5. Grant the `core` module entitlement + assign the owner a seat
 6. Issue an llm_api_key; credit the trial balance in credit_ledger
@@ -540,10 +548,18 @@ must never become the isolation boundary.
    features AND modules
 ```
 
-> ⚠️ **`ensure_owner_bootstrap()` is a permanent no-op once any owner exists anywhere**
-> (`access.py:522`, `_HAS_OWNER_SQL`, no org filter). Until MT-1i lands, **step 3 above
-> silently produces an ownerless org** — a lockout, not a leak. This is the single most
-> likely way tenant #2 fails.
+> ⚠️ **Step 3 still silently produces an ownerless org — and the reason changed.**
+> *(Re-measured 2026-08-19; the previous text said "until MT-1i lands" and MT-1i has
+> landed.)* MT-1i **did** fix the unscoped guard: `_HAS_OWNER_SQL` is now at
+> **`access.py:572`** and joins `organization o ON … o.slug = :org_slug`. But the fix bound
+> that parameter to a **literal** — `_BOOTSTRAP_ORG_SLUG = "default"` (`access.py:540`),
+> passed into both the guard (`:614`) and the insert (`:630`) — so
+> `ensure_owner_bootstrap()` is no longer a no-op *for `default`* and **can never provision
+> an owner into any other organization at all.** The conclusion is unchanged and this is
+> still the single most likely way tenant #2 fails; the owner is now
+> **`saas_multitenancy.md` §11 MT-1j slice 2**, which must fix it *without* re-pointing
+> that constant (**D36.3**: the `default` bootstrap stays the fresh-box path and
+> provisioning a customer org never routes through it).
 
 ### 7.2 Cutting a silo customer over to pooled — 🔴 OWNER-GATE to execute
 
@@ -588,8 +604,10 @@ uv run pytest tests/integration/test_cross_tenant.py -v -rs
 | 2 | `SET LOCAL` outside a transaction | Silent no-op → every query returns zero rows → reads as "the feature is broken" |
 | 3 | App connects as table owner | Every test passes; RLS never applies. **`test_tenant_coverage` checks `relforcerowsecurity`, not just `relrowsecurity`, for exactly this** |
 | 4 | A background job with no tenant | Not one row — **unbounded**. Job records must carry `organization_id` and refuse to run without it |
-| 5 | Role seeding still keyed `slug='default'` | Org #2 gets no roles and no owner. Runbook 7.1 step 3 |
-| 6 | `_HAS_OWNER_SQL` unfiltered | Org #2 is ownerless and nobody can grant access back — **a lockout RLS does not fix** |
+| 5 | Role seeding still keyed `slug='default'` | Org #2 gets no roles and no owner. Runbook 7.1 step 3. **Owner: `saas_multitenancy.md` §11 MT-1j slice 1** (2026-08-19) |
+| 6 | ~~`_HAS_OWNER_SQL` unfiltered~~ → **filtered to a LITERAL** | ⚠️ *Restated 2026-08-19.* MT-1i filtered it (`access.py:572`) — and bound `:org_slug` to `_BOOTSTRAP_ORG_SLUG = "default"`, so org #2 is **still** ownerless and nobody can grant access back. **A lockout RLS does not fix. Owner: MT-1j slice 2** |
+| 6a | An organization row with no `tenant_placement` / `org_placement` | Tenant plane: `placement.resolve_placement` refuses, correctly. Console plane: `store.py:625`'s **inner join** means the org can never be resolved by any deployment key, and it reads as "the Console is down". **Owner: MT-1j slices 3+4** (2026-08-19) |
+| 6b | `ON CONFLICT (email)` after migration 162 | 162 dropped `app_user_email_key`, leaving only `app_user_email_lower_key ON (lower(email))`. Two upserts still name the bare column (`access.py:550`, `admin/_common.py:599`) — predicted **42P10** at runtime, invisible to a hermetic fake. **Owner: MT-1j slice 6**, which must reproduce it RED on a real ladder first (2026-08-19) |
 | 7 | Redis key without a tenant prefix | Cross-tenant cache/presence bleed, invisible to every DB test. **MT-1e's wrapper is the fix; a convention is not** |
 | 8 | `usage_event` without `request_id` unique | Double billing on retry |
 | 9 | Entitlement checked in the UI only | Module dark in nav, scheduler still polling, still costing you money |
