@@ -514,10 +514,16 @@ by D15/D16) — read their banners before citing either.
   discount coupon so that [Fracktal] does not have to pay anything, but still
   goes through the payment onboarding process … so that we actually can test it
   out like the production.")*
-  1. The checkout (WS-30 SC-4a / CP-8) ships WITH operator-issued discount
+  1. The checkout (WS-30 SC-4a / **CP-9**) ships WITH operator-issued discount
      codes. The contract is **`subscription_console.md` SC-4g** — minted with
      this decision; do not build a purchase slice that treats codes as a
-     later add-on.
+     later add-on. *(Ticket re-pointed 2026-08-18: this read "CP-8", which is
+     the Operator Console. The payment seam had no ticket body anywhere and is
+     now `specs/customer_console.md` **CP-9**. SC-4g was **completed** the same
+     day — code storage via `keys.py`'s split-key pattern, the two tables,
+     percent-in-basis-points against the **pre-GST** base, the named
+     `credit_ledger` reason/ref vocabulary, and the honest note that clause 2's
+     test-mode rehearsal is not in an agent's reach.)*
   2. The two-leg reality is recorded there and binds: Razorpay cannot capture
      ₹0, so the 100% coupon path completes **without a provider order** while
      writing the identical records (referenced to the redemption id), and the
@@ -766,12 +772,23 @@ by D15/D16) — read their banners before citing either.
   5. **Neither console is on the critical path to customer #1.** Provisioning,
      seat assignment, credit grants and balance reads all work through the
      Control Plane API today (CP-1). The console makes that pleasant; it does not
-     make it possible — which is why it is CP-8 and deliberately last. **Revenue
-     order is enforcement, then checkout:** CP-3 → CP-4 → CP-6 makes credits real
-     and sellable against a hand-issued invoice (D19.4's manage-only launch
-     posture), and CP-8's self-serve checkout follows once manual invoicing is
-     the bottleneck rather than the plan. Shipping checkout before enforcement
-     would mean taking money for something we cannot yet limit.
+     make it possible — which is why the **Operator** console is CP-8 and
+     deliberately last. **Revenue order is enforcement, then checkout:** CP-3 →
+     CP-4 → CP-6 makes credits real and sellable against a hand-issued invoice
+     (D19.4's manage-only launch posture), and **CP-9's** self-serve checkout
+     follows once manual invoicing is the bottleneck rather than the plan.
+     Shipping checkout before enforcement would mean taking money for something
+     we cannot yet limit.
+     > ⚠️ **Corrected 2026-08-18.** This clause said *"CP-8's self-serve
+     > checkout"*. CP-8 is the Operator Console and reconciliation and always
+     > was; the checkout's payment seam had **no ticket anywhere** until it was
+     > minted as **CP-9** (`specs/customer_console.md` §6). Two consequences of
+     > this clause that a dispatching agent must read together: the ordering
+     > binds the **flip to live checkout**, not the dark build — CP-6's
+     > mechanism is already BUILT with its refusals OFF behind
+     > `CUSTOMER_CONSOLE_SPEND_GATE` — so CP-9 and WS-30 SC-4a/SC-4g are
+     > dispatchable now, and the four-item flip set is in `subscription_console.md`
+     > SC-4a.
 
 - **D34 — Supabase is the Control Plane's database AND its authenticator.**
   *(owner call, 2026-08-12: "Let's use Supabase for auth configuration." Owning
@@ -1793,7 +1810,18 @@ same PR:
 (§8 gate 2) — the service is built and on no box; where it runs is itself an
 open owner decision (`specs/customer_console_infrastructure.md`) ·
 **(b) live Razorpay credentials and any real payment configuration** (§8 gate 3,
-CP-8/D19.5) ·
+**CP-9**/D19.5) — ⚠️ *re-pointed 2026-08-18: this read "CP-8/D19.5", and CP-8 is
+the **Operator Console and reconciliation**. The `payment_provider` seam had no
+ticket body anywhere in the corpus and no code (one repo-wide hit,
+`org_subscription.provider CHECK (…'razorpay'…)`); it is now
+`specs/customer_console.md` **CP-9**, minted with this correction.* **Extended
+the same day: creating the Razorpay ACCOUNT is owner-side even in TEST mode**,
+and so is writing test-mode keys into CI or any deployment's env — any external
+commercial account is an owner act (`specs/customer_console_infrastructure.md`
+§5 item 5, §7). The consequence binds a dispatched agent: the whole seam is
+built against a **fake provider with a real HMAC signer**, and WS-30 SC-4g
+clause 2's test-mode capture rehearsal is **scripted and handed over, never
+reported as run** ·
 **(c) editing any live organization's entitlements, seats or credit balance**
 (§8 gate 4) — concretely `POST /credits/grant`
 (`customer_console/main.py:690`), `POST /billing/seats` (`:635`),

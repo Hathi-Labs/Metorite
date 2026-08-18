@@ -1,20 +1,55 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
-**Status:** ◐ **SC-5's billing view BUILT 2026-08-14** on
-`claude/multi-tenancy-ai-metering-nr8zbj`, unmerged and **not reachable from the
-nav** — the Control Plane it reads from is undeployed (WS-31: "where it runs is
-an open owner decision"), so the page fails closed with *"Billing is not
-configured for this deployment"*. It stays URL-only until the Control Plane has
-somewhere to run; promoting it into the sidebar would hand every customer admin
-a menu item that always errors, in our internal environment-variable
-vocabulary. That is CLAUDE.md §4's ship-dark, not an oversight — a previous
-commit added the nav entry reading it as one, and it was reverted.
-**Everything else here is still SPEC — nothing built.** ·
-**Date:** 2026-08-09 · status header corrected 2026-08-14 (R4: it still read
-"nothing built" after the console shipped) · verified against code
-2026-08-09 (repo-wide grep: zero hits for `module_catalog`, `org_module_entitlement`,
-`user_module_seat`, `ModuleGate`, `entitlement_mask` — MT-2's substrate does not
-exist yet, so nothing here is dispatchable before MT-2's tables land) ·
+**Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout is
+specced and not built.** *(Header rewritten 2026-08-18 — R4. What stood here was
+wrong on three counts, each corrected below rather than quietly deleted: it
+called the billing view "unmerged" on a branch, it said "everything else …
+nothing built", and it said dispatch waits on MT-2's tables.)*
+
+**What exists, verified against code 2026-08-18:**
+- **SC-1b/SC-5's billing view MERGED as `f1fcca4f`** *("feat(WS-30): the billing
+  console — first UI for the platform")*:
+  `workbench/control_plane/src/app/settings/billing/page.tsx` plus its read-only
+  proxy `src/app/api/billing/summary/route.ts`, which calls the Customer
+  Console's `GET /me/billing` with this deployment's own `cc_live_` key. It
+  **fails closed** — 503 *"Billing is not configured for this deployment"* when
+  `CUSTOMER_CONSOLE_URL` / `CUSTOMER_CONSOLE_ORG_KEY` are unset
+  (`route.ts:34-53`) — and stays URL-only, out of the nav, because the Customer
+  Console is on no box (`customer_console_infrastructure.md`: where it runs is an
+  open owner decision). That is CLAUDE.md §4's ship-dark, not an oversight.
+- **The substrate it reads is BUILT** — not pending. WS-31 shipped CP-1, CP-2,
+  CP-2a, CP-2b, CP-3, CP-4 and CP-6's mechanism against a real Postgres:
+  `plan_catalog` (seeded with the priced D23/D24 ladder), `org_subscription`,
+  `seat_grant`, `seat_assignment`, `credit_ledger`, `usage_event`,
+  `model_rate_card`, `usage_rollup` all exist in
+  `infra/customer_console/001_customer_console.sql`. **The old "wait for MT-2's
+  tables" sentence is obsolete**: D32 moved this console from *reader of
+  CC-local tables* to *client of the Customer Console*, and its server side is
+  there. What MT-2 still owns is **enforcement** inside Metorite (`intersect()`,
+  `ModuleGate`, the 402-vs-403 split) — which gates the *entitlement* surfaces,
+  not this console's reads.
+- **The checkout is the hole, and it is now specced.** `GET /me/billing` returns
+  `"purchaseEnabled": False` (`customer_console/main.py:1266`) and the page
+  renders a contact prompt instead of a button on that branch
+  (`page.tsx:202`). That flag is the landing site for SC-4a.
+
+**What this 2026-08-18 remediation minted**, after the checkout was audited
+**NO-GO** for dispatch (the payment seam had no ticket body anywhere; this
+console had no customer-authenticated write path; SC-4a and SC-4g were both
+under-specified):
+- **WS-31 `customer_console.md` CP-9 — the `payment_provider` seam (Razorpay)**,
+  the ticket the corpus cited in three places and never wrote. It carries the
+  auth answer (no fifth scheme; the org key gains two writes that cannot move
+  value), the order state machine, the signature-verified idempotent webhook and
+  the **one fulfilment function** both the paid and ₹0 paths write through.
+- **SC-4a re-scoped** to the seeded, priced Center-package ladder; its
+  credit-pack clauses **deferred**, dated, behind an owner pricing act.
+- **SC-4g completed** — code storage, the two tables, percent-or-fixed against
+  the pre-GST base, the named ledger vocabulary, and an honest account of which
+  half of its own acceptance an agent cannot reach.
+All are **agent-proposed defaults the owner may overrule** (the D16/D17
+convention). ·
+**Date:** 2026-08-09 · corrected 2026-08-14 · **rewritten 2026-08-18** ·
 **Owner:** WS-30 (this spec) · **Decisions:** **D23 + D24** (work_plan.md §3,
 2026-08-10 — Center packages are the governing pricing shape, carrying D19's
 credit/seat rules; D24 closed every customer-framing question: ₹600 headline
@@ -65,8 +100,15 @@ promised by `NotEntitled.upgrade_url`, `saas_multitenancy_implementation.md` §4
 its gateway endpoints; seat assign/unassign writes under the D19.3 rules; a
 change-request flow that lands in the operator's inbox.
 
-**Non-goals:** the payment *provider* integration itself (Razorpay SDK wiring,
-MT-4) — SC-4 specifies the customer-facing flow over it · the Operator Console,
+**Non-goals:** the payment *provider* integration itself — now WS-31
+`customer_console.md` **CP-9**, minted 2026-08-18; SC-4 specifies the
+customer-facing flow **over** it. *(This line read "(Razorpay SDK wiring, MT-4)" and that phrasing put SC-4g's
+own acceptance outside the spec that carries it — SC-4g clause 2 mandates a
+test-mode capture, which is provider work. The boundary is restated so the
+straddle is gone: **the seam, the order, the webhook and fulfilment are CP-9;
+the surfaces, the pack/package choice, the code entry and the copy are here.**
+CP-9 also names the part of clause 2 no agent can execute — creating the
+Razorpay account is owner-side even in test mode.)* · the Operator Console,
 which is a **separate deployable** (D35) · the entitlement tables and enforcement
 seam (MT-2) · the rate card itself (WS-31 CP-6) · **dunning** (the processor's
 collection retries) · any surface a non-admin member sees, who get the
@@ -137,23 +179,93 @@ entitlements directly.
 
 ### SC-4 — Buying credits, and running out *(specced 2026-08-13, D37)*
 
-Razorpay-only (D19.5) behind the `payment_provider` seam. The mechanics of the
-ledger are `customer_console.md` §3.4; this is the part a customer touches.
+Razorpay-only (D19.5) behind the `payment_provider` seam — **which is WS-31
+`customer_console.md` CP-9** (minted 2026-08-18; the corpus previously cited
+CP-8, which is the Operator Console). The mechanics of the ledger are
+`customer_console.md` §3.4; this is the part a customer touches.
 
-**SC-4a · Fixed packs, self-serve (D37.1).** A short ladder of pre-priced packs
-rather than a free-text amount. Three reasons, in order of importance:
-**(1)** every pack is priced **under ₹15,000**, so a repeat purchase clears the
-RBI e-mandate AFA threshold and never demands an OTP from a customer who is
-already out of credits mid-workflow (`saas_operations_doctrine.md` §3.2);
-**(2)** a ladder makes price-per-credit legible, where an arbitrary amount makes
-the customer do arithmetic to know if they are getting a good deal; **(3)** it is
-the smallest thing that can be built correctly. Custom amounts are a later
-question, and only if a customer asks.
-**Done when:** buying a pack moves the balance by exactly the pack's credits and
-lands **one** `credit_ledger` row referencing the provider payment id; a
-duplicate webhook for the same payment credits **once** (the ledger is
-append-only, so idempotency is on the reference, not on a mutable balance); a
-failed payment credits nothing and says so.
+> ⚠️ **Read CP-9 before building any SC-4 slice.** It carries the parts that are
+> *not* customer-facing and that these clauses silently assume: the
+> `payment_order` state machine, the mandatory signature check, webhook
+> idempotency on `provider_event_id`, the **one** fulfilment function, integer
+> paise, and the auth answer — **the organization key gains exactly two writes
+> (`POST /billing/orders`, `POST /billing/orders/{id}/redeem`), neither of which
+> can move value, and no fifth auth scheme is minted.** Value moves only on a
+> signature-verified webhook or an operator-issued code. That answer is recorded
+> in CP-9 §9.3 and cross-cited here so a WS-30 agent cannot build the surface
+> against a different assumption.
+
+**SC-4a · The self-serve checkout — SCOPED 2026-08-18 to the seeded, priced
+Center-package ladder; credit packs DEFERRED.**
+
+> ⚠️ **Re-scoped 2026-08-18, dated rather than silently narrowed.** This clause
+> was written (D37.1) as *"a short ladder of pre-priced packs"* for **AI credit
+> packs**. Measured against the code the same day: **no pack ladder exists
+> anywhere.** `plan_catalog.kind` is `CHECK (kind IN
+> ('core','center','addon','bundle'))` (`001_customer_console.sql:144`) and
+> `002_seed_catalog.sql` seeds no pack row. D19.2 fixes the ₹10 credit **unit**
+> and no pack price; pricing a ladder is the owner's commercial act
+> (`customer_console.md` §8 gate 4, §9 item 4).
+>
+> **So the launch checkout sells what is actually priced and seeded — the
+> Center-package subscription ladder (D23/D24)**, which is also what customer
+> zero buys (D36): `core` ₹600 · app-bearing Centers ₹600 · slices-only Centers
+> ₹300 · `builder` ₹500 · `workflows` ₹300 · `all_centers` ₹1,800 · `complete`
+> ₹3,000. Building a pack checkout against an unpriced table would mean either
+> inventing prices (D19.2's gate) or shipping a surface with an empty ladder.
+>
+> **The pack clauses below are DEFERRED, not deleted** — they are correct and
+> they return the moment the owner prices a ladder. Everything CP-9 builds is
+> pack-agnostic: `payment_order_line.plan_slug` references `plan_catalog`, so a
+> pack is a catalog row plus a `kind` value, never a second code path.
+
+**Deferred — the pack rationale, unchanged and still right when packs land
+(D37.1).** A short ladder of pre-priced packs rather than a free-text amount.
+Three reasons, in order of importance: **(1)** every pack is priced **under
+₹15,000**, so a repeat purchase clears the RBI e-mandate AFA threshold and never
+demands an OTP from a customer who is already out of credits mid-workflow
+(`saas_operations_doctrine.md` §3.2); **(2)** a ladder makes price-per-credit
+legible, where an arbitrary amount makes the customer do arithmetic to know if
+they are getting a good deal; **(3)** it is the smallest thing that can be built
+correctly. Custom amounts are a later question, and only if a customer asks.
+**Deferred done-when:** buying a pack moves the balance by exactly the pack's
+credits and lands **one** `credit_ledger` row referencing the provider payment
+id; a duplicate webhook for the same payment credits **once**; a failed payment
+credits nothing and says so.
+
+**Launch done-when (the subscription checkout):**
+1. The purchase surface renders **only `plan_catalog` rows that are `active` and
+   priced** — never a hard-coded ladder in TypeScript. A price change is a
+   database row (D23/D24's own rule), so a surface that transcribes prices is a
+   second source of truth and a defect.
+2. Choosing packages and quantities and confirming creates **one**
+   `payment_order` through `POST /billing/orders` under the deployment's
+   organization key, and **changes nothing else** — no seat, no subscription, no
+   ledger row until capture (CP-9 §9.3, fenced there).
+3. On capture, the org's entitlements reflect the order: `org_subscription` is
+   active for the period and `seat_grant` totals equal the ordered quantities —
+   read back through the **existing** `GET /billing/summary`, so no surface
+   recomputes seats (SC-2's rule, `customer_console.md` §3.3).
+4. **A duplicate webhook grants once** — the ledger and grants are idempotent on
+   `provider_event_id`, not on a mutable count (CP-9 §9.5).
+5. **A failed or abandoned payment grants nothing and says so** on the page,
+   naming what to do next.
+6. `purchaseEnabled` (`customer_console/main.py:1266`) is what flips the page
+   from the contact prompt to the checkout (`page.tsx:202`) — **the flip is the
+   owner's**, and its preconditions are the flip set below.
+7. `npx tsc --noEmit && npx vitest run` green; the surface uses
+   `src/components/ui/` primitives and the theme tokens (no colour literals,
+   no `lucide-react` import) per `workbench/control_plane/AGENTS.md`.
+
+> **🔴 The flip set — what must be true before checkout is LIVE** *(recorded
+> 2026-08-18; D35.5's "revenue order is enforcement, then checkout" binds the
+> FLIP, not the dark build, so this ticket is dispatchable now):*
+> **(1)** a **priced rate card** — owner act, D19.2 / `customer_console.md` §8
+> gate 4 · **(2)** `CUSTOMER_CONSOLE_SPEND_GATE`'s two open money invariants
+> closed (BYOK zero-rating; the pre-flight-cost invariant) and the gate flipped
+> — owner act, `work_plan.md` §6 · **(3)** `purchaseEnabled` → true — owner act
+> · **(4)** live Razorpay credentials — owner act, `work_plan.md` §6(b) /
+> `customer_console.md` §8 gate 3. An agent builds all four dark and flips none.
 
 **SC-4b · Auto-top-up (off by default at launch).** §3.3 makes it the default
 for paid plans; **D37.1 defers that**, because an auto-charge above the AFA cap
@@ -226,13 +338,188 @@ are operator-issued in the Customer Console and scoped — org, expiry, max
 redemptions, percent-or-fixed — with an audit row on issue and on redemption,
 and redemption idempotency sits beside SC-4a's webhook idempotency (append-only
 ledger, idempotent on the reference). 🔴 **Issuing a code against a live org is
-the same owner gate as SC-4e's adjustments.** **Done when:** a 100% code takes
-an org from package selection to active entitlements and a credited ledger with
-**zero provider calls** and one invoice showing the discount; a partial code
-(e.g. 50%) routes the REMAINDER through the normal SC-4a provider path; an
-expired, exhausted or wrong-org code refuses with a reason; and the ledger row
-from a discounted purchase is distinguishable from both a paid purchase and an
-SC-4e adjustment a year later.
+the same owner gate as SC-4e's adjustments.**
+
+> ### SC-4g completed — 2026-08-18
+>
+> The clause above states the *policy* and was silent on five things a build
+> must decide. All five are answered here as **agent-proposed defaults the owner
+> may overrule** (D16/D17), each derived from the code rather than from
+> preference. A NO-GO dispatch audit named exactly these gaps.
+
+**(i) How a code is stored: the split-key pattern, reused verbatim.** A discount
+code is a **bearer secret that grants value**, so it is stored the way this
+service already stores bearer secrets — `customer_console/keys.py`: a **prefix
+in the clear, indexed** and a **SHA-256 hash of the secret**, never the secret
+itself. Format `disc_<prefix>_<secret>`, minted through the same
+`mint_key`/`split_key`/`verify_secret` seam (`keys.py` already parameterises the
+env segment for `live`/`depl` — a third value, not a third implementation).
+Consequences that make this the right call rather than a stylistic one: a
+database disclosure hands over no working codes; lookup is one indexed read, not
+a scan-and-compare; and `split_key`'s left-split discipline (the secret's
+alphabet contains `_`) is inherited rather than re-derived wrongly.
+*Trade-off, stated:* the operator sees the full code **once**, at issue, exactly
+as with a `cc_live_` key. A code that must be re-read later is re-issued, not
+recovered. That is deliberate — a recoverable discount code is a shared password
+in a database somebody exports.
+
+**(ii) The two tables.** On the **Customer Console** ladder,
+`infra/customer_console/`, **the number taken by listing that directory at build
+time and re-checked at merge (R1)** — the same migration territory as CP-9's
+order tables, and the two may share one migration. *(On 2026-08-18 the ladder
+was 001–006 and the next free number was 007; that is a measurement, not an
+instruction.)*
+
+```sql
+discount_code(id UUID PK,
+  prefix TEXT UNIQUE NOT NULL, code_hash TEXT NOT NULL,   -- keys.py, (i)
+  label TEXT NOT NULL,                                    -- what it is FOR, on the audit row
+  organization_id UUID REFERENCES organization(id),       -- NULL = open (any org)
+  kind TEXT NOT NULL CHECK (kind IN ('percent','fixed')),
+  percent_bp INT CHECK (percent_bp BETWEEN 1 AND 10000),  -- basis points; 10000 = 100%
+  amount_paise BIGINT CHECK (amount_paise > 0),           -- for kind='fixed'
+  CHECK ((kind = 'percent') = (percent_bp IS NOT NULL)),
+  CHECK ((kind = 'fixed')   = (amount_paise IS NOT NULL)),
+  max_redemptions INT NOT NULL DEFAULT 1 CHECK (max_redemptions > 0),
+  expires_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ,
+  created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+
+discount_redemption(id UUID PK,
+  discount_code_id UUID NOT NULL REFERENCES discount_code(id),
+  organization_id UUID NOT NULL REFERENCES organization(id),
+  order_id UUID NOT NULL REFERENCES payment_order(id),
+  gross_paise BIGINT NOT NULL, discount_paise BIGINT NOT NULL,
+  net_paise BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (discount_code_id, order_id));
+```
+
+**Single- vs multi-use is `max_redemptions`, defaulting to 1** — the safe
+default, because the dangerous mistake is a code intended for one customer that
+turns out to be reusable, never the reverse. **Percent is basis points**
+(`percent_bp`), not a float: 33⅓% has no float representation and a discount
+that rounds differently on two reads is a dispute. **The count that enforces the
+cap is `COUNT(discount_redemption)`, never a mutable `times_used` column** —
+the same append-only argument `credit_ledger` makes, and the same reason.
+**Concurrency:** the redemption path takes the advisory-lock idiom already
+proven for seats (`store.lock_seat_capacity`, `pg_advisory_xact_lock`) before
+counting, plus `UNIQUE (discount_code_id, order_id)` so one order can never
+redeem one code twice. A check-then-insert without the lock is the seat race CP-2b
+had to fix; do not re-introduce it here.
+
+**(iii) Percent-or-fixed against WHICH base: the PRE-GST taxable base.**
+`discount_paise` applies to `gross_paise`; **GST is computed on the discounted
+base** (`taxable_paise = gross − discount`, then `gst_paise` on
+`taxable_paise`). That is standard GST invoice practice — a discount recorded on
+the invoice reduces the taxable value — and it is the only reading under which
+**100% off yields taxable 0 → GST 0 → total 0**, which is what D42 requires. The
+alternative (discount after tax) would leave GST payable on a zero-rupee sale,
+i.e. a bill for customer zero. The columns live on `payment_order` (CP-9 §9.2)
+so gross · discount · net · GST are recorded per order whether or not a document
+is ever rendered.
+**A fixed-amount code larger than the gross is clamped to the gross**, never
+negative — a negative order total is a refund path and this is not one.
+
+**(iv) The ₹0 path, and the equivalence fence.** A 100% redemption completes
+with **`provider='none'`, no `provider_order_id`, and zero provider calls**, and
+then calls **the same `payments.fulfil()`** the capture path calls (CP-9 §9.6),
+with `reference = redemption:<uuid>` where a paid order passes `order:<uuid>`.
+**Fence — this is SC-4g's central one:**
+`test_the_free_path_and_the_paid_path_write_identical_records` runs both paths
+over an identical basket and compares the written `org_subscription`,
+`seat_grant`, `seat_assignment` and `credit_ledger` rows **field by field**,
+asserting the **only** difference is the reference string. A third difference
+means one of the two paths is not the product — which is precisely the failure
+D42 exists to prevent. **A partial code (e.g. 50%) routes the REMAINDER through
+CP-9's provider path**: one order, `discount_paise` recorded, `total_paise > 0`,
+provider `razorpay`, fulfilment on capture. There is no second flow.
+
+**(v) The ledger vocabulary, named — so the three-way clause is a real fence.**
+`credit_ledger.reason` is bare `TEXT` today (`001_customer_console.sql:283-284`)
+and `POST /credits/grant` accepts any string, so *"distinguishable a year
+later"* was unenforceable. The vocabulary, defined once in
+`customer_console/credits.py` as `LEDGER_REASONS` and imported by every writer:
+
+| `reason` | `ref` | Written by |
+|---|---|---|
+| `usage` | `<request_id>` | the Router's meter (**shipped**, `store.py:379`) |
+| `purchase` | `order:<uuid>` | CP-9's fulfilment, paid path |
+| `discount_redemption` | `redemption:<uuid>` | CP-9's fulfilment, ₹0 / partial path |
+| `adjustment` | operator-supplied note ref | SC-4e goodwill |
+| `grant` | operator-supplied | `POST /credits/grant`, non-commercial grants |
+
+**Fence:** a structural test that every `store.add_credit(...)` call site passes
+a member of `LEDGER_REASONS`, plus a data test that the three commercial reasons
+are pairwise distinguishable by `(reason, ref)` — no row can be read as two of
+them. ⚠️ **Deliberately NOT a `CHECK` constraint in this slice, and the reason is
+R6:** `/credits/grant` accepts free-form reasons today, so an expand-phase
+migration must not reject rows the running code can still write. Narrowing
+`CreditGrantRequest.reason` to the enum comes first; the `CHECK` is a later
+contract-phase migration. Recorded here so the omission reads as a decision
+rather than as forgetting.
+
+**(vi) The invoice: what this slice owes, and what it honestly does not.**
+Clause 1 above says the tax invoice shows gross · discount · ₹0 net.
+**The amounts are recorded by this slice** (on `payment_order` and
+`discount_redemption`, per (iii)). **The invoice DOCUMENT is not**, and cannot
+be: **no `invoice` table exists anywhere in the tree** (verified repo-wide
+2026-08-18), and SC-5c's gapless-per-financial-year serial constrains the data
+model — a serial allocated at *issue* and never at *attempt*, immutable once
+issued, corrected only by credit note. Inventing that model inside a checkout
+slice is how a year of invoices turns out non-compliant at once (SC-5's own
+warning).
+**Therefore: SC-5b + SC-5c are named HARD PREREQUISITES for the DOCUMENT and are
+explicitly NOT prerequisites for the CHECKOUT.** Customer zero can complete the
+whole purchase — package selection → code → ₹0 checkout → active entitlements —
+with every amount recorded, and the rendered invoice follows when SC-5b/5c land
+against the same recorded numbers.
+> 🔴 **Launch-sequencing note for the OWNER, stated plainly rather than buried:**
+> **the first purchase can complete before the first tax invoice can be issued.**
+> Under GST the invoice is our obligation as supplier of record (D38), so
+> SC-5b/5c must land before we take money from a customer who is not us. For a
+> ₹0 first purchase by customer zero (D36) nothing is collected, which is what
+> makes running the rails ahead of the document safe **in that case and only
+> that case**.
+
+**Done when:**
+1. A **100% code** takes an org from package selection to **active entitlements**
+   with **zero provider calls** and a `discount_redemption` row carrying
+   gross · discount · net; the order is `captured` with `provider='none'` and
+   `total_paise = 0`.
+2. `test_the_free_path_and_the_paid_path_write_identical_records` passes and
+   **goes red** under a deliberate mutation of either path (per (iv)).
+3. A **partial code** routes the remainder through CP-9's provider path — one
+   order, discount recorded, fulfilment on capture, not a second flow.
+4. **Expired, revoked, exhausted, wrong-org and unknown codes each refuse with a
+   distinct reason** to the admin — *and* an unknown code is indistinguishable
+   from a wrong-org code to a caller probing for existence (CP-3's oracle
+   lesson: refusal reasons are for the authenticated admin of that org, never a
+   membership test on other orgs' codes).
+5. **Redemption is idempotent**: re-submitting the same code against the same
+   order redeems **once** (`UNIQUE (discount_code_id, order_id)`), and a
+   concurrent double-redeem of a `max_redemptions = 1` code yields one success
+   and one refusal — proven under the advisory lock with a real two-connection
+   race, not a mock (R8, and the CP-2b race precedent).
+6. **The ledger row from a discounted purchase is distinguishable from both a
+   paid purchase and an SC-4e adjustment** by `(reason, ref)` alone, fenced per
+   (v).
+7. **Issue and redemption each land a `control_audit` row** naming the operator
+   and the code's **prefix** — never its secret, asserted over the log/audit
+   record rather than by reading the code (CP-3's fence discipline).
+8. **R8** — the constraints, the uniqueness, the count-based cap and the
+   fulfilment transaction run against a real Postgres 16 via
+   `tests/unit/_customer_console_ladder.py`; the suite joins §7's command block
+   and `pr-check.yml`'s skip-guard in the same PR.
+9. ⚠️ **Clause 2 of the policy above (the test-mode capture rehearsal) is
+   NOT met by an agent** — creating the Razorpay account is owner-side even in
+   test mode (`customer_console.md` §8 gate 3, CP-9 §9.7). The agent-reachable
+   half is the whole thing against CP-9's **fake provider with a real HMAC
+   signer**; the rehearsal is scripted and handed over. **A PR claiming this
+   clause met is claiming something it did not do.**
+
+🔴 **OWNER-GATE:** issuing a code against a **live** organization (`work_plan.md`
+§6(g), the SC-4e adjustment gate class). Authoring codes and running both paths
+against fixtures is **AGENT-SAFE**.
 
 ### SC-5 — Billing management: the documents, and who issues them *(D38, 2026-08-13)*
 
@@ -365,15 +652,57 @@ seam (R5); the console must be impossible to render cross-org by construction.
 
 ## 5. Verification
 
-`uv run pytest tests/unit/test_billing_console*.py` (to be created per slice) ·
-`cd workbench/control_plane && npx tsc --noEmit && npx vitest run` · the two-org
-fixture from MT-1i reused for every SC-1 read test.
+> ⚠️ **Rewritten 2026-08-18.** The block that stood here named
+> `tests/unit/test_billing_console*.py` — **no file with that prefix has ever
+> existed**. The real prefix for this system's suites is
+> `test_customer_console_*.py`, and the two database variables the R8 suites
+> gate on were unnamed, so a reader following this section would have run
+> nothing and seen green.
+
+```bash
+# Server side — this console is a CLIENT of the Customer Console (D32.2), so its
+# server-side acceptance runs in WS-31's suites.
+# ⚠️ These SKIP THEMSELVES without a real Postgres (R8) — and a skipped R8 test
+# proves nothing (CP-3: CI silently skipped every DB-gated fence while green):
+#   export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1/cc_platform
+uv run pytest tests/unit/test_customer_console_seats.py \
+              tests/unit/test_customer_console_credits.py \
+              tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_lifecycle.py
+# SC-4a/SC-4g's own suite, created with CP-9's build slice — add it to
+# `customer_console.md` §7 AND to pr-check.yml's hand-maintained skip-guard
+# list in the same PR (that list discovers nothing):
+#   tests/unit/test_customer_console_payments.py
+
+# ⚠️ SECOND, DIFFERENT database for any tenant-side suite —
+# `TENANT_LADDER_DATABASE_URL`, deliberately NOT `DATABASE_URL`, which would arm
+# two tenant-coverage tests that fail by construction (WS-29 MT-1b/MT-1c's
+# gates, not this console's). See `customer_console.md` §7.
+
+# The surfaces themselves.
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+The two-org fixture from MT-1i is reused for every SC-1 read test.
 
 ## 6. Sequencing
 
-MT-2 tables → SC-1a → (SC-1b after MT-3's ledger) → SC-2 → SC-3 → (SC-4 with
-MT-4). SC-3's *flow* can be built against MT-2 alone — it is the piece that lets
-you sell before billing automation exists.
+**Corrected 2026-08-18.** The old line read *"MT-2 tables → SC-1a → …
+(SC-4 with MT-4)"* and is obsolete on both ends: D32 made this console a
+**client** of the Customer Console, whose subscription/seat/ledger tables are
+**built**, and MT-4's payment work is now **CP-9**.
+
+Live order: **SC-1b/SC-5's billing view (merged, `f1fcca4f`)** → **SC-4a's
+checkout over CP-9** (+ **SC-4g** in the same slice — D42.1: *"do not build a
+purchase slice that treats codes as a later add-on"*) → SC-2 seat writes →
+SC-1a's Centers panel (needs MT-2's entitlement surface) → SC-3 → SC-5b/5c's
+invoice documents → SC-4b/4c/4d/4f.
+
+SC-3's *flow* can be built against the existing tables alone — it is the piece
+that lets you sell before billing automation exists. **SC-5b/5c are hard
+prerequisites for the invoice DOCUMENT, not for the checkout** (SC-4g (vi)); the
+owner-facing consequence is recorded there.
 
 ## Gate labels
 
