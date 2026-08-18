@@ -555,6 +555,16 @@ header the caller sets**, so a caller that rotates it escapes the breaker; the
 balance gate is the backstop that depends on nothing the caller says. The
 breaker stops the *accident*, which is what a runaway loop is.
 
+**The tripwire that keeps both inert** — and a third, that the pre-flight
+spends one `CREDIT_QUANTUM` rather than an estimate, so a single large priced
+call can vault the overdraft floor in one step — is
+`test_customer_console_sql.py::test_the_rate_card_ships_unpriced`, which counts
+non-zero rows across the **whole** `model_rate_card` table as the ladder
+applies it (R7). A migration that prices a card fails it; pricing stays an
+owner act on a live system (§8 gate 4, D19.2). Do not narrow it to the seed's
+`effective_from` — suites that need a price insert one inside a rolled-back
+transaction or delete it in teardown.
+
 **Deliberately not built** (each excluded for a stated reason): the Redis
 balance cache of §4.4 — balance stays `SUM(credit_ledger.delta)` in Postgres, and
 this plane is cross-tenant so R5(c)'s tenant-prefix wrapper does not apply; a

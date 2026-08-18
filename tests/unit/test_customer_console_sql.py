@@ -117,16 +117,42 @@ class TestSchema:
         # Deliberate: CP-6 sets prices against measured burn, and rate_call()
         # raises UnpricedModel rather than billing a guess as free.
         #
-        # Scoped to the SEEDED rows by their effective_from, because CP-6's
-        # suites insert fixture-priced cards at a later date to exercise rating.
-        # The claim being pinned is about `002_seed_catalog.sql` — that it ships
-        # zeros — and that is exactly what this now asks.
-        assert conn.execute(
+        # WHOLE TABLE, on purpose — every row the ladder applies, not just the
+        # seed's effective_from. Two CP-6 money invariants are inert *only*
+        # while every shipped card rates at zero, so this is their tripwire and
+        # narrowing it to the seed date would let a later migration price a card
+        # green. It coexists with the fixture-priced rows because nothing here
+        # commits (the `conn` fixture rolls every test back) and the Router
+        # suite's `priced_card` deletes its row in teardown.
+        #
+        # The predicate mirrors `credits.RateCard.is_priced` — cached input
+        # included — so "priced" means the same thing to the fence as to the
+        # code that bills.
+        priced = conn.execute(
             text("SELECT count(*) FROM model_rate_card "
-                 "WHERE effective_from = TIMESTAMPTZ '2026-01-01T00:00:00Z' "
-                 "  AND (input_credits_per_1k <> 0 "
-                 "       OR output_credits_per_1k <> 0)")
-        ).scalar_one() == 0
+                 "WHERE input_credits_per_1k <> 0 "
+                 "   OR output_credits_per_1k <> 0 "
+                 "   OR cached_input_credits_per_1k <> 0")
+        ).scalar_one()
+
+        # ASCII on purpose: this string is read from a CI log and from a
+        # Windows console, where cp1252 turns an em dash into mojibake
+        # (CLAUDE.md section 6).
+        assert priced == 0, (
+            f"{priced} rate-card row(s) in the applied ladder carry a non-zero "
+            "price. A non-zero rate card may not ship in the ladder until BOTH "
+            "of these are closed: (1) BYOK zero-rating, customer_console.md "
+            "sec 6 CP-6 deferred limit (a) - an org serving calls with its own "
+            "provider_credential would be charged platform credits for tokens "
+            "it has already paid the provider for (sec 3.4 / sec 4.4); and "
+            "(2) the balance gate's pre-flight cost invariant (review P1 on "
+            "WS-31 CP-6) - the pre-flight spends one CREDIT_QUANTUM rather "
+            "than an estimate, so one large priced call can vault the "
+            "overdraft floor in a single step. Both are inert ONLY while every "
+            "card in the shipped ladder rates at zero, which is what this "
+            "counts. Price via an owner act on a live system, never a seeded "
+            "migration - customer_console.md sec 8 gate 4, D19.2."
+        )
 
 
 # ── Registry ────────────────────────────────────────────────────────────────
