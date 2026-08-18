@@ -192,6 +192,20 @@ class FakeConsole:
             raise httpx.ConnectError("the Console is unreachable")
         self._answer = responder
 
+    def answers_status(self, status: int, **body) -> None:
+        """Any status at all — the shapes a REVERSE PROXY produces, not a route.
+
+        A 502/503/504 is nginx's HTML error page, and a 401 is a rotated
+        `cc_depl_` key: neither is the Console *deciding* anything about the
+        person, and both were previously read as one. Bodies are deliberately
+        not JSON by default, because a gateway's error page is not.
+        """
+        def responder(request: httpx.Request) -> httpx.Response:
+            if body:
+                return httpx.Response(status, json=body)
+            return httpx.Response(status, text="<html>502 Bad Gateway</html>")
+        self._answer = responder
+
     # -- plumbing -----------------------------------------------------------
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -664,6 +678,105 @@ class TestTheFourOutcomes:
         assert decision.admit is False
         assert decision.code == console_resolve.ACCESS_DENIED
         assert _membership(db, email) == []
+
+
+# ══ §6(j) row v — a TRANSPORT failure is not an authorization failure ════════
+#
+# Repair of review finding **P1-1** (2026-08-18). `_post_resolve` collapsed
+# every non-200 to `(status, {})` and `resolve_for_signin` mapped everything
+# that was not 200/403 to `AccessDenied`. So a Console 502 behind nginx, or a
+# rotated `cc_depl_` key answering 401, showed EVERY user of EVERY tenant "your
+# account isn't authorized" — the exact wrong-looking denial D33.1 forbids —
+# while the same outage over a *closed port* degraded gracefully. Two spellings
+# of one event, two opposite behaviours.
+#
+# The rule now: a status that says *the box could not get an answer* (5xx, 401,
+# 408, 429) is an unreachable Console. A status that says *the Console decided*
+# (403, 409) keeps its own meaning.
+
+class TestATransportFailureIsNotAnAuthorizationFailure:
+    async def test_a_console_5xx_degrades_to_the_cache_like_any_other_outage(
+        self, wired, db
+    ):
+        """A 30-second 502 must not lock out the people this box already knows.
+
+        Cached, past the TTL, inside the ceiling: exactly the window
+        `cache-stale` exists for. Before the repair this arrived as
+        `AccessDenied` and the cache was never consulted at all.
+        """
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+
+        _backdate(db, email,
+                  get_settings().customer_console_resolve_ttl_seconds + 60)
+        console_resolve.invalidate()
+        wired.answers_status(502)
+
+        decision = await console_resolve.resolve_for_signin(email)
+        assert decision.admit is True
+        assert decision.source == "cache-stale"
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504, 408, 429])
+    async def test_an_unreadable_status_with_nothing_cached_says_unavailable(
+        self, wired, db, status
+    ):
+        """Refuse — but with the copy that is TRUE.
+
+        The person has done nothing wrong; a wrong-looking denial generates a
+        support ticket and a password reset that fix nothing (D33.1).
+        """
+        from acb_auth import console_resolve
+
+        wired.answers_status(status)
+
+        decision = await console_resolve.resolve_for_signin(_email())
+
+        assert decision.admit is False
+        assert decision.code == console_resolve.CONSOLE_UNAVAILABLE
+        assert decision.source == "unreachable"
+
+    async def test_a_rotated_deployment_key_is_an_outage_not_a_denial(
+        self, wired, db
+    ):
+        """401 is about the BOX's credential, never about the person.
+
+        An operator rotating `cc_depl_…` without updating this deployment's env
+        would otherwise tell every user of every tenant they are not
+        authorized — a support queue full of password resets that cannot
+        possibly help, for a one-line env fix.
+        """
+        from acb_auth import console_resolve
+
+        wired.answers_status(401, detail="invalid deployment key")
+
+        decision = await console_resolve.resolve_for_signin(_email())
+
+        assert decision.admit is False
+        assert decision.code == console_resolve.CONSOLE_UNAVAILABLE
+        assert decision.code != console_resolve.ACCESS_DENIED
+
+    async def test_a_403_and_a_409_still_mean_what_they_meant(self, wired, db):
+        """The Console DECIDING is untouched by the rule above.
+
+        Only statuses that prove the box could not read an answer are
+        reclassified; a refusal and a seat cap are answers.
+        """
+        from acb_auth import console_resolve
+
+        wired.refuses("deleted")
+        refused = await console_resolve.resolve_for_signin(_email())
+        assert refused.code == console_resolve.ACCESS_DENIED
+        assert refused.source == "console-refused"
+
+        wired.is_at_cap()
+        capped = await console_resolve.resolve_for_signin(_email())
+        assert capped.code == console_resolve.ACCESS_DENIED
+        assert capped.source == "console-error"
 
 
 # ══ Clause 7 — a lifecycle change is RECORDED within the stated bound ════════

@@ -52,6 +52,12 @@ everyone at once, because the rows still carry the answer.
 
 * Console **reachable** → a cached answer is re-consulted past
   ``CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS``.
+* **"Unreachable" is a behaviour, not a socket.** A 5xx, a ``401`` (this box's
+  own credential is wrong — never a fact about the person), a ``408`` or a
+  ``429`` all mean *no answer was produced*, so they take the path below rather
+  than the refusal path. Reading them as refusals showed every user of every
+  tenant *"your account isn't authorized"* during one nginx hiccup, while the
+  same outage over a closed port degraded gracefully (finding P1-1).
 * Console **unreachable** → a cached person proceeds up to
   ``CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS`` and is refused past it. A
   cache with no ceiling is not a cache, it is a second identity system that
@@ -318,6 +324,24 @@ async def _post_resolve(
             )
     except Exception as exc:
         raise _Unreachable(str(exc)[:200]) from exc
+
+    # ── A status that proves we got no ANSWER is an outage, not a verdict ────
+    #
+    # Repair of review finding P1-1 (2026-08-18). Everything that was not
+    # 200/403 used to end at `AccessDenied`, so a Console 502 behind nginx —
+    # or a rotated `cc_depl_` key answering 401 — told every user of every
+    # tenant *"your account isn't authorized"*, the exact wrong-looking denial
+    # D33.1 forbids, while the SAME outage over a closed port degraded to the
+    # cache. Two spellings of one event, two opposite behaviours.
+    #
+    # The line drawn: **5xx** (the Console or something in front of it is
+    # broken), **401** (this box's own credential is wrong — never a fact about
+    # the person), **408** and **429** (no answer was produced, try later) are
+    # transport failures and take the unreachable path, which is bounded by
+    # MAX_STALENESS and refuses when nothing is cached — still fail-closed,
+    # just honest about why. **403 and 409 are ANSWERS** and keep their meaning.
+    if response.status_code >= 500 or response.status_code in (401, 408, 429):
+        raise _Unreachable(f"HTTP {response.status_code}")
 
     if response.status_code == 200:
         try:
@@ -729,14 +753,21 @@ async def resolve_for_signin(
 
     if status_code != 200:
         # ⚠️ The FIFTH outcome, which the ticket's four-row table does not
-        # name: 409 at the seat cap, plus any other status this box cannot
-        # read. It is a refusal — the Console did not admit this person — and
-        # it caches NOTHING, because a status we do not understand proves
-        # nothing worth recording. `AccessDenied` is the honest code of the
-        # three that exist: at the cap the person genuinely holds no seat and
-        # *"ask your admin"* is exactly the remedy. A third code is
-        # deliberately not minted here; the ticket names two and adding a
-        # third is a decision for the owner, not for a build.
+        # name: 409 at the seat cap, plus any other status in which the CONSOLE
+        # ANSWERED and the answer was not an admission (400, 404, 422 — a
+        # request this box built wrong). It is a refusal — the Console did not
+        # admit this person — and it caches NOTHING, because an answer we do
+        # not understand proves nothing worth recording. `AccessDenied` is the
+        # honest code of the three that exist: at the cap the person genuinely
+        # holds no seat and *"ask your admin"* is exactly the remedy. A third
+        # code is deliberately not minted here; the ticket names two and adding
+        # a third is a decision for the owner, not for a build.
+        #
+        # ⚠️ This branch no longer covers "any status this box cannot READ"
+        # (P1-1, 2026-08-18): 5xx, 401, 408 and 429 never reach it, because
+        # `_post_resolve` raises `_Unreachable` for them. A transport failure
+        # is an outage and takes the degrade-bounded path; only a decision
+        # arrives here.
         _log.warning("console_resolve.refused", status_code=status_code)
         return ResolveDecision(
             admit=False, code=ACCESS_DENIED, source="console-error"
