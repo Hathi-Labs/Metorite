@@ -7,8 +7,14 @@ path/env/package mapping is in D41.1.)*
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-3 · CP-4 BUILT · CP-6 mechanism
 BUILT (refusals ship OFF)** — 219 Customer Console tests against a real
 Postgres 16 per R8 · CP-3 was **rejected by independent verification once** and
-rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only · **where it runs is an
-open owner decision —
+rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only · **CP-2b (sign-in
+resolve wiring) and CP-4b (streaming pass-through) MINTED 2026-08-18, spec only**
+— CP-4b carries the half of CP-4's done-when that was never met (`stream: true`
+returns 501) and CP-4's ✅ is amended accordingly; CP-2b is §5.2's wiring, which
+**has no caller in the tree** and is the highest-leverage unbuilt work here ·
+two acceptance clauses are annotated rather than struck: **CP-2a's step-kill
+test is OWED** and **CP-1 clause 3 was unmeetable as written** (both dated
+2026-08-18 in §6) · **where it runs is an open owner decision —
 [`customer_console_infrastructure.md`](customer_console_infrastructure.md)** ·
 **Date:** 2026-08-18 · **verified against code 2026-08-18 by WS-31 CP-6 audit**
 — the four §3.4 tables (`usage_event`, `credit_ledger`, `model_rate_card`,
@@ -432,10 +438,28 @@ workspace member, `infra/docker-compose.yml` entry beside `gateway`). Its own
 database, no RLS (§0.9.2 — it reads across tenants by design). Tables from §3.2.
 **Done when:** the service starts under compose and answers `/health`; a two-org
 fixture returns both orgs from one query (proving cross-tenant reads work, which is
-the *opposite* of every other plane's requirement); `tests/unit/test_tenant_coverage.py`
-records the new tables in `gen_tenant_migration.EXEMPT` with the §0.9.2 citation as
-the reason — **R5(a) is satisfied by an explicit, reviewable exemption, never by
-omission**.
+the *opposite* of every other plane's requirement); **R5(a) is satisfied
+explicitly and reviewably** — the plane's separateness is *declared*, in
+`tests/unit/test_db_engine_seam.py::_ALLOWED_SYNC`, with the §0.9.2 citation as
+its written reason, and `tests/unit/test_tenant_coverage.py` stays green because
+this plane's tables sit on their own ladder where the tenant scan cannot reach
+them.
+
+> ⚠️ **Clause 3 corrected 2026-08-18 — it was unmeetable as written, and meeting
+> it would have made things worse.** It asked for the Customer Console's tables
+> to be recorded in `gen_tenant_migration.EXEMPT`. That generator discovers
+> tables from `infra/postgres/[0-9]*_*.sql` **only**
+> (`scripts/gen_tenant_migration.py:63` `_MIGRATIONS`, `:175`, `:200`), so a
+> Customer Console table name added to `EXEMPT` matches no discovered table,
+> prints under *"exempt names that match no discovered table (stale entry, or
+> the table moved)"* (`:402-407`), and pushes a map that holds **12** entries
+> today through `test_tenant_coverage.py:77`'s ≤15 tripwire — a map whose whole
+> purpose is to be the security review. R5(a)'s requirement is *"tenant-scoped
+> or exempted with a reason"*, and what CP-1 actually shipped satisfies it by a
+> stronger route: a ladder the tenant scan cannot see (`infra/customer_console/`,
+> replayed by nothing in `apply_migrations.sh`) plus one declared engine site
+> carrying its argument. Annotated rather than struck, because the original
+> clause's *intent* — no exemption by omission — is the part that binds.
 
 **CP-2 · Plan catalog, subscriptions and seats.** §3.3 tables plus
 `GET /billing/summary` and `POST /billing/seats`. **Done when:** purchased/assigned/
@@ -489,29 +513,130 @@ problem, a failed call is a product problem, and the product problem is worse.
 The provider call sits behind `router.set_provider_call` so the pass-through is
 testable without a provider account — otherwise the only way to test it is to
 spend money at DeepSeek on every run, which means nobody does.
-Behind a flag, default **OFF** — Metorite can still call providers directly
-(CLAUDE.md §4, ship dark). **Done when:** with the flag ON, a completion through
-CC `/v1` is byte-identical for the client to one with it OFF (the streaming path
-included — this is the choke point every agent runtime streams through); one
-`usage_event` row exists per completion; a retried `request_id` writes **one** row,
-not two.
+Ships dark (CLAUDE.md §4) — see the amendment below for *how*. **Done when:** a
+non-streaming completion through the Customer Console's `/v1` is byte-identical
+for the client to one made directly against the provider; one `usage_event` row
+exists per completion; a retried `request_id` writes **one** row, not two.
 
-**CP-5 · Tier capabilities and the model-access rework.** `GET /v1/tiers`, the CC-side
-cache, `_fit_context_window` / `_clamp_max_tokens` driven from it, and removal of the
-customer-facing model picker. **Done when:** a tier whose window shrinks in the
-Router causes CC to fit to the smaller window without a CC deploy; a bare
-(non-tier) model id returns 400 rather than being coerced; the Settings→Models
-provider/model/tier tabs are gone from the customer product and
+> ⚠️ **Done-when AMENDED 2026-08-18** — annotation, not a rewrite. Two of the
+> original clauses could not be met as written, and one of them named a thing
+> that does not exist.
+>
+> **(1) "Behind a flag, default OFF" — no such flag was ever built.** A
+> repo-wide search on 2026-08-18 finds no Router-exposure flag in any Python,
+> TypeScript, compose or env file. Ship-dark is nonetheless real, and is
+> achieved by **absence of a caller**: nothing in Metorite posts to the Customer
+> Console's `/v1`, and the only Metorite→Customer Console call anywhere in the
+> tree is the workbench's read-only billing proxy
+> (`workbench/control_plane/src/app/api/billing/summary/route.ts:58`, which
+> calls `/me/billing`). The flag that *does* exist is CP-6's
+> **`CUSTOMER_CONSOLE_SPEND_GATE`** (registered in `work_plan.md` §6), and it
+> gates the two spend *refusals*, not the route. **The Router-exposure flag
+> arrives with the first caller ticket**, because a flag with no caller to gate
+> is a config value nobody reads and a false sense of a control. §8 gate 5
+> ("flipping CP-4's Router flag ON for a real customer") is therefore that
+> ticket's gate, not this one's — it is correctly registered and currently
+> ungrounded in code.
+>
+> **(2) "the streaming path included" — UNMET, and now its own ticket.**
+> `stream: true` returns **501** (`main.py:818-828`). Deliberately: CP-4
+> forwarded the flag and handed litellm's `CustomStreamWrapper` to FastAPI,
+> which failed to serialise it — the client got "Internal Server Error" **and** a
+> phantom zero-token `usage_event` was committed for a completion nobody
+> received. An explicit refusal is the honest state, and it is pinned
+> (`test_customer_console_router.py:548` — 501, not 500; `:557` — a refused
+> stream writes no usage row). The streaming half is **CP-4b** below, and it is
+> the half that matters most: every agent runtime streams through this choke
+> point, so CP-4 as it stands cannot carry a single real caller.
+
+**CP-4b · Streaming pass-through.** 🔲 **MINTED 2026-08-18** — CP-4's owed
+second half, carved out of its done-when rather than left as an unmet clause
+under a ✅. Make `stream: true` work end to end on the Customer Console's
+`POST /v1/chat/completions`: relay the provider's SSE frames to the client
+unaltered, and meter the completion from the usage the stream reports, not from
+a guess.
+
+Two hazards decide the shape, and both are already recorded rather than
+theoretical. **(a)** The provider's stream object is not JSON-serialisable — the
+501 exists because returning it produced a 500. The relay is therefore a
+`StreamingResponse` over an explicit iterator, and the route's `def`-not-`async
+def` rule (`main.py:30-36`) has to be re-argued for a streaming route rather
+than assumed: the engine is synchronous and a streaming handler holds its
+connection for the life of the stream. **(b)** Usage arrives *last* (or not at
+all) on a stream, and §3.4 already names this: *"Retries, stream reconnects and
+the streaming usage-rebuild path in `v1_compat.py` all create double-write
+opportunities."* A client that disconnects mid-stream has still cost us the
+provider call.
+
+**Done when:**
+1. The frames the client receives are **byte-identical** to the frames the
+   provider emitted — frame boundaries, ordering and the `[DONE]` sentinel
+   included, with nothing re-serialised in between. Fence:
+   `test_the_relayed_frames_are_byte_identical_to_the_providers`, driven through
+   the existing `router.set_provider_call` seam (the same seam CP-4 added) so no
+   provider account is spent — `main.py`'s CP-4 argument stands: a test that
+   costs money at DeepSeek on every run is a test nobody runs.
+2. **Exactly one `usage_event` per stream**, written after the final frame, with
+   the token counts the stream reported. Fence:
+   `test_one_stream_writes_one_usage_row`.
+3. **A client that disconnects mid-stream is still metered** for what the
+   provider actually delivered, and still writes exactly one row. Fence:
+   `test_an_abandoned_stream_is_metered_once`. (Dropping it is a revenue hole
+   that scales with flaky networks; writing it twice is the credibility event
+   `request_id UNIQUE` exists to prevent.)
+4. **A stream that fails before its first frame writes NO usage row** — the
+   phantom-row defect that produced the 501, restated as a permanent fence:
+   `test_a_stream_that_never_starts_writes_no_usage_row`.
+5. **The balance gate and the per-run breaker refuse BEFORE the first frame**,
+   with the same 402/403 bodies the non-streaming path returns — a refusal
+   delivered inside an SSE frame is one every client renders as content. Fence:
+   `test_a_refused_stream_never_opens_the_stream`, run with
+   `CUSTOMER_CONSOLE_SPEND_GATE` on.
+6. **R8** — the metering clauses run against a real Postgres 16 through
+   `tests/unit/_customer_console_ladder.py`, and the new suite is added to §7's
+   command list and to `pr-check.yml`'s skip-guard. A skipped R8 test proves
+   nothing (CP-3's finding: CI silently skipped every DB-gated fence while
+   reporting green).
+7. The 501 branch and its two fences are **removed in the same change**, so the
+   tree never carries a refusal and its replacement at once.
+
+🟢 **AGENT-SAFE in full** — the provider seam makes it testable without a
+provider account. 🔴 Nothing new is gated: exposure to a real customer remains
+§8 gate 5.
+
+**Non-goals:** the Metorite-side forwarder (that is CP-5 plus the first caller
+ticket) · the tier-capabilities document · any rate-card price.
+
+**CP-5 · Tier capabilities and the model-access rework.** `GET /v1/tiers`, the
+**Metorite-side** cache, `_fit_context_window` / `_clamp_max_tokens` driven from
+it, and removal of the customer-facing model picker. **Done when:** a tier whose
+window shrinks in the Router causes **Metorite (the tenant deployment)** to fit
+to the smaller window without a **Metorite** deploy; a bare (non-tier) model id
+returns 400 rather than being coerced; the Settings→Models provider/model/tier
+tabs are gone from the customer product and
 `npx tsc --noEmit && npx vitest run` is green.
+
+*(Disambiguated 2026-08-18: this ticket read "the CC-side cache … causes CC to
+fit … without a CC deploy", where "CC" meant CommandCenter, i.e. the tenant
+product. Post-**D41** the same two letters read as **C**ustomer **C**onsole —
+the exact opposite party, since §4.2's whole point is that the fitting stays in
+the tenant deployment because it needs the messages. Expanded, not reinterpreted.
+`X-CC-Member` / `X-CC-Agent` / `X-CC-Module` / `X-CC-Run` and the `cc_live_` /
+`cc_depl_` key prefixes are **wire identifiers of this service** and are
+untouched.)*
 
 **CP-6 · Rate card, ledger and the balance gate.** ◐ **MECHANISM BUILT
 2026-08-18 — the two refusals ship OFF.** §3.4 + §4.4. **Done when:**
 balance equals `SUM(credit_ledger.delta)` in a fixture and no code path UPDATEs a
 balance column (structural fence — grep the tree, per R7's preference for
 structural over example tests); a zero-balance org gets **402** with the top-up
-payload while a non-AI endpoint on the same org still returns 200; the ~10%
-overdraft is a named config value with a test at both edges; the per-run circuit
-breaker trips a runaway loop.
+payload while a non-AI endpoint on the same org still returns 200; **the
+overdraft grace is a named config value with a test at both edges** *(corrected
+2026-08-18 — the shipped policy is ABSOLUTE, `OverdraftPolicy.grace_credits =
+100` with `grace_for_trial = False`, not the "~10%" this clause and §4.4
+originally said; the shipped docstring's argument stands — a percentage grows
+the exposure on your largest accounts forever)*; the per-run circuit breaker
+trips a runaway loop.
 
 **What shipped.** `router.resolve_rate_card` (newest card whose `effective_from`
 has passed — the same shape as `resolve_tier`, so a re-price is an INSERT and a
@@ -604,15 +729,292 @@ placement and its trial, plus **GST fields captured at signup** (GSTIN + registe
 state — `saas_operations_doctrine.md` §3.1: retrofitting a GSTIN onto an already-invoiced
 org is a customer conversation, not a migration). **Done when:** provisioning is
 **idempotent and resumable** — a run interrupted after any step and re-run produces one
-org, not two, and a test kills it at each step; the lifecycle states of §4.1d are
-enforced with `suspended` keeping **login working** while features lock; an org reaching
-`cancelled` retains data through a named export window.
+org, not two, and **⚠️ a test kills it at each step — OWED, see below**; the
+lifecycle states of §4.1d are enforced with `suspended` keeping **login working**
+while features lock; an org reaching `cancelled` retains data through a named
+export window.
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → CP-3 → CP-4 → CP-5 → CP-6 → CP-7 →
-CP-8. CP-4 is
+> ⚠️ **One acceptance clause is OWED, not met — recorded 2026-08-18 rather than
+> struck.** "a test kills it at each step" is **not implemented**.
+> `tests/unit/test_customer_console_lifecycle.py` proves *re-provision
+> idempotence* — `test_re_provisioning_does_not_create_a_second_run_or_org`
+> (`:155`), plus `test_provisioning_records_a_resumable_run` (`:147`) — which is
+> the whole-run replay case. What no test does is **interrupt the run between
+> steps and resume it**, which is the case the clause was written for and the
+> only one that can leave a half-provisioned org: a `provisioning_run` row
+> exists precisely because a run can die in the middle. The ✅ stands for what
+> shipped; this clause is a **known gap with a name**, closed by a future
+> `test_a_run_killed_after_each_step_resumes_to_one_org` parametrised over the
+> step list (so a step added later is covered without anyone remembering).
+> Deliberately not struck: an acceptance criterion that turns out to be
+> unbuilt is evidence about the build, and deleting it deletes the evidence.
+
+**CP-2b · Sign-in resolve: the product calls the registry.** 🔲 **MINTED
+2026-08-18.** §5.2's wiring — the half that has existed as prose since
+2026-08-12 and as code in nobody. `POST /registry/resolve` is built
+(`main.py:525`) and **has no caller anywhere in the tree**: a repo-wide search
+on 2026-08-18 returns the endpoint itself and two test files, nothing else.
+Until this lands, **the seat cap is a number the Customer Console keeps and the
+product never consults** — a person becomes a user of a Metorite deployment
+without any seat being allocated, which is exactly the claim §5.2 rests on
+(*"the box asks before admitting them"*), unbuilt. It is the highest-leverage
+unbuilt work in this spec and it had no ticket.
+
+The 2026-08-18 audit found **three undecided questions** blocking dispatch. Each
+is answered below as an **agent-proposed default, owner may overrule** — the
+D16/D17 convention (`work_plan.md` §3: *"proposed defaults, adopted unless the
+owner objects"*). They are named as proposals because each has a defensible
+alternative; none of them is a commercial call, so none needs to wait.
+
+**(a) Which credential — a FOURTH scheme: the deployment key (`cc_depl_…`).**
+The endpoint is Operator-auth today (`main.py:526`, `_: Operator`), and the
+service itself says why a tenant deployment must not hold that token
+(`main.py:946`): *"the workbench must **not** hold the operator token — a tenant
+deployment holding a cross-organization credential is the whole thing D32/D35
+are arranged to avoid."* Neither other existing scheme fits either: `Internal`
+(`auth.py:108`) is the Router's meter-writing token and is equally
+cross-organization, and the **organization key is org-scoped**, which is right
+for `/me/billing` and wrong here — a **pooled** deployment must resolve *any*
+email to *its* org, and the org is not known before the answer.
+
+So mint `cc_depl_<prefix>_<secret>`: issued **per deployment** by the operator in
+the Customer Console, stored in that deployment's env, with a capability set of
+**exactly `{resolve}`** — one endpoint, nothing else, enforced as a dependency
+rather than a per-route `if`. What it can learn about an organization is bounded
+to what sign-in needs: **org id, slug, placement, lifecycle status, and
+seat-existence for the presented email.** Never a balance, never a credit
+figure, never an invoice, and never the existence of an organization this
+deployment does not serve.
+
+*Storage and verification reuse `keys.py` verbatim* — `mint_key` (`keys.py:50`),
+`hash_secret` (`:62`, SHA-256 over a 256-bit machine secret, with its written
+argument against a KDF on the hot path), `verify_secret` (`:74`) and
+`split_key` (`:84`, split from the LEFT with a bounded count — the flaky-auth
+bug that function's docstring records). `mint_key` already takes `env=`, so
+`cc_depl_` is a parameter, not a fork.
+
+**A sibling table, not a column on `llm_api_key`:** that table's owner is an
+`organization` (`001_customer_console.sql:212-214`, `organization_id UUID NOT
+NULL`), and a deployment key belongs to a **`deployment`** (`:82`) — hanging it
+off a nullable org id would make "which kind of key is this" a property of a
+NULL, and every query would have to remember. So:
+
+```sql
+deployment_key(id UUID PK, deployment_id UUID NOT NULL REFERENCES deployment(id),
+               prefix TEXT NOT NULL UNIQUE, key_hash TEXT NOT NULL,
+               label TEXT, capabilities TEXT[] NOT NULL DEFAULT '{resolve}',
+               created_by TEXT, created_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ);
+```
+
+⚠️ **R1 — take the migration number at build time.** The Customer Console ladder
+is `001`–`005` on 2026-08-18, so the next free number is **006**; list
+`infra/customer_console/` at build time and re-check at merge rather than
+trusting this sentence. The migration is **not written now**. Nothing has to be
+added to any suite's ladder list — `tests/unit/_customer_console_ladder.py`
+reads the directory.
+
+**(b) The R11 shape — the request carries the EMAIL and the KEY, and no org.**
+The deployment has already run its own OAuth flow and verified the address
+(`workbench/control_plane/src/auth.ts:80-103`, the NextAuth jwt/session
+callbacks); what it asserts to the Customer Console is *"this verified person is
+signing in"*. It asserts **nothing about which company they belong to** — that
+is the answer, derived server-side from `org_membership` intersected with
+`org_placement`. This is `user_management_contract.md` **R11** satisfied at its
+strongest available reading: not "the tenant claim is validated against the
+caller" but **"the caller makes no tenant claim at all"**, which is the same
+property `organization_from_key`'s docstring already argues for the org key
+(`auth.py:147-157`: *"there is no `X-CC-Org` parameter and no `org_slug` body
+field"*).
+
+*Why the existing body-slug shape stays legal — for the operator scheme only.*
+`ResolveRequest` (`main.py:119-122`) carries `org_slug`, and under **operator**
+auth that is not an R11 violation: R11 forbids taking the tenant from *request
+input* when a caller has a tenant of their own to be inferred from. The operator
+credential has no tenant — it is cross-organization by design and by §0.9.2 —
+so there is nothing for the slug to override; naming the org is the operator
+*performing an act on a named customer*, exactly as `POST /billing/seats`
+(`main.py:635`) and `POST /credits/grant` (`main.py:690`) already do. Under a
+**deployment** key the same field is the forbidden shape, because that caller
+*does* have an identity from which the answer must be derived. **One endpoint,
+two schemes, one shape rule:** a deployment key presenting `org_slug` is
+refused **400**, never silently ignored — an ignored field is a caller who
+believes it worked. A second endpoint is refused for the CLAUDE.md §5 reason: it
+would be a second way to do an existing thing.
+
+**(c) Failure semantics — fail closed, degrade bounded.** What happens when the
+Customer Console is unreachable at sign-in is the question that most needs
+deciding before a line is written, because the tempting answer ("admit them,
+we'll sort it out") recreates **D33.1** — auth that fails **open** — which CP-0
+existed to remove.
+
+- **No cached resolution → REFUSE.** Fail closed. The refusal page says the
+  service is **temporarily unavailable**, not "access denied": the person has
+  done nothing wrong, and a wrong-looking denial generates a support ticket and
+  a password reset that fix nothing.
+- **A cached resolution → PROCEED on the cache.** A successful resolve is cached
+  in the deployment, with two named bounds:
+  - **`CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS`** — freshness. *Agent-proposed
+    default `900` (15 minutes).* Past it, a reachable Customer Console is
+    re-consulted; an unreachable one falls through to the ceiling below.
+  - **`CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS`** — the hard ceiling.
+    *Agent-proposed default `86400` (24 hours).* Past it sign-in **fails
+    closed even for a cached person**. A cache with no ceiling is not a cache,
+    it is a second identity system that never expires — and the day it matters
+    is the day an account is suspended for non-payment.
+  Both are named config values living beside the existing settings
+  (`packages/acb_common/acb_common/settings.py`, the
+  `crm_auto_lead: bool = False` shape at `:140`), so a test pins the number by
+  reading it rather than by re-deriving it.
+- **`suspended` / `deleted` take effect no later than the TTL.** That is the
+  honest cost §5.2 already states (*"deprovisioning is as fast as the cache
+  TTL"*) — now with a number attached, and a ceiling behind it.
+
+**Where the cache lives — migration 159's projection tables, whose real column
+names are not the ones this spec assumes.** Verified 2026-08-18 against
+`infra/postgres/159_control_plane.sql`:
+
+| Resolve answer | Projection column | ⚠️ |
+|---|---|---|
+| `email`, `display_name` | `user_identity.email`, `.display_name` (`159:67-79`) | `TEXT` + `UNIQUE INDEX ON (lower(email))`, **not** the Customer Console's `CITEXT` (`001:110`) — match on `lower(email)` or mint a second human on a UPN case change (R10) |
+| membership status | `org_membership.status` (`159:83-96`) | CHECK is `invited\|active\|suspended\|removed` — a **membership** status, not the org lifecycle. Do not overload it |
+| which person | `org_membership.`**`user_id`** (`159:85`) | the Customer Console calls the same column `user_identity_id` (`001:123`). Two names, one thing — name it in the mapping code or it becomes a silent no-op |
+| placement | `tenant_placement.tier`, `.target` (`159:40-53`) | the Customer Console answers `org_placement` (`001:96`); the tenant plane's row is the projection of it |
+| org slug | `organization.slug` (`130_org_access_control.sql:39`) | already exists |
+| **freshness** | *— none —* | **new nullable column** `org_membership.resolved_at TIMESTAMPTZ`, the per-person TTL clock |
+| **org lifecycle** | *— none —* | **new nullable column** `tenant_placement.cc_org_status TEXT`, last-seen `trial\|active\|past_due\|suspended\|cancelled\|deleted` |
+
+Both new columns are **nullable with no default and nothing renamed** (R6
+expand/contract), in a **tenant** migration whose number is taken at build time
+by listing `infra/postgres/` and re-checked at merge (**R1** — the highest on
+disk on 2026-08-18 was `176_people_skills.sql`; do not write a number into this
+ticket).
+
+**Role is deliberately NOT projected.** The Customer Console's
+`org_membership.role` (`001:124`, `owner|admin|member`) is a *registry/billing*
+role; the tenant's permission vocabulary is `org_role` + the access ladder that
+`acb_auth/access.py` resolves. Copying one into the other creates a second grant
+vocabulary, which CLAUDE.md §5 forbids by name. The Customer Console stays
+authoritative on what was **bought**; Metorite stays authoritative on what is
+**enforced** (§2, unchanged).
+
+**Where the caller goes — the gateway's identity path, not the Next BFF.** The
+resolve writes the tenant database, and the workbench BFF neither holds nor
+should hold a tenant DB connection; the seam that already owns "somebody is
+knocking at the front door" is `acb_auth`, where exactly one caller passes
+`record_request=True` into `resolve_access`
+(`packages/acb_auth/acb_auth/access.py:249-271`, called from
+`acb_auth.deps._with_resolved_access`). That module already carries a TTL cache
+with an `invalidate()` escape hatch (`:73-98`), which is the shape the resolve
+cache should extend rather than duplicate. The deployment key is therefore a
+**server-side env value that never reaches a browser** — the same posture as
+`CUSTOMER_CONSOLE_ORG_KEY`, which the workbench's own fence already
+allow-lists by name (`workbench/control_plane/src/lib/gateway.test.ts:191`).
+
+**Done when** — each clause is separately testable, and each names the test that
+will fence it (R7); the tests are created by this ticket:
+
+1. **The deployment key authenticates resolve and nothing else.** A `cc_depl_…`
+   key presented at any other route 401s, and the check is parametrised over
+   `app.routes` so a route added tomorrow is covered without anyone remembering.
+   Fence: `test_a_deployment_key_reaches_resolve_and_nothing_else`.
+2. **The org is the answer, never the assertion.** Under a deployment key the
+   body is `{email}`; a body carrying `org_slug` is **400**, not ignored. Fences:
+   `test_a_deployment_key_may_not_name_an_org`,
+   `test_the_org_comes_from_membership_not_from_the_body`.
+3. **The operator shape stays legal, and only for the operator.** The existing
+   operator + `org_slug` calls still pass unchanged
+   (`test_customer_console_api.py:121,134,144` and
+   `test_customer_console_lifecycle.py:173,189` are the regression), and an
+   operator token is *not* accepted as a deployment key nor vice versa. Fence:
+   `test_the_two_schemes_do_not_substitute_for_each_other`.
+4. **Two-deployment isolation, stated so the pooled case does not falsify it.**
+   Fixture: deployments A and B; org X placed on A, org Y on B;
+   `person@y.example` a member of Y only. Key A resolving that email returns the
+   **empty** answer. Re-place Y onto A and the *same key* resolves it — not a
+   leak, but the definition of pooled. The claim under test is therefore
+   precisely: **a deployment key resolves an email if and only if that email
+   holds a membership in an organization whose current
+   `org_placement.deployment_id` equals the key's deployment.** *Placement is
+   the boundary, not the organization.* Fences:
+   `test_a_deployment_key_sees_only_the_orgs_placed_on_it`,
+   `test_a_pooled_deployment_resolves_every_org_placed_on_it`.
+5. **No cross-org existence oracle.** Three cases return the **same status and
+   the same body shape** (`200 {"organizations": []}`): an email with no
+   membership anywhere; an email whose every membership is in an organization
+   placed on a *different* deployment; an email whose organization does not
+   exist at all. Fence: `test_the_invisible_cases_are_indistinguishable` —
+   CP-3's `recorded:false` lesson (a distinguishable negative *is* a cross-tenant
+   read) applied here before a verifier has to find it.
+   ⚠️ **Deliberately NOT in that set:** an organization placed **on this
+   deployment** whose lifecycle is `suspended`, `cancelled` or `deleted`. The
+   deployment already serves that customer, so telling it the state reveals
+   nothing it does not have, and it needs the state to refuse correctly — the
+   existing 403-on-`deleted` (`main.py:542-547`) is the right shape and stays.
+   Fence: `test_a_dead_org_placed_here_is_named_not_hidden`.
+6. **Fail closed, degrade bounded — both TTLs pinned.** With the Customer
+   Console unreachable: an uncached email is **refused** with the
+   service-unavailable copy (never "access denied"); a cached email within
+   `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS` proceeds; one past
+   `CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS` is **refused**. Fences:
+   `test_an_uncached_person_is_refused_when_the_console_is_unreachable`,
+   `test_a_cached_person_proceeds_inside_the_ttl`,
+   `test_a_cached_person_is_refused_past_the_staleness_ceiling` — the last one
+   reading the named config value, so changing the default changes the test's
+   input and not its meaning.
+7. **A lifecycle change lands within the TTL.** An organization moved to
+   `suspended` locks features on the deployment no later than the TTL, with
+   login still working (§4.1d, `lifecycle.py`); `deleted` refuses sign-in.
+   Fence: `test_a_suspension_reaches_the_deployment_within_the_ttl`.
+8. **Idempotent projection upsert.** Resolving the same person five times leaves
+   exactly **one** `user_identity` row (matched on `lower(email)`) and **one**
+   `org_membership` row, with `resolved_at` moved and nothing else rewritten.
+   Fence: `test_resolving_five_times_writes_one_projection_row`.
+9. **Seat semantics unchanged, and multi-org allocates nothing.** Exactly one
+   visible organization → a Core seat is allocated on first resolve and **not
+   re-burned** on the next, and the cap still returns **409** with the buy-more
+   payload. The operator-auth equivalents of both are already pinned
+   (`test_customer_console_api.py:131` — five resolves, one seat, the drift bug;
+   `:142` — the cap and its payload); this ticket adds the **deployment-key**
+   equivalents rather than assuming the scheme is transparent to them. More than
+   one visible organization → **no seat is allocated** and the set is returned;
+   choosing among them is a later ticket, and allocating a seat in every
+   organization a person can see would bill an admin for a login they did not
+   make. Fence: `test_a_multi_org_resolve_allocates_no_seat`.
+10. **R8 — proven against a real Postgres.** Every clause above that reads or
+    writes runs against a real Postgres 16 via
+    `tests/unit/_customer_console_ladder.py`; the new suite
+    (`tests/unit/test_customer_console_resolve.py`) is added to §7's command
+    list **and** to `pr-check.yml`'s skip-guard, because CP-3's finding was that
+    CI skipped every DB-gated fence while reporting green.
+
+**Gate split.** 🟢 **AGENT-SAFE:** the fourth scheme, the migration, the
+endpoint change, the projection columns, the gateway-side caller, every fence,
+and the whole thing exercised dark against fixtures. 🔴 **OWNER-GATE — refuse by
+name:** **issuing a real `cc_depl_` key and setting it in a live deployment's
+env** (registered as §8 gate 7). It is a credential issuance plus a deployment
+env write, i.e. two existing gate classes at once, and a deployment key is the
+credential that lets a box ask about people.
+
+**Non-goals** (each is a later ticket, named so this one does not grow):
+placement **heartbeat** on the deployment key — plausibly the second capability
+it earns, and explicitly not now, because a capability set of one is the only
+one that is obviously right · entitlement/module sync to the deployment ·
+**enforcing** seats or lifecycle in product surfaces beyond sign-in (MT-2's
+`intersect()` seam stays where it is, §2) · the multi-organization chooser for a
+person visible in two orgs on one deployment · retiring the operator-auth shape
+· any Router or metering change.
+
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → CP-3 → CP-4 →
+CP-5 → CP-6 → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6 shipped before
+it, and it must land before the first Router caller, because every agent runtime
+streams. CP-4 is
 where revenue-relevant data starts existing (real per-org burn, unpriced), and it is
 worth reaching before CP-6 sets a rate card, because a rate card set on estimates is
 a rate card you change on customers.
+
+*(Sequence line updated 2026-08-18 — CP-2b inserted after CP-2a, CP-4b noted.
+The board row in `work_plan.md` §2 carries the same line and was updated in the
+same change.)*
 
 ## 7. Verification
 
@@ -655,7 +1057,15 @@ surface, against fixtures.
 4. **Editing any live organization's entitlements, seats or credit balance** — same
    gate the Subscription Console's fulfilment already carries.
 5. **Flipping CP-4's Router flag ON for a real customer**, and the §5.1 pooled cutover.
+   ⚠️ *That flag does not exist in code (CP-4's 2026-08-18 amendment); the gate is
+   correct and currently ungrounded — it binds the first caller ticket.*
 6. **Issuing a production `cc_live_` key to a real organization.**
+7. **Issuing a `cc_depl_` deployment key and setting it in a live deployment's
+   env** (CP-2b, added 2026-08-18) — a credential issuance *and* a deployment env
+   write. Minting keys against fixtures is AGENT-SAFE; a real one is not.
+
+*All seven are registered in `work_plan.md` §6 as of 2026-08-18 — a gate that
+lives only in a spec is a gate the dispatch board cannot enforce.*
 
 ## 9. Open owner inputs
 
