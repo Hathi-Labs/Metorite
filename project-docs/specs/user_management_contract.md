@@ -124,6 +124,21 @@ one. Reuse the existing capability that already governs the thing. Both the HR
 directory fix and the sign-in queue reused `admin:members:read` /
 `admin:members:manage` for exactly this reason.
 
+> **One registered, argued DEVIATION from that rule — `billing:purchase`**
+> *(2026-08-19, WS-30 SC-4a's B7 block; agent-proposed default the owner may
+> overrule, D16/D17)*. **No existing capability governs spending the company's
+> money**, and the nearest floor, `admin:members:read`, means *"may see the
+> member list"* — reusing it would grant purchase authority to every
+> member-reader, which is the opposite of what a money write needs. The rule's
+> own failure mode (a slug nobody holds) is answered rather than ignored: the
+> minting change **seeds it in the same migration**, onto `default`'s `admin`
+> role, in `133_workflows_publish_permission.sql`'s idempotent shape. ⚠️ It is
+> **born unheld in every organization other than `default`** — not because of
+> this slug, but because a newly created org gets no roles at all
+> (`saas_multitenancy_implementation.md` §7.1 step 3, §8 trap 5), which the
+> org-provisioning ticket owns. **Deviations go here, in §3, or they are not
+> deviations — they are drift.**
+
 **A `feature:` flag gates navigation, not data.** `140_center_features.sql` is
 explicit about it, and three feature slugs are enforced *nowhere* server-side
 (`memory`, `artifacts`, `observability`) — they hide a nav pane, and the

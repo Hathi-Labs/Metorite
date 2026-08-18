@@ -113,6 +113,15 @@ minted in 9.3a · **B8** — duplicate-safety was attributed to
 the money guard is the terminal-state rule, and the event-id key is transport
 dedup. The narrowed dispatchable slice (substrate half) and the held-back
 surface half are written into §6's sequencing note ·
+**§6's held-back list gained TWO ENTRIES on 2026-08-19**, from WS-30 SC-4a's own
+NO-GO dispatch audit and recorded here because both are **this service's** to
+answer: **(e)** the browser→provider **hand-off** (`SC-4h`, jointly owned) —
+`create_order` returns no payment link, the seam is two methods, and browser
+Checkout's `key_id` + `order_id` are exposed by no route, `OrderView` being
+pinned to an exact 14-name set; and **(f)** a small **customer-key read of the
+priced `plan_catalog`**, without which SC-4a's launch done-when 1 has no data
+source. Neither is built here; both are named so the next WS-31 slice does not
+have to rediscover them ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -1297,8 +1306,8 @@ builds an amount from a `float`.
 neither of which can move value.** This is the question the audit stopped on —
 `main.py:5-24` declares four schemes, the `cc_live_` organization key is
 **read-only by design** (it reaches `/me` and `/me/billing`), every write route
-takes `Operator`, and `main.py:1213-1224` forbids the workbench from holding the
-operator token. A checkout is a customer write, so something had to give. The
+takes `Operator`, and `main.py:1355-1366` (*re-anchored 2026-08-19 from
+`:1213-1224`*) forbids the workbench from holding the operator token. A checkout is a customer write, so something had to give. The
 answer that gives least:
 
 1. **The org key stays read-only for every existing route.** Nothing already
@@ -1421,7 +1430,8 @@ answer that gives least:
      200. Fulfilment writes `org_subscription`, `seat_grant` and (later)
      `credit_ledger`; it never touches the `organization` row.
    - **The reason is CP-2a's transition-graph discipline.** `POST /orgs/lifecycle`
-     is `Operator`-only (`main.py:500`) and `assert_transition` refuses every
+     is `Operator`-only (`main.py:637`, `set_lifecycle` — *re-anchored
+     2026-08-19 from `:500`*) and `assert_transition` refuses every
      off-graph move precisely so the lifecycle has one writer. Letting a
      **webhook** drive it makes an *outside system* the writer of our account
      state: a replayed capture, a provider bug, or a captured-then-refunded
@@ -1534,7 +1544,8 @@ Credentials come from env with **no defaults** —
 D41.1's naming — and **absent means the seam REFUSES**: `POST /billing/orders`
 returns **503** naming what is missing (the `route.ts:34-36` posture, not a
 localhost default), and the webhook route 503s rather than accepting a body it
-cannot verify. That, plus `purchaseEnabled` staying `False` at `main.py:1266`,
+cannot verify. That, plus `purchaseEnabled` staying `False` at `main.py:1408`
+(*re-anchored 2026-08-19 from `:1266`*),
 is how this ships dark: **absence of credentials and absence of a UI**, both
 observable, neither a flag nobody reads (CP-4's amendment is the precedent).
 
@@ -3726,6 +3737,57 @@ code-issue surface** (issuing is `Operator`-scheme API in this slice; rendering
 it is CP-8). **(c)** The **invoice document** — SC-5b/5c, hard prerequisite for
 the DOCUMENT and explicitly not for the checkout (SC-4g (vi)). **(d)** The
 **flip set** — all four items are owner acts (SC-4a's flip-set box).
+
+**(e) The browser→provider HAND-OFF — `SC-4h`, jointly owned by WS-30 and
+WS-31/CP-9** *(added 2026-08-19 by SC-4a's NO-GO dispatch audit; the full
+argument is in `subscription_console.md` SC-4a's remediation box, F-A, and is
+not restated here)*. Measured against this tree: `create_order` posts to the
+**Orders** API and returns `ProviderOrder` with no payment link
+(`payments.py:449-473`, `:333-338`); the `PaymentProvider` protocol is
+`create_order` + `verify_webhook` and nothing else (`:414-425`); Razorpay's
+browser Checkout needs `key_id` **and** `order_id` in the page, and this service
+exposes neither — `key_id` reaches no response, and `OrderView` is pinned to an
+**exact 14-name** field set by
+`test_the_order_read_carries_no_provider_identifiers`. So the hand-off is three
+decisions on **this service's** response surface — whether a customer-key
+response may carry `key_id`, which provider identifier goes on the wire and
+under what auth, and the **`OrderView` fence amendment** that makes either
+possible — plus CP-9 §9.5's capture leg against a real account. **They are
+CP-9's to decide, which is why the WS-30 ticket names them and does not take
+them**, and why SC-4a's launch slice was narrowed to the ₹0 path instead of
+inventing a hand-off inside a UI PR. Gated behind `work_plan.md` §6(b) (the
+Razorpay account, owner-side even in test mode).
+
+**(f) One SMALL prerequisite the same audit found, and it belongs to this
+service:** *no route exposes the priced `plan_catalog` to a customer
+credential.* `GET /billing/summary` (`main.py:1017`) is `Operator`, cross-org,
+and returns only slugs the org already holds seats on; `GET /me/billing`
+(`:1355`) and `GET /me` (`:1181`) carry no catalog. SC-4a launch done-when 1
+forbids a hard-coded ladder in TypeScript, so **without a customer-key catalog
+read the launch slice cannot meet it honestly.** Recorded here as WS-31's, not
+built by WS-30. *(Made buildable 2026-08-19 after the dispatch confirmation
+found the first draft too loose to build from — agent-proposed defaults, D16/D17:)*
+
+- **Route:** `GET /billing/catalog`.
+- **Auth:** the **`can_pay` dependency** (`organization_for_payment`), NOT the
+  `can_use_ai`-gated `KeyCaller` — the nearest read to copy (`/me/billing`)
+  403s a `suspended` org at `auth.py:217`, which is exactly the "the customer
+  who most needs to pay is the one the door is shut on" defect §9.3(5) exists
+  to fix. A suspended org may read the catalog; a deleted one may not.
+- **Payload:** the `active` rows of `plan_catalog` as
+  `slug · name · kind · price_paise · sort_order` — **one money field, integer
+  paise on the wire**, converted from the rupee `NUMERIC` by the ONE
+  `payments.paise()` (§9.2's rule; exposing `price_inr` rupees next to a
+  paise-denominated order API is the rupee/paise ambiguity §9.2 exists to
+  prevent). `active = TRUE` in the `WHERE` clause per `store.py:596-603`'s own
+  argument (`rnd`/`support` are seeded INACTIVE and must never board a
+  customer response). No per-org pricing, no entitlement state (MT-2/SC-1a's).
+- **Fences (R7), in `tests/unit/test_customer_console_payments.py`** (already
+  on §7's list and pr-check's skip-guard):
+  `test_the_catalog_read_never_boards_an_inactive_row` (seed an inactive row,
+  assert absent) and
+  `test_the_catalog_read_carries_no_per_org_state_and_paise_only` (field-set
+  equality incl. `price_paise`; a suspended org reads it; a deleted org 403s).
 
 The split is not cosmetic: the substrate half is verifiable end-to-end by an
 agent against a real database and a fake provider, and the surface half is not
