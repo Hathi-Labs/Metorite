@@ -249,15 +249,18 @@ jobs:
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
+            tests/unit/test_billing_purchase_capability.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
             exit 1
           fi
           # CP-2b's tenant-side suite answers to its OWN variable and would
-          # skip with a wholly different message.
+          # skip with a wholly different message. WS-30 SC-4a's
+          # `billing:purchase` seed fence is the second suite on that variable
+          # and reuses this line by using the same skip string.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
-            echo "::error::Deployment-resolve suite skipped — the tenant R8 gate is disarmed."
+            echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1
           fi
           # The structural fences take NO database and must never report a

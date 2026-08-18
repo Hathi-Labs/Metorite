@@ -134,6 +134,15 @@ CAPABILITIES: tuple[str, ...] = (
     # earlier one, or disable it. See specs/workflows_app.md Q3.
     "workflows:publish",
     "admin:members:read",
+    # Spending the company's money at /settings/billing's checkout. A
+    # DELIBERATE new slug, argued in user_management_contract.md §3 against
+    # that section's own "do not mint a permission" rule and in
+    # specs/subscription_console.md SC-4a's B7 block: no existing capability
+    # governs a purchase, and reusing the §3 floor `admin:members:read` would
+    # hand purchase authority to every member-reader. Seeded onto `admin`
+    # only (178) — `owner` already holds '*'; `manager` is excluded on
+    # purpose, which is where this diverges from `workflows:publish`.
+    "billing:purchase",
     "admin:members:invite",
     "admin:members:manage",
     "admin:roles:manage",
