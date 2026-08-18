@@ -10,9 +10,10 @@ halves)**, the deployment half landing the same day the Console half did, after
 two audit rounds (B1–B7 + two drift items, then B-a…B-g + one mis-anchor) whose
 answers are in §6(d)–(k) — **271** Customer Console tests against a real
 Postgres 16 per R8 (219 + the **52** of `test_customer_console_resolve.py`),
-plus **31** in `test_deployment_resolve_cache.py` against a real **tenant**
-Postgres and **4** database-free structural fences in
-`test_console_dependency_boundary.py` · CP-3 was **rejected by independent
+plus **50** in `test_deployment_resolve_cache.py` against a real **tenant**
+Postgres, **4** database-free structural fences in
+`test_console_dependency_boundary.py` and **7** in
+`test_signin_resolve_route.py` · CP-3 was **rejected by independent
 verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
 **CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
 half of CP-4's done-when that was never met (`stream: true` returns 501) and
@@ -27,6 +28,49 @@ itself at merge and refused sign-ins during ordinary deploy windows. The repair
 is a **dedicated Next-side flag, `CUSTOMER_CONSOLE_RESOLVE_ENABLED`, default
 unset = OFF**, which the callback now gates on alone (§6(f)/§6(g); flipping it
 on a live deployment joins §8 gate 7). Every other acceptance probe passed. ·
+⚠️ **The repaired half was then REVIEWED ADVERSARIALLY and came back
+REQUEST-CHANGES on five defects — all five REPAIRED 2026-08-18, each shown red
+first.** They are recorded here because four of them are in the *failure*
+semantics, which is the part of this ticket nobody exercises until an incident:
+- **F5 (P0) — a half-provisioned gateway SILENTLY ADMITTED.**
+  `resolve_for_signin` fails open when `is_wired()` is false (correct for the
+  module: that is what ships dark means) and `POST /signin/resolve` passed the
+  answer through. The two switches sit in **different containers with different
+  env files**, so "Next flag on, gateway env empty" is the ordinary topology —
+  every sign-in admitted, no seat allocated, nothing asked, and **no log line at
+  all**. The route now checks `is_wired()` itself and refuses with
+  `ConsoleUnavailable`, logging `signin.resolve_unwired` at error. Fence:
+  `tests/unit/test_signin_resolve_route.py` (**new** — nothing tested the route
+  at all, which is how this survived).
+  ✅ **This also closes finding F4**, raised by the same verification round: the
+  header sentence below (*"gateway env half-filled → refuses"*) was **false**
+  whenever the gateway was reachable, because the box answered `admit: true`.
+  It is true now, and it is true by construction rather than by intention —
+  re-verified 2026-08-18 against the route, not against this paragraph.
+- **P1-1 — a Console 5xx or 401 showed the WRONG refusal.** Everything that was
+  not 200/403 mapped to `AccessDenied`, so an nginx 502 told cache-fresh users
+  *"your account isn't authorized"* and a rotated `cc_depl_` key told every user
+  of every tenant the same — while the identical outage over a closed port
+  degraded gracefully. 5xx/401/408/429 now take the unreachable path (§6(j) row
+  v narrowed accordingly).
+- **P1-2 — a 403 wrote a PERSON fact onto an ORG row and locked out every
+  member, permanently.** The dead-state short-circuit outranked every freshness
+  bound at any age forever, and the only thing that could clear it was a 200 it
+  prevented from being requested; recovery was a manual `UPDATE` on the tenant
+  database. It is now bounded by `MAX_STALENESS` — self-healing within 24h, and
+  still fail-closed while the Console is unreachable.
+- **P1-3 — an org MOVE left a live admission behind.** The unprovisioned-slug
+  branch returned before `_forget_others`, so a person moved to an org placed
+  here but not yet bootstrapped was admitted back into the org they LEFT for up
+  to 24h on the next outage.
+- **P2 — `_age_seconds`'s `max(0.0, …)` floor was documented fail-closed and was
+  fail-open**: a record stamped in the future read as maximally fresh. Age is
+  honest now, with a **measured** 60s skew tolerance (the tenant container's
+  `now()` runs 0.40 s ahead of the app process, so a hard zero floor turns the
+  read-through cache off entirely).
+Two review notes were taken in the same round: the refusal code is
+`encodeURIComponent`-ed into `/signin?error=`, and the R8 fixture disposes the
+engine it strands on setup. ·
 ✅ **CP-2b is BUILT on both sides of the wire (2026-08-18), and the split is
 still the thing to understand.** The **Customer Console side**: the fourth auth
 scheme (`cc_depl_…`, capability set exactly `{resolve}`, `auth.py`), migration
@@ -68,7 +112,19 @@ transport or provisioning failure — the gateway unreachable during a deploy
 window, or the gateway's own env half-filled — refuses with
 `ConsoleUnavailable`. A deployment that says it is wired while half-provisioned
 is a provisioning error, and silently admitting there would give back exactly
-the fail-open posture CP-0 removed. Issuing a real `cc_depl_` key, writing
+the fail-open posture CP-0 removed.
+⚠️ **That sentence was FALSE until 2026-08-18 (finding F4, closed with F5's
+repair).** With the flag on and the gateway *reachable* but its own env empty,
+`POST /signin/resolve` answered `admit: true` and the BFF admitted — the
+half-provisioned case was the one case that did **not** refuse. What makes it
+true is a check in the **route**, not in the module: reaching `/signin/resolve`
+at all means somebody declared the box wired, so an unwired box refuses there
+(`signin.resolve_unwired`, error level). The module's own unwired branch still
+admits, deliberately, because ship-dark is a statement about a box nobody
+configured — and that split is exactly what F5 was: two true statements one hop
+apart, composing into a false one. Fence:
+`tests/unit/test_signin_resolve_route.py`.
+Issuing a real `cc_depl_` key, writing
 either gateway variable into a live deployment's env, **or flipping
 `CUSTOMER_CONSOLE_RESOLVE_ENABLED` on a live deployment**, remains 🔴
 **OWNER-GATE** (§8 gate 7).
@@ -950,7 +1006,9 @@ projection read/write, branching on the **resolve outcome** and never on a
 lifecycle string. Its **one** caller,
 `apps/services/gateway/gateway/routes/signin.py` (`POST /signin/resolve`),
 mounted in `gateway/main.py`, covered by the app-wide `require_authenticated`
-and absent from `PUBLIC_ROUTES`. The four settings fields. Tenant migration
+and absent from `PUBLIC_ROUTES` — and, since the 2026-08-18 review, **refusing
+by itself when the gateway is not wired** (F5; the route is not inert, the BFF
+flag is). The four settings fields. Tenant migration
 `177_console_resolve_projection.sql`. The **new `signIn` callback** in
 `workbench/control_plane/src/auth.ts` reaching hop 3 through
 `headersActingAs()`, with `ConsoleUnavailable` and `WorkspaceChooserRequired` in
@@ -973,8 +1031,9 @@ ticket; ✅ marks what landed)*:
 | Projection columns | ✅ **`infra/postgres/177_console_resolve_projection.sql`** — number taken by listing `infra/postgres/` at build time (R1; `176_people_skills.sql` was the highest on disk) and re-checked at commit. **Next free number: 178** | `org_membership.resolved_at`, `organization.registry_status`, and — **added 2026-08-18 by §6(j)** — `organization.registry_capabilities JSONB`, because B-d's cached outcome needs a durable carrier and a *string* must never be one. All three nullable with **no default**; zero rows added to `gen_tenant_migration.EXEMPT` |
 | BFF hop | `workbench/control_plane/src/auth.ts` — a **new `signIn` callback**, gated by **`CUSTOMER_CONSOLE_RESOLVE_ENABLED`** (Next-side env, read by the workbench only — **not** an `acb_common` settings field; default unset = OFF, and only the exact string `"true"` arms it) | ✅ §6(g), flag added 2026-08-18 by the F1 repair |
 | Refusal copy | `workbench/control_plane/src/app/signin/errorCopy.ts` | ✅ two new keys — §6(g) |
-| R8 suite (tenant DB) | `tests/unit/test_deployment_resolve_cache.py` | ✅ **new (31 tests)**, + `tests/unit/_tenant_ladder.py`, + one line in `tests/conftest.py` beside `:16` snapshotting `TENANT_LADDER_DATABASE_URL` at launch — §6(i) |
+| R8 suite (tenant DB) | `tests/unit/test_deployment_resolve_cache.py` | ✅ **new (31 tests; 50 after the 2026-08-18 review repairs)**, + `tests/unit/_tenant_ladder.py`, + one line in `tests/conftest.py` beside `:16` snapshotting `TENANT_LADDER_DATABASE_URL` at launch — §6(i) |
 | Structural fences (no DB) | `tests/unit/test_console_dependency_boundary.py` | ✅ **new (4 tests)** — §6(d) manifest + import scan, §6(e)/clause 11's single-caller ratchet, §6(j)'s no-lifecycle-string scan |
+| **Route fences (no DB)** | `tests/unit/test_signin_resolve_route.py` | ✅ **new (7 tests), 2026-08-18 — finding F5's repair.** The unwired refusal, its `signin.resolve_unwired` error line, the module NOT consulted, the wired pass-through, the 401 for an anonymous caller, and R11 (the address comes from the context, never the body). ⚠️ Before it, **nothing in the tree tested this route** — which is how a P0 shipped on it |
 | Frontend fence | `workbench/control_plane/src/app/signin/signin.test.ts` (extended) | ✅ five new fences — §6(g) |
 | CI | `.github/workflows/pr-check.yml` — a second Postgres service on **`pgvector/pgvector:pg16`** exporting **`TENANT_LADDER_DATABASE_URL`** (⚠️ **never `DATABASE_URL`** — §6(i)(2)), plus a skip-guard entry | ✅ §6(i), with its own reachability assertion **and a second `grep`**: the guard's single hard-coded grep on the *Console's* skip string would have stayed green while the tenant suite skipped, which is the CP-3 failure class one layer up |
 
@@ -999,6 +1058,19 @@ visibility predicate — clause 4 states the criterion as *holds a membership* a
 clause 5 enumerates three invisible cases, none of which is "membership was
 removed", so a `removed` member still resolves; and `deployment.status`
 (`active|draining|retired`) does not affect its keys.
+
+📌 **Named follow-up, opened 2026-08-18 by the P1-2 repair — record a refusal
+where the FACT lives.** `{"sign_in": false}` is a statement about a **person**,
+and today it is written onto `organization.registry_capabilities`, because the
+403 names no organization and the org row is the only thing the box can join to.
+The consequence is collateral by construction: the org-scoped fallback read
+serves that refusal to **every** member of the organization. The P1-2 repair
+time-bounds the damage (`MAX_STALENESS`, so it self-heals within 24h); it does
+not remove it. **Removing it means moving the boolean to `org_membership`**, the
+person↔org row — an expand/contract migration plus a read-path rewrite (R6), so
+it is a ticket of its own rather than a drive-by. Until it is taken, the
+interim is the ceiling and the blast radius is written down here rather than
+discovered during an incident.
 
 ⚠️ **Two pre-existing defects on shipped surfaces, found by the CP-2b review
 (2026-08-18) and deliberately NOT fixed here.** Both are inherited, both are
@@ -1161,7 +1233,10 @@ existed to remove.
   forbids by name, and named two states that do not refuse anything.** The
   carrier is concrete now: a **403** outcome writes `{"sign_in": false}` into
   `organization.registry_capabilities`, and **that boolean** is what refuses at
-  any freshness. `suspended`/`cancelled` arrive in a **200** with
+  any freshness **up to `MAX_STALENESS`** *(bound added 2026-08-18 — review
+  finding P1-2; unbounded it locked out every member of the organization
+  permanently, and §6(j) row ii carries the argument and the follow-up)*.
+  `suspended`/`cancelled` arrive in a **200** with
   `sign_in: true`; what they cache is `write_seats: false` / `use_ai: false`,
   which change no sign-in decision in this ticket (clause 7, B5).
   - ⚠️ **Applied through the ONE state machine, not a second copy of it.**
@@ -1185,9 +1260,28 @@ existed to remove.
 - **So the honest bound is a pair, not a number.** **Console reachable →
   `CUSTOMER_CONSOLE_RESOLVE_TTL_SECONDS`.** **Console unreachable →
   `CUSTOMER_CONSOLE_RESOLVE_MAX_STALENESS_SECONDS`**, with the dead-state rule
-  above cutting the `deleted` case to *immediate* even then. §5.2 states the
-  same pair; the two must be edited together. The two TTLs are **settings
-  fields, not bare env reads** — see (f) for their names.
+  above cutting the `deleted` case to *immediate* inside that ceiling. §5.2
+  states the same pair; the two must be edited together. The two TTLs are
+  **settings fields, not bare env reads** — see (f) for their names.
+- ⚠️ **"Unreachable" is a BEHAVIOUR, not a socket** *(2026-08-18 — review
+  finding P1-1, §6(j) row vi)*. A 5xx, a `401`, a `408` or a `429` means no
+  answer was produced, so it takes the unreachable path above. Only a status in
+  which the Console *decided* (403, 409) is a refusal. Reading a transport
+  failure as a refusal is how one nginx hiccup told every user of every tenant
+  their account was not authorized.
+- ⚠️ **Freshness is measured across TWO CLOCKS, and the arithmetic says so**
+  *(2026-08-18 — review finding P2)*. `resolved_at` is the **database's**
+  `now()`; the comparison happens against the **app process's** clock, and in
+  the ordinary deployment those are different machines (measured against this
+  suite's own containers: 0.40 s apart). So the age function is honest about
+  sign — a record stamped materially in the FUTURE is **stale**, never
+  "maximally fresh" — with a named `_CLOCK_SKEW_TOLERANCE_SECONDS = 60` for
+  ordinary jitter, because a hard zero floor makes every freshly-written record
+  read as stale and silently disables the read-through cache. Fences:
+  `test_a_record_stamped_in_the_future_is_not_treated_as_fresh`,
+  `…_is_RE_CONSULTED`, and
+  `test_ordinary_sub_minute_skew_does_not_disable_the_cache` for the other side
+  of the bound.
 - **Org re-placement is an explicit `invalidate()` trigger.** Moving an
   organization off this deployment must revoke promptly rather than wait out a
   ceiling, so the resolve cache exposes `invalidate(email=None)` in the same
@@ -1506,6 +1600,34 @@ CP-0 removed. The consequence is stated plainly so nobody is surprised by it:
 turning this flag on is an act with an availability cost, which is why it is
 🔴 OWNER-GATE (§8 gate 7).
 
+⚠️ **Where that refusal actually lives, and why it is not where you would look**
+*(2026-08-18 — repair of findings **F4** and **F5**; F5 was a P0)*. The
+paragraph above described the intent and the code did the opposite: with the
+gateway *reachable* and its env empty, `resolve_for_signin` returned
+`admit=True, source="unwired"` — its ship-dark contract, correct for a module
+nobody configured — and `POST /signin/resolve` passed it through, so the BFF
+admitted. Every sign-in succeeded with **no seat allocated, no Console
+consulted and no log line**, because the route logged only refusals. Two true
+statements one hop apart composed into a false one, and the topology makes it
+the *likely* misconfiguration rather than an exotic one: the Next flag and the
+gateway's env are in different containers with different env files, so flipping
+one does not imply the other.
+
+The rule, and it is a rule about the ROUTE:
+
+> **Reaching `POST /signin/resolve` at all means somebody declared this box
+> wired.** So the route checks `is_wired()` **itself**, before calling the
+> module, and answers `{"admit": false, "code": "ConsoleUnavailable", "source":
+> "unwired"}` with a `signin.resolve_unwired` line at **error** level.
+
+Ship-dark is untouched: with `CUSTOMER_CONSOLE_RESOLVE_ENABLED` off the BFF
+never calls the route, so a deployment that has not opted in is unaffected. The
+module's fail-open branch stays as it is — it is the module's contract, not the
+product's guarantee, and reading it as the latter is precisely what F5 was.
+Fence: **`tests/unit/test_signin_resolve_route.py`** (new; before it, nothing
+in the tree tested this route at all, which is how a P0 lived on a shipped
+surface for a day).
+
 Fences (extend `workbench/control_plane/src/app/signin/signin.test.ts`, which
 already reads a sibling as source and already tests `signInErrorMessage` — a new
 file would be a second home for one subject):
@@ -1518,7 +1640,11 @@ CP-2b codes"` asserting neither new string matches
 CUSTOMER_CONSOLE_RESOLVE_ENABLED is exactly \"true\""` (the flag is read FIRST,
 before the call, and by equality not truthiness) and — the F1 repair's own
 fence — `"does not arm itself off CUSTOMER_CONSOLE_URL (F1)"`, a scan of the
-callback's body for the arming-by-accident channel.
+callback's body for the arming-by-accident channel. Added 2026-08-18 with the
+review notes: `"encodes the code it puts in the redirect URL"` — `answer.code`
+arrives from another service and lands in a URL, so **every** interpolation into
+`/signin?error=` must go through `encodeURIComponent`, swept rather than
+asserted once.
 
 ⚠️ **All of these are source-regex fences, and that is forced rather than
 chosen** *(measured 2026-08-18)*: vitest in `workbench/control_plane` is
@@ -1795,7 +1921,8 @@ admission:
 | ii | **403** (`main.py:702-711`) | **refuse** — **`AccessDenied`** *(code named 2026-08-18: this row left it blank, and §6(g) had already supplied `AccessDenied` for `deleted`. Carried in so the table is complete — the copy is TRUE here, exactly as in row iv)* | `{capabilities: {"sign_in": false}}` + `resolved_at`, on the org row this box previously resolved this person into. **No `registry_status`** — see below |
 | iii | **200**, **more than one** organization | **refuse** — `WorkspaceChooserRequired` | **nothing written** |
 | iv | **200**, **zero** organizations | **refuse** — `AccessDenied` | **nothing written**, and `invalidate(email)` fires |
-| **v** | **409 at the seat cap, or any other status this box cannot read** | **refuse** — `AccessDenied` | **nothing written** *(added 2026-08-18 during the build: §6(j)'s four rows did not cover the 409 clause 12 documents. At the cap the person genuinely holds no seat and "ask your admin" is the remedy, so the shipped copy is true; a THIRD refusal code was deliberately not minted. Agent-proposed default, owner may overrule. Fence: `test_a_seat_cap_refusal_fails_closed_and_caches_nothing`)* |
+| **v** | **409 at the seat cap, or any other status in which the Console ANSWERED and the answer was not an admission** (400, 404, 422 — a request this box built wrong) | **refuse** — `AccessDenied` | **nothing written** *(added 2026-08-18 during the build: §6(j)'s four rows did not cover the 409 clause 12 documents. At the cap the person genuinely holds no seat and "ask your admin" is the remedy, so the shipped copy is true; a THIRD refusal code was deliberately not minted. Agent-proposed default, owner may overrule. Fence: `test_a_seat_cap_refusal_fails_closed_and_caches_nothing`. ⚠️ **Wording narrowed 2026-08-18** — it used to read "any other status this box cannot read", which is row vi's job)* |
+| **vi** | **5xx · 401 · 408 · 429** — the box got **no answer**: the Console or something in front of it is broken, or *this box's own credential* is wrong | **the UNREACHABLE path** — degrade on the cache up to `MAX_STALENESS`, else refuse with `ConsoleUnavailable` | **nothing written** *(added 2026-08-18, repair of review finding **P1-1**. Row v used to sweep these in and answer `AccessDenied`: an nginx 502 told even cache-fresh users "your account isn't authorized" — their cache was never consulted — and a rotated `cc_depl_` key told **every user of every tenant** the same, which is the wrong-looking denial D33.1 forbids by name. The identical outage over a **closed port** already degraded gracefully, so one event had two spellings and two opposite behaviours. The line is now drawn on **whether an answer was produced**, never on whether a status was recognised. Fences: `test_a_console_5xx_degrades_to_the_cache_like_any_other_outage`, `test_an_unreadable_status_with_nothing_cached_says_unavailable` (parametrised over 500/502/503/504/408/429), `test_a_rotated_deployment_key_is_an_outage_not_a_denial`, and `test_a_403_and_a_409_still_mean_what_they_meant` as the control)* |
 
 Case by case, because each carries a decision:
 
@@ -1809,8 +1936,35 @@ Case by case, because each carries a decision:
   `use_ai` are NOT written**, because the 403 body does not carry them and a
   value the Console never sent is minted information. A missing key means *not
   observed*, never *false*. **A cached `sign_in: false` refuses immediately at
-  ANY freshness** — inside the TTL, outside it, Console reachable or not — which
-  is what §6(c)'s dead-state rule asked for and now has a row to live in.
+  any freshness *up to the staleness ceiling*** — inside the TTL, outside it,
+  Console reachable or not — which is what §6(c)'s dead-state rule asked for and
+  now has a row to live in.
+  ⚠️ **Bounded by `MAX_STALENESS`, 2026-08-18 — repair of review finding
+  **P1-2**, and the unbounded version was an unrecoverable lockout of every
+  member of the organization.** Read the two facts together: the 403 names no
+  organization, so the write targets the **org row** this box last resolved the
+  person into; and the fallback read is org-scoped, so it serves that
+  `{"sign_in": false}` to **every member with a non-NULL `resolved_at`**. A
+  person fact written on an org row, applied ahead of every freshness bound at
+  any age forever, and clearable only by a successful 200 that the
+  short-circuit itself prevented from being requested — recovery was a manual
+  `UPDATE` on the tenant database. (`lifecycle.capabilities_of` returning
+  `STATES["deleted"]` for any **unrecognised** status string is the amplifier: a
+  typo in the Console's column 403s a paying customer.) Past the ceiling the
+  record is re-consulted like any other, which relaxes **nothing** — an
+  unreachable Console refuses on the uncached path anyway, and a genuinely dead
+  organization 403s again and re-arms the record. What it buys is that a wrong
+  one heals within 24h instead of never. Fences:
+  `test_a_dead_record_past_the_ceiling_is_re_consulted_and_heals`,
+  `…_still_refuses_with_no_console`, `…_re_arms_on_a_second_403`, and
+  `test_one_persons_403_does_not_lock_their_COLLEAGUES_out_forever`.
+  📌 **Named follow-up, deliberately NOT done in the repair round: record the
+  refusal where the fact lives.** `{"sign_in": false}` is a statement about a
+  *person*, and its home is `org_membership` (the person↔org row), not
+  `organization`. Writing it there removes the collateral blast radius
+  altogether rather than time-bounding it. That is a schema change with an
+  expand/contract migration and a read-path rewrite (R6), so it is a ticket of
+  its own; the ceiling is the correct interim and is what ships today.
   ⚠️ **`registry_status` is NOT written on a 403 either, and the reason is the
   same discipline one level down.** The body is
   `{"detail": "organization is <state>"}` — a **human sentence**, not a field.
@@ -1883,12 +2037,22 @@ split the tenant in half.
   mistake for a foreign key. If an operator-facing correlation column is wanted
   later it is a named later ticket, not a quiet addition here. Fence:
   `test_the_console_uuid_is_never_written_to_the_projection`.
-- **When no local `organization` row matches the slug: SKIP the cache write, log
-  ONE structured warning, and sign in on the fresh Console answer unchanged.**
-  Not an error, not a refusal, not an insert. The box simply has **no fallback
+- **When no local `organization` row matches the slug: SKIP the cache write,
+  FORGET any organization this box previously resolved them into, log ONE
+  structured warning, and sign in on the fresh Console answer unchanged.**
+  Not an error, not a refusal, not an insert. The box then has **no fallback
   cache for that person until the row exists** — which degrades to §6(c)'s
   uncached case, i.e. fail-closed on the next Console outage, which is the safe
-  direction. Fence:
+  direction.
+  ⚠️ **The forget was missing until 2026-08-18 (review finding P1-3), and its
+  absence made this bullet false.** The branch returned before `_forget_others`,
+  so a person the Console had **moved** to an organization placed here but not
+  yet bootstrapped kept a live `resolved_at` on the organization they *left* —
+  and the next outage admitted them back into it for up to `MAX_STALENESS`, into
+  an org the registry no longer places them in. "Nothing to cache" and "keep the
+  last thing we cached" are different answers and only the first degrades in the
+  direction argued here; §6(c)'s trigger (a) fires with an empty keep set. Fence:
+  `test_a_move_to_an_unprovisioned_org_clears_the_OLD_admission`. Fence:
   `test_a_resolve_for_an_unprovisioned_org_signs_in_and_writes_nothing`, asserting
   the sign-in succeeds, the projection is untouched, and the warning fired once.
 - ⚠️ **Creating the local `organization` row is out of scope, by name.**
@@ -2581,8 +2745,12 @@ uv run pytest tests/unit/test_deployment_resolve_cache.py
 
 # CP-2b's structural fences. Deliberately NEED NO DATABASE, so they must never
 # move into the suite above — folded in, they would skip with it, which is the
-# CP-3 disarmed-gate failure this ticket is built to avoid:
-uv run pytest tests/unit/test_console_dependency_boundary.py
+# CP-3 disarmed-gate failure this ticket is built to avoid.
+# test_signin_resolve_route.py is the ROUTE's own suite (finding F5's fence, a
+# P0): it opens no session on purpose, and it is the only thing in the tree that
+# tests POST /signin/resolve at all:
+uv run pytest tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py
 
 # The seam and tenancy ratchets this must not regress. ⚠️ test_tenant_coverage.py
 # keeps its OWN DSN discipline: its source-level tests always run, and its two
