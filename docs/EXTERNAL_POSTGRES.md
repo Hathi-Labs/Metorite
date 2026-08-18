@@ -4,7 +4,7 @@ The application seam (`acb_common.db`, one `DATABASE_URL`) is fully portable.
 What assumes a local dockerised Postgres is the **ops shell** around it. This
 page is the complete delta for pointing a Metorite box at a managed database.
 Written 2026-08-17 for the metorite.com production bring-up (HANDOFF H-11);
-tenant DB and control-plane DB are **separate** Supabase projects — the two
+tenant DB and customer-console DB are **separate** Supabase projects — the two
 planes each define an `organization` table with different shapes and cannot
 share a schema.
 
@@ -89,7 +89,7 @@ restore point.
 | Pool arithmetic assumes `max_connections=100` | `acb_common/settings.py` (`db_pool_size`/`db_max_overflow`) | redo the math against the provider tier; pooler mitigates |
 | Agent workspace files are BYTEA **in Postgres** (no object store) | `infra/postgres/71_agent_blob_store.sql` | size the provider plan for it |
 | RLS policies are staged, NOT applied | `infra/postgres/generated/04_policies.sql` | do not hand-apply; promoting them is a planned maintenance act (see its header) |
-| Control plane DSN is separate and has no default | `platform_api/db.py` (`CONTROL_PLANE_DATABASE_URL`) | second project; never point it at the tenant DB |
+| Customer Console DSN is separate and has no default | `customer_console/db.py` (`CUSTOMER_CONSOLE_DATABASE_URL`) | second project; never point it at the tenant DB |
 
 ## 5. What is NOT replaced
 

@@ -1,14 +1,14 @@
-"""The Control Plane migration ladder — discovered, never transcribed.
+"""The Customer Console migration ladder — discovered, never transcribed.
 
-Every R8 suite that talks to the Control Plane database has to build the schema
+Every R8 suite that talks to the Customer Console database has to build the schema
 first, and each one used to carry its own hand-written tuple of
-``infra/platform/00N_*.sql`` paths. Five copies. Three of them stopped at 003,
+``infra/customer_console/00N_*.sql`` paths. Five copies. Three of them stopped at 003,
 because 004 and 005 were added to the ladder and to the code that needs them but
 not to those copies.
 
 That is not a hypothetical. It shipped: ``store.record_usage`` writes
 ``client_ref``, a column ``005_metering_identity.sql`` adds, and
-``test_platform_api.py`` applied only 001-003, so a real Postgres answered
+``test_customer_console_api.py`` applied only 001-003, so a real Postgres answered
 
     column "client_ref" of relation "usage_event" does not exist
 
@@ -31,16 +31,16 @@ from __future__ import annotations
 import os
 import re
 
-#: Repository root — this file is ``<root>/tests/unit/_platform_ladder.py``.
+#: Repository root — this file is ``<root>/tests/unit/_customer_console_ladder.py``.
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_LADDER_DIR = os.path.join(_ROOT, "infra", "platform")
+_LADDER_DIR = os.path.join(_ROOT, "infra", "customer_console")
 
 _NUMBERED = re.compile(r"^(\d+)_.*\.sql$")
 
 
 def ladder() -> tuple[str, ...]:
-    """Absolute paths of every Control Plane migration, in application order.
+    """Absolute paths of every Customer Console migration, in application order.
 
     Raises rather than returning empty: an empty ladder would let every R8 suite
     "pass" against a database with no tables, which is the failure mode this
@@ -54,7 +54,7 @@ def ladder() -> tuple[str, ...]:
 
     if not found:
         raise RuntimeError(
-            f"no numbered migrations found in {_LADDER_DIR} — the Control Plane "
+            f"no numbered migrations found in {_LADDER_DIR} — the Customer Console "
             "ladder cannot be empty, and an empty one would make every R8 suite "
             "pass against a schema-less database"
         )
@@ -66,7 +66,7 @@ def ladder() -> tuple[str, ...]:
         # Two files claiming 006 apply in filesystem order, which is not an
         # order — and the collision is invisible until the second one loses.
         raise RuntimeError(
-            f"duplicate Control Plane migration numbers {sorted(duplicates)} in "
+            f"duplicate Customer Console migration numbers {sorted(duplicates)} in "
             f"{_LADDER_DIR} — R1: renumber before merging"
         )
 

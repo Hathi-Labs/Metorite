@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 004_provider_keys.sql — WS-31 CP-4: the Router's own provider credentials
 -- ============================================================================
--- Spec: platform_control_plane.md §4 (the Router) · §3.4.
+-- Spec: customer_console.md §4 (the Router) · §3.4.
 --
 -- ⚠️ **Why this is not `acb_llm.key_store`.** That store exists and works, and
 -- reusing it was the obvious move — but it reads the **tenant** database

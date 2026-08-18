@@ -1,7 +1,7 @@
 /**
  * Authentication fails CLOSED, and accepts directories we do not own.
  *
- * Spec: `project-docs/specs/platform_control_plane.md` CP-0 ·
+ * Spec: `project-docs/specs/customer_console.md` CP-0 ·
  * `project-docs/specs/saas_operations_doctrine.md` §4 findings 1–2 · decision D33.1.
  *
  * ## The two defects this pins

@@ -182,20 +182,28 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-11 · Stand up Metorite production: DNS, box, Supabase, secrets · [OWNER]
-- **Check:** ALL of: `nslookup app.metorite.com` resolves · Actions secrets in
-  `Hathi-Labs/Metorite` show `HOSTINGER_*` · `gh workflow list --all` shows
-  `deploy` enabled · the box `.env` carries `ACB_MASTER_KEY`. Any one missing
+- **Check:** ALL of: `nslookup app.metorite.com` resolves ·
+  `nslookup anycustomer.metorite.com` resolves (the D41.3 wildcard record) ·
+  Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
+  `gh workflow list --all` shows `deploy` enabled · the box `.env` carries
+  `ACB_MASTER_KEY` and `AUTH_MICROSOFT_ENTRA_ID_ID`. Any one missing
   → still pending.
-- **Why:** Topology and identity are **D40** (`work_plan.md` §3); the ops
+- **Why:** Topology and identity are **D40 + D41** (`work_plan.md` §3); the ops
   runbook is `docs/EXTERNAL_POSTGRES.md`. What remains is owner-only: DNS
-  records, the box itself, GitHub secrets, the Google OAuth app (redirect
-  `https://app.metorite.com/api/auth/callback/google`), the box `.env`, and
+  records (`app.` · `api.` · the `*.metorite.com` wildcard, D41.3), wiping the
+  old CommandCenter deployment off the VPS (D41.4 — rotate the SSH
+  credentials, H-3, in the same session), GitHub secrets, the Google OAuth app
+  (redirect `https://app.metorite.com/api/auth/callback/google`), the
+  **multi-tenant** Entra app registration (redirect
+  `https://app.metorite.com/api/auth/callback/microsoft-entra-id`; leave
+  `AUTH_MICROSOFT_ENTRA_ID_TENANT` unset — D41.2), the box `.env`, and
   re-enabling the three workflows an agent turned off with
   `gh workflow disable` on 2026-08-17 — GitHub-side state; re-derive with
   `gh workflow list --all`, never from this file.
-- **Authority:** `work_plan.md` §6 · D40
+- **Authority:** `work_plan.md` §6 · D40 · D41
 - **Added:** 2026-08-16 · updated 2026-08-17 (review round 1: decisions moved
-  out of this entry into D40 — this file must not restate state)
+  out of this entry into D40 — this file must not restate state) · updated
+  2026-08-18 (D41: wildcard record · Entra registration · VPS wipe)
 
 ### H-13 · Apply the two plan-guard-gated patches (deploy.sh, .env.example) · [OWNER]
 - **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still

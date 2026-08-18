@@ -1,6 +1,6 @@
 """Credit rating, balance and the spend gate.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §3.4/§4.4 · D19.2 (the
+Spec: ``project-docs/specs/customer_console.md`` §3.4/§4.4 · D19.2 (the
 credit unit) · D32.6 (rollover) · D32.8 (per-member caps).
 
 Three failure modes drive these tests, all of them expensive in different ways:
@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 
-from platform_api.credits import (
+from customer_console.credits import (
     OverdraftPolicy,
     RateCard,
     TokenUsage,

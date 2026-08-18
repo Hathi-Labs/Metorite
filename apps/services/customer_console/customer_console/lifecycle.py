@@ -1,6 +1,6 @@
 """The organization lifecycle — one state machine, read by every surface.
 
-Spec: ``platform_control_plane.md`` §4.1d · ``saas_operations_doctrine.md`` §2.1
+Spec: ``customer_console.md`` §4.1d · ``saas_operations_doctrine.md`` §2.1
 · CP-2a.
 
     trial → active → past_due (grace: warnings, still working)

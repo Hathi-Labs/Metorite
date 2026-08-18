@@ -1,6 +1,6 @@
 """AI credits — rating a call, the balance, and the spend gate.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §3.4/§4.4 · decision
+Spec: ``project-docs/specs/customer_console.md`` §3.4/§4.4 · decision
 D19.2 (the credit unit and the cost x 2 rule) and D32.6/D32.8 (rollover, and
 per-member caps as a policy against the org pool).
 

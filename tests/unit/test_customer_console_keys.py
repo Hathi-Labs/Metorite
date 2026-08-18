@@ -1,6 +1,6 @@
 """Per-organization API keys — minting, splitting, verification.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §4.3.
+Spec: ``project-docs/specs/customer_console.md`` §4.3.
 
 The parser case is the one worth having: ``secrets.token_urlsafe`` emits ``_``
 as part of its alphabet, so a left-split would truncate the secret and fail
@@ -9,7 +9,7 @@ authentication rather than as a parser bug, and is therefore expensive to chase.
 """
 from __future__ import annotations
 
-from platform_api.keys import (
+from customer_console.keys import (
     hash_secret,
     mint_key,
     split_key,

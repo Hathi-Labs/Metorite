@@ -1,6 +1,6 @@
-"""Control Plane SQL, against a REAL Postgres. R8 binds this file.
+"""Customer Console SQL, against a REAL Postgres. R8 binds this file.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` CP-1/CP-2 ·
+Spec: ``project-docs/specs/customer_console.md`` CP-1/CP-2 ·
 ``work_plan.md`` §1 R8.
 
 Why real rather than hermetic: *"hermetic fakes agree with whatever SQL they are
@@ -10,8 +10,8 @@ about something only a real database can answer — a partial unique index, an
 aggregate. A fake would pass all of them while the SQL was wrong.
 
 Run:
-    export CONTROL_PLANE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1/cc_platform
-    uv run pytest tests/unit/test_platform_sql.py
+    export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1/cc_platform
+    uv run pytest tests/unit/test_customer_console_sql.py
 
 Skips (loudly) when that variable is unset, so the suite stays runnable on a
 laptop without Postgres — but a skipped R8 test proves nothing, and CI must set
@@ -28,19 +28,19 @@ import pytest
 pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from tests.unit._platform_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
 
-from platform_api import store  # noqa: E402
-from platform_api.credits import balance_of  # noqa: E402
-from platform_api.keys import mint_key, verify_secret  # noqa: E402
-from platform_api.seats import decide_assignment, seat_counts  # noqa: E402
+from customer_console import store  # noqa: E402
+from customer_console.credits import balance_of  # noqa: E402
+from customer_console.keys import mint_key, verify_secret  # noqa: E402
+from customer_console.seats import decide_assignment, seat_counts  # noqa: E402
 
-_URL = os.environ.get("CONTROL_PLANE_DATABASE_URL", "").strip()
+_URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
     not _URL,
     reason=(
-        "CONTROL_PLANE_DATABASE_URL unset — R8 requires a REAL Postgres for "
+        "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres for "
         "this suite. A skip here is not a pass; CI must set it."
     ),
 )

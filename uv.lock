@@ -28,11 +28,11 @@ members = [
     "agent-orchestrator",
     "agent-task-manager",
     "agent-whatsapp-assistant",
+    "customer-console",
     "email-ingestion",
     "gateway",
     "ingestion",
     "orchestrator",
-    "platform-api",
     "project-docs",
     "reconciler",
     "skill-clickup-sync",
@@ -975,6 +975,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/75/a2e55f99c16fcac7b5d6c1eb19ad8e00799854d6be5ca845f9259eae1681/cryptography-48.0.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:a5da777e32ffed6f85a7b2b3f7c5cbc88c146bfcd0a1d7baf5fcc6c52ee35dd4", size = 4960575, upload-time = "2026-05-04T22:59:09.851Z" },
     { url = "https://files.pythonhosted.org/packages/b8/23/6e6f32143ab5d8b36ca848a502c4bcd477ae75b9e1677e3530d669062578/cryptography-48.0.0-cp39-abi3-win32.whl", hash = "sha256:77a2ccbbe917f6710e05ba9adaa25fb5075620bf3ea6fb751997875aff4ae4bd", size = 3279117, upload-time = "2026-05-04T22:59:12.019Z" },
     { url = "https://files.pythonhosted.org/packages/9d/9a/0fea98a70cf1749d41d738836f6349d97945f7c89433a259a6c2642eefeb/cryptography-48.0.0-cp39-abi3-win_amd64.whl", hash = "sha256:16cd65b9330583e4619939b3a3843eec1e6e789744bb01e7c7e2e62e33c239c8", size = 3792100, upload-time = "2026-05-04T22:59:14.884Z" },
+]
+
+[[package]]
+name = "customer-console"
+version = "0.0.1"
+source = { editable = "apps/services/customer_console" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "litellm" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "litellm", specifier = ">=1.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
 ]
 
 [[package]]
@@ -2276,27 +2297,6 @@ wheels = [
 ]
 
 [[package]]
-name = "platform-api"
-version = "0.0.1"
-source = { editable = "apps/services/platform" }
-dependencies = [
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "litellm" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "sqlalchemy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cryptography", specifier = ">=42" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "litellm", specifier = ">=1.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
-    { name = "sqlalchemy", specifier = ">=2.0" },
-]
-
-[[package]]
 name = "platformdirs"
 version = "4.9.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2394,10 +2394,10 @@ dependencies = [
     { name = "acb-skills" },
     { name = "action-broker" },
     { name = "bcrypt" },
+    { name = "customer-console" },
     { name = "gateway" },
     { name = "ingestion" },
     { name = "orchestrator" },
-    { name = "platform-api" },
     { name = "python-multipart" },
     { name = "reconciler" },
     { name = "skill-clickup-sync" },
@@ -2430,10 +2430,10 @@ requires-dist = [
     { name = "acb-skills", editable = "packages/acb_skills" },
     { name = "action-broker", editable = "apps/services/action_broker" },
     { name = "bcrypt", specifier = ">=5.0.0" },
+    { name = "customer-console", editable = "apps/services/customer_console" },
     { name = "gateway", editable = "apps/services/gateway" },
     { name = "ingestion", editable = "apps/services/ingestion" },
     { name = "orchestrator", editable = "apps/services/orchestrator" },
-    { name = "platform-api", editable = "apps/services/platform" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "reconciler", editable = "apps/services/reconciler" },
     { name = "skill-clickup-sync", editable = "apps/skills/skill-clickup-sync" },

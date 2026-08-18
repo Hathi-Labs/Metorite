@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 005_metering_identity.sql — the meter's identity is OURS, not the caller's
 -- ============================================================================
--- Spec: platform_control_plane.md §6 CP-4 · found by independent verification
+-- Spec: customer_console.md §6 CP-4 · found by independent verification
 -- of CP-4 (finding F2), measured on a live database.
 --
 -- CP-4 keyed usage_event on a CALLER-SUPPLIED request_id, and 003 made that

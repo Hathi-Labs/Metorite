@@ -1,8 +1,8 @@
-"""The platform Control Plane — organizations, seats, subscriptions, AI credits.
+"""The platform Customer Console — organizations, seats, subscriptions, AI credits.
 
-WS-31 · owning spec ``project-docs/specs/platform_control_plane.md``.
+WS-31 · owning spec ``project-docs/specs/customer_console.md``.
 
-This is ``saas_multitenancy.md`` §0.9.2's **Control plane**, extracted from each
+This is ``saas_multitenancy.md`` §0.9.2's **Customer Console**, extracted from each
 Metorite deployment into one central service. It is deliberately the only
 place in this monorepo that reads across tenants: it answers "which companies
 exist, what did they buy, and what have they burned" — questions the tenant

@@ -175,7 +175,7 @@ describe("the route surface", () => {
     //                the LiteLLM completions endpoint.
     //   githubToken  GitHub's own PAT, sent to api.github.com.
     //
-    //   CONTROL_PLANE_ORG_KEY
+    //   CUSTOMER_CONSOLE_ORG_KEY
     //                this deployment's OWN `cc_live_…` organization key, sent
     //                to the Control Plane (WS-31). It justifies itself on the
     //                same ground as the other two — a different secret going to
@@ -188,7 +188,7 @@ describe("the route surface", () => {
     //
     // Allow-listed by name rather than matched loosely, so a FOURTH inline
     // bearer fails this test and has to justify itself.
-    const ALLOWED = /^(LITELLM_KEY|githubToken|CONTROL_PLANE_ORG_KEY)$/;
+    const ALLOWED = /^(LITELLM_KEY|githubToken|CUSTOMER_CONSOLE_ORG_KEY)$/;
     const offenders: string[] = [];
     for (const r of ROUTES) {
       for (const [, name] of r.src.matchAll(/Authorization:\s*`Bearer \$\{(\w+)/g)) {

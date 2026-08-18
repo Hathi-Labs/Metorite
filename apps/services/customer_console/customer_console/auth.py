@@ -1,6 +1,6 @@
 """Three authentication schemes, deliberately separate.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §4.3 (CP-3) ·
+Spec: ``project-docs/specs/customer_console.md`` §4.3 (CP-3) ·
 ``user_management_contract.md`` R11 ("never trust a tenant from request input").
 
   * **Operator** — a shared staff token. Reaches cross-organization surfaces:
@@ -19,7 +19,7 @@ verification found two consequences, both measured on a live database:
      customer-reachable **credit-minting endpoint** (balance 989 → 100,989).
   2. More fundamentally, it made the metered party the reporter of its own
      usage, which contradicts the argument the entire workstream rests on
-     (``platform_control_plane.md`` §4.1: *"Metering anywhere else means either
+     (``customer_console.md`` §4.1: *"Metering anywhere else means either
      trusting a client's self-report… That is not a meter, it is a
      suggestion."*).
 
@@ -50,10 +50,10 @@ from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException
 
-from platform_api import store
-from platform_api.db import get_engine
-from platform_api.keys import split_key, verify_secret
-from platform_api.lifecycle import capabilities_of
+from customer_console import store
+from customer_console.db import get_engine
+from customer_console.keys import split_key, verify_secret
+from customer_console.lifecycle import capabilities_of
 
 __all__ = [
     "Caller",
@@ -83,11 +83,11 @@ def require_operator(
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Refuse anything that is not the operator. Fails CLOSED when unconfigured."""
-    expected = os.environ.get("CONTROL_PLANE_OPERATOR_TOKEN", "").strip()
+    expected = os.environ.get("CUSTOMER_CONSOLE_OPERATOR_TOKEN", "").strip()
     if not expected:
         raise HTTPException(
             status_code=503,
-            detail="CONTROL_PLANE_OPERATOR_TOKEN is not configured",
+            detail="CUSTOMER_CONSOLE_OPERATOR_TOKEN is not configured",
         )
     presented = ""
     if authorization and authorization.startswith("Bearer "):
@@ -109,11 +109,11 @@ def require_internal(
     `LITELLM_MASTER_KEY` is exactly that mistake, already recorded as an
     owner-gated defect (work_plan.md §6). Do not repeat it here.
     """
-    expected = os.environ.get("CONTROL_PLANE_INTERNAL_TOKEN", "").strip()
+    expected = os.environ.get("CUSTOMER_CONSOLE_INTERNAL_TOKEN", "").strip()
     if not expected:
         raise HTTPException(
             status_code=503,
-            detail="CONTROL_PLANE_INTERNAL_TOKEN is not configured",
+            detail="CUSTOMER_CONSOLE_INTERNAL_TOKEN is not configured",
         )
     presented = ""
     if authorization and authorization.startswith("Bearer "):
@@ -123,7 +123,7 @@ def require_internal(
 
 
 # Which states may spend AI is decided by ONE state machine, in
-# `platform_api.lifecycle`, read by every surface. This used to be a local
+# `customer_console.lifecycle`, read by every surface. This used to be a local
 # frozenset here — a second copy of the answer, and the copy that drifts
 # permissively is the one that gives away product.
 

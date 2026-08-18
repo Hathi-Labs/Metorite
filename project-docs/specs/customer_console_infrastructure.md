@@ -1,4 +1,4 @@
-# Where the Control Plane runs — the infrastructure decision (owner session)
+# Where the Customer Console runs — the infrastructure decision (owner session)
 
 **Status:** ✅ **DECIDED 2026-08-12 — Supabase** (owner, recorded as **D34** in
 `work_plan.md` §3): managed Postgres in Mumbai **plus** Supabase Auth as the
@@ -6,7 +6,7 @@ authenticator, consumed as one provider inside NextAuth rather than replacing
 it. §3's disqualification of Firebase and §4's reasoning stand as the record of
 why. **Items 1, 2 and 3 of §5 are answered; items 4 and 5 remain open.** ·
 **Date:** 2026-08-12 · **Owner:** vjvarada (this is an owner call) ·
-**Companion:** `platform_control_plane.md` (WS-31 — what runs), this document
+**Companion:** `customer_console.md` (WS-31 — what runs), this document
 (**where** it runs) · **Blocks:** nothing. CP-1 is built and tested against
 plain Postgres 16, so every option below is still open.
 
@@ -23,7 +23,7 @@ a deliberate choice so this decision could be made late, on evidence, without
 rework. Whatever you pick, the migration and the service move unchanged.
 
 **The one thing that is NOT reversible is the data model's shape**, and it is
-already committed: the Control Plane is **relational, transactional and
+already committed: the Customer Console is **relational, transactional and
 constraint-heavy**. That is not an aesthetic preference — §3 shows it
 disqualifies one of the four options you named.
 
@@ -34,7 +34,7 @@ Requirements derived from what CP-1 already does, not from a generic checklist:
 | # | Requirement | Where it comes from |
 |---|---|---|
 | R-a | **Multi-row transactions.** Recording usage writes a `usage_event` *and* a `credit_ledger` row, and a retry must write neither | `store.record_usage` — the double-billing guard |
-| R-b | **Partial unique indexes.** `seat_assignment` unique on `(org, plan, member) WHERE released_at IS NULL` is what makes double-assignment impossible under concurrency | `001_control_plane.sql` |
+| R-b | **Partial unique indexes.** `seat_assignment` unique on `(org, plan, member) WHERE released_at IS NULL` is what makes double-assignment impossible under concurrency | `001_customer_console.sql` |
 | R-c | **Aggregates as truth.** Balance is `SUM(delta)` over an append-only ledger; seat counts are sums over signed grants | D32.6, §3.3 |
 | R-d | **Case-insensitive identity.** `CITEXT` on email, or the tenant plane's migration-162 duplicate-identity bug repeats here | `ensure_identity` |
 | R-e | **It is the single point of failure for every customer.** Down = nobody signs in (seat resolution) and nothing meters | §5.2, CP-4 |
@@ -42,9 +42,9 @@ Requirements derived from what CP-1 already does, not from a generic checklist:
 | R-g | **Backups you can actually restore**, separate from the tenant boxes | D31 — we currently have no per-tenant restore at all |
 
 R-e is the one that should drive the decision, and it is the argument against
-the cheapest option: **the Control Plane must not share a failure domain with a
+the cheapest option: **the Customer Console must not share a failure domain with a
 customer deployment.** A tenant box falling over should inconvenience one
-customer. The Control Plane falling over stops sign-in and metering for all of
+customer. The Customer Console falling over stops sign-in and metering for all of
 them.
 
 ## 3. The options
@@ -94,7 +94,7 @@ over-provision. If you pick Azure, pick exactly two services and stop.
 
 ### ◐ The existing Hostinger VPS — cheapest, and the one I would not choose
 
-It works today and costs nothing new. But it fails R-e — the Control Plane would
+It works today and costs nothing new. But it fails R-e — the Customer Console would
 share a box with a tenant deployment — and it puts payment and GST data on
 self-managed infrastructure whose backup story is the one D31 already flags as
 broken. **Fine for developing against; wrong for the thing that holds every
@@ -123,7 +123,7 @@ re-authenticate.
 2. **Auth provider** for customer sign-in — Supabase Auth, Entra External ID, or
    build on the CP-0 foundation. **The one with lock-in; give it the time.**
 3. **Region**, confirming India for R-f.
-4. **Whether the Control Plane gets its own environment** separate from tenant
+4. **Whether the Customer Console gets its own environment** separate from tenant
    deployments (§R-e). My answer is yes; it is worth ten minutes to disagree.
 5. **Razorpay account and GST registration status** — both are prerequisites for
    CP-8 and neither is an engineering task. 🔴 OWNER-GATE.
@@ -132,13 +132,13 @@ re-authenticate.
 
 Built and verified 2026-08-12 against Postgres 16, so none of it waits on §5:
 
-- `infra/platform/001_control_plane.sql` + `002_seed_catalog.sql` — the schema
+- `infra/customer_console/001_customer_console.sql` + `002_seed_catalog.sql` — the schema
   and the D23/D24 catalog. Applies and **replays** cleanly.
-- `apps/services/platform/` — the service: provisioning, seat resolution, seat
+- `apps/services/customer_console/` — the service: provisioning, seat resolution, seat
   writes, credit grant/balance, usage recording.
 - **79 tests**: 45 pure-domain, 20 SQL against real Postgres (R8), 14 HTTP
   end-to-end.
-- The service **fails closed** without `CONTROL_PLANE_OPERATOR_TOKEN`, and its
+- The service **fails closed** without `CUSTOMER_CONSOLE_OPERATOR_TOKEN`, and its
   DSN has **no default**, so it cannot silently reach the tenant database.
 
 ## 7. Gate labels

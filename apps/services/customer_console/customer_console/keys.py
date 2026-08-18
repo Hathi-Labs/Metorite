@@ -1,6 +1,6 @@
 """Per-organization API keys — the thing that resolves the tenant.
 
-Spec: ``project-docs/specs/platform_control_plane.md`` §4.3 · §3.2's first
+Spec: ``project-docs/specs/customer_console.md`` §4.3 · §3.2's first
 addition ("the load-bearing change").
 
 **The key resolves the tenant, and nothing else may.** Attribution headers

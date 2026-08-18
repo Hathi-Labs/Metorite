@@ -1,9 +1,9 @@
-"""The Control Plane HTTP surface.
+"""The Customer Console HTTP surface.
 
-WS-31 CP-1/CP-3 · spec ``project-docs/specs/platform_control_plane.md`` §6.
+WS-31 CP-1/CP-3 · spec ``project-docs/specs/customer_console.md`` §6.
 
 **Three authentication schemes, and which one an endpoint takes is a design
-statement** (see :mod:`platform_api.auth`):
+statement** (see :mod:`customer_console.auth`):
 
   * ``Operator`` — a staff token, for cross-organization surfaces: provisioning,
     seat writes, credit grants, key issuance.
@@ -17,7 +17,7 @@ statement** (see :mod:`platform_api.auth`):
 ⚠️ The customer key deliberately cannot write the meter. It briefly could, and
 verification found that let a negative ``billed_credits`` mint credits — and,
 more fundamentally, made the metered party the reporter of its own usage. See
-:mod:`platform_api.auth` for the full note.
+:mod:`customer_console.auth` for the full note.
 
 Both fail **closed**: the operator token has no default and an unconfigured
 deployment 503s rather than admitting anyone. That is CP-0's lesson applied from
@@ -28,7 +28,7 @@ Still to come: the customer-admin surface is WS-30's, and the operator console i
 CP-8 — a separate deployable app (D35), never a route tree in here.
 
 Endpoints are ``def`` rather than ``async def`` so FastAPI runs them in its
-threadpool alongside the sync engine (see :mod:`platform_api.db`). ⚠️ CP-4 first
+threadpool alongside the sync engine (see :mod:`customer_console.db`). ⚠️ CP-4 first
 shipped ``/v1/chat/completions`` as ``async def`` while still opening the sync
 engine inside it, which blocked the event loop for two round trips on the
 highest-QPS endpoint on the plane *and* contradicted this paragraph. It is
@@ -48,33 +48,33 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from platform_api import store
-from platform_api.auth import Internal, KeyCaller, Operator
-from platform_api.credits import (
+from customer_console import store
+from customer_console.auth import Internal, KeyCaller, Operator
+from customer_console.credits import (
     OverdraftPolicy,
     balance_of,
     decide_spend,
 )
-from platform_api.db import get_engine
-from platform_api.keys import mint_key
-from platform_api.lifecycle import (
+from customer_console.db import get_engine
+from customer_console.keys import mint_key
+from customer_console.lifecycle import (
     TransitionRefused,
     assert_transition,
     capabilities_of,
 )
-from platform_api.router import (
+from customer_console.router import (
     TierUnknown,
     call_provider,
     provider_credential,
     resolve_tier,
     usage_from_response,
 )
-from platform_api.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
+from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
 
 _log = logging.getLogger("platform.router")
 
 app = FastAPI(
-    title="Metorite Control Plane",
+    title="Metorite Customer Console",
     description=(
         "Organizations, seats, subscriptions and AI metering. Cross-tenant by "
         "design (saas_multitenancy.md §0.9.2) — never exposed to a tenant."
@@ -353,7 +353,7 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
 
     A free-form status write would let an operator move a customer straight from
     `past_due` to `deleted`, destroying their data without the export window
-    §2.1 requires. The graph in :mod:`platform_api.lifecycle` makes that
+    §2.1 requires. The graph in :mod:`customer_console.lifecycle` makes that
     unreachable rather than merely discouraged.
     """
     with get_engine().begin() as conn:
@@ -405,7 +405,7 @@ def resolve(req: ResolveRequest, _: Operator) -> dict[str, Any]:
     """Resolve a person against the registry at sign-in, consuming a Core seat.
 
     **This is what makes the seat cap real.** A person cannot become a user of
-    an organization without the Control Plane allocating them a seat, because
+    an organization without the Customer Console allocating them a seat, because
     the deployment asks before admitting them (D32.4/D32.5).
 
     Returns 409 with a buy-more payload when the organization is full — never an
@@ -646,7 +646,7 @@ def list_keys(org_slug: str, _: Operator) -> dict[str, Any]:
 def whoami(caller: KeyCaller) -> dict[str, Any]:
     """Who this key belongs to, and what it has left. **Read-only.**
 
-    This is the whole of the organization key's surface on the Control Plane.
+    This is the whole of the organization key's surface on the Customer Console.
     It resolves the tenant from the credential (CP-3's actual point) and reports
     the balance the caller needs to render an out-of-credits state — without
     handing the metered party any way to move its own ledger.

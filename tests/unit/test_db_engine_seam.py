@@ -77,7 +77,7 @@ _ALLOWED_SYNC: dict[str, str] = {
         "the entity-graph sync engine — connection path 4 in "
         "saas_multitenancy.md §0.1; carries tenant data and MUST bind a tenant "
         "under MT-1c",
-    "apps/services/platform/platform_api/db.py":
+    "apps/services/customer_console/customer_console/db.py":
         "WS-31 CP-1 — the CONTROL PLANE's own database, a DIFFERENT database on "
         "a different plane (saas_multitenancy.md §0.9.2), not the tenant one. "
         "It binds NO tenant, deliberately and by design: this plane is "
@@ -88,9 +88,9 @@ _ALLOWED_SYNC: dict[str, str] = {
         "bind none (returning nothing). It holds NO tenant business data — no "
         "mail, no CRM rows, no documents — so isolation here is a network and "
         "credential boundary, not a row predicate. Its DSN is a separate "
-        "variable (CONTROL_PLANE_DATABASE_URL) with no default, so it cannot "
+        "variable (CUSTOMER_CONSOLE_DATABASE_URL) with no default, so it cannot "
         "silently fall back to the tenant database. See "
-        "specs/platform_control_plane.md §3 and the module docstring.",
+        "specs/customer_console.md §3 and the module docstring.",
 }
 
 

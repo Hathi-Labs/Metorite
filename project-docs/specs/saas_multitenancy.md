@@ -5,7 +5,7 @@
 working tree at `b09093a` · ⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
 MT-3 is ABSORBED.** AI metering, per-org keys, the rate card and the credit ledger now
 live in a **central Control Plane service** — owning spec
-[`platform_control_plane.md`](platform_control_plane.md) (**WS-31**). §3.2–§3.5's design
+[`customer_console.md`](customer_console.md) (**WS-31**). §3.2–§3.5's design
 is unchanged and still binding; only its placement moved. **D15 is untouched** — tenancy
 is still a ROW, the deployment still a placement. Read §3's banner before citing §3.
 MT-1's tenancy retrofit (H2–H6) is **unaffected and still the long pole**. ·
@@ -1200,7 +1200,7 @@ the `FEATURES` tuple is **invisible even to an owner holding `*`**. Keep the pin
 ## 3. DECISION — resell AI through the existing `/v1` choke point, priced in CREDITS
 
 > ⚠️ **§3.1 IS REVERSED — D32.1 (owner, 2026-08-12).** Owning spec for the
-> replacement: **`specs/platform_control_plane.md` (WS-31)**. AI is now metered and
+> replacement: **`specs/customer_console.md` (WS-31)**. AI is now metered and
 > routed by a **central Control Plane service**; Metorite's `/v1` becomes a
 > forwarder. **Do not build §3.1's "keep it all in the gateway" shape.**
 >
@@ -2124,7 +2124,7 @@ Each names the one thing that would make it so. **Do not hand these to an agent 
 | Ticket | Scope | Owning § | To become dispatchable |
 |---|---|---|---|
 | **MT-2** Entitlements | `module_catalog` · **`center_package` + `plan_catalog` (D23/D20 — the sales objects)** · `org_module_entitlement` · `user_module_seat` (**with `source ∈ center/plan/alacarte`**) · the `intersect()` mask · 402-vs-403 · `ModuleGate` + upsell · non-HTTP gating · per-org feature flags + release channel · **the one-assignment act (seat + membership + entitlements + grants, D23.2)** | §2, §2.4b, §1.4b | ~~The SKU list and price points~~ **INPUT ANSWERED — final shape D23 2026-08-10 (§2.4b; D18/D19's module-first answers superseded).** Remaining to dispatch: write the seven-point ticket contract onto §2/§2.4b (per-item done-whens + verification) — the input is no longer the blocker |
-| ~~**MT-3** AI credits~~ **→ ABSORBED by WS-31 (D32.2, 2026-08-12)** | Per-org virtual keys · Redis budget gate + per-run circuit breaker · `usage_event` (idempotent on `request_id`) · `model_rate_card` · `credit_ledger` · BYOK tier | §3 (design) — **placement now `specs/platform_control_plane.md`** | **DO NOT DISPATCH FROM HERE.** Every item listed moved to the central Control Plane as CP-3/CP-4/CP-6, with the seven-point contract written there. The *design* in §3.2–§3.5 is unchanged and still binding; only where it runs moved (see the §3 banner) |
+| ~~**MT-3** AI credits~~ **→ ABSORBED by WS-31 (D32.2, 2026-08-12)** | Per-org virtual keys · Redis budget gate + per-run circuit breaker · `usage_event` (idempotent on `request_id`) · `model_rate_card` · `credit_ledger` · BYOK tier | §3 (design) — **placement now `specs/customer_console.md`** | **DO NOT DISPATCH FROM HERE.** Every item listed moved to the central Control Plane as CP-3/CP-4/CP-6, with the seven-point contract written there. The *design* in §3.2–§3.5 is unchanged and still binding; only where it runs moved (see the §3 banner) |
 | **MT-4** Billing | `payment_provider` seam · Stripe + Razorpay · webhooks → entitlements · dunning state machine · Operator Console · reconciler | §4 | **The provider split decision** (§8 item 3) and MT-2 shipped |
 | **MT-5** Tiers & compliance | Per-tenant envelope encryption · dedicated-DB tier activation · **drop Neo4j / graph into Postgres** · residency · SOC 2 groundwork | §1.1a, §0.9.4 | Nothing blocking. ⚠️ **Envelope encryption should be pulled into MT-1 if MT-0d or MT-1g touch those columns anyway** — retrofitting encryption onto populated columns is materially harder |
 

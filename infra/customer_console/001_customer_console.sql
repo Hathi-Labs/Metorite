@@ -1,7 +1,7 @@
 -- ============================================================================
 -- 001_control_plane.sql — WS-31 CP-1: the platform Control Plane schema
 -- ============================================================================
--- Spec: project-docs/specs/platform_control_plane.md §3 · doctrine
+-- Spec: project-docs/specs/customer_console.md §3 · doctrine
 -- project-docs/specs/saas_operations_doctrine.md · decisions D32, D33.
 --
 -- ⚠️ THIS IS A DIFFERENT DATABASE FROM THE TENANT ONE, AND THAT IS THE POINT.
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS organization (
 COMMENT ON TABLE organization IS
     'The customer company. One row per company that bought Metorite; the '
     'authority for "which companies exist" that no single tenant deployment can '
-    'answer (platform_control_plane.md §3.1).';
+    'answer (customer_console.md §3.1).';
 
 CREATE TABLE IF NOT EXISTS deployment (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

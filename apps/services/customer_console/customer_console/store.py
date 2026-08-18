@@ -1,7 +1,7 @@
-"""SQL for the Control Plane. Fetches rows; decides nothing.
+"""SQL for the Customer Console. Fetches rows; decides nothing.
 
-Every arithmetic and policy decision lives in :mod:`platform_api.seats` and
-:mod:`platform_api.credits` as pure functions. This module's only job is to put
+Every arithmetic and policy decision lives in :mod:`customer_console.seats` and
+:mod:`customer_console.credits` as pure functions. This module's only job is to put
 rows in and take rows out, so that "how many seats are free" has exactly one
 implementation rather than one per caller.
 
@@ -9,7 +9,7 @@ implementation rather than one per caller.
 and hermetic fakes agree with whatever SQL they are handed — five live bugs
 shipped green that way (an unencodable ``CAST(:param AS timestamptz)``; a fake
 matching ``lower(col) = :param`` against NULL; a ``LEFT JOIN`` whose ``ON``
-could not see its table). ``tests/unit/test_platform_sql.py`` runs all of it
+could not see its table). ``tests/unit/test_customer_console_sql.py`` runs all of it
 against a real Postgres and skips loudly when none is configured.
 """
 from __future__ import annotations
@@ -172,7 +172,7 @@ def try_assign_seat(conn: Connection, *, org_id: str, plan_slug: str,
     ``DO NOTHING`` turns the rejection into "already had one" instead of an
     integrity error surfacing as a 500.
 
-    The caller must still consult :func:`platform_api.seats.decide_assignment`
+    The caller must still consult :func:`customer_console.seats.decide_assignment`
     for the cap — this function enforces *uniqueness*, not *capacity*.
     """
     row = conn.execute(
