@@ -1824,14 +1824,16 @@ clause 2's test-mode capture rehearsal is **scripted and handed over, never
 reported as run** ·
 **(c) editing any live organization's entitlements, seats or credit balance**
 (§8 gate 4) — concretely `POST /credits/grant`
-(`customer_console/main.py:963`, `grant_credits`), `POST /billing/seats`
-(`:908`, `assign_seat`), `POST /billing/seats/release` (`:948`, `release_seat`)
-and `POST /orgs/lifecycle` (`:500`, `set_lifecycle`) against a real org — *(all
-four line numbers re-measured 2026-08-18; the previous set — :690/:635/:675/:472
-— predated CP-2a/CP-2b and pointed into unrelated code. **Handler names are
-carried beside the numbers from now on**, so the next reader can find the route
-when the number drifts again.)* Same gate class as WS-24 (d)'s member/role
-writes and as the Subscription Console's fulfilment ·
+(`customer_console/main.py:1104`, `grant_credits`), `POST /billing/seats`
+(`:1049`, `assign_seat`), `POST /billing/seats/release` (`:1089`,
+`release_seat`) and `POST /orgs/lifecycle` (`:637`, `set_lifecycle`) against a
+real org — *(all four re-measured **2026-08-19** — :963/:908/:948/:500 →
+:1104/:1049/:1089/:637 — after CP-9's six routes landed above and below them.
+The 2026-08-18 set had itself corrected :690/:635/:675/:472, which predated
+CP-2a/CP-2b and pointed into unrelated code. **Handler names travel beside the
+numbers**, which is what made this drift a two-minute re-measure rather than a
+hunt.)* Same gate class as WS-24 (d)'s member/role writes and as the
+Subscription Console's fulfilment ·
 **(d) flipping the Router ON for a real customer, and the §5.1 pooled cutover**
 (§8 gate 5) — ⚠️ **the flag named in CP-4's done-when does not exist in code**
 (verified 2026-08-18, repo-wide); CP-4 ships dark by having no caller, and this

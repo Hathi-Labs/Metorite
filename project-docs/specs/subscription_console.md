@@ -1,11 +1,17 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
 **Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout's
-SERVER SIDE is BUILT and its SURFACE is not.** *(Header rewritten 2026-08-18 —
-R4. What stood here was wrong on three counts, each corrected below rather than
-quietly deleted: it called the billing view "unmerged" on a branch, it said
-"everything else … nothing built", and it said dispatch waits on MT-2's
-tables.)*
+SERVER SIDE is BUILT and its SURFACE is not. SC-4a's surface was audited for
+dispatch on 2026-08-19 and returned NO-GO; the seven blockers are ANSWERED
+(docs-only) and its LAUNCH SLICE is now narrowed to the ₹0 / discount path — the
+paid browser hand-off does not exist in code and is deferred to the new SC-4h.
+One prerequisite remains open and is named: no route exposes the priced
+`plan_catalog` to a customer credential, so launch done-when 1 is not yet
+buildable (F-I, a WS-31/CP-9 ask).** *(Header rewritten 2026-08-18 — R4 — and
+extended 2026-08-19 with the NO-GO answer. What stood here before 08-18 was wrong
+on three counts, each corrected below rather than quietly deleted: it called the
+billing view "unmerged" on a branch, it said "everything else … nothing built",
+and it said dispatch waits on MT-2's tables.)*
 
 **SC-4g (i)–(v) — server side — ✅ BUILT 2026-08-18** with CP-9's substrate
 half, in WS-31's tree because that is where the tables live: `discount_code` +
@@ -53,6 +59,28 @@ its verifier; a non-ASCII signature header 500'd instead of 400'ing).
 behind B7's capability decision, which reaches the tenant plane's vocabulary
 and must not ride in on a payments PR.
 
+⚠️ **SC-4a was then AUDITED FOR DISPATCH and returned NO-GO — 2026-08-19, seven
+blockers. All seven are answered in SC-4a's remediation box, docs-only, plus one
+non-blocking residual and one finding the audit did not reach.** The two that
+change what may be built: **(F-A)** there is **no browser→provider hand-off
+anywhere in the tree** — `create_order` posts to the Orders API and returns no
+payment link, the seam is `create_order` + `verify_webhook` and nothing else,
+and browser Checkout's two required values (`key_id`, `order_id`) are exposed by
+no route, `OrderView` being pinned to an exact 14-name field set. **SC-4a's
+LAUNCH slice is therefore narrowed in writing to the ₹0 / discount path plus
+order create + read** (which is what customer zero actually does — D36/D42);
+done-whens 3 and 4 are **DEFERRED-until-hand-off** to a new named ticket,
+**SC-4h**, jointly owned with WS-31/CP-9. **Deferral does not un-rehearse the
+capture leg** — SC-4g clause 2's test-mode rehearsal stands, owner-side,
+unchanged. **(F-I)** the audit did not reach it and re-measurement found it:
+**no route exposes the priced `plan_catalog` to a customer credential**, so
+launch done-when 1 has no data source and is blocked on one small WS-31 read.
+B7's gate is now **chosen and correct** — `billing:purchase`, seeded like its
+siblings onto `default`'s `admin`, with the honest statement that in every other
+org it is **born unheld** because a new org gets **no roles at all** (a recorded
+pre-existing defect class, `saas_multitenancy_implementation.md` §7.1 step 3 /
+§8 trap 5, owned by the org-provisioning ticket, not by this one).
+
 **What exists, verified against code 2026-08-18:**
 - **SC-1b/SC-5's billing view MERGED as `f1fcca4f`** *("feat(WS-30): the billing
   console — first UI for the platform")*:
@@ -76,7 +104,8 @@ and must not ride in on a payments PR.
   `ModuleGate`, the 402-vs-403 split) — which gates the *entitlement* surfaces,
   not this console's reads.
 - **The checkout is the hole, and it is now specced.** `GET /me/billing` returns
-  `"purchaseEnabled": False` (`customer_console/main.py:1266`) and the page
+  `"purchaseEnabled": False` (`customer_console/main.py:1408` — *re-anchored
+  2026-08-19 from `:1266`, F-G*) and the page
   renders a contact prompt instead of a button on that branch
   (`page.tsx:202`). That flag is the landing site for SC-4a.
 
@@ -113,6 +142,7 @@ server-side), and the **existing read proxy's gap is recorded as a board finding
 not fixed here** · plus SC-4g (i)'s code format corrected to `cc_disc_…`, which
 is what the seam it names will actually parse. ·
 **Date:** 2026-08-09 · corrected 2026-08-14 · **rewritten 2026-08-18** ·
+**SC-4a NO-GO remediation 2026-08-19** ·
 **Owner:** WS-30 (this spec) · **Decisions:** **D23 + D24** (work_plan.md §3,
 2026-08-10 — Center packages are the governing pricing shape, carrying D19's
 credit/seat rules; D24 closed every customer-framing question: ₹600 headline
@@ -259,7 +289,10 @@ CP-8, which is the Operator Console). The mechanics of the ledger are
 > against a different assumption.
 
 **SC-4a · The self-serve checkout — SCOPED 2026-08-18 to the seeded, priced
-Center-package ladder; credit packs DEFERRED.**
+Center-package ladder (credit packs DEFERRED); LAUNCH SLICE NARROWED 2026-08-19
+to the ₹0 / discount path plus order create + read.** The browser→provider
+hand-off does not exist anywhere in the tree and is deferred by name to
+**SC-4h**; see the remediation box below the pack rationale.
 
 > ⚠️ **Re-scoped 2026-08-18, dated rather than silently narrowed.** This clause
 > was written (D37.1) as *"a short ladder of pre-priced packs"* for **AI credit
@@ -296,16 +329,217 @@ credits and lands **one** `credit_ledger` row referencing the provider payment
 id; a duplicate webhook for the same payment credits **once**; a failed payment
 credits nothing and says so.
 
+> ### The 2026-08-19 dispatch audit returned **NO-GO**. This is the answer.
+>
+> Seven blockers, one non-blocking residual, and **one the audit did not reach**
+> — found while re-measuring its anchors, and it is the one that decides whether
+> the narrowed slice is buildable at all (F-I). Docs-only round; **every anchor
+> below was re-measured against the tree on 2026-08-19**, and every default is
+> **agent-proposed, the owner may overrule** (the D16/D17 convention).
+
+**F-A · There is no browser→provider hand-off anywhere in the tree, so the paid
+path cannot be built. The LAUNCH slice is narrowed to the ₹0 path.**
+
+Measured, not inferred:
+- `RazorpayProvider.create_order` POSTs to `{API_BASE}/orders`
+  (`payments.py:449-473`) — the **Orders** API. An Order is not a payment link:
+  the response is parsed into `ProviderOrder` = `provider_order_id` +
+  `amount_paise` + `raw` (`payments.py:333-338`). There is **no `short_url`**,
+  because `/v1/orders` does not return one; that field belongs to the Payment
+  **Links** API, which nothing here calls.
+- The seam is **exactly two methods** — `create_order` + `verify_webhook`
+  (`PaymentProvider`, `payments.py:414-425`). Neither hands the customer
+  anything to pay with.
+- Razorpay's browser **Checkout** needs two values in the page: the publishable
+  `key_id` and the `order_id`. This Console exposes **neither**. `key_id` is
+  read from env into `RazorpayProvider.__init__` (`payments.py:442-447`) and
+  appears in **no** response anywhere in `main.py`; and `OrderView`
+  (`main.py:268-295`) deliberately strips every provider identifier — pinned by
+  `test_the_order_read_carries_no_provider_identifiers`
+  (`tests/unit/test_customer_console_payments.py:1560-1576`) as an **equality**
+  over the exact **14** field names, not a "no provider_ prefix" rule. Putting
+  `provider_order_id` on the wire is therefore not a field addition; it is a
+  **fence amendment**.
+
+So an agent handed "build the checkout surface" would have to invent the
+hand-off — a credential-exposure decision, a wire-format change and a fence
+amendment — inside a UI PR, on a service it does not own. That is precisely the
+straddle §6's two-slice split exists to prevent, one seam further along.
+
+**The decision — the audit's option 1b, taken because it matches the launch goal
+rather than because it is smaller:** customer zero pays **₹0** (D36 + D42), so
+the flow that must work at launch never reaches a provider. **SC-4a's LAUNCH
+slice is the ₹0 / discount path plus order create + read.** The customer journey
+it must complete end to end:
+
+> **pick package → order created (`POST /billing/orders`) → enter code
+> (`POST /billing/orders/{id}/redeem`) → 100% redemption fulfils → done**,
+> with the result read back through `GET /billing/orders/{id}`.
+
+Every hop in that line exists in built, R8-tested code today. Nothing in it
+needs a `key_id`, an `order_id` on the wire, or a fence amendment.
+
+**Done-whens 3 and 4 are DEFERRED-until-hand-off** — dated, not deleted. Both
+are statements about **capture**, and capture is unreachable from a surface that
+never hands off. Done-when **5**'s *attempt* half goes with them (a page that
+cannot start a payment cannot render a failed one); its **terminal-state** half
+survives inside the rewritten **5a**, which is where `abandoned` now lives.
+
+**SC-4h · The provider hand-off — a named future ticket, jointly owned with
+WS-31 / CP-9.** One paragraph deliberately, not a full mint: two of its three
+parts are decisions about the **Console's** responses, and minting them from
+WS-30 would recreate the boundary straddle §1 already had to repair. It carries:
+**(a)** the **`key_id` exposure decision** — Razorpay's `key_id` is publishable
+by design, but *whether a customer-key response may carry it* is still a
+decision about that service's response surface, and CP-3's non-oracle
+discipline is the reason it gets argued rather than assumed; **(b)**
+**`order_id` on the wire** — which provider identifier the browser receives and
+under which auth; **(c)** the **`OrderView` fence amendment** — the 14-name
+equality will go red, so amending it (with the argument, in the ticket) is the
+first act of the slice rather than a diff nobody reads. It also carries SC-4a's
+deferred done-whens 3, 4 and 5, and CP-9 §9.5's capture leg against a real
+account. **Dispatch it only after `work_plan.md` §6(b) is answered** — the
+Razorpay account is owner-side even in test mode.
+
+⚠️ **Deferring the paid path does NOT un-rehearse the capture leg.** SC-4g
+clause 2 stands exactly as written: the capture is rehearsed with Razorpay
+**test-mode keys**, by the **owner**, and it remains the one clause of SC-4g an
+agent may not claim (SC-4g done-when 9, still 🔴). The coupon path deliberately
+never reaches the provider, so the two together cover the whole flow and
+**neither alone does**. Narrowing the surface changes which half a WS-30 agent
+builds; it changes nothing about whether the rehearsal is owed.
+
+**F-I · The one the audit did not reach: launch done-when 1 has NO DATA SOURCE
+today.** *(Found 2026-08-19 while re-measuring F-A's anchors. It is recorded
+here rather than fixed, because the fix is a route on WS-31's service.)*
+Done-when 1 requires the surface to render *"only `plan_catalog` rows that are
+`active` and priced — never a hard-coded ladder in TypeScript"*. Measured
+repo-wide: **no route exposes the priced catalog to a customer credential.**
+`plan_catalog` is read in exactly four places
+(`store.py:281`, `store.py:606`, `store.py:845`, `main.py:1024`); of those the
+only one on a response path is `GET /billing/summary` (`main.py:1017`), which is
+**`Operator`**-scoped, cross-org, and returns plan **slugs the org already holds
+seats on** — never the ladder and never a price. `GET /me/billing`
+(`main.py:1355`) returns credits, an empty `invoices` list and
+`purchaseEnabled`. `GET /me` (`main.py:1181`) returns identity and balance.
+There is no `module_catalog` anywhere in the tree (repo-wide: zero hits).
+**So an implementer meets done-when 1 only by transcribing the D23/D24 prices
+into TypeScript — which is the exact defect done-when 1 was written to forbid.**
+**Named as a HARD PREREQUISITE of the launch slice, owned by WS-31 / CP-9**, and
+it is small: one **customer-key**, own-org-irrelevant read returning the
+`active` rows of `plan_catalog` as `slug · kind · price_inr · sort_order`, no
+per-org pricing, no entitlement state (that is SC-1a over MT-2). *Agent-proposed
+default; the owner or WS-31 may shape the payload differently.* Two properties
+it must have, both inherited rather than re-derived: `active` belongs in the
+`WHERE` clause, not in the caller (`store.py:596-603`'s argument — *"a caller
+that had to remember the filter is a caller that eventually sells R&D Center"*),
+and prices stay integer paise on the wire per CP-9's rule, the browser
+formatting and never arithmeticking. **Until that read exists, done-when 1 is
+not met and must not be claimed.**
+
+**F-B · Done-when 5a, rewritten against fields that exist.** As written it
+demanded behaviour over "replaced, detached or abandoned" — three states the
+surface has no way to observe. What the shipped read actually carries
+(`OrderView`, `main.py:282-295`) is `status`, `expires_at`, `terminal_at` and
+`discount`. The rewrite is below, in the done-when list, and it is testable
+against those four.
+
+**F-C · B7's seed clause, fixed against the actual pattern** — see the B7 block
+below, which now names the role set, the org scope, and the defect class the
+org scope belongs to.
+
+**F-D · The fence shape collides with a known-open route** — see the B7 block.
+
+**F-E · Done-when 6 gains its fence** — see done-when 6 below.
+
+**F-F · `billing:purchase` is registered in the contract as a deliberate,
+argued deviation.** `user_management_contract.md` §3 says *"Do not mint a new
+permission slug to fix a hole"* — a rule this ticket breaks on purpose, so it is
+recorded **in §3 itself** rather than only here. The argument, in one line: no
+existing capability governs **spending the company's money**, and reusing the §3
+floor `admin:members:read` would hand purchase authority to every member-reader.
+The rule's own stated failure mode ("a new slug is nobody's grant until an admin
+creates it") is answered by the seed, which is why B7's clause 2 exists and why
+F-C had to make it correct.
+
+**F-G · Anchors re-measured 2026-08-19** (the corpus already carries ~12 wrong
+citations; these were four more). `purchaseEnabled` **1266 → 1408**;
+`GET /me/billing` **1213 → 1355** (`my_billing`); `GET /billing/summary`
+**875 → 1017** (`billing_summary`, `Operator`). Handler names now travel beside
+the numbers, per the §6(c) convention. `work_plan.md` §6(c)'s four are corrected
+in the same change: `grant_credits` 963 → **1104**, `assign_seat` 908 → **1049**,
+`release_seat` 948 → **1089**, `set_lifecycle` 500 → **637**.
+
+**F-H · Non-blocking residual: the write routes discard WHO bought.** The read
+proxy sends `X-CC-Member: identity.email`
+(`src/app/api/billing/summary/route.ts:63`), and **nothing on the Console reads
+it on the write path** — `create_order` audits with `actor="organization"`
+(`main.py:1592-1595`) and `redeem_discount_code` does the same. So the audit
+trail records *which organization* bought, never *which person*, which is the
+one distinction an audit trail most needs on a money write (SC-4g done-when 7
+made exactly this point about the operator-vs-organization actor split, one
+column short of this one). **Not a blocker for the launch slice** — the two
+write proxies still resolve the caller server-side and refuse without the
+capability, so authorization is unaffected; only *attribution* is lost.
+**Attributing the buyer is a WS-31 column ask** (a `purchased_by` on
+`payment_order`, or an actor on the audit row) **for a later ticket**, not a
+WS-30 surface change: the surface already holds the identity and already sends
+it.
+
+> **What the 2026-08-19 audit VERIFIED — recorded so the implementer does not
+> re-derive it, and so nobody re-opens a settled question out of caution:**
+>
+> - **The BFF fence precedent is `src/lib/export.test.ts`, and it is named here
+>   deliberately.** It **imports the real route handlers** through the same `@/`
+>   specifier the app uses (`load: () => import("@/app/api/crm/[...path]/route")`,
+>   `export.test.ts:100-115`), mocks `@/auth` rather than importing it
+>   (`:38-41`), stubs `fetch` with `vi.stubGlobal` (`:148-151`) and builds
+>   requests from `NextRequest` out of `next/server` (`:152-155`). ⚠️ **Do not
+>   fall back to source-regex out of fear of the `signin.test.ts` import
+>   warning.** That warning is real but *specific*: `import("@/auth")` dies
+>   inside `next-auth/lib/env.js` in this node-env vitest
+>   (`signin.test.ts:36-45`). Mocking `@/auth` — which `export.test.ts` does —
+>   sidesteps it entirely, and B7's clause 4 fence (*assert the upstream fetch
+>   was never called*) is **only expressible by running the handler**. A
+>   source-regex cannot prove a 403 happened *before* the money route was hit.
+> - **The capability chain is complete end to end** — nothing new has to be
+>   built to carry a slug from the database to the browser:
+>   `acb_auth.permissions.CAPABILITIES` (`permissions.py:126-154`) → the seed row
+>   in `org_role_permission` → `admin/me.py:164-166`, which emits
+>   `"capabilities": [c for c in CAPABILITIES if "*" not in c and access.has(c)]`
+>   (so an owner holding `*` resolves to yes without holding the literal string)
+>   → `Access.capabilities` + `hasCapability()`
+>   (`src/lib/access.ts:43`, `:172-174`). A slug added to `CAPABILITIES` and
+>   seeded is visible at every hop with **no** other code change.
+> - **No new environment variables.** The two write proxies read the same
+>   `CUSTOMER_CONSOLE_URL` / `CUSTOMER_CONSOLE_ORG_KEY` the shipped read proxy
+>   reads (`summary/route.ts:34-36`), and inherit its fail-closed 503 (`:44-55`).
+>   Adding a variable here would be a third configuration surface for one
+>   credential.
+> - **The tenant ladder tops at `177_console_resolve_projection.sql`** as of
+>   2026-08-19. That is a **measurement, not an instruction**: take the number by
+>   listing `infra/postgres/` at build time and re-check it at merge (R1).
+
 **Launch done-when (the subscription checkout):**
 1. The purchase surface renders **only `plan_catalog` rows that are `active` and
    priced** — never a hard-coded ladder in TypeScript. A price change is a
    database row (D23/D24's own rule), so a surface that transcribes prices is a
    second source of truth and a defect.
+   🔴 **Blocked on its prerequisite (F-I, 2026-08-19): no route exposes the
+   priced catalog to a customer credential today.** The catalog read is a WS-31 /
+   CP-9 ask, named in F-I above with its agent-proposed shape. **Do not meet this
+   clause by transcribing D23/D24's prices** — that is the defect the clause
+   exists to forbid, and it would ship a second source of truth for money.
 2. Choosing packages and quantities and confirming creates **one**
    `payment_order` through `POST /billing/orders` under the deployment's
    organization key, and **changes nothing else** — no seat, no subscription, no
    ledger row until capture (CP-9 §9.3, fenced there).
-3. On capture, the org's entitlements reflect the order: `org_subscription` is
+3. ⏸ **DEFERRED-until-hand-off → SC-4h** *(2026-08-19, F-A)*. This clause and
+   clause 4 are statements about **capture**, and a surface that cannot hand off
+   to the provider cannot reach one. They are correct and they return with
+   SC-4h, unchanged. *(The ₹0 path's own entitlement read-back is clause 9,
+   which is the launch-slice version of this criterion and is **not** deferred.)*
+   On capture, the org's entitlements reflect the order: `org_subscription` is
    active for the period and `seat_grant` totals equal the ordered quantities —
    read back through the **existing** `GET /billing/summary`, so no surface
    recomputes seats (SC-2's rule, `customer_console.md` §3.3).
@@ -315,17 +549,25 @@ credits nothing and says so.
    it — enforcement inside the product is **MT-2**'s `intersect()` / `ModuleGate`
    / the 402-vs-403 split, and **SC-2 over MT-2 owns that**, not this clause.
    Two further facts about the route, both measured: it is the **Operator**,
-   cross-org read (`customer_console/main.py:875`), so this acceptance runs
-   operator-side in the suite; the customer-reachable read is `GET /me/billing`
-   (`:1213`) and it returns **no seats at all** today — growing it a seats block
-   is SC-1a's work, named here so nobody reads clause 3 as a promise the
-   customer's own page can keep.
-4. **A duplicate webhook grants once** — CP-9 §9.5's **two** guards, not one:
+   cross-org read (`customer_console/main.py:1017`, `billing_summary` —
+   *re-anchored 2026-08-19 from `:875`*), so this acceptance runs operator-side
+   in the suite; the customer-reachable read is `GET /me/billing` (`:1355`,
+   `my_billing` — *re-anchored from `:1213`*) and it returns **no seats at all**
+   today — growing it a seats block is SC-1a's work, named here so nobody reads
+   clause 3 as a promise the customer's own page can keep.
+4. ⏸ **DEFERRED-until-hand-off → SC-4h** *(2026-08-19, F-A)* — see clause 3.
+   **A duplicate webhook grants once** — CP-9 §9.5's **two** guards, not one:
    the `provider_event_id` key is transport dedup, and the **terminal-state
    rule** is the money guard, because Razorpay sends *different* event ids
    (`payment.captured`, `order.paid`) for one capture *(corrected 2026-08-18,
    B8)*.
-5. **A failed or abandoned payment grants nothing and says so** on the page,
+5. ⏸ **The ATTEMPT half is DEFERRED-until-hand-off → SC-4h** *(2026-08-19,
+   F-A)*: a surface that cannot start a payment cannot render a failed one, so
+   the `payment_event` attempt copy below has no way to occur at launch. **The
+   TERMINAL-STATE half is NOT deferred** — it moved into the rewritten **5a**,
+   which is where `abandoned` (the TTL, written by the clock and reachable
+   without any provider) is now handled.
+   **A failed or abandoned payment grants nothing and says so** on the page,
    naming what to do next — read through **`GET /billing/orders/{id}`**, minted
    as CP-9 §9.3a *(2026-08-18, B6: as first specced nothing could read an order
    back, so this clause had no data source and would have been "met" by a page
@@ -338,28 +580,106 @@ credits nothing and says so.
    payable**, and the correct copy is *"that attempt didn't go through — try
    again"*, never *"this order failed, start a new one"*. The only terminal
    states this page renders are `captured` and `abandoned` (the TTL).
-5a. **The surface must never expose a payment link for an order this Console
-   has replaced, detached or abandoned.** *(Added 2026-08-18 as CP-9 finding
-   F2; **extended 2026-08-19** with the review's P0(b).)* A redemption
-   **replaces** the provider order (partial) or **detaches** it (₹0), and the
-   TTL **abandons** an order the customer left open — none of the three
-   retracts the link at Razorpay. Paying a stale link is a capture the Console
-   either cannot attribute to any order or attributes to a **terminal** one:
-   money received with nothing granted, alerted at `ERROR` in both shapes and
-   owned by `customer_console.md` **CP-8**. So the checkout re-reads the order
-   after every redemption **and before every hand-off to the provider**, and
-   renders a link only while the order is open on the **current**
-   `provider_order_id`; a link captured in component state before the redeem
-   call, or left live on a page open past `expires_at`, is the bug this clause
-   exists to name.
-6. `purchaseEnabled` (`customer_console/main.py:1266`) is what flips the page
-   from the contact prompt to the checkout (`page.tsx:202`) — **the flip is the
-   owner's**, and its preconditions are the flip set below.
+5a. **The surface never re-uses an order after redemption or after
+   `expires_at`; it re-reads `GET /billing/orders/{id}` before every hand-off;
+   and it treats `captured` and `abandoned` as terminal.** *(Added 2026-08-18 as
+   CP-9 finding F2 · extended 2026-08-19 with CP-9's review P0(b) · **rewritten
+   2026-08-19, F-B, against fields that exist**.)*
+
+   > ⚠️ **Why the rewrite.** As it stood, this clause was expressed in terms of
+   > orders the Console had *"replaced, detached or abandoned"* — and **two of
+   > those three are invisible to the surface**. `OrderView`
+   > (`main.py:282-295`) carries `id · status · provider · gross_paise ·
+   > discount_paise · taxable_paise · gst_paise · total_paise · gst_split ·
+   > expires_at · created_at · terminal_at · lines · discount`, and no more:
+   > *replaced* and *detached* are both facts about `provider_order_id`, which
+   > the read deliberately withholds (F-A). A criterion a surface cannot
+   > observe is a criterion that gets "met" by a page that guesses — the same
+   > defect B6 minted `GET /billing/orders/{id}` to fix, one clause along.
+
+   The rule, restated over the four fields the read actually gives:
+   - **Re-read before every act.** After **every** successful redeem, and
+     **before every hand-off to the provider**, the surface re-reads
+     `GET /billing/orders/{id}` and acts on that response — never on an order
+     object captured in component state before the redeem call, and never on one
+     rendered before the page was left open.
+   - **`captured` and `abandoned` are terminal, and nothing else is.** Nothing
+     writes `failed` at order level (CP-9's review P0, and
+     `test_no_code_path_drives_an_order_to_failed` pins it), so a page that
+     branches on a third terminal state is branching on a state that cannot
+     occur. A terminal order is never re-used: no redeem, no hand-off, no
+     retry — start a new order.
+   - **`expires_at` in the past is treated as terminal even while `status`
+     still reads open.** `abandoned` is written by the clock on the next touch
+     (`abandon_if_expired`), so a page held open past `expires_at` will be
+     looking at a `status` the server is about to change. Trusting the stale
+     `status` is exactly the stale-link bug this clause exists to name.
+   - **A `discount` on the read means the amount moved**, and any figure or
+     link derived from the pre-redemption total is stale by definition.
+
+   The reason all of this matters, unchanged: a redemption **replaces** the
+   provider order (partial) or **detaches** it (₹0), and the TTL **abandons** an
+   order the customer left open — **none of the three retracts the link at
+   Razorpay**. Paying a stale link is a capture the Console either cannot
+   attribute to any order or attributes to a **terminal** one: money received
+   with nothing granted, alerted at `ERROR` in both shapes and owned by
+   `customer_console.md` **CP-8**. At launch the ₹0 path hands off to nothing, so
+   the re-read-before-hand-off half is **carried forward to SC-4h**; the re-read
+   and terminal-state halves are **live now** and testable against the shipped
+   read.
+6. `purchaseEnabled` (`customer_console/main.py:1408` — *re-anchored
+   2026-08-19 from `:1266`, F-G*) is what flips the page from the contact prompt
+   to the checkout (`page.tsx:202`) — **the flip is the owner's**, and its
+   preconditions are the flip set below.
+   **Fence** *(added 2026-08-19, F-E — R7: a rule with no test is advisory, and
+   "it ships dark" is the kind of claim that quietly stops being true)*: a
+   **source-level assertion** over
+   `src/app/settings/billing/page.tsx`, in the `signin.test.ts` idiom —
+   `readFileSync(new URL("./page.tsx", import.meta.url), "utf-8")` plus
+   `toContain` / `not.toContain` (`signin.test.ts:28`, `:71-81`). It asserts the
+   **entire purchase flow renders only inside the `data.purchaseEnabled`
+   conditional** (`page.tsx:202`): the checkout's entry control, the package
+   picker and the code entry appear in the true arm and **nowhere else in the
+   file**, and the false arm stays the contact prompt.
+   ⚠️ **Source-regex is the right tool for THIS one and the wrong tool for
+   B7's** — the distinction is worth stating because the two sit in the same
+   PR. Here the subject is **where a thing may appear in a file**, which is
+   exactly what a source assertion decides; B7's subject is **whether a refusal
+   happens before a network call**, which only running the handler can decide
+   (see the verified-facts box above, and `src/lib/export.test.ts`).
 7. `npx tsc --noEmit && npx vitest run` green; the surface uses
    `src/components/ui/` primitives and the theme tokens (no colour literals,
    no `lucide-react` import) per `workbench/control_plane/AGENTS.md`.
 8. **The two new write proxies are gated SERVER-SIDE**, per the block
    immediately below *(added 2026-08-18, B7)*.
+9. **The ₹0 journey completes on the surface, end to end** *(new 2026-08-19,
+   F-A — this is the launch slice's central criterion and the reason the
+   narrowing is a narrowing rather than a retreat)*: **pick package → order
+   created → enter code → 100% redemption fulfils → done.** Concretely, with a
+   100%-off code issued against the fixture org:
+   - the surface calls `POST /billing/orders` **once** and holds the returned
+     order id;
+   - it calls `POST /billing/orders/{id}/redeem` with the code, and **re-reads**
+     `GET /billing/orders/{id}` afterwards (5a);
+   - the re-read shows `status = "captured"`, `provider = "none"`,
+     `total_paise = 0` and a `discount` block carrying the code's **prefix** —
+     never its secret (`OrderDiscountView`, `main.py:262-265`);
+   - the page renders a completed state from that response and **stops** — it
+     does not poll, does not offer a retry, and does not construct a payment
+     link, because on this path there is nothing to pay;
+   - each of SC-4g done-when 4's refusal shapes renders distinguishable copy for
+     the three named reasons and **one** identical message for the collapsed
+     `404 {"detail": "no such discount code"}`, plus the two order-level 409s
+     (`already_discounted`, `order_not_open`). A surface that leaks the
+     wrong-org case apart from the unknown case defeats the partition
+     server-side code was built to hold.
+
+> **The narrowed LAUNCH done-when list, stated once so it cannot be inferred
+> wrongly** *(2026-08-19)*. In scope for this slice: **1** (blocked on F-I's
+> prerequisite — see it), **2**, **5a** (rewritten), **6** (fenced), **7**,
+> **8**, **9**. Deferred to **SC-4h** with the hand-off: **3**, **4**, and
+> clause **5**'s attempt half. Nothing else in SC-4a is in this slice; SC-4b–4f
+> keep their own sequencing in §6.
 
 > ### The gate on the two new write proxies — B7, answered 2026-08-18
 >
@@ -394,15 +714,79 @@ credits nothing and says so.
 >    person who administers members and the person who buys are not the same
 >    person in most companies of any size, and a capability is how that is
 >    expressible without a second role system.
-> 2. **It must not be born unheld.** A capability nobody holds makes checkout
->    dead on arrival, and granting it per-member against a live org is an owner
->    gate (`work_plan.md` §6, WS-24 (d)). So the same change **seeds it onto the
->    `owner` and `admin` roles**, exactly as
->    `infra/postgres/133_workflows_publish_permission.sql` did for
->    `workflows:publish` — same shape, same idempotent `DO $$` block, **migration
->    number taken by listing `infra/postgres/` at build time and re-checked at
->    merge (R1)**. It joins `acb_auth.permissions.CAPABILITIES`
->    (`permissions.py:126-154`) so a typo is catchable rather than silently inert.
+> 2. **It must not be born unheld — and the honest version of that sentence is
+>    narrower than the original.** *(Rewritten 2026-08-19, F-C. As written this
+>    clause said "seeds it onto the `owner` and `admin` roles", which
+>    **misdescribes the pattern it cites**: 133 seeds nothing onto `owner` — it
+>    carries the comment `-- owner already holds '*'; nothing to add`
+>    (`133_workflows_publish_permission.sql:40`) — and it says nothing about
+>    which organizations the seed reaches, which is the half that actually
+>    decides whether checkout works for a customer.)*
+>
+>    **The role set (agent-proposed default): `admin` only.** `owner` already
+>    holds `*` (`130_org_access_control.sql:188-190`) and needs no row; adding
+>    one would be a second statement of the same grant. `manager` is
+>    deliberately **excluded**, which is where this seed diverges from 133's
+>    admin+manager: 133 gated *publishing an automation*, an operational act a
+>    manager owns; this gates **spending the company's money**, and the whole
+>    argument for minting the slug (clause 1) is that money authority is
+>    narrower than the §3 `admin:members:read` floor. Seeding `manager` would
+>    re-widen it to every holder of that floor and make clause 1 decorative.
+>    `agent_service` gets the row for table-consistency exactly as 133 does
+>    (`:62-70`) — it resolves to `*` in `acb_auth.access.SERVICE_ACCESS`
+>    regardless, and the row is for anyone reading the table directly.
+>    ⚠️ **No agent may grant this capability per-member against a live org** —
+>    that is `work_plan.md` §6, WS-24 (d), unchanged.
+>
+>    **The org scope, stated honestly rather than optimistically.** The seed
+>    migration seeds the **`default`** organization, like **every** permission
+>    seed in this tree: `130_org_access_control.sql:180`,
+>    `131_integration_memory_permissions.sql:36` and
+>    `133_workflows_publish_permission.sql:34` all open with
+>    `SELECT id INTO org_id FROM organization WHERE slug = 'default'`. Writing a
+>    fourth one that loops every org would be inventing a second seeding
+>    doctrine inside a checkout ticket — the thing root `CLAUDE.md` §5 forbids
+>    — and it would not help, because the roles it would attach to **do not
+>    exist in other orgs either**.
+>
+>    **So say the consequence plainly: in any organization other than
+>    `default`, `billing:purchase` is born UNHELD.** Not because of this
+>    ticket — because a newly created organization gets **no roles at all**
+>    today. That is a **recorded, pre-existing defect class**, not a new one:
+>    `saas_multitenancy_implementation.md` §7.1 step 3 (*"that seeding must
+>    become a parameterised function, or org #2 has no roles and no owner"*) and
+>    §8 trap 5 (*"Role seeding still keyed `slug='default'` → Org #2 gets no
+>    roles and no owner"*), the same finding the second-org work carries. **It is
+>    fixed by the org-provisioning ticket that parameterises role seeding — not
+>    here.** A checkout slice that invented per-org role provisioning on the way
+>    past would be building WS-29's work in the wrong layer, unreviewed.
+>    ⚠️ **The launch consequence, so nobody is surprised by it:** customer zero's
+>    org (Fracktal, D36) will need its roles provisioned by that ticket — or the
+>    capability granted by the owner as a gated act — before its admin can reach
+>    checkout. The **flip set** below is where that belongs operationally; it is
+>    named here because a capability that is unheld in the only org that matters
+>    is a checkout that is dead on arrival, which is the exact failure this
+>    clause was written to prevent.
+>
+>    Shape otherwise unchanged: same idempotent `DO $$` block as 133, guarded on
+>    a NULL `org_id` with a `RAISE NOTICE` (`:35-38`), `ON CONFLICT DO NOTHING`
+>    on every insert, **migration number taken by listing `infra/postgres/` at
+>    build time and re-checked at merge (R1)** — *measured 2026-08-19: the ladder
+>    topped at `177_console_resolve_projection.sql`; that is a measurement, not
+>    an instruction*. The slug joins `acb_auth.permissions.CAPABILITIES`
+>    (`permissions.py:126-154`) so a typo is catchable rather than silently
+>    inert, and it is registered in `user_management_contract.md` §3 as an argued
+>    deviation from that section's own rule (F-F).
+>    **Fence for the seed (R7/R8):** a new
+>    `tests/unit/test_billing_purchase_capability.py`, run against the **tenant**
+>    ladder via `tests/unit/_tenant_ladder.py` and `TENANT_LADDER_DATABASE_URL`
+>    (§5's command block carries it) — it asserts the slug is in `CAPABILITIES`,
+>    that after the ladder replays the `default` org's `admin` role holds it and
+>    `manager` and `member` do **not**, and that a **re-replay grants nothing
+>    twice**. ⚠️ **Never `DATABASE_URL`** for this: that name arms
+>    `test_tenant_coverage.py`'s two DB-gated tests, which fail by construction
+>    against a freshly-replayed ladder and are WS-29 MT-1b/MT-1c's gates, not
+>    this console's.
 > 3. **Resolved server-side, never from the browser.** The route resolves the
 >    caller's access through the **existing** seam — the gateway's `/auth/me`
 >    via `headersActingAs(email)`, the same hop `api/auth/me/route.ts` already
@@ -415,6 +799,42 @@ credits nothing and says so.
 >    never called — a 403 issued *after* the money route was hit is a different
 >    and worse bug); a holder passes. Parametrised over both write proxies, so
 >    a third one added later is covered without anyone remembering.
+>
+>    **The pattern to copy is `src/lib/export.test.ts`, by name** *(2026-08-19,
+>    F-D)*. It imports the real handlers (`import("@/app/api/…/route")`,
+>    `:100-115`), mocks `@/auth` (`:38-41`), stubs `fetch` via `vi.stubGlobal`
+>    (`:148-151`) and builds `NextRequest` from `next/server` (`:152-155`) — the
+>    only shape in this tree that can assert *"the refusal happened before the
+>    fetch"*, because that assertion requires **running the handler**. Do not
+>    fall back to a source regex here out of caution about `signin.test.ts`'s
+>    recorded import warning: that warning is about importing `@/auth`, which
+>    this pattern **mocks**.
+>
+>    ⚠️ **The parametrisation is an EXPLICIT TWO-ENTRY LIST, and a directory
+>    sweep over `src/app/api/billing/**` is FORBIDDEN here** *(2026-08-19,
+>    F-D — the fence shapes in this tree collide, and the collision has to be
+>    named or the implementer will discover it as a red test and "fix" it the
+>    wrong way).* The house sweep idiom — `routeFiles(API_DIR).filter(...)`,
+>    `signin.test.ts:60-69`, `:171-174` — walks every `route.ts` under a
+>    directory. Pointed at `src/app/api/billing/**` it would immediately go
+>    **RED on `summary/route.ts`**, which is the **known-open board finding**
+>    recorded at the foot of this block: that route is reachable by any
+>    signed-in member and is deliberately **not** fixed in this slice.
+>    An implementer meeting a red sweep has two moves and **both are wrong**:
+>    fix the read proxy (scope creep into merged code, in a checkout PR), or
+>    **narrow the sweep** to make it pass — which is the CP-6 failure mode B1
+>    already names, a fence quietly re-shaped around the thing it caught.
+>    So: **an explicit list of the two write proxies, with the read proxy
+>    excluded BY NAME and the board finding cited on the exclusion line.** A
+>    named exclusion is visible in a diff and dies when the finding is fixed; a
+>    narrowed sweep is invisible and outlives it. *(This is the same discipline
+>    CP-9 §9.3(4) applied to `METERING_EXEMPTION` — exempt by name in a separate
+>    constant with its own fence, never narrow the list the ticket counts.)*
+>    ⚠️ Consequence, stated so it is a decision rather than an oversight: **the
+>    "a third proxy is covered without anyone remembering" property does not
+>    hold** under an explicit list. It is bought back the day the read proxy is
+>    fixed and the sweep can be armed — which is the small ticket the board
+>    finding below asks for.
 >
 > **The fallback the owner may prefer:** the §3 floor (`admin:members:read`)
 > alone, no new capability, no tenant-plane migration. Cheaper by one migration
@@ -943,6 +1363,13 @@ the org resolved by the session — never from request input
 (`user_management_contract.md` R11/R3). All queries run through the tenant-bound
 seam (R5); the console must be impossible to render cross-org by construction.
 
+⚠️ **The floor is the READ floor. The two SC-4a write proxies sit above it**
+*(recorded here 2026-08-19 so §3 does not read as the whole access story)*: they
+require **`billing:purchase`**, resolved server-side, per SC-4a's B7 block —
+because `admin:members:read` means *"may see the member list"* and these routes
+spend the company's money. The slug is registered as an argued deviation in
+`user_management_contract.md` §3.
+
 ## 4. Open design items (engineering, not owner)
 
 1. **`usage_event.module_slug` attribution rule** — a chat agent that reads Email
@@ -984,8 +1411,30 @@ uv run pytest tests/unit/test_customer_console_payments.py
 # `TENANT_LADDER_DATABASE_URL`, deliberately NOT `DATABASE_URL`, which would arm
 # two tenant-coverage tests that fail by construction (WS-29 MT-1b/MT-1c's
 # gates, not this console's). See `customer_console.md` §7.
+#
+# SC-4a's `billing:purchase` SEED migration is TENANT-side, so its fence runs
+# here and nowhere else (named 2026-08-19, F-C; ⚠️ the FILE DOES NOT EXIST YET —
+# it is created by the slice that writes the seed, like SC-4g's suite was).
+# The suite builds the tenant
+# schema from infra/postgres/ through tests/unit/_tenant_ladder.py and gates on
+# TENANT_LADDER_DATABASE_URL *as pytest was launched with it* (the snapshot line
+# beside tests/conftest.py:16). It needs the pgvector image — infra/postgres/
+# 01_schema.sql requires uuid-ossp AND vector:
+#   export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1/acb_tenant
+uv run pytest tests/unit/test_billing_purchase_capability.py
+# ⚠️ It joins pr-check.yml's hand-maintained skip-guard list IN THE PR THAT
+# CREATES IT — that list discovers nothing, and a tenant-side R8 suite that
+# skips in CI reports green while proving nothing (CP-3's disarmed gate).
+# ⚠️ Do NOT export TENANT_LADDER_DATABASE_URL as DATABASE_URL to "make things
+# run": those two tenant-coverage tests need 04_policies.sql promoted and a
+# non-superuser role, i.e. WS-29 MT-1b/MT-1c.
 
-# The surfaces themselves.
+# The capability chain the seed feeds, no database needed:
+uv run pytest tests/unit/test_permission_policy.py tests/unit/test_org_access_control.py
+
+# The surfaces themselves — SC-4a's two BFF write-proxy fences
+# (src/app/api/billing/*.test.ts, the src/lib/export.test.ts pattern) and
+# done-when 6's source fence over settings/billing/page.tsx run here.
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 
@@ -1018,6 +1467,18 @@ gate is chosen, because that decision reaches the tenant plane's capability
 vocabulary and must not ride in on a payments PR. The full split, with the
 other two held-back items, is written once in `customer_console.md` §6's
 sequencing note; do not restate it here, follow it.
+
+⚠️ **The surface half itself split again on 2026-08-19** *(the NO-GO dispatch
+audit; the answers are in SC-4a's remediation box)*. B7's gate is now **chosen**
+(a seeded `billing:purchase`, F-C), so the surface is no longer held on that —
+but **the paid path is, and by a harder thing than a decision: there is no
+browser→provider hand-off in the code** (F-A). Live order inside SC-4a:
+**(1)** the **₹0 / discount launch slice** — order create + read + redeem, done-whens
+1, 2, 5a, 6, 7, 8, 9 — which needs **one prerequisite from WS-31/CP-9: a
+customer-key read of the priced `plan_catalog`** (F-I), without which done-when 1
+cannot be met honestly; then **(2) SC-4h, the provider hand-off**, jointly owned
+with WS-31/CP-9, carrying done-whens 3, 4 and 5's attempt half and gated behind
+`work_plan.md` §6(b)'s Razorpay account.
 
 ## Gate labels
 
