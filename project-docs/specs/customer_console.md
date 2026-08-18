@@ -3764,12 +3764,30 @@ credential.* `GET /billing/summary` (`main.py:1017`) is `Operator`, cross-org,
 and returns only slugs the org already holds seats on; `GET /me/billing`
 (`:1355`) and `GET /me` (`:1181`) carry no catalog. SC-4a launch done-when 1
 forbids a hard-coded ladder in TypeScript, so **without a customer-key catalog
-read the launch slice cannot meet it honestly.** The ask, agent-proposed and
-deliberately minimal: the `active` rows of `plan_catalog` as
-`slug · kind · price_inr · sort_order`, `active` in the `WHERE` clause per
-`store.py:596-603`'s own argument, integer paise on the wire, no per-org pricing
-and no entitlement state (that is MT-2/SC-1a). Recorded here as WS-31's, not
-built by WS-30.
+read the launch slice cannot meet it honestly.** Recorded here as WS-31's, not
+built by WS-30. *(Made buildable 2026-08-19 after the dispatch confirmation
+found the first draft too loose to build from — agent-proposed defaults, D16/D17:)*
+
+- **Route:** `GET /billing/catalog`.
+- **Auth:** the **`can_pay` dependency** (`organization_for_payment`), NOT the
+  `can_use_ai`-gated `KeyCaller` — the nearest read to copy (`/me/billing`)
+  403s a `suspended` org at `auth.py:217`, which is exactly the "the customer
+  who most needs to pay is the one the door is shut on" defect §9.3(5) exists
+  to fix. A suspended org may read the catalog; a deleted one may not.
+- **Payload:** the `active` rows of `plan_catalog` as
+  `slug · name · kind · price_paise · sort_order` — **one money field, integer
+  paise on the wire**, converted from the rupee `NUMERIC` by the ONE
+  `payments.paise()` (§9.2's rule; exposing `price_inr` rupees next to a
+  paise-denominated order API is the rupee/paise ambiguity §9.2 exists to
+  prevent). `active = TRUE` in the `WHERE` clause per `store.py:596-603`'s own
+  argument (`rnd`/`support` are seeded INACTIVE and must never board a
+  customer response). No per-org pricing, no entitlement state (MT-2/SC-1a's).
+- **Fences (R7), in `tests/unit/test_customer_console_payments.py`** (already
+  on §7's list and pr-check's skip-guard):
+  `test_the_catalog_read_never_boards_an_inactive_row` (seed an inactive row,
+  assert absent) and
+  `test_the_catalog_read_carries_no_per_org_state_and_paise_only` (field-set
+  equality incl. `price_paise`; a suspended org reads it; a deleted org 403s).
 
 The split is not cosmetic: the substrate half is verifiable end-to-end by an
 agent against a real database and a fake provider, and the surface half is not
