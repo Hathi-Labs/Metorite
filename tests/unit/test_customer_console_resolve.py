@@ -43,7 +43,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from customer_console import auth, store
+from customer_console import auth, lifecycle, store
 from customer_console.keys import ENV_DEPLOYMENT, mint_key, split_key
 from customer_console.main import app
 from fastapi.routing import APIRoute
@@ -86,6 +86,41 @@ INT = {"Authorization": f"Bearer {INTERNAL}"}
 #: port is a real finding — pre-existing, unrelated to CP-2b, and a matter for
 #: the board rather than a line of this suite.)*
 _UNAUTHENTICATED_ROUTES = frozenset({"/health"})
+
+
+#: How to drive a freshly-provisioned organization (``trial``, ``001:56``) to
+#: each lifecycle state THROUGH THE REAL TRANSITION GRAPH — never a hand-written
+#: UPDATE. A state that stopped being reachable would fail the parametrised
+#: capability fence rather than be silently asserted against a row the product
+#: can no longer produce.
+_LIFECYCLE_PATH: dict[str, tuple[str, ...]] = {
+    "trial": (),
+    "active": ("active",),
+    "past_due": ("active", "past_due"),
+    "suspended": ("suspended",),
+    # Deletion is reachable ONLY from `cancelled`, i.e. only after the export
+    # window — the property `lifecycle._TRANSITIONS` enforces by construction.
+    "cancelled": ("cancelled",),
+    "deleted": ("cancelled", "deleted"),
+}
+
+
+def test_every_lifecycle_state_has_a_reachable_path() -> None:
+    """Guards the map above, which is the one hand-written list in this file.
+
+    A state added to ``lifecycle.STATES`` with no path here would silently drop
+    out of the parametrised capability fence — the mirror-goes-stale failure
+    (``CLAUDE.md`` §5) one level down from the ladder module's.
+    """
+    assert set(_LIFECYCLE_PATH) == set(lifecycle.STATES)
+    for state, path in _LIFECYCLE_PATH.items():
+        current = "trial"
+        for target in path:
+            assert lifecycle.can_transition(current, target), (
+                f"{current!r} → {target!r} is not on the graph"
+            )
+            current = target
+        assert current == state
 
 
 def _api_routes() -> list[APIRoute]:
@@ -945,7 +980,8 @@ class TestResponseShape:
 
         assert set(body) == {"identity_id", "organizations"}
         assert set(body["organizations"][0]) == {
-            "organization_id", "slug", "placement", "status", "seat"}
+            "organization_id", "slug", "placement", "status", "seat",
+            "capabilities"}
         assert "admin" not in str(body)
 
     def test_the_empty_answer_carries_nothing_but_an_empty_list(
@@ -986,7 +1022,12 @@ class TestResponseShape:
             "organizations"][0]["placement"] is None
 
     def test_the_operator_response_shape_is_unchanged(self, client, box):
-        """One endpoint, two schemes, two shapes — and the shipped one moves not at all."""
+        """One endpoint, two schemes, two shapes — and the shipped one moves not at all.
+
+        Also proves the operator arm did **not** gain ``capabilities``
+        (clause 12, 2026-08-18): adding it there would change a shipped surface
+        for no caller.
+        """
         body = client.post("/registry/resolve", headers=OP, json={
             "org_slug": box["slug"], "email": box["email"]}).json()
 
@@ -994,6 +1035,57 @@ class TestResponseShape:
             "identity_id", "organization_id", "role", "status", "seats"}
         assert body["role"] == "member"
         assert body["seats"] == ["core"]
+
+    @pytest.mark.parametrize("state", sorted(lifecycle.STATES))
+    def test_the_deployment_answer_carries_capability_booleans_from_the_one_state_machine(
+        self, client, db, box, state
+    ):
+        """CP-2b clause 12's ``capabilities`` block — §6(d), B1.
+
+        Parametrised over ``lifecycle.STATES`` so a state added later is
+        covered without anyone remembering.
+
+        ⚠️ **It asserts one of TWO things per state, not one.** For a state
+        whose ``capabilities_of(state).can_sign_in`` is TRUE the 200 entry's
+        block must match ``capabilities_of(state)`` field for field. For a
+        state whose ``can_sign_in`` is FALSE — ``deleted`` is the only one
+        today — it asserts the **403**, because that state cannot appear in a
+        200 body at all: the arm partitions on ``can_sign_in``, 403s when
+        nothing is admissible, and builds the array from ``admissible`` alone.
+        A version expecting a 200 carrying ``sign_in: false`` would have been
+        red on ``deleted`` from the first run, against code that is correct
+        (§6(j) — B-d). **No fence may feed a 200 body with `sign_in: false`.**
+
+        The state is reached through ``POST /orgs/lifecycle``, i.e. the real
+        transition graph, so a state that cannot be reached from ``trial``
+        would fail here rather than be asserted against a hand-written UPDATE.
+        """
+        for target in _LIFECYCLE_PATH[state]:
+            r = client.post("/orgs/lifecycle", headers=OP,
+                            json={"org_slug": box["slug"], "target": target})
+            assert r.status_code == 200, r.text
+
+        expected = lifecycle.capabilities_of(state)
+        answer = _resolve(client, box["key"], email=box["email"])
+
+        if not expected.can_sign_in:
+            assert answer.status_code == 403, answer.text
+            assert answer.json() == {"detail": f"organization is {state}"}
+            return
+
+        assert answer.status_code == 200, answer.text
+        entry = answer.json()["organizations"][0]
+        assert entry["status"] == state
+        assert entry["capabilities"] == {
+            "sign_in": expected.can_sign_in,
+            "write_seats": expected.can_write_seats,
+            "use_ai": expected.can_use_ai,
+        }
+        # The box's vocabulary is deliberately three fields, not
+        # OrgCapabilities' four: `data_retained` is a Console-side retention
+        # fact with no deployment behaviour behind it, and shipping a field
+        # nothing reads invites somebody to read it.
+        assert "data_retained" not in entry["capabilities"]
 
 
 # ══ R7 — the two fences this implementation itself introduces ════════════════

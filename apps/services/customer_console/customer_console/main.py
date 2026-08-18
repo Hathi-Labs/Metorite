@@ -761,10 +761,46 @@ def _resolve_for_deployment(
                     "placement": o["placement"],
                     "status": o["status"],
                     "seat": seat_outcomes[o["organization_id"]],
+                    "capabilities": _capability_block(o["status"]),
                 }
                 for o in admissible
             ],
         }
+
+
+def _capability_block(status: str) -> dict[str, bool]:
+    """The three booleans the DEPLOYMENT stores and applies (CP-2b §6(d)).
+
+    **Computed here, where the state machine is, because the deployment must
+    not import it.** ``capabilities_of`` lives in this package; a tenant box
+    that depended on it would ship the Console's code, and a tenant box that
+    re-implemented it would be a second copy of the state machine spelled as an
+    ``if``. So the decision is made on this side and only its RESULT crosses
+    the wire. A deployment that branches on ``sign_in`` cannot drift, because
+    there is nothing to drift from. Fenced from the other side by
+    ``tests/unit/test_console_dependency_boundary.py``.
+
+    ⚠️ **In a 200 body ``sign_in`` is ALWAYS true**, and that is a property of
+    the caller, not of this function: ``_resolve_for_deployment`` partitions on
+    ``can_sign_in`` above, 403s when nothing is admissible, and builds the
+    array from ``admissible`` alone. It rides the wire anyway — it is the box's
+    durable record and MT-2's future input, and a field that is constant
+    *today* because of a filter *upstream* is exactly the field to send
+    explicitly rather than leave the reader to infer.
+
+    Three names, not ``OrgCapabilities``' four: ``data_retained`` is a
+    Console-side retention fact with no deployment behaviour behind it, and
+    shipping a field nothing reads invites somebody to read it.
+
+    Added to the DEPLOYMENT arm only — adding it to the operator arm would
+    change a shipped surface for no caller (clause 12).
+    """
+    caps = capabilities_of(status)
+    return {
+        "sign_in": caps.can_sign_in,
+        "write_seats": caps.can_write_seats,
+        "use_ai": caps.can_use_ai,
+    }
 
 
 def _allocate_core_seat(
