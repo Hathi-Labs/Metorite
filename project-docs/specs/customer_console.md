@@ -4,16 +4,26 @@
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
-**Status:** ◐ **CP-0 · CP-1 · CP-2a · CP-3 · CP-4 BUILT** (2026-08-12/13) — 172
-platform tests against a real Postgres 16 per R8 · CP-3 was
-**rejected by independent verification once** and rebuilt (see its ticket) ·
-CP-2a ✅ · CP-2 · CP-5…CP-8 spec only · **where it runs is an open owner decision —
+**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-3 · CP-4 BUILT · CP-6 mechanism
+BUILT (refusals ship OFF)** — 219 Customer Console tests against a real
+Postgres 16 per R8 · CP-3 was **rejected by independent verification once** and
+rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only · **where it runs is an
+open owner decision —
 [`customer_console_infrastructure.md`](customer_console_infrastructure.md)** ·
-**Date:** 2026-08-12 · **verified against code 2026-08-12** (repo-wide grep: zero hits for `usage_event`, `credit_ledger`,
-`model_rate_card`, `usage_rollup`, `module_catalog`, `org_module_entitlement`
-— none of the commercial substrate exists; `llm_api_key`'s eight hits are all
-the *setting* `settings.llm_api_key`, not a table. Highest migration on disk:
-`170_projects_search_trgm.sql`). · **Owner:** WS-31 (this spec) ·
+**Date:** 2026-08-18 · **verified against code 2026-08-18 by WS-31 CP-6 audit**
+— the four §3.4 tables (`usage_event`, `credit_ledger`, `model_rate_card`,
+`usage_rollup`) and the rest of the commercial substrate all exist today in
+`infra/customer_console/001_customer_console.sql`; the ladder is 001–005 and
+the next free number is 006. *(The previous header's "repo-wide grep: zero
+hits … none of the commercial substrate exists" was true at authoring on
+2026-08-12 and false from CP-1 onward; likewise "CP-2 … spec only" — CP-2 is
+**✅ BUILT**: `main.py:603` `GET /billing/summary`, `:635` `POST /billing/seats`,
+`:675` release, pinned by `test_customer_console_seats.py:59`
+(409 + buy-more, never an auto-upgrade), `test_customer_console_api.py:142`
+(the cap over HTTP) and `test_customer_console_sql.py:183,217` (the partial
+unique index and the cap against a real database). Line anchors re-derived
+2026-08-18 **after** CP-6's edits to `main.py`; re-verify at dispatch.)*
+· **Owner:** WS-31 (this spec) ·
 **Decisions:** **D32** (work_plan.md §3, 2026-08-12 — eight calls, owner-directed
 in session). D15, D19.2, D19.3, D22, D23, D24 are carried unchanged and must not
 be re-litigated here.
@@ -494,13 +504,74 @@ Router causes CC to fit to the smaller window without a CC deploy; a bare
 provider/model/tier tabs are gone from the customer product and
 `npx tsc --noEmit && npx vitest run` is green.
 
-**CP-6 · Rate card, ledger and the balance gate.** §3.4 + §4.4. **Done when:**
+**CP-6 · Rate card, ledger and the balance gate.** ◐ **MECHANISM BUILT
+2026-08-18 — the two refusals ship OFF.** §3.4 + §4.4. **Done when:**
 balance equals `SUM(credit_ledger.delta)` in a fixture and no code path UPDATEs a
 balance column (structural fence — grep the tree, per R7's preference for
 structural over example tests); a zero-balance org gets **402** with the top-up
 payload while a non-AI endpoint on the same org still returns 200; the ~10%
 overdraft is a named config value with a test at both edges; the per-run circuit
 breaker trips a runaway loop.
+
+**What shipped.** `router.resolve_rate_card` (newest card whose `effective_from`
+has passed — the same shape as `resolve_tier`, so a re-price is an INSERT and a
+past invoice is never recomputed) folded into the existing pure
+`credits.rate_call`; the rated cost passed to `store.record_usage`, which
+negates it into `credit_ledger` **in the same transaction as the usage row**, so
+a retried write that inserts nothing also charges nothing; the balance gate on
+`POST /v1/chat/completions` **before** the provider call, via the existing
+`credits.decide_spend`, returning 402 with a `top_up` payload; the per-run
+circuit breaker over `SUM(usage_event.billed_credits)` for
+`(organization_id, run_id)` — migration 003's partial index, no new schema —
+returning **403** (not 402: topping up does not fix a runaway loop, and not 429:
+a breaker a retry loop can wait out is not a breaker).
+
+**Both refusals are behind `CUSTOMER_CONSOLE_SPEND_GATE`, default OFF** (ship
+dark). The reason is §9.2: a newly provisioned organization is `trial` with a
+zero balance and **how many credits a trial starts with is still an open owner
+input**, so enforcing today would refuse the first AI call of every new
+customer. **Flipping it for a real customer is an owner act**, on the same
+footing as §8's gate 5. Rating and the ledger draw are *not* flagged — they
+compute zero until the card is priced, which is the owner's commercial act.
+
+**The overdraft is absolute, not a percentage.** `OverdraftPolicy.grace_credits
+= 100`, `grace_for_trial = False`. The §4.4 line says "~10%"; the shipped
+docstring argues the percentage form grows the exposure on your largest accounts
+forever. Tested at both edges of the shipped value, pure and over HTTP.
+
+**Named values introduced:** `credits.RunCeiling.max_credits = 500` (a tripwire
+on one loop, never a budget — budgets are CP-7's) and `credits.CREDIT_QUANTUM =
+0.0001`, which is both the rounding step for a rated cost and the probe the
+pre-flight spends, because the true cost of a completion is unknowable before
+the provider answers and the only honest pre-flight question is *"is there any
+headroom left at all?"*.
+
+⚠️ **Two honest limits, recorded rather than left to be discovered.**
+**(a) BYOK is not zero-rated yet** — §3.4 says a BYOK organization is metered
+but not charged for tokens, and `_rate_completion` does not yet know which
+credential served the call. Harmless while every card is zero; **it must be
+closed before any real price is set.** **(b) The run id is an attribution
+header the caller sets**, so a caller that rotates it escapes the breaker; the
+balance gate is the backstop that depends on nothing the caller says. The
+breaker stops the *accident*, which is what a runaway loop is.
+
+**The tripwire that keeps both inert** — and a third, that the pre-flight
+spends one `CREDIT_QUANTUM` rather than an estimate, so a single large priced
+call can vault the overdraft floor in one step — is
+`test_customer_console_sql.py::test_the_rate_card_ships_unpriced`, which counts
+non-zero rows across the **whole** `model_rate_card` table as the ladder
+applies it (R7). A migration that prices a card fails it; pricing stays an
+owner act on a live system (§8 gate 4, D19.2). Do not narrow it to the seed's
+`effective_from` — suites that need a price insert one inside a rolled-back
+transaction or delete it in teardown.
+
+**Deliberately not built** (each excluded for a stated reason): the Redis
+balance cache of §4.4 — balance stays `SUM(credit_ledger.delta)` in Postgres, and
+this plane is cross-tenant so R5(c)'s tenant-prefix wrapper does not apply; a
+`balance_after` column — it would defeat the structural fence; the Metorite-side
+credit lease — there is no Metorite-side Router caller yet; CP-7's per-member
+caps — `credits.decide_member_cap` exists and stays unwired; alert *delivery* at
+80% (D37.2 gives it to WS-30 SC-4); any real rate-card price.
 
 **CP-7 · Per-member caps.** §4.5 + `department_centers.md` Phase E. **Done when:**
 a member at 100% with `on_exhaustion='degrade'` completes on `tier-fast`; with

@@ -93,8 +93,15 @@ ON CONFLICT (tier, effective_from) DO NOTHING;
 --
 -- Seeded at zero rather than at a guess: a zero here bills nothing and is
 -- obviously wrong, where a plausible-looking guess bills confidently and is
--- quietly wrong. `test_platform_credits.py` pins that a zero card is treated as
--- UNPRICED (raises) rather than as free.
+-- quietly wrong. `test_customer_console_credits.py` pins that a zero card is
+-- treated as UNPRICED (raises) rather than as free, and
+-- `test_customer_console_sql.py::test_the_rate_card_ships_unpriced` pins that
+-- EVERY row the ladder applies is still zero: the whole table, not scoped to
+-- this effective_from, because that fence is what holds CP-6's two open money
+-- invariants (BYOK zero-rating, the pre-flight cost) inert. A migration that
+-- prices a card must fail it: pricing is an owner act on a live system (§8
+-- gate 4, D19.2). Suites needing a price insert one at a later date inside a
+-- rolled-back transaction, or delete it in teardown.
 INSERT INTO model_rate_card
     (model, input_credits_per_1k, output_credits_per_1k,
      cached_input_credits_per_1k, effective_from) VALUES

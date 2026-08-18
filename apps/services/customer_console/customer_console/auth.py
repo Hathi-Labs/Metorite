@@ -72,6 +72,15 @@ class Caller:
 
     organization_id: str
     key_prefix: str
+    #: The owning organization's lifecycle state, already resolved alongside the
+    #: key (:func:`customer_console.store.resolve_key` returns it so callers do
+    #: not each run a second query). CP-6's balance gate needs it: a **trial**
+    #: organization gets no overdraft grace, because an unpaid account is where
+    #: overdraft turns into unrecoverable cost.
+    #:
+    #: Defaults to ``"trial"`` rather than ``"active"`` deliberately — a path
+    #: that forgets to set it then denies grace instead of granting it.
+    organization_status: str = "trial"
     #: Attribution only. Never used to select rows, never used to authorise.
     member: str | None = None
     agent: str | None = None
@@ -190,6 +199,7 @@ def organization_from_key(
     return Caller(
         organization_id=organization_id,
         key_prefix=prefix,
+        organization_status=org_status,
         member=x_cc_member,
         agent=x_cc_agent,
         module_slug=x_cc_module,
