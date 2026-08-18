@@ -35,6 +35,24 @@ code-derived correction rides with it: `can_use_ai` is the **wrong** lifecycle
 gate for paying (`auth.py:217` shuts the door on exactly the `suspended`
 customer who needs to pay), so `lifecycle.OrgCapabilities` gains `can_pay` —
 in the **one** state machine, never a second frozenset ·
+**CP-9 was then RE-AUDITED for dispatch and returned GO-NARROWED with nine
+blocking doc corrections (B1–B9) + six nits — all answered 2026-08-18 in this
+same file and in `subscription_console.md`, still spec-only, no code touched.**
+The four that changed the design rather than the wording: **B1** — redeem
+**does** grant when a verified code brings the total to 0, and 9.3(4)'s fence is
+transitive with **one** carve-out allow-listed by name (as minted, the fence was
+red by construction and an implementer would have narrowed it — the CP-6 failure
+mode) · **B4** — the ₹0-vs-paid equivalence fence was **unsatisfiable** ("only
+the reference differs" is false against `gen_random_uuid()` ids and `now()`
+defaults); it now names the carrier (`seat_grant.reason`), the excluded field
+*classes*, and the one difference that is **expected and asserted** ·
+**B6** — nothing could read an order back, so SC-4a's *"a failed payment says
+so"* was unbuildable; `GET /billing/orders/{id}` and `GET /billing/orders` are
+minted in 9.3a · **B8** — duplicate-safety was attributed to
+`provider_event_id`, but Razorpay sends **different** event ids for one capture;
+the money guard is the terminal-state rule, and the event-id key is transport
+dedup. The narrowed dispatchable slice (substrate half) and the held-back
+surface half are written into §6's sequencing note ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -1085,19 +1103,53 @@ answer that gives least:
      `payment_order` + `payment_order_line` and nothing else. **No entitlement,
      no seat, no ledger row, no subscription change.**
    - `POST /billing/orders/{id}/redeem` — **presents** a discount code. It
-     writes `discount_redemption` and updates the order's money columns. It
-     grants nothing.
+     writes `discount_redemption`, updates the order's money columns, and
+     **GRANTS when — and only when — a verified operator-issued code brings
+     `total_paise` to 0**, by calling the same `payments.fulfil()` the capture
+     path calls (9.6). It grants nothing on its own authority.
+     > ⚠️ **Corrected 2026-08-18 (repair round, B1).** This read *"it grants
+     > nothing"*, and that was wrong in a way that would have been resolved by
+     > the implementer in the worst direction. It contradicted **9.6's
+     > two-call-site rule** — redemption **is** one of the two call sites — and
+     > it made **9.3(4)'s fence red by construction**, because that fence is
+     > transitive and `redeem → payments.fulfil → store.grant_seats` writes
+     > `seat_grant`. An implementer who meets a fence that cannot pass narrows
+     > the fence; that is the **CP-6 failure mode**, and a fence narrowed to fit
+     > is worth less than no fence at all. What is true is narrower and is
+     > already argued in (3): **the code is the pre-authorization.** The org key
+     > still cannot mint value — it can only present a bearer secret that
+     > somebody holding `Operator` issued, against an order that the key's own
+     > organization owns (7).
 3. **Value moves on exactly two events, and both carry an authority the caller
    does not hold:** (a) a **provider webhook whose signature verifies**, or
    (b) redemption of a **valid operator-issued code** — where the code itself
    *is* the pre-authorization, issued under the `Operator` scheme (WS-30 SC-4g
    clause 4). A customer cannot mint either.
-4. **The CP-3 fence class extends.** CP-3's lesson was that the org key must not
-   reach the meter. The new, wider fence: **no route reachable by the
-   organization key writes `org_subscription`, `seat_grant`, `seat_assignment`
-   or `credit_ledger` directly.** Structural, over `app.routes` × their
-   dependency trees × the `store` functions they call — not an example test.
-   Fence name: `test_no_org_key_route_writes_an_entitlement_or_ledger_row`.
+4. **The CP-3 fence class extends — transitively, with exactly ONE named
+   carve-out.** CP-3's lesson was that the org key must not reach the meter.
+   The new, wider fence: **no route reachable by the organization key writes
+   `org_subscription`, `seat_grant`, `seat_assignment` or `credit_ledger`** —
+   and **transitively**: over `app.routes` × their dependency trees × the call
+   graph of the `store`/`payments` functions those routes reach, not just the
+   route body. Structural, not an example test. Fence name:
+   `test_no_org_key_route_writes_an_entitlement_or_ledger_row`.
+
+   **The carve-out, allow-listed BY NAME** *(added 2026-08-18 with B1's
+   answer)*: exactly **one** edge is permitted, and it is written as a
+   `(route function, callee)` **pair** —
+   `("redeem_discount_code", "payments.fulfil")`. A pair rather than a
+   sentence like *"redeem may write seats"*, because the sentence is a general
+   licence and the pair is not: every other callee on that route, and every
+   other org-key route, stays red. The allow-list lives beside the fence, in
+   the test module, never in application code — a production allow-list is a
+   switch somebody flips under deadline.
+
+   **The carve-out's own fence:**
+   `test_the_fulfil_allow_list_has_exactly_one_entry` — mutating the list to
+   add **any** second path goes **red**, and its failure message names the two
+   authorised ways to move value (issue a code, or capture a payment) so the
+   next agent reads a decision rather than an obstacle. An allow-list that
+   grows quietly is the fence deleting itself one entry at a time.
 5. **The lifecycle gate for paying is NOT `can_use_ai`.** Measured 2026-08-18:
    `auth.organization_from_key` 403s when
    `lifecycle.capabilities_of(status).can_use_ai` is false
@@ -1110,12 +1162,114 @@ answer that gives least:
    cancelled`, false for `deleted` only. The checkout dependency reuses
    `organization_from_key`'s key resolution and gates on `can_pay`.
    **Fence:** `test_a_suspended_org_can_create_an_order_and_a_deleted_one_cannot`.
+
+   ⚠️ **HOW `can_pay` is added matters, and the trap is positional** *(recorded
+   2026-08-18, repair-round nit 3)*. `lifecycle.STATES` is built with
+   **positional** arguments — `OrgCapabilities("trial", True, True, True, True)`,
+   seven rows at `lifecycle.py:64-78`. A field inserted anywhere but **last**
+   silently re-maps every existing row's booleans, and every existing test keeps
+   passing while `suspended` quietly becomes AI-enabled. **Rule: append
+   `can_pay` LAST in the dataclass AND convert the seven `STATES` rows to
+   keyword construction in the same edit**, so the field after this one cannot
+   be added wrongly. Two comments in the tree count *"four booleans"* and go
+   stale the moment it lands; they are listed under *Build-slice edits* below.
+
+   **What `can_pay` buys — and what it deliberately does NOT** *(answered
+   2026-08-18, B9; agent-proposed default, D16/D17)*. It grants **exactly**:
+   create an order, read your own orders (9.3a), redeem a code. Nothing else,
+   and in particular:
+   - **Capture does NOT transition `organization.status`.** A suspended org
+     that pays is still `suspended` the microsecond after the webhook returns
+     200. Fulfilment writes `org_subscription`, `seat_grant` and (later)
+     `credit_ledger`; it never touches the `organization` row.
+   - **The reason is CP-2a's transition-graph discipline.** `POST /orgs/lifecycle`
+     is `Operator`-only (`main.py:500`) and `assert_transition` refuses every
+     off-graph move precisely so the lifecycle has one writer. Letting a
+     **webhook** drive it makes an *outside system* the writer of our account
+     state: a replayed capture, a provider bug, or a captured-then-refunded
+     payment would reinstate an account nobody decided to reinstate. An
+     unattended callback must not drive a state machine whose whole value is
+     that a human is on every edge.
+   - **Reinstatement stays a manual operator act**, and the expected flow is
+     the deliberate **two-step**: *customer pays → the operator sees a
+     `captured` order for that org → the operator posts `suspended → active`
+     through `POST /orgs/lifecycle`.* Today the operator sees it through the
+     `Operator` scheme's reads; **CP-8 is the console that renders it and CP-8
+     is UNBUILT** — so at launch step 2 is a query, not a screen. Said plainly
+     rather than implied.
+   - **Named residual:** a customer who pays at 2am stays suspended until an
+     operator acts. Accepted at one-customer volume (D36) and revisited by
+     giving the operator an **alert/queue** (CP-8), never by wiring the webhook
+     into `lifecycle`.
 6. **Named residual, not hidden:** an organization-key holder can create
-   **unlimited pending orders**. Bounded by construction — an order has no value
-   effect and expires — so the cost is table rows, not money or entitlement.
-   **Rate limiting is deliberately deferred** and named here rather than
-   discovered later; it belongs with the first abuse signal, and inventing a
-   limiter with no data is how you pick the wrong number.
+   **unlimited pending orders** — and, extended 2026-08-18 (repair-round nit 4),
+   make **unlimited redeem attempts** against those orders. Both are bounded by
+   construction: an order has no value effect and expires, so its cost is table
+   rows; a redeem attempt is a guess at a **bearer secret** whose prefix and
+   256-bit secret come from `keys.py`'s `mint_key`, answered by a refusal shape
+   that is the same for unknown and wrong-org (7, and SC-4g done-when 4), so it
+   is neither an existence oracle nor a feasible search. **Rate limiting is
+   deliberately deferred for both** and named here rather than discovered
+   later; it belongs with the first abuse signal, and inventing a limiter with
+   no data is how you pick the wrong number. What would change that call is a
+   *measured* attempt rate — so the redeem route logs refusals with the
+   presented **prefix only**, which is the signal a limiter would later be
+   sized from.
+7. **Every order route resolves the organization FROM THE KEY, and a foreign
+   order is indistinguishable from a missing one** *(added 2026-08-18, B5 —
+   there was no ownership predicate anywhere in this ticket)*.
+   `POST /billing/orders/{id}/redeem` and **every** order read (9.3a) take the
+   organization from `organization_from_key`'s resolution — never from the
+   path, the body or a header (R11) — and answer **404 with a byte-identical
+   body** for both *"that order belongs to another organization"* and *"no such
+   order"*. One shape, one status, one body: `{"detail": "no such order"}`,
+   naming nothing. A 403-for-foreign / 404-for-unknown split is a membership
+   oracle over other tenants' order ids, which is CP-3's lesson in the one
+   place order ids are guessable (they are UUIDs, but the refusal shape is the
+   control, not the entropy). The operator-side idiom stays as it is —
+   `_org_id`'s 404 names the slug (`main.py:276-282`) because the operator is
+   cross-org **by design**; that is the contrast, not the precedent.
+   **Fence:** `test_a_foreign_order_and_an_unknown_order_refuse_identically` —
+   two organizations, org A attempts to read and to redeem against org B's
+   order id and against a random UUID, and the four responses are compared
+   **status and body bytes**, not merely "both are 4xx".
+
+**9.3a · Reading an order back — the two routes B6 found missing.** *(Added
+2026-08-18. As minted, this ticket wrote orders and gave nothing the power to
+read one, so **WS-30 SC-4a done-when 5** — "a failed or abandoned payment grants
+nothing and **says so** on the page, naming what to do next" — was unbuildable:
+the page had no way to learn a state that only exists in this service. These are
+**reads on a credential that already reads** (`/me`, `/me/billing`), so they mint
+no scheme, need no carve-out, and touch 9.3's "exactly two writes" not at all.)*
+
+| Route | Auth | Answers |
+|---|---|---|
+| `GET /billing/orders/{id}` | organization key, `can_pay` | one order — **own org only**, 9.3(7)'s predicate |
+| `GET /billing/orders` | organization key, `can_pay` | that org's orders, newest first |
+
+**Response shape — the single order.** `{ id, status, provider, gross_paise,
+discount_paise, taxable_paise, gst_paise, total_paise, gst_split, expires_at,
+created_at, terminal_at, lines: [{ plan_slug, quantity, unit_price_paise }],
+discount: { code_prefix, discount_paise } | null }`. Integer paise on the wire,
+as everywhere else (9.2) — the browser formats, it never arithmetics.
+**Deliberately absent:** `provider_order_id` and any provider payload. The
+customer's browser has no use for the provider's identifiers, and a field
+nothing reads is a field somebody eventually reads (`_capability_block`'s
+argument, `main.py:791`). `code_prefix` never carries the code's secret, per
+SC-4g (i).
+
+**The list.** Same objects without `lines`, ordered `created_at DESC`, capped at
+a **named** page size (50) with an explicit `next` cursor — never an unbounded
+`SELECT *` on a table a customer can grow without limit (9.3(6)'s residual is
+exactly that). Filter parameters are `status` only, validated against 9.2's
+state set; an unknown value is **400**, not silently ignored.
+
+**Fences:**
+- `test_an_order_read_is_scoped_to_the_key_and_refuses_identically` — 9.3(7)'s
+  shared fence covers both routes; the list of org A **never** contains an order
+  of org B, asserted by seeding both and comparing ids, not counts.
+- `test_the_order_read_carries_no_provider_identifiers` — structural over the
+  response model, so a later field addition has to argue with a red test.
 
 **9.4 · The provider seam, and what ships without an account.**
 `customer_console/payments.py`: a `PaymentProvider` protocol with
@@ -1151,16 +1305,36 @@ runs, and here it is worse — nobody may *create* the account (9.7).
   nothing written. Never 200-and-ignore: a provider that receives 200 stops
   retrying, so "accept and drop" silently loses captured payments.
 - ⚠️ **It must register its verifier in `auth.AUTHENTICATING_DEPENDENCIES`**
-  (`auth.py:344`). The webhook is a door with no bearer token, so expressed
-  naively it would make CP-2b clause 1's fence
+  (`auth.py:344-349`; the set is declared at `:344` and a new entry goes inside
+  it, at `:345-348` — anchor re-measured 2026-08-18). The webhook is a door with
+  no bearer token, so expressed naively it would make CP-2b clause 1's fence
   (`test_the_unauthenticated_route_set_is_exactly_health`) go red — correctly.
   The signature check **is** this route's authenticating dependency; express it
   as one and the existing fence covers it on the day it lands.
-- **Idempotent on `(provider_event_id)`** — the `payment_event` primary key. A
-  duplicate delivery is a **no-op that returns 200**, writes no second ledger or
-  seat row, and logs at info. This is CP-3's `(organization_id, request_id)`
-  idempotency applied one layer out, and it is the clause SC-4a's *"a duplicate
-  webhook credits once"* actually rests on.
+- **Two guards, and they are NOT the same guard.** *(Rewritten 2026-08-18, B8.
+  The previous text attributed duplicate-safety to `provider_event_id` alone,
+  which is wrong for the provider D19.5 chose — and wrong in the direction that
+  double-grants.)*
+  1. **`payment_event.provider_event_id` PRIMARY KEY = TRANSPORT-level dedup.**
+     It makes the *same* delivery, delivered twice, a no-op. That is the retry
+     case and nothing more. This is CP-3's `(organization_id, request_id)`
+     idempotency applied one layer out.
+  2. **The terminal-state rule = the MONEY guard.** **Razorpay sends DIFFERENT
+     event ids for one capture** — `payment.captured` and `order.paid` are two
+     events, two ids, one payment — so the primary key does not see them as
+     duplicates and never will. What makes the second one harmless is 9.2's
+     state machine: `captured` is **terminal**, so a fulfilment attempt against
+     an already-`captured` order is a **no-op that returns 200** and logs at
+     info. Both events are *recorded*; exactly one *fulfils*.
+
+  Together these are what SC-4a's *"a duplicate webhook credits once"* actually
+  rests on — the event-id key alone does not deliver it.
+  **Fence:** `test_two_different_event_ids_for_one_order_fulfil_exactly_once` —
+  deliver `payment.captured` and `order.paid` for one order and assert **two**
+  `payment_event` rows and **one** set of written records. ⚠️ A fence that
+  delivers the *same* event id twice does not test this at all, and is the
+  fence this ticket would otherwise have shipped; keep both, they answer
+  different questions.
 - **Order-state coupling:** a webhook for an order already in a terminal state
   is a no-op. A capture whose amount disagrees with `payment_order.total_paise`
   is **refused and alerted**, never fulfilled — an amount mismatch is either a
@@ -1175,14 +1349,54 @@ writes exactly what the order's line items imply:
 - one `seat_grant` per package line (`store.grant_seats`, the existing seam);
 - one `credit_ledger` row per credit-pack line — **zero rows at launch**, since
   9.1 sells no packs; the branch exists so packs are a catalog row later and not
-  a second code path.
+  a second code path. ⚠️ **Because that count is zero, the ledger cannot be what
+  the ₹0-vs-paid distinguishability contract rides on at launch** — it rides on
+  `discount_redemption` + `seat_grant.reason` instead (below, and WS-30 SC-4g
+  done-when 6, both corrected 2026-08-18 with B3).
 
-**`reference` is the only difference between the two paths**: `order:<uuid>` for
-a captured payment, `redemption:<uuid>` for a ₹0 code. **The equivalence fence
-(SC-4g's other half) compares the two paths' written records field-by-field and
-asserts the ONLY difference is that reference** —
-`test_the_free_path_and_the_paid_path_write_identical_records`. If a third
-difference appears, one of the two paths is not the product.
+**The reference, its CARRIER, and what "identical" excludes.** *(Answered
+2026-08-18, B4. As first written — "`reference` is the only difference" — the
+fence was **unsatisfiable**: `seat_grant.id`, `seat_assignment.id` and
+`credit_ledger.id` are `gen_random_uuid()` defaults and every timestamp column
+defaults to `now()`, so two runs of the same path already differ. A fence that
+cannot pass gets narrowed by whoever meets it.)*
+
+1. **The carrier is `seat_grant.reason`** — it exists today
+   (`001_customer_console.sql:178`) and `store.grant_seats(...)` already takes
+   `reason` as a keyword (`store.py:103-104`), so nothing new is minted to hold
+   it. `payments.fulfil` passes it through.
+2. **The format is `<reason>:<ref>`, composed from SC-4g (v)'s ONE vocabulary**:
+   `purchase:order:<uuid>` on the paid path, `discount_redemption:redemption:<uuid>`
+   on the ₹0 / partial path. Symmetric and mechanical — the left half is a
+   `LEDGER_REASONS` member, the right half is exactly the string that would go
+   in `credit_ledger.ref`, and `reason.split(":", 1)` recovers the pair. One
+   vocabulary spanning both tables, so a packs-era `credit_ledger` row and a
+   launch-era `seat_grant` row say the same word for the same event.
+3. **Excluded from the comparison, by CLASS and not by field list** — because
+   the database writes them, not the code under test:
+   **(a) surrogate ids** (`gen_random_uuid()` primary keys: `seat_grant.id`,
+   `seat_assignment.id`, `credit_ledger.id`) · **(b) clock columns**
+   (`created_at`, `updated_at`, `effective_from`, `assigned_at`). Stated as
+   classes so a column added later is covered by the rule instead of quietly
+   escaping a hand-list.
+4. **`org_subscription`'s provider columns differ, and that difference is
+   EXPECTED and ASSERTED — never excluded.** The paid path writes
+   `provider='razorpay'` plus `provider_customer_id` / `provider_subscription_id`;
+   the ₹0 path leaves **all three NULL**, because no provider was involved and
+   NULL is the honest record of that. ⚠️ **Do not write `'none'` here**: that
+   value belongs to `payment_order.provider` (9.2); `org_subscription.provider`
+   is `CHECK (provider IN ('razorpay','manual'))`
+   (`001_customer_console.sql:163`) and `'none'` violates it.
+
+**The equivalence fence, restated** —
+`test_the_free_path_and_the_paid_path_write_identical_records` runs both paths
+over an identical basket and compares the written `org_subscription`,
+`seat_grant`, `seat_assignment` and `credit_ledger` rows field by field, minus
+class (3), and asserts **exactly two** differences: the `seat_grant.reason`
+prefix (2) and `org_subscription`'s three provider columns (4). **A third
+difference fails** — that is still the whole point, D42's failure mode is two
+paths that drift into two products; it is now a comparison that can actually
+hold.
 
 **GST is captured at order time**, from the organization's CP-2a fields (GSTIN +
 registered state, D33.4a), snapshotted onto the order row: split
@@ -1218,18 +1432,26 @@ nobody ran.
    no seat** — asserted by snapshotting `credit_ledger`, `seat_grant`,
    `seat_assignment` and `org_subscription` before and after and diffing.
    A non-existent or inactive `plan_slug` is **400**.
-4. `test_no_org_key_route_writes_an_entitlement_or_ledger_row` — structural, per
-   9.3(4), and it must go **red** under a deliberate mutation that points a
-   grant-writing route at the key dependency.
+4. `test_no_org_key_route_writes_an_entitlement_or_ledger_row` — structural and
+   **transitive** per 9.3(4), and it must go **red** under a deliberate mutation
+   that points a grant-writing route at the key dependency. Its **one**
+   allow-listed pair (`redeem_discount_code` → `payments.fulfil`) is pinned by
+   `test_the_fulfil_allow_list_has_exactly_one_entry`, which goes **red** when a
+   second pair is added.
 5. A **suspended** organization can create an order; a **deleted** one is
-   refused (9.3(5)), and `can_pay` lives in `lifecycle.py` with the rest.
+   refused (9.3(5)), and `can_pay` lives in `lifecycle.py` with the rest —
+   **appended LAST**, with `STATES` converted to keyword construction in the
+   same edit.
 6. **A mis-signed webhook is refused before its body is parsed** — proven by
    sending a body whose parsing would itself be observable (a malformed JSON
    payload that returns 400-for-signature, not 422-for-schema), with **no**
    `payment_event` row written.
 7. **A duplicate webhook is a no-op**: two deliveries of one `provider_event_id`
    ⇒ one `payment_event`, one fulfilment, one set of records. Re-delivered after
-   the order is terminal ⇒ still one.
+   the order is terminal ⇒ still one. **And the case that key does not cover
+   (B8):** `payment.captured` **and** `order.paid` for one order ⇒ **two**
+   `payment_event` rows, **one** fulfilment —
+   `test_two_different_event_ids_for_one_order_fulfil_exactly_once`.
 8. A **capture whose amount ≠ `total_paise`** does not fulfil and raises an alert.
 9. `payments.fulfil` is called from **exactly two** call sites (webhook capture,
    SC-4g redemption) — structural fence, so a third path cannot quietly appear.
@@ -1244,6 +1466,43 @@ nobody ran.
     **same PR** — a skipped R8 test proves nothing (CP-3).
 12. `uv run ruff check .` clean; the existing Console suites stay green,
     `test_the_unauthenticated_route_set_is_exactly_health` included.
+
+*Clauses 13–17 added 2026-08-18 with the repair round's answers.*
+
+13. **Ownership is a predicate, not a convention (B5, 9.3(7)):** org A reading
+    or redeeming against org B's order id and against a random UUID gets four
+    responses that are **byte-identical** in status and body —
+    `test_a_foreign_order_and_an_unknown_order_refuse_identically`.
+14. **An order can be read back (B6, 9.3a):** `GET /billing/orders/{id}` and
+    `GET /billing/orders` answer under the organization key, scoped to that org,
+    carrying no provider identifiers, with `failed` and `abandoned` visible —
+    which is what makes WS-30 SC-4a done-when 5 buildable at all.
+15. **The ₹0 and paid paths differ in exactly two places (B4, 9.6):** the
+    `seat_grant.reason` prefix and `org_subscription`'s three provider columns.
+    The excluded classes are surrogate ids and clock columns, expressed as
+    classes; a third difference fails.
+16. **Capture does not move the lifecycle (B9, 9.3(5)):** a `suspended` org
+    whose order is captured is **still `suspended`** afterwards — asserted
+    directly on `organization.status` — and the only writer of that column
+    remains `POST /orgs/lifecycle` under `Operator`.
+    `test_a_capture_does_not_transition_the_organization`.
+17. **A discount code is minted through `keys.py` and never stored in the
+    clear** (SC-4g (i)): the issue response is the only place the token exists,
+    and no audit row, log line or read route contains anything but the prefix.
+
+**Build-slice edits this repair round could NOT make — it is docs-only.** Listed
+so the implementer does not have to rediscover them, and because **nothing tests
+a comment**:
+
+1. `customer_console/lifecycle.py` — append `can_pay` **last**; convert the
+   seven `STATES` rows (`:64-78`) to keyword construction (9.3(5)).
+2. `customer_console/main.py:791` — `_capability_block`'s docstring says
+   *"Three names, not `OrgCapabilities`' four"*. With `can_pay` the dataclass
+   carries **five**; the deployment arm still ships three, and the sentence must
+   say five to keep meaning what it means.
+3. `tests/unit/test_customer_console_resolve.py:1084-1085` — the same count in a
+   comment (*"deliberately three fields, not `OrgCapabilities`' four"*). Same
+   edit, same reason.
 
 **Non-goals of CP-9:** the checkout **UI** (WS-30 SC-4a) · the **discount-code**
 tables and their semantics (WS-30 SC-4g — CP-9 consumes a validated redemption,
@@ -3023,6 +3282,37 @@ set in WS-30 SC-4a.
 **CP-9 inserted after CP-6** the same day when the payment seam was minted. The
 board row in `work_plan.md` §2 carries the same line — updating it is the
 supervisor's act, not this file's.)*
+
+**What is dispatchable in CP-9's FIRST slice, and what is held back** *(the
+re-audit returned **GO-NARROWED** on 2026-08-18; this is that narrowing, written
+down so the next agent does not have to infer it).*
+
+**🟢 The substrate half — dispatch this.** Everything server-side, all of it
+reachable with a fake provider and a real Postgres 16: 9.2's three tables and
+the state machine · the paise conversion · 9.3's two writes, `can_pay`, the
+transitive fence and its one named carve-out, the ownership predicate · 9.3a's
+two reads · 9.4's `PaymentProvider` seam, `RazorpayProvider` over `httpx`, the
+`FakeProvider` and the real HMAC signer · 9.5's webhook with both guards ·
+9.6's single `payments.fulfil` with the reference carrier · **WS-30 SC-4g
+(i)–(v) server-side**: `discount_code` + `discount_redemption`, the split-key
+storage, percent-against-the-pre-GST-base, the redeem route and the ₹0 path ·
+every fence named in this ticket. Its acceptance is CP-9 done-when 1–17 and
+SC-4g done-when 1–8.
+
+**🔴 The surface half — held back, and named rather than left to drift.**
+**(a)** WS-30 **SC-4a's checkout UI** and its two write proxies, **because
+B7's gate is an open decision that reaches the tenant plane's capability
+vocabulary** (`acb_auth/permissions.py`) — a different seam, a different review,
+and one that must not ride in on a payments PR. **(b)** The **operator
+code-issue surface** (issuing is `Operator`-scheme API in this slice; rendering
+it is CP-8). **(c)** The **invoice document** — SC-5b/5c, hard prerequisite for
+the DOCUMENT and explicitly not for the checkout (SC-4g (vi)). **(d)** The
+**flip set** — all four items are owner acts (SC-4a's flip-set box).
+
+The split is not cosmetic: the substrate half is verifiable end-to-end by an
+agent against a real database and a fake provider, and the surface half is not
+(it needs a capability decision, an account, or an owner's flip). Shipping them
+together is how a reviewable PR becomes an unreviewable one.
 
 ## 7. Verification
 

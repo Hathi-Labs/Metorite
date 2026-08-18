@@ -49,6 +49,22 @@ under-specified):
   half of its own acceptance an agent cannot reach.
 All are **agent-proposed defaults the owner may overrule** (the D16/D17
 convention). ·
+
+**Then RE-AUDITED for dispatch the same day → GO-NARROWED, nine blocking doc
+corrections (B1–B9) + six nits, all answered 2026-08-18** (still docs-only; the
+CP-9 half of the answers is in `customer_console.md` §6). What changed **here**:
+**B2** — SC-4g done-when 4 demanded five distinct refusal reasons *and*
+unknown ≡ wrong-org in one sentence; it now **partitions** into three distinct
+reasons for a code this org may see and **one** indistinguishable shape for
+{unknown, wrong-org} · **B3** — done-when 6's three-way `credit_ledger`
+distinguishability was **vacuous at launch** (zero ledger rows are written on
+the subscription path) and now rides `discount_redemption` + `seat_grant.reason`,
+with the ledger clause dated to when packs land · **B7** — SC-4a's two new write
+proxies ride a BFF pattern whose admin gate is **documented but does not exist**;
+the gate is now named (a `billing:purchase` capability over §3's floor, resolved
+server-side), and the **existing read proxy's gap is recorded as a board finding,
+not fixed here** · plus SC-4g (i)'s code format corrected to `cc_disc_…`, which
+is what the seam it names will actually parse. ·
 **Date:** 2026-08-09 · corrected 2026-08-14 · **rewritten 2026-08-18** ·
 **Owner:** WS-30 (this spec) · **Decisions:** **D23 + D24** (work_plan.md §3,
 2026-08-10 — Center packages are the governing pricing shape, carrying D19's
@@ -246,16 +262,106 @@ credits nothing and says so.
    active for the period and `seat_grant` totals equal the ordered quantities —
    read back through the **existing** `GET /billing/summary`, so no surface
    recomputes seats (SC-2's rule, `customer_console.md` §3.3).
-4. **A duplicate webhook grants once** — the ledger and grants are idempotent on
-   `provider_event_id`, not on a mutable count (CP-9 §9.5).
+   ⚠️ **A green `GET /billing/summary` is a CONSOLE fact, not a live product
+   entitlement** *(added 2026-08-18)*. It says the Console recorded the
+   purchase; it says nothing about whether any Metorite surface will *honour*
+   it — enforcement inside the product is **MT-2**'s `intersect()` / `ModuleGate`
+   / the 402-vs-403 split, and **SC-2 over MT-2 owns that**, not this clause.
+   Two further facts about the route, both measured: it is the **Operator**,
+   cross-org read (`customer_console/main.py:875`), so this acceptance runs
+   operator-side in the suite; the customer-reachable read is `GET /me/billing`
+   (`:1213`) and it returns **no seats at all** today — growing it a seats block
+   is SC-1a's work, named here so nobody reads clause 3 as a promise the
+   customer's own page can keep.
+4. **A duplicate webhook grants once** — CP-9 §9.5's **two** guards, not one:
+   the `provider_event_id` key is transport dedup, and the **terminal-state
+   rule** is the money guard, because Razorpay sends *different* event ids
+   (`payment.captured`, `order.paid`) for one capture *(corrected 2026-08-18,
+   B8)*.
 5. **A failed or abandoned payment grants nothing and says so** on the page,
-   naming what to do next.
+   naming what to do next — read through **`GET /billing/orders/{id}`**, minted
+   as CP-9 §9.3a *(2026-08-18, B6: as first specced nothing could read an order
+   back, so this clause had no data source and would have been "met" by a page
+   that guesses)*.
 6. `purchaseEnabled` (`customer_console/main.py:1266`) is what flips the page
    from the contact prompt to the checkout (`page.tsx:202`) — **the flip is the
    owner's**, and its preconditions are the flip set below.
 7. `npx tsc --noEmit && npx vitest run` green; the surface uses
    `src/components/ui/` primitives and the theme tokens (no colour literals,
    no `lucide-react` import) per `workbench/control_plane/AGENTS.md`.
+8. **The two new write proxies are gated SERVER-SIDE**, per the block
+   immediately below *(added 2026-08-18, B7)*.
+
+> ### The gate on the two new write proxies — B7, answered 2026-08-18
+>
+> **The problem, measured.** This checkout adds two **write** proxies
+> (`POST /api/billing/orders`, `POST /api/billing/orders/[id]/redeem`) to a BFF
+> pattern whose admin gate is **documented but does not exist**. The shipped
+> read proxy asserts it in its own header — *"Admin-gating is enforced upstream
+> by the Control Plane's key scope and here by the session check — a member
+> without admin never reaches billing figures"* (`api/billing/summary/route.ts:21-22`)
+> — and the handler checks only `currentIdentity()`, i.e. **signed in**, not
+> admin. There are **zero** capability checks anywhere under
+> `src/app/api/billing/` or `src/app/settings/billing/` except the page's
+> client-side `access?.is_admin` (`page.tsx:102`), and that check does **not**
+> stop the fetch: the `useEffect` is registered at `:93` *before* the early
+> return at `:102`, so a non-admin's browser calls the proxy and receives the
+> billing payload while being shown "Billing is admin-only."
+>
+> **Why this bites harder for the writes than for the read.** The workbench's
+> BFF rule is *"nothing here grants anything, and every real request is
+> authorized again at the gateway"* (`api/auth/me/route.ts:8-10`). The billing
+> proxies **do not go to the gateway** — they call the Customer Console
+> directly with the deployment's `cc_live_` key — so there is no second
+> authorization anywhere. For these routes **the BFF is the only gate there
+> will ever be.**
+>
+> **The default (agent-proposed, D16/D17 — the owner may take the fallback):**
+> the two write proxies require a **new, dedicated `billing:purchase`
+> capability**, on top of §3's `admin:members:read` floor, resolved
+> **server-side**.
+> 1. **Stricter than the floor, deliberately.** `admin:members:read` is *"may
+>    see the member list"*; these routes **spend the company's money**. The
+>    person who administers members and the person who buys are not the same
+>    person in most companies of any size, and a capability is how that is
+>    expressible without a second role system.
+> 2. **It must not be born unheld.** A capability nobody holds makes checkout
+>    dead on arrival, and granting it per-member against a live org is an owner
+>    gate (`work_plan.md` §6, WS-24 (d)). So the same change **seeds it onto the
+>    `owner` and `admin` roles**, exactly as
+>    `infra/postgres/133_workflows_publish_permission.sql` did for
+>    `workflows:publish` — same shape, same idempotent `DO $$` block, **migration
+>    number taken by listing `infra/postgres/` at build time and re-checked at
+>    merge (R1)**. It joins `acb_auth.permissions.CAPABILITIES`
+>    (`permissions.py:126-154`) so a typo is catchable rather than silently inert.
+> 3. **Resolved server-side, never from the browser.** The route resolves the
+>    caller's access through the **existing** seam — the gateway's `/auth/me`
+>    via `headersActingAs(email)`, the same hop `api/auth/me/route.ts` already
+>    makes — and refuses **403** before any Customer Console call. Never from a
+>    header, a body or a client-supplied claim (`user_management_contract.md`
+>    R3/R11).
+> 4. **Fences** (`src/app/api/billing/*.test.ts`): a signed-out caller is
+>    **401**; a signed-in member **without** the capability is **403**; the
+>    refusal happens **before** the upstream fetch (assert the fetch mock was
+>    never called — a 403 issued *after* the money route was hit is a different
+>    and worse bug); a holder passes. Parametrised over both write proxies, so
+>    a third one added later is covered without anyone remembering.
+>
+> **The fallback the owner may prefer:** the §3 floor (`admin:members:read`)
+> alone, no new capability, no tenant-plane migration. Cheaper by one migration
+> and one vocabulary entry; it makes every member-admin a purchaser. Recorded so
+> the choice is visible rather than defaulted into.
+>
+> **🔎 Board finding, recorded and NOT fixed here — the EXISTING read proxy.**
+> `GET /api/billing/summary` is reachable by **any signed-in member** and
+> returns the org's credit balance, burn and BYOK status; its own header says
+> otherwise. That is a **live gap in merged code (`f1fcca4f`)**, not a gap in
+> this ticket, and fixing it is a code change to a shipped route — out of scope
+> for a docs round and out of scope for a checkout slice that must stay
+> reviewable. It belongs on the board as its own small ticket: add the same
+> server-side check to the read proxy and correct the header comment, which is
+> currently a **false statement about a security control** (the most expensive
+> kind of stale comment).
 
 > **🔴 The flip set — what must be true before checkout is LIVE** *(recorded
 > 2026-08-18; D35.5's "revenue order is enforcement, then checkout" binds the
@@ -351,9 +457,18 @@ the same owner gate as SC-4e's adjustments.**
 code is a **bearer secret that grants value**, so it is stored the way this
 service already stores bearer secrets — `customer_console/keys.py`: a **prefix
 in the clear, indexed** and a **SHA-256 hash of the secret**, never the secret
-itself. Format `disc_<prefix>_<secret>`, minted through the same
+itself. Format **`cc_disc_<prefix>_<secret>`**, minted through the same
 `mint_key`/`split_key`/`verify_secret` seam (`keys.py` already parameterises the
-env segment for `live`/`depl` — a third value, not a third implementation).
+env segment for `live`/`depl` — `disc` is a third **value**, not a third
+implementation; add it as a named constant beside `ENV_DEPLOYMENT`,
+`keys.py:42`, for the reason stated there).
+> ⚠️ **Format corrected 2026-08-18** during the repair round's anchor
+> re-verification. It read `disc_<prefix>_<secret>`, which **the named seam
+> rejects**: `split_key` returns `None` unless the first segment is exactly
+> `"cc"` (`keys.py:136-138`), and `_canonical_prefix` composes `cc_{env}_{prefix}`
+> (`:59-60`). The old format could only have been built by editing the shared
+> key seam — i.e. by doing the opposite of what this clause's own sentence
+> ("a third value, not a third implementation") asks for.
 Consequences that make this the right call rather than a stylistic one: a
 database disclosure hands over no working codes; lookup is one indexed read, not
 a scan-and-compare; and `split_key`'s left-split discipline (the secret's
@@ -421,14 +536,33 @@ is ever rendered.
 negative — a negative order total is a refund path and this is not one.
 
 **(iv) The ₹0 path, and the equivalence fence.** A 100% redemption completes
-with **`provider='none'`, no `provider_order_id`, and zero provider calls**, and
-then calls **the same `payments.fulfil()`** the capture path calls (CP-9 §9.6),
-with `reference = redemption:<uuid>` where a paid order passes `order:<uuid>`.
+with **`provider='none'` on `payment_order`, no `provider_order_id`, and zero
+provider calls**, and then calls **the same `payments.fulfil()`** the capture
+path calls (CP-9 §9.6), with `reference = redemption:<uuid>` where a paid order
+passes `order:<uuid>`.
+
+> ⚠️ **The fence as first written was UNSATISFIABLE and is repaired in CP-9
+> §9.6 — read it there, it is the authority** *(2026-08-18, B4)*. "The only
+> difference is the reference" is false against the schema: `seat_grant.id`,
+> `seat_assignment.id` and `credit_ledger.id` are `gen_random_uuid()` defaults
+> and every timestamp defaults to `now()`, so **two runs of the same path
+> already differ**. §9.6 now names (a) the **carrier** — `seat_grant.reason`,
+> holding `<reason>:<ref>`, i.e. `purchase:order:<uuid>` vs
+> `discount_redemption:redemption:<uuid>` — (b) the **excluded classes**
+> (surrogate ids; `created_at`/`updated_at`/`effective_from`/`assigned_at`), and
+> (c) the one difference that is **expected and asserted rather than excluded**:
+> `org_subscription`'s `provider` / `provider_customer_id` /
+> `provider_subscription_id` are set on the paid path and **NULL** on the ₹0
+> one. ⚠️ **Not `'none'` there** — that value belongs to `payment_order.provider`;
+> `org_subscription.provider` is `CHECK (provider IN ('razorpay','manual'))`
+> (`001_customer_console.sql:163`).
+
 **Fence — this is SC-4g's central one:**
 `test_the_free_path_and_the_paid_path_write_identical_records` runs both paths
 over an identical basket and compares the written `org_subscription`,
 `seat_grant`, `seat_assignment` and `credit_ledger` rows **field by field**,
-asserting the **only** difference is the reference string. A third difference
+minus the excluded classes, asserting **exactly two** differences (the reason
+prefix and the provider columns). A third difference
 means one of the two paths is not the product — which is precisely the failure
 D42 exists to prevent. **A partial code (e.g. 50%) routes the REMAINDER through
 CP-9's provider path**: one order, `discount_paise` recorded, `total_paise > 0`,
@@ -449,9 +583,15 @@ later"* was unenforceable. The vocabulary, defined once in
 | `grant` | operator-supplied | `POST /credits/grant`, non-commercial grants |
 
 **Fence:** a structural test that every `store.add_credit(...)` call site passes
-a member of `LEDGER_REASONS`, plus a data test that the three commercial reasons
-are pairwise distinguishable by `(reason, ref)` — no row can be read as two of
-them. ⚠️ **Deliberately NOT a `CHECK` constraint in this slice, and the reason is
+a member of `LEDGER_REASONS` — **real in this slice**, since it reads call sites
+rather than rows. ⚠️ **The data test that the three commercial reasons are
+pairwise distinguishable by `(reason, ref)` is scoped to WHEN PACKS LAND**
+*(2026-08-18, B3)*: CP-9 §9.6 writes **zero** `credit_ledger` rows on the
+subscription path at launch, so that test would pass over an empty table — the
+disarmed-gate shape CP-3 already cost us once. Launch distinguishability rides
+`discount_redemption` + `seat_grant.reason` (done-when 6). The vocabulary
+**is** defined now, because the two tables must say the same word for the same
+event on the day packs arrive. ⚠️ **Deliberately NOT a `CHECK` constraint in this slice, and the reason is
 R6:** `/credits/grant` accepts free-form reasons today, so an expand-phase
 migration must not reject rows the running code can still write. Narrowing
 `CreditGrantRequest.reason` to the enum comes first; the `CHECK` is a later
@@ -490,19 +630,53 @@ against the same recorded numbers.
    **goes red** under a deliberate mutation of either path (per (iv)).
 3. A **partial code** routes the remainder through CP-9's provider path — one
    order, discount recorded, fulfilment on capture, not a second flow.
-4. **Expired, revoked, exhausted, wrong-org and unknown codes each refuse with a
-   distinct reason** to the admin — *and* an unknown code is indistinguishable
-   from a wrong-org code to a caller probing for existence (CP-3's oracle
-   lesson: refusal reasons are for the authenticated admin of that org, never a
-   membership test on other orgs' codes).
+4. **The refusals PARTITION — three distinct reasons and one collapsed shape.**
+   *(Rewritten 2026-08-18, B2. As written this clause demanded five distinct
+   reasons **and** unknown ≡ wrong-org in the same sentence, which is a
+   contradiction: an implementer satisfies one half and quietly drops the
+   other.)* The partition is on **what this org is entitled to see**:
+   - **{`expired`, `revoked`, `exhausted`} — three DISTINCT reasons**, given
+     only for a code this organization is entitled to see at all: one bound to
+     it (`discount_code.organization_id = <caller org>`) or an **open** code
+     (`organization_id IS NULL`). The caller has already proven possession of
+     the secret, so naming *why* it failed tells them nothing they could not
+     learn by asking us, and an admin told "this code expired on the 3rd" does
+     not file a support ticket.
+   - **{`unknown`, `wrong-org`} — ONE indistinguishable refusal shape**: same
+     status, same body bytes, same latency class, naming nothing. These two are
+     collapsed precisely because telling them apart is the **non-oracle rule**
+     (CP-3's lesson): a distinguishable "wrong org" answer confirms that a code
+     exists and belongs to somebody, which is a membership test over other
+     tenants' data run from a customer's own key.
+   **Fence:** `test_the_five_refusals_partition_three_and_two` — asserts the
+   three named reasons are distinct strings **and** that the unknown and
+   wrong-org responses are byte-identical. Both halves in one test, so the
+   contradiction cannot reappear by satisfying one of them.
 5. **Redemption is idempotent**: re-submitting the same code against the same
    order redeems **once** (`UNIQUE (discount_code_id, order_id)`), and a
    concurrent double-redeem of a `max_redemptions = 1` code yields one success
    and one refusal — proven under the advisory lock with a real two-connection
    race, not a mock (R8, and the CP-2b race precedent).
-6. **The ledger row from a discounted purchase is distinguishable from both a
-   paid purchase and an SC-4e adjustment** by `(reason, ref)` alone, fenced per
-   (v).
+6. **A discounted purchase is distinguishable from a paid purchase and from an
+   SC-4e adjustment — on `discount_redemption` + `seat_grant.reason`.**
+   *(Re-pointed 2026-08-18, B3. This clause named the `credit_ledger`
+   three-way and was **vacuous at launch**: CP-9 §9.6 writes **zero**
+   `credit_ledger` rows on the subscription path, because §9.1 sells no credit
+   packs. A test over an empty table passes for the wrong reason, which is
+   worse than no test.)* What carries it at launch:
+   - a discounted purchase has a `discount_redemption` row referencing the
+     order; a paid purchase has none; an adjustment has no order at all;
+   - `seat_grant.reason` carries `<reason>:<ref>` from the ONE vocabulary —
+     `purchase:order:<uuid>` vs `discount_redemption:redemption:<uuid>`
+     (CP-9 §9.6, B4's carrier).
+   **Fence:** `test_a_discounted_grant_is_tellable_from_a_paid_one_a_year_later`
+   — the three cases seeded, then classified **from the stored rows alone**,
+   with no access to how they were created.
+   ⚠️ **The `credit_ledger` half of (v) is scoped to WHEN PACKS LAND** (dated
+   2026-08-18): the vocabulary is defined now and the **structural** call-site
+   fence is real now; the *data* test that the three commercial reasons are
+   pairwise distinguishable becomes meaningful with the first pack row and is
+   part of that ticket, not this one.
 7. **Issue and redemption each land a `control_audit` row** naming the operator
    and the code's **prefix** — never its secret, asserted over the log/audit
    record rather than by reading the code (CP-3's fence discipline).
@@ -703,6 +877,16 @@ SC-3's *flow* can be built against the existing tables alone — it is the piece
 that lets you sell before billing automation exists. **SC-5b/5c are hard
 prerequisites for the invoice DOCUMENT, not for the checkout** (SC-4g (vi)); the
 owner-facing consequence is recorded there.
+
+⚠️ **The checkout dispatches in TWO slices, not one** *(2026-08-18, the
+GO-NARROWED re-audit).* The **substrate half** — CP-9's tables, seam, webhook,
+fulfilment, order reads, and **SC-4g (i)–(v) server-side** — is dispatchable
+now, entirely against a real Postgres and a fake provider. The **surface half**
+— SC-4a's checkout UI and its two write proxies — is **held back** until B7's
+gate is chosen, because that decision reaches the tenant plane's capability
+vocabulary and must not ride in on a payments PR. The full split, with the
+other two held-back items, is written once in `customer_console.md` §6's
+sequencing note; do not restate it here, follow it.
 
 ## Gate labels
 
