@@ -139,6 +139,40 @@ class Settings(BaseSettings):
     # Flipping it is an OWNER-GATE act (work_plan.md §6 (b)).
     crm_auto_lead: bool = False
 
+    # ── Customer Console sign-in resolve (WS-31 CP-2b, spec customer_console.md
+    # §6(f)) ────────────────────────────────────────────────────────────────
+    #
+    # `Settings` declares no `env_prefix`, so each field name maps directly to
+    # its upper-cased environment variable.
+    #
+    # ⚠️ SHIPS DARK. With `customer_console_url` OR
+    # `customer_console_deployment_key` unset the resolve path is INERT and
+    # sign-in behaves exactly as it did before CP-2b — no HTTP call, no
+    # projection write, no refusal. Wiring a live deployment (writing either
+    # value into its env) is 🔴 OWNER-GATE (§8 gate 7); declaring the fields is
+    # not.
+    #
+    # `CUSTOMER_CONSOLE_URL` is deliberately the SAME name the workbench BFF
+    # already reads (`app/api/billing/summary/route.ts`) — one Console, one
+    # address, two readers. The KEY is a different name from the BFF's
+    # `CUSTOMER_CONSOLE_ORG_KEY` because it is a different credential with a
+    # different blast radius: `cc_live_` is org-scoped and read-only,
+    # `cc_depl_` is deployment-scoped with capability `{resolve}`. Reusing one
+    # name for two credentials is how a box presents the wrong one and gets a
+    # 401 nobody can explain.
+    customer_console_url: str = ""
+    customer_console_deployment_key: str = ""
+    # The freshness/staleness PAIR (§6(c)) — one number cannot express it.
+    # Console REACHABLE  → a cached answer is re-consulted past the TTL.
+    # Console UNREACHABLE → a cached person proceeds up to the ceiling, and
+    #                       then sign-in fails closed even for them. A cache
+    #                       with no ceiling is not a cache, it is a second
+    #                       identity system that never expires.
+    # A cached record already carrying `sign_in: false` overrides both and
+    # refuses immediately, at any freshness (clause 6's dead-state rule).
+    customer_console_resolve_ttl_seconds: int = 900          # 15 minutes
+    customer_console_resolve_max_staleness_seconds: int = 86400  # 24 hours
+
     # Gmail (Phase 1, WBS 1.3)
     gmail_sa_json_path: str = ""         # service-account key file
     gmail_workspace_domain: str = ""     # e.g. fracktal.in

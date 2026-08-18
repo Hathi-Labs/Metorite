@@ -9,6 +9,17 @@ dependencies = [
     # Org access control resolves roles/overrides from Postgres (acb_auth.access).
     # Imported lazily so the pure permission model stays usable without a DB.
     "sqlalchemy>=2.0",
+    # WS-31 CP-2b — `acb_auth.console_resolve` calls the Customer Console over
+    # HTTP at sign-in. Declared HERE and not inherited from the gateway service
+    # (which already has it): a package that is importable-but-broken anywhere
+    # else is the same trap as depending on `customer-console` in the root venv
+    # and discovering it only when the container is built.
+    #
+    # ⚠️ `customer-console` is deliberately NOT a dependency of this package and
+    # must never become one — the capability decision is made Console-side and
+    # only its RESULT crosses the wire (customer_console.md §6(d)). Fenced by
+    # `tests/unit/test_console_dependency_boundary.py`.
+    "httpx>=0.27",
 ]
 
 [build-system]
