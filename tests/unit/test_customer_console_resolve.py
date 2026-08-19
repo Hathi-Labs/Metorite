@@ -221,8 +221,11 @@ def db():
 
 #: Where an organization is BORN when this suite is about somewhere else.
 #:
-#: Since slice 4 ``deployment_label`` is required and provisioning writes the
-#: placement, so every org has one from birth. Most tests here are about where
+#: This suite births its orgs through the OPERATOR arm, where
+#: ``deployment_label`` is required (it is ``str | None`` at the model since
+#: CP-2c slice 1, required in the handler for the operator arm), and
+#: provisioning writes the placement, so every org has one from birth. Most
+#: tests here are about where
 #: an org is placed *afterwards* — they call ``_place``, which is a MOVE — and
 #: making each of them invent a birth deployment would put a fact none of them
 #: assert into fifteen call sites. This row is that fact, named once.
