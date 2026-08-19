@@ -3038,6 +3038,59 @@ grant landing exactly once). Mutation-proved: reverting the `access.py` conflict
 alone turns **6** of the 20 red. The suite is named in `pr-check.yml`'s R8 skip guard and
 reuses the existing `TENANT_LADDER_DATABASE_URL unset` grep line.
 
+**Slice 7 · The tenant-plane create-only guard — the `store.org_owned_by_other`
+analogue that migration 179 is missing. · 🔲 MINTED 2026-08-20 (found by CP-2c
+slice 2's re-audit; owned HERE because it fixes 179's own invariant — D46.6's
+"one seam, one owner" applied).**
+**The finding, measured on `origin/main`:** `provision_org_owner`
+(`179_org_provisioning.sql:196-262`) refuses only ONE conflict — an
+`owner_email` whose `app_user` row **already belongs to a different
+organization** (the cross-tenant guard, `:222-229`). It does **NOT** refuse a
+**fresh** email claiming an **existing slug**: `provision_organization` reuses
+the org via `INSERT … ON CONFLICT (slug) DO NOTHING` (`:307`), then
+`provision_org_owner` sees the fresh email pass the cross-tenant check and
+**writes it an `owner` role on the existing org**. With `acme` owned by
+`alice`, a fresh `carol@c.com` provisioning slug `acme` → **200, carol is now a
+co-owner of alice's org.** This is byte-for-byte the P0 slice 1 caught and
+fixed **on the Console plane** (`store.org_owned_by_other`, `main.py:794`); the
+tenant plane has no equivalent. **Latent today** — `provision_organization` and
+`provision_local_organization` have no production caller — but CP-2c slice 2
+makes the tenant seam the FIRST writer for a **user-supplied slug from an
+unauthenticated signup form**, so this guard is a **hard prerequisite of CP-2c
+slice 2** and must land first.
+- **What it builds:** migration **180** (`CREATE OR REPLACE FUNCTION
+  provision_org_owner`, forward-only, R6 — a new migration, never an edit to
+  179) adding the create-only guard: refuse when the target org already has an
+  `owner` role held by an email **other than** `p_email` (case-insensitive on
+  `lower(email)`, the 162 idiom — so `Carol` cannot slip past `carol`). A
+  no-owner org may still be completed (the crash-resume shape); the same owner
+  is still idempotent. The refusal is a **catchable, typed signal** —
+  `RAISE EXCEPTION … USING ERRCODE = '<a chosen SQLSTATE, e.g. unique_violation
+  or a custom class>'` so a caller can distinguish "slug owned by another" from
+  the existing "email belongs elsewhere" raise and from a transient error,
+  **without parsing Postgres prose** (the gap `provisioning.py:115-122`'s
+  "deliberately not translated" leaves).
+- **The seam raises it typed:** `provision_local_organization`
+  (`packages/acb_common/acb_common/provisioning.py`) maps the two 179 refusals
+  to two distinct catchable Python exception types (e.g.
+  `OwnerBelongsElsewhere` / `SlugOwnedByAnother`) — the translation slice 4
+  deliberately deferred, now needed by its first caller. Everything else it
+  returns unchanged.
+- **The pre-flight read (for CP-2c step 0's `SlugTaken` classification):**
+  `acb_auth.access.org_owner_of(slug) -> owner_email | None`, the read sibling
+  of `membership_of`, so CP-2c classifies `SlugTaken` **before** any write,
+  mirroring how `membership_of` classifies `AlreadyMember`. Plain identity read,
+  not the resolve path.
+- **Done when:** against the real tenant ladder (R8, both shells) — a fresh
+  email claiming an owned slug is **refused, writes nothing** (the tenant mirror
+  of slice 1's `hijack-refused-writes-nothing`, red-first — reverting the guard
+  re-opens the 200 hijack); a no-owner org is completed by any email; the same
+  owner is idempotent; the two refusals raise **distinct** catchable types; the
+  S1-1 tenant fence and every slice-1/3/4/6 behaviour stays green. No change to
+  179 in place; migration number taken at build (180).
+- **Gate:** 🟢 AGENT-SAFE end to end (fixtures + real Postgres). Executing
+  against a real second org is still H3-gated (D43-3), unchanged.
+
 ---
 
 **Three decisions — `DECISION (agent-proposed, owner may overrule)`, 2026-08-19.**
