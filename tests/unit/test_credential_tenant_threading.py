@@ -552,6 +552,23 @@ def _make_execute(connection):
     return _execute
 
 
+def _default_org(connection) -> str:
+    """The ladder's own seeded organization — the *operator's*.
+
+    Named here rather than inlined because the fail-closed tests below only
+    mean anything if this organization HOLDS the credential an untenanted read
+    might wrongly be served. That is MT-0d's stated leak in one line:
+    *"a default-org fallback would keep answering after tenant #2 and would
+    serve the operator's keys to a customer."*
+    """
+    return str(
+        connection.execute(
+            text("SELECT id FROM organization WHERE slug = :slug"),
+            {"slug": "default"},
+        ).scalar_one()
+    )
+
+
 def _provision(connection, slug: str, name: str) -> str:
     return str(
         connection.execute(
@@ -609,9 +626,17 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
         in-memory table that mirrors the predicate; here Postgres evaluates
         ``(SELECT count(*) FROM organization) = 1`` for real, against the
         ladder's own ``default`` row plus the two just provisioned.
+
+        ⚠️ **The operator's organization must HOLD the key**, or this test
+        passes for the wrong reason. Measured: with no ``default`` key, swapping
+        the predicate for ``WHERE slug = 'default'`` — D33.3's predicted wrong
+        turn — left this assertion GREEN, because the fallback resolved to an
+        organization that happened to have nothing stored. Seeding the operator
+        first is what makes the leak visible rather than merely absent.
         """
         import asyncio
 
+        operator = _default_org(conn)
         org_a = _provision(conn, "mt1j-s5-gamma", "Gamma")
         _provision(conn, "mt1j-s5-delta", "Delta")
         assert conn.execute(
@@ -621,12 +646,16 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
         store = _LadderStore(conn)
 
         async def _drive():
+            await store.put(
+                "openai", "sk-OPERATOR-must-not-leak", organization_id=operator
+            )
             await store.put("openai", "sk-gamma", organization_id=org_a)
             return await store.get("openai")
 
         assert asyncio.run(_drive()) == "", (
             "an untenanted read answered while more than one organization "
-            "exists — the MT-0d fail-closed contract has been softened"
+            "exists — the MT-0d fail-closed contract has been softened, and "
+            "what it served is the operator's key"
         )
 
     def test_the_untenanted_write_raises_with_more_than_one_org(
@@ -711,10 +740,18 @@ class TestTwoOrganizationsResolveTheirOwnModelConfig:
     ):
         from acb_llm.model_config import load_blob, save_blob
 
+        operator = _default_org(conn)
         org_a = _provision(conn, "mt1j-s5-mc-c", "MC C")
         _provision(conn, "mt1j-s5-mc-d", "MC D")
         self._patch(monkeypatch, conn)
 
+        # The operator holds a blob too — see the key_store twin above for why
+        # an empty `default` would make this assertion vacuous.
+        save_blob(
+            "tier_overrides",
+            {"model_list": ["OPERATOR-must-not-leak"]},
+            organization_id=operator,
+        )
         save_blob("tier_overrides", {"model_list": ["a"]}, organization_id=org_a)
 
         assert load_blob("tier_overrides", default="sentinel") == "sentinel", (
@@ -744,9 +781,19 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
         encoding="utf-8"
     )
-    assert "tests/unit/test_credential_tenant_threading.py" in workflow, (
-        "this suite is no longer named in pr-check.yml's R8 platform step, so "
-        "its two-org half would skip unnoticed"
+    # ⚠️ Match the pytest ARGUMENT, not a mention. The comment block above
+    # that step names this file too, so a substring search stayed green with
+    # the invocation line deleted — measured while mutation-proving this fence,
+    # and it is the same "green because something else matched" shape the
+    # skip guard itself exists to catch.
+    invoked = re.search(
+        r"^\s*tests/unit/test_credential_tenant_threading\.py\s*\\\s*$",
+        workflow,
+        re.MULTILINE,
+    )
+    assert invoked, (
+        "this suite is no longer an argument of pr-check.yml's R8 platform "
+        "step, so its two-org half would skip unnoticed"
     )
     assert "TENANT_LADDER_DATABASE_URL unset" in workflow, (
         "the skip-guard grep line this suite's gate reuses has been removed"
