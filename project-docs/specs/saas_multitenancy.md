@@ -3,14 +3,20 @@
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
-⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED** — the
-ticket four specs and one migration were already disclaiming work to
+⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED, and
+slices 6 + 1 + 2 + 3 are now BUILT** — the ticket four specs and one migration were
+already disclaiming work to
 (`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
 `subscription_console.md` · `user_management_contract.md` §3 · `178:39-48`) and which
 **did not exist**, while D36.1 asserts customer zero onboards through `/orgs/provision`.
 Six slices, three agent-proposed defaults (**D43**), execution gated on H3. Three stale
 anchors corrected in the same pass: `_HAS_OWNER_SQL` `:522`→**`:572`**, the second
-`app_user` upsert `:509`→**`:550`**, and MT-0d's *"~20 call sites"*→**38** (measured). ·
+`app_user` upsert `:509`→**`:550`**, and MT-0d's *"~20 call sites"*→**38** (measured).
+**Slices 1+2+3 landed together as one branch** (migration `179_org_provisioning.sql`,
+three plpgsql callables; new `tests/unit/test_org_provisioning.py`, 34 R8 tests, 0
+skips) — a callable that nothing calls yet, by the auditor's own sequencing: slice 4
+brings the box-side caller. **Slice 2 carries a recorded, argued deviation** from its own
+"green without edit" clause — see its box. **Slices 4 and 5 remain NOT BUILT.** ·
 ⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
 MT-3 is ABSORBED.** AI metering, per-org keys, the rate card and the credit ledger now
 live in a **central Control Plane service** — owning spec
@@ -2146,7 +2152,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · ◐ **SLICE 6 BUILT 2026-08-19 · slices 1–5 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slices 4 and 5 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2188,10 +2194,14 @@ org.
 
 1. Extract migration 130's role seed into a **callable** so any organization can be
    seeded with the system roles and their grants.
+   ✅ **BUILT 2026-08-19** — `provision_org_roles(org_id)`, migration 179.
 2. Give the ownership bootstrap a path that is not `_BOOTSTRAP_ORG_SLUG`, **without**
    changing what that constant does for a fresh box (D36.3).
+   ✅ **BUILT 2026-08-19** — `provision_org_owner(org_id, email)`; the constant is
+   untouched, and a fence now asserts that in the negative.
 3. Create the tenant-plane `organization` + `tenant_placement` pair as **one idempotent
    act**.
+   ✅ **BUILT 2026-08-19** — `provision_organization(slug, …)`.
 4. Wire the Console↔tenant seam so a provisioned org **resolves** — including the
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
@@ -2218,7 +2228,7 @@ org.
 
 ---
 
-**Slice 1 · Parameterised role seed.**
+**Slice 1 · Parameterised role seed. · ✅ BUILT 2026-08-19.**
 **Anchors:** `130_org_access_control.sql:175-260` (the `DO $$` block: `owner`, `admin`,
 `manager`, `member`, `guest`, `agent_service` — **six** `org_role` rows, the five
 assignable ones plus the service principal) · its `slug='default'` lookup at `:180` ·
@@ -2237,7 +2247,48 @@ asserts org #2's `admin` holds `billing:purchase` and org #2's `owner` holds `*`
 `default`'s permission set is **byte-identical before and after** the re-point (the
 regression the extraction can actually cause).
 
-**Slice 2 · `_BOOTSTRAP_ORG_SLUG` stops being the only path to an owner.**
+> ✅ **BUILT 2026-08-19 — `infra/postgres/179_org_provisioning.sql`** (number taken at
+> build time; the ladder topped at 178 on `main` **and on every origin branch**, R1).
+> `provision_org_roles(p_org_id UUID)` replays all four seeds' data — six roles,
+> `20 / 19 / 11 / 2 / 7 / 1` permissions for admin / manager / member / guest /
+> agent_service / owner, measured off the live `default` org before extraction.
+>
+> ⚠️ **The re-point did NOT happen, and that is deliberate.** 130/131/133/178 are
+> HISTORY (R6 expand-only; root `CLAUDE.md` §5), and re-pointing `default` at the
+> callable would have required either editing four shipped migrations or adding a fifth
+> `default`-scoped predicate to 179 — **growing the very ratchet this slice installs**.
+> Every organization that exists today is already seeded, so 179 seeds nothing on its
+> own. The done-when's *byte-identical* clause is therefore met the stronger way:
+> `test_the_callable_reproduces_the_default_orgs_grant_set_exactly` asserts the
+> callable's output for a fresh organization **equals `default`'s live set, role for
+> role and permission for permission**, on the same replayed ladder. A text diff could
+> not have made that claim, and it fails if *either* statement drifts.
+>
+> **Evidence.** Red first: 25 failed / 9 passed, every subject
+> `function provision_organization(unknown, unknown, unknown) does not exist`.
+> Green: **34 passed, 0 skips** (`test_org_provisioning.py`, both shells).
+> Mutation-proved — widen `manager` with `billing:purchase` → **2 red** (this suite's
+> parity test *and* `test_billing_purchase_capability.py`'s role set); drop
+> `memory:write_org` from `admin` → **1 red**.
+>
+> **The `slug = 'default'` ratchet is installed** as `TestTheDefaultSlugRatchet`,
+> whitespace-proof (`slug\s*=\s*'default'`), ladder-scoped, baseline **31** — the
+> spec's quoted **29** is the *spaced* measuring command; the two extra are 161's
+> unspaced comment hits, which is exactly why the fence uses the wider regex. It
+> **did not grow**, and it caught the first draft of 179 red for quoting the predicate
+> in a comment. It also ratchets DOWN: `test_the_baseline_is_not_stale` fails if a seed
+> is legitimately retired without lowering the number in the same commit.
+>
+> ⚠️ **One existing suite needed an argued edit**: `test_billing_purchase_capability.py`
+> asserted *exactly one* migration names `'billing:purchase'`, and there are now
+> deliberately two — 178 (the `default` seed, history) and 179 (the callable). The
+> helper is split into `_seed_migration()` / `_per_org_callable()`, told apart by the
+> `default`-slug predicate the callable cannot have **because the ratchet forbids it**,
+> and two tests were ADDED so the second statement is fenced rather than merely
+> tolerated (10 → 12 tests, still 0 skips).
+
+**Slice 2 · `_BOOTSTRAP_ORG_SLUG` stops being the only path to an owner. · ✅ BUILT
+2026-08-19.**
 **Anchors:** `packages/acb_auth/acb_auth/access.py:540` (`_BOOTSTRAP_ORG_SLUG =
 "default"`) · `:542-561` `_BOOTSTRAP_OWNER_SQL` · `:572-577` `_HAS_OWNER_SQL` ·
 `:580-642` `ensure_owner_bootstrap()`, which binds the literal into **both** queries at
@@ -2274,7 +2325,92 @@ production half is now right: with slice 6's fix,
 without it (`ownership_bootstrap_failed`, same error). The `tests/` tree is for that
 reason **not** scanned by slice 6's ratchet — see its `_SCANNED_TREES` comment.
 
-**Slice 3 · `organization` + `tenant_placement`, one act, one transaction.**
+> ✅ **BUILT 2026-08-19 — `provision_org_owner(p_org_id, p_email, p_display_name)` in
+> migration 179.** Named address, explicit organization, `ON CONFLICT (lower(email))`,
+> then the `owner` grant. `_BOOTSTRAP_ORG_SLUG` is **byte-unchanged** and
+> `ensure_owner_bootstrap()` is **not touched at all** — no production Python changed in
+> this slice. The two paths differ in *where the owner's address comes from*, which is
+> why they are two paths and not one parameterised one: the bootstrap reads
+> `EXECUTIVE_EMAILS` from the environment, which SQL cannot do; a provisioned
+> organization is TOLD its owner, which is a parameter. Neither is a special case of the
+> other, so D36.3 is honoured by construction rather than by discipline.
+>
+> **Fail-closed, and it is the interesting half.** `app_user` is unique on
+> `lower(email)` **globally**, so one address cannot be a member of two organizations.
+> Adopting a taken address would MOVE a person between tenants (S1-1's write leak) and
+> attaching org #2's `owner` role to a row that stays in org #1 would be a cross-tenant
+> grant. The function **RAISES**, and because a plpgsql body runs inside the calling
+> statement the whole provisioning act rolls back — asserted by
+> `test_a_refused_owner_rolls_the_whole_act_back`, because an organization that exists
+> with no owner is the 2026-07-30 lockout shape (no owner ⇒ no inviter).
+>
+> **Done-when, met:** provisioning org #2 with a named owner leaves that address holding
+> `owner` **in org #2** (`test_a_named_owner_holds_owner_in_the_provisioned_organization`);
+> `default`'s owner set is untouched — asserted against a `default` that *has* an owner,
+> because on a fresh ladder `app_user` is empty and "unchanged" would otherwise be
+> trivially true.
+>
+> ---
+>
+> ### ⚠️ RECORDED DEVIATION (2026-08-19): the "green without edit" clause was overruled, and here is the argument
+>
+> **What the clause said:** *"its existing tests in `tests/unit/test_owner_bootstrap.py`
+> stay green without edit."* **What was done:** the suite was **edited on two axes** —
+> the fixture's `ON CONFLICT (email)` repaired to `(lower(email))`, and the whole suite
+> re-gated from `DATABASE_URL` onto `TENANT_LADDER_DATABASE_URL`.
+>
+> **Why, in order of weight:**
+>
+> 1. **The clause was unsatisfiable as written and this section already said so.** The
+>    paragraph above it records the measurement: pointed at a real ladder the suite is
+>    4 passed / 1 failed, because its own fixture names an index migration 162 dropped.
+>    Reproduced again at the start of this slice, verbatim: `1 failed, 4 passed`,
+>    `psycopg.errors.InvalidColumnReference … 42P10`. A clause nothing can satisfy is
+>    not a constraint, it is a stop.
+> 2. **The clause protects production semantics; the edit touches neither.** "Without
+>    edit" exists so nobody quietly re-writes the bootstrap's meaning to make a new
+>    feature fit. Not one production line changed in this slice — `access.py` is
+>    byte-identical. What changed is a **test fixture's own INSERT** and a **skip
+>    condition**. A fixture that raises in setup pins nothing at all, so leaving it
+>    broken would have preserved the letter of the clause and none of its purpose.
+> 3. **The re-gate is the whole reason slice 6's defect shipped.** `DATABASE_URL` is
+>    set by no CI job — pr-check.yml refuses to set it, deliberately and with a comment,
+>    because it would arm `test_tenant_coverage.py`'s two DB-gated tests. So these five
+>    tests skipped in **every run ever made**, while the statement beneath them raised
+>    42P10 on every call and `ensure_owner_bootstrap()`'s catch-all swallowed it.
+>    Repairing the fixture without re-gating would have produced a suite that is correct
+>    and still never runs.
+>
+> **The deviation is proved, not asserted.** Mutation: re-arm slice 6's defect on
+> `_BOOTSTRAP_OWNER_SQL` alone → this suite goes **2 failed / 6 passed**. Before the
+> re-gate the same mutation produced **5 skipped, 0 failed**. That difference is the
+> entire value of the edit.
+>
+> **Scope held.** `ensure_owner_bootstrap()` untouched; `_BOOTSTRAP_ORG_SLUG` untouched
+> and now *fenced* by `TestD363TheBootstrapConstantIsNotRepointed` (mutation: re-point
+> it at `os.environ.get("BOOTSTRAP_ORG", "acme")` → **6 red** across the two suites).
+> The suite is added to `pr-check.yml`'s R8 skip guard on the existing
+> `TENANT_LADDER_DATABASE_URL unset` grep line, and `test_this_suite_is_named_in_the_ci_skip_guard`
+> makes its own removal fail. Result: **8 passed, 0 skips**, from a suite that had never
+> once executed.
+>
+> **Two incidental findings, both surfaced only because it now runs:**
+> * `access.py:283`'s `_tables_missing` is a **process-global latch** — the first
+>   resolve that fails with *"does not exist"* sets it permanently and every later call
+>   short-circuits to `_degraded()` without touching a database. Any earlier module in a
+>   directory run arms it, and this suite then reports a successfully-bootstrapped owner
+>   as `is_active=False`. Reset in the fixture (same class as the old
+>   `acb_common.db._ENGINE` reset). **It is a production latch with no reset path
+>   either — a transient "relation does not exist" during a migration window disables
+>   access resolution for the life of the process. Flagged for the board; NOT fixed
+>   here.**
+> * On Windows, psycopg's async mode refuses `ProactorEventLoop`, the loop
+>   `pytest-asyncio` hands every test there. The suite builds its async engine on
+>   `postgresql+asyncpg`, mirroring `acb_common.db.async_database_url():59-60`, which is
+>   what production already does — fidelity, not a workaround.
+
+**Slice 3 · `organization` + `tenant_placement`, one act, one transaction. · ✅ BUILT
+2026-08-19.**
 **Anchors:** `130_org_access_control.sql:36-52` (`organization` DDL + the `default` seed) ·
 `159_control_plane.sql:40-65` (`tenant_placement` DDL + its seed) ·
 `packages/acb_common/acb_common/placement.py` (the resolver; `_PLACEMENT_SQL:36-40`,
@@ -2289,6 +2425,42 @@ is unresolvable, and `placement.resolve_placement` refuses rather than guessing.
 **one** placement; and the set-difference *organizations without a placement* is **empty**
 in the tenant plane (fence:
 `test_every_organization_has_a_placement`).
+
+> ✅ **BUILT 2026-08-19 — `provision_organization(p_slug, p_display_name, p_owner_email,
+> p_domain, p_tier, p_target, p_region)` in migration 179.** One statement:
+> `organization` ON CONFLICT (slug) DO NOTHING → `tenant_placement` ON CONFLICT
+> (organization_id) DO NOTHING → `provision_org_roles` → optionally
+> `provision_org_owner`. **Atomicity comes from the shape, not from a convention**: a
+> plpgsql body executes inside the calling statement, so there is no reachable state in
+> which the organization exists and the placement does not.
+>
+> **Where it lives, and why not Python.** In the migration, beside the role seed —
+> D43-A already ruled that the seeding doctrine is *one SQL function*, and a Python
+> re-statement of the same act would be the second doctrine 178's comment refuses. It
+> also adds **no** database-connection site (R5) and needs no new engine. **Slice 4
+> brings the caller**: a seam function invoking `SELECT provision_organization(…)`
+> through the existing `get_db()` idiom, which is Decision B's pull direction arriving
+> from the box side. **Until then this is a callable nothing calls** — acceptable
+> within one branch of its caller by the auditor's own sequencing, and stated here so
+> nobody reads it as an oversight.
+>
+> **Done-when, met:** re-running for the same slug returns the same id and leaves
+> **one** organization and **one** placement; `test_every_organization_has_a_placement`
+> is a genuine set-difference over the whole tenant plane, not a read-back of the row
+> just written — so a future provisioning path that skips the placement fails there
+> even though its own tests pass. `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner`
+> is kept at the spec's own name and asserts the **SET** of six slugs, per the fences
+> table's warning about the name.
+>
+> **Mutation-proved:** delete the `tenant_placement` insert → **7 red**; drop the
+> cross-tenant refusal → **2 red**; name the bare `email` column in the owner upsert →
+> **13 red** (42P10 at PLAN time, exactly as slice 6 measured).
+>
+> Also fenced: an explicit `bridge`/`eu-west-1` placement is honoured (§1.5's priced
+> tiers stay expressible), an unknown tier is refused by 159's own CHECK rather than
+> defaulted, a blank slug is refused, and an organization may be provisioned **without**
+> an owner — roles and placement still land, because an org with roles and no owner is
+> recoverable and one with neither is not.
 
 **Slice 4 · The Console↔tenant seam — and the Console-side half that is missing.**
 **Anchors:** `customer_console/main.py:584-664` (`POST /orgs/provision`: writes
@@ -2465,17 +2637,29 @@ generated phases inside the fixture, so the build and its fences are unblocked t
 
 | Fence | Binds |
 |---|---|
-| `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement |
-| `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service` |
-| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved |
-| a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited |
+| `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement. ✅ **BUILT** in `tests/unit/test_org_provisioning.py` (not `test_tenant_placement.py`, which is hermetic by design and has no ladder harness) |
+| `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service`. ✅ **BUILT**, name kept verbatim, set asserted |
+| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved. ✅ Still green and still unedited after slices 1+2+3 (8 passed) |
+| a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited. ✅ **BUILT** as `TestTheDefaultSlugRatchet`, pinned at **31** — the whitespace-proof count, which is 29 + 161's two unspaced comment hits. Ratchets both ways: `test_the_baseline_is_not_stale` forces the number DOWN in the same commit as any retirement. ⚠️ **The four seeds were NOT retired** (R6: shipped migrations are history), so the baseline does not fall on this branch — it must simply never rise |
 
-**Rule exposure.** **R1** — the migration number is taken at build time (the ladder tops at
-178 today; that is a measurement). **R5** — no new persisted table is introduced by any
+**Rule exposure.** **R1** — the migration number is taken at build time (the ladder topped
+at 178 when this ticket was minted; slices 1+2+3 took **179** after re-deriving it across
+`main` *and* every origin branch, and `_tenant_ladder.ladder()` fails the whole suite on a
+duplicate prefix). **R5** — no new persisted table is introduced by any
 slice; if one appears it faces `test_tenant_coverage.py`'s source gate, and no slice adds a
-DB-connection or Redis site outside the seam. **R6** — the role-seed extraction is
+DB-connection or Redis site outside the seam. *(Slices 1+2+3 added none: the three
+callables are SQL, and their only Python is test code.)* **R6** — the role-seed extraction is
 expand/contract: add the callable and re-point, never rename in place; the deploy applies
 migrations *before* restarting services, so the old code must still meet the new schema.
+*(As built, there is no re-point at all — see slice 1's box. `CREATE OR REPLACE FUNCTION`
+plus a migration that writes no data is as expand-only as it gets: the ladder can replay it
+against a database serving the old code with no effect whatsoever.)*
+⚠️ **One deferred security decision, recorded in 179's header rather than taken here:**
+the three callables are **SECURITY INVOKER** (the default). Under H3's FORCE-RLS promotion
+a caller bound to tenant A cannot insert tenant B's rows — correct for the app, wrong for a
+path that by definition creates a tenant nobody is bound to yet. `SECURITY DEFINER` is a
+privilege decision that belongs *with* the policy it answers to, not months before it.
+**H3 must resolve this; it is not resolved.**
 **R8 — mandatory and not satisfiable hermetically**: every slice's subject is a query, a
 migration, a constraint or a predicate, and §7.1's traps are precisely the hermetic-fake
 class.
@@ -2495,8 +2679,10 @@ uv run pytest tests/unit/test_org_provisioning.py \
               tests/unit/test_billing_purchase_capability.py -v -rs
 # slice 2 — the fresh-box path must be untouched
 uv run pytest tests/unit/test_owner_bootstrap.py tests/unit/test_org_access_control.py -v -rs
-# slice 3 — placement
-uv run pytest tests/unit/test_tenant_placement.py -v -rs
+# slice 3 — placement. `test_tenant_placement.py` is MT-1a's hermetic resolver
+# suite and stays that way; slice 3's own R8 fences (the one idempotent act,
+# and `test_every_organization_has_a_placement`) live in test_org_provisioning.py
+uv run pytest tests/unit/test_tenant_placement.py tests/unit/test_org_provisioning.py -v -rs
 # slice 4 — the Console half and the resolve arm, end to end
 uv run pytest tests/unit/test_customer_console_resolve.py \
               tests/unit/test_customer_console_lifecycle.py -v -rs
@@ -2508,11 +2694,27 @@ uv run pytest tests/unit/test_app_user_upserts.py -v -rs
 
 ⚠️ **A skip is not a pass** — read the `-rs` block. The R8 suites above skip loudly
 without their DSN, and a green run that skipped them proves the SQL was written, not that
-it works. ⚠️ **`test_org_provisioning.py` does not exist yet** — it is this ticket's own
-deliverable, named here so the file name is decided once rather than per-slice.
-**`test_app_user_upserts.py` now exists** (slice 6, 2026-08-19: 20 tests, 0 skips, named
-in `pr-check.yml`'s R8 skip guard). Everything else in the block exists today and must
-stay green.
+it works.
+
+**Suite state, 2026-08-19 after slices 1+2+3 (all on the tenant DSN, 0 skips):**
+
+| Suite | Count | Note |
+|---|---|---|
+| `tests/unit/test_org_provisioning.py` | **34** | NEW — slices 1+2+3's fences. Was *"does not exist yet"*; the name was reserved here and is the name that shipped |
+| `tests/unit/test_owner_bootstrap.py` | **8** | RE-GATED onto `TENANT_LADDER_DATABASE_URL` by slice 2 (was 5 tests skipping in every run ever made) |
+| `tests/unit/test_billing_purchase_capability.py` | **12** | was 10; +2 for the second statement of the grant (see slice 1's box) |
+| `tests/unit/test_app_user_upserts.py` | **20** | slice 6, unedited |
+| `tests/unit/test_org_access_control.py` | 74 | unedited |
+| `tests/unit/test_tenant_placement.py` | 8 | unedited, still hermetic by design |
+| `tests/unit/test_mt0d_per_org_credentials.py` | 8 | the standing tripwire, unedited |
+
+Whole-block run: **156 passed, 0 skipped**. Directory sweep
+(`pytest tests/unit -k "not calendar and not memory_integration"`): **7125 passed, 10
+failed**, and those ten reproduce byte-identically on a clean tree — pre-existing
+(`test_chat_message_upsert`, `test_code_tools`, `test_observability_access`,
+`test_workflows_engine`, `test_workflows_modules`), none touching MT-1j's surface.
+The first four suites above are named in `pr-check.yml`'s R8 skip guard and share the
+one `TENANT_LADDER_DATABASE_URL unset` grep line.
 
 ---
 
@@ -2549,7 +2751,10 @@ Customers 1–5 shipped as silos (§5.1) ─────────────
   database-level isolation. It is the substrate **MT-2's** one-assignment act assumes:
   MT-2 assigns seats and entitlements *in* an organization that MT-1j is what creates,
   with roles, an owner and a placement. Slice 6 also lands **before** MT-1a-2/H6, which
-  rewrites the same two upserts.
+  rewrites the same two upserts. **Built order, 2026-08-19: slice 6 first (it edits the
+  same SQL string slice 2 would have), then 1+2+3 as one branch — splitting those three
+  would have shipped a callable that nothing calls and an owner path with no organization
+  to own. Slice 4 is next and brings the first caller; slice 5 rides its own ratchet.**
 - **MT-0 does not block selling.** §5.1's first five customers ship as silos *while* MT-1
   is built — but **MT-0a/b/d must be in before customer #2**, silo or not, because they
   are process-level not database-level defects.

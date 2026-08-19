@@ -251,6 +251,8 @@ jobs:
             tests/unit/test_signin_resolve_route.py \
             tests/unit/test_billing_purchase_capability.py \
             tests/unit/test_app_user_upserts.py \
+            tests/unit/test_org_provisioning.py \
+            tests/unit/test_owner_bootstrap.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -264,6 +266,16 @@ jobs:
           # reason and with the same string — the two `app_user` upserts were
           # shipped naming an index migration 162 had dropped, and only a real
           # ladder can see that.
+          #
+          # MT-1j slices 1+2+3 add the fourth and fifth, same string again:
+          # `test_org_provisioning.py` (the per-org role seed, the explicit
+          # owner path and the organization+placement act) and
+          # `test_owner_bootstrap.py`, RE-GATED onto this variable by slice 2.
+          # ⚠️ That second one is the whole reason slice 6's defect reached
+          # main: it gated on `DATABASE_URL`, which no job here sets, so five
+          # tests of the ownership bootstrap skipped in every run ever made
+          # while the statement under them raised 42P10 on every call. A fence
+          # that never executes is not a fence.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1

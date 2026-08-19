@@ -81,22 +81,59 @@ UNGRANTED_ROLES = ("manager", "member", "guest")
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-def _seed_migration() -> Path:
-    """Find the seed BY CONTENT, never by its number.
+#: ⚠️ **Two migrations name this capability since WS-29 MT-1j slice 1, and
+#: that is the design, not drift.** 178 seeds it into the ``default``
+#: organization — history, and R6 keeps it that way. 179's
+#: ``provision_org_roles(org_id)`` grants it to **any** organization, which is
+#: what retires 178's own header sentence: *"In any OTHER organization
+#: `billing:purchase` is born UNHELD … owned by the org-provisioning ticket
+#: that parameterises role seeding."* The two are told apart by the predicate
+#: 178 has and the callable cannot: the ``default``-slug scope. MT-1j's ratchet
+#: (``test_org_provisioning.py::TestTheDefaultSlugRatchet``) is what keeps that
+#: discriminator true, and this regex is deliberately the same whitespace-proof
+#: one it uses.
+_DEFAULT_SCOPED = re.compile(r"slug\s*=\s*'default'", re.IGNORECASE)
+
+
+def _migrations_naming_the_capability() -> list[Path]:
+    """Every numbered tenant migration mentioning the slug, BY CONTENT.
 
     R1: the number is taken at build time and re-checked at merge, so a test
     that hard-codes ``178`` fails the day this file is renumbered in a merge —
     reporting a renumber as a broken seed. The content is the fact.
     """
-    matches = [
+    return [
         path
         for path in sorted((_ROOT / "infra" / "postgres").glob("*.sql"))
         if re.match(r"^\d+_", path.name)
         and f"'{CAPABILITY}'" in path.read_text(encoding="utf-8")
     ]
+
+
+def _seed_migration() -> Path:
+    """The ``default``-scoped seed — SC-4a's own subject."""
+    matches = [
+        path
+        for path in _migrations_naming_the_capability()
+        if _DEFAULT_SCOPED.search(path.read_text(encoding="utf-8"))
+    ]
     assert len(matches) == 1, (
-        f"expected exactly one tenant migration seeding {CAPABILITY!r}, "
-        f"found {[p.name for p in matches]}"
+        f"expected exactly one default-scoped tenant migration seeding "
+        f"{CAPABILITY!r}, found {[p.name for p in matches]}"
+    )
+    return matches[0]
+
+
+def _per_org_callable() -> Path:
+    """MT-1j's parameterised seed — the one that pins no organization."""
+    matches = [
+        path
+        for path in _migrations_naming_the_capability()
+        if not _DEFAULT_SCOPED.search(path.read_text(encoding="utf-8"))
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one organization-agnostic tenant migration granting "
+        f"{CAPABILITY!r}, found {[p.name for p in matches]}"
     )
     return matches[0]
 
@@ -119,6 +156,20 @@ class TestTheVocabulary:
     def test_the_seed_and_the_vocabulary_name_the_same_string(self):
         """A typo in either half is a capability nobody can ever hold."""
         assert f"'{CAPABILITY}'" in _seed_migration().read_text(encoding="utf-8")
+
+    def test_the_per_org_callable_names_the_same_string(self):
+        """B7's org-scope caveat, now answerable.
+
+        178's header states the defect and names its owner: in any other
+        organization the capability is born UNHELD, *"owned by the
+        org-provisioning ticket that parameterises role seeding"*. That ticket
+        (MT-1j slice 1) landed, and this asserts its callable carries the same
+        literal — a typo in either half is a capability nobody can ever hold
+        in any organization but the first.
+        """
+        assert (
+            f"'{CAPABILITY}'" in _per_org_callable().read_text(encoding="utf-8")
+        )
 
     def test_the_seed_is_on_the_replayable_ladder(self):
         """A file the ladder does not pick up is a seed that never runs.
@@ -250,6 +301,56 @@ class TestTheSeed:
         with replayed.begin() as conn:
             for role in GRANTED_ROLES:
                 assert _permissions_for(conn, role).count(CAPABILITY) == 1
+
+    def test_a_second_organization_holds_it_on_the_same_role_set(self, replayed):
+        """B7 clause 2's role set, asserted where it was previously UNHELD.
+
+        The exclusion argument is the fragile half: it is easy to extract a
+        role seed and quietly widen `manager` on the way past, and nothing in
+        178 would notice because 178 only ever describes `default`. This drives
+        the extraction directly — provision an organization, then ask the same
+        two questions of it that the two tests above ask of `default`.
+
+        Rolled back rather than committed: this suite's other tests read the
+        whole plane, and a leftover organization would make
+        ``test_org_provisioning.py``'s placement set-difference answer about
+        rows nobody provisioned.
+        """
+        with replayed.connect() as conn:
+            trans = conn.begin()
+            try:
+                org = conn.execute(
+                    text(
+                        "SELECT provision_organization("
+                        "  'sc4a-second', 'Second Org', 'chief@second.example')"
+                    )
+                ).scalar_one()
+                held = {
+                    row[0]: set(row[1] or [])
+                    for row in conn.execute(
+                        text(
+                            "SELECT r.slug, array_agg(p.permission) "
+                            "  FROM org_role r "
+                            "  LEFT JOIN org_role_permission p ON p.role_id = r.id "
+                            " WHERE r.organization_id = :org GROUP BY r.slug"
+                        ),
+                        {"org": org},
+                    )
+                }
+            finally:
+                trans.rollback()
+
+        for role in GRANTED_ROLES:
+            assert CAPABILITY in held[role], (
+                f"{role!r} does not hold {CAPABILITY!r} in a provisioned "
+                "organization — MT-1j slice 1's extraction dropped it"
+            )
+        for role in UNGRANTED_ROLES:
+            assert CAPABILITY not in held[role], (
+                f"{role!r} holds {CAPABILITY!r} in a provisioned organization "
+                "— the extraction widened B7 clause 2's role set"
+            )
+        assert "*" in held["owner"]
 
     def test_the_ladder_dsn_does_not_leak_out_of_this_suite(self):
         """``DATABASE_URL`` must be untouched by anything above.
