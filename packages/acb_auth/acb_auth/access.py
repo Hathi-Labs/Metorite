@@ -380,6 +380,56 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     return row["id"], row["org"]
 
 
+#: The address that holds ``owner`` in the organization with a given slug. Joins
+#: user_role → org_role('owner') → app_user, scoped to the org by slug. One row
+#: is returned because an org has one owner in practice; ``LIMIT 1`` makes the
+#: read total even if a historical co-owner exists.
+_ORG_OWNER_SQL = """
+    SELECT au.email AS email
+      FROM organization o
+      JOIN org_role r ON r.organization_id = o.id AND r.slug = 'owner'
+      JOIN user_role ur ON ur.role_id = r.id
+      JOIN app_user au ON au.id = ur.user_id
+     WHERE o.slug = :slug
+     LIMIT 1
+"""
+
+
+async def org_owner_of(slug: str | None) -> str | None:
+    """Return the email that OWNS the organization with this ``slug``, or ``None``.
+
+    A plain identity READ, the sibling of :func:`resolve_identity`, placed here
+    for CP-2c step 0's pre-flight ``SlugTaken`` classification — the read analogue
+    of the Console's ``membership_of``, so a self-serve signup can classify a
+    taken slug BEFORE any write, exactly as migration 180's create-only guard
+    refuses it at write time (``saas_multitenancy.md`` §11 slice 7). ``None`` for
+    an unknown slug, an unplaced slug, or a slug whose org has no owner yet (the
+    crash-resume shape — not a conflict). **This read is UX-only, not the
+    boundary:** it never raises (a lookup error resolves to ``None``, matching
+    :func:`resolve_identity`'s posture), so on a transient failure it returns
+    ``None`` = "not taken" and the signup proceeds to the write — where
+    migration 180's guard is the authoritative refusal (``SlugOwnedByAnother``).
+    Degrading open here trades a friendly pre-flight "that name is taken" for a
+    hard write-time error on the rare read failure; it can never admit a hijack,
+    because the DB-level guard, not this read, is what enforces create-only.
+    """
+    if not slug:
+        return None
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            row = (
+                await session.execute(text(_ORG_OWNER_SQL), {"slug": slug})
+            ).mappings().first()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return row["email"]
+
+
 # ── Shared-session authority (groups_sessions_authority.md §3) ──────────────
 
 #: More per-session subjects than this is a data error, not a room.

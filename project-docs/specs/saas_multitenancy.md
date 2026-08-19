@@ -3039,7 +3039,7 @@ alone turns **6** of the 20 red. The suite is named in `pr-check.yml`'s R8 skip 
 reuses the existing `TENANT_LADDER_DATABASE_URL unset` grep line.
 
 **Slice 7 · The tenant-plane create-only guard — the `store.org_owned_by_other`
-analogue that migration 179 is missing. · 🔲 MINTED 2026-08-20 (found by CP-2c
+analogue that migration 179 is missing. · ✅ BUILT 2026-08-20 (found by CP-2c
 slice 2's re-audit; owned HERE because it fixes 179's own invariant — D46.6's
 "one seam, one owner" applied).**
 **The finding, measured on `origin/main`:** `provision_org_owner`
@@ -3090,6 +3090,44 @@ slice 2** and must land first.
   179 in place; migration number taken at build (180).
 - **Gate:** 🟢 AGENT-SAFE end to end (fixtures + real Postgres). Executing
   against a real second org is still H3-gated (D43-3), unchanged.
+
+> ✅ **SLICE 7 BUILT 2026-08-20** (branch `ws-29-mt1j-slice7`). Migration **180**
+> (`180_org_provisioning_create_only_guard.sql`, `CREATE OR REPLACE
+> provision_org_owner`, forward-only R6 — **179 left byte-for-byte untouched**;
+> 180 carries the whole body). Two changes: the **create-only guard** (`IF EXISTS
+> (… user_role → org_role('owner') → app_user WHERE lower(au.email) <>
+> lower(v_email))`, mirroring `store.org_owned_by_other` — a no-owner org still
+> completes, the same owner stays idempotent case-insensitively) and **dedicated,
+> distinct SQLSTATEs** on the two caller-recoverable refusals: email-belongs-
+> elsewhere re-tagged `P1001` (was the generic `P0001` it shared with the two
+> non-recoverable raises), slug-owned-by-another `P1002`. Custom class **P1** (not
+> `23505`, which the genuine `app_user`/`user_role` unique constraints in the same
+> function also raise). The blank-arg and no-owner-role raises stay generic
+> `P0001` and pass through the seam raw.
+> `acb_common.provisioning` grew `OwnerBelongsElsewhere` / `SlugOwnedByAnother`
+> (both under a new `ProvisioningRefused` base) and `_translate_refusal`, which
+> classifies on the driver's **SQLSTATE alone** (`_sqlstate`, asyncpg/psycopg3
+> `.sqlstate`) — never message text — mapping only those two codes and re-raising
+> everything else unchanged. `acb_auth.access.org_owner_of(slug) -> owner_email |
+> None` added beside `resolve_identity` for CP-2c step 0's pre-flight `SlugTaken`.
+> **`test_org_provisioning.py`: 54 passed, 0 skipped, both shells** (sync `conn`
+> guard + async seam). Red-first (180 off the ladder → 179's unguarded body
+> replays): the two hijack fences (sync + async seam) and both cross-tenant
+> classification fences go red. Mutation-proved, each reverted: neutralise the
+> guard predicate → both hijack fences red; make both raises share one SQLSTATE →
+> distinct-SQLSTATE fence red + the seam surfaces `OwnerBelongsElsewhere` for a
+> create-only refusal; give the no-owner-role raise a dedicated code → the
+> "stays-untranslated" fence red; classify on message substring → the pgcode-only
+> by-construction fences red (a `P0001` carrying the cross-tenant prose is
+> correctly NOT translated). The structural invariants were updated for R6
+> forward-only redefinition: `provision_org_owner` may now be defined in two
+> ladder files (179 introduces, 180 supersedes), the **seeding** callables stay
+> singly-defined (D43-A). `test_an_address_already_in_another_tenant_is_refused`
+> and `test_re_provisioning_grants_the_owner_role_exactly_once` stay green (the
+> message on `P1001` is unchanged). Related suites green: `test_app_user_upserts`
+> / `test_owner_bootstrap` / `test_org_access_control` / `test_signin_requests` /
+> `test_billing_purchase_capability` (159 passed). No change to 179, `deploy/`,
+> `.env*` or `key_store.py`; R5 source gate green (180 adds no table).
 
 ---
 
