@@ -186,8 +186,9 @@ BLOB_LINES_CEILING = 10
 
 #: The real debt, measured with :func:`untenanted_sites` on 50e203c0:
 #: **11** untenanted tenant-scoped store calls and **10** untenanted blob
-#: calls. Round 1 banks 11 → 9 and 10 → 1.
-UNTENANTED_KEY_STORE_BASELINE = 9
+#: calls. Round 1 banked 11 → 9 and 10 → 1; round 2 banks 9 → 4 (the five
+#: ``routes/integrations.py`` sites), leaving exactly the H4 remainder below.
+UNTENANTED_KEY_STORE_BASELINE = 4
 UNTENANTED_BLOB_BASELINE = 1
 
 #: Files converted to ZERO untenanted sites, pinned parametrically — the
@@ -202,6 +203,13 @@ CONVERTED_FILES: tuple[str, ...] = (
     # Agent display-name aliases (3 blob calls), read by the Agents page and by
     # observability's roster — both HTTP handlers with a bound tenant.
     "apps/services/gateway/gateway/routes/agent.py",
+    # Round 2 — the Integration Registry credential surface (5 store calls):
+    # `/integrations/status` and `GET /integrations/keys` (`get_by_type`),
+    # `POST /integrations/configure` and `PUT /integrations/keys` (`put`), and
+    # `DELETE /integrations/keys` (`delete`). Every one is reached through the
+    # app-wide `require_authenticated` — the module's only `PUBLIC_ROUTES`
+    # entry is the OAuth callback, which touches none of them.
+    "apps/services/gateway/gateway/routes/integrations.py",
 )
 
 #: Sites that STAY untenanted, as file → exact remaining count, each a decision
@@ -391,6 +399,43 @@ def test_every_h4_site_carries_its_marker_in_place(relative_path: str):
     assert re.search(r"H4[:\s]", source), (
         f"{relative_path} is exempted here but carries no `H4:` marker in "
         "place — the exemption is a decision and belongs beside the code"
+    )
+
+
+def test_every_remaining_untenanted_site_is_an_owner_gated_one():
+    """The terminal statement: slice 5 is at its floor absent an owner act.
+
+    Round 2 lands the last agent-safe subgraph, so the remaining untenanted
+    calls are EXACTLY the H4 set — the once-per-process latch on the live
+    completion path, the lifespan startup, and the import-time tier map. Each
+    needs a **tenant-scoped API key** and per-request provider credentials,
+    which is a credential-scope change and ``work_plan.md`` §6 gate (f).
+
+    Stated as set equality rather than as a total, because two totals can agree
+    while naming different sites. This is the fence a future agent trips by
+    threading a *guessed* org at an owner-gated site to make the number fall —
+    the leftover is the honest state, and the number cannot go lower without
+    the owner's act. When that act lands, this test and the H4 tables move
+    together or the fence is lying.
+    """
+    key_store, blobs = untenanted_sites()
+    assert set(key_store) == set(H4_KEY_STORE_SITES), (
+        "the untenanted key_store sites are no longer exactly the H4 set — "
+        f"measured {sorted(key_store)}, pinned {sorted(H4_KEY_STORE_SITES)}"
+    )
+    assert set(blobs) == set(H4_BLOB_SITES), (
+        "the untenanted blob sites are no longer exactly the H4 set — "
+        f"measured {sorted(blobs)}, pinned {sorted(H4_BLOB_SITES)}"
+    )
+    assert (_total(key_store), _total(blobs)) == (
+        sum(H4_KEY_STORE_SITES.values()),
+        sum(H4_BLOB_SITES.values()),
+    ), (
+        f"measured {_total(key_store)} + {_total(blobs)} untenanted calls "
+        f"against an H4 remainder of {sum(H4_KEY_STORE_SITES.values())} + "
+        f"{sum(H4_BLOB_SITES.values())}. Every untenanted credential call left "
+        "in the tree must be one the H4 tables name with a reason; a new one "
+        "that is not is debt written past the ratchet."
     )
 
 
@@ -616,6 +661,61 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
         assert b_key == "sk-beta-secret"
         assert a_all == {"openai": "sk-alpha-secret"}
         assert b_all == {"openai": "sk-beta-secret"}
+
+    def test_integration_credentials_are_org_scoped_on_listing_and_delete(
+        self, conn, master_key
+    ):
+        """The `/integrations/keys` arm of the store — round 2's own surface.
+
+        `get_by_type` and `delete` are not covered by the `get`/`get_all` pair
+        above. `get_by_type` stacks a `credential_type` predicate on top of
+        `organization_id`, and `delete` is the only DESTRUCTIVE method in the
+        set — and the one whose untenanted arm returns *silently*
+        (`key_store.delete_no_tenant`) rather than raising, so a delete that
+        resolved the wrong organization would destroy another tenant's
+        credential and report `{"deleted": true}` either way.
+
+        The LLM key seeded into A is what makes the `credential_type`
+        predicate load-bearing: if it were dropped, A's integration listing
+        would carry `openai` and the first assertion fails.
+        """
+        import asyncio
+
+        org_a = _provision(conn, "mt1j-s5-int-a", "Integrations A")
+        org_b = _provision(conn, "mt1j-s5-int-b", "Integrations B")
+        store = _LadderStore(conn)
+
+        async def _drive():
+            for org, tag in ((org_a, "alpha"), (org_b, "beta")):
+                await store.put(
+                    "zoho-crm:client_id",
+                    f"cid-{tag}",
+                    credential_type="integration",
+                    service="zoho-crm",
+                    organization_id=org,
+                )
+            await store.put("openai", "sk-alpha", organization_id=org_a)
+            before = (
+                await store.get_by_type("integration", organization_id=org_a),
+                await store.get_by_type("integration", organization_id=org_b),
+            )
+            await store.delete("zoho-crm:client_id", organization_id=org_a)
+            after = (
+                await store.get_by_type("integration", organization_id=org_a),
+                await store.get_by_type("integration", organization_id=org_b),
+            )
+            return before, after
+
+        (a_before, b_before), (a_after, b_after) = asyncio.run(_drive())
+
+        assert a_before == {"zoho-crm:client_id": "cid-alpha"}
+        assert b_before == {"zoho-crm:client_id": "cid-beta"}
+        assert a_after == {}
+        assert b_after == {"zoho-crm:client_id": "cid-beta"}, (
+            "deleting an integration credential in one organization removed "
+            "the other organization's row — DELETE /integrations/keys is "
+            "org-scoped or it is a cross-tenant destructive write"
+        )
 
     def test_the_untenanted_read_returns_nothing_with_three_orgs_present(
         self, conn, master_key

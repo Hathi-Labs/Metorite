@@ -4,7 +4,8 @@
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
 ⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
-slices 6 + 1 + 2 + 3 are BUILT, and slice 5 is on its RATCHET (round 1 landed)** — the
+slices 6 + 1 + 2 + 3 are BUILT, and slice 5 is on its RATCHET (rounds 1 + 2 landed —
+the ratchet now stands at `4 + 1`, which is exactly its owner-gated floor)** — the
 ticket four specs and one migration were
 already disclaiming work to
 (`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
@@ -17,7 +18,10 @@ anchors corrected in the same pass: `_HAS_OWNER_SQL` `:522`→**`:572`**, the se
 three plpgsql callables; new `tests/unit/test_org_provisioning.py`, 34 R8 tests, 0
 skips) — a callable that nothing calls yet, by the auditor's own sequencing: slice 4
 brings the box-side caller. **Slice 2 carries a recorded, argued deviation** from its own
-"green without edit" clause — see its box. **Slices 4 and 5 remain NOT BUILT.** ·
+"green without edit" clause — see its box. **Slice 4 remains NOT BUILT. Slice 5 is on
+its ratchet: rounds 1 and 2 have landed (`11 + 10` → `9 + 1` → `4 + 1`), and every
+untenanted credential call still in the tree is now an OWNER-GATED one named in the
+H4 tables — slice 5 is at its floor absent an owner act.** ·
 ⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
 MT-3 is ABSORBED.** AI metering, per-org keys, the rate card and the credit ledger now
 live in a **central Control Plane service** — owning spec
@@ -2507,8 +2511,8 @@ database)*, **two single-DB halves plus a reserved smoke:**
   that loads both ladders explicitly — named here so nobody invents it as an acceptance
   criterion; it is optional hardening, not the done-when.
 
-**Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUND 1 BUILT
-2026-08-19.**
+**Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUNDS 1 + 2 BUILT
+2026-08-19 — the ratchet stands at `4 + 1`, its owner-gated FLOOR.**
 **Anchors + measurement (2026-08-19):**
 
 ```bash
@@ -2666,7 +2670,69 @@ ratchet's cadence; each PR banks its progress.
 > **Remaining for round 2+ (9 + 1):** `routes/integrations.py` (5 — `get_by_type` ×2,
 > `put` ×2, `delete` ×1; request-scoped and convertible exactly like `settings.py`, simply
 > a different subgraph and deliberately out of this round's scope) and the 4 + 1 H4 sites
-> above, which are blocked on the owner act, not on effort.
+> above, which are blocked on the owner act, not on effort. **Round 2 took the first half
+> — see the box below.**
+
+> ### ◐ RATCHET ROUND 2 — BUILT 2026-08-19 · the ratchet reaches its FLOOR
+>
+> **Banked: `9 + 1` → `4 + 1`,** which now EQUALS `sum(H4_KEY_STORE_SITES)` +
+> `sum(H4_BLOB_SITES)`. **Every untenanted credential call left in `apps/` + `packages/`
+> is an owner-gated one named in the H4 tables with its reason**, so slice 5 cannot move
+> further without the credential-scope act (`work_plan.md` §6 gate (f)) — it is at its
+> floor, not merely in progress.
+>
+> **Converted this round — the Integration Registry credential surface.**
+> `gateway/routes/integrations.py` → **0** untenanted (was 5), pinned in
+> `CONVERTED_FILES`:
+>
+> | Route | Call | Was |
+> |---|---|---|
+> | `GET /integrations/status` | `get_by_type("integration")` | rendered *"no keys stored"* for org #2 — the untenanted read returns `{}` |
+> | `GET /integrations/keys` | `get_by_type("integration")` | same: `{"services": {}, "total_keys": 0}` |
+> | `POST /integrations/configure` | `put(...)` | the raise was **swallowed** into a `integrations.db_write_failed` warning, and the route still returned its `written` list — a silent loss, the same shape as round 1's `_sync_key_to_store` |
+> | `PUT /integrations/keys` | `put(...)` | the raise surfaced as an unhandled **500** |
+> | `DELETE /integrations/keys` | `delete(provider)` | ⚠️ the worst of the five: `delete` **logs `key_store.delete_no_tenant` and returns**, so the route answered `{"ok": true, "deleted": true}` having deleted nothing |
+>
+> Idiom identical to round 1 — `from gateway.db import current_tenant`,
+> `organization_id=current_tenant()`, read on the request's own context, never from
+> `req.service` or any other request input (R11). All five routes are under the app-wide
+> `require_authenticated`; this module's only `PUBLIC_ROUTES` entry is the OAuth callback,
+> which touches none of them.
+>
+> 🚫 **Refused and marked in place, not repaired: the `os.environ[...]` /
+> `_upsert_env_var(...)` halves** of `configure` / `put` / `delete`. A process env var and
+> a single `.env` file hold one value for the whole deployment, so org #2 saving
+> `ZOHO_CLIENT_ID` overwrites org #1's for every caller and every agent reading it through
+> `get_settings()`; the delete's `os.environ.pop` unsets it for every organization while
+> removing only the caller's row. Same class as
+> `settings.py::_inject_env_into_litellm` — it needs per-request provider credentials, the
+> same owner act the H4 sites wait on. Consequence worth stating: `/integrations/status`'s
+> `configured` / `missing_keys` / `env-file` columns stay **deployment-wide**; only the
+> `db_keys` / `encrypted-db` half is per organization.
+>
+> **New fences (R7), both red-first:** `test_every_remaining_untenanted_site_is_an_owner_gated_one`
+> — set equality (not just a total, since two totals can agree while naming different
+> sites) between the measured untenanted files and the H4 tables · and the R8
+> `test_integration_credentials_are_org_scoped_on_listing_and_delete`, which exercises the
+> two store methods the `get`/`get_all` pair did not: `get_by_type` (a `credential_type`
+> predicate stacked on `organization_id`) and `delete` (**the only destructive method in
+> the set, and the one whose untenanted arm returns silently**). Suite: **25 tests, 0
+> skips** (was 22).
+>
+> **Mutation-proved (each performed, measured, reverted):**
+>
+> | Mutation | Red |
+> |---|---|
+> | un-thread one newly banked site (`delete` in `integrations.py`) | **4** — incl. the new equality fence |
+> | add a new untenanted `get_by_type` in `integrations.py` | **4** — site-dependent, the property is the fence |
+> | thread a *guessed* org at an H4 site (`main.py:209 get_all`) | **3** — incl. the exact-count fence going red for *shrinking* |
+> | `key_store.delete` drops `organization_id` from its `WHERE` | **1** — and it is the new R8 test; nothing else in the suite saw it |
+> | `key_store.get_by_type` drops `organization_id` from its `WHERE` | **1** — same, same test |
+>
+> ⚠️ **The last two are why the R8 half was extended.** Both mutations are cross-tenant
+> credential bugs that the whole structural half — every count, every ceiling, every
+> exact-count pin — reports as GREEN, because the call sites are correctly threaded and
+> only the SQL underneath is wrong. That is the R8 case in one line.
 
 **Slice 6 · The `ON CONFLICT (email)` repair. · ✅ BUILT 2026-08-19 — the prediction held,
 and it was WORSE than predicted.**
@@ -2816,8 +2882,11 @@ uv run pytest tests/unit/test_tenant_placement.py tests/unit/test_org_provisioni
 # slice 4 — the Console half and the resolve arm, end to end
 uv run pytest tests/unit/test_customer_console_resolve.py \
               tests/unit/test_customer_console_lifecycle.py -v -rs
-# slice 5 — the standing tripwire, unedited
-uv run pytest tests/unit/test_mt0d_per_org_credentials.py -v -rs
+# slice 5 — the completion ratchet, plus the standing tripwire it must leave
+# UNEDITED. Run them together: the ratchet is only meaningful while the pair it
+# refuses to "repair" is still green.
+uv run pytest tests/unit/test_credential_tenant_threading.py \
+              tests/unit/test_mt0d_per_org_credentials.py -v -rs
 # slice 6 — both upsert paths against the real ladder
 uv run pytest tests/unit/test_app_user_upserts.py -v -rs
 ```
@@ -2826,7 +2895,8 @@ uv run pytest tests/unit/test_app_user_upserts.py -v -rs
 without their DSN, and a green run that skipped them proves the SQL was written, not that
 it works.
 
-**Suite state, 2026-08-19 after slices 1+2+3 (all on the tenant DSN, 0 skips):**
+**Suite state, 2026-08-19 after slices 1+2+3 and slice 5's ratchet rounds 1+2 (all on
+the tenant DSN, 0 skips):**
 
 | Suite | Count | Note |
 |---|---|---|
@@ -2837,14 +2907,25 @@ it works.
 | `tests/unit/test_org_access_control.py` | 67 | unedited *(row corrected 2026-08-19 at verification — the first write-up transcribed 74; measured 67)* |
 | `tests/unit/test_tenant_placement.py` | 7 | unedited, still hermetic by design *(corrected from a transcribed 8; measured 7)* |
 | `tests/unit/test_mt0d_per_org_credentials.py` | 8 | the standing tripwire, unedited |
+| `tests/unit/test_credential_tenant_threading.py` | **25** | slice 5's completion ratchet. 22 at round 1; round 2 adds the H4-equality fence, the R8 integration-credential case and one `CONVERTED_FILES` parameter. 0 skips on the tenant DSN |
 
-Whole-block run: **156 passed, 0 skipped**. Directory sweep
-(`pytest tests/unit -k "not calendar and not memory_integration"`): **7125 passed, 10
-failed**, and those ten reproduce byte-identically on a clean tree — pre-existing
-(`test_chat_message_upsert`, `test_code_tools`, `test_observability_access`,
-`test_workflows_engine`, `test_workflows_modules`), none touching MT-1j's surface.
-The first four suites above are named in `pr-check.yml`'s R8 skip guard and share the
-one `TENANT_LADDER_DATABASE_URL unset` grep line.
+Whole-block run: **181 passed, 0 skipped** *(was 156; +25 when slice 5's ratchet joined
+the block at round 2 — measured, not summed)*. Directory sweep
+(`pytest tests/unit -k "not calendar and not memory_integration"`, **both DSNs
+exported**): **7150 passed, 10 failed, 44 skipped** at slice 5 round 2, measured against
+a same-session clean-tree run of **7147 passed, 10 failed, 44 skipped** — exactly the +3
+tests round 2 adds and not one collateral change. The ten failures are the SAME ten in
+both runs and are pre-existing (`test_chat_message_upsert`, `test_code_tools`,
+`test_observability_access`, `test_workflows_engine`, `test_workflows_modules`), none
+touching MT-1j's surface. ⚠️ Export **both** DSNs before comparing this number: with
+`CUSTOMER_CONSOLE_DATABASE_URL` unset the same tree reports **6830 passed / 364
+skipped** — a ~320-test swing that is skip posture, not regression, and the kind of
+difference a transcribed number hides.
+The first four suites above, plus `test_credential_tenant_threading.py`, are named in
+`pr-check.yml`'s R8 skip guard and share the one `TENANT_LADDER_DATABASE_URL unset` grep
+line. That suite asserts its own membership
+(`test_this_suite_is_named_in_the_ci_skip_guard`), matching the pytest **argument** rather
+than a mention — slice 2's box records why the weaker check is not a check.
 
 ---
 
