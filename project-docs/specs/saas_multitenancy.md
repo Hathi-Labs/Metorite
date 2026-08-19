@@ -2704,8 +2704,8 @@ it works.
 | `tests/unit/test_owner_bootstrap.py` | **8** | RE-GATED onto `TENANT_LADDER_DATABASE_URL` by slice 2 (was 5 tests skipping in every run ever made) |
 | `tests/unit/test_billing_purchase_capability.py` | **12** | was 10; +2 for the second statement of the grant (see slice 1's box) |
 | `tests/unit/test_app_user_upserts.py` | **20** | slice 6, unedited |
-| `tests/unit/test_org_access_control.py` | 74 | unedited |
-| `tests/unit/test_tenant_placement.py` | 8 | unedited, still hermetic by design |
+| `tests/unit/test_org_access_control.py` | 67 | unedited *(row corrected 2026-08-19 at verification — the first write-up transcribed 74; measured 67)* |
+| `tests/unit/test_tenant_placement.py` | 7 | unedited, still hermetic by design *(corrected from a transcribed 8; measured 7)* |
 | `tests/unit/test_mt0d_per_org_credentials.py` | 8 | the standing tripwire, unedited |
 
 Whole-block run: **156 passed, 0 skipped**. Directory sweep
