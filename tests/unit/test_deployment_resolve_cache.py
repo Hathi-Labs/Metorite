@@ -43,7 +43,6 @@ builds are under test rather than stubbed away.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import uuid
@@ -57,7 +56,7 @@ pytest.importorskip("sqlalchemy")
 import httpx
 from sqlalchemy import create_engine, text
 
-from tests.unit._tenant_ladder import apply_ladder
+from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 #: The launch snapshot (``tests/conftest.py``), not the live variable. Falls
 #: back to the live one only when the snapshot was never taken, i.e. when this
@@ -84,50 +83,13 @@ DEPLOYMENT_KEY = "cc_depl_fixture_notarealsecret"
 
 
 # ── The process-singleton scope ─────────────────────────────────────────────
-
-@contextlib.asynccontextmanager
-async def tenant_engine_scope(url: str):
-    """Point ``acb_common.db`` at the tenant ladder DSN for one test.
-
-    ⚠️ **The singletons are reset on SETUP as well as teardown.** ``_ENGINE``
-    and ``_SESSION_FACTORY`` are module-level and process-wide; an earlier
-    suite in the same process can have built one against a *different* DSN, and
-    a fixture that only cleaned up after itself would then run every assertion
-    below against that other database and pass or fail for reasons nothing here
-    controls.
-
-    The engine is disposed **inside the test's own event loop** — asyncpg
-    connections belong to the loop that opened them, so a synchronous teardown
-    running after the loop closed would leak them for the length of the run.
-
-    ⚠️ **Setup DISPOSES what it drops** *(review note 2, 2026-08-18)*. It used
-    to set ``_ENGINE = None`` and walk away, orphaning an engine an earlier
-    suite had built with its pool still holding live sockets — once per suite,
-    for the length of the run. Teardown always disposed; setup only forgot,
-    which is the harder half to notice. Fence:
-    ``test_the_scope_disposes_the_engine_it_finds_ALREADY_built``.
-    """
-    from acb_common import db as shared
-
-    prior = os.environ.get("DATABASE_URL")
-    stranded = shared._ENGINE
-    shared._ENGINE = None
-    shared._SESSION_FACTORY = None
-    if stranded is not None:
-        await stranded.dispose()
-    os.environ["DATABASE_URL"] = url
-    try:
-        yield
-    finally:
-        engine = shared._ENGINE
-        shared._ENGINE = None
-        shared._SESSION_FACTORY = None
-        if engine is not None:
-            await engine.dispose()
-        if prior is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = prior
+#
+# ``tenant_engine_scope`` used to be defined here. It moved to
+# ``tests/unit/_tenant_ladder.py`` on 2026-08-19 (WS-29 MT-1j slice 4) because
+# ``test_org_provisioning.py`` needs the same scope to drive the seam caller,
+# and a second copy of a process-singleton reset is the mirror that goes stale
+# and then leaks sockets. Its two fences below are unchanged and still exercise
+# the same function, by import.
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -1307,6 +1269,59 @@ class TestProjectionUpsert:
                 {"u": console_uuid},
             ).scalar_one()
         assert hits == 0
+
+    async def test_a_slug_PROVISIONED_BY_THE_SEAM_takes_the_write_path(
+        self, wired, db, monkeypatch
+    ):
+        """WS-29 MT-1j slice 4c — the join key, end to end.
+
+        Spec: ``saas_multitenancy.md`` §11 MT-1j slice 4 (done-when 4c).
+
+        ⚠️ **There is no projection bug being hunted here** (re-audit finding).
+        The write path is already fenced green by every sibling above, whose
+        local ``organization`` row comes from ``_provision_org`` — a hand-
+        written INSERT standing in for a provisioning act that did not exist.
+        The claim of THIS test is narrower and it is the one nothing else
+        makes: the row **``provision_local_organization`` writes** is
+        discoverable through the slug join key §6(k) names, so a real
+        provisioned tenant takes the WRITE path rather than the skip-warn.
+        Before slice 4b it failed only because the function did not exist.
+
+        The seam runs inside ``wired``'s ``tenant_engine_scope``, i.e. against
+        the same ladder database the projection writes to — which is the point:
+        one database, one slug, two writers that have never met.
+        """
+        from acb_auth import console_resolve
+        from acb_common.provisioning import provision_local_organization
+
+        recorder = Recorder()
+        monkeypatch.setattr(console_resolve, "_log", recorder)
+
+        email, slug = _email(), _slug()
+        org_id = await provision_local_organization(slug, "Seam Org")
+        wired.answers(_answer(slug))
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is True
+        assert decision.slug == slug
+        # The WRITE path: identity and membership rows landed on the
+        # provisioned organization, by slug.
+        assert _identity_rows(db, email) == 1
+        assert [m["slug"] for m in _membership(db, email)] == [slug]
+        with db.begin() as c:
+            resolved_org = c.execute(
+                text("SELECT m.organization_id::text "
+                     "  FROM user_identity ui "
+                     "  JOIN org_membership m ON m.user_id = ui.id "
+                     " WHERE lower(ui.email) = :e"),
+                {"e": email.lower()},
+            ).scalar_one()
+        assert resolved_org == org_id
+        # And the skip-warn did NOT fire — the negative half, because a write
+        # that happened *and* a warning that fired would mean the branch ran
+        # twice or the row was found by something other than the slug.
+        assert "console_resolve.unprovisioned_org" not in recorder.names()
 
     async def test_a_resolve_for_an_unprovisioned_org_signs_in_and_writes_nothing(
         self, wired, db, monkeypatch

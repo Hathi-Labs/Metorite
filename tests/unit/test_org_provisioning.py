@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth.access import _BOOTSTRAP_ORG_SLUG
 from sqlalchemy import create_engine, text
 
-from tests.unit._tenant_ladder import apply_ladder, ladder
+from tests.unit._tenant_ladder import apply_ladder, ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
 _URL = (
@@ -772,5 +773,135 @@ class TestSliceThreeTheOneIdempotentAct:
     def test_the_ladder_dsn_does_not_leak_out_of_this_suite(self):
         """``DATABASE_URL`` must be untouched by anything above — setting it
         re-arms ``test_tenant_coverage.py``'s two DB-gated tests, which fail by
-        construction against a freshly-replayed ladder."""
+        construction against a freshly-replayed ladder.
+
+        ⚠️ Slice 4b's tests below DO set it, inside
+        ``tenant_engine_scope`` — which restores it in a ``finally``. That is
+        the same discipline ``test_deployment_resolve_cache.py`` runs under and
+        the same context manager, which is why this assertion still holds
+        whichever order the classes run in.
+        """
         assert os.environ.get("DATABASE_URL", "") != _URL
+
+
+# ── Slice 4b · the seam caller, through its own call path ───────────────────
+
+def _org_row(conn, slug: str) -> dict | None:
+    row = conn.execute(
+        text("SELECT id::text AS id, display_name FROM organization "
+             " WHERE slug = :s"),
+        {"s": slug},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _placement_count(conn, org_id: str) -> int:
+    return conn.execute(
+        text("SELECT count(*) FROM tenant_placement "
+             " WHERE organization_id = CAST(:o AS uuid)"),
+        {"o": org_id},
+    ).scalar_one()
+
+
+@_DB_GATE
+class TestSliceFourTheSeamCaller:
+    """``acb_common.provisioning.provision_local_organization`` — slice 4b.
+
+    Spec: ``saas_multitenancy.md`` §11 MT-1j slice 4 (done-when 4b).
+
+    **Asserted through this function's own call path, never delegated.** Slice
+    3's suite above already proves what ``provision_organization`` does when
+    ``psql`` calls it; that says nothing about whether a Python caller reaches
+    it with the right arguments, commits, and hands back the id. The audit
+    killed the version of this clause that leaned on the class above, so every
+    assertion here follows a call to the seam.
+
+    ⚠️ **These tests COMMIT.** The seam takes its own session from the shared
+    engine (``get_session_factory()``, R5(b) — deliberately NOT ``get_db()``,
+    whose ratchet may only go down; see ``provisioning.py``'s docstring) and
+    cannot ride the rolled-back ``conn``
+    fixture — so slugs and owner addresses carry a uuid and the rows stay in
+    the scratch ladder database. That is safe for the one whole-plane invariant
+    in this file (``test_every_organization_has_a_placement``): every row these
+    tests leave behind has a placement by construction, which is the property
+    it asserts.
+    """
+
+    async def test_the_seam_provisions_an_organization_end_to_end(self, conn):
+        """One call → one org, one placement, six roles, one owner."""
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"mt1j-seam-{uuid.uuid4().hex[:8]}"
+        owner = f"chief-{uuid.uuid4().hex[:8]}@seam.example"
+
+        async with tenant_engine_scope(_URL):
+            org_id = await provision_local_organization(slug, "Seam Org", owner)
+
+        row = _org_row(conn, slug)
+        assert row is not None, "the seam wrote no organization row"
+        assert row["id"] == org_id
+        assert row["display_name"] == "Seam Org"
+        assert _placement_count(conn, org_id) == 1
+        assert set(_grants(conn, org_id)) == SYSTEM_ROLES
+        assert _owner_emails(conn, org_id) == {owner}
+
+    async def test_calling_it_twice_converges_on_one_organization(self, conn):
+        """Idempotent on the slug — the natural key a retrying signup resends.
+
+        Twice through the SEAM, not twice through the SQL: two Python calls are
+        two transactions, so this also asserts the commit in the first one did
+        not leave the second one inserting a duplicate.
+        """
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"mt1j-seam-twice-{uuid.uuid4().hex[:8]}"
+        owner = f"chief-{uuid.uuid4().hex[:8]}@twice.example"
+
+        async with tenant_engine_scope(_URL):
+            first = await provision_local_organization(slug, "Twice Org", owner)
+            second = await provision_local_organization(slug, "Twice Org", owner)
+
+        assert first == second
+        assert conn.execute(
+            text("SELECT count(*) FROM organization WHERE slug = :s"),
+            {"s": slug},
+        ).scalar_one() == 1
+        assert _placement_count(conn, first) == 1
+        assert set(_grants(conn, first)) == SYSTEM_ROLES
+        assert _owner_emails(conn, first) == {owner}
+
+    async def test_an_organization_may_be_provisioned_without_an_owner(self, conn):
+        """The Console-side half may create the org before it knows the owner.
+
+        ``owner_email`` is optional here for the same reason it is optional in
+        179: an organization with roles and no owner is recoverable, one with
+        neither is the lockout shape.
+        """
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"mt1j-seam-ownerless-{uuid.uuid4().hex[:8]}"
+
+        async with tenant_engine_scope(_URL):
+            org_id = await provision_local_organization(slug)
+
+        # The display name defaults to the slug — in SQL, not in Python.
+        assert _org_row(conn, slug) == {"id": org_id, "display_name": slug}
+        assert _placement_count(conn, org_id) == 1
+        assert set(_grants(conn, org_id)) == SYSTEM_ROLES
+        assert _owner_emails(conn, org_id) == set()
+
+    async def test_a_blank_slug_surfaces_179s_refusal(self):
+        """The refusal is the DATABASE's, and it arrives unchanged.
+
+        There is deliberately no client-side slug check: a second guard here
+        could drift from the one that actually enforces, and a test asserting
+        it would be asserting this module rather than the contract.
+        """
+        from acb_common.provisioning import provision_local_organization
+        from sqlalchemy.exc import DBAPIError
+
+        async with tenant_engine_scope(_URL):
+            with pytest.raises(DBAPIError) as caught:
+                await provision_local_organization("   ", "Blank")
+
+        assert "slug is required" in str(caught.value.orig)

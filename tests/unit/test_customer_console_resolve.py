@@ -26,11 +26,15 @@ that way — so this suite skips loudly rather than passing without a server, an
 ``pr-check.yml``'s hand-list names it so CI cannot go back to skipping it while
 reporting green (CP-3's finding).
 
-⚠️ **Fixtures INSERT ``deployment`` and ``org_placement`` rows directly, and
-that is correct.** Nothing in the tree writes them today — ``POST
-/orgs/provision`` does not, and teaching it to is a NON-goal of this ticket. A
-fixture that went through a route that does not exist would be testing a route
-that does not exist.
+⚠️ **Fixtures still INSERT ``deployment`` rows directly, and they still MOVE
+``org_placement`` directly — but they no longer CREATE the placement.** As of
+WS-29 MT-1j slice 4 ``POST /orgs/provision`` writes it, so ``_new_org`` names a
+deployment and the row is born through the product. ``_place`` survives as what
+it always was underneath: **a move**, which provisioning deliberately refuses
+to perform (D46.6 item 4) and which no route implements yet. The one clause
+that closes the loop end to end —
+*provisioning alone makes an org resolvable* — is
+``TestProvisioningIsWhatPlacesAnOrg`` below, and it was red before slice 4.
 """
 from __future__ import annotations
 
@@ -50,7 +54,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder
+from tests.unit._customer_console_ladder import apply_ladder, ensure_deployment
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -192,11 +196,35 @@ def db():
     return create_engine(_URL, future=True)
 
 
-def _new_org(client, prefix: str = "org", *, core_seats: int = 3) -> str:
+#: Where an organization is BORN when this suite is about somewhere else.
+#:
+#: Since slice 4 ``deployment_label`` is required and provisioning writes the
+#: placement, so every org has one from birth. Most tests here are about where
+#: an org is placed *afterwards* — they call ``_place``, which is a MOVE — and
+#: making each of them invent a birth deployment would put a fact none of them
+#: assert into fifteen call sites. This row is that fact, named once.
+PARKING_LABEL = "parking-resolve-suite"
+
+
+@pytest.fixture(autouse=True)
+def _parking(db):
+    """Ensure :data:`PARKING_LABEL` exists — per TEST, never per module.
+
+    ``test_customer_console_lifecycle.py`` empties ``deployment`` to build the
+    sole-deployment world adjudication item 3 forbids inferring from, and a
+    module-scoped row would not survive it whichever order the two files run
+    in.
+    """
+    with db.begin() as c:
+        ensure_deployment(c, label=PARKING_LABEL)
+
+
+def _new_org(client, prefix: str = "org", *, core_seats: int = 3,
+             deployment_label: str = PARKING_LABEL) -> str:
     slug = f"{prefix}-{uuid.uuid4().hex[:8]}"
     r = client.post("/orgs/provision", headers=OP, json={
         "slug": slug, "name": "N", "owner_email": f"owner@{slug}.example",
-        "core_seats": core_seats,
+        "core_seats": core_seats, "deployment_label": deployment_label,
     })
     assert r.status_code == 200, r.text
     return slug
@@ -556,15 +584,102 @@ class TestPlacementIsTheBoundary:
         assert [o["slug"] for o in answer["organizations"]] == [y]
 
     def test_an_org_with_no_placement_row_is_placed_nowhere(self, client, db):
-        """Nowhere is not here. The join is inner on purpose."""
+        """Nowhere is not here. The join is inner on purpose.
+
+        ⚠️ **The row is now REMOVED to construct this case**, because since
+        slice 4 provisioning always writes one and an unplaced organization is
+        no longer a state the product can produce. The property under test is
+        unchanged and still worth a fence: it is the inner join in
+        ``store.deployment_visible_orgs`` that makes "placed nowhere" invisible
+        rather than universally visible, and a ``LEFT JOIN`` written there in a
+        later refactor would show every unplaced organization to every
+        deployment.
+        """
         deployment = _new_deployment(db, "lonely")
         orphan = _new_org(client, "orphan")
+        orphan_id = _org_id(client, orphan)
         email = f"person-{uuid.uuid4().hex[:8]}@orphan.example"
-        _member(db, org_id=_org_id(client, orphan), email=email)
+        _member(db, org_id=orphan_id, email=email)
+        with db.begin() as c:
+            removed = c.execute(
+                text("DELETE FROM org_placement WHERE organization_id = "
+                     "CAST(:o AS uuid) RETURNING organization_id"),
+                {"o": orphan_id},
+            ).first()
+        assert removed is not None, (
+            "provisioning wrote no placement to remove — this case is now "
+            "constructed by deleting the row slice 4 writes"
+        )
 
         r = _resolve(client, _depl_key(db, deployment_id=deployment),
                      email=email)
         assert r.json() == {"organizations": []}
+
+
+class TestProvisioningIsWhatPlacesAnOrg:
+    """WS-29 MT-1j slice 4a's last clause — and the only one with no fixture.
+
+    Spec: ``saas_multitenancy.md`` §11 MT-1j slice 4 (done-when 4a, final
+    clause) · D46.6 item 1.
+
+    Every other placement in this file is written by ``_place``, a fixture
+    standing in for a product that did not write one. Here the *product* writes
+    it: an operator provisions naming a deployment, and a key for that
+    deployment resolves the organization. **Red before slice 4** — ``POST
+    /orgs/provision`` wrote no ``org_placement`` row, so ``store.py:706``'s
+    inner join answered nothing for every organization the Console had ever
+    created, forever, and fail-closed sign-in read as "the Console is down".
+    """
+
+    def test_an_org_provisioned_onto_a_deployment_resolves_on_its_key(
+        self, client, db
+    ):
+        """Provision → resolve, with nothing hand-written in between.
+
+        The subject is the OWNER's address, which provisioning itself made a
+        member of, so the whole path from ``POST /orgs/provision`` to a
+        deployment key's answer is the product's — no ``_place``, no
+        ``_member``. The only fixture writes are the deployment row and the key
+        itself, both of which are OWNER-GATE to create for real (§8 gate 7) and
+        therefore have no route by design.
+        """
+        label = f"born-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            deployment = ensure_deployment(c, label=label)
+
+        slug = _new_org(client, "born", deployment_label=label)
+        owner = f"owner@{slug}.example"
+
+        answer = _resolve(
+            client, _depl_key(db, deployment_id=deployment), email=owner
+        )
+
+        assert answer.status_code == 200, answer.text
+        body = answer.json()
+        assert [o["slug"] for o in body["organizations"]] == [slug]
+        # NULL is a legitimate answer and reaches the wire as `null`, never as
+        # an invented string: slice 4 leaves `database_target` unset.
+        assert body["organizations"][0]["placement"] is None
+
+    def test_a_key_for_another_deployment_still_sees_nothing(
+        self, client, db
+    ):
+        """The negative half — provisioning places on ONE box, not on all of them.
+
+        Without this, a placement write that ignored its ``deployment_id`` (or
+        an inner join quietly widened to a cross join) would pass the positive
+        clause above.
+        """
+        label = f"born-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            ensure_deployment(c, label=label)
+        elsewhere = _new_deployment(db, "elsewhere")
+
+        slug = _new_org(client, "born", deployment_label=label)
+
+        answer = _resolve(client, _depl_key(db, deployment_id=elsewhere),
+                          email=f"owner@{slug}.example")
+        assert answer.json() == {"organizations": []}
 
 
 # ══ Clause 5 — no cross-org existence oracle ═════════════════════════════════

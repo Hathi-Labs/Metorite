@@ -33,7 +33,11 @@ from fastapi.testclient import TestClient
 from customer_console.keys import split_key
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import (  # noqa: E402
+    DEFAULT_DEPLOYMENT_LABEL,
+    apply_ladder,
+    ensure_deployment,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -72,11 +76,26 @@ def db():
     return create_engine(_URL, future=True)
 
 
+@pytest.fixture(autouse=True)
+def _box():
+    """The deployment every org here is provisioned onto (MT-1j slice 4).
+
+    Autouse and per-test: the helpers below are plain functions taking only a
+    ``client``, and threading a fixture through every one of them would be more
+    edit than the fact deserves — this suite's subject is credentials, not
+    placement.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        ensure_deployment(conn)
+    eng.dispose()
+
+
 def _new_org(client, prefix: str = "org") -> str:
     slug = f"{prefix}-{uuid.uuid4().hex[:8]}"
     r = client.post("/orgs/provision", headers=OP, json={
         "slug": slug, "name": "N", "owner_email": f"o@{slug}.com",
-        "core_seats": 3,
+        "core_seats": 3, "deployment_label": DEFAULT_DEPLOYMENT_LABEL,
     })
     assert r.status_code == 200, r.text
     return slug
@@ -108,6 +127,7 @@ def _org_id(client, slug: str) -> str:
     """The org's id. Provisioning is idempotent on slug, so this is a lookup."""
     return client.post("/orgs/provision", headers=OP, json={
         "slug": slug, "name": "N", "owner_email": f"o@{slug}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL,
     }).json()["organization_id"]
 
 
@@ -372,10 +392,16 @@ class TestRejection:
         assert client.post("/usage/record",
                            headers={"Authorization": f"Bearer {key}"},
                            json=usage).status_code == 401
+        # The body is COMPLETE and valid — including slice 4's required
+        # `deployment_label` — so 401 can only be about the credential. A body
+        # the model would reject anyway would let a 422 masquerade as this
+        # refusal the day the door stopped shutting.
         assert client.post("/orgs/provision",
                            headers={"Authorization": f"Bearer {key}"},
                            json={"slug": "x", "name": "x",
-                                 "owner_email": "x@y.com"}).status_code == 401
+                                 "owner_email": "x@y.com",
+                                 "deployment_label": DEFAULT_DEPLOYMENT_LABEL,
+                                 }).status_code == 401
 
     def test_a_key_shaped_operator_token_is_still_not_a_key(self, client, monkeypatch):
         # Guards the parser rather than the comparison: a staff token that

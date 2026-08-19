@@ -18,9 +18,13 @@ two P2s (2026-08-19)**: **115** tests in
 
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) and CP-2d
 (second factor / email OTP, documented-deferred) MINTED 2026-08-19 (D46,
-owner directive) — spec only, nothing built.** CP-2c dispatches only after
-MT-1j slice 4 (`saas_multitenancy.md` §11) closes the Console↔tenant seam it
-orchestrates; its live flip set is §8 gate 8. *(Header verified against code
+owner directive) — spec only, nothing built.** CP-2c's hard dependency —
+MT-1j slice 4 (`saas_multitenancy.md` §11), the Console↔tenant seam it
+orchestrates — is **✅ MET on the operator arm as of 2026-08-19**: the
+`org_placement` write and the `provision_local_organization` seam both ship.
+What CP-2c still owns is its own **deployment-key arm** (the key names itself,
+`{resolve, provision}`), which stays behind §8 gate 7; its live flip set is
+§8 gate 8. *(Header verified against code
 2026-08-19: no signup route, no `SELF_SERVE*` flag, no production caller of
 migration 179 — measured, cited in the ticket.)*
 
@@ -1499,8 +1503,12 @@ answer that gives least:
    oracle over other tenants' order ids, which is CP-3's lesson in the one
    place order ids are guessable (they are UUIDs, but the refusal shape is the
    control, not the entropy). The operator-side idiom stays as it is —
-   `_org_id`'s 404 names the slug (`main.py:276-282`) because the operator is
-   cross-org **by design**; that is the contrast, not the precedent.
+   `_org_id`'s 404 names the slug (`main.py:449-455` — *anchor re-measured
+   2026-08-19 at the slice-4 re-audit to `:436-442`, then shifted +13 by the
+   same PR's `ProvisionRequest` insert and re-corrected at review; it
+   originally said `:276-282`, an unrelated order-read model*) because the
+   operator is cross-org **by design**; that is the contrast, not the
+   precedent.
    **Fence:** `test_a_foreign_order_and_an_unknown_order_refuse_identically` —
    two organizations, org A attempts to read and to redeem against org B's
    order id and against a random UUID, and the four responses are compared
@@ -1994,24 +2002,38 @@ lifecycle states of §4.1d are enforced with `suspended` keeping **login working
 while features lock; an org reaching `cancelled` retains data through a named
 export window.
 
-> ⚠️ **A second, larger gap — recorded 2026-08-19 as a dated correction rather
-> than silently, because CP-2a's ✅ and this fact contradict each other.**
-> **`POST /orgs/provision` does not write `org_placement`, and nothing else in
-> the tree does either.** Measured 2026-08-19: the route
-> (`customer_console/main.py:584-664`) writes `organization`, `user_identity`,
-> seats, `org_membership`, `org_subscription`, `provisioning_run` and an audit
-> row — and no placement. The only `INSERT INTO org_placement` anywhere is a test
-> fixture (`tests/unit/test_customer_console_resolve.py:232`), whose docstring
-> names the gap and correctly declares closing it a non-goal *of CP-2b*.
-> **The consequence composes with CP-2b's inner join** (`store.py:625`,
-> `JOIN org_placement p … WHERE p.deployment_id = :dep`): **an organization
-> provisioned through this route can never be resolved by any deployment key**,
-> so a provisioned customer's sign-in fails closed in a way that reads as a
+> ✅ **A second, larger gap — CLOSED 2026-08-19 by `saas_multitenancy.md` §11
+> MT-1j slice 4 (operator arm).** The record is kept rather than deleted,
+> because CP-2a's ✅ and this fact contradicted each other for a day and the
+> next reader needs to know which way it resolved.
+>
+> *The gap, as measured 2026-08-19:* **`POST /orgs/provision` did not write
+> `org_placement`, and nothing else in the tree did either.** The route wrote
+> `organization`, `user_identity`, seats, `org_membership`, `org_subscription`,
+> `provisioning_run` and an audit row — and no placement. The only
+> `INSERT INTO org_placement` anywhere was a test fixture
+> (`tests/unit/test_customer_console_resolve.py`), whose docstring named the gap
+> and correctly declared closing it a non-goal *of CP-2b*. **The consequence
+> composed with CP-2b's inner join** (`store.py`,
+> `JOIN org_placement p … WHERE p.deployment_id = :dep`): an organization
+> provisioned through this route could never be resolved by any deployment key,
+> so a provisioned customer's sign-in failed closed in a way that read as a
 > Console outage. Under **D36.1** — Fracktal onboards through this same route —
-> that is customer zero's path. The ✅ stands for what shipped; the row is
-> **owed**, and its owner is **`saas_multitenancy.md` §11 MT-1j slice 4**
-> (minted 2026-08-19). Neither CP-2a nor CP-2b was wrong to leave it: each
-> disclaimed it to a ticket that, until that date, did not exist.
+> that was customer zero's path. Neither CP-2a nor CP-2b was wrong to leave it:
+> each disclaimed it to a ticket that, until that date, did not exist.
+>
+> *How it closed:* `ProvisionRequest` gained a **required `deployment_label`**
+> and the route writes exactly one `org_placement` row for the named deployment,
+> `database_target` NULL, `ON CONFLICT (organization_id) DO NOTHING` —
+> provisioning places, it never moves (409 on a different label, 404 on an
+> unknown one, 422 on a missing field even with exactly one deployment seeded).
+> This is a **breaking change to `POST /orgs/provision`**, free because the
+> Console is deployed nowhere; the six CP-2a-era suites were updated in the same
+> PR. The end-to-end clause — *provision, then a deployment key resolves that
+> org* — is fenced by
+> `test_customer_console_resolve.py::TestProvisioningIsWhatPlacesAnOrg`.
+> The **deployment-key arm** (the key names itself) remains CP-2c's and stays
+> behind §8 gate 7 / §6 gate (f).
 >
 > ⚠️ **One acceptance clause is OWED, not met — recorded 2026-08-18 rather than
 > struck.** "a test kills it at each step" is **not implemented**.
@@ -3798,18 +3820,31 @@ overrule any numbered item)*:
    gateway does not have today; minting it must not weaken
    `require_authenticated` for any existing route. The route orchestrates, in
    order: **(a)** Console `POST /orgs/provision` (registry org + GST fields +
-   trial + resumable `provisioning_run` + owner membership) — authenticated by
-   the deployment credential whose capability set grows to exactly
-   `{resolve, provision}`. **That growth is this ticket's proposed answer to
-   D43-2's open sub-question** and is the deliberate act CP-2b's non-goals
-   anticipated ("plausibly the second capability it earns"); Console-side
-   enforcement stays per-capability, so a `{resolve}`-only key presenting a
-   provision call is refused. Issuing/expanding a real key stays §8 gate 7.
-   **(b)** the Console act writes `org_placement` — the measured hole above
-   (`main.py:584-664` writes no placement) is **MT-1j slice 4's**, a HARD
-   dependency of this ticket. **(c)** tenant-side
-   `SELECT provision_organization(slug, display_name, owner_email)` (migration
-   179) — org + placement + six roles + owner, `ON CONFLICT`-idempotent.
+   trial + resumable `provisioning_run` + owner membership + `org_placement`)
+   — authenticated by the deployment credential whose capability set grows to
+   exactly `{resolve, provision}`. **That growth is this ticket's proposed
+   answer to D43-2's open sub-question** and is the deliberate act CP-2b's
+   non-goals anticipated ("plausibly the second capability it earns");
+   Console-side enforcement stays per-capability, so a `{resolve}`-only key
+   presenting a provision call is refused. Issuing/expanding a real key stays
+   §8 gate 7. ⚠️ **Adjudicated 2026-08-19 (D46.6, after slice 4's NO-GO
+   audit): the provision route has TWO arms, and each ticket owns exactly
+   one.** MT-1j slice 4 ships the **operator arm** — the operator names the
+   deployment via a required `deployment_label`; provisioning never MOVES a
+   placement (same-label re-run no-ops, different-label is 409); the
+   sole-deployment heuristic forbidden by name. CP-2c builds the
+   **deployment-key arm**: the key IS the deployment identity, so this arm
+   carries NO `deployment_label` — presenting one is **400, never ignored**
+   (the same R11 rule as the resolve arm's `org_slug`) — and every placement
+   write semantic is inherited from slice 4 unchanged.
+   **(b)** the `org_placement` write itself is **MT-1j slice 4's** — ✅ **BUILT
+   2026-08-19 on the operator arm**, so this hard dependency is MET: the route
+   writes the row and the two refusals (404 unknown label, 409 different label)
+   ship with it. **(c)** tenant-side: call **slice 4's seam function
+   `provision_local_organization(…)`** (✅ built 2026-08-19,
+   `packages/acb_common/acb_common/provisioning.py`) — the one caller-side
+   wrapper over migration 179; this route must not invoke the SQL directly (one
+   seam, not two). Org + placement + six roles + owner, `ON CONFLICT`-idempotent.
    Cross-plane retry converges on ONE org because the **slug is the natural
    key on both planes** (179's header: *"the natural key is what a retrying
    signup form resends"*).
@@ -3878,11 +3913,14 @@ half) · invite emails (`members.py:149` — its own small ticket) · per-tenant
 subdomains (MT-1f).
 
 **Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
-seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, so
-slice 4 lands first or this ticket absorbs it explicitly) → CP-2c build
-(agent-safe, dark) → the owner's live set (Console deployed · key issued with
-`{resolve, provision}` · `SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve
-flip).
+seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, and
+**slice 4 lands FIRST — adjudicated, D46.6**: neither ticket absorbs the
+other's half. Slice 4 owns the operator arm, the placement write and the
+tenant seam function; CP-2c owns the deployment-key arm and the form. The
+earlier "or this ticket absorbs it explicitly" escape hatch is struck — it
+was how one seam got two owners) → CP-2c build (agent-safe, dark) → the
+owner's live set (Console deployed · key issued with `{resolve, provision}` ·
+`SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve flip).
 
 **CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
 MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a

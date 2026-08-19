@@ -58,6 +58,7 @@ the image the ``migrations`` job already names for exactly this file.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 
@@ -175,3 +176,61 @@ def apply_ladder(conn) -> None:
         _exec_file(conn, INIT_SCHEMA)
     for path in ladder():
         _exec_file(conn, path)
+
+
+@contextlib.asynccontextmanager
+async def tenant_engine_scope(url: str):
+    """Point ``acb_common.db`` at the tenant ladder DSN for one test.
+
+    ⚠️ **Lives here rather than in a suite** *(moved 2026-08-19, WS-29 MT-1j
+    slice 4)*. It was written inside ``test_deployment_resolve_cache.py``, and
+    slice 4b's seam caller — ``acb_common.provisioning.
+    provision_local_organization``, which goes through ``get_session_factory()``
+    (the shared engine; deliberately NOT ``get_db()``, whose site-count ratchet
+    may only go down — the module's own docstring carries the argument) — needs
+    the same scope from ``test_org_provisioning.py``. A second copy of a process-
+    singleton reset is exactly the mirror this module's docstring is about: the
+    two would drift, and the one that forgot to dispose would leak sockets for
+    the length of the run. The fences that were written against it
+    (``test_the_scope_disposes_the_engine_it_finds_ALREADY_built``,
+    ``test_the_ladder_dsn_does_not_leak_out_of_this_suite``) still exercise
+    THIS function, by import.
+
+    ⚠️ **The singletons are reset on SETUP as well as teardown.** ``_ENGINE``
+    and ``_SESSION_FACTORY`` are module-level and process-wide; an earlier
+    suite in the same process can have built one against a *different* DSN, and
+    a scope that only cleaned up after itself would then run every assertion
+    against that other database and pass or fail for reasons nothing here
+    controls.
+
+    The engine is disposed **inside the test's own event loop** — asyncpg
+    connections belong to the loop that opened them, so a synchronous teardown
+    running after the loop closed would leak them for the length of the run.
+
+    ⚠️ **Setup DISPOSES what it drops** *(review note 2, 2026-08-18)*. It used
+    to set ``_ENGINE = None`` and walk away, orphaning an engine an earlier
+    suite had built with its pool still holding live sockets — once per suite,
+    for the length of the run. Teardown always disposed; setup only forgot,
+    which is the harder half to notice.
+    """
+    from acb_common import db as shared
+
+    prior = os.environ.get("DATABASE_URL")
+    stranded = shared._ENGINE
+    shared._ENGINE = None
+    shared._SESSION_FACTORY = None
+    if stranded is not None:
+        await stranded.dispose()
+    os.environ["DATABASE_URL"] = url
+    try:
+        yield
+    finally:
+        engine = shared._ENGINE
+        shared._ENGINE = None
+        shared._SESSION_FACTORY = None
+        if engine is not None:
+            await engine.dispose()
+        if prior is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = prior

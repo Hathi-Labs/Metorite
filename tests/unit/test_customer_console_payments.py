@@ -50,7 +50,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from tests.unit._customer_console_ladder import apply_ladder, ladder
+from tests.unit._customer_console_ladder import (
+    DEFAULT_DEPLOYMENT_LABEL,
+    apply_ladder,
+    ensure_deployment,
+    ladder,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -184,6 +189,19 @@ def db():
     return create_engine(_URL, future=True)
 
 
+@pytest.fixture(autouse=True)
+def _box():
+    """The deployment every org here is provisioned onto (MT-1j slice 4).
+
+    Autouse and per-test: ``_new_org`` is a plain function taking a ``client``,
+    and this suite's subject is money, not placement.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        ensure_deployment(conn)
+    eng.dispose()
+
+
 def _new_org(client, prefix: str = "pay", *, billing_state: str = "KA",
              owner_email: str | None = None) -> str:
     slug = f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -191,7 +209,7 @@ def _new_org(client, prefix: str = "pay", *, billing_state: str = "KA",
         "slug": slug, "name": "Acme Pumps",
         "owner_email": owner_email or f"owner@{slug}.test",
         "gstin": "29ABCDE1234F1Z5", "billing_state": billing_state,
-        "core_seats": 3,
+        "core_seats": 3, "deployment_label": DEFAULT_DEPLOYMENT_LABEL,
     })
     assert r.status_code == 200, r.text
     return slug
