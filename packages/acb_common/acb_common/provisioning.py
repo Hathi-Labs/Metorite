@@ -43,10 +43,13 @@ no rules of its own on purpose:
   the acting identity, and provisioning is not an act performed *as* the
   organization being created.
 
-⚠️ **Nothing calls this in production yet, and that is a stated state rather
-than an oversight.** Its first caller is CP-2c's self-serve signup route; until
-then the "callable nothing calls" note that used to live on 179 lives here,
-honestly (spec §11 MT-1j slice 4b).
+⚠️ **Its first caller is CP-2c's self-serve signup route
+(`gateway/routes/signup.py`), built 2026-08-20 — step 1 of the two-plane
+orchestration.** It is not yet reachable *in production*: signup is behind
+`SELF_SERVE_SIGNUP_ENABLED` (default OFF) and the Console it mirrors to is
+deployed nowhere (D47). So the "callable nothing calls" note that used to live
+on 179 is retired — it has a caller now; it is simply dark (spec §11 MT-1j
+slice 4b; CP-2c slice 2).
 """
 from __future__ import annotations
 

@@ -161,9 +161,11 @@ __all__ = [
     "ACCESS_DENIED",
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
+    "ConsoleProvisionUnavailable",
     "ResolveDecision",
     "invalidate",
     "is_wired",
+    "provision_org_on_console",
     "resolve_for_signin",
 ]
 
@@ -195,6 +197,22 @@ _cache: dict[str, tuple[float, _Record]] = {}
 
 class _Unreachable(Exception):
     """The Customer Console did not give us an answer we could read."""
+
+
+class ConsoleProvisionUnavailable(Exception):
+    """The Customer Console could not mirror a signup provision.
+
+    Transient by construction — the box is not wired, the network failed, or
+    the Console answered anything other than a readable 200 (a 5xx, a 401 on
+    this box's own key, a 408/429, or a 4xx we should not treat as a verdict).
+    A FRESH tenant-born slug cannot be *permanently* refused by the Console:
+    slice 1's create-only guard (``store.org_owned_by_other``) rejects only an
+    org already owned by a DIFFERENT identity, and this slug's owner is the same
+    session email the tenant plane just made owner — so any non-200 here is an
+    outage, never a real "slug taken". CP-2c's signup route maps this to
+    ``ConsoleUnavailable`` and a resubmit converges, because both planes are
+    idempotent on the slug.
+    """
 
 
 @dataclass(frozen=True)
@@ -410,6 +428,103 @@ async def _post_resolve(
             raise _Unreachable("a 200 body that is not an object")
         return 200, body
     return response.status_code, {}
+
+
+# ── The Console-provision client (CP-2c slice 2) ─────────────────────────────
+#
+# ⚠️ **This module is the ONE Console httpx client and the sole reader of
+# `CUSTOMER_CONSOLE_URL` / `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` (`is_wired()`).** A
+# second httpx client for the Console anywhere — e.g. one built inside the
+# signup route — is root `CLAUDE.md` §5's defect by name (a second way to do an
+# existing thing). CP-2c's route calls `provision_org_on_console` and holds no
+# client, no URL and no key of its own.
+
+
+async def _post_provision(
+    slug: str,
+    name: str,
+    owner_email: str,
+    gstin: str | None,
+    billing_state: str | None,
+) -> dict[str, Any]:
+    """Present the deployment key to the ``/orgs/provision`` DEPLOYMENT-KEY arm.
+
+    ⚠️ **The body carries NO ``deployment_label``** — the key IS the deployment,
+    and the Console refuses a deployment key that names one with a 400 (R11, the
+    same rule the resolve arm applies to ``org_slug``). ``gstin`` and
+    ``billing_state`` thread straight to the Console org row; the Console side
+    already accepts both (``main.py:169-170``), so no Console change is needed.
+    """
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_deployment_key.strip()
+
+    payload: dict[str, Any] = {
+        "slug": slug,
+        "name": name,
+        "owner_email": owner_email,
+    }
+    if gstin:
+        payload["gstin"] = gstin
+    if billing_state:
+        payload["billing_state"] = billing_state
+
+    try:
+        client = _new_http_client()
+        async with client:
+            response = await client.post(
+                f"{base}/orgs/provision",
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+            )
+    except Exception as exc:
+        raise ConsoleProvisionUnavailable(str(exc)[:200]) from exc
+
+    if response.status_code == 200:
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise ConsoleProvisionUnavailable("unreadable 200 body") from exc
+        if not isinstance(body, dict):
+            raise ConsoleProvisionUnavailable("a 200 body that is not an object")
+        return body
+
+    # Anything that is not a readable 200 is TRANSIENT for a fresh tenant-born
+    # slug: the create-only guard cannot permanently refuse the same owner, so a
+    # 5xx / 401 / 408 / 429 — or any other non-200 — is an outage to retry, never
+    # a real "slug taken". Raising the same type for all of them is what keeps
+    # the route from ever answering a false `SlugTaken` off the Console plane.
+    raise ConsoleProvisionUnavailable(f"HTTP {response.status_code}")
+
+
+async def provision_org_on_console(
+    slug: str,
+    name: str,
+    owner_email: str,
+    *,
+    gstin: str | None = None,
+    billing_state: str | None = None,
+) -> dict[str, Any]:
+    """Mirror a signup provision onto the Customer Console. Idempotent on slug.
+
+    Step 2 of CP-2c's two-plane signup orchestration: the tenant plane is
+    provisioned FIRST (the hard one-email-one-org guard), then this mirrors the
+    org onto the Console so the registry can meter and cap it. Returns the
+    Console's ``{organization_id, slug}`` on success.
+
+    Raises:
+        ConsoleProvisionUnavailable: the box is not wired, or the Console did
+            not answer a readable 200. These are the ONLY failures a fresh
+            tenant-born slug can hit; the route maps them to
+            ``ConsoleUnavailable`` and a resubmit converges (both planes
+            idempotent on the slug).
+    """
+    if not is_wired():
+        # Ship-dark: an unwired box has no Console to mirror onto. Transient by
+        # the same logic — the caller has already committed the tenant plane, so
+        # the org works dark, and a wired resubmit catches the Console up.
+        raise ConsoleProvisionUnavailable("unwired")
+    return await _post_provision(slug, name, owner_email, gstin, billing_state)
 
 
 # ── The projection (migration 159 + 177) ────────────────────────────────────

@@ -430,6 +430,65 @@ async def org_owner_of(slug: str | None) -> str | None:
     return row["email"]
 
 
+#: The organization a person already belongs to, by their globally-unique
+#: ``app_user`` row. ``app_user`` is unique on ``lower(email)`` since migration
+#: 162, so one address is a member of at most one organization; the join carries
+#: the org's ``slug`` and ``display_name`` back so a caller can NAME the caller's
+#: OWN org without a second read.
+_MEMBERSHIP_SQL = """
+    SELECT o.slug         AS slug,
+           o.display_name AS display_name
+      FROM app_user au
+      JOIN organization o ON o.id = au.organization_id
+     WHERE lower(au.email) = :email
+     LIMIT 1
+"""
+
+
+async def membership_of(email: str | None) -> tuple[str, str] | None:
+    """Return ``(org_slug, org_display_name)`` for the org this email belongs to.
+
+    A plain identity READ, the sibling of :func:`org_owner_of` and
+    :func:`resolve_identity`, placed here for CP-2c step 0a's ``AlreadyMember``
+    pre-flight — the tenant-plane analogue of the Console's ``membership_of``.
+    It reads ``app_user ⋈ organization``; ``app_user`` is globally unique on
+    ``lower(email)`` (migration 162), so a hit is the caller's ONE own
+    organization. Returns the caller's OWN org (slug + display_name), or
+    ``None``.
+
+    ``None`` means **"not a member"** — no ``app_user`` row, or a row with a
+    NULL ``organization_id``. It is the answer a self-serve signup pre-flight
+    wants: *nobody by this address yet, proceed*.
+
+    **This read is UX-only, not the boundary, and it fails OPEN.** A transient
+    lookup error resolves to ``None`` (same posture as :func:`org_owner_of` and
+    :func:`resolve_identity`), because the DB-level guards are authoritative: a
+    ``None`` from a read failure just lets the signup proceed to the WRITE,
+    where migration 180's create-only guard / the cross-tenant guard
+    (``SlugOwnedByAnother`` / ``OwnerBelongsElsewhere``) is the real refusal.
+    Degrading open here can never admit a hijack — it only trades a friendly
+    pre-flight ``AlreadyMember`` for the write-time typed raise on the rare read
+    failure, which CP-2c's route maps to the SAME code.
+    """
+    if not email:
+        return None
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            row = (
+                await session.execute(
+                    text(_MEMBERSHIP_SQL), {"email": email.lower().strip()}
+                )
+            ).mappings().first()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return row["slug"], row["display_name"]
+
+
 # ── Shared-session authority (groups_sessions_authority.md §3) ──────────────
 
 #: More per-session subjects than this is a data error, not a room.

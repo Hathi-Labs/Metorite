@@ -50,6 +50,22 @@ export function signInErrorMessage(code: string | null): string | null {
       // field on a public URL, for a number that changes nothing the person
       // can act on. D33.1 asks for the cause (§6(g)).
       return "Your account belongs to more than one organization on this deployment, and there is no way to choose between them yet. Please contact your operator.";
+    // ── WS-31 CP-2c (self-serve signup) — three new codes; ConsoleUnavailable
+    // is reused for a signup that could not reach the tenant plane or the
+    // Console. customer_console.md §6 CP-2c item 5.
+    case "SignupDisabled":
+      // The feature is off on this deployment. Not the person's fault, and not
+      // a denial — there is simply no self-serve signup here.
+      return "Self-serve signup is not available on this deployment. Ask your administrator for an invitation.";
+    case "AlreadyMember":
+      // They already have an organization; signing up again would create a
+      // second. The redirect carries their org name, but the static copy names
+      // no third party.
+      return "You already belong to an organization. Sign in instead.";
+    case "SlugTaken":
+      // Names only that the chosen name is unavailable — never who holds it,
+      // nor whether it exists on another deployment (no cross-tenant oracle).
+      return "That organization name is already taken. Please choose a different one.";
     default:
       return `Authentication error: ${code}`;
   }
