@@ -14,6 +14,7 @@ Two properties carry most of the weight:
 """
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
@@ -21,13 +22,15 @@ import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
-from customer_console import lifecycle
+from customer_console import auth, lifecycle
+from customer_console.keys import split_key
 from sqlalchemy import create_engine, text
 
 from tests.unit._customer_console_ladder import (  # noqa: E402
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
     ensure_deployment,
+    mint_deployment_key,
 )
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -126,7 +129,7 @@ def box(db):
     """The deployment this suite provisions onto, ensured per test.
 
     Per test rather than per module because
-    ``test_a_missing_deployment_label_is_422_even_with_exactly_one_deployment``
+    ``test_nothing_infers_the_deployment_from_there_being_exactly_one``
     empties the table to build the world a sole-deployment heuristic would have
     guessed right in.
     """
@@ -189,6 +192,33 @@ def _placement_rows(db, slug: str) -> int:
             ),
             {"s": slug},
         ).scalar_one()
+
+
+def _orgs(db, slug: str) -> int:
+    with db.begin() as c:
+        return c.execute(
+            text("SELECT count(*) FROM organization WHERE slug = :s"),
+            {"s": slug},
+        ).scalar_one()
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _provision_as(client, token: str, *, slug: str, **extra):
+    """POST ``/orgs/provision`` under an ARBITRARY credential, unasserted.
+
+    The sibling of :func:`_provision`, which is the operator's, and
+    deliberately not merged with it (WS-31 CP-2c slice 1). The operator body
+    always carries a ``deployment_label`` and the deployment-key body must
+    never carry one — a single helper with an optional label would turn the
+    one difference between the two arms into a keyword argument nobody reads,
+    and the arm a call exercises would stop being legible at the call site.
+    """
+    body = {"slug": slug, "name": "N", "owner_email": f"o@{slug}.com"}
+    body.update(extra)
+    return client.post("/orgs/provision", headers=_bearer(token), json=body)
 
 
 @pytestmark_db
@@ -350,6 +380,22 @@ class TestProvisioningPlacesTheOrganization:
         file green, because they all run against a database with many
         deployments.
 
+        ⚠️ **Clause (a) AMENDED 2026-08-19 by WS-31 CP-2c slice 1 (D46.6 item
+        1, ruled in `customer_console.md` in writing — not by an implementer
+        in silence).** It pinned **422**, i.e. *pydantic refuses before the
+        handler runs, so there is no code path in which a count could be
+        consulted*. A two-arm route cannot keep that: the deployment-key arm
+        has to **refuse** a presented label, which a required field makes
+        unexpressible, so ``deployment_label`` became ``str | None`` on the
+        ``ResolveRequest.org_slug`` precedent and the refusal moved into the
+        handler as a **400**.
+
+        That is a strictly weaker starting point and the clause is written to
+        say so: the handler now *does* run with no label, so what is asserted
+        is that it refuses **there** rather than reaching for the sole
+        deployment. The mutation is unchanged and still the proof — plant a
+        ``count(*) = 1`` fallback and this test must go red.
+
         ⚠️ The wipe is safe because every suite that provisions ensures its
         deployment row **per test** (``_box`` here and in the four sibling
         suites), and because these files run serially. It is the reason those
@@ -364,13 +410,14 @@ class TestProvisioningPlacesTheOrganization:
                 text("SELECT count(*) FROM deployment")
             ).scalar_one() == 1
 
-        # (a) The field is missing. Pydantic refuses before the handler runs —
-        # which is exactly the property: there is no code path in which the
-        # count could be consulted.
+        # (a) The field is missing, and since slice 1 of CP-2c the HANDLER is
+        # what refuses it — 400, naming the field. The count is reachable from
+        # here in a way it was not when pydantic refused first, which is
+        # exactly why this clause is the one the mutation is aimed at.
         missing = f"nolabel-{uuid.uuid4().hex[:8]}"
         r = client.post("/orgs/provision", headers=OP, json={
             "slug": missing, "name": "N", "owner_email": f"o@{missing}.com"})
-        assert r.status_code == 422, r.text
+        assert r.status_code == 400, r.text
         assert "deployment_label" in r.text
 
         # (b) The field names a box that does not exist. Still 404 — the sole
@@ -389,6 +436,267 @@ class TestProvisioningPlacesTheOrganization:
             assert c.execute(
                 text("SELECT count(*) FROM org_placement")
             ).scalar_one() == 0
+
+
+@pytestmark_db
+class TestTheDeploymentKeyProvisionArm:
+    """WS-31 CP-2c slice 1 — the SECOND arm of ``POST /orgs/provision``.
+
+    Spec: ``customer_console.md`` §6 CP-2c done-when 6 (*"a `{resolve}`-only
+    deployment key calling provision is refused and the refusal is logged; a
+    `{resolve, provision}` key provisions"*) and done-when 8's Console half ·
+    D46.6 item 1 as amended · ``user_management_contract.md`` R11.
+
+    **The shape, stated once.** One endpoint, two schemes, and the *credential*
+    decides which — the same dispatcher ``POST /registry/resolve`` already
+    takes, gated on a different capability. The operator names the box out loud
+    because that credential is cross-org and carries no deployment identity of
+    its own; a deployment key **is** the deployment identity, so this arm
+    carries no ``deployment_label`` at all and presenting one is **400, never
+    ignored** — the identical rule the resolve arm applies to ``org_slug``, for
+    the identical reason: a caller that *has* an identity must not be allowed
+    to assert a different one, and an ignored field is a caller who believes it
+    worked.
+
+    **Every placement-write semantic below is INHERITED from WS-29 MT-1j slice
+    4, not re-decided here** — ``ON CONFLICT (organization_id) DO NOTHING``,
+    provisioning never moves, 409 on a different target, ``database_target``
+    NULL. What this class adds is the proof that they hold when the deployment
+    is derived from the credential rather than read from the body, which is a
+    different code path to the same writes.
+
+    ⚠️ **No migration, and none may be minted** (done-when 6, verbatim):
+    ``deployment_key.capabilities`` is ``TEXT[]`` with no CHECK
+    (``006_deployment_key.sql:56``), so the wide set is insertable today and
+    the enforcement is entirely ``deployment_or_operator(capability)``, already
+    generic. Minting a wide key **into a scratch database from a fixture** is
+    agent-safe; issuing or widening a REAL one is OWNER-GATE (§8 gate 7) and
+    there is deliberately no HTTP route that does it.
+
+    R8 throughout: capability sets are a Postgres ``TEXT[]``, the placement
+    write is an ``ON CONFLICT`` upsert and the resolve loop is a four-table
+    join — the class of thing a hermetic fake agrees with whatever it is
+    handed.
+    """
+
+    @pytest.fixture
+    def keyed_box(self, db):
+        """One deployment, and BOTH keys for it — narrow and wide.
+
+        Both minted on the *same* deployment on purpose: it makes the only
+        difference between the two credentials the capability set, so a test
+        that passes with one and fails with the other cannot be explained by
+        placement.
+        """
+        label = f"cp2c-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            deployment = ensure_deployment(c, label=label)
+            narrow = mint_deployment_key(
+                c, deployment_id=deployment,
+                capabilities=[auth.RESOLVE_CAPABILITY],
+            )
+            wide = mint_deployment_key(
+                c, deployment_id=deployment,
+                capabilities=[auth.RESOLVE_CAPABILITY,
+                              auth.PROVISION_CAPABILITY],
+            )
+        return {"label": label, "deployment_id": deployment,
+                "narrow": narrow, "wide": wide}
+
+    def test_a_resolve_only_key_may_not_provision_and_the_refusal_is_logged(
+        self, client, db, keyed_box, caplog
+    ):
+        """Done-when 6's first half — **both** halves of it.
+
+        403 rather than 401: the credential is valid and the caller is told
+        what it lacks rather than sent to re-authenticate in a loop (the shape
+        ``deployment_or_operator`` already applies to ``resolve``).
+
+        **And the refusal is LOGGED**, which the clause names separately and a
+        silent 403 does not satisfy. This credential is the one an operator
+        would widen by hand into a live box (§8 gate 7), so *"a key tried to do
+        something it was not issued for"* is the signal that a widening was
+        forgotten or that a leaked key is being probed — and it was
+        unobservable before slice 1: the raise carried no log line at all.
+        What is logged is the **capability and the key prefix, never the
+        secret**, which the last assertion here pins rather than trusts.
+        """
+        slug = f"narrow-{uuid.uuid4().hex[:8]}"
+
+        with caplog.at_level(logging.WARNING, logger="platform.auth"):
+            r = _provision_as(client, keyed_box["narrow"], slug=slug)
+
+        assert r.status_code == 403, r.text
+        assert auth.PROVISION_CAPABILITY in r.json()["detail"]
+
+        refusals = [
+            rec for rec in caplog.records
+            if rec.getMessage() == "deployment_key.capability_refused"
+        ]
+        assert len(refusals) == 1, [rec.getMessage() for rec in caplog.records]
+        assert refusals[0].capability == auth.PROVISION_CAPABILITY
+        parsed = split_key(keyed_box["narrow"])
+        assert parsed is not None
+        assert refusals[0].key_prefix == parsed[0]
+        # The SECRET half never reaches a log line. Asserted on the whole
+        # captured text, not on the one record, because a second log site
+        # added later would be caught here too.
+        assert parsed[1] not in caplog.text
+
+        # Refused means refused: nothing was written on the way out.
+        assert _orgs(db, slug) == 0
+
+    def test_a_wide_key_provisions_onto_the_deployment_the_key_names(
+        self, client, db, keyed_box
+    ):
+        """Done-when 6's second half, and the loop it exists to close.
+
+        The org is created, placed on the KEY's own deployment, and then
+        **resolved by that same key** — which is the whole point of the arm:
+        a box that provisions a customer must be able to sign them in
+        afterwards, and the inner join in ``store.deployment_visible_orgs``
+        makes that true only if the placement landed on the right deployment.
+        Asserting the placement row alone would pass on a write that put the
+        org on some other box.
+        """
+        slug = f"wide-{uuid.uuid4().hex[:8]}"
+
+        r = _provision_as(client, keyed_box["wide"], slug=slug)
+
+        assert r.status_code == 200, r.text
+        assert r.json()["slug"] == slug
+        row = _placement(db, slug)
+        assert row is not None, "the deployment arm wrote no org_placement row"
+        assert row["label"] == keyed_box["label"]
+        # `database_target` is left NULL — inherited from slice 4 unchanged.
+        assert row["database_target"] is None
+        assert _placement_rows(db, slug) == 1
+
+        answer = client.post(
+            "/registry/resolve", headers=_bearer(keyed_box["wide"]),
+            json={"email": f"o@{slug}.com"},
+        )
+        assert answer.status_code == 200, answer.text
+        assert [o["slug"] for o in answer.json()["organizations"]] == [slug]
+
+    def test_a_deployment_key_may_not_name_a_deployment_label(
+        self, client, db, keyed_box
+    ):
+        """400, never ignored — R11, the same rule as the resolve arm's ``org_slug``.
+
+        Refused on **shape, before the value is looked at**, which is why
+        naming its OWN box and naming a box that does not exist are the same
+        refusal byte for byte. Were the value consulted first, the status code
+        would answer *"does this deployment exist"* for every label an
+        attacker cares to try — the existence oracle clause 5 removes from the
+        resolve arm, re-entering by a different door.
+        """
+        mine = f"named-{uuid.uuid4().hex[:8]}"
+        r = _provision_as(client, keyed_box["wide"], slug=mine,
+                          deployment_label=keyed_box["label"])
+
+        assert r.status_code == 400, r.text
+        assert _orgs(db, mine) == 0
+
+        ghost = f"ghost-{uuid.uuid4().hex[:8]}"
+        other = _provision_as(client, keyed_box["wide"], slug=ghost,
+                              deployment_label="no-such-box-anywhere")
+
+        assert (other.status_code, other.json()) == (400, r.json())
+        assert _orgs(db, ghost) == 0
+
+    def test_the_deployment_arm_never_moves_a_placement(
+        self, client, db, keyed_box, box
+    ):
+        """409, inherited from slice 4 — and inherited through a NEW code path.
+
+        The org is born on the operator's box and a wide key for a *different*
+        deployment tries to provision the same slug. With ``DO NOTHING`` alone
+        that call would answer 200 while the organization stayed exactly where
+        it was, and the caller — here a box, not a human who might notice —
+        would believe it had taken over a customer.
+        """
+        slug = f"stay-{uuid.uuid4().hex[:8]}"
+        assert _provision(client, slug, box).status_code == 200
+        before = _placement(db, slug)
+
+        r = _provision_as(client, keyed_box["wide"], slug=slug)
+
+        assert r.status_code == 409, r.text
+        assert _placement(db, slug) == before
+        assert _placement_rows(db, slug) == 1
+
+    def test_re_provisioning_on_the_same_key_leaves_the_row_untouched(
+        self, client, db, keyed_box
+    ):
+        """Idempotent on the SLUG under this arm too, ``moved_at`` the evidence.
+
+        A retrying signup form resends the natural key, and a re-run that
+        refreshed ``moved_at`` would make *"when was this customer moved"*
+        answer *"whenever the form was last retried"*.
+        """
+        slug = f"again-{uuid.uuid4().hex[:8]}"
+        assert _provision_as(client, keyed_box["wide"],
+                             slug=slug).status_code == 200
+        before = _placement(db, slug)
+
+        assert _provision_as(client, keyed_box["wide"],
+                             slug=slug).status_code == 200
+
+        assert _placement(db, slug) == before
+        assert _placement_rows(db, slug) == 1
+        assert _orgs(db, slug) == 1
+
+    def test_the_deployment_arms_write_is_audited_as_a_deployment_act(
+        self, client, db, keyed_box, box
+    ):
+        """``control_audit.actor`` tells the two arms apart.
+
+        ``_audit``'s own docstring is the authority: ``actor`` exists because
+        *"an audit trail that called those acts 'operator' would misattribute
+        the one class of write we most need to tell apart later"*. A box
+        provisioning a self-serve customer is exactly such a class — it is the
+        one provisioning act with no human in it — so it must not be recorded
+        as staff having done it.
+
+        Agent-proposed default (D16/D17 class), recorded in the build box.
+        """
+        by_key = f"audit-key-{uuid.uuid4().hex[:8]}"
+        by_operator = f"audit-op-{uuid.uuid4().hex[:8]}"
+        assert _provision_as(client, keyed_box["wide"],
+                             slug=by_key).status_code == 200
+        assert _provision(client, by_operator, box).status_code == 200
+
+        with db.begin() as c:
+            actors = dict(c.execute(
+                text(
+                    "SELECT o.slug, a.actor FROM control_audit a "
+                    "  JOIN organization o ON o.id = a.organization_id "
+                    " WHERE a.action = 'org.provision' AND o.slug IN (:k, :o)"
+                ),
+                {"k": by_key, "o": by_operator},
+            ).all())
+
+        assert actors == {by_key: "deployment", by_operator: "operator"}
+
+    def test_the_wide_key_is_still_not_an_operator_token(
+        self, client, keyed_box, org
+    ):
+        """A second capability widens the KEY, never the SCHEME.
+
+        The credential that may now create an organization must still be
+        unable to read a balance, grant a credit or open ``/me`` — capabilities
+        are enumerated per door, and the failure mode this guards is a
+        dispatcher that started treating "holds two capabilities" as "is
+        trusted".
+        """
+        wide = _bearer(keyed_box["wide"])
+
+        assert client.get(f"/billing/summary?org_slug={org}",
+                          headers=wide).status_code == 401
+        assert client.get("/me", headers=wide).status_code == 401
+        assert client.post("/credits/grant", headers=wide, json={
+            "org_slug": org, "credits": "1"}).status_code == 401
 
 
 @pytestmark_db

@@ -48,13 +48,17 @@ import pytest
 pytest.importorskip("fastapi")
 
 from customer_console import auth, lifecycle, store
-from customer_console.keys import ENV_DEPLOYMENT, mint_key, split_key
+from customer_console.keys import split_key
 from customer_console.main import app
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder, ensure_deployment
+from tests.unit._customer_console_ladder import (
+    apply_ladder,
+    ensure_deployment,
+    mint_deployment_key,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -101,6 +105,25 @@ _UNAUTHENTICATED_ROUTES = frozenset({"/health"})
 #: ⚠️ Deliberately a set of ONE, named rather than derived, so adding a second
 #: signature-authenticated route is an edit somebody justifies in review.
 _SIGNATURE_AUTHENTICATED_ROUTES = frozenset({"/billing/webhooks/razorpay"})
+
+#: Routes a deployment key is admitted at the DOOR of and refused INSIDE, for
+#: lacking the capability they require (WS-31 CP-2c slice 1, 2026-08-19).
+#:
+#: ``POST /orgs/provision`` grew a second arm on the same
+#: ``deployment_or_operator`` dispatcher resolve uses, gated on ``provision``
+#: rather than ``resolve``. This suite's key carries the column default —
+#: exactly ``{resolve}`` — so it is a **valid credential that may not do this**,
+#: which is 403, not 401. The property clause 1 asserts is unchanged and this
+#: is not a relaxation of it: a ``{resolve}`` key still reaches resolve and
+#: nothing else. What changed is the vocabulary the refusal is stated in, the
+#: same amendment CP-9's signature door needed one line above — and stating it
+#: as *"anything but 2xx"* instead would pass on a 500.
+#:
+#: ⚠️ A set of ONE, named rather than derived. Deriving it from
+#: ``auth._provision_dependency`` would make the expectation and the subject
+#: the same fact, so a route that silently gained the wide capability would
+#: teach this fence to expect it.
+_CAPABILITY_GATED_ROUTES = frozenset({"/orgs/provision"})
 
 
 #: How to drive a freshly-provisioned organization (``trial``, ``001:56``) to
@@ -272,20 +295,18 @@ def _place(db, *, org_id: str, deployment_id: str, target: str | None = None):
 
 def _depl_key(db, *, deployment_id: str,
               capabilities: list[str] | None = None) -> str:
-    """Mint a deployment key straight into the table.
+    """Mint a deployment key straight into the table — the engine-side wrapper.
 
-    ``mint_key(env="depl")`` + a store helper, because CP-2b specifies **no**
-    HTTP route that issues one: no done-when asks for it, and issuing a real
-    ``cc_depl_`` key into a live deployment is OWNER-GATE (§8 gate 7).
+    The mint itself moved to ``_customer_console_ladder.mint_deployment_key``
+    when CP-2c slice 1 gave the credential a second capability and therefore a
+    second suite that mints one (2026-08-19). What is left here is the
+    transaction: this file's helpers take an ENGINE, the ladder module's take a
+    CONNECTION so the caller owns the transaction.
     """
-    minted = mint_key(env=ENV_DEPLOYMENT)
     with db.begin() as c:
-        store.issue_deployment_key(
-            c, deployment_id=deployment_id, prefix=minted.prefix,
-            key_hash=minted.key_hash, label="fixture", created_by="fixture",
-            capabilities=capabilities,
+        return mint_deployment_key(
+            c, deployment_id=deployment_id, capabilities=capabilities,
         )
-    return minted.token
 
 
 def _member(db, *, org_id: str, email: str, role: str = "member") -> str:
@@ -357,6 +378,16 @@ class TestTheKeyReachesOneEndpoint:
         route had grown a token check it must not have. So the property is
         asserted in that scheme's own vocabulary rather than relaxed to
         *"anything but 2xx"*, which would have passed on a 500.
+
+        ⚠️ **Amended again 2026-08-19 by WS-31 CP-2c slice 1**, and narrower
+        still. ``POST /orgs/provision`` now takes the same two-scheme
+        dispatcher, gated on the ``provision`` capability. This suite's key
+        carries the column default — exactly ``{resolve}`` — so it is refused
+        there for lacking a capability, which is **403**: the credential is
+        valid and the caller is told what it lacks rather than sent to
+        re-authenticate in a loop. A 401 there would now mean the key was not
+        recognised at all, which is a different (and wrong) claim. The clause-1
+        property is untouched: this key still reaches resolve and nothing else.
         """
         r = client.request(method, path, headers=_headers(box["key"]), json={})
 
@@ -364,6 +395,13 @@ class TestTheKeyReachesOneEndpoint:
             # Accepted at the door. (The empty body is then a 422 from the
             # model — which is the point: authentication happened.)
             assert r.status_code != 401, r.text
+        elif path in _CAPABILITY_GATED_ROUTES:
+            assert r.status_code == 403, (
+                f"{method} {path} -> {r.status_code}: a key holding only "
+                "{resolve} must be refused here for the capability it lacks, "
+                "not for being an unknown credential"
+            )
+            assert "provision" in r.json()["detail"]
         elif path in _SIGNATURE_AUTHENTICATED_ROUTES:
             assert r.status_code in {400, 503}, (
                 f"{method} {path} -> {r.status_code}: a signature-authenticated "
