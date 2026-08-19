@@ -181,43 +181,45 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-11 · Stand up Metorite production: DNS, box, Supabase, secrets · [OWNER]
-- **Check:** ALL of: `nslookup app.metorite.com` resolves ·
-  `nslookup anycustomer.metorite.com` resolves (the D41.3 wildcard record) ·
-  Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
-  `gh workflow list --all` shows `deploy` enabled · the box `.env` carries
-  `ACB_MASTER_KEY` and `AUTH_MICROSOFT_ENTRA_ID_ID`. Any one missing
-  → still pending.
-- **Why:** Topology and identity are **D40 + D41** (`work_plan.md` §3); the ops
-  runbook is `docs/EXTERNAL_POSTGRES.md`. What remains is owner-only: DNS
-  records (`app.` · `api.` · the `*.metorite.com` wildcard, D41.3), wiping the
-  old CommandCenter deployment off the VPS (D41.4 — rotate the SSH
-  credentials, H-3, in the same session), GitHub secrets, the Google OAuth app
-  (redirect `https://app.metorite.com/api/auth/callback/google`), the
-  **multi-tenant** Entra app registration (redirect
-  `https://app.metorite.com/api/auth/callback/microsoft-entra-id`; leave
-  `AUTH_MICROSOFT_ENTRA_ID_TENANT` unset — D41.2), the box `.env`, and
-  re-enabling the three workflows an agent turned off with
-  `gh workflow disable` on 2026-08-17 — GitHub-side state; re-derive with
-  `gh workflow list --all`, never from this file.
-- **Authority:** `work_plan.md` §6 · D40 · D41
-- **Added:** 2026-08-16 · updated 2026-08-17 (review round 1: decisions moved
-  out of this entry into D40 — this file must not restate state) · updated
-  2026-08-18 (D41: wildcard record · Entra registration · VPS wipe)
+### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
+- **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
+  `gh workflow list --all` shows the three workflows an agent disabled on
+  2026-08-17 re-enabled (GitHub-side state; re-derive with that command, never
+  from this file). Any one missing → still pending.
+- **Why:** The rest of the original entry was DONE 2026-08-19 and its clauses
+  are deleted rather than ticked (this file's rule): DNS (`app.` · `api.` ·
+  wildcard) resolves, the box serves TLS on a **new** VPS (D44, in flight on
+  the governance branch — the old VPS keeps CommandCenter for demos, so
+  D41.4's "wipe" clause is superseded), both Supabase planes are bootstrapped,
+  the box `.env` carries `ACB_MASTER_KEY`, and Google OAuth signs in. The
+  Entra clause is **suspended by owner direction 2026-08-19** ("leave
+  Microsoft Entra for now") — restore it when an M365 customer needs it, per
+  D41.2's registration shape. Until the secrets + workflows land, every deploy
+  is a hand-run of `deploy/hostinger/deploy.sh` over SSH.
+- **Authority:** `work_plan.md` §6 · D40 · D41 · D44 (in flight)
+- **Added:** 2026-08-16 · updated 2026-08-17, 2026-08-18 · trimmed 2026-08-19
+  (VPS bring-up session: done clauses deleted, Entra suspended)
 
-### H-13 · Apply the two plan-guard-gated patches (deploy.sh, .env.example) · [OWNER]
+### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
 - **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
   pending. `rg -n "127.0.0.1:8000" .env.example` → a hit means still pending.
+  `rg -n "ActiveEnterTimestamp" deploy/hostinger/health-watchdog.sh` → NO hit
+  means still pending.
 - **Why:** plan-guard forbids agent writes under `deploy/` and to `.env*`, so
-  two fixes travel as ready-made blocks in the production-enablement PR
-  description instead of commits: (a) `deploy/hostinger/deploy.sh` still seeds
-  one company's Entra directory GUID into every fresh box
-  (`scripts/vps_apply.sh`, the CI path, is already fixed); (b) `.env.example`
-  ships `GATEWAY_BASE_URL` on port 8000 while the gateway listens on 8080,
-  lacks `ACB_MASTER_KEY` entirely (load-bearing — encrypts stored provider
-  keys), and carries the dead `AUTH_ALLOWED_DOMAIN` variable.
+  three fixes exist only where the owner (or a granted session) applied them:
+  (a) `deploy/hostinger/deploy.sh` still seeds one company's Entra directory
+  GUID into every fresh box (`scripts/vps_apply.sh`, the CI path, is already
+  fixed); (b) `.env.example` ships `GATEWAY_BASE_URL` on port 8000 while the
+  gateway listens on 8080, lacks `ACB_MASTER_KEY` entirely (load-bearing —
+  encrypts stored provider keys), and carries the dead `AUTH_ALLOWED_DOMAIN`
+  variable; (c) `health-watchdog.sh` needs the **180-second startup grace**
+  that is live on the box but absent from the repo — the gateway cold-starts
+  in ~90–105 s (awaited warm-clone timeouts) while the watchdog probes after
+  15 s, and without the grace it killed the gateway seconds before "startup
+  complete", in a permanent loop. ⚠️ (a) and (c) are patched **on the box
+  only** — the next git-reset deploy REVERTS them unless committed first.
 - **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
-- **Added:** 2026-08-17 · production-enablement session
+- **Added:** 2026-08-17 · updated 2026-08-19 (VPS bring-up: watchdog grace)
 
 ### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
 - **Check:** ask the owner whether a Razorpay test account exists; on the box or
@@ -244,6 +246,47 @@ this file grows a graveyard and the graveyard is what goes stale.
   decision.
 - **Authority:** CLAUDE.md §3 (never trust/invent external repo identity)
 - **Added:** 2026-08-16 · rebrand session (branch `rebrand/metorite`)
+
+### H-16 · Rotate the go-live secret set; put GITHUB_TOKEN on the box · [OWNER]
+- **Check:** ask the owner — no repo command can see this. The set: both
+  Supabase database passwords (Console + tenant planes) · the Google OAuth
+  client secret · the DeepSeek API key. All four transited agent chat
+  2026-08-18/19. Plus: `grep -c GITHUB_TOKEN /opt/acb/app/.env` on the box →
+  `0` means still pending.
+- **Why:** A secret in a transcript is a disclosed secret (the H-3 principle;
+  these are its four new instances). None is rotated yet; the owner said "I
+  will change it later on" — this entry is the *later*. `GITHUB_TOKEN` is
+  separate: without it the gateway's agent warm-clones fail on every restart
+  and account for most of the ~90 s cold start.
+- **Authority:** `work_plan.md` §6 (credentials) · `specs/engineering_practice.md`
+- **Added:** 2026-08-19 · VPS bring-up session
+
+### H-17 · Land the governance branch (D44 · D45 · OWNER_GRANTS protocol) · [OWNER]
+- **Check:** `git log main --oneline -- .claude/OWNER_GRANTS.md` → empty means
+  still pending.
+- **Why:** The main checkout sits dirty on `governance-d45-owner-grants`:
+  plan-guard's grant mechanism, CLAUDE.md's D45 exception, D44/D45 in
+  `work_plan.md` §3, and H-15 in this file — live-verified but uncommitted,
+  because the harness classifier (correctly) blocks an agent finalizing its
+  own guardrail changes. Commit message is staged at the session scratchpad
+  (`commit_d45.txt`); the 15-case grants test travels beside it
+  (`plan-guard-grants-test-content.txt` → save as
+  `.claude/hooks/plan-guard.grants.test.mjs`, then run both guard suites).
+  Both files are regenerable from the diff if the scratchpad is gone.
+- **Authority:** `work_plan.md` §6 · D45 (in flight)
+- **Added:** 2026-08-19 · VPS bring-up session
+
+### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
+- **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
+  plus a session row for `vjvarada@gmail.com` after a real browser sign-in at
+  `app.metorite.com` → both present means done. Needs box reach, i.e. a dated
+  D45 `ALLOW <date> deploy` grant or the owner running it.
+- **Why:** `ensure_owner_bootstrap()` fired at startup (log-verified), but no
+  one has verified the full chain — Google OAuth → NextAuth session →
+  gateway identity → owner of `default` — from a real browser. CLAUDE.md §3.8:
+  verify by evidence, never by a green job.
+- **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
+- **Added:** 2026-08-19 · VPS bring-up session
 
 ---
 
