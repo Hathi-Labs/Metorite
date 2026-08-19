@@ -205,7 +205,9 @@ Two review notes were taken in the same round: the refusal code is
 engine it strands on setup. ·
 ✅ **CP-2b is BUILT on both sides of the wire (2026-08-18), and the split is
 still the thing to understand.** The **Customer Console side**: the fourth auth
-scheme (`cc_depl_…`, capability set exactly `{resolve}`, `auth.py`), migration
+scheme (`cc_depl_…`, capability set exactly `{resolve}` *as CP-2b shipped it —
+`provision` exists beside it since CP-2c slice 1, 2026-08-19, per-capability
+enforced, issuance still gate 7*, `auth.py`), migration
 `006_deployment_key.sql`, `POST /registry/resolve` answering **two schemes with
 two shapes** chosen by the credential (`main.py`), and — added with the
 deployment half — the per-organization **`capabilities` block** computed by the
@@ -2085,7 +2087,9 @@ prose since 2026-08-12, and now code on both sides of the wire.
 
 **What is built (the Console side of the wire).** The fourth auth scheme
 `cc_depl_<prefix>_<secret>` beside the three that existed, with a capability set
-of exactly `{resolve}` enforced as a dependency
+of exactly `{resolve}` *(as this ticket shipped it — CP-2c slice 1 minted
+`provision` beside it 2026-08-19; a key holds only what its issuer granted,
+enforcement stays per-capability)* enforced as a dependency
 (`customer_console/auth.py` — `DeploymentCaller`, `deployment_or_operator`,
 `AUTHENTICATING_DEPENDENCIES`); the sibling table
 `infra/customer_console/006_deployment_key.sql`; and `POST /registry/resolve`
@@ -2230,7 +2234,12 @@ email to *its* org, and the org is not known before the answer.
 So mint `cc_depl_<prefix>_<secret>`: issued **per deployment** by the operator in
 the Customer Console, stored in that deployment's env, with a capability set of
 **exactly `{resolve}`** — one endpoint, nothing else, enforced as a dependency
-rather than a per-route `if`. What it can learn about an organization is bounded
+rather than a per-route `if`. *(⚠️ Updated 2026-08-19, CP-2c slice 1: the
+capability VOCABULARY now also carries `provision` — the signup arm of
+`POST /orgs/provision` — so "one endpoint, nothing else" describes what a
+DEFAULT-issued key reaches, not the vocabulary's ceiling. A key reaches exactly
+the endpoints its issued set names; widening a real key's set stays §8 gate 7 /
+§6(h).)* What it can learn about an organization is bounded
 to what sign-in needs: **org id, slug, placement, lifecycle status, and
 seat-existence for the presented email.** Never a balance, never a credit
 figure, never an invoice, and never the existence of an organization this
@@ -4113,6 +4122,27 @@ smaller and took two slices and 14 blockers)*:
    P2-1, recorded as its own ticket, and slice 1 deliberately does not fix it —
    it is now reachable by one more door, which raises its priority without
    changing its owner.
+
+   **Independent verify (2026-08-19): FAIL-then-repaired, doc sweep only —
+   zero functional defects.** The verifier re-derived every clause on FRESH
+   scratch databases with its own 45-check probe and its own minted keys
+   (45/45), replayed seven mutations (all killed, including its own novel
+   "key arm HONOURS a presented label" plant), matched every count exactly
+   (409/0 · 31/31 · 89/89 · ruff identical by file and rule), and confirmed
+   the mutation pair covers disjoint paths (the lookup-side sole-deployment
+   fallback is unreachable once the handler 400s — which is why the
+   handler-side mutation exists). The FAIL: **eight sentences across the two
+   owning specs still described the pre-slice-1 world** (five in
+   `saas_multitenancy.md` §11 including the "Until that PR" conditional this
+   very PR was named to close; three "exactly `{resolve}`" claims in this
+   file) — all swept in the repair commit, dated in place. **Two verifier
+   observations, recorded not fixed:** (i) an explicit JSON `null`
+   `deployment_label` under a deployment key answers 200 — judged correct
+   (a `null` asserts no identity, so R11's hazard does not arise and nothing
+   is ignored) but unfenced and the prose does not distinguish it; (ii) a
+   `{provision}`-only key is unspecified — it could create an org it can
+   never resolve; harmless while issuance is gate 7's owner act, and the
+   issuance surface ticket should refuse or warn on that set.
 2. **Slice 2 — gateway `POST /signup/provision` + the Console-provision
    client in `console_resolve.py`** (done-whens 2, 3, 4, 5; the
    two-importer fence amendment).
