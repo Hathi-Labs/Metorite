@@ -109,14 +109,23 @@ def _numbered_migrations() -> list[Path]:
     ]
 
 
-def _defining_migration(function_name: str) -> Path:
-    """Find the migration defining *function_name* BY CONTENT, never by number.
+#: The two SEEDING callables carry D43-A's *one* seeding doctrine — exactly one
+#: file may define each, so a competing copy fails rather than silently winning
+#: by sort order. The OWNER path is EXEMPT: slice 7 redefines it forward-only in
+#: migration 180 (R6), which is last-body-wins replay, not a scattered doctrine.
+SINGLY_DEFINED_FUNCTIONS = ("provision_org_roles", "provision_organization")
 
-    R1: migration numbers are taken at build time and re-checked at merge, so a
-    test that hard-codes ``179`` reports a merge renumber as a broken
-    migration. It also enforces D43-A's *one* seeding doctrine: exactly one
-    file may define each callable, so a second copy fails here rather than
-    silently winning by sort order.
+
+def _defining_migrations(function_name: str) -> list[Path]:
+    """Every migration defining *function_name* BY CONTENT, low→high by number.
+
+    R1: migration numbers are taken at build time and re-checked at merge, so
+    this scans CONTENT and never a hard-coded number. R6: a plpgsql function may
+    be REDEFINED forward-only in a LATER migration — slice 7
+    (``saas_multitenancy.md`` §11) redefines ``provision_org_owner`` in 180 to
+    add the create-only guard, leaving 179 byte-for-byte untouched. The deploy
+    replays the ladder low→high before restarting services, so the AUTHORITATIVE
+    body is the highest-numbered one.
     """
     pattern = re.compile(
         rf"CREATE\s+OR\s+REPLACE\s+FUNCTION\s+{function_name}\s*\(", re.IGNORECASE
@@ -126,12 +135,21 @@ def _defining_migration(function_name: str) -> Path:
         for path in _numbered_migrations()
         if pattern.search(path.read_text(encoding="utf-8"))
     ]
-    assert len(matches) == 1, (
-        f"expected exactly one tenant migration defining {function_name}(), "
-        f"found {[p.name for p in matches]} — D43-A's whole point is that "
-        "there is ONE statement of the seeding doctrine"
+    assert matches, (
+        f"no tenant migration defines {function_name}() — a callable the ladder "
+        "never creates cannot be provisioned"
     )
-    return matches[0]
+    matches.sort(key=lambda p: int(p.name.split("_", 1)[0]))
+    return matches
+
+
+def _defining_migration(function_name: str) -> Path:
+    """The AUTHORITATIVE (highest-numbered) migration defining *function_name*.
+
+    Under R6 forward-only redefinition the last-replayed body wins, so this is
+    the definition whose behaviour the R8 tests below actually observe.
+    """
+    return _defining_migrations(function_name)[-1]
 
 
 # ── The structural half: no database, and it must never skip ────────────────
@@ -196,23 +214,24 @@ class TestTheDefaultSlugRatchet:
     def test_the_provisioning_migration_pins_no_organization_at_all(self):
         """The callable's whole value is that it names no organization.
 
-        A ``slug = 'default'`` anywhere in this migration would mean the
-        extraction copied the defect it was extracted from.
+        A ``slug = 'default'`` anywhere in EITHER the introducing migration or a
+        forward-only redefinition (slice 7's 180) would mean the extraction
+        copied the defect it was extracted from.
         """
         for name in PROVISIONING_FUNCTIONS:
-            path = _defining_migration(name)
-            offending = [
-                n
-                for n, line in enumerate(
-                    path.read_text(encoding="utf-8").splitlines(), start=1
+            for path in _defining_migrations(name):
+                offending = [
+                    n
+                    for n, line in enumerate(
+                        path.read_text(encoding="utf-8").splitlines(), start=1
+                    )
+                    if _DEFAULT_SLUG.search(line)
+                ]
+                assert not offending, (
+                    f"{path.name} pins the `default` organization at lines "
+                    f"{offending} — the provisioning callable is parameterised "
+                    "on organization_id by construction"
                 )
-                if _DEFAULT_SLUG.search(line)
-            ]
-            assert not offending, (
-                f"{path.name} pins the `default` organization at lines "
-                f"{offending} — the provisioning callable is parameterised on "
-                "organization_id by construction"
-            )
 
     def test_the_baseline_is_not_stale(self):
         """A ratchet whose baseline drifted far above reality stops ratcheting.
@@ -230,8 +249,12 @@ class TestTheDefaultSlugRatchet:
 
 
 class TestTheMigrationIsOnTheLadder:
-    def test_each_callable_is_defined_exactly_once_and_is_replayable(self):
+    def test_every_definition_is_replayable_on_the_ladder(self):
         """A file the ladder does not pick up is a function that never exists.
+
+        Every definition — the introducing 179 AND slice 7's forward-only 180
+        redefinition of ``provision_org_owner`` — must be a migration
+        ``ladder()`` replays, or the last-body-wins guarantee is empty.
 
         ⚠️ Compared through ``os.path.normcase`` for the reason
         ``test_billing_purchase_capability.py`` records: this side resolves the
@@ -242,11 +265,31 @@ class TestTheMigrationIsOnTheLadder:
         """
         found = {os.path.normcase(str(Path(p))) for p in ladder()}
         for name in PROVISIONING_FUNCTIONS:
-            assert os.path.normcase(str(_defining_migration(name))) in found
+            for path in _defining_migrations(name):
+                assert os.path.normcase(str(path)) in found
 
-    def test_all_three_callables_ship_in_one_migration(self):
-        """They are one act; splitting them across files splits the replay."""
-        homes = {_defining_migration(n).name for n in PROVISIONING_FUNCTIONS}
+    def test_the_seeding_callables_are_defined_exactly_once(self):
+        """D43-A: ONE seeding doctrine, so a competing copy fails here.
+
+        ``provision_org_owner`` is EXEMPT — slice 7 redefines it forward-only in
+        180 (R6), which is last-body-wins replay, not a scattered doctrine. Only
+        the two SEEDING callables carry the single-definition invariant.
+        """
+        for name in SINGLY_DEFINED_FUNCTIONS:
+            homes = _defining_migrations(name)
+            assert len(homes) == 1, (
+                f"{name}() is defined in {[p.name for p in homes]} — D43-A's "
+                "whole point is ONE statement of the seeding doctrine"
+            )
+
+    def test_all_three_callables_are_introduced_in_one_migration(self):
+        """They are one act; their INTRODUCTION is one file.
+
+        A later forward-only redefinition (slice 7's 180) is permitted — it
+        redefines an EXISTING callable, it does not scatter the introduction —
+        so the invariant is on the LOWEST-numbered definition of each.
+        """
+        homes = {_defining_migrations(n)[0].name for n in PROVISIONING_FUNCTIONS}
         assert len(homes) == 1, f"the provisioning callables are scattered: {homes}"
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
@@ -905,3 +948,339 @@ class TestSliceFourTheSeamCaller:
                 await provision_local_organization("   ", "Blank")
 
         assert "slug is required" in str(caught.value.orig)
+
+
+# ── Slice 7 · the tenant-plane create-only guard ────────────────────────────
+#
+# `saas_multitenancy.md` §11 slice 7. Migration 180 (`CREATE OR REPLACE
+# provision_org_owner`, forward-only R6) refuses a FRESH email claiming an
+# EXISTING owned slug — the tenant-plane twin of the slice-1 Console P0
+# (`store.org_owned_by_other`). Two caller-recoverable refusals now carry
+# DEDICATED, DISTINCT SQLSTATEs so `acb_common.provisioning` classifies on the
+# code alone (never Postgres prose); the two NON-recoverable raises stay generic
+# P0001 and pass through raw.
+
+
+@_DB_GATE
+class TestSliceSevenTheCreateOnlyGuardSql:
+    """The SQL guard, on the SYNC shell (the `conn` fixture).
+
+    R8 against the real replayed ladder — a fake would agree with whatever SQL
+    it is handed, which is the class of trap slice 6 shipped green through.
+    """
+
+    def test_a_fresh_email_claiming_an_owned_slug_is_refused_and_writes_nothing(
+        self, conn
+    ):
+        """The hijack fence, RED-FIRST: reverting the guard re-opens the 200.
+
+        With `alice` owning the slug, a FRESH `carol` (no app_user row) claiming
+        it must be refused with the dedicated create-only SQLSTATE and leave the
+        database exactly as it was — the tenant mirror of slice 1's
+        `hijack-refused-writes-nothing`.
+        """
+        from acb_common.provisioning import SQLSTATE_SLUG_OWNED_BY_ANOTHER
+        from sqlalchemy.exc import DBAPIError
+
+        org = _provision(conn, "mt1j-s7-hijack", "Alice Org", "alice@a.example")
+        assert _owner_emails(conn, org) == {"alice@a.example"}
+
+        with pytest.raises(DBAPIError) as caught, conn.begin_nested():
+            _provision(conn, "mt1j-s7-hijack", "Alice Org", "carol@c.example")
+        assert caught.value.orig.sqlstate == SQLSTATE_SLUG_OWNED_BY_ANOTHER
+
+        # Writes nothing: still owned by alice only, carol got no app_user row.
+        assert _owner_emails(conn, org) == {"alice@a.example"}
+        assert conn.execute(
+            text(
+                "SELECT count(*) FROM app_user "
+                "WHERE lower(email) = 'carol@c.example'"
+            )
+        ).scalar_one() == 0
+
+    def test_a_no_owner_org_is_completed_by_any_email(self, conn):
+        """The crash-resume shape: an org created before its owner was known
+        (roles + placement, no owner) may be completed by ANY email — a
+        no-owner org is not a conflict."""
+        org = _provision(conn, "mt1j-s7-noowner", "No Owner Org", None)
+        assert _owner_emails(conn, org) == set()
+
+        conn.execute(
+            text("SELECT provision_org_owner(CAST(:o AS uuid), :e)"),
+            {"o": org, "e": "anyone@x.example"},
+        )
+        assert _owner_emails(conn, org) == {"anyone@x.example"}
+
+    def test_the_same_owner_is_idempotent_case_insensitively(self, conn):
+        """The same owner re-affirming (in a DIFFERENT case) is not a conflict.
+
+        This is the `Carol`/`carol` idiom from the other side: a case-SENSITIVE
+        guard (`au.email <> v_email`) would refuse this idempotent re-affirm, so
+        this fences the `lower(email)` comparison the guard is built on.
+        """
+        org = _provision(conn, "mt1j-s7-idem", "Idem Org", "owner@o.example")
+        conn.execute(
+            text("SELECT provision_org_owner(CAST(:o AS uuid), :e)"),
+            {"o": org, "e": "Owner@O.Example"},
+        )
+        held = conn.execute(
+            text(
+                "SELECT count(*) FROM user_role ur "
+                "  JOIN org_role r ON r.id = ur.role_id AND r.slug = 'owner' "
+                " WHERE r.organization_id = CAST(:o AS uuid)"
+            ),
+            {"o": org},
+        ).scalar_one()
+        assert held == 1
+        assert _owner_emails(conn, org) == {"owner@o.example"}
+
+    def test_the_two_refusals_carry_distinct_dedicated_sqlstates(self, conn):
+        """Constraint A, at the SQL level: the cross-tenant and create-only
+        raises carry DISTINCT, non-P0001 SQLSTATEs — so a caller can tell them
+        apart, and from the two generic raises, by the CODE.
+
+        Mutation: give both raises one code and `c1 != c2` goes red; leave the
+        cross-tenant raise generic and `c1 != 'P0001'` goes red.
+        """
+        from acb_common.provisioning import (
+            SQLSTATE_OWNER_BELONGS_ELSEWHERE,
+            SQLSTATE_SLUG_OWNED_BY_ANOTHER,
+        )
+        from sqlalchemy.exc import DBAPIError
+
+        default = _default_org(conn)
+        conn.execute(
+            text("SELECT provision_org_owner(CAST(:o AS uuid), :e)"),
+            {"o": default, "e": "boss@fracktal.in"},
+        )
+        with pytest.raises(DBAPIError) as cross, conn.begin_nested():
+            _provision(conn, "mt1j-s7-cross", "Cross", "boss@fracktal.in")
+
+        _provision(conn, "mt1j-s7-distinct", "Distinct", "alice@d.example")
+        with pytest.raises(DBAPIError) as slug_owned, conn.begin_nested():
+            _provision(conn, "mt1j-s7-distinct", "Distinct", "carol@d.example")
+
+        c1 = cross.value.orig.sqlstate
+        c2 = slug_owned.value.orig.sqlstate
+        assert c1 == SQLSTATE_OWNER_BELONGS_ELSEWHERE
+        assert c2 == SQLSTATE_SLUG_OWNED_BY_ANOTHER
+        assert c1 != c2
+        assert c1 != "P0001" and c2 != "P0001"
+
+    def test_a_no_owner_role_refusal_stays_untranslated(self, conn):
+        """Constraints A/B on a REAL error: the no-owner-role raise is generic
+        P0001, so the production classifier leaves it untranslated — it is NOT
+        OwnerBelongsElsewhere. Mutation: give that raise a dedicated code and
+        both assertions go red.
+        """
+        from acb_common.provisioning import _translate_refusal
+        from sqlalchemy.exc import DBAPIError
+
+        org = str(
+            conn.execute(
+                text(
+                    "INSERT INTO organization (slug, display_name) "
+                    "VALUES ('mt1j-s7-roleless', 'Roleless') RETURNING id"
+                )
+            ).scalar_one()
+        )
+        with pytest.raises(DBAPIError) as caught, conn.begin_nested():
+            conn.execute(
+                text("SELECT provision_org_owner(CAST(:o AS uuid), :e)"),
+                {"o": org, "e": "nobody@roleless.example"},
+            )
+        assert caught.value.orig.sqlstate == "P0001"
+        assert _translate_refusal(caught.value) is None
+
+
+@_DB_GATE
+class TestSliceSevenTheTypedRefusals:
+    """The seam raises TWO distinct catchable types, on the ASYNC shell.
+
+    Mirrors `TestSliceFourTheSeamCaller`: the exception-translation path lives in
+    `provision_local_organization`, which goes through the shared async engine
+    (asyncpg). These COMMIT (uuid-suffixed slugs stay in the scratch ladder),
+    and every row a refusal leaves behind is unchanged — the refused call rolled
+    back having written nothing.
+    """
+
+    async def test_a_slug_owned_by_another_raises_SlugOwnedByAnother(self, conn):
+        """The seam's translation of 180's create-only guard (SQLSTATE P1002).
+
+        RED-FIRST: without the guard the second call would 200 and make carol a
+        co-owner, so `pytest.raises(SlugOwnedByAnother)` fails.
+        """
+        from acb_common.provisioning import (
+            SlugOwnedByAnother,
+            provision_local_organization,
+        )
+
+        slug = f"mt1j-s7-seam-slug-{uuid.uuid4().hex[:8]}"
+        alice = f"alice-{uuid.uuid4().hex[:8]}@seam.example"
+        carol = f"carol-{uuid.uuid4().hex[:8]}@seam.example"
+
+        async with tenant_engine_scope(_URL):
+            org_id = await provision_local_organization(slug, "Alice Seam", alice)
+            with pytest.raises(SlugOwnedByAnother):
+                await provision_local_organization(slug, "Carol Seam", carol)
+
+        # Writes nothing: still alice's, and carol never got a row.
+        assert _owner_emails(conn, org_id) == {alice}
+        assert conn.execute(
+            text("SELECT count(*) FROM app_user WHERE lower(email) = :e"),
+            {"e": carol.lower()},
+        ).scalar_one() == 0
+
+    async def test_an_email_in_another_tenant_raises_OwnerBelongsElsewhere(
+        self, conn
+    ):
+        """The seam's translation of the cross-tenant guard (SQLSTATE P1001).
+
+        RED-FIRST: on origin/main that raise is generic P0001, so the classifier
+        would re-raise a bare DBAPIError, not OwnerBelongsElsewhere.
+        """
+        from acb_common.provisioning import (
+            OwnerBelongsElsewhere,
+            provision_local_organization,
+        )
+
+        slug_a = f"mt1j-s7-seam-a-{uuid.uuid4().hex[:8]}"
+        slug_b = f"mt1j-s7-seam-b-{uuid.uuid4().hex[:8]}"
+        alice = f"alice-{uuid.uuid4().hex[:8]}@seam.example"
+
+        async with tenant_engine_scope(_URL):
+            await provision_local_organization(slug_a, "A Org", alice)
+            with pytest.raises(OwnerBelongsElsewhere):
+                await provision_local_organization(slug_b, "B Org", alice)
+
+        # The whole act rolled back — org B was never created.
+        assert _org_row(conn, slug_b) is None
+
+
+class TestSliceSevenTheRefusalTypes:
+    """The type hierarchy — no database. `distinct catchable types` (done-when)."""
+
+    def test_the_two_refusals_are_distinct_catchable_types(self):
+        from acb_common.provisioning import (
+            OwnerBelongsElsewhere,
+            ProvisioningRefused,
+            SlugOwnedByAnother,
+        )
+
+        assert OwnerBelongsElsewhere is not SlugOwnedByAnother
+        assert not issubclass(OwnerBelongsElsewhere, SlugOwnedByAnother)
+        assert not issubclass(SlugOwnedByAnother, OwnerBelongsElsewhere)
+        assert issubclass(OwnerBelongsElsewhere, ProvisioningRefused)
+        assert issubclass(SlugOwnedByAnother, ProvisioningRefused)
+
+
+class _FakeOrig:
+    """A driver error carrying a SQLSTATE and a message, and nothing else."""
+
+    def __init__(self, sqlstate: str | None, message: str) -> None:
+        self.sqlstate = sqlstate
+        self._message = message
+
+    def __str__(self) -> str:
+        return self._message
+
+
+class _FakeDBAPIError(Exception):
+    """A `DBAPIError` shape: `.orig` is the driver error, `str()` is its text."""
+
+    def __init__(self, sqlstate: str | None, message: str) -> None:
+        self.orig = _FakeOrig(sqlstate, message)
+        super().__init__(message)
+
+
+class TestSliceSevenClassificationIsPgcodeOnly:
+    """Constraint C: classification dispatches on SQLSTATE ALONE, never message.
+
+    No database, by construction: the SAME message classifies differently by
+    CODE, and a misleading message never overrides the code. A message-substring
+    classifier — the gap slice 7 closes — fails every assertion here.
+    """
+
+    def test_a_dedicated_code_classifies_regardless_of_message(self):
+        from acb_common.provisioning import (
+            SQLSTATE_OWNER_BELONGS_ELSEWHERE,
+            SQLSTATE_SLUG_OWNED_BY_ANOTHER,
+            OwnerBelongsElsewhere,
+            SlugOwnedByAnother,
+            _translate_refusal,
+        )
+
+        # Empty messages, yet each dedicated code still classifies.
+        assert isinstance(
+            _translate_refusal(_FakeDBAPIError(SQLSTATE_OWNER_BELONGS_ELSEWHERE, "")),
+            OwnerBelongsElsewhere,
+        )
+        assert isinstance(
+            _translate_refusal(_FakeDBAPIError(SQLSTATE_SLUG_OWNED_BY_ANOTHER, "")),
+            SlugOwnedByAnother,
+        )
+
+    def test_a_misleading_message_on_a_generic_code_is_not_translated(self):
+        """The killer: a P0001 error whose MESSAGE carries the cross-tenant prose
+        must NOT become OwnerBelongsElsewhere. A substring classifier mis-maps
+        it; a code classifier ignores the message entirely."""
+        from acb_common.provisioning import _translate_refusal
+
+        misleading = _FakeDBAPIError(
+            "P0001",
+            "provision_org_owner: x already belongs to organization y — "
+            "refusing to move a member between tenants",
+        )
+        assert _translate_refusal(misleading) is None
+
+    def test_an_unknown_code_and_a_missing_code_are_not_translated(self):
+        from acb_common.provisioning import _translate_refusal
+
+        assert _translate_refusal(_FakeDBAPIError("42P10", "some other error")) is None
+        assert _translate_refusal(_FakeDBAPIError(None, "no sqlstate at all")) is None
+
+
+@_DB_GATE
+class TestSliceSevenOrgOwnerOf:
+    """`acb_auth.access.org_owner_of(slug)` — the pre-flight identity read.
+
+    The read sibling of `resolve_identity`, for CP-2c step 0's `SlugTaken`
+    classification (the analogue of the Console's `membership_of`). Exercised
+    through its own call path against the real ladder (the shared async engine,
+    redirected by `tenant_engine_scope`).
+    """
+
+    async def test_it_returns_the_owner_email_for_an_owned_slug(self):
+        from acb_auth.access import org_owner_of
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"mt1j-s7-owner-{uuid.uuid4().hex[:8]}"
+        owner = f"owner-{uuid.uuid4().hex[:8]}@read.example"
+        async with tenant_engine_scope(_URL):
+            await provision_local_organization(slug, "Owned", owner)
+            assert await org_owner_of(slug) == owner
+
+    async def test_it_returns_none_for_a_slug_with_no_owner(self):
+        """The crash-resume shape — an org created before its owner is known —
+        is NOT a taken slug, so the pre-flight lets it be completed."""
+        from acb_auth.access import org_owner_of
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"mt1j-s7-noowner-read-{uuid.uuid4().hex[:8]}"
+        async with tenant_engine_scope(_URL):
+            await provision_local_organization(slug)
+            assert await org_owner_of(slug) is None
+
+    async def test_it_returns_none_for_an_unknown_slug(self):
+        from acb_auth.access import org_owner_of
+
+        async with tenant_engine_scope(_URL):
+            assert await org_owner_of(f"never-{uuid.uuid4().hex[:8]}") is None
+
+    async def test_a_blank_slug_reads_none(self):
+        """Never a false 'free': a blank in resolves to None like the other
+        identity reads, so a caller cannot mistake it for an available slug."""
+        from acb_auth.access import org_owner_of
+
+        assert await org_owner_of("") is None
+        assert await org_owner_of(None) is None
