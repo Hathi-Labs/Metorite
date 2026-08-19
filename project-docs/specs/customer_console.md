@@ -18,9 +18,13 @@ two P2s (2026-08-19)**: **115** tests in
 
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) and CP-2d
 (second factor / email OTP, documented-deferred) MINTED 2026-08-19 (D46,
-owner directive) — spec only, nothing built.** CP-2c dispatches only after
-MT-1j slice 4 (`saas_multitenancy.md` §11) closes the Console↔tenant seam it
-orchestrates; its live flip set is §8 gate 8. *(Header verified against code
+owner directive) — spec only, nothing built.** CP-2c's hard dependency —
+MT-1j slice 4 (`saas_multitenancy.md` §11), the Console↔tenant seam it
+orchestrates — is **✅ MET on the operator arm as of 2026-08-19**: the
+`org_placement` write and the `provision_local_organization` seam both ship.
+What CP-2c still owns is its own **deployment-key arm** (the key names itself,
+`{resolve, provision}`), which stays behind §8 gate 7; its live flip set is
+§8 gate 8. *(Header verified against code
 2026-08-19: no signup route, no `SELF_SERVE*` flag, no production caller of
 migration 179 — measured, cited in the ticket.)*
 
@@ -1996,24 +2000,38 @@ lifecycle states of §4.1d are enforced with `suspended` keeping **login working
 while features lock; an org reaching `cancelled` retains data through a named
 export window.
 
-> ⚠️ **A second, larger gap — recorded 2026-08-19 as a dated correction rather
-> than silently, because CP-2a's ✅ and this fact contradict each other.**
-> **`POST /orgs/provision` does not write `org_placement`, and nothing else in
-> the tree does either.** Measured 2026-08-19: the route
-> (`customer_console/main.py:584-664`) writes `organization`, `user_identity`,
-> seats, `org_membership`, `org_subscription`, `provisioning_run` and an audit
-> row — and no placement. The only `INSERT INTO org_placement` anywhere is a test
-> fixture (`tests/unit/test_customer_console_resolve.py:232`), whose docstring
-> names the gap and correctly declares closing it a non-goal *of CP-2b*.
-> **The consequence composes with CP-2b's inner join** (`store.py:625`,
-> `JOIN org_placement p … WHERE p.deployment_id = :dep`): **an organization
-> provisioned through this route can never be resolved by any deployment key**,
-> so a provisioned customer's sign-in fails closed in a way that reads as a
+> ✅ **A second, larger gap — CLOSED 2026-08-19 by `saas_multitenancy.md` §11
+> MT-1j slice 4 (operator arm).** The record is kept rather than deleted,
+> because CP-2a's ✅ and this fact contradicted each other for a day and the
+> next reader needs to know which way it resolved.
+>
+> *The gap, as measured 2026-08-19:* **`POST /orgs/provision` did not write
+> `org_placement`, and nothing else in the tree did either.** The route wrote
+> `organization`, `user_identity`, seats, `org_membership`, `org_subscription`,
+> `provisioning_run` and an audit row — and no placement. The only
+> `INSERT INTO org_placement` anywhere was a test fixture
+> (`tests/unit/test_customer_console_resolve.py`), whose docstring named the gap
+> and correctly declared closing it a non-goal *of CP-2b*. **The consequence
+> composed with CP-2b's inner join** (`store.py`,
+> `JOIN org_placement p … WHERE p.deployment_id = :dep`): an organization
+> provisioned through this route could never be resolved by any deployment key,
+> so a provisioned customer's sign-in failed closed in a way that read as a
 > Console outage. Under **D36.1** — Fracktal onboards through this same route —
-> that is customer zero's path. The ✅ stands for what shipped; the row is
-> **owed**, and its owner is **`saas_multitenancy.md` §11 MT-1j slice 4**
-> (minted 2026-08-19). Neither CP-2a nor CP-2b was wrong to leave it: each
-> disclaimed it to a ticket that, until that date, did not exist.
+> that was customer zero's path. Neither CP-2a nor CP-2b was wrong to leave it:
+> each disclaimed it to a ticket that, until that date, did not exist.
+>
+> *How it closed:* `ProvisionRequest` gained a **required `deployment_label`**
+> and the route writes exactly one `org_placement` row for the named deployment,
+> `database_target` NULL, `ON CONFLICT (organization_id) DO NOTHING` —
+> provisioning places, it never moves (409 on a different label, 404 on an
+> unknown one, 422 on a missing field even with exactly one deployment seeded).
+> This is a **breaking change to `POST /orgs/provision`**, free because the
+> Console is deployed nowhere; the six CP-2a-era suites were updated in the same
+> PR. The end-to-end clause — *provision, then a deployment key resolves that
+> org* — is fenced by
+> `test_customer_console_resolve.py::TestProvisioningIsWhatPlacesAnOrg`.
+> The **deployment-key arm** (the key names itself) remains CP-2c's and stays
+> behind §8 gate 7 / §6 gate (f).
 >
 > ⚠️ **One acceptance clause is OWED, not met — recorded 2026-08-18 rather than
 > struck.** "a test kills it at each step" is **not implemented**.
@@ -3817,12 +3835,14 @@ overrule any numbered item)*:
    carries NO `deployment_label` — presenting one is **400, never ignored**
    (the same R11 rule as the resolve arm's `org_slug`) — and every placement
    write semantic is inherited from slice 4 unchanged.
-   **(b)** the `org_placement` write itself is **MT-1j slice 4's** (the
-   measured hole at `main.py:584-664` closes there, on the operator arm) — a
-   HARD dependency of this ticket. **(c)** tenant-side: call **slice 4's seam
-   function `provision_local_organization(…)`** — the one caller-side wrapper
-   over migration 179; this route must not invoke the SQL directly (one seam,
-   not two). Org + placement + six roles + owner, `ON CONFLICT`-idempotent.
+   **(b)** the `org_placement` write itself is **MT-1j slice 4's** — ✅ **BUILT
+   2026-08-19 on the operator arm**, so this hard dependency is MET: the route
+   writes the row and the two refusals (404 unknown label, 409 different label)
+   ship with it. **(c)** tenant-side: call **slice 4's seam function
+   `provision_local_organization(…)`** (✅ built 2026-08-19,
+   `packages/acb_common/acb_common/provisioning.py`) — the one caller-side
+   wrapper over migration 179; this route must not invoke the SQL directly (one
+   seam, not two). Org + placement + six roles + owner, `ON CONFLICT`-idempotent.
    Cross-plane retry converges on ONE org because the **slug is the natural
    key on both planes** (179's header: *"the natural key is what a retrying
    signup form resends"*).

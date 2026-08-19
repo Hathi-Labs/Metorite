@@ -2160,7 +2160,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUNDS 1 + 2 — AT THE OWNER-GATED FLOOR OF THE WALKER-VISIBLE SET (`4 + 1`; three uncounted `self.` calls inside `key_store.py` remain — round-2 box) · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 4 (OPERATOR ARM) + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUNDS 1 + 2 — AT THE OWNER-GATED FLOOR OF THE WALKER-VISIBLE SET (`4 + 1`; three uncounted `self.` calls inside `key_store.py` remain — round-2 box)** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2212,6 +2212,10 @@ org.
    ✅ **BUILT 2026-08-19** — `provision_organization(slug, …)`.
 4. Wire the Console↔tenant seam so a provisioned org **resolves** — including the
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
+   ✅ **OPERATOR ARM BUILT 2026-08-19** — required `deployment_label`, the
+   placement write and its two refusals, and the tenant seam function
+   `provision_local_organization`. The **deployment-key arm is CP-2c's** and
+   stays behind §6 (f)/(h), by the same adjudication (D46.6 item 2).
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
    ◐ **RATCHET ROUNDS 1 + 2 landed 2026-08-19** — round 1 the ratchet itself plus the
@@ -2484,8 +2488,11 @@ in the tenant plane (fence:
 > an owner — roles and placement still land, because an org with roles and no owner is
 > recoverable and one with neither is not.
 
-**Slice 4 · The Console↔tenant seam — and the Console-side half that is missing.**
-**Anchors:** `customer_console/main.py:584-664` (`POST /orgs/provision`: writes
+**Slice 4 · The Console↔tenant seam — and the Console-side half that was missing.
+· ✅ OPERATOR ARM BUILT 2026-08-19** (the deployment-key arm is CP-2c's, D46.6
+item 2, still §6-gated).
+**Anchors** *(as measured before the build)*: `customer_console/main.py:584-664`
+(`POST /orgs/provision`: writes
 `organization`, `user_identity`, seats, `org_membership`, `org_subscription`,
 `provisioning_run`, an audit row — and **no `org_placement` row**) ·
 `customer_console/store.py:618-632`, whose resolve query **inner-joins**
@@ -2494,13 +2501,15 @@ in the tenant plane (fence:
 `customer_console/store.py:511-542` `issue_deployment_key` (capabilities default
 `'{resolve}'`; `006_deployment_key.sql:56`).
 
-⚠️ **Measured 2026-08-19: `org_placement` has no production writer anywhere.** The only
-`INSERT` is a test fixture (`tests/unit/test_customer_console_resolve.py:232`), whose
-docstring names the gap and correctly declares fixing it a non-goal *of CP-2b*. The
-consequence composes with the inner join: **an organization created through
-`/orgs/provision` can never be resolved by any deployment key** — CP-2b's resolve arm
-returns nothing for it, forever, and fails closed in a way that reads as "the Console is
-down".
+⚠️ **The defect this slice closed, kept in the past tense.** Measured 2026-08-19 before
+the build: `org_placement` had **no production writer anywhere** — the only `INSERT` was
+a test fixture (`tests/unit/test_customer_console_resolve.py`), whose docstring named the
+gap and correctly declared fixing it a non-goal *of CP-2b*. The consequence composed with
+the inner join: **an organization created through `/orgs/provision` could never be
+resolved by any deployment key** — CP-2b's resolve arm returned nothing for it, forever,
+and failed closed in a way that reads as "the Console is down". ✅ The route now writes
+the row; the end-to-end clause is fenced by
+`test_customer_console_resolve.py::TestProvisioningIsWhatPlacesAnOrg`.
 
 ⚠️ **Flag the capability-set question; do not widen it silently.** If Decision B's pull
 direction needs the box to ask the Console for anything beyond `resolve`, the
@@ -2596,6 +2605,75 @@ reserved smoke:**
   the harness is `httpx.ASGITransport` onto `customer_console.main.app` in a NEW module
   that loads both ladders explicitly — named here so nobody invents it as an acceptance
   criterion; it is optional hardening, not the done-when.
+
+> ✅ **OPERATOR ARM BUILT 2026-08-19** — D46.6 arm 1, agent-safe end to end. The
+> deployment-key arm (D46.6 arm 2) is CP-2c's and remains §6 (f)/(h)-gated; nothing here
+> touched a capability set, a `database_target` value, a placement *move*, the two-ladder
+> bridge, or any live execution.
+>
+> **What shipped.**
+> - **4a, Console DB.** `ProvisionRequest` gains a **required** `deployment_label`
+>   (`customer_console/main.py`, `ProvisionRequest`), and `POST /orgs/provision` resolves
+>   it FIRST — before anything is written — then writes exactly one `org_placement` row
+>   with `database_target` NULL. Three new SQL statements in `customer_console/store.py`,
+>   separate because the decision between them is a refusal: `deployment_by_label`
+>   (`None` ⇒ the caller's 404), `current_placement` (read-before-write, which is what
+>   makes 409 possible against a `DO NOTHING` write) and `place_organization`
+>   (`ON CONFLICT (organization_id) DO NOTHING` — provisioning places, it never moves).
+>   The audit row and `provisioning_run.steps_done` carry the new step, so a resumed run
+>   can tell "already placed" from "never placed".
+> - **4b, tenant DB.** `packages/acb_common/acb_common/provisioning.py` ·
+>   `provision_local_organization(slug, display_name=None, owner_email=None, *, domain,
+>   tier, target, region)` — one statement, `SELECT provision_organization(…)` with every
+>   argument explicitly CAST, beside the ONE engine and next to `placement.py`, which
+>   READS the row it writes. No client-side validation: 179's refusals reach the caller
+>   unchanged.
+> - **4c, tenant DB.** `test_deployment_resolve_cache.py::
+>   test_a_slug_PROVISIONED_BY_THE_SEAM_takes_the_write_path` — the seam's row is
+>   discoverable through §6(k)'s slug join key, so the projection takes the WRITE path and
+>   `console_resolve.unprovisioned_org` does not fire.
+> - **The six CP-2a-era suites** were updated for the required field in the same PR
+>   (12 call sites). The `deployment` row every one of them now needs is seeded by one
+>   shared helper, `tests/unit/_customer_console_ladder.py::ensure_deployment` — six
+>   copies of that INSERT is the exact failure that module exists to prevent.
+>
+> ⚠️ **One deviation from the dispatch contract, argued rather than smuggled.** The
+> contract named `get_db()` as the acquisition idiom (`acb_common/db.py:171`). Built that
+> way, `tests/unit/test_db_engine_seam.py::test_get_db_sites_elsewhere_only_ratchet_down`
+> went **red at 112 against a frozen baseline of 111** — that fence exists precisely to
+> stop new unbound sites, and `get_db`'s own docstring says it "is not a second sanctioned
+> way in". The seam therefore takes `get_session_factory()`, which is the SAME shared
+> engine and pool (R5(b) satisfied, no new engine site) and the SAME idiom
+> `acb_auth.console_resolve` and `acb_auth.access` already use for the one other act that
+> runs before any tenant can be bound. `tenant_session()` is not available to this
+> function by construction: it *creates* the tenant, so there is nothing to bind until
+> after the statement it would have wrapped.
+>
+> **Evidence.**
+> - **Red first, 4a:** with the pre-change `main.py`/`store.py` and the new tests,
+>   **8 failed / 79 passed** (`test_customer_console_lifecycle.py` +
+>   `test_customer_console_resolve.py`) — including `200 == 404`, `200 == 422`, and
+>   `assert [] == ['born-…']` for the resolve clause.
+> - **Red first, 4b/4c:** with `acb_common/provisioning.py` removed, **5 failed / 84
+>   passed**, every subject `ModuleNotFoundError: No module named
+>   'acb_common.provisioning'` — the honest form of "it fails today only because the
+>   function does not exist".
+> - **Green:** `398 passed, 0 skipped` across the eight suites the done-when names, both
+>   DSNs, real Postgres 16 (baseline before the change: 386).
+> - **Mutation-proved**, one revert at a time: remove the placement write → **5 red**;
+>   remove the 409 refusal → **1 red** (`test_re_provisioning_a_different_label_…`);
+>   `DO NOTHING` → `DO UPDATE` (provisioning moves) → **1 red**
+>   (`test_re_provisioning_the_same_label_leaves_the_row_untouched`, on `moved_at`);
+>   `deployment_label` made optional → **1 red**; the seam stops committing → **4 red**;
+>   the seam drops the owner argument → **2 red**.
+> - ⚠️ **Mutation found a real hole in the first version of the item-3 fence, and it is
+>   the reason that test now has two clauses.** Substituting the FORBIDDEN
+>   `count(deployment) = 1` fallback for the 404 left **every test green**: the 422 case
+>   never reaches the handler, and every other fence runs against a database holding many
+>   deployments, where the heuristic refuses anyway.
+>   `test_nothing_infers_the_deployment_from_there_being_exactly_one` now asserts BOTH
+>   arms in the emptied, one-deployment world — missing field ⇒ 422, unknown label ⇒ 404 —
+>   and the same mutation dies there.
 
 **Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUNDS 1 + 2 BUILT
 2026-08-19 — the ratchet stands at `4 + 1`, the owner-gated FLOOR of the set it measures
