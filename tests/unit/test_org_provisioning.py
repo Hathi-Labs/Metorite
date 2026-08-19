@@ -817,7 +817,9 @@ class TestSliceFourTheSeamCaller:
     assertion here follows a call to the seam.
 
     ⚠️ **These tests COMMIT.** The seam takes its own session from the shared
-    engine (``get_db()``, R5(b)) and cannot ride the rolled-back ``conn``
+    engine (``get_session_factory()``, R5(b) — deliberately NOT ``get_db()``,
+    whose ratchet may only go down; see ``provisioning.py``'s docstring) and
+    cannot ride the rolled-back ``conn``
     fixture — so slugs and owner addresses carry a uuid and the rows stay in
     the scratch ladder database. That is safe for the one whole-plane invariant
     in this file (``test_every_organization_has_a_placement``): every row these

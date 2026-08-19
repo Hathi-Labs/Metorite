@@ -185,8 +185,10 @@ async def tenant_engine_scope(url: str):
     ⚠️ **Lives here rather than in a suite** *(moved 2026-08-19, WS-29 MT-1j
     slice 4)*. It was written inside ``test_deployment_resolve_cache.py``, and
     slice 4b's seam caller — ``acb_common.provisioning.
-    provision_local_organization``, which goes through ``get_db()`` — needs the
-    same scope from ``test_org_provisioning.py``. A second copy of a process-
+    provision_local_organization``, which goes through ``get_session_factory()``
+    (the shared engine; deliberately NOT ``get_db()``, whose site-count ratchet
+    may only go down — the module's own docstring carries the argument) — needs
+    the same scope from ``test_org_provisioning.py``. A second copy of a process-
     singleton reset is exactly the mirror this module's docstring is about: the
     two would drift, and the one that forgot to dispose would leak sockets for
     the length of the run. The fences that were written against it

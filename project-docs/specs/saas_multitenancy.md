@@ -4,9 +4,9 @@
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
 ⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
-slices 6 + 1 + 2 + 3 are BUILT, and slice 5 is on its RATCHET (rounds 1 + 2 landed —
-the ratchet now stands at `4 + 1`, exactly the owner-gated floor of the set it
-measures)** — the
+slices 6 + 1 + 2 + 3 + 4 (OPERATOR ARM) are BUILT, and slice 5 is on its RATCHET
+(rounds 1 + 2 landed — the ratchet now stands at `4 + 1`, exactly the owner-gated
+floor of the set it measures)** — the
 ticket four specs and one migration were
 already disclaiming work to
 (`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
@@ -19,7 +19,11 @@ anchors corrected in the same pass: `_HAS_OWNER_SQL` `:522`→**`:572`**, the se
 three plpgsql callables; new `tests/unit/test_org_provisioning.py`, 34 R8 tests, 0
 skips) — a callable that nothing calls yet, by the auditor's own sequencing: slice 4
 brings the box-side caller. **Slice 2 carries a recorded, argued deviation** from its own
-"green without edit" clause — see its box. **Slice 4 remains NOT BUILT. Slice 5 is on
+"green without edit" clause — see its box. **Slice 4's OPERATOR ARM is BUILT
+2026-08-19 (the deployment-key arm is CP-2c's, D46.6 item 2, §6-gated — see the
+slice-4 build box); this banner briefly said "remains NOT BUILT" on the same
+branch that built it, caught by the independent verifier as the CLAUDE.md §5
+stale-mirror defect. Slice 5 is on
 its ratchet: rounds 1 and 2 have landed (`11 + 10` → `9 + 1` → `4 + 1`), and every
 **walker-visible** untenanted credential call is now an OWNER-GATED one named in the
 H4 tables — slice 5 is at the floor of the set the ratchet measures absent an owner
@@ -2583,8 +2587,14 @@ reserved smoke:**
 - **(4b, tenant DB) — the seam caller slice 3 promised:** a seam function
   `provision_local_organization(slug, display_name, owner_email=None, …)` (proposed
   home: beside the ONE engine in `acb_common`, final path at build time; **no new
-  engine site, R5(b)**) invokes `SELECT provision_organization(…)` through the existing
-  `get_db()` idiom. R8 on the tenant ladder **through its own call path** (delegating
+  engine site, R5(b)**) invokes `SELECT provision_organization(…)` through the shared
+  engine seam via **`get_session_factory()`** *(amended at verification — this clause
+  was authored as "`get_db()`" while `test_db_engine_seam.py`'s
+  `H2_BASELINE_ELSEWHERE = 111` ratchet may only go DOWN and `get_db`'s own docstring
+  refuses new sites; the shipped idiom is the same engine and pool, the one
+  `console_resolve`/`access` use for pre-tenant acts, and `tenant_session()` is
+  unavailable by construction — this function CREATES the tenant. The build box below
+  carries the full argument.)*. R8 on the tenant ladder **through its own call path** (delegating
   assertions to 179's suite would be the vacuity the audit killed): twice-called → one
   org, one placement, six roles, one owner; blank slug surfaces 179's refusal. Its
   first production caller is CP-2c's route — until then the "callable nothing calls"
