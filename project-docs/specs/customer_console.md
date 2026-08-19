@@ -16,6 +16,14 @@ two P2s (2026-08-19)**: **115** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
 **0 skipped**, every load-bearing fence shown red first.
 
+**CP-2c (the self-serve signup flow — the form over CP-2a's API) and CP-2d
+(second factor / email OTP, documented-deferred) MINTED 2026-08-19 (D46,
+owner directive) — spec only, nothing built.** CP-2c dispatches only after
+MT-1j slice 4 (`saas_multitenancy.md` §11) closes the Console↔tenant seam it
+orchestrates; its live flip set is §8 gate 8. *(Header verified against code
+2026-08-19: no signup route, no `SELF_SERVE*` flag, no production caller of
+migration 179 — measured, cited in the ticket.)*
+
 ⚠️ **The 2026-08-19 review round, because its P0 was a money-losing defect that
 all 110 tests were green over.** **P0 — a failed payment ATTEMPT permanently
 bricked the ORDER.** One Razorpay order accepts many attempts until one
@@ -3747,7 +3755,151 @@ one that is obviously right · entitlement/module sync to the deployment ·
 person visible in two orgs on one deployment · retiring the operator-auth shape
 · any Router or metering change.
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → CP-3 → CP-4 →
+**CP-2c · The self-serve signup flow — the form over CP-2a's API.** 🔲 **MINTED
+2026-08-19 (D46, owner directive) — spec only, nothing built.** The owner's
+words: a basic website on `metorite.com` where users can sign up (that page is
+**WS-33**, `specs/marketing_site.md` — its CTA lands here); on signup *"they
+are taken through a full signup flow. They have to set up an organisation, and
+the first user becomes the admin and can then log into the application."*
+Verified 2026-08-19: **no** `signup`/`register`/`onboarding` route exists in
+`workbench/control_plane/src/app/` (the only unauthenticated surface is
+`/signin`), no `SELF_SERVE*`/`SIGNUP*` flag exists repo-wide, and migration
+179's `provision_organization` has **no production caller**. This ticket is the
+first caller of both provisioning halves and closes the loop four specs left
+open.
+
+**The flow** *(agent-proposed defaults, the D16/D17 class — owner may
+overrule any numbered item)*:
+
+1. **Entry `app.metorite.com/signup`** — an unauthenticated Next route beside
+   `/signin`, rendered from the same `configuredProviders` seam
+   (`authPosture.ts:79`). **Identity is IdP-attested BEFORE any form**: the
+   visitor authenticates with Google first, so the email is never typed
+   (R11 posture) and arrives verified — which is exactly what makes CP-2d's
+   email-OTP deferrable.
+2. **Post-auth branch.** An email that already belongs to an organization is
+   refused with honest copy naming *the caller's own* membership ("this
+   account already belongs to <their org> — sign in instead"), never any other
+   org's existence (CP-3's `recorded:false` oracle lesson). No chooser (CP-2b
+   non-goal), no second org for one email: `app_user` is globally unique on
+   `lower(email)` and `provision_org_owner` refuses cross-tenant moves
+   (`179_org_provisioning.sql:222-229`).
+3. **The form**: organization display name · slug (derived, editable,
+   validated by the same rules 179 enforces) · **registered state (REQUIRED —
+   GST place-of-supply, `saas_operations_doctrine.md` §3.1)** · GSTIN
+   (optional, shape-validated when present). The GST fields land on the
+   Console org row (`001_customer_console.sql:68-69`); if `POST
+   /orgs/provision` does not yet accept them, adding them is in-scope
+   (re-verify at dispatch).
+4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
+   `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
+   only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
+   ⚠️ Its caller holds a session but NO membership — a dependency class the
+   gateway does not have today; minting it must not weaken
+   `require_authenticated` for any existing route. The route orchestrates, in
+   order: **(a)** Console `POST /orgs/provision` (registry org + GST fields +
+   trial + resumable `provisioning_run` + owner membership) — authenticated by
+   the deployment credential whose capability set grows to exactly
+   `{resolve, provision}`. **That growth is this ticket's proposed answer to
+   D43-2's open sub-question** and is the deliberate act CP-2b's non-goals
+   anticipated ("plausibly the second capability it earns"); Console-side
+   enforcement stays per-capability, so a `{resolve}`-only key presenting a
+   provision call is refused. Issuing/expanding a real key stays §8 gate 7.
+   **(b)** the Console act writes `org_placement` — the measured hole above
+   (`main.py:584-664` writes no placement) is **MT-1j slice 4's**, a HARD
+   dependency of this ticket. **(c)** tenant-side
+   `SELECT provision_organization(slug, display_name, owner_email)` (migration
+   179) — org + placement + six roles + owner, `ON CONFLICT`-idempotent.
+   Cross-plane retry converges on ONE org because the **slug is the natural
+   key on both planes** (179's header: *"the natural key is what a retrying
+   signup form resends"*).
+5. **Outcome**: the first user is owner on both planes (Console
+   `org_membership.role='owner'`; tenant `owner` role, `app_user` active) and
+   is redirected into the app. While `CUSTOMER_CONSOLE_RESOLVE_ENABLED` is
+   OFF, the tenant-side `app_user` row is what admits them
+   (`deps.py:261-294`) — **the flow works dark**; the resolve flip adds
+   registry enforcement, it does not enable signup.
+6. **The CP-2b interaction this ticket must amend, named rather than
+   discovered**: once the resolve flag is armed, an unknown email's resolve
+   returns empty = **genuine AccessDenied** (§6(j)) — which would refuse the
+   very session signup needs. Under `SELF_SERVE_SIGNUP_ENABLED=true` (and only
+   then), the empty outcome admits into a **limbo session** — no org, every
+   app surface behind the existing AccessGate, `/signup` the only usable
+   surface. §6(j) gains that row; both flag positions fenced.
+7. **Flag: `SELF_SERVE_SIGNUP_ENABLED`** — minted here (exists nowhere,
+   verified); the exact-string-`"true"` idiom of `auth.ts:163`; default unset
+   = OFF; read by BOTH the Next page (404s to `/signin` when off) and the
+   gateway route (refuses when off) — fail closed on each half independently.
+
+**Done when** *(each clause names its fence; R8 binds every SQL clause —
+real Postgres on both ladders, 0 skips, both shells; red-first everywhere;
+mutation testing on auth/tenancy clauses)*:
+
+1. `/signup` renders only under the flag; OFF = redirect to `/signin`.
+   Fence: `signup.test.ts` pins both positions (the `signin.test.ts:209`
+   pattern).
+2. `POST /signup/provision` refuses flag-off, unwired, and body-email each
+   with a distinct code (the `signin.py:107-122` shape). Fence:
+   `test_signup_provision_route.py`.
+3. Already-a-member → the clause-2 refusal names only the caller's own org;
+   unknown-vs-known leaks no third-party existence. Fence: same suite,
+   two-org R8 case.
+4. Registered state required, GSTIN optional, both land on the Console org
+   row. Fence: R8 against the Console ladder.
+5. Kill-and-resubmit at every step of the ORCHESTRATION converges to one org,
+   one owner, on both planes (parametrised over the step list). ⚠️ This is
+   CP-2c's flow-level test; CP-2a's own per-step `provisioning_run` kill test
+   stays OWED under CP-2a and is not absorbed silently.
+6. A `{resolve}`-only deployment key calling provision is refused and the
+   refusal is logged. Fence: Console R8 suite, red-first by issuing the
+   narrow key.
+7. The limbo-session row of §6(j) behaves per item 6 above under the flag,
+   and byte-identically to today without it. Fence: extension of
+   `test_deployment_resolve_cache.py`.
+8. No new engine sites (R5(b)), all tenant writes through the seam, the new
+   table-less route adds zero migrations on the tenant ladder (Console
+   ladder: next free number at build time, R1).
+
+**Gates** (registered in §8 as gate 8 and in `work_plan.md` §6(h)):
+setting `SELF_SERVE_SIGNUP_ENABLED=true` on a live deployment — it opens org
+creation to the public internet and is the productized version of §6(f)'s
+availability trade · expanding a REAL deployment key's capability set (gate
+7's class) · deploying the Customer Console anywhere (§8 gate 2 — **this
+ticket cannot go LIVE before that owner decision**,
+`customer_console_infrastructure.md`) · H3's RLS promotion before a real
+org #2 exists (D43-3 — same execution gate as MT-1j). Building everything
+against fixtures, both flag positions fenced, is AGENT-SAFE.
+
+**Non-goals**: email/password auth, email OTP, TOTP 2FA (**CP-2d**, below) ·
+the marketing page (WS-33) · payment at signup — a self-serve org starts on
+CP-2a's trial; seats/credits purchases are in-app afterwards (WS-30 SC-4a,
+owner's point 3) · the multi-org chooser · certified deletion (CP-2a's open
+half) · invite emails (`members.py:149` — its own small ticket) · per-tenant
+subdomains (MT-1f).
+
+**Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
+seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, so
+slice 4 lands first or this ticket absorbs it explicitly) → CP-2c build
+(agent-safe, dark) → the owner's live set (Console deployed · key issued with
+`{resolve, provision}` · `SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve
+flip).
+
+**CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
+MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
+two-factor authentication and email OTP system set up. Not made it by MVP,
+but documented for eventual build up.").** 🔲 **No board row until minted;
+nothing may build against this stub.** The shape when it is built: identity
+stays IdP-attested (Google, Entra when un-deferred) — there is **no password
+system in the tree to add a factor to** (verified: no credentials provider in
+`auth.ts`), so (a) **email OTP** becomes relevant only when a non-OAuth
+identity is admitted (an Auth.js v5 magic-link/OTP provider), and it must ride
+the ONE existing session idiom, never a parallel one; (b) **TOTP/passkey
+step-up** rides the Auth.js session and is enforced at the gateway identity
+seam (`deps.py`), never per-app; (c) either lands behind its own default-OFF
+flag with both positions fenced. Anti-scope: SMS OTP (cost + SIM-swap
+surface) unless the owner asks by name.
+
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6
 shipped before it, and it must land before the first Router caller, because
 every agent runtime streams. CP-4 is
@@ -3765,9 +3917,11 @@ not the dark build. CP-9 is therefore dispatchable now; going live is the flip
 set in WS-30 SC-4a.
 
 *(Sequence line updated 2026-08-18 — CP-2b inserted after CP-2a, CP-4b noted;
-**CP-9 inserted after CP-6** the same day when the payment seam was minted. The
-board row in `work_plan.md` §2 carries the same line — updating it is the
-supervisor's act, not this file's.)*
+**CP-9 inserted after CP-6** the same day when the payment seam was minted;
+**CP-2c inserted after CP-2b 2026-08-19 (D46)** — it is the form over CP-2a's
+API and consumes CP-2b's resolve semantics, and it dispatches only after
+MT-1j slice 4. The board row in `work_plan.md` §2 carries the same line —
+updating it is the supervisor's act, not this file's.)*
 
 **What is dispatchable in CP-9's FIRST slice, and what is held back** *(the
 re-audit returned **GO-NARROWED** on 2026-08-18; this is that narrowing, written
@@ -4005,9 +4159,17 @@ surface, against fixtures.
    a deliberate availability trade nobody but the owner may take. *Declaring
    the flag, defaulting it OFF and testing both positions is AGENT-SAFE;
    writing it into a running box is not.*
+8. **Setting `SELF_SERVE_SIGNUP_ENABLED=true` on a live deployment, and
+   expanding a real deployment key's capability set beyond `{resolve}`**
+   (CP-2c, added 2026-08-19 by D46). The flag opens organization creation to
+   the public internet; the capability growth is gate 7's issuance class
+   applied to a wider credential. Building the flow against fixtures, minting
+   `{resolve, provision}` keys in tests, and fencing both flag positions is
+   AGENT-SAFE.
 
-*All seven are registered in `work_plan.md` §6 as of 2026-08-18 — a gate that
-lives only in a spec is a gate the dispatch board cannot enforce.*
+*All eight are registered in `work_plan.md` §6 (seven as of 2026-08-18, the
+eighth as §6(h) on 2026-08-19) — a gate that lives only in a spec is a gate
+the dispatch board cannot enforce.*
 
 ## 9. Open owner inputs
 

@@ -2220,8 +2220,12 @@ org.
   grants, D23.2). MT-1j is the substrate *beneath* it: an organization that exists, has
   roles, has an owner, has a placement and can read its own keys. It sells nothing and
   grants no entitlement.
-- **The self-serve signup form is CP-2a's** (`customer_console.md`). This ticket
-  consumes `POST /orgs/provision`; it does not build a UI.
+- **The self-serve signup form is CP-2c's** (`customer_console.md`; minted
+  2026-08-19 by D46 — CP-2a is the API beneath it; this line said "CP-2a's"
+  while that form had no ticket of its own). This ticket consumes
+  `POST /orgs/provision`; it does not build a UI. ⚠️ CP-2c names **slice 4 of
+  this ticket** as its hard dependency — the Console↔tenant seam including the
+  `org_placement` hole is what its orchestration calls.
 - **The identity cutover is MT-1a-2 / H6.** MT-1j fixes two upserts that are *broken
   against today's schema*; it does not move sign-in onto `user_identity`.
 - **Not the RLS promotion (MT-1b / H3).** See Decision C: H3 gates *executing* this
