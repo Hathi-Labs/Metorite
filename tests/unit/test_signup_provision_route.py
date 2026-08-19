@@ -443,6 +443,104 @@ class TestTheShapeClasses:
         assert r.json()["admit"] is True
         assert capture.calls[0][3] == VALID_GSTIN  # gstin threaded through
 
+    # ── The slug SHAPE gate (P2 repair) — a missing/blank/whitespace or
+    # non-DNS-label-safe slug is a 400 shape refusal, never the transient
+    # ``ConsoleUnavailable`` and never a 200 admit. The join key is refused at
+    # the route before either plane is touched; the happy path is unchanged.
+
+    def test_a_missing_slug_is_400_MissingSlug_not_ConsoleUnavailable(
+        self, flag_on, monkeypatch
+    ):
+        """Red-first: with the blank-slug check removed, an absent slug reaches
+        ``provision_local_organization("")`` — 179's generic ``P0001`` (stood in
+        here by a bare raise) → the broad step-1 ``except`` → a FALSE
+        ``ConsoleUnavailable``, a permanent shape error told to retry. The 400 is
+        the mirror of ``MissingState``.
+
+        Mutation: delete the blank-slug check and this returns
+        ``ConsoleUnavailable`` (200), not the 400.
+        """
+        _forbid_console(monkeypatch)
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        # Stand-in for migration 179's generic P0001 on an empty slug.
+        monkeypatch.setattr(
+            route, "provision_local_organization",
+            _araise(RuntimeError("slug is required")),
+        )
+        body = _body()
+        del body["slug"]
+
+        r = _client().post("/signup/provision", json=body)
+
+        assert r.status_code == 400
+        assert r.json()["code"] == "MissingSlug"
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_a_blank_or_whitespace_slug_is_400_MissingSlug(
+        self, flag_on, monkeypatch, blank
+    ):
+        """A whitespace-only slug is ``.strip()``-ed to empty and refused the
+        same way as a missing one — the same red as the missing-slug case."""
+        _forbid_console(monkeypatch)
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(
+            route, "provision_local_organization",
+            _araise(RuntimeError("slug is required")),
+        )
+
+        r = _client().post("/signup/provision", json=_body(slug=blank))
+
+        assert r.status_code == 400
+        assert r.json()["code"] == "MissingSlug"
+
+    @pytest.mark.parametrize("bad", ["a b", "UPPER", "-lead", "trail-"])
+    def test_a_badly_formatted_slug_is_400_InvalidSlug_not_an_admit(
+        self, flag_on, monkeypatch, bad
+    ):
+        """A non-DNS-label-safe slug is refused at the route BEFORE the join key
+        reaches either plane. ``"a b"`` (internal space) is the review's noted
+        unvalidated-join-key case; ``"UPPER"``/``"-lead"``/``"trail-"`` cover the
+        charset, leading- and trailing-hyphen rules of the ``fullmatch`` regex.
+
+        Red-first / mutation: with the format check removed these pass the
+        pre-flight and 200-admit (writing e.g. a spaced slug into the cross-plane
+        join key). Green: 400 ``InvalidSlug``.
+        """
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(
+            route, "provision_local_organization", _areturn("org-id")
+        )
+        monkeypatch.setattr(
+            route, "provision_org_on_console",
+            _areturn({"organization_id": "c", "slug": bad}),
+        )
+
+        r = _client().post("/signup/provision", json=_body(slug=bad))
+
+        assert r.status_code == 400
+        assert r.json()["code"] == "InvalidSlug"
+
+    def test_a_valid_slug_passes_the_shape_check(self, flag_on, monkeypatch):
+        """A well-formed slug is NOT a 400 — it reaches the planes and admits
+        (the happy path is unchanged by the shape gate)."""
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(
+            route, "provision_local_organization", _areturn("org-id")
+        )
+        monkeypatch.setattr(
+            route, "provision_org_on_console",
+            _areturn({"organization_id": "c", "slug": "acme-2"}),
+        )
+
+        r = _client().post("/signup/provision", json=_body(slug="acme-2"))
+
+        assert r.status_code == 200
+        assert r.json()["admit"] is True
+
 
 class TestThePosture:
     def test_an_anonymous_caller_never_reaches_the_handler(self, flag_on):

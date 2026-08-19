@@ -27,6 +27,12 @@ guard), the Customer Console SECOND (the registry mirror).
   (``deps.py:~299``), and every read below goes through the shared unbound
   session factory — a stray tenant-bound call would fail closed with
   ``TenantUnbound``.
+* **Inherited residual, stated not fixed.** This route inherits ``signin.py``'s
+  accepted risk that an internal-token holder can assert any ``X-User-Email``,
+  and is BROADER: sign-in only RESOLVES an existing org, but this route CREATES
+  an org + owner, so a token holder could squat slugs. Narrowed by the
+  ``GATEWAY_INTERNAL_TOKEN`` split (§6 WS-24(b)) and shipped dark behind
+  ``SELF_SERVE_SIGNUP_ENABLED`` — an accepted, gated residual, recorded here.
 
 ## Why this route may call ``acb_auth.console_resolve`` (the second importer)
 
@@ -72,7 +78,7 @@ _log = get_logger("gateway.signup")
 
 router = APIRouter(prefix="/signup", tags=["signup"])
 
-# ── The wire vocabulary (item 3's four outcome codes + the two 400 codes) ────
+# ── The wire vocabulary (item 3's four outcome codes + the four 400 codes) ───
 
 #: The flag was not exactly ``"true"``. The feature is off; nothing is created.
 SIGNUP_DISABLED = "SignupDisabled"
@@ -87,6 +93,17 @@ SLUG_TAKEN = "SlugTaken"
 MISSING_STATE = "MissingState"
 #: A GSTIN was present but structurally invalid (400).
 INVALID_GSTIN = "InvalidGstin"
+#: A required organization slug was missing/blank/whitespace (400). The mirror
+#: of ``MissingState`` — a blank slug is a malformed REQUEST, never a signup
+#: outcome. Without it a blank slug reaches ``provision_local_organization("")``
+#: and migration 179's generic ``P0001`` surfaces through the broad step-1
+#: ``except`` as a FALSE ``ConsoleUnavailable`` ("retry"), so a PERMANENT shape
+#: error masquerades as a transient one and the caller retries forever.
+MISSING_SLUG = "MissingSlug"
+#: A slug was present but not DNS-label-safe (400). Closes the same false-transient
+#: hole for a non-empty-but-malformed slug (e.g. an internal space) that would
+#: otherwise reach the cross-plane join key unvalidated.
+INVALID_SLUG = "InvalidSlug"
 
 #: R11: the tenant/identity claims a caller must not assert in the body. The
 #: owner is the SESSION email; the deployment is the Console key's own. Present
@@ -97,6 +114,14 @@ _FORBIDDEN_BODY_KEYS = frozenset({"email", "org", "deployment_label"})
 #: Optional, but validated when present so a typo is caught at signup rather
 #: than at the first invoice.
 _GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+
+#: The slug's shape: a DNS-label-safe subdomain, forward-compatible with MT-1f's
+#: per-tenant ``<slug>.metorite.com`` — lowercase alphanumeric plus internal
+#: hyphens, no leading/trailing hyphen, at most 63 characters. Applied with
+#: ``re.fullmatch`` (the whole slug is the label, not a prefix of it). An
+#: AGENT-PROPOSED DEFAULT (D16/D17): the owner may overrule the exact charset,
+#: and slice 4's form mirrors it client-side (advisory — THIS route is the fence).
+_SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _refuse(code: str, **extra: Any) -> dict[str, Any]:
@@ -113,6 +138,24 @@ def _bad_request(code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=400, content={"code": code, "detail": detail})
 
 
+def _slug_shape_refusal(slug: str) -> JSONResponse | None:
+    """The slug SHAPE gate: a 400 for a missing/blank slug (the mirror of
+    ``MissingState``) or one that is not DNS-label-safe, else ``None``. Extracted
+    so the handler stays under the complexity fence while the two refusals join
+    the same shape-violation class as ``MissingState``/``InvalidGstin`` — a
+    malformed REQUEST, never a 200 outcome."""
+    if not slug:
+        return _bad_request(MISSING_SLUG, "an organization slug is required")
+    if not _SLUG_RE.fullmatch(slug):
+        return _bad_request(
+            INVALID_SLUG,
+            "the slug must be a DNS-label-safe subdomain: lowercase "
+            "alphanumeric and internal hyphens, no leading or trailing hyphen, "
+            "at most 63 characters",
+        )
+    return None
+
+
 @router.post("/provision")
 async def provision_signup(
     request: Request,
@@ -122,8 +165,9 @@ async def provision_signup(
 
     Always 200 for an OUTCOME (admit, or a refusal code the form renders), and
     400 only for a SHAPE violation (a body that asserts a tenant/identity, a
-    missing registered state, a malformed GSTIN). A 4xx for an outcome would
-    make "signup says no" indistinguishable from "the route is broken".
+    missing/malformed slug, a missing registered state, a malformed GSTIN). A
+    4xx for an outcome would make "signup says no" indistinguishable from "the
+    route is broken".
     """
     settings = get_settings()
 
@@ -157,6 +201,17 @@ async def provision_signup(
     registered_state = str(raw.get("registered_state") or "").strip()
     gstin_raw = raw.get("gstin")
     gstin = str(gstin_raw).strip() if gstin_raw is not None else ""
+
+    # ── Slug SHAPE — the cross-plane join key, refused HERE (a malformed
+    # REQUEST, 400) before step 0/1/2 touch either plane. Same shape-violation
+    # class as InvalidBody/MissingState/InvalidGstin, never a 200 outcome.
+    # Missing/blank/whitespace ⇒ MissingSlug (the mirror of MissingState); a
+    # value that is not DNS-label-safe ⇒ InvalidSlug. Without this a blank slug
+    # would reach provision_local_organization("") and 179's generic P0001 would
+    # come back as a FALSE ConsoleUnavailable — a permanent error told to retry.
+    slug_refusal = _slug_shape_refusal(slug)
+    if slug_refusal is not None:
+        return slug_refusal
 
     # ── GST: registered state REQUIRED; GSTIN optional but structural when
     # present. Both 400s, both thread to the Console org row below.

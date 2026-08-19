@@ -43,16 +43,19 @@ hard one-email-one-org guard, its two typed raises the TOCTOU backstop mapped to
 the same two codes; step 2 the Console deployment-key arm, which cannot
 permanently refuse a fresh tenant-born slug so only transient failures →
 `ConsoleUnavailable`); the flag `SELF_SERVE_SIGNUP_ENABLED` minted as a GATEWAY
-settings field (exact-`"true"`, default OFF → `SignupDisabled`); GST validated
-at the route (`MissingState`/`InvalidGstin` 400s) and threaded to the Console
-org row; the Console-provision client added to `acb_auth.console_resolve` (the
-ONE Console httpx client) and `test_console_dependency_boundary.py`'s allow-list
-grown from ONE importer to EXACTLY TWO (`signin.py` + `signup.py`). Zero
-migrations, zero new engine sites; **30 route tests / 88 in the verify set, 0
-skipped on both ladders**; every auth/tenancy clause mutation-proved (drop the
-flag → `SignupDisabled` red; trust a body email → the R11 400 red; map the wrong
+settings field (exact-`"true"`, default OFF → `SignupDisabled`); slug shape
+validated at the route (`MissingSlug`/`InvalidSlug` 400s, a DNS-label-safe
+`fullmatch` — agent-proposed default, D16/D17); GST validated at the route
+(`MissingState`/`InvalidGstin` 400s) and threaded to the Console org row; the
+Console-provision client added to `acb_auth.console_resolve` (the ONE Console
+httpx client) and `test_console_dependency_boundary.py`'s allow-list grown from
+ONE importer to EXACTLY TWO (`signin.py` + `signup.py`). Zero migrations, zero
+new engine sites; **39 route tests / 97 in the verify set, 0 skipped on both
+ladders**; every auth/tenancy clause mutation-proved (drop the flag →
+`SignupDisabled` red; trust a body email → the R11 400 red; map the wrong
 exception → the code red; skip `org_owner_of` + uncaught step-1 raise → the
-`SlugTaken` path red). **Slices 3 (the `signIn` limbo branch) and 4 (the
+`SlugTaken` path red; drop the slug shape gate → a blank slug returns the false
+`ConsoleUnavailable`/a spaced slug 200-admits, red). **Slices 3 (the `signIn` limbo branch) and 4 (the
 `/signup` form) remain OPEN** — nothing of the *form* exists. **Issuing or
 widening a REAL deployment key stays §8 gate 7; flipping
 `SELF_SERVE_SIGNUP_ENABLED` live is §8 gate 8** — the code is built, the acts are
@@ -3886,10 +3889,21 @@ overrule any numbered item)*:
    customer conversation, not a security boundary (argued; tighten later).
    *Registered state* = required NON-EMPTY at the **gateway route** (the
    requirement is the self-serve flow's — the Console's `billing_state` stays
-   optional so the operator arm's semantics are untouched). Refusals: **400**
-   `InvalidGstin` / **400** `MissingState`, fenced red-first in
-   `test_signup_provision_route.py`; the form mirrors both client-side
-   (advisory — the route is the fence).
+   optional so the operator arm's semantics are untouched). *Slug* = required
+   NON-EMPTY **and** a DNS-label-safe subdomain
+   `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (`re.fullmatch`: lowercase
+   alphanumeric + internal hyphens, no leading/trailing hyphen, ≤63 chars),
+   validated at the **gateway route** BEFORE step 0/1/2 — an **agent-proposed
+   default (D16/D17)**, forward-compatible with MT-1f's per-tenant
+   `<slug>.metorite.com`; the owner may overrule the exact charset. 179 only
+   guarantees non-empty, so without this a blank slug reached
+   `provision_local_organization("")` → 179's generic `P0001` → the broad step-1
+   `except` → a FALSE **200 `ConsoleUnavailable`** ("retry") for a PERMANENT
+   shape error (slice-2 P2, repaired at landing), and a spaced slug (`"a b"`)
+   reached the cross-plane join key unvalidated. Refusals: **400**
+   `InvalidGstin` / **400** `MissingState` / **400** `MissingSlug` / **400**
+   `InvalidSlug`, fenced red-first in `test_signup_provision_route.py`; the form
+   mirrors all four client-side (advisory — the route is the fence).
 4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
    `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
    only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
@@ -4098,15 +4112,23 @@ mutation testing on auth/tenancy clauses)*:
    session attempting A's slug gets `SlugTaken` naming nothing, and the Console
    is asserted NEVER reached. **Prereq MT-1j slice 7 is merged** (`org_owner_of`
    + the create-only guard both present).
-4. ✅ **MET — slice 2, 2026-08-20.** Registered state required (**400
-   `MissingState`** at the route), GSTIN optional but structurally valid when
-   present (**400 `InvalidGstin`**, the item-3 regex), and both values land on
-   the Console org row. Fences: `::TestTheShapeClasses` red-first for both 400s;
-   the client-threading test (`::TestTheConsoleProvisionClient` — no
-   `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
+4. ✅ **MET — slice 2, 2026-08-20 (slug shape gate added at landing).**
+   Registered state required (**400 `MissingState`** at the route), GSTIN
+   optional but structurally valid when present (**400 `InvalidGstin`**, the
+   item-3 regex), and both values land on the Console org row. Slug shape
+   validated at the route BEFORE step 0/1/2 (**400 `MissingSlug`** for
+   missing/blank/whitespace, **400 `InvalidSlug`** for a non-DNS-label-safe
+   value, item-3's `fullmatch` regex) — the slice-2 P2 repair: a blank slug had
+   reached `provision_local_organization("")` and surfaced as a false **200
+   `ConsoleUnavailable`**, and `"a b"` reached the join key unvalidated. Fences:
+   `::TestTheShapeClasses` red-first for all four 400s (the slug fences show the
+   blank case returning `ConsoleUnavailable` and the spaced case 200-admitting
+   before the gate); the client-threading test (`::TestTheConsoleProvisionClient`
+   — no `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
    ConsoleOrgRow` (R8 against the Console ladder, the deployment-key arm) for
    the landing.
-5. ✅ **MET — slice 2, 2026-08-20. The two-plane orchestration converges or
+5. ✅ **5b MET · 5a MET at plane level, route-level convergence is CP-2e —
+   slice 2, 2026-08-20. The two-plane orchestration converges or
    refuses cleanly (audit blocker 3), parametrised over BOTH directions**
    (built — `pr-check.yml` provisions both Postgres services; MT-1j slice 7
    merged): **(a)** a TRANSIENT Console failure after the tenant commit leaves
