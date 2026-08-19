@@ -416,6 +416,13 @@ def _sanitize_upstream_error(exc: Exception) -> tuple[int, str]:
 
 async def _handle_chat_completions(request: Request) -> StreamingResponse | dict[str, Any]:
     """OpenAI-compatible chat completions. Supports streaming and tools."""
+    # H4: the provider credential this call sends is process-global and this
+    # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,
+    # the deployment-wide LITELLM_MASTER_KEY, so `current_tenant()` is None on
+    # the agent-runtime path. Threading an org from `x-cc-agent` or the body
+    # would be R5 / R11's forbidden move. The full argument, and what a real
+    # fix requires (a tenant-scoped API key — owner gate (f)), is on
+    # `acb_llm.client._ensure_keys_loaded`. MT-1j slice 5, recorded not fixed.
     await _ensure_keys_loaded()
 
     # Observability attribution (E2): the agent runtime stamps its identity on the

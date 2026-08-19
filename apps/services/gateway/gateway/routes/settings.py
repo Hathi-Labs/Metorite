@@ -17,10 +17,30 @@ from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
 from acb_llm.model_limits import FALLBACK_CONTEXT_WINDOWS, MODEL_CAPABILITIES
 from fastapi import APIRouter, Depends, HTTPException
+from gateway.db import current_tenant
 from pydantic import BaseModel
 
 _log = get_logger("settings")
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+# ── MT-1j slice 5 · the tenant on this surface ─────────────────────────
+#
+# Every `model_config` / `provider_keys` call below passes
+# ``organization_id=current_tenant()``. The value comes from ONE place — the
+# tenant `acb_auth.deps._with_resolved_access` bound from the authenticated
+# session (`saas_multitenancy.md` §11 MT-1j slice 5 · R5 ·
+# `user_management_contract.md` R11) — never from a header, query parameter or
+# body field. Every route in this module is reached through the app-wide
+# `require_authenticated`, whose own dependency is `get_current_user`, so the
+# binding is already in context by the time these helpers run; they are sync
+# functions called from async handlers, and a ContextVar read works in both.
+#
+# ``None`` when nothing is bound is deliberate and is NOT a fallback: it hands
+# `key_store._resolve_org` / `model_config._resolve_org` exactly the argument
+# they receive today, so the sole-org resolution — and its fail-closed arm the
+# moment a second organization exists — is untouched. What changes is that once
+# org #2 exists, an authenticated caller now resolves to THEIR organization
+# instead of to nothing.
 
 # ---------------------------------------------------------------------------
 # Locate infra/litellm/config.yaml relative to the repo root.
@@ -67,7 +87,8 @@ def _load_tier_overrides() -> dict[str, Any]:
     """
     from acb_llm.model_config import load_blob, save_blob
 
-    blob = load_blob("tier_overrides")
+    org = current_tenant()
+    blob = load_blob("tier_overrides", organization_id=org)
     if isinstance(blob, dict) and "model_list" in blob:
         return blob
     # DB empty (or unreachable) — seed from the legacy YAML file once.
@@ -78,7 +99,7 @@ def _load_tier_overrides() -> dict[str, Any]:
                 existing = yaml.safe_load(f) or {"model_list": []}
             if existing.get("model_list"):
                 try:
-                    save_blob("tier_overrides", existing)
+                    save_blob("tier_overrides", existing, organization_id=org)
                     _log.info("settings.llm.tier_overrides_seeded_from_file")
                 except Exception:
                     pass  # DB unreachable — use file contents this request
@@ -132,7 +153,7 @@ def _save_tier_override(tier_name: str, entry: dict[str, Any]) -> None:
         model_list.append(entry)
 
     existing["model_list"] = model_list
-    save_blob("tier_overrides", existing)
+    save_blob("tier_overrides", existing, organization_id=current_tenant())
 
 
 def _infra_dir() -> Path:
@@ -199,6 +220,16 @@ def _inject_env_into_litellm(env_var: str, value: str) -> None:
     Since there's no separate LiteLLM proxy, keys are set in the current
     process environment AND the encrypted Postgres key store.  The gateway's
     /v1 endpoint reads from the key store on every request.
+
+    ⚠️ **The ``os.environ`` half is PROCESS-WIDE and therefore not tenantable
+    here.** ``key_store.configure_litellm`` sets ``litellm.<provider>_api_key``
+    and the matching env var once per process, so a second organization saving
+    its own key would overwrite the first's for every caller. MT-1j slice 5
+    threads the *persisted* half (``_sync_key_to_store`` below, per-org and
+    correct); the in-process half is the same class as
+    ``acb_llm.client._ensure_keys_loaded`` — see its ``H4`` note — and belongs
+    to whichever ticket makes provider credentials per-request rather than
+    per-process. Recorded, not fixed: `saas_multitenancy.md` §11 MT-1j slice 5.
     """
     # Update os.environ immediately so _is_provider_configured() returns True.
     os.environ[env_var] = value
@@ -211,6 +242,16 @@ def _sync_key_to_store(env_var: str, value: str) -> None:
 
     Maps env var name (e.g. GEMINI_API_KEY) → provider slug (e.g. gemini)
     using the reverse of _PROVIDER_ENV_MAP.
+
+    MT-1j slice 5: the write is scoped to the caller's organization. Read the
+    binding HERE, on the request's own context, and pass it explicitly — never
+    from inside the scheduled coroutine. ``ensure_future`` does copy the
+    context, but the value this write owns must not depend on that: the tenant
+    is resolved at the call site or it is ``None``, and ``put`` then raises the
+    moment a second organization exists rather than writing an ownerless
+    credential (``key_store.put``'s docstring, MT-0d). Before this, org #2's
+    admin saving a provider key hit exactly that raise and lost it silently to
+    the ``except`` below.
     """
     import asyncio as _asyncio
 
@@ -221,15 +262,20 @@ def _sync_key_to_store(env_var: str, value: str) -> None:
     provider = _env_to_provider.get(env_var)
     if not provider:
         return
+    org = current_tenant()
     try:
         from acb_llm.key_store import get_key_store
         store = get_key_store()
         loop = _asyncio.get_event_loop()
         if loop.is_running():
             # We're in an async context — schedule and forget
-            _asyncio.ensure_future(store.put(provider, value.strip()))
+            _asyncio.ensure_future(
+                store.put(provider, value.strip(), organization_id=org)
+            )
         else:
-            loop.run_until_complete(store.put(provider, value.strip()))
+            loop.run_until_complete(
+                store.put(provider, value.strip(), organization_id=org)
+            )
     except Exception:
         pass  # best-effort — key will be re-seeded from .env on restart
 
@@ -871,14 +917,15 @@ def _load_catalogue() -> dict[str, object]:
     """
     from acb_llm.model_config import load_blob, save_blob
 
-    blob = load_blob("enabled_models")
+    org = current_tenant()
+    blob = load_blob("enabled_models", organization_id=org)
     if blob is not None:
         return _normalise_catalogue(blob)
     # DB empty (or unreachable) — seed from the legacy file once.
     cat = _load_catalogue_from_file()
     if cat.get("enabled") or cat.get("hidden"):
         try:
-            save_blob("enabled_models", cat)
+            save_blob("enabled_models", cat, organization_id=org)
             _log.info("settings.llm.enabled_models_seeded_from_file")
         except Exception:
             pass  # DB unreachable — fall back to file contents this request
@@ -887,7 +934,7 @@ def _load_catalogue() -> dict[str, object]:
 
 def _save_catalogue(catalogue: dict[str, object]) -> None:
     from acb_llm.model_config import save_blob
-    save_blob("enabled_models", catalogue)
+    save_blob("enabled_models", catalogue, organization_id=current_tenant())
 
 
 def _load_enabled_models() -> list[dict[str, str]]:

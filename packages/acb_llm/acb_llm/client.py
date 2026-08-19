@@ -164,6 +164,17 @@ def _init_tier_models() -> None:
     overrides: dict[str, Any] = {}
     try:
         from acb_llm.model_config import load_blob
+        # H4: no tenant is reachable here and threading one would be wrong.
+        # `_init_tier_models` runs at IMPORT time (bottom of this module) and
+        # populates `_TIER_MODEL`, which is PROCESS-GLOBAL: one tier→model map
+        # shared by every request in the process. There is no request, no
+        # session and no bound tenant at import, and passing one would produce
+        # a global map filled from whichever organization happened to be first.
+        # Per-organization tier resolution is a redesign of this module's
+        # caching, not a threading exercise — MT-1j slice 5 records it and does
+        # not attempt it (`saas_multitenancy.md` §11). The untenanted read still
+        # fails CLOSED once a second organization exists, which degrades to the
+        # `config.yaml` defaults rather than to another tenant's models.
         blob = load_blob("tier_overrides")
         if isinstance(blob, dict) and "model_list" in blob:
             overrides = blob
@@ -253,6 +264,34 @@ async def _ensure_keys_loaded() -> None:
 
     On first run with an empty store, auto-seeds any keys found in env vars.
     Falls back to env vars only if the store is completely unreachable.
+
+    ⚠️ **H4 — this is the LIVE completion path's key read, and it is NOT
+    tenant-threadable as written.** Two structural reasons, both measured
+    2026-08-19 for MT-1j slice 5 (`saas_multitenancy.md` §11):
+
+    1. **It is a once-per-process latch writing PROCESS-GLOBAL state.**
+       ``_keys_loaded`` runs the body exactly once, and
+       ``store.configure_litellm()`` then assigns ``litellm.<provider>_api_key``
+       and ``os.environ[...]`` — module attributes shared by every request in
+       the process. Calling it per organization would not scope anything; it
+       would make the LAST organization's key the one every caller sends.
+    2. **Its caller has no tenant to give it.** The choke point is the
+       gateway's ``/v1/chat/completions``
+       (``routes/v1_compat.py::_handle_chat_completions``), authenticated by
+       ``require_llm_api_auth`` — the deployment-wide ``LITELLM_MASTER_KEY``
+       every agent holds. That branch of ``get_current_user`` resolves
+       ``system:internal`` and never reaches ``_with_resolved_access``, so
+       ``current_tenant()`` is ``None``. Deriving the org from ``X-CC-Agent``
+       or the body instead is exactly what R5 /
+       ``user_management_contract.md`` R11 forbid.
+
+    Making the live path per-tenant therefore needs a **tenant-scoped API key**
+    (R11's second admitted source) and per-request provider credentials rather
+    than per-process ones. Widening ``LITELLM_MASTER_KEY``'s scope is a
+    credential-scope change — ``work_plan.md`` §6 gate (f), the owner's act,
+    not this ticket's. Until then the untenanted read fails CLOSED once a
+    second organization exists: no key, a visibly failing completion, never
+    another tenant's key.
     """
     global _keys_loaded
     if _keys_loaded:
