@@ -54,6 +54,94 @@ from acb_common import get_logger
 
 _log = get_logger("provisioning")
 
+
+# ── The two typed, catchable refusals (slice 7) ─────────────────────────────
+#
+# Migration 180 tags provision_org_owner's TWO caller-recoverable refusals with
+# DEDICATED, DISTINCT SQLSTATEs so this seam can classify on the code ALONE —
+# never on Postgres prose (the gap the "deliberately not translated" block below
+# used to leave, sanctioned for repair by spec §11 slice 7). Custom class P1:
+# Postgres defines only class P0 (PL/pgSQL), so P1001/P1002 collide with nothing
+# built in — and deliberately NOT 23505 (unique_violation), which the genuine
+# app_user / user_role unique constraints in the SAME function also raise.
+
+#: SQLSTATE migration 180 raises when the owner_email's ``app_user`` row already
+#: belongs to a DIFFERENT organization (the cross-tenant guard, re-tagged from
+#: the generic P0001 it shared in 179).
+SQLSTATE_OWNER_BELONGS_ELSEWHERE = "P1001"
+
+#: SQLSTATE migration 180's create-only guard raises when the target org already
+#: holds an ``owner`` role for an address other than the one provisioning it.
+SQLSTATE_SLUG_OWNED_BY_ANOTHER = "P1002"
+
+
+class ProvisioningRefused(Exception):
+    """Base for a tenant-plane provisioning refusal a CALLER can recover from.
+
+    The two subclasses below are what a self-serve signup route (CP-2c slice 2)
+    catches to answer "slug taken" / "email already elsewhere" distinctly. The
+    two NON-recoverable raises (a blank slug, an org with no owner role) stay a
+    plain :class:`sqlalchemy.exc.DBAPIError` — they are programming errors, not
+    signup outcomes, and are never translated to this hierarchy.
+    """
+
+
+class OwnerBelongsElsewhere(ProvisioningRefused):
+    """The ``owner_email`` already belongs to a DIFFERENT organization.
+
+    Migration 180 raises SQLSTATE ``P1001``. Adopting the address would MOVE a
+    member between tenants (S1-1's cross-tenant write) and attach this org's
+    ``owner`` role to a row that stays in the other tenant. Distinct from
+    :class:`SlugOwnedByAnother`: this is about the EMAIL, not the slug.
+    """
+
+
+class SlugOwnedByAnother(ProvisioningRefused):
+    """The target slug's organization is already OWNED by another address.
+
+    Migration 180's create-only guard raises SQLSTATE ``P1002``. Completing it
+    would make ``owner_email`` a co-owner of a stranger's organization — the
+    tenant-plane twin of the slice-1 Console P0. Distinct from
+    :class:`OwnerBelongsElsewhere`: this is about the SLUG, not the email.
+    """
+
+
+#: SQLSTATE → typed refusal. The ONLY dispatch table; classification reads this
+#: keyed on the driver's SQLSTATE and nothing else (constraint C).
+_REFUSAL_BY_SQLSTATE: dict[str, type[ProvisioningRefused]] = {
+    SQLSTATE_OWNER_BELONGS_ELSEWHERE: OwnerBelongsElsewhere,
+    SQLSTATE_SLUG_OWNED_BY_ANOTHER: SlugOwnedByAnother,
+}
+
+
+def _sqlstate(exc: Exception) -> str | None:
+    """The SQLSTATE of a DBAPI error, from the DRIVER's own attribute.
+
+    Never parsed from the message. SQLAlchemy wraps the driver error in
+    ``.orig``; asyncpg (the async seam) and psycopg3 (the sync R8 shell) both
+    expose ``.sqlstate``, psycopg2 exposes ``.pgcode``. Returns ``None`` when
+    the exception carries no SQLSTATE at all.
+    """
+    orig = getattr(exc, "orig", exc)
+    code = getattr(orig, "sqlstate", None)
+    if code is None:
+        code = getattr(orig, "pgcode", None)
+    return code
+
+
+def _translate_refusal(exc: Exception) -> ProvisioningRefused | None:
+    """Map a dedicated-SQLSTATE refusal to its typed exception, else ``None``.
+
+    Dispatches on :func:`_sqlstate` ALONE — the message is used only to carry
+    the human-readable detail onto the typed exception, never to CLASSIFY.
+    ``None`` means "not one of the two caller-recoverable refusals", so the seam
+    re-raises the original error unchanged (constraints B + C).
+    """
+    cls = _REFUSAL_BY_SQLSTATE.get(_sqlstate(exc) or "")
+    if cls is None:
+        return None
+    return cls(str(getattr(exc, "orig", exc)))
+
 #: Every argument is CAST explicitly. 179's parameters are all TEXT, and an
 #: untyped NULL bound through asyncpg's prepare step leaves the server to infer
 #: a type for a parameter that has no value — which is how a call resolves to
@@ -113,14 +201,23 @@ async def provision_local_organization(
         region: Placement region.
 
     Raises:
-        Exception: whatever the database raised — 179's refusals reach the
-            caller unchanged (a blank slug, an owner who already belongs to
-            another organization, an organization with no owner role). They are
-            deliberately not translated into a local exception type: the
-            message names the function and the condition, and a wrapper here
-            would be a second vocabulary for the same refusal.
+        OwnerBelongsElsewhere: the ``owner_email`` already belongs to a
+            DIFFERENT organization (migration 180's SQLSTATE ``P1001``).
+        SlugOwnedByAnother: the target slug's organization is already owned by
+            another address (migration 180's create-only guard, SQLSTATE
+            ``P1002``) — the tenant-plane twin of the slice-1 Console P0.
+        sqlalchemy.exc.DBAPIError: any OTHER database refusal, unchanged — a
+            blank slug and an org with no owner role stay raw. They are the
+            two NON-recoverable raises (generic P0001): a wrapper for them would
+            be a second vocabulary for a programming error, not a signup outcome.
+
+    ⚠️ **The translation slice 4 deferred, now supplied for slice 7's first
+    caller (CP-2c slice 2).** Classification is on the driver's SQLSTATE ALONE
+    (:func:`_translate_refusal`), never on Postgres prose — the two dedicated
+    codes are the whole grammar.
     """
     from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
 
     # Imported inside the function, like :mod:`acb_common.placement` does:
     # importing this module must not drag SQLAlchemy's async stack into a
@@ -128,25 +225,35 @@ async def provision_local_organization(
     from acb_common.db import get_session_factory
 
     factory = get_session_factory()
-    async with factory() as session:
-        row = (
-            await session.execute(
-                text(_PROVISION_SQL),
-                {
-                    "slug": slug,
-                    "display_name": display_name,
-                    "owner_email": owner_email,
-                    "domain": domain,
-                    "tier": tier,
-                    "target": target,
-                    "region": region,
-                },
-            )
-        ).mappings().first()
-        # A function that RETURNS UUID and did not raise returned a row; if it
-        # somehow did not, committing would bank an unknown state.
-        assert row is not None, "provision_organization returned no row"
-        await session.commit()
+    try:
+        async with factory() as session:
+            row = (
+                await session.execute(
+                    text(_PROVISION_SQL),
+                    {
+                        "slug": slug,
+                        "display_name": display_name,
+                        "owner_email": owner_email,
+                        "domain": domain,
+                        "tier": tier,
+                        "target": target,
+                        "region": region,
+                    },
+                )
+            ).mappings().first()
+            # A function that RETURNS UUID and did not raise returned a row; if
+            # it somehow did not, committing would bank an unknown state.
+            assert row is not None, "provision_organization returned no row"
+            await session.commit()
+    except DBAPIError as exc:
+        # Map the two caller-recoverable refusals (180's dedicated SQLSTATEs) to
+        # their typed exceptions; re-raise every other DBAPIError unchanged. The
+        # session context manager above has already rolled back, so a refused
+        # act has written nothing (the "refused, writes nothing" contract).
+        typed = _translate_refusal(exc)
+        if typed is not None:
+            raise typed from exc
+        raise
 
     organization_id = str(row["organization_id"])
     _log.info(
