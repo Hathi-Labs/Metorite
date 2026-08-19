@@ -2523,11 +2523,19 @@ waits on the other:**
 1. **Slice 4 ships the OPERATOR arm, and the operator names the deployment explicitly**:
    `ProvisionRequest` gains a **required** `deployment_label` resolving to
    `deployment.label` (`001_customer_console.sql:82-94`, `UNIQUE`). Missing field →
-   422; unknown label → the collapsed refusal shape (no existence oracle). This is a
+   422; unknown label → **404 naming the label, per the operator idiom `_org_id`
+   already ships** (`main.py:436-442`; the operator credential is cross-org by design,
+   so naming what it asked about is not an existence oracle — `customer_console.md`
+   CP-9 clause 7 is the authority, and it calls this "the contrast, not the
+   precedent"; *ruled at the 2026-08-19 re-audit, which found the earlier "collapsed
+   refusal" wording untestable and contradicting that clause*). This is a
    breaking change to `POST /orgs/provision` and is FREE today: the Console is deployed
-   nowhere and the route has no production caller — CP-2a's existing suites are updated
-   in the same PR, named here so the diff surprises nobody. **No capability change, no
-   §6 act — agent-safe end to end.**
+   nowhere and the route has no production caller — **the six CP-2a-era suites that
+   POST `/orgs/provision` (12 call sites, auditor-measured) are updated in the same
+   PR**: `test_customer_console_api.py` · `test_customer_console_key_auth.py` ·
+   `test_customer_console_lifecycle.py` · `test_customer_console_payments.py` ·
+   `test_customer_console_resolve.py` · `test_customer_console_router.py`. **No
+   capability change, no §6 act — agent-safe end to end.**
 2. **The DEPLOYMENT-KEY arm (the key names itself) is CP-2c's**, arrives with CP-2c, and
    stays gated on §6 (f)/(h) — the `{resolve, provision}` growth remains CP-2c's
    *proposal*, decided by the owner at issuance, never by an implementer. Slice 4 is
@@ -2558,7 +2566,8 @@ reserved smoke:**
   `org_placement` row for the named deployment with `database_target` NULL; re-run same
   label → still one row, `moved_at` untouched; different label → 409; missing field →
   422 even with exactly one deployment seeded (adjudication item 3's fence); unknown
-  label → the collapsed refusal; and `POST /registry/resolve`'s deployment arm, called
+  label → **404 naming the label** (adjudication item 1 — the operator idiom); and
+  `POST /registry/resolve`'s deployment arm, called
   with that deployment's key, **returns the provisioned org** (red today: the fixture
   at `test_customer_console_resolve.py:232` is the only writer). Every clause R8,
   red-first.
@@ -2571,12 +2580,17 @@ reserved smoke:**
   org, one placement, six roles, one owner; blank slug surfaces 179's refusal. Its
   first production caller is CP-2c's route — until then the "callable nothing calls"
   note graduates from 179 to this function, honestly, in this header.
-- **(4c, tenant DB) — the projection now has a local row to land on:** extend
+- **(4c, tenant DB) — the projection now has a PROVISIONED row to land on:** extend
   `test_deployment_resolve_cache.py` with the provisioned-slug case — after
   `provision_local_organization('x')`, a fresh resolve answer for x's member takes the
   WRITE path: projection rows written AND the `console_resolve.unprovisioned_org`
-  skip-warn (`console_resolve.py:606-626`) does NOT fire. Fails today; that is the
-  point.
+  skip-warn (`console_resolve.py:606-626`) does NOT fire. ⚠️ **There is no projection
+  bug to hunt** (re-audit finding): the write path is already fenced green — the
+  suite's own `_provision_org` (`test_deployment_resolve_cache.py:271-284`) hand-seeds
+  a local row, and the skip-warn has a passing negative fence at `:1311`. 4c's
+  non-vacuous claim is that **the seam function's row is discoverable via the slug
+  join key** — it fails today only because `provision_local_organization` does not
+  exist, and that is the clause.
 - **True end-to-end (both databases, live HTTP)** is reserved for the deployment smoke at
   execution time (🔴 the §6 gate). If an implementer wants the in-process bridge anyway,
   the harness is `httpx.ASGITransport` onto `customer_console.main.app` in a NEW module
@@ -2988,10 +3002,17 @@ uv run pytest tests/unit/test_tenant_placement.py tests/unit/test_org_provisioni
 # slice 4 — the three single-DB clauses (4a Console · 4b seam caller · 4c projection).
 # "End to end" was struck at remediation: the split above de-scopes it to the
 # execution-time smoke, and this line must not promise what the clauses do not.
+# The last four suites are here because the required deployment_label is a
+# breaking change and they POST /orgs/provision (re-audit measure: 6 suites,
+# 12 call sites) — a green run on the first four alone proves nothing about them.
 uv run pytest tests/unit/test_customer_console_resolve.py \
               tests/unit/test_customer_console_lifecycle.py \
               tests/unit/test_org_provisioning.py \
-              tests/unit/test_deployment_resolve_cache.py -v -rs
+              tests/unit/test_deployment_resolve_cache.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_router.py -v -rs
 # slice 5 — the completion ratchet, plus the standing tripwire it must leave
 # UNEDITED. Run them together: the ratchet is only meaningful while the pair it
 # refuses to "repair" is still green.
