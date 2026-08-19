@@ -27,6 +27,7 @@ import httpx
 from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
 from acb_common import get_logger, get_settings
 from fastapi import APIRouter, Depends, HTTPException, status
+from gateway.db import current_tenant
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -36,6 +37,39 @@ router = APIRouter(
     prefix="/integrations", tags=["integrations"],
     dependencies=[require_feature_router("integrations")],
 )
+
+# ── MT-1j slice 5 · the tenant on this surface ─────────────────────────
+#
+# Every `provider_keys` call in this module passes
+# ``organization_id=current_tenant()`` — the SAME idiom `routes/settings.py`
+# uses, not a second one (`saas_multitenancy.md` §11 MT-1j slice 5 ratchet
+# round 2 · R5 · `user_management_contract.md` R11). The value comes from one
+# place: the tenant `acb_auth.deps._with_resolved_access` bound from the
+# authenticated session. Never from `req.service`, a header, a query parameter
+# or any other request input — an org taken from the request is R11's forbidden
+# move and would let a caller name somebody else's tenant.
+#
+# Only `/integrations/oauth/callback/{service}` is in `main.PUBLIC_ROUTES`, and
+# it touches none of these calls; the five threaded sites are all reached
+# through the app-wide `require_authenticated`, so the binding is in context.
+#
+# ``None`` outside a bound session is deliberate and is NOT a fallback: it hands
+# `key_store._resolve_org` exactly the argument it receives today, so MT-0d's
+# sole-org resolution and its fail-closed arm at org #2 are unchanged. What
+# changes is that an authenticated caller now resolves to THEIR organization.
+#
+# 🚫 **The `os.environ[...] = value` / `_upsert_env_var(env_path, ...)` halves of
+# `configure_integrations`, `put_integration_key` and `delete_integration_key`
+# are NOT tenantable and are a known cross-tenant write** — the same class as
+# `settings.py::_inject_env_into_litellm`. A process-global env var and a single
+# `.env` file have one value for the whole deployment, so org #2 saving
+# `ZOHO_CLIENT_ID` overwrites org #1's for every caller and every agent reading
+# it through `get_settings()`. Recorded here, deliberately NOT repaired: the fix
+# is per-request provider credentials, which is the same owner-gated
+# credential-scope change the H4 sites wait on (`work_plan.md` §6 gate (f)).
+# `_is_configured` and `missing_keys` below read those env vars, so
+# `/integrations/status`'s `configured` / `env-file` columns stay deployment-wide
+# too — only the `db_keys` / `encrypted-db` half is per organization.
 
 # ---------------------------------------------------------------------------
 # Static setup guides — one entry per registered integration.
@@ -566,7 +600,9 @@ async def integration_status(
         from acb_llm.key_store import get_key_store
         store = get_key_store()
         db_keys_by_service: dict[str, list[str]] = {}
-        all_int_keys = await store.get_by_type("integration")
+        all_int_keys = await store.get_by_type(
+            "integration", organization_id=current_tenant()
+        )
         for provider in all_int_keys:
             if ":" in provider:
                 svc, suffix = provider.split(":", 1)
@@ -740,6 +776,7 @@ async def configure_integrations(
                     var.value,
                     credential_type="integration",
                     service=svc,
+                    organization_id=current_tenant(),
                 )
                 db_written.append(provider)
             except Exception as exc:
@@ -751,6 +788,10 @@ async def configure_integrations(
                 )
 
         # 2. Set in current process env (immediate effect)
+        # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired —
+        # see the MT-1j slice 5 block at the top of this module. Steps 2
+        # and 3 have one value for the whole deployment; only step 1 above
+        # is per organization.
         os.environ[var.key] = var.value
 
         # 3. Write to .env as bootstrap fallback (still useful for
@@ -806,7 +847,9 @@ async def list_integration_keys(
     """
     from acb_llm.key_store import get_key_store
     store = get_key_store()
-    all_integration_keys = await store.get_by_type("integration")
+    all_integration_keys = await store.get_by_type(
+        "integration", organization_id=current_tenant()
+    )
 
     # Group by service
     by_service: dict[str, list[str]] = {}
@@ -883,9 +926,28 @@ async def put_integration_key(
         req.value,
         credential_type="integration",
         service=req.service,
+        organization_id=current_tenant(),
     )
 
     # Set in current process env (immediate effect)
+    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
+    # MT-1j slice 5 block at the top of this module. The store write above is
+    # per organization; these two are deployment-wide.
+    #
+    # ⚠️ And on THIS route they are newly REACHABLE, which is not true of the
+    # store half. Before the tenant was threaded, the untenanted `store.put`
+    # above raised (`_resolve_org` → "" → RuntimeError) the moment a second
+    # organization existed, so the handler 500'd BEFORE reaching these lines —
+    # an accidental fail-closed arm, not a design. Now the put succeeds for a
+    # tenant-bound caller and the process-global writes below RUN: env var,
+    # `.env` file, settings cache_clear. That is new in COUNT, not in kind —
+    # the same deployment-wide write is already reachable today via
+    # `POST /integrations/configure` (whose put failure is swallowed into
+    # `integrations.db_write_failed` and continues) and via
+    # `DELETE /integrations/keys` (whose `os.environ.pop` is unconditional).
+    # Fixing the reachability by re-breaking the write would be repairing the
+    # fail-closed contract in the wrong direction (D33 finding 3); the fix is
+    # per-request provider credentials — `work_plan.md` §6 gate (f).
     os.environ[env_var] = req.value
 
     # Write to .env as bootstrap fallback
@@ -929,9 +991,13 @@ async def delete_integration_key(
     provider = f"{req.service}:{req.key_name}"
     from acb_llm.key_store import get_key_store
     store = get_key_store()
-    await store.delete(provider)
+    await store.delete(provider, organization_id=current_tenant())
 
     # Find and clear the env var
+    # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
+    # MT-1j slice 5 block at the top of this module. The delete above removes
+    # only this organization's row; the pop below unsets the variable for the
+    # whole process, i.e. for every other organization too.
     guide = _SETUP_GUIDES[req.service]
     for var in guide["env_vars"]:
         suffix = var["key"].lower().removeprefix(

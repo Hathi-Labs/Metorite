@@ -109,7 +109,25 @@ def _store_bindings(tree: ast.AST) -> set[str]:
 
 
 def _is_store_expr(node: ast.expr, bindings: set[str]) -> bool:
-    """Is *node* a ``ProviderKeyStore``? Either a bound name or the accessor."""
+    """Is *node* a ``ProviderKeyStore``? Either a bound name or the accessor.
+
+    ⚠️ **Two receiver shapes this does NOT see. Both are named here rather than
+    fixed, so every count below is a count of the walker-visible set** (repair
+    round 3, 2026-08-19):
+
+    1. ``self.<method>`` inside ``key_store.py`` itself. Three real untenanted
+       calls live there — see
+       :func:`test_every_remaining_untenanted_site_is_an_owner_gated_one`.
+    2. An accessor **wrapper**. ``routes/tasks/core.py:326`` defines
+       ``_key_store()`` (a one-line ``return get_key_store()``); six modules
+       import it and call it 15 times. The receiver is then a call to
+       ``_key_store``, not to ``get_key_store``, so this returns ``False``.
+       Nothing is missed *today* — all 15 are ``encrypt``/``decrypt``, which
+       have no tenant dimension at all — but a credential read grown behind
+       that wrapper would be invisible to every count in this file. If that
+       happens, widen the accepted receivers here; the shape is recorded so
+       the next agent recognises it rather than trusting the number.
+    """
     if isinstance(node, ast.Name):
         return node.id in bindings
     if isinstance(node, ast.Call):
@@ -186,8 +204,9 @@ BLOB_LINES_CEILING = 10
 
 #: The real debt, measured with :func:`untenanted_sites` on 50e203c0:
 #: **11** untenanted tenant-scoped store calls and **10** untenanted blob
-#: calls. Round 1 banks 11 → 9 and 10 → 1.
-UNTENANTED_KEY_STORE_BASELINE = 9
+#: calls. Round 1 banked 11 → 9 and 10 → 1; round 2 banks 9 → 4 (the five
+#: ``routes/integrations.py`` sites), leaving exactly the H4 remainder below.
+UNTENANTED_KEY_STORE_BASELINE = 4
 UNTENANTED_BLOB_BASELINE = 1
 
 #: Files converted to ZERO untenanted sites, pinned parametrically — the
@@ -202,6 +221,13 @@ CONVERTED_FILES: tuple[str, ...] = (
     # Agent display-name aliases (3 blob calls), read by the Agents page and by
     # observability's roster — both HTTP handlers with a bound tenant.
     "apps/services/gateway/gateway/routes/agent.py",
+    # Round 2 — the Integration Registry credential surface (5 store calls):
+    # `/integrations/status` and `GET /integrations/keys` (`get_by_type`),
+    # `POST /integrations/configure` and `PUT /integrations/keys` (`put`), and
+    # `DELETE /integrations/keys` (`delete`). Every one is reached through the
+    # app-wide `require_authenticated` — the module's only `PUBLIC_ROUTES`
+    # entry is the OAuth callback, which touches none of them.
+    "apps/services/gateway/gateway/routes/integrations.py",
 )
 
 #: Sites that STAY untenanted, as file → exact remaining count, each a decision
@@ -391,6 +417,71 @@ def test_every_h4_site_carries_its_marker_in_place(relative_path: str):
     assert re.search(r"H4[:\s]", source), (
         f"{relative_path} is exempted here but carries no `H4:` marker in "
         "place — the exemption is a decision and belongs beside the code"
+    )
+
+
+def test_every_remaining_untenanted_site_is_an_owner_gated_one():
+    """The terminal statement — and its subject is the WALKER-VISIBLE set.
+
+    **Scope, stated precisely because the short form of this claim was
+    false.** What is measured is every direct call to a tenant-scoped store
+    method in ``apps/`` + ``packages/`` whose receiver is ``get_key_store()``
+    or a name bound from it (:func:`_is_store_expr`). Over *that* set, round 2
+    lands the last agent-safe subgraph and the remainder is EXACTLY the H4
+    set — the once-per-process latch on the live completion path, the lifespan
+    startup, and the import-time tier map. Each needs a **tenant-scoped API
+    key** and per-request provider credentials, which is a credential-scope
+    change and ``work_plan.md`` §6 gate (f).
+
+    ⚠️ **Known remainder this test does NOT count: three untenanted calls
+    inside ``packages/acb_llm/acb_llm/key_store.py`` itself**, verified against
+    the file 2026-08-19 — ``self.get(provider)`` at **:420** and
+    ``self.put(...)`` at **:433** (both in ``configure_integrations``), and
+    ``self.get_all()`` at **:472** (in ``configure_litellm``). Their receiver
+    is ``self``, so the walker is blind to them by construction; "the
+    remainder is exactly the H4 set" is therefore a statement about the
+    walker-visible set, never about the tree. They are **H4 in class, not in
+    count**: the two methods holding them are called from exactly the sites
+    the H4 tables already name — ``configure_integrations`` only from
+    ``gateway/main.py``'s lifespan, ``configure_litellm`` from that same
+    lifespan and from ``acb_llm.client._ensure_keys_loaded`` — and both
+    destinations (``litellm.<provider>_api_key``, ``os.environ``) are
+    process-global, so threading them travels with the same owner-gated
+    credential-scope act rather than being separately dispatchable. One fact
+    for whoever performs it: **:433 is a WRITE, and ``put`` RAISES** once a
+    second organization exists, aborting ``configure_integrations`` mid-loop;
+    its caller wraps the whole block in ``try/except`` →
+    ``gateway.key_store_skipped``, so every integration after the raising one
+    is silently left unconfigured rather than the process failing.
+
+    Stated as set equality rather than as a total, because two totals can agree
+    while naming different sites. This is the fence a future agent trips by
+    threading a *guessed* org at an owner-gated site to make the number fall —
+    the leftover is the honest state, and the number cannot go lower without
+    the owner's act. When that act lands, this test and the H4 tables move
+    together or the fence is lying.
+    """
+    key_store, blobs = untenanted_sites()
+    assert set(key_store) == set(H4_KEY_STORE_SITES), (
+        "the untenanted key_store sites are no longer exactly the H4 set — "
+        f"measured {sorted(key_store)}, pinned {sorted(H4_KEY_STORE_SITES)}"
+    )
+    assert set(blobs) == set(H4_BLOB_SITES), (
+        "the untenanted blob sites are no longer exactly the H4 set — "
+        f"measured {sorted(blobs)}, pinned {sorted(H4_BLOB_SITES)}"
+    )
+    assert (_total(key_store), _total(blobs)) == (
+        sum(H4_KEY_STORE_SITES.values()),
+        sum(H4_BLOB_SITES.values()),
+    ), (
+        f"measured {_total(key_store)} + {_total(blobs)} untenanted calls "
+        f"against an H4 remainder of {sum(H4_KEY_STORE_SITES.values())} + "
+        f"{sum(H4_BLOB_SITES.values())}. Every WALKER-VISIBLE untenanted "
+        "credential call in apps/ + packages/ must be one the H4 tables name "
+        "with a reason; a new one that is not is debt written past the "
+        "ratchet. (Scope, not a loophole: key_store.py's own three `self.` "
+        "calls at :420/:433/:472 are an uncounted remainder of the same "
+        "class — see this test's docstring.)"
     )
 
 
@@ -616,6 +707,95 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
         assert b_key == "sk-beta-secret"
         assert a_all == {"openai": "sk-alpha-secret"}
         assert b_all == {"openai": "sk-beta-secret"}
+
+    def test_integration_credentials_are_org_scoped_on_listing_and_delete(
+        self, conn, master_key
+    ):
+        """The `/integrations/keys` arm of the store — round 2's own surface.
+
+        `get_by_type` and `delete` are not covered by the `get`/`get_all` pair
+        above. `get_by_type` stacks a `credential_type` predicate on top of
+        `organization_id`, and `delete` is the only DESTRUCTIVE method in the
+        set — and the one whose untenanted arm returns *silently*
+        (`key_store.delete_no_tenant`) rather than raising, so a delete that
+        resolved the wrong organization would destroy another tenant's
+        credential and report `{"deleted": true}` either way.
+
+        **Three seeds, and each one answers a different mutation — do not
+        "simplify" them away:**
+
+        - `openai` in A (an ``llm`` credential) makes the ``credential_type``
+          predicate load-bearing: drop it and A's integration listing carries
+          `openai`, so `a_before` fails.
+        - `clickup:token` in **B alone** makes the ``organization_id`` predicate
+          load-bearing *on the listing itself*: drop it from `get_by_type` and
+          B's credential appears in A's listing, so `a_before` fails.
+          ⚠️ Measured 2026-08-19: while both organizations held only the
+          *same-named* `zoho-crm:client_id`, that same mutation left both
+          `*_before` assertions **green** — the unscoped rows collapsed onto one
+          dict key and `_decrypt_rows`' write-through cache re-served the
+          caller's own value — and only the post-delete pair went red. A
+          credential one organization holds and the other does not cannot
+          collapse.
+        - `zoho-crm:client_id` in **both** is what makes the delete half a
+          *cross-tenant* test: drop ``organization_id`` from `delete`'s
+          ``WHERE`` and B's row goes with A's, which `b_after` catches.
+        """
+        import asyncio
+
+        org_a = _provision(conn, "mt1j-s5-int-a", "Integrations A")
+        org_b = _provision(conn, "mt1j-s5-int-b", "Integrations B")
+        store = _LadderStore(conn)
+
+        async def _drive():
+            for org, tag in ((org_a, "alpha"), (org_b, "beta")):
+                await store.put(
+                    "zoho-crm:client_id",
+                    f"cid-{tag}",
+                    credential_type="integration",
+                    service="zoho-crm",
+                    organization_id=org,
+                )
+            # Held by B and by nobody else: an unscoped listing cannot hide it
+            # behind a shared provider name or behind A's own cache entry.
+            await store.put(
+                "clickup:token",
+                "tok-beta",
+                credential_type="integration",
+                service="clickup",
+                organization_id=org_b,
+            )
+            await store.put("openai", "sk-alpha", organization_id=org_a)
+            before = (
+                await store.get_by_type("integration", organization_id=org_a),
+                await store.get_by_type("integration", organization_id=org_b),
+            )
+            await store.delete("zoho-crm:client_id", organization_id=org_a)
+            after = (
+                await store.get_by_type("integration", organization_id=org_a),
+                await store.get_by_type("integration", organization_id=org_b),
+            )
+            return before, after
+
+        (a_before, b_before), (a_after, b_after) = asyncio.run(_drive())
+
+        _b_integrations = {
+            "zoho-crm:client_id": "cid-beta",
+            "clickup:token": "tok-beta",
+        }
+
+        assert a_before == {"zoho-crm:client_id": "cid-alpha"}, (
+            "organization A's integration listing carried a credential A does "
+            "not hold — GET /integrations/keys is org-scoped or it serves "
+            "another tenant's credentials"
+        )
+        assert b_before == _b_integrations
+        assert a_after == {}
+        assert b_after == _b_integrations, (
+            "deleting an integration credential in one organization removed "
+            "the other organization's row — DELETE /integrations/keys is "
+            "org-scoped or it is a cross-tenant destructive write"
+        )
 
     def test_the_untenanted_read_returns_nothing_with_three_orgs_present(
         self, conn, master_key
