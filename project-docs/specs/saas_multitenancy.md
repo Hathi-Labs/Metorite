@@ -2537,7 +2537,8 @@ waits on the other:**
    `ProvisionRequest` gains a **required** `deployment_label` resolving to
    `deployment.label` (`001_customer_console.sql:82-94`, `UNIQUE`). Missing field →
    422; unknown label → **404 naming the label, per the operator idiom `_org_id`
-   already ships** (`main.py:436-442`; the operator credential is cross-org by design,
+   already ships** (`main.py:449-455` — was `:436-442` pre-build; this PR's own
+   `ProvisionRequest` insert shifted it +13, caught at review; the operator credential is cross-org by design,
    so naming what it asked about is not an existence oracle — `customer_console.md`
    CP-9 clause 7 is the authority, and it calls this "the contrast, not the
    precedent"; *ruled at the 2026-08-19 re-audit, which found the earlier "collapsed
@@ -2563,7 +2564,8 @@ waits on the other:**
    `ON CONFLICT (organization_id) DO NOTHING`; re-run with the SAME label → no-op (one
    row, `moved_at` untouched); re-run naming a DIFFERENT label → **409 refusal** — a
    move is a separate operator act with the move-on-conflict semantics the CP-2b fixture
-   sketches (`test_customer_console_resolve.py:232-242`), owned by a future placement
+   sketches (`test_customer_console_resolve.py` — the `_place` helper, `:249-271` post-build;
+   was `:232-242` when ruled), owned by a future placement
    ticket, not by provisioning. `database_target` is left NULL by slice 4 — stated, not
    forgotten; a field arrives when a real need names it.
 
@@ -2630,8 +2632,14 @@ reserved smoke:**
 >   (`None` ⇒ the caller's 404), `current_placement` (read-before-write, which is what
 >   makes 409 possible against a `DO NOTHING` write) and `place_organization`
 >   (`ON CONFLICT (organization_id) DO NOTHING` — provisioning places, it never moves).
->   The audit row and `provisioning_run.steps_done` carry the new step, so a resumed run
->   can tell "already placed" from "never placed".
+>   The audit row and `provisioning_run.steps_done` carry the new step **for symmetry
+>   with CP-2a's array — and nothing more: the adversarial review measured that NOTHING
+>   in the tree reads `steps_done` (the only occurrences are the one INSERT and two test
+>   assertions), the row is written unconditionally at the END of an already-successful
+>   transaction, so a partial array is unreachable by construction and no resume
+>   mechanism exists.** The resume path is CP-2a's owed step-kill clause, not anything
+>   this slice shipped — an earlier draft of this box claimed otherwise and the claim
+>   was struck at review.
 > - **4b, tenant DB.** `packages/acb_common/acb_common/provisioning.py` ·
 >   `provision_local_organization(slug, display_name=None, owner_email=None, *, domain,
 >   tier, target, region)` — one statement, `SELECT provision_organization(…)` with every

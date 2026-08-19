@@ -210,8 +210,10 @@ class TestProvisioningLeavesACompleteAccount:
                 "WHERE idempotency_key = :k"), {"k": f"provision:{org}"}).first()
         assert row[0] == "complete"
         assert "subscription" in row[1]
-        # Slice 4's step is recorded like every other one: a resumed run must
-        # be able to tell "already placed" from "never placed".
+        # Slice 4's step is recorded for symmetry with the existing array.
+        # NOTHING reads steps_done today (review-measured: one INSERT, two test
+        # assertions, no production reader) — the resume path is CP-2a's owed
+        # step-kill clause, and this assertion only pins the array's shape.
         assert "placement" in row[1]
 
     def test_re_provisioning_does_not_create_a_second_run_or_org(

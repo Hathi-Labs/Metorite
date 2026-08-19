@@ -1503,10 +1503,12 @@ answer that gives least:
    oracle over other tenants' order ids, which is CP-3's lesson in the one
    place order ids are guessable (they are UUIDs, but the refusal shape is the
    control, not the entropy). The operator-side idiom stays as it is —
-   `_org_id`'s 404 names the slug (`main.py:436-442` — *anchor re-measured
-   2026-08-19 at the slice-4 re-audit; this line said `:276-282`, which is an
-   unrelated order-read model*) because the operator is cross-org **by
-   design**; that is the contrast, not the precedent.
+   `_org_id`'s 404 names the slug (`main.py:449-455` — *anchor re-measured
+   2026-08-19 at the slice-4 re-audit to `:436-442`, then shifted +13 by the
+   same PR's `ProvisionRequest` insert and re-corrected at review; it
+   originally said `:276-282`, an unrelated order-read model*) because the
+   operator is cross-org **by design**; that is the contrast, not the
+   precedent.
    **Fence:** `test_a_foreign_order_and_an_unknown_order_refuse_identically` —
    two organizations, org A attempts to read and to redeem against org B's
    order id and against a random UUID, and the four responses are compared
