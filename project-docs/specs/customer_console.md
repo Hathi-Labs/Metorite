@@ -3911,37 +3911,49 @@ overrule any numbered item)*:
    plane that holds the hard "one email, one org" guard FIRST, so a permanent
    refusal writes nothing anywhere** — and it collapses all three blockers:
 
-   **Step 0 · a READ-ONLY pre-flight on the tenant plane (audit blocker 2).**
-   Before either plane is written, the route asks the tenant plane: *does an
-   `app_user` row already exist for this session email?* (`app_user` is globally
-   unique on `lower(email)` since migration 162, so this is the authoritative
-   "already has an account" question.) A NEW read helper —
-   `acb_auth.access.membership_of(email) -> (org_slug, org_display_name) | None`,
-   a plain identity+org-name read, **NOT** `resolve_identity`/`resolve_access`
-   (those burn seats and live behind the two-importer fence) and **NOT** a
-   Console call — returns the caller's own org name when present. Present →
-   **`200 {"admit": false, "code": "AlreadyMember", "org_name": …}`**, naming
-   only the caller's OWN org (no third-party existence oracle — done-when 3).
-   The org display name comes from the tenant `organization` row this helper
-   joins; the raw `provision_org_owner` `RAISE` (a Postgres prose string
-   carrying a UUID, `provisioning.py:113-121` — "deliberately not translated")
-   is **not** the detection path and never reaches the wire.
+   ⚠️ **This block's mechanism was CORRECTED 2026-08-20 (CP-2c slice 2's
+   RE-AUDIT, which returned NO-GO on the first remediation's false premise):**
+   the first remediation claimed 179 *"refuses slug taken by another org"* on
+   the tenant plane — **it does not.** `provision_org_owner`
+   (`179:222-229`) refuses only *email-belongs-elsewhere*; a FRESH email
+   claiming an EXISTING slug is silently made a co-owner (the slice-1 P0, tenant
+   side). So the tenant guard the reorder relies on **had to be built** — it is
+   now **MT-1j slice 7** (`saas_multitenancy.md` §11; migration 180 +
+   `provision_org_owner` create-only guard + `access.org_owner_of` +
+   `provision_local_organization` raising two DISTINCT catchable types),
+   **owned there because it fixes 179's own invariant** (D46.6 one-seam-one-owner)
+   and **a HARD PREREQUISITE that lands before this slice**. With slice 7 in
+   place the mechanism below is real; without it, do not build this route.
+
+   **Step 0 · a READ-ONLY pre-flight on the tenant plane** — TWO classifying
+   reads, both plain identity reads (not `resolve_identity`/`resolve_access`,
+   which burn seats and sit behind the two-importer fence; not a Console call):
+   **(0a)** `acb_auth.access.membership_of(email) -> (org_slug,
+   org_display_name) | None` — does this session email already have an
+   `app_user` account? (`app_user` is globally unique on `lower(email)` since
+   162.) Present → **`200 {"admit": false, "code": "AlreadyMember",
+   "org_name": …}`**, naming only the caller's OWN org (no third-party oracle —
+   done-when 3), the name read from the tenant `organization` row the helper
+   joins. **(0b)** `acb_auth.access.org_owner_of(slug) -> owner_email | None`
+   (slice 7's read) — is the requested slug already owned by someone who is not
+   this email? → **`200 {"admit": false, "code": "SlugTaken"}`** (audit blocker
+   1 — "choose a different organization name"; the fourth outcome code, in
+   `errorCopy.ts`). Both classify BEFORE any write, so the browser never depends
+   on parsing a raised DB error.
 
    **Step 1 · the TENANT plane, FIRST (was step (c)) — the hard guard.** Call
-   slice 4's seam `provision_local_organization(slug, display_name,
-   owner_email=<session email>, …)` (built 2026-08-19,
-   `packages/acb_common/acb_common/provisioning.py`; this route must not invoke
-   179's SQL directly — one seam, not two). Because 179 is idempotent-on-slug
-   and `provision_org_owner` refuses moving an existing `app_user` to a new org,
-   the two permanent-refusal causes — *email belongs elsewhere* and *slug taken
-   by another org* — both surface HERE, on the FIRST write, with **nothing on
-   the Console**. The pre-flight catches the common case with a friendly code;
-   the DB constraints are the TOCTOU-safe backstop (a signup that raced its own
-   pre-flight gets a generic refusal and, on resubmit, the now-populated
-   pre-flight answers `AlreadyMember`). Slug taken → **`200 {"admit": false,
-   "code": "SlugTaken"}`** (audit blocker 1 — "choose a different organization
-   name"; the fourth outcome code, added to `errorCopy.ts` beside the other
-   three).
+   slice 7's now-guarded seam `provision_local_organization(slug, display_name,
+   owner_email=<session email>, …)` (this route must not invoke 179's SQL
+   directly — one seam, not two). Slice 7's guard makes the two permanent-refusal
+   causes — *email belongs elsewhere* and *slug owned by another* — raise on the
+   FIRST write with **nothing on the Console**, as two DISTINCT catchable types
+   (`OwnerBelongsElsewhere` → `AlreadyMember`, `SlugOwnedByAnother` →
+   `SlugTaken`). Step 0's pre-flight classifies the common case cleanly; step 1's
+   typed raises are the **TOCTOU-safe backstop** for a signup that raced its own
+   pre-flight — mapped to the SAME two codes (never a raw-prose parse), so a race
+   is indistinguishable from the pre-flighted case at the wire, and a resubmit
+   converges. A raise that is NEITHER typed cause is a genuine error →
+   `ConsoleUnavailable`/500, not a false `SlugTaken`.
 
    **Step 2 · the CONSOLE plane, SECOND (was step (a)) — the registry mirror.**
    `POST /orgs/provision` against the Console **deployment-key arm** (✅ slice 1,
@@ -3957,16 +3969,17 @@ overrule any numbered item)*:
    and a **resubmit converges** because both planes are idempotent on the slug
    (179's header: *"the natural key is what a retrying signup form resends"*) and
    the Console's `provisioning_run` covers its own step-resumability. **The
-   atomicity contract (audit blocker 3), stated rather than left to discover:**
+   atomicity contract (audit blocker 3), true only WITH slice 7's tenant guard:**
    the ONLY divergent window is *tenant committed, Console pending* after a
    transient Console failure — the org works dark immediately (the tenant
    `app_user` admits sign-in while the resolve flag is OFF), and the Console
-   catches up on the next resubmit; there is no window in which a permanent
-   refusal leaves a half-built org on the OTHER plane, because every permanent
-   refusal happens on step 1 before step 2 runs. Done-when 5 parametrizes both:
-   a transient-Console-failure resubmit converges to one org/one owner on both
-   planes; an email-belongs-elsewhere attempt refuses `AlreadyMember` with
-   nothing written on EITHER plane.
+   catches up on the next resubmit; there is no window in which a **permanent**
+   refusal leaves a half-built org on the OTHER plane, because slice 7 makes
+   every permanent refusal (email-elsewhere, slug-owned-by-another) raise on
+   step 1 before step 2 runs. Done-when 5 parametrizes both: a
+   transient-Console-failure resubmit converges to one org/one owner on both
+   planes; a permanent-refusal attempt (either cause) refuses with nothing
+   written on EITHER plane.
 
    ⚠️ **Adjudicated 2026-08-19 (D46.6, after slice 4's NO-GO
    audit): the provision route has TWO arms, and each ticket owns exactly
@@ -4052,31 +4065,36 @@ mutation testing on auth/tenancy clauses)*:
    email/org/label), per item 4's two-class ruling. Fence:
    `test_signup_provision_route.py`, every code and both classes.
 3. Already-a-member → `AlreadyMember` names only the caller's own org (from
-   step-0's `access.membership_of` read, `org_name` on the wire), and a slug
-   already owned by another org → `SlugTaken`; **neither leaks any
-   third-party existence beyond the bare "this name is unavailable"** (the
-   step-1 tenant guard is the source; the Console never sees the slug in the
-   refusal case, so no cross-deployment oracle). Fence: same suite, two-org R8
-   case — one org owned by A, then B's session attempts A's email (→
-   `AlreadyMember`, A's name) and a third session attempts A's slug (→
-   `SlugTaken`, no owner/placement named).
+   step-0a's `access.membership_of`, `org_name` on the wire); a slug already
+   owned by another org → `SlugTaken` (from step-0b's `access.org_owner_of`,
+   slice 7); **neither leaks any third-party existence beyond the bare "this
+   name is unavailable"** (both classify on the tenant plane before any write —
+   the Console never sees the slug in the refusal case, so no cross-deployment
+   oracle). Fence: same suite, two-org R8 case — one org owned by A, then B's
+   session attempts A's email (→ `AlreadyMember`, A's name) and a third session
+   attempts A's slug (→ `SlugTaken`, naming no owner/placement). **Prereq:
+   MT-1j slice 7 (the tenant create-only guard + `org_owner_of`) must be
+   merged — without it `SlugTaken` has no producing path and the tenant plane
+   hijacks (the re-audit's blocker).**
 4. Registered state required (**400 `MissingState`** at the route), GSTIN
    optional but structurally valid when present (**400 `InvalidGstin`**, the
    item-3 regex), and both values land on the Console org row. Fences: the
    route suite red-first for both 400s; R8 against the Console ladder for the
    landing.
 5. **The two-plane orchestration converges or refuses cleanly (audit blocker
-   3), parametrised over BOTH directions** (buildable today —
-   `pr-check.yml:113/:136` provisions both Postgres services): **(a)** a
-   TRANSIENT Console failure after the tenant commit → resubmit converges to
-   one org / one owner on both planes (idempotent-on-slug); **(b)** a PERMANENT
-   refusal (email belongs elsewhere, or slug owned by another org) is caught on
-   step 1 (tenant plane) and leaves **nothing written on EITHER plane** —
-   asserted directly (zero Console rows for the slug, zero new tenant rows
-   beyond the pre-existing org). The invariant the fence pins: *no interleaving
-   leaves a permanent-refusal org half-built on one plane.* ⚠️ This is CP-2c's
-   flow-level test; CP-2a's own per-step `provisioning_run` kill test stays
-   OWED under CP-2a and is not absorbed silently.
+   3), parametrised over BOTH directions** (buildable — `pr-check.yml:113/:136`
+   provisions both Postgres services; **requires MT-1j slice 7 merged**):
+   **(a)** a TRANSIENT Console failure after the tenant commit → resubmit
+   converges to one org / one owner on both planes (idempotent-on-slug);
+   **(b)** a PERMANENT refusal (email belongs elsewhere, OR slug owned by
+   another org — both are slice 7's typed raises on step 1) leaves **nothing
+   written on EITHER plane** — asserted directly (zero Console rows for the
+   slug; the pre-existing org's ownership unchanged, no new tenant owner/role
+   for the signer). The invariant the fence pins: *no interleaving leaves a
+   permanent-refusal org half-built on one plane, and no signer joins an org
+   they do not own.* ⚠️ This is CP-2c's flow-level test; CP-2a's own per-step
+   `provisioning_run` kill test stays OWED under CP-2a and is not absorbed
+   silently.
 6. ✅ **MET — slice 1, 2026-08-19.** A `{resolve}`-only deployment key calling
    provision is refused and the refusal is logged; a `{resolve, provision}` key
    provisions. Fence: Console
@@ -4259,7 +4277,14 @@ smaller and took two slices and 14 blockers)*:
    refusals leave nothing on the Console; step 2 Console mirror, which cannot
    permanently refuse a fresh tenant-born slug), `SlugTaken` is the fourth
    outcome code, and done-when 5 parametrizes both convergence and clean-refusal
-   directions. Re-audit before build.
+   directions. ⚠️ **RE-AUDIT 2026-08-20 returned NO-GO on the first
+   remediation's false premise** (179 does NOT refuse slug-owned-by-another —
+   the tenant plane would HIJACK, the slice-1 P0's tenant twin). Corrected: the
+   tenant create-only guard is **MT-1j slice 7** (`saas_multitenancy.md` §11;
+   migration 180 + typed raises + `access.org_owner_of`), a HARD PREREQUISITE
+   that lands BEFORE this slice; step 0 now does TWO pre-flight reads
+   (`membership_of` → `AlreadyMember`, `org_owner_of` → `SlugTaken`). **Dispatch
+   order: MT-1j slice 7 → CP-2c slice 2.** Re-audit slice 2 after slice 7 merges.
 3. **Slice 3 — the `signIn` callback limbo branch** (done-when 7; §6(j) row
    vii is already authored — the build is the callback branch + its
    `signin.test.ts` pins).
