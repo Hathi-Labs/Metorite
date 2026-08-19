@@ -12,9 +12,14 @@ request input").
     **Read-only.** Identifies the caller and reports their balance; it cannot
     write a ledger row.
   * **Deployment key** — ``cc_depl_<prefix>_<secret>``, one per *deployment*.
-    Reaches ``POST /registry/resolve`` and nothing else, with a capability set
-    of exactly ``{resolve}``. It is the credential that lets a box ask *"this
-    person just signed in — do you know them, and may they have a seat?"*
+    It is the credential that lets a box ask *"this person just signed in — do
+    you know them, and may they have a seat?"* **What it reaches is decided
+    per door by its CAPABILITY SET, never by the scheme**: ``resolve`` opens
+    ``POST /registry/resolve`` (CP-2b) and ``provision`` opens the second arm
+    of ``POST /orgs/provision`` (CP-2c slice 1, 2026-08-19). A key carrying
+    only ``{resolve}`` — the column default, and the only set anything mints
+    by accident — is refused at provision with a **403** and the refusal is
+    logged. Growing a REAL key's set is OWNER-GATE (§8 gate 7).
 
 ⚠️ **Why the fourth scheme rather than reusing one of the three.** The operator
 token is cross-organization and staff-held, and this service already argues in
@@ -75,6 +80,7 @@ from customer_console.lifecycle import OrgCapabilities, capabilities_of
 __all__ = [
     "AUTHENTICATING_DEPENDENCIES",
     "ORGANIZATION_KEY_DEPENDENCIES",
+    "PROVISION_CAPABILITY",
     "RESOLVE_CAPABILITY",
     "Caller",
     "DeploymentCaller",
@@ -82,6 +88,7 @@ __all__ = [
     "KeyCaller",
     "Operator",
     "PayingCaller",
+    "ProvisionCaller",
     "ResolveCaller",
     "SignedWebhook",
     "deployment_or_operator",
@@ -94,9 +101,28 @@ __all__ = [
 
 _log = logging.getLogger("platform.auth")
 
-#: The one capability a deployment key carries today. Named once so the string
-#: that gates sign-in is not retyped at the mint site, the check and the tests.
+#: The capability that gates sign-in. Named once so the string is not retyped
+#: at the mint site, the check and the tests.
 RESOLVE_CAPABILITY = "resolve"
+
+#: The second capability, and the one CP-2b's non-goals predicted it would earn
+#: ("plausibly the second capability it earns, and explicitly not now"). It
+#: gates the deployment-key arm of ``POST /orgs/provision`` — WS-31 CP-2c
+#: slice 1, D43-2's open sub-question answered by D46.6.
+#:
+#: ⚠️ **A capability is not a scheme.** Holding this one lets a box create an
+#: organization *on itself*; it does not make the credential an operator token,
+#: and every other door on this service refuses it exactly as before. Which
+#: capability a door demands is written at the door, never inferred from how
+#: many the caller happens to hold.
+#:
+#: ⚠️ **No migration carries this string and none may be minted for it.**
+#: ``deployment_key.capabilities`` is ``TEXT[]`` with no ``CHECK``
+#: (``006_deployment_key.sql:56``), so the wider set is insertable today and
+#: the enforcement is entirely :func:`deployment_or_operator`. Widening a REAL
+#: deployment key is OWNER-GATE (``customer_console.md`` §8 gate 7) and there
+#: is deliberately no HTTP route that issues or edits one.
+PROVISION_CAPABILITY = "provision"
 
 
 @dataclass(frozen=True)
@@ -296,8 +322,11 @@ class DeploymentCaller:
 
     deployment_id: str
     key_prefix: str
-    #: Exactly ``{resolve}`` today. Checked in the dependency below, before the
-    #: route body runs — never by an ``if`` inside an endpoint.
+    #: What this credential was issued for, as stored. Two capabilities exist
+    #: (``resolve``, ``provision``) and a key may hold either or both; the
+    #: DEFAULT here is the narrow one, so a construction that forgets to pass
+    #: the set denies rather than grants. Checked in the dependency below,
+    #: before the route body runs — never by an ``if`` inside an endpoint.
     capabilities: frozenset[str] = frozenset({RESOLVE_CAPABILITY})
 
 
@@ -358,6 +387,23 @@ def deployment_or_operator(capability: str):
         if capability not in capabilities:
             # 403, not 401: the credential is valid and the caller should be
             # told what it lacks rather than sent to re-authenticate in a loop.
+            #
+            # **Logged**, which is a named half of CP-2c done-when 6 and was
+            # missing until slice 1: this raise carried no log line, so a key
+            # reaching for something it was not issued for was invisible. It
+            # is the signal that a widening was forgotten (a capability set is
+            # edited by hand under §8 gate 7 — there is no route) or that a
+            # leaked key is being probed, and neither is inferable from a 403
+            # count alone. **The prefix, never the secret**: the prefix is the
+            # public half by construction — it is what
+            # ``store.resolve_deployment_key`` looks up — and putting the
+            # other half in a log is how a credential leaks into a log
+            # aggregator. Warning rather than error: a refusal is the door
+            # working, the same level ``payments.webhook_refused`` takes.
+            _log.warning(
+                "deployment_key.capability_refused",
+                extra={"capability": capability, "key_prefix": prefix},
+            )
             raise HTTPException(
                 status_code=403,
                 detail=f"deployment key lacks the {capability!r} capability",
@@ -432,9 +478,23 @@ SignedWebhook = Annotated[
 #: — and therefore the clause-1 fence — can recognise.
 _resolve_dependency = deployment_or_operator(RESOLVE_CAPABILITY)
 
+#: The provision arm's dependency — WS-31 CP-2c slice 1. Built here for the
+#: same stable-identity reason, and built from the SAME factory: the two doors
+#: differ in the capability they demand and in nothing else, so a second
+#: dispatcher would be a second answer to "which scheme is at the door".
+_provision_dependency = deployment_or_operator(PROVISION_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
+
+#: The same two-arm shape for ``POST /orgs/provision``. ``None`` is the
+#: operator, who must then NAME a deployment because that credential has none;
+#: a :class:`DeploymentCaller` **is** the deployment, and naming one in the
+#: body is refused rather than ignored (R11).
+ProvisionCaller = Annotated[
+    DeploymentCaller | None, Depends(_provision_dependency)
+]
 
 #: Every dependency in this module that authenticates somebody.
 #:
@@ -444,6 +504,12 @@ ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
 #: another. A fifth scheme added here is covered on the day it lands; one that
 #: forgets to register itself makes every route it guards look unauthenticated,
 #: which fails loudly rather than passing quietly.
+#: ⚠️ **Each capability's dependency is a SEPARATE closure and each must be
+#: listed.** ``deployment_or_operator`` returns a new function per call, so
+#: ``_provision_dependency`` is not ``_resolve_dependency`` and registering one
+#: does not cover the other — a door built from this factory and left out here
+#: makes its route read as authenticating nobody, which the clause-1 fence
+#: reports as `/orgs/provision` having joined `/health` in the open set.
 AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     require_operator,
     require_internal,
@@ -451,6 +517,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     organization_for_payment,
     razorpay_webhook_event,
     _resolve_dependency,
+    _provision_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — both of them.

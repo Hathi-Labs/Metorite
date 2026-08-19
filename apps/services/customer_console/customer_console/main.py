@@ -13,10 +13,13 @@ statement** (see :mod:`customer_console.auth`):
     organization**; nothing under key auth takes an organization from request
     input, because that would make the caller the authority on which customer
     they are (``user_management_contract.md`` R11).
-  * ``ResolveCaller`` — CP-2b's ``cc_depl_…`` deployment key, which reaches
-    exactly one endpoint (``POST /registry/resolve``) with a capability set of
-    exactly ``{resolve}``. That endpoint takes **both** it and ``Operator``:
-    one endpoint, two schemes, two response shapes chosen by the credential.
+  * ``ResolveCaller`` / ``ProvisionCaller`` — the ``cc_depl_…`` deployment key
+    at the two doors its **capabilities** open: ``resolve`` reaches
+    ``POST /registry/resolve`` (CP-2b) and ``provision`` reaches the second arm
+    of ``POST /orgs/provision`` (CP-2c slice 1). Both endpoints take **both**
+    that key and ``Operator``: one endpoint, two schemes, and the credential —
+    never the body — chooses the shape. A key holding only ``{resolve}``, the
+    column default, is refused at provision with a logged 403.
 
 ⚠️ The customer key deliberately cannot write the meter. It briefly could, and
 verification found that let a negative ``billed_credits`` mint credits — and,
@@ -62,6 +65,7 @@ from customer_console.auth import (
     KeyCaller,
     Operator,
     PayingCaller,
+    ProvisionCaller,
     ResolveCaller,
     SignedWebhook,
 )
@@ -118,21 +122,47 @@ app = FastAPI(
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
 class ProvisionRequest(BaseModel):
+    """One body, two schemes — and ``deployment_label`` is what tells them apart.
+
+    ⚠️ It is **optional here and mandatory in neither direction by pydantic**,
+    on purpose, exactly as :class:`ResolveRequest`'s ``org_slug`` is. Under the
+    operator scheme it is required; under a deployment key it is refused with a
+    **400**. Both rules are enforced in the handler rather than by the model,
+    because a model can only express one of them, and the one it would express
+    (``str``, required) is the shape the deployment-key arm exists to forbid
+    for the caller it is about.
+
+    A missing operator ``deployment_label`` therefore answers **400** and not
+    pydantic's 422 — pinned by ``test_nothing_infers_the_deployment_from_there_
+    being_exactly_one``, whose clause (a) was amended for exactly this reason
+    (WS-31 CP-2c slice 1; D46.6 item 1 as amended in ``customer_console.md``,
+    ruled in writing rather than by an implementer in silence). The 422 that
+    clause used to assert was *pydantic refuses before the handler runs*; the
+    property it asserts now is *the handler refuses without consulting a
+    count*, which is weaker to start from and is why the ``count(*) = 1``
+    mutation is still run against it.
+    """
+
     slug: str
     name: str
-    #: Which deployment this organization is placed on. **Required, and named
-    #: by the operator** (WS-29 MT-1j slice 4, D46.6 adjudication item 1): the
-    #: `Operator` credential is cross-org by design and carries no deployment
-    #: identity of its own, so the box has to be said out loud. It resolves
-    #: against `deployment.label` (`001_customer_console.sql:82-94`, UNIQUE) —
-    #: a name rather than a UUID, because an operator can say a name.
+    #: Which deployment this organization is placed on — **named by the
+    #: operator, and named by NOBODY else** (WS-29 MT-1j slice 4 · D46.6 item
+    #: 1). The `Operator` credential is cross-org by design and carries no
+    #: deployment identity of its own, so the box has to be said out loud; it
+    #: resolves against `deployment.label` (`001_customer_console.sql:82-94`,
+    #: UNIQUE) — a name rather than a UUID, because an operator can say a name.
     #:
-    #: ⚠️ **Required is the whole point.** A missing field is a 422 even when
-    #: exactly one deployment exists; inferring the sole deployment is
-    #: forbidden by name (adjudication item 3) and fenced in
-    #: `test_customer_console_lifecycle.py`. The DEPLOYMENT-KEY arm, where the
-    #: key names itself, is CP-2c's and stays behind §6 gate (f)/(h).
-    deployment_label: str
+    #: ⚠️ **Absent under a deployment key. Present is 400, never ignored** —
+    #: that caller IS a deployment, so naming one would be a credential
+    #: asserting an identity it already has and might be asserting a different
+    #: one (R11, the same rule as `ResolveRequest.org_slug`). An ignored field
+    #: is a caller who believes it worked.
+    #:
+    #: ⚠️ **Nothing infers it in either arm.** A `count(deployment) = 1`
+    #: fallback is forbidden by name (D46.6 item 3, `store.deployment_by_label`)
+    #: — a missing operator label is a 400 and an unknown one a 404 even with
+    #: exactly one deployment seeded.
+    deployment_label: str | None = None
     #: Captured at SIGNUP, not at first invoice (saas_operations_doctrine.md
     #: §3.1) — chasing a GSTIN after invoices have gone out is a customer
     #: conversation, not a migration.
@@ -595,7 +625,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/orgs/provision")
-def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
+def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
     """Create an organization, its owner and its Core seats. Idempotent.
 
     Idempotent on the org slug rather than on a request id, because the natural
@@ -607,35 +637,85 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
     nothing in the tree wrote ``org_placement``, and ``store.
     deployment_visible_orgs`` inner-joins it — so an organization created here
     could never be resolved by any deployment key, forever, failing closed in a
-    way that reads as "the Console is down". The deployment is named by the
-    operator in ``deployment_label`` and never inferred.
+    way that reads as "the Console is down".
 
-    Two refusals, and they are different questions:
+    **One endpoint, two schemes, and the CREDENTIAL says which deployment**
+    (WS-31 CP-2c slice 1, D46.6 item 1 as amended). A second endpoint was
+    refused for root ``CLAUDE.md`` §5's reason — it would be a second way to do
+    an existing thing — which is the same call ``POST /registry/resolve`` made.
 
-    * **404** — no deployment carries that label. Naming the label back is the
-      operator idiom :func:`_org_id` already ships: this credential is
-      cross-org by design, so telling it what it asked about is not an
+      * **Operator** — a staff act on a **named** box. The credential is
+        cross-org and carries no deployment identity, so ``deployment_label``
+        is required and its absence is a **400**.
+      * **Deployment key** (capability ``provision``) — a box provisioning a
+        customer onto **itself**. The deployment is ``caller.deployment_id``
+        and the body may not name one: presenting ``deployment_label`` is a
+        **400, never ignored** (R11, the same rule the resolve arm applies to
+        ``org_slug``).
+
+    **Nothing infers the deployment in either arm.** A ``count(deployment) = 1``
+    fallback is forbidden by name (D46.6 item 3).
+
+    Two refusals beyond that, and they are different questions:
+
+    * **404** — no deployment carries that label. Operator arm only: a key's
+      deployment is a foreign key, so it cannot fail to exist. Naming the label
+      back is the operator idiom :func:`_org_id` already ships: this credential
+      is cross-org by design, so telling it what it asked about is not an
       existence oracle (``customer_console.md`` CP-9 clause 7 — "the contrast,
       not the precedent").
     * **409** — the organization is already placed on a *different*
       deployment. Provisioning never MOVES a placement (D46.6 item 4); a move
       is a separate operator act with its own semantics and its own ticket.
+      **Both arms**, and it matters more under the key: the caller there is a
+      box rather than a human who might notice a 200 that changed nothing.
 
-    Re-running with the SAME label is a no-op on the placement row —
+    Re-running against the SAME deployment is a no-op on the placement row —
     ``moved_at`` is untouched — exactly like every other step here.
     """
     with get_engine().begin() as conn:
-        # Resolved FIRST, before anything is written: an unknown label is a
-        # refusal, and a refusal discovered after five inserts is a rollback
-        # whose reason nobody can read in the log.
-        deployment_id = store.deployment_by_label(
-            conn, label=req.deployment_label
-        )
-        if deployment_id is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"no deployment {req.deployment_label!r}",
+        # Resolved FIRST, before anything is written: a refusal discovered
+        # after five inserts is a rollback whose reason nobody can read in the
+        # log. Which arm resolves it is the credential's answer, never the
+        # body's.
+        if caller is None:
+            if req.deployment_label is None:
+                # Refused HERE rather than by the model. `deployment_label`
+                # became optional so the deployment-key arm could refuse it;
+                # without this line that relaxation would silently make the
+                # operator's own subject optional — and it would do it by
+                # opening the one code path in which a sole-deployment guess
+                # could be consulted.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "deployment_label is required under the operator "
+                        "scheme"
+                    ),
+                )
+            deployment_id = store.deployment_by_label(
+                conn, label=req.deployment_label
             )
+            if deployment_id is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"no deployment {req.deployment_label!r}",
+                )
+        else:
+            if req.deployment_label is not None:
+                # 400, never ignored — and refused on SHAPE, before the value
+                # is looked at, so naming its own box and naming one that does
+                # not exist are the same refusal. Consulting the value first
+                # would make the status code answer "does this deployment
+                # exist" for every label a caller cares to try.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "a deployment key may not name a deployment; the "
+                        "deployment is the credential's own"
+                    ),
+                )
+            deployment_id = caller.deployment_id
 
         org_id = store.ensure_organization(
             conn, slug=req.slug, name=req.name,
@@ -647,12 +727,20 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
         # seats but no placement is the shape this slice exists to remove.
         placed_on = store.current_placement(conn, org_id=org_id)
         if placed_on is not None and placed_on != deployment_id:
+            # The target is named back in whichever vocabulary the caller used
+            # — the operator's own label, or the key's own deployment id. A
+            # deployment key learns nothing from being told its own id, so
+            # this is not the existence oracle clause 5 removes elsewhere.
+            target = (
+                repr(req.deployment_label) if caller is None
+                else f"deployment {deployment_id}"
+            )
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"{req.slug!r} is already placed on another deployment; "
                     f"provisioning never moves a placement — moving it to "
-                    f"{req.deployment_label!r} is a separate operator act "
+                    f"{target} is a separate operator act "
                     f"(saas_multitenancy.md §11 MT-1j slice 4)"
                 ),
             )
@@ -725,8 +813,27 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
             ),
             {"key": f"provision:{req.slug}", "org": org_id},
         )
-        _audit(conn, org_id, "org.provision",
-               {"slug": req.slug, "deployment": req.deployment_label})
+        # ⚠️ The ACTOR distinguishes the two arms, and it is not decoration:
+        # `_audit`'s own contract is that a trail calling every act "operator"
+        # *"would misattribute the one class of write we most need to tell
+        # apart later"*. A box provisioning a self-serve customer is exactly
+        # that class — the one provisioning act with no human in it — and
+        # recording it as staff would make the self-serve flow indistinguishable
+        # from an operator's console session forever after.
+        #
+        # The deployment is recorded by ID in both arms — the operator's label
+        # is a name for it, and a name can be re-pointed at a different row —
+        # with the operator's own word kept beside it, and the key's PREFIX
+        # (never its secret) so the trail names WHICH credential acted.
+        detail: dict[str, Any] = {
+            "slug": req.slug,
+            "deployment": req.deployment_label,
+            "deployment_id": deployment_id,
+        }
+        if caller is not None:
+            detail["key_prefix"] = caller.key_prefix
+        _audit(conn, org_id, "org.provision", detail,
+               actor="operator" if caller is None else "deployment")
 
     return {"organization_id": org_id, "slug": req.slug}
 
