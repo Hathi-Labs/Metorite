@@ -404,9 +404,14 @@ async def org_owner_of(slug: str | None) -> str | None:
     taken slug BEFORE any write, exactly as migration 180's create-only guard
     refuses it at write time (``saas_multitenancy.md`` §11 slice 7). ``None`` for
     an unknown slug, an unplaced slug, or a slug whose org has no owner yet (the
-    crash-resume shape — not a conflict). Never raises: a lookup error resolves
-    to ``None``, matching :func:`resolve_identity`'s posture, so a caller cannot
-    mistake a transient failure for "slug is free".
+    crash-resume shape — not a conflict). **This read is UX-only, not the
+    boundary:** it never raises (a lookup error resolves to ``None``, matching
+    :func:`resolve_identity`'s posture), so on a transient failure it returns
+    ``None`` = "not taken" and the signup proceeds to the write — where
+    migration 180's guard is the authoritative refusal (``SlugOwnedByAnother``).
+    Degrading open here trades a friendly pre-flight "that name is taken" for a
+    hard write-time error on the rare read failure; it can never admit a hijack,
+    because the DB-level guard, not this read, is what enforces create-only.
     """
     if not slug:
         return None
