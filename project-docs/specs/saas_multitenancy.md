@@ -2630,8 +2630,8 @@ ratchet's cadence; each PR banks its progress.
 > | Mutation | Red |
 > |---|---|
 > | un-thread one banked site (`_load_catalogue`) | **3** |
-> | add a new untenanted `load_blob` call | **5** |
-> | thread a *guessed* org at an H4 site | **5** (incl. the exact-count fence) |
+> | add a new untenanted `load_blob` call | **5** at the implementer's site; the count is SITE-DEPENDENT (verifier measured **4** planting in `agent.py`) — the property, not the number, is the fence |
+> | thread a *guessed* org at an H4 site | **5** at `_init_tier_models` (incl. the exact-count fence); site-dependent (verifier: **2** at `client.py`'s blob site) — every site tried went red |
 > | replace `count(*) = 1` with `WHERE slug = 'default'` in both copies | **7** |
 > | `key_store._resolve_org` ignores the org it is given | **6** (2 here + 4 in the mt0d suite) |
 > | `model_config._resolve_org` ignores the org it is given | **2** |

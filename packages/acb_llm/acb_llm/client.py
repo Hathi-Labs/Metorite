@@ -279,9 +279,12 @@ async def _ensure_keys_loaded() -> None:
        gateway's ``/v1/chat/completions``
        (``routes/v1_compat.py::_handle_chat_completions``), authenticated by
        ``require_llm_api_auth`` — the deployment-wide ``LITELLM_MASTER_KEY``
-       every agent holds. That branch of ``get_current_user`` resolves
-       ``system:internal`` and never reaches ``_with_resolved_access``, so
-       ``current_tenant()`` is ``None``. Deriving the org from ``X-CC-Agent``
+       every agent holds. ``get_current_user`` is not in that route's
+       dependency chain at all (``dependencies=_auth`` discards the pure
+       token check's return; nothing resolves an identity), so
+       ``current_tenant()`` is ``None`` *(mechanism corrected 2026-08-19 at
+       verification — an earlier draft described a ``system:internal``
+       branch this route never takes)*. Deriving the org from ``X-CC-Agent``
        or the body instead is exactly what R5 /
        ``user_management_contract.md`` R11 forbid.
 
