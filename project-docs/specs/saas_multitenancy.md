@@ -2157,7 +2157,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUND 1 · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUNDS 1 + 2 — AT ITS OWNER-GATED FLOOR (`4 + 1`) · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2211,9 +2211,13 @@ org.
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
-   ◐ **RATCHET ROUND 1 landed 2026-08-19** — the ratchet itself plus the `model_config`
-   subgraph on the LLM/model surface. Banked **11 + 10 → 9 + 1**. The LIVE completion
-   path turned out to be H4 and is marked, not threaded (slice 5's box below).
+   ◐ **RATCHET ROUNDS 1 + 2 landed 2026-08-19** — round 1 the ratchet itself plus the
+   `model_config` subgraph on the LLM/model surface; round 2 the Integration Registry
+   credential surface (`routes/integrations.py`). Banked **11 + 10 → 9 + 1 → 4 + 1**,
+   which now EQUALS the H4 tables: every untenanted credential call left in `apps/` +
+   `packages/` is an owner-gated one, so the ratchet is at its **FLOOR** absent the
+   credential-scope act. The LIVE completion path turned out to be H4 and is marked, not
+   threaded (slice 5's box below).
 6. Repair the two `ON CONFLICT (email)` upserts that migration 162 invalidated.
    ✅ **BUILT 2026-08-19** — the predicted 42P10 reproduced red on a real ladder first, and
    it took out the fresh-insert path too, not just the conflict one (slice 6 below).
@@ -2834,8 +2838,8 @@ generated phases inside the fixture, so the build and its fences are unblocked t
 |---|---|
 | `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement. ✅ **BUILT** in `tests/unit/test_org_provisioning.py` (not `test_tenant_placement.py`, which is hermetic by design and has no ladder harness) |
 | `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service`. ✅ **BUILT**, name kept verbatim, set asserted |
-| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved. ✅ Still green and still unedited after slices 1+2+3 and slice 5 round 1 (8 passed). ⚠️ **Necessary, not sufficient**: its `_FakeStore` matches the organization query by PREFIX, so it stays green when `count(*) = 1` is replaced by a `slug = 'default'` fallback (measured 2026-08-19). Slice 5 round 1 added `TestTheFailClosedContractIsNotRepaired` (source shape, both copies) and a live two-org read that seeds the operator's key, which do catch it |
-| `tests/unit/test_credential_tenant_threading.py` | slice 5's completion ratchet — the untenanted **call** counts (parsed, not grepped) only go DOWN, converted files pin at zero, H4 leftovers pin at their EXACT count, and the spec's two greps stay as ceilings. ✅ **BUILT** round 1, 22 tests / 0 skips, banked **11 + 10 → 9 + 1** |
+| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved. ✅ Still green and still unedited after slices 1+2+3 and slice 5's ratchet rounds 1+2 (8 passed). ⚠️ **Necessary, not sufficient**: its `_FakeStore` matches the organization query by PREFIX, so it stays green when `count(*) = 1` is replaced by a `slug = 'default'` fallback (measured 2026-08-19). Slice 5 round 1 added `TestTheFailClosedContractIsNotRepaired` (source shape, both copies) and a live two-org read that seeds the operator's key, which do catch it |
+| `tests/unit/test_credential_tenant_threading.py` | slice 5's completion ratchet — the untenanted **call** counts (parsed, not grepped) only go DOWN, converted files pin at zero, H4 leftovers pin at their EXACT count, and the spec's two greps stay as ceilings. ✅ **BUILT** rounds 1 + 2, **25** tests / 0 skips, banked **11 + 10 → 9 + 1 → 4 + 1** — its FLOOR, since `4 + 1` equals `sum(H4_KEY_STORE_SITES)` + `sum(H4_BLOB_SITES)` and every remaining untenanted call is owner-gated |
 | a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited. ✅ **BUILT** as `TestTheDefaultSlugRatchet`, pinned at **31** — the whitespace-proof count, which is 29 + 161's two unspaced comment hits. Ratchets both ways: `test_the_baseline_is_not_stale` forces the number DOWN in the same commit as any retirement. ⚠️ **The four seeds were NOT retired** (R6: shipped migrations are history), so the baseline does not fall on this branch — it must simply never rise |
 
 **Rule exposure.** **R1** — the migration number is taken at build time (the ladder topped

@@ -675,9 +675,25 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
         resolved the wrong organization would destroy another tenant's
         credential and report `{"deleted": true}` either way.
 
-        The LLM key seeded into A is what makes the `credential_type`
-        predicate load-bearing: if it were dropped, A's integration listing
-        would carry `openai` and the first assertion fails.
+        **Three seeds, and each one answers a different mutation — do not
+        "simplify" them away:**
+
+        - `openai` in A (an ``llm`` credential) makes the ``credential_type``
+          predicate load-bearing: drop it and A's integration listing carries
+          `openai`, so `a_before` fails.
+        - `clickup:token` in **B alone** makes the ``organization_id`` predicate
+          load-bearing *on the listing itself*: drop it from `get_by_type` and
+          B's credential appears in A's listing, so `a_before` fails.
+          ⚠️ Measured 2026-08-19: while both organizations held only the
+          *same-named* `zoho-crm:client_id`, that same mutation left both
+          `*_before` assertions **green** — the unscoped rows collapsed onto one
+          dict key and `_decrypt_rows`' write-through cache re-served the
+          caller's own value — and only the post-delete pair went red. A
+          credential one organization holds and the other does not cannot
+          collapse.
+        - `zoho-crm:client_id` in **both** is what makes the delete half a
+          *cross-tenant* test: drop ``organization_id`` from `delete`'s
+          ``WHERE`` and B's row goes with A's, which `b_after` catches.
         """
         import asyncio
 
@@ -694,6 +710,15 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
                     service="zoho-crm",
                     organization_id=org,
                 )
+            # Held by B and by nobody else: an unscoped listing cannot hide it
+            # behind a shared provider name or behind A's own cache entry.
+            await store.put(
+                "clickup:token",
+                "tok-beta",
+                credential_type="integration",
+                service="clickup",
+                organization_id=org_b,
+            )
             await store.put("openai", "sk-alpha", organization_id=org_a)
             before = (
                 await store.get_by_type("integration", organization_id=org_a),
@@ -708,10 +733,19 @@ class TestTwoOrganizationsResolveTheirOwnCredentials:
 
         (a_before, b_before), (a_after, b_after) = asyncio.run(_drive())
 
-        assert a_before == {"zoho-crm:client_id": "cid-alpha"}
-        assert b_before == {"zoho-crm:client_id": "cid-beta"}
+        _b_integrations = {
+            "zoho-crm:client_id": "cid-beta",
+            "clickup:token": "tok-beta",
+        }
+
+        assert a_before == {"zoho-crm:client_id": "cid-alpha"}, (
+            "organization A's integration listing carried a credential A does "
+            "not hold — GET /integrations/keys is org-scoped or it serves "
+            "another tenant's credentials"
+        )
+        assert b_before == _b_integrations
         assert a_after == {}
-        assert b_after == {"zoho-crm:client_id": "cid-beta"}, (
+        assert b_after == _b_integrations, (
             "deleting an integration credential in one organization removed "
             "the other organization's row — DELETE /integrations/keys is "
             "org-scoped or it is a cross-tenant destructive write"
