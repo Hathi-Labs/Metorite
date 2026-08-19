@@ -5,7 +5,8 @@
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
 ⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
 slices 6 + 1 + 2 + 3 are BUILT, and slice 5 is on its RATCHET (rounds 1 + 2 landed —
-the ratchet now stands at `4 + 1`, which is exactly its owner-gated floor)** — the
+the ratchet now stands at `4 + 1`, exactly the owner-gated floor of the set it
+measures)** — the
 ticket four specs and one migration were
 already disclaiming work to
 (`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
@@ -20,8 +21,10 @@ skips) — a callable that nothing calls yet, by the auditor's own sequencing: s
 brings the box-side caller. **Slice 2 carries a recorded, argued deviation** from its own
 "green without edit" clause — see its box. **Slice 4 remains NOT BUILT. Slice 5 is on
 its ratchet: rounds 1 and 2 have landed (`11 + 10` → `9 + 1` → `4 + 1`), and every
-untenanted credential call still in the tree is now an OWNER-GATED one named in the
-H4 tables — slice 5 is at its floor absent an owner act.** ·
+**walker-visible** untenanted credential call is now an OWNER-GATED one named in the
+H4 tables — slice 5 is at the floor of the set the ratchet measures absent an owner
+act. ⚠️ Not of the tree: `key_store.py`'s own three `self.` calls (`:420`/`:433`/`:472`)
+are uncounted and travel with the same owner act — MT-1j slice 5's round-2 box.** ·
 ⚠️ **Updated 2026-08-12 (D32 pass): §3.1 is REVERSED and
 MT-3 is ABSORBED.** AI metering, per-org keys, the rate card and the credit ledger now
 live in a **central Control Plane service** — owning spec
@@ -2157,7 +2160,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUNDS 1 + 2 — AT ITS OWNER-GATED FLOOR (`4 + 1`) · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUNDS 1 + 2 — AT THE OWNER-GATED FLOOR OF THE WALKER-VISIBLE SET (`4 + 1`; three uncounted `self.` calls inside `key_store.py` remain — round-2 box) · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2214,9 +2217,12 @@ org.
    ◐ **RATCHET ROUNDS 1 + 2 landed 2026-08-19** — round 1 the ratchet itself plus the
    `model_config` subgraph on the LLM/model surface; round 2 the Integration Registry
    credential surface (`routes/integrations.py`). Banked **11 + 10 → 9 + 1 → 4 + 1**,
-   which now EQUALS the H4 tables: every untenanted credential call left in `apps/` +
-   `packages/` is an owner-gated one, so the ratchet is at its **FLOOR** absent the
-   credential-scope act. The LIVE completion path turned out to be H4 and is marked, not
+   which now EQUALS the H4 tables: every **walker-visible** untenanted credential call in
+   `apps/` + `packages/` is an owner-gated one, so the ratchet is at the **FLOOR of the
+   set it measures** absent the credential-scope act. ⚠️ Not a floor of the tree —
+   `key_store.py` makes three untenanted calls on `self` (`:420`, `:433`, `:472`) that
+   the ratchet's walker cannot see; same class, same owner act, itemised in the round-2
+   box below. The LIVE completion path turned out to be H4 and is marked, not
    threaded (slice 5's box below).
 6. Repair the two `ON CONFLICT (email)` upserts that migration 162 invalidated.
    ✅ **BUILT 2026-08-19** — the predicted 42P10 reproduced red on a real ladder first, and
@@ -2516,7 +2522,9 @@ database)*, **two single-DB halves plus a reserved smoke:**
   criterion; it is optional hardening, not the done-when.
 
 **Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUNDS 1 + 2 BUILT
-2026-08-19 — the ratchet stands at `4 + 1`, its owner-gated FLOOR.**
+2026-08-19 — the ratchet stands at `4 + 1`, the owner-gated FLOOR of the set it measures
+(walker-visible call sites; `key_store.py`'s own three `self.` calls are an uncounted
+remainder of the same class — round-2 box).**
 **Anchors + measurement (2026-08-19):**
 
 ```bash
@@ -2677,13 +2685,45 @@ ratchet's cadence; each PR banks its progress.
 > above, which are blocked on the owner act, not on effort. **Round 2 took the first half
 > — see the box below.**
 
-> ### ◐ RATCHET ROUND 2 — BUILT 2026-08-19 · the ratchet reaches its FLOOR
+> ### ◐ RATCHET ROUND 2 — BUILT 2026-08-19 · the ratchet reaches the floor of the set it measures
 >
 > **Banked: `9 + 1` → `4 + 1`,** which now EQUALS `sum(H4_KEY_STORE_SITES)` +
-> `sum(H4_BLOB_SITES)`. **Every untenanted credential call left in `apps/` + `packages/`
-> is an owner-gated one named in the H4 tables with its reason**, so slice 5 cannot move
-> further without the credential-scope act (`work_plan.md` §6 gate (f)) — it is at its
-> floor, not merely in progress.
+> `sum(H4_BLOB_SITES)`. **Every *walker-visible* untenanted credential call in `apps/` +
+> `packages/` is an owner-gated one named in the H4 tables with its reason**, so slice 5
+> cannot move further on that set without the credential-scope act (`work_plan.md` §6
+> gate (f)).
+>
+> ⚠️ **Scope of that claim, corrected in repair round 3 — it is the floor of the
+> WALKER-VISIBLE set, not of the tree.** The ratchet counts a call whose receiver is
+> `get_key_store()` or a name bound from it (`_is_store_expr`,
+> `test_credential_tenant_threading.py`). Three real untenanted tenant-scoped calls sit
+> **inside `packages/acb_llm/acb_llm/key_store.py` itself**, on `self`, and are invisible
+> to it — verified against the file 2026-08-19:
+>
+> | Site | Call | Consequence once org #2 exists |
+> |---|---|---|
+> | `key_store.py:420` (`configure_integrations`) | `self.get(provider)` | `_resolve_org` returns `""` → the read yields `""`, so no stored integration credential reaches `os.environ` |
+> | `key_store.py:433` (`configure_integrations`) | `self.put(...)` — the env→store auto-migration | **RAISES** (`put` fails closed on a write), aborting the loop mid-way; its one caller wraps the whole block in `try/except` → `gateway.key_store_skipped`, so every integration after the raising one is silently left unconfigured rather than the process failing |
+> | `key_store.py:472` (`configure_litellm`) | `self.get_all()` | returns `{}` → no provider key is loaded into `litellm`'s module config |
+>
+> **Same class as H4, not a separate ticket.** The two methods holding them are called
+> from exactly the places the H4 tables already name: `configure_integrations` only from
+> `gateway/main.py`'s lifespan (`:222`, in the same `try` block as the H4-counted
+> `get_all` at `:209` and `put` at `:220`), `configure_litellm` from that same lifespan
+> (`:221`) and from `acb_llm.client._ensure_keys_loaded` (`:329`) — and both destinations
+> (`litellm.<provider>_api_key`, `os.environ`) are process-global, so threading these
+> three travels with the same owner-gated credential-scope act (§6 gate (f)) rather than
+> being separately dispatchable. They are recorded here and in the terminal fence's
+> docstring; they are **not** in the H4 tables, because those tables are keyed by what
+> the walker counts and adding an uncountable entry would make the exact-count fences
+> unsatisfiable.
+>
+> ⚠️ **Second known limitation of the same walker, named not fixed: an accessor
+> WRAPPER.** `routes/tasks/core.py:326` defines `_key_store()` (`return get_key_store()`);
+> six modules import it and call it 15 times. Every one is `encrypt`/`decrypt` today —
+> master-key Fernet with no tenant dimension, so nothing is being missed now — but a
+> credential *read* grown behind that wrapper would not be seen by any count in the
+> suite, because the receiver is a call to `_key_store`, not to `get_key_store`.
 >
 > **Converted this round — the Integration Registry credential surface.**
 > `gateway/routes/integrations.py` → **0** untenanted (was 5), pinned in

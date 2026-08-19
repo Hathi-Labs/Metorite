@@ -933,6 +933,21 @@ async def put_integration_key(
     # ⚠️ CROSS-TENANT WRITE, recorded and deliberately not repaired — see the
     # MT-1j slice 5 block at the top of this module. The store write above is
     # per organization; these two are deployment-wide.
+    #
+    # ⚠️ And on THIS route they are newly REACHABLE, which is not true of the
+    # store half. Before the tenant was threaded, the untenanted `store.put`
+    # above raised (`_resolve_org` → "" → RuntimeError) the moment a second
+    # organization existed, so the handler 500'd BEFORE reaching these lines —
+    # an accidental fail-closed arm, not a design. Now the put succeeds for a
+    # tenant-bound caller and the process-global writes below RUN: env var,
+    # `.env` file, settings cache_clear. That is new in COUNT, not in kind —
+    # the same deployment-wide write is already reachable today via
+    # `POST /integrations/configure` (whose put failure is swallowed into
+    # `integrations.db_write_failed` and continues) and via
+    # `DELETE /integrations/keys` (whose `os.environ.pop` is unconditional).
+    # Fixing the reachability by re-breaking the write would be repairing the
+    # fail-closed contract in the wrong direction (D33 finding 3); the fix is
+    # per-request provider credentials — `work_plan.md` §6 gate (f).
     os.environ[env_var] = req.value
 
     # Write to .env as bootstrap fallback

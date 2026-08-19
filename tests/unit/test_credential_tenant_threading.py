@@ -109,7 +109,25 @@ def _store_bindings(tree: ast.AST) -> set[str]:
 
 
 def _is_store_expr(node: ast.expr, bindings: set[str]) -> bool:
-    """Is *node* a ``ProviderKeyStore``? Either a bound name or the accessor."""
+    """Is *node* a ``ProviderKeyStore``? Either a bound name or the accessor.
+
+    ⚠️ **Two receiver shapes this does NOT see. Both are named here rather than
+    fixed, so every count below is a count of the walker-visible set** (repair
+    round 3, 2026-08-19):
+
+    1. ``self.<method>`` inside ``key_store.py`` itself. Three real untenanted
+       calls live there — see
+       :func:`test_every_remaining_untenanted_site_is_an_owner_gated_one`.
+    2. An accessor **wrapper**. ``routes/tasks/core.py:326`` defines
+       ``_key_store()`` (a one-line ``return get_key_store()``); six modules
+       import it and call it 15 times. The receiver is then a call to
+       ``_key_store``, not to ``get_key_store``, so this returns ``False``.
+       Nothing is missed *today* — all 15 are ``encrypt``/``decrypt``, which
+       have no tenant dimension at all — but a credential read grown behind
+       that wrapper would be invisible to every count in this file. If that
+       happens, widen the accepted receivers here; the shape is recorded so
+       the next agent recognises it rather than trusting the number.
+    """
     if isinstance(node, ast.Name):
         return node.id in bindings
     if isinstance(node, ast.Call):
@@ -403,13 +421,38 @@ def test_every_h4_site_carries_its_marker_in_place(relative_path: str):
 
 
 def test_every_remaining_untenanted_site_is_an_owner_gated_one():
-    """The terminal statement: slice 5 is at its floor absent an owner act.
+    """The terminal statement — and its subject is the WALKER-VISIBLE set.
 
-    Round 2 lands the last agent-safe subgraph, so the remaining untenanted
-    calls are EXACTLY the H4 set — the once-per-process latch on the live
-    completion path, the lifespan startup, and the import-time tier map. Each
-    needs a **tenant-scoped API key** and per-request provider credentials,
-    which is a credential-scope change and ``work_plan.md`` §6 gate (f).
+    **Scope, stated precisely because the short form of this claim was
+    false.** What is measured is every direct call to a tenant-scoped store
+    method in ``apps/`` + ``packages/`` whose receiver is ``get_key_store()``
+    or a name bound from it (:func:`_is_store_expr`). Over *that* set, round 2
+    lands the last agent-safe subgraph and the remainder is EXACTLY the H4
+    set — the once-per-process latch on the live completion path, the lifespan
+    startup, and the import-time tier map. Each needs a **tenant-scoped API
+    key** and per-request provider credentials, which is a credential-scope
+    change and ``work_plan.md`` §6 gate (f).
+
+    ⚠️ **Known remainder this test does NOT count: three untenanted calls
+    inside ``packages/acb_llm/acb_llm/key_store.py`` itself**, verified against
+    the file 2026-08-19 — ``self.get(provider)`` at **:420** and
+    ``self.put(...)`` at **:433** (both in ``configure_integrations``), and
+    ``self.get_all()`` at **:472** (in ``configure_litellm``). Their receiver
+    is ``self``, so the walker is blind to them by construction; "the
+    remainder is exactly the H4 set" is therefore a statement about the
+    walker-visible set, never about the tree. They are **H4 in class, not in
+    count**: the two methods holding them are called from exactly the sites
+    the H4 tables already name — ``configure_integrations`` only from
+    ``gateway/main.py``'s lifespan, ``configure_litellm`` from that same
+    lifespan and from ``acb_llm.client._ensure_keys_loaded`` — and both
+    destinations (``litellm.<provider>_api_key``, ``os.environ``) are
+    process-global, so threading them travels with the same owner-gated
+    credential-scope act rather than being separately dispatchable. One fact
+    for whoever performs it: **:433 is a WRITE, and ``put`` RAISES** once a
+    second organization exists, aborting ``configure_integrations`` mid-loop;
+    its caller wraps the whole block in ``try/except`` →
+    ``gateway.key_store_skipped``, so every integration after the raising one
+    is silently left unconfigured rather than the process failing.
 
     Stated as set equality rather than as a total, because two totals can agree
     while naming different sites. This is the fence a future agent trips by
@@ -433,9 +476,12 @@ def test_every_remaining_untenanted_site_is_an_owner_gated_one():
     ), (
         f"measured {_total(key_store)} + {_total(blobs)} untenanted calls "
         f"against an H4 remainder of {sum(H4_KEY_STORE_SITES.values())} + "
-        f"{sum(H4_BLOB_SITES.values())}. Every untenanted credential call left "
-        "in the tree must be one the H4 tables name with a reason; a new one "
-        "that is not is debt written past the ratchet."
+        f"{sum(H4_BLOB_SITES.values())}. Every WALKER-VISIBLE untenanted "
+        "credential call in apps/ + packages/ must be one the H4 tables name "
+        "with a reason; a new one that is not is debt written past the "
+        "ratchet. (Scope, not a loophole: key_store.py's own three `self.` "
+        "calls at :420/:433/:472 are an uncounted remainder of the same "
+        "class — see this test's docstring.)"
     )
 
 
