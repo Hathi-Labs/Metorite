@@ -3798,18 +3798,29 @@ overrule any numbered item)*:
    gateway does not have today; minting it must not weaken
    `require_authenticated` for any existing route. The route orchestrates, in
    order: **(a)** Console `POST /orgs/provision` (registry org + GST fields +
-   trial + resumable `provisioning_run` + owner membership) — authenticated by
-   the deployment credential whose capability set grows to exactly
-   `{resolve, provision}`. **That growth is this ticket's proposed answer to
-   D43-2's open sub-question** and is the deliberate act CP-2b's non-goals
-   anticipated ("plausibly the second capability it earns"); Console-side
-   enforcement stays per-capability, so a `{resolve}`-only key presenting a
-   provision call is refused. Issuing/expanding a real key stays §8 gate 7.
-   **(b)** the Console act writes `org_placement` — the measured hole above
-   (`main.py:584-664` writes no placement) is **MT-1j slice 4's**, a HARD
-   dependency of this ticket. **(c)** tenant-side
-   `SELECT provision_organization(slug, display_name, owner_email)` (migration
-   179) — org + placement + six roles + owner, `ON CONFLICT`-idempotent.
+   trial + resumable `provisioning_run` + owner membership + `org_placement`)
+   — authenticated by the deployment credential whose capability set grows to
+   exactly `{resolve, provision}`. **That growth is this ticket's proposed
+   answer to D43-2's open sub-question** and is the deliberate act CP-2b's
+   non-goals anticipated ("plausibly the second capability it earns");
+   Console-side enforcement stays per-capability, so a `{resolve}`-only key
+   presenting a provision call is refused. Issuing/expanding a real key stays
+   §8 gate 7. ⚠️ **Adjudicated 2026-08-19 (D46.6, after slice 4's NO-GO
+   audit): the provision route has TWO arms, and each ticket owns exactly
+   one.** MT-1j slice 4 ships the **operator arm** — the operator names the
+   deployment via a required `deployment_label`; provisioning never MOVES a
+   placement (same-label re-run no-ops, different-label is 409); the
+   sole-deployment heuristic forbidden by name. CP-2c builds the
+   **deployment-key arm**: the key IS the deployment identity, so this arm
+   carries NO `deployment_label` — presenting one is **400, never ignored**
+   (the same R11 rule as the resolve arm's `org_slug`) — and every placement
+   write semantic is inherited from slice 4 unchanged.
+   **(b)** the `org_placement` write itself is **MT-1j slice 4's** (the
+   measured hole at `main.py:584-664` closes there, on the operator arm) — a
+   HARD dependency of this ticket. **(c)** tenant-side: call **slice 4's seam
+   function `provision_local_organization(…)`** — the one caller-side wrapper
+   over migration 179; this route must not invoke the SQL directly (one seam,
+   not two). Org + placement + six roles + owner, `ON CONFLICT`-idempotent.
    Cross-plane retry converges on ONE org because the **slug is the natural
    key on both planes** (179's header: *"the natural key is what a retrying
    signup form resends"*).
@@ -3878,11 +3889,14 @@ half) · invite emails (`members.py:149` — its own small ticket) · per-tenant
 subdomains (MT-1f).
 
 **Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
-seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, so
-slice 4 lands first or this ticket absorbs it explicitly) → CP-2c build
-(agent-safe, dark) → the owner's live set (Console deployed · key issued with
-`{resolve, provision}` · `SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve
-flip).
+seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, and
+**slice 4 lands FIRST — adjudicated, D46.6**: neither ticket absorbs the
+other's half. Slice 4 owns the operator arm, the placement write and the
+tenant seam function; CP-2c owns the deployment-key arm and the form. The
+earlier "or this ticket absorbs it explicitly" escape hatch is struck — it
+was how one seam got two owners) → CP-2c build (agent-safe, dark) → the
+owner's live set (Console deployed · key issued with `{resolve, provision}` ·
+`SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve flip).
 
 **CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
 MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
