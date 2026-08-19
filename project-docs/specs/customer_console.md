@@ -3856,8 +3856,9 @@ overrule any numbered item)*:
    (optional, shape-validated when present). The GST fields land on the
    Console org row (`001_customer_console.sql:68-69`) — ✅ re-verified at the
    2026-08-19 audit: `ProvisionRequest.gstin`/`billing_state` already exist
-   (`main.py:139-140`) and thread to `store.ensure_organization`
-   (`store.py:75-94`), so no Console change is needed for the fields.
+   (`main.py:169-170` post-slice-1; were `:139-140` pre-build) and thread to
+   `store.ensure_organization` (`store.py:73`), so no Console change is needed
+   for the fields.
    **The shapes, ruled here because no document in the corpus had one
    (audit B5):** *GSTIN* = the 15-character structural form
    `^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$` (state code · PAN ·
@@ -3885,10 +3886,11 @@ overrule any numbered item)*:
    B4):** outcome refusals answer **200 `{"admit": false, "code": …}`** —
    `signin.py:85-88`'s idiom, "the refusal is the ANSWER" — with exactly three
    codes: `SignupDisabled` (flag off) · `ConsoleUnavailable` (unwired or
-   Console unreachable, reusing CP-2b's copy) · `AlreadyMember` (item 2's
-   branch). SHAPE violations (a body email, org, or `deployment_label`)
-   answer **400, never ignored**. `errorCopy.ts` gains `SignupDisabled` and
-   `AlreadyMember`; `ConsoleUnavailable` is reused. **Homes, named (audit B2
+   Console unreachable, reusing CP-2b's copy) · `AlreadyMember` (step-0's
+   branch) · **`SlugTaken`** (step-1's slug-unavailable branch, audit blocker
+   1). SHAPE violations (a body email, org, or `deployment_label`) answer
+   **400, never ignored**. `errorCopy.ts` gains `SignupDisabled`,
+   `AlreadyMember` and `SlugTaken`; `ConsoleUnavailable` is reused. **Homes, named (audit B2
    — the same blocker CP-2b's first audit raised):** the Console-provision
    client is a NEW FUNCTION inside `packages/acb_auth/acb_auth/console_resolve.py`
    — the ONE Console httpx client and the only reader of
@@ -3898,16 +3900,75 @@ overrule any numbered item)*:
    its allow-list to EXACTLY two named importers — `routes/signin.py` and the
    new `routes/signup.py` — with the original reason restated (resolve behind
    `resolve_access` = farmable seat burn; both allowed importers are
-   session-email-only routes). The route orchestrates, in
-   order: **(a)** Console `POST /orgs/provision` (registry org + GST fields +
-   trial + resumable `provisioning_run` + owner membership + `org_placement`)
-   — authenticated by the deployment credential whose capability set grows to
-   exactly `{resolve, provision}`. **That growth is this ticket's proposed
-   answer to D43-2's open sub-question** and is the deliberate act CP-2b's
-   non-goals anticipated ("plausibly the second capability it earns");
-   Console-side enforcement stays per-capability, so a `{resolve}`-only key
-   presenting a provision call is refused. Issuing/expanding a real key stays
-   §8 gate 7. ⚠️ **Adjudicated 2026-08-19 (D46.6, after slice 4's NO-GO
+   session-email-only routes).
+
+   ⚠️ **ORCHESTRATION ORDER — the three-blocker cluster the slice-2 audit
+   returned NO-GO on (2026-08-19), resolved here. Agent-proposed default
+   (D16/D17 class — owner may overrule).** The audit's finding: *"what the two
+   planes do when an email or slug already exists"* was undefined, and Console-
+   first (the earlier draft's order) leaves a **dangling Console org** whenever
+   the tenant plane then permanently refuses. The fix has one idea — **put the
+   plane that holds the hard "one email, one org" guard FIRST, so a permanent
+   refusal writes nothing anywhere** — and it collapses all three blockers:
+
+   **Step 0 · a READ-ONLY pre-flight on the tenant plane (audit blocker 2).**
+   Before either plane is written, the route asks the tenant plane: *does an
+   `app_user` row already exist for this session email?* (`app_user` is globally
+   unique on `lower(email)` since migration 162, so this is the authoritative
+   "already has an account" question.) A NEW read helper —
+   `acb_auth.access.membership_of(email) -> (org_slug, org_display_name) | None`,
+   a plain identity+org-name read, **NOT** `resolve_identity`/`resolve_access`
+   (those burn seats and live behind the two-importer fence) and **NOT** a
+   Console call — returns the caller's own org name when present. Present →
+   **`200 {"admit": false, "code": "AlreadyMember", "org_name": …}`**, naming
+   only the caller's OWN org (no third-party existence oracle — done-when 3).
+   The org display name comes from the tenant `organization` row this helper
+   joins; the raw `provision_org_owner` `RAISE` (a Postgres prose string
+   carrying a UUID, `provisioning.py:113-121` — "deliberately not translated")
+   is **not** the detection path and never reaches the wire.
+
+   **Step 1 · the TENANT plane, FIRST (was step (c)) — the hard guard.** Call
+   slice 4's seam `provision_local_organization(slug, display_name,
+   owner_email=<session email>, …)` (built 2026-08-19,
+   `packages/acb_common/acb_common/provisioning.py`; this route must not invoke
+   179's SQL directly — one seam, not two). Because 179 is idempotent-on-slug
+   and `provision_org_owner` refuses moving an existing `app_user` to a new org,
+   the two permanent-refusal causes — *email belongs elsewhere* and *slug taken
+   by another org* — both surface HERE, on the FIRST write, with **nothing on
+   the Console**. The pre-flight catches the common case with a friendly code;
+   the DB constraints are the TOCTOU-safe backstop (a signup that raced its own
+   pre-flight gets a generic refusal and, on resubmit, the now-populated
+   pre-flight answers `AlreadyMember`). Slug taken → **`200 {"admit": false,
+   "code": "SlugTaken"}`** (audit blocker 1 — "choose a different organization
+   name"; the fourth outcome code, added to `errorCopy.ts` beside the other
+   three).
+
+   **Step 2 · the CONSOLE plane, SECOND (was step (a)) — the registry mirror.**
+   `POST /orgs/provision` against the Console **deployment-key arm** (✅ slice 1,
+   2026-08-19: registry org + GST fields + trial + resumable `provisioning_run`
+   + owner membership + `org_placement`), authenticated by the deployment
+   credential whose capability set is `{resolve, provision}` (the D43-2 answer;
+   issuing/expanding a real key stays §8 gate 7). **For a fresh tenant-born slug
+   the Console arm cannot permanently refuse**: its create-only guard
+   (`store.org_owned_by_other`, slice 1) rejects only an org already owned by a
+   DIFFERENT identity, and this slug's owner is the same session email the
+   tenant plane just made owner — so the guard passes. The only Console failures
+   left are **transient** (unwired / unreachable / 5xx) → **`ConsoleUnavailable`**,
+   and a **resubmit converges** because both planes are idempotent on the slug
+   (179's header: *"the natural key is what a retrying signup form resends"*) and
+   the Console's `provisioning_run` covers its own step-resumability. **The
+   atomicity contract (audit blocker 3), stated rather than left to discover:**
+   the ONLY divergent window is *tenant committed, Console pending* after a
+   transient Console failure — the org works dark immediately (the tenant
+   `app_user` admits sign-in while the resolve flag is OFF), and the Console
+   catches up on the next resubmit; there is no window in which a permanent
+   refusal leaves a half-built org on the OTHER plane, because every permanent
+   refusal happens on step 1 before step 2 runs. Done-when 5 parametrizes both:
+   a transient-Console-failure resubmit converges to one org/one owner on both
+   planes; an email-belongs-elsewhere attempt refuses `AlreadyMember` with
+   nothing written on EITHER plane.
+
+   ⚠️ **Adjudicated 2026-08-19 (D46.6, after slice 4's NO-GO
    audit): the provision route has TWO arms, and each ticket owns exactly
    one.** MT-1j slice 4 ships the **operator arm** — the operator names the
    deployment via a required `deployment_label`; provisioning never MOVES a
@@ -3934,17 +3995,12 @@ overrule any numbered item)*:
    is rewritten. Ruled here, not by an implementer in silence — amending an
    adjudicated item is exactly the "one seam, two owners" failure D46.6
    exists to prevent.
-   **(b)** the `org_placement` write itself is **MT-1j slice 4's** — ✅ **BUILT
-   2026-08-19 on the operator arm**, so this hard dependency is MET: the route
-   writes the row and the two refusals (404 unknown label, 409 different label)
-   ship with it. **(c)** tenant-side: call **slice 4's seam function
-   `provision_local_organization(…)`** (✅ built 2026-08-19,
-   `packages/acb_common/acb_common/provisioning.py`) — the one caller-side
-   wrapper over migration 179; this route must not invoke the SQL directly (one
-   seam, not two). Org + placement + six roles + owner, `ON CONFLICT`-idempotent.
-   Cross-plane retry converges on ONE org because the **slug is the natural
-   key on both planes** (179's header: *"the natural key is what a retrying
-   signup form resends"*).
+   *(The Console arm's own `org_placement` write, and its 404/409 label refusals,
+   are MT-1j slice 4's ✅ built behaviour — the deployment-key arm carries NO
+   `deployment_label`, so those label refusals cannot arise on this route; the
+   arm places the org on the KEY's own deployment. The step-0/1/2 ordering block
+   above supersedes the earlier "(a) Console first → (c) tenant last" wording —
+   the reorder IS the blocker-3 fix.)*
 5. **Outcome**: the first user is owner on both planes (Console
    `org_membership.role='owner'`; tenant `owner` role, `app_user` active) and
    is redirected into the app. While `CUSTOMER_CONSOLE_RESOLVE_ENABLED` is
@@ -3990,24 +4046,37 @@ mutation testing on auth/tenancy clauses)*:
    it. Fence: `signup.test.ts` pins both positions (the `signin.test.ts:209`
    pattern).
 2. `POST /signup/provision` answers **200 `{"admit": false, "code": …}`** for
-   the three outcome refusals — `SignupDisabled` · `ConsoleUnavailable` ·
-   `AlreadyMember` — and **400** for shape violations (body email/org/label),
-   per item 4's two-class ruling. Fence: `test_signup_provision_route.py`,
-   every code and both classes.
-3. Already-a-member → `AlreadyMember` names only the caller's own org;
-   unknown-vs-known leaks no third-party existence. Fence: same suite,
-   two-org R8 case.
+   the FOUR outcome refusals — `SignupDisabled` · `ConsoleUnavailable` ·
+   `AlreadyMember` · **`SlugTaken`** (the Console/tenant "slug unavailable"
+   mapping, audit blocker 1) — and **400** for shape violations (body
+   email/org/label), per item 4's two-class ruling. Fence:
+   `test_signup_provision_route.py`, every code and both classes.
+3. Already-a-member → `AlreadyMember` names only the caller's own org (from
+   step-0's `access.membership_of` read, `org_name` on the wire), and a slug
+   already owned by another org → `SlugTaken`; **neither leaks any
+   third-party existence beyond the bare "this name is unavailable"** (the
+   step-1 tenant guard is the source; the Console never sees the slug in the
+   refusal case, so no cross-deployment oracle). Fence: same suite, two-org R8
+   case — one org owned by A, then B's session attempts A's email (→
+   `AlreadyMember`, A's name) and a third session attempts A's slug (→
+   `SlugTaken`, no owner/placement named).
 4. Registered state required (**400 `MissingState`** at the route), GSTIN
    optional but structurally valid when present (**400 `InvalidGstin`**, the
    item-3 regex), and both values land on the Console org row. Fences: the
    route suite red-first for both 400s; R8 against the Console ladder for the
    landing.
-5. Kill-and-resubmit at every step of the ORCHESTRATION converges to one org,
-   one owner, on both planes (parametrised over the step list; buildable
-   today — `pr-check.yml:113/:136` provisions BOTH Postgres services in the
-   `test` job). ⚠️ This is CP-2c's flow-level test; CP-2a's own per-step
-   `provisioning_run` kill test stays OWED under CP-2a and is not absorbed
-   silently.
+5. **The two-plane orchestration converges or refuses cleanly (audit blocker
+   3), parametrised over BOTH directions** (buildable today —
+   `pr-check.yml:113/:136` provisions both Postgres services): **(a)** a
+   TRANSIENT Console failure after the tenant commit → resubmit converges to
+   one org / one owner on both planes (idempotent-on-slug); **(b)** a PERMANENT
+   refusal (email belongs elsewhere, or slug owned by another org) is caught on
+   step 1 (tenant plane) and leaves **nothing written on EITHER plane** —
+   asserted directly (zero Console rows for the slug, zero new tenant rows
+   beyond the pre-existing org). The invariant the fence pins: *no interleaving
+   leaves a permanent-refusal org half-built on one plane.* ⚠️ This is CP-2c's
+   flow-level test; CP-2a's own per-step `provisioning_run` kill test stays
+   OWED under CP-2a and is not absorbed silently.
 6. ✅ **MET — slice 1, 2026-08-19.** A `{resolve}`-only deployment key calling
    provision is refused and the refusal is logged; a `{resolve, provision}` key
    provisions. Fence: Console
@@ -4182,7 +4251,15 @@ smaller and took two slices and 14 blockers)*:
    fences); ruff parity with the branch base.
 2. **Slice 2 — gateway `POST /signup/provision` + the Console-provision
    client in `console_resolve.py`** (done-whens 2, 3, 4, 5; the
-   two-importer fence amendment).
+   two-importer fence amendment). ⚠️ **Dispatch-audited NO-GO 2026-08-19 →
+   REMEDIATED same day** (three blockers, one cluster — "what the two planes do
+   when an email or slug already exists"): the orchestration is now **tenant-
+   plane FIRST** (step 0 read-only pre-flight `access.membership_of` →
+   `AlreadyMember`; step 1 tenant seam = the hard one-email-one-org guard, its
+   refusals leave nothing on the Console; step 2 Console mirror, which cannot
+   permanently refuse a fresh tenant-born slug), `SlugTaken` is the fourth
+   outcome code, and done-when 5 parametrizes both convergence and clean-refusal
+   directions. Re-audit before build.
 3. **Slice 3 — the `signIn` callback limbo branch** (done-when 7; §6(j) row
    vii is already authored — the build is the callback branch + its
    `signin.test.ts` pins).
