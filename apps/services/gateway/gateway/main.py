@@ -1234,6 +1234,19 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-31 CP-2c slice 2 — the self-serve signup flow's server half
+    # (customer_console.md §6 CP-2c). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # caller is an ORGLESS session and the route is IDENTITY-ONLY (it creates a
+    # tenant, it never binds or assumes one). Ships dark behind the gateway's
+    # own `SELF_SERVE_SIGNUP_ENABLED` — off ⇒ `SignupDisabled`, nothing created.
+    from gateway.routes.signup import router as _signup_router
+
+    app.include_router(_signup_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

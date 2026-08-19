@@ -181,6 +181,25 @@ class Settings(BaseSettings):
     customer_console_resolve_ttl_seconds: int = 900          # 15 minutes
     customer_console_resolve_max_staleness_seconds: int = 86400  # 24 hours
 
+    # ── Self-serve signup (WS-31 CP-2c, spec customer_console.md §6 CP-2c
+    # item 7) ─────────────────────────────────────────────────────────────────
+    #
+    # The GATEWAY's own reader of the signup flag. Minted here; the exact
+    # `=== "true"` idiom of `auth.ts:163` (a truthiness test would arm the route
+    # for an operator who wrote `SELF_SERVE_SIGNUP_ENABLED=false` while
+    # debugging). Default unset = OFF: `POST /signup/provision` answers
+    # `SignupDisabled` and creates no organization.
+    #
+    # ⚠️ **Three readers, two containers, and this is ONLY the gateway's.** The
+    # `/signup` Next page and the `signIn` limbo branch read `SELF_SERVE_SIGNUP_
+    # ENABLED` from the *Next* env (`workbench/control_plane/.env.local`); this
+    # field is the *gateway* env (`/opt/acb/app/.env`). Each fails closed
+    # independently, and the deploy must set BOTH or the halves disagree.
+    # `acb_auth/console_resolve.py` does NOT read this flag — the resolve path
+    # is byte-identical under both positions. Flipping it live is 🔴 OWNER-GATE
+    # (§8 gate 8).
+    self_serve_signup_enabled: str = ""
+
     # Gmail (Phase 1, WBS 1.3)
     gmail_sa_json_path: str = ""         # service-account key file
     gmail_workspace_domain: str = ""     # e.g. fracktal.in

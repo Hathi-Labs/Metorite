@@ -249,6 +249,7 @@ jobs:
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
+            tests/unit/test_signup_provision_route.py \
             tests/unit/test_billing_purchase_capability.py \
             tests/unit/test_app_user_upserts.py \
             tests/unit/test_org_provisioning.py \
