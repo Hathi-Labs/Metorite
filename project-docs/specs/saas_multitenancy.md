@@ -2554,6 +2554,16 @@ waits on the other:**
    stays gated on §6 (f)/(h) — the `{resolve, provision}` growth remains CP-2c's
    *proposal*, decided by the owner at issuance, never by an implementer. Slice 4 is
    decoupled from that open question by construction.
+   ⚠️ **AMENDED IN WRITING 2026-08-19 (CP-2c's audit, blocker B1) — the model
+   consequence:** when CP-2c slice 1 lands, `ProvisionRequest.deployment_label`
+   becomes `str | None = None` on the `ResolveRequest.org_slug` precedent (both
+   arms' rules move to the handler) and **the operator arm's missing-label answer
+   moves 422 → 400**. Slice 4's mutation-proved no-inference fence
+   (`test_customer_console_lifecycle.py:332-374`) is amended IN THAT PR, red-first —
+   it pins 400 and must re-prove that the `count(*)=1` mutation still goes red
+   through the handler path. Until that PR, the shipped 422 and this fence stand
+   as built. Recorded here so slice 4's box and CP-2c cannot disagree about who
+   changes the fence and when.
 3. **The sole-deployment heuristic is FORBIDDEN by name**: no arm may infer the
    deployment from `count(deployment)=1` — that would be a fourth copy of the sole-org
    guess this same ticket retires (`key_store.py:114-139` / `model_config.py:40-48` /

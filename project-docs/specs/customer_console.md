@@ -2995,6 +2995,7 @@ admission:
 | iv | **200**, **zero** organizations | **refuse** — `AccessDenied` | **nothing written**, and `invalidate(email)` fires |
 | **v** | **409 at the seat cap, or any other status in which the Console ANSWERED and the answer was not an admission** (400, 404, 422 — a request this box built wrong) | **refuse** — `AccessDenied` | **nothing written** *(added 2026-08-18 during the build: §6(j)'s four rows did not cover the 409 clause 12 documents. At the cap the person genuinely holds no seat and "ask your admin" is the remedy, so the shipped copy is true; a THIRD refusal code was deliberately not minted. Agent-proposed default, owner may overrule. Fence: `test_a_seat_cap_refusal_fails_closed_and_caches_nothing`. ⚠️ **Wording narrowed 2026-08-18** — it used to read "any other status this box cannot read", which is row vi's job)* |
 | **vi** | **5xx · 401 · 408 · 429** — the box got **no answer**: the Console or something in front of it is broken, or *this box's own credential* is wrong | **the UNREACHABLE path** — degrade on the cache up to `MAX_STALENESS`, else refuse with `ConsoleUnavailable` | **nothing written** *(added 2026-08-18, repair of review finding **P1-1**. Row v used to sweep these in and answer `AccessDenied`: an nginx 502 told even cache-fresh users "your account isn't authorized" — their cache was never consulted — and a rotated `cc_depl_` key told **every user of every tenant** the same, which is the wrong-looking denial D33.1 forbids by name. The identical outage over a **closed port** already degraded gracefully, so one event had two spellings and two opposite behaviours. The line is now drawn on **whether an answer was produced**, never on whether a status was recognised. Fences: `test_a_console_5xx_degrades_to_the_cache_like_any_other_outage`, `test_an_unreadable_status_with_nothing_cached_says_unavailable` (parametrised over 500/502/503/504/408/429), `test_a_rotated_deployment_key_is_an_outage_not_a_denial`, and `test_a_403_and_a_409_still_mean_what_they_meant` as the control)* |
+| **vii** | **row iv's outcome, seen by the `signIn` CALLBACK while `SELF_SERVE_SIGNUP_ENABLED === "true"` (Next-side env)** | **admit an ORG-LESS session** — the callback maps this one code to `return true`; the user lands where `/signup` is reachable and every tenant-bound surface stays behind the gateway's per-request resolution + fail-closed tenant binding | **nothing written** — row iv's cache-nothing rule intact, `invalidate(email)` still fires; the gateway, `console_resolve.py` and this table's rows i–vi are byte-identical under both flag positions *(added 2026-08-19 by CP-2c's remediation, audit B3 — the first draft cited this row before it existed. The decision is deliberately the CALLBACK's, not the resolve path's: nothing gateway-side reads the signup flag. Fence: the callback branch pinned in `signin.test.ts`, both positions; `test_deployment_resolve_cache.py` untouched by construction)* |
 
 Case by case, because each carries a decision:
 
@@ -3810,15 +3811,51 @@ overrule any numbered item)*:
    validated by the same rules 179 enforces) · **registered state (REQUIRED —
    GST place-of-supply, `saas_operations_doctrine.md` §3.1)** · GSTIN
    (optional, shape-validated when present). The GST fields land on the
-   Console org row (`001_customer_console.sql:68-69`); if `POST
-   /orgs/provision` does not yet accept them, adding them is in-scope
-   (re-verify at dispatch).
+   Console org row (`001_customer_console.sql:68-69`) — ✅ re-verified at the
+   2026-08-19 audit: `ProvisionRequest.gstin`/`billing_state` already exist
+   (`main.py:139-140`) and thread to `store.ensure_organization`
+   (`store.py:75-94`), so no Console change is needed for the fields.
+   **The shapes, ruled here because no document in the corpus had one
+   (audit B5):** *GSTIN* = the 15-character structural form
+   `^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$` (state code · PAN ·
+   entity · literal Z · check character), validated **structurally only** at
+   MVP — the checksum needs a lookup table and a checksum-bad GSTIN is a
+   customer conversation, not a security boundary (argued; tighten later).
+   *Registered state* = required NON-EMPTY at the **gateway route** (the
+   requirement is the self-serve flow's — the Console's `billing_state` stays
+   optional so the operator arm's semantics are untouched). Refusals: **400**
+   `InvalidGstin` / **400** `MissingState`, fenced red-first in
+   `test_signup_provision_route.py`; the form mirrors both client-side
+   (advisory — the route is the fence).
 4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
    `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
    only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
-   ⚠️ Its caller holds a session but NO membership — a dependency class the
-   gateway does not have today; minting it must not weaken
-   `require_authenticated` for any existing route. The route orchestrates, in
+   ⚠️ **The caller is an ORGLESS session, and the hazard is stated correctly
+   here (audit B3 corrected the first draft):** `require_authenticated`
+   (`deps.py:568-602`) checks only that the session carries an email — an
+   orgless session already passes it today, so no new dependency class is
+   minted. The real constraint is that an unresolved identity **binds no
+   tenant** (`deps.py:299-300`): this route is **identity-only by
+   construction** — it must never bind or assume a tenant, and any accidental
+   call into a tenant-bound path fails closed with `TenantUnbound`, which is
+   the boundary, not a bug. **Refusal shapes, two classes ruled apart (audit
+   B4):** outcome refusals answer **200 `{"admit": false, "code": …}`** —
+   `signin.py:85-88`'s idiom, "the refusal is the ANSWER" — with exactly three
+   codes: `SignupDisabled` (flag off) · `ConsoleUnavailable` (unwired or
+   Console unreachable, reusing CP-2b's copy) · `AlreadyMember` (item 2's
+   branch). SHAPE violations (a body email, org, or `deployment_label`)
+   answer **400, never ignored**. `errorCopy.ts` gains `SignupDisabled` and
+   `AlreadyMember`; `ConsoleUnavailable` is reused. **Homes, named (audit B2
+   — the same blocker CP-2b's first audit raised):** the Console-provision
+   client is a NEW FUNCTION inside `packages/acb_auth/acb_auth/console_resolve.py`
+   — the ONE Console httpx client and the only reader of
+   `CUSTOMER_CONSOLE_URL`/`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` (`is_wired()`,
+   `:232-243`); a second client would be the CLAUDE.md §5 defect by name. The
+   single-importer AST fence `test_console_dependency_boundary.py:224` grows
+   its allow-list to EXACTLY two named importers — `routes/signin.py` and the
+   new `routes/signup.py` — with the original reason restated (resolve behind
+   `resolve_access` = farmable seat burn; both allowed importers are
+   session-email-only routes). The route orchestrates, in
    order: **(a)** Console `POST /orgs/provision` (registry org + GST fields +
    trial + resumable `provisioning_run` + owner membership + `org_placement`)
    — authenticated by the deployment credential whose capability set grows to
@@ -3837,6 +3874,23 @@ overrule any numbered item)*:
    carries NO `deployment_label` — presenting one is **400, never ignored**
    (the same R11 rule as the resolve arm's `org_slug`) — and every placement
    write semantic is inherited from slice 4 unchanged.
+   ⚠️ **D46.6 item 1 is AMENDED here, in writing (audit B1) — the model
+   consequence nobody had stated:** a two-arm route cannot keep
+   `deployment_label` required AT THE MODEL (`main.py:135`), so
+   `ProvisionRequest.deployment_label` becomes `str | None = None` on the
+   **`ResolveRequest.org_slug` precedent** (`main.py:154-171`): optionality
+   lives on the model, BOTH arms' rules live in the handler, and the operator
+   arm's missing-label answer moves **422 → 400**. This deletes the
+   Pydantic-refuses-before-the-handler property that slice 4's
+   mutation-proved fence
+   (`test_customer_console_lifecycle.py:332-374`,
+   `test_nothing_infers_the_deployment_from_there_being_exactly_one`) rests
+   on — so THAT FENCE IS AMENDED IN THE SAME PR, red-first: it pins **400**
+   and re-proves no-inference through the handler path (the `count(*)=1`
+   mutation must still go red), and the model docstring (`main.py:130-134`)
+   is rewritten. Ruled here, not by an implementer in silence — amending an
+   adjudicated item is exactly the "one seam, two owners" failure D46.6
+   exists to prevent.
    **(b)** the `org_placement` write itself is **MT-1j slice 4's** — ✅ **BUILT
    2026-08-19 on the operator arm**, so this hard dependency is MET: the route
    writes the row and the two refusals (404 unknown label, 409 different label)
@@ -3854,46 +3908,82 @@ overrule any numbered item)*:
    OFF, the tenant-side `app_user` row is what admits them
    (`deps.py:261-294`) — **the flow works dark**; the resolve flip adds
    registry enforcement, it does not enable signup.
-6. **The CP-2b interaction this ticket must amend, named rather than
-   discovered**: once the resolve flag is armed, an unknown email's resolve
-   returns empty = **genuine AccessDenied** (§6(j)) — which would refuse the
-   very session signup needs. Under `SELF_SERVE_SIGNUP_ENABLED=true` (and only
-   then), the empty outcome admits into a **limbo session** — no org, every
-   app surface behind the existing AccessGate, `/signup` the only usable
-   surface. §6(j) gains that row; both flag positions fenced.
+6. **The CP-2b interaction this ticket must amend — the row is AUTHORED in
+   §6(j) by this remediation (audit B3: the first draft cited a row that did
+   not exist and claimed an unenumerable "only usable surface"):** once the
+   resolve flag is armed, an unknown email's resolve returns the EMPTY
+   outcome, which the gateway maps to `admit=False, code=ACCESS_DENIED`
+   (`console_resolve.py:892-898`, §6(j) row iv) — refusing the very session
+   signup needs. **The limbo decision is the `signIn` CALLBACK's, Next-side,
+   nothing gateway-side changes:** under `SELF_SERVE_SIGNUP_ENABLED === "true"`,
+   the callback maps that one code to `return true` — a session with no org,
+   **nothing cached** (row iv's cache-nothing rule intact) — and the ordinary
+   redirect lands the user where `/signup` is reachable. **No new gating
+   claim is made**: `AccessGate.tsx:10-12` is presentation by its own header;
+   the enforcement boundary stays the gateway's per-request access resolution
+   plus fail-closed tenant binding (item 4's `TenantUnbound` note). See
+   §6(j) row **vii**.
 7. **Flag: `SELF_SERVE_SIGNUP_ENABLED`** — minted here (exists nowhere,
    verified); the exact-string-`"true"` idiom of `auth.ts:163`; default unset
-   = OFF; read by BOTH the Next page (404s to `/signin` when off) and the
-   gateway route (refuses when off) — fail closed on each half independently.
+   = OFF; **exactly three readers, two containers — named because CP-2b's F1
+   defect was precisely an accidental fourth reader in the wrong container
+   (audit B3):** (i) the `/signup` Next page (redirects to `/signin` when
+   off), (ii) the `signIn` callback's limbo branch (item 6), both reading the
+   Next env; (iii) the gateway route (answers `SignupDisabled` when off),
+   reading its own settings field from the gateway env. Each fails closed
+   independently; the deploy note must set BOTH env files
+   (`/opt/acb/app/.env` and `workbench/control_plane/.env.local`) or the
+   halves disagree — stated here so the flip is one documented act.
+   `acb_auth/console_resolve.py` does NOT read this flag — the gateway's
+   resolve path is byte-identical under both positions.
 
 **Done when** *(each clause names its fence; R8 binds every SQL clause —
 real Postgres on both ladders, 0 skips, both shells; red-first everywhere;
 mutation testing on auth/tenancy clauses)*:
 
-1. `/signup` renders only under the flag; OFF = redirect to `/signin`.
-   Fence: `signup.test.ts` pins both positions (the `signin.test.ts:209`
+1. `/signup` **redirects to `/signin`** when the flag is not exactly `"true"`
+   (one behaviour, everywhere — the first draft said "404s" in one place and
+   "redirect" in another; redirect is the ruling, audit B4a) and renders under
+   it. Fence: `signup.test.ts` pins both positions (the `signin.test.ts:209`
    pattern).
-2. `POST /signup/provision` refuses flag-off, unwired, and body-email each
-   with a distinct code (the `signin.py:107-122` shape). Fence:
-   `test_signup_provision_route.py`.
-3. Already-a-member → the clause-2 refusal names only the caller's own org;
+2. `POST /signup/provision` answers **200 `{"admit": false, "code": …}`** for
+   the three outcome refusals — `SignupDisabled` · `ConsoleUnavailable` ·
+   `AlreadyMember` — and **400** for shape violations (body email/org/label),
+   per item 4's two-class ruling. Fence: `test_signup_provision_route.py`,
+   every code and both classes.
+3. Already-a-member → `AlreadyMember` names only the caller's own org;
    unknown-vs-known leaks no third-party existence. Fence: same suite,
    two-org R8 case.
-4. Registered state required, GSTIN optional, both land on the Console org
-   row. Fence: R8 against the Console ladder.
+4. Registered state required (**400 `MissingState`** at the route), GSTIN
+   optional but structurally valid when present (**400 `InvalidGstin`**, the
+   item-3 regex), and both values land on the Console org row. Fences: the
+   route suite red-first for both 400s; R8 against the Console ladder for the
+   landing.
 5. Kill-and-resubmit at every step of the ORCHESTRATION converges to one org,
-   one owner, on both planes (parametrised over the step list). ⚠️ This is
-   CP-2c's flow-level test; CP-2a's own per-step `provisioning_run` kill test
-   stays OWED under CP-2a and is not absorbed silently.
+   one owner, on both planes (parametrised over the step list; buildable
+   today — `pr-check.yml:113/:136` provisions BOTH Postgres services in the
+   `test` job). ⚠️ This is CP-2c's flow-level test; CP-2a's own per-step
+   `provisioning_run` kill test stays OWED under CP-2a and is not absorbed
+   silently.
 6. A `{resolve}`-only deployment key calling provision is refused and the
-   refusal is logged. Fence: Console R8 suite, red-first by issuing the
-   narrow key.
-7. The limbo-session row of §6(j) behaves per item 6 above under the flag,
-   and byte-identically to today without it. Fence: extension of
-   `test_deployment_resolve_cache.py`.
-8. No new engine sites (R5(b)), all tenant writes through the seam, the new
-   table-less route adds zero migrations on the tenant ladder (Console
-   ladder: next free number at build time, R1).
+   refusal is logged; a `{resolve, provision}` key provisions. Fence: Console
+   R8 suite, red-first by issuing the narrow key. **No Console migration is
+   needed and none may be minted for this** — `deployment_key.capabilities`
+   is `TEXT[]` with no CHECK (`006_deployment_key.sql:56`), so the wide set
+   is insertable today; the enforcement is `deployment_or_operator(capability)`
+   (`auth.py:304-372`), already generic, registered via
+   `AUTHENTICATING_DEPENDENCIES` (`auth.py:447`).
+7. §6(j) **row vii** (authored by this remediation): under the signup flag,
+   the `signIn` callback maps the EMPTY outcome's `ACCESS_DENIED` to an
+   admitted org-less session, caching nothing; flag unset/other value → row
+   iv verbatim, byte-identical to today. Fence: the callback branch pinned in
+   `signin.test.ts` (both positions) — NOT `test_deployment_resolve_cache.py`,
+   which stays untouched because nothing gateway-side changes (audit B3's
+   third-reader correction).
+8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
+   function; **zero migrations on BOTH ladders** (tenant: nothing to add;
+   Console: done-when 6's no-CHECK fact — if something genuinely needs one,
+   next free numbers at build time per R1, and the PR must argue why).
 
 **Gates** (registered in §8 as gate 8 and in `work_plan.md` §6(h)):
 setting `SELF_SERVE_SIGNUP_ENABLED=true` on a live deployment — it opens org
@@ -3918,9 +4008,27 @@ seam INCLUDING the `org_placement` hole — step 4(b) above IS that seam, and
 other's half. Slice 4 owns the operator arm, the placement write and the
 tenant seam function; CP-2c owns the deployment-key arm and the form. The
 earlier "or this ticket absorbs it explicitly" escape hatch is struck — it
-was how one seam got two owners) → CP-2c build (agent-safe, dark) → the
-owner's live set (Console deployed · key issued with `{resolve, provision}` ·
-`SELF_SERVE_SIGNUP_ENABLED` · optionally the resolve flip).
+was how one seam got two owners. ✅ **slice 4 MERGED 2026-08-19**) → CP-2c
+build (agent-safe, dark) → the owner's live set (Console deployed · key
+issued with `{resolve, provision}` · `SELF_SERVE_SIGNUP_ENABLED` ·
+optionally the resolve flip).
+
+**CP-2c dispatches as FOUR ordered slices, never as one** *(auditor-ruled
+2026-08-19: four surfaces, two languages, two databases, a new credential
+capability and an amendment to a shipped auth path — CP-2b was strictly
+smaller and took two slices and 14 blockers)*:
+1. **Slice 1 — the Console deployment-key provision arm** (done-whens 6 + 8's
+   Console half; carries the D46.6-item-1 amendment: model → `str | None`,
+   both arms' rules in the handler, operator missing-label 422→400, slice 4's
+   no-inference fence amended red-first in the same PR).
+2. **Slice 2 — gateway `POST /signup/provision` + the Console-provision
+   client in `console_resolve.py`** (done-whens 2, 3, 4, 5; the
+   two-importer fence amendment).
+3. **Slice 3 — the `signIn` callback limbo branch** (done-when 7; §6(j) row
+   vii is already authored — the build is the callback branch + its
+   `signin.test.ts` pins).
+4. **Slice 4 — the `/signup` form UI** (done-whens 1 + 4's client half;
+   DESIGN_SYSTEM rules bind — it is a product surface).
 
 **CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
 MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
