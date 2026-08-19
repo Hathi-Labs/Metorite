@@ -623,6 +623,48 @@ def current_placement(conn: Connection, *, org_id: str) -> str | None:
     return str(row[0]) if row else None
 
 
+def org_owned_by_other(
+    conn: Connection, *, org_id: str, owner_email: str
+) -> bool:
+    """True iff the org already has an owner membership held by a DIFFERENT email.
+
+    The deployment-key provision arm **creates only, it never joins** (WS-31
+    CP-2c slice 1, R11). It may complete an org that has no owner yet — the
+    crash-after-org-before-membership resume shape — and it may idempotently
+    re-affirm the same owner, but it must REFUSE to write into an org already
+    owned by someone else. Without that refusal a per-box ``provision`` key,
+    driven in slice 2 by a user-supplied slug from an UNAUTHENTICATED signup
+    form, makes its caller a co-owner of a stranger's organization; the refusal
+    therefore lives at the CONSOLE door, not the gateway.
+
+    The predicate keys on **ownership**, which resolves all three cases with one
+    read: a slug with no owner is not a conflict (it may be completed), the same
+    owner is not a conflict (idempotent retry), a different owner is. ``email``
+    is ``CITEXT`` (``001_customer_console.sql:110``), so ``Ada@Corp.com`` cannot
+    slip past a membership owned by ``ada@corp.com`` — the inequality is
+    case-insensitive without a ``lower()`` on either side.
+
+    Read-only: no engine site, no write, so a refusal on this path rolls back a
+    transaction that has written nothing that will commit (R5(b)).
+    """
+    return bool(
+        conn.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM org_membership m
+                    JOIN user_identity ui ON ui.id = m.user_identity_id
+                    WHERE m.organization_id = :org
+                      AND m.role = 'owner'
+                      AND ui.email <> :owner_email
+                )
+                """
+            ),
+            {"org": org_id, "owner_email": owner_email},
+        ).scalar_one()
+    )
+
+
 def place_organization(
     conn: Connection, *, org_id: str, deployment_id: str
 ) -> None:

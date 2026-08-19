@@ -2216,10 +2216,14 @@ org.
    ✅ **BUILT 2026-08-19** — `provision_organization(slug, …)`.
 4. Wire the Console↔tenant seam so a provisioned org **resolves** — including the
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
-   ✅ **OPERATOR ARM BUILT 2026-08-19** — required `deployment_label`, the
-   placement write and its two refusals, and the tenant seam function
-   `provision_local_organization`. The **deployment-key arm is CP-2c's** and
-   stays behind §6 (f)/(h), by the same adjudication (D46.6 item 2).
+   ✅ **OPERATOR ARM BUILT 2026-08-19** — `deployment_label` (required at the
+   model as slice 4 shipped it; `str | None` since CP-2c slice 1, required in
+   the handler for this arm), the placement write and its two refusals, and the
+   tenant seam function `provision_local_organization`. The **deployment-key arm
+   shipped in CP-2c slice 1 (2026-08-19)** — the model/handler split, the
+   `provision` capability, and its create-only refusal; **issuing or widening a
+   real key stays behind §6 (f)/(h)** (D46.6 item 2, that gate unchanged — only
+   the code arm is built).
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
    ◐ **RATCHET ROUNDS 1 + 2 landed 2026-08-19** — round 1 the ratchet itself plus the
@@ -2534,9 +2538,12 @@ answer the blockquote above forbids. The remediation below adjudicates all of it
 **The adjudication (D46.6) — who names the deployment, in two arms so neither ticket
 waits on the other:**
 1. **Slice 4 ships the OPERATOR arm, and the operator names the deployment explicitly**:
-   `ProvisionRequest` gains a **required** `deployment_label` resolving to
-   `deployment.label` (`001_customer_console.sql:82-94`, `UNIQUE`). Missing field →
-   422; unknown label → **404 naming the label, per the operator idiom `_org_id`
+   `ProvisionRequest` gains a `deployment_label` resolving to
+   `deployment.label` (`001_customer_console.sql:82-94`, `UNIQUE`) — *required at
+   the model as slice 4 shipped it; since CP-2c slice 1 (2026-08-19, item 2's
+   amendment landed) the model is `str | None` and the operator arm REQUIRES it
+   in the handler*. Missing field →
+   ~~422~~ **400 since CP-2c slice 1**; unknown label → **404 naming the label, per the operator idiom `_org_id`
    already ships** (`main.py:449-455` — was `:436-442` pre-build; this PR's own
    `ProvisionRequest` insert shifted it +13, caught at review; the operator credential is cross-org by design,
    so naming what it asked about is not an existence oracle — `customer_console.md`
@@ -2561,15 +2568,21 @@ waits on the other:**
    moves 422 → 400**. Slice 4's mutation-proved no-inference fence
    (`test_customer_console_lifecycle.py:332-374`) is amended IN THAT PR, red-first —
    it pins 400 and must re-prove that the `count(*)=1` mutation still goes red
-   through the handler path. Until that PR, the shipped 422 and this fence stand
-   as built. Recorded here so slice 4's box and CP-2c cannot disagree about who
-   changes the fence and when.
+   through the handler path. ✅ **THAT PR LANDED 2026-08-19 (CP-2c slice 1,
+   branch `ws-31-cp2c-slice1`)**: the model is `str | None`, the operator
+   missing-label answer is **400**, the fence was amended red-first
+   (`assert 422 == 400` shown failing), and the handler-side sole-deployment
+   mutation was added and killed alongside the lookup-side one — the two cover
+   disjoint paths (verifier-measured). Recorded here so slice 4's box and CP-2c
+   cannot disagree about who changed the fence and when — and now, that it
+   happened.
 3. **The sole-deployment heuristic is FORBIDDEN by name**: no arm may infer the
    deployment from `count(deployment)=1` — that would be a fourth copy of the sole-org
    guess this same ticket retires (`key_store.py:114-139` / `model_config.py:40-48` /
    `placement.py:46-50`), and it silently mis-places every org the day a second box
    exists. Fence: with exactly one deployment seeded, a request WITHOUT
-   `deployment_label` is still 422.
+   `deployment_label` is still refused — **400 since CP-2c slice 1** (422 as
+   slice 4 shipped it; the fence moved with the item-2 amendment, red-first).
 4. **Provisioning never MOVES a placement.** The write is
    `ON CONFLICT (organization_id) DO NOTHING`; re-run with the SAME label → no-op (one
    row, `moved_at` untouched); re-run naming a DIFFERENT label → **409 refusal** — a
@@ -2590,7 +2603,8 @@ reserved smoke:**
   cases): `POST /orgs/provision` with `deployment_label` writes **exactly one**
   `org_placement` row for the named deployment with `database_target` NULL; re-run same
   label → still one row, `moved_at` untouched; different label → 409; missing field →
-  422 even with exactly one deployment seeded (adjudication item 3's fence); unknown
+  ~~422~~ **400 since CP-2c slice 1** even with exactly one deployment seeded
+  (adjudication item 3's fence, which moved with the item-2 amendment); unknown
   label → **404 naming the label** (adjudication item 1 — the operator idiom); and
   `POST /registry/resolve`'s deployment arm, called
   with that deployment's key, **returns the provisioned org** (red today: the fixture
@@ -2701,7 +2715,9 @@ reserved smoke:**
 >   deployments, where the heuristic refuses anyway.
 >   `test_nothing_infers_the_deployment_from_there_being_exactly_one` now asserts BOTH
 >   arms in the emptied, one-deployment world — missing field ⇒ 422, unknown label ⇒ 404 —
->   and the same mutation dies there.
+>   and the same mutation dies there. *(Historical record of what slice 4 shipped;
+>   the missing-field arm reads **400** since CP-2c slice 1's item-2 amendment,
+>   2026-08-19, amended red-first in that PR.)*
 
 **Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUNDS 1 + 2 BUILT
 2026-08-19 — the ratchet stands at `4 + 1`, the owner-gated FLOOR of the set it measures

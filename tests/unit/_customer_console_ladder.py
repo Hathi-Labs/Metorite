@@ -34,6 +34,14 @@ seeds none — so every Console R8 suite that provisions needs one. Six copies o
 that INSERT is precisely the shape this module exists to prevent, and the
 alternative (a helper in whichever suite happened to need it first) would make
 five suites import a sixth.
+
+⚠️ **:func:`mint_deployment_key` joined it for the same reason** (WS-31 CP-2c
+slice 1, 2026-08-19). It was ``test_customer_console_resolve.py::_depl_key``
+while exactly one suite minted deployment keys; slice 1 gave the credential a
+second capability and therefore a second suite that has to mint one, and the
+moment there are two the mint site is a thing to keep in step — the capability
+vocabulary in particular. Moved rather than copied: the resolve suite's helper
+now delegates here.
 """
 from __future__ import annotations
 
@@ -121,6 +129,45 @@ def ensure_deployment(
     ).first()
     assert row is not None  # guaranteed by DO UPDATE
     return str(row[0])
+
+
+def mint_deployment_key(
+    conn,
+    *,
+    deployment_id: str,
+    capabilities: list[str] | None = None,
+) -> str:
+    """Mint a ``cc_depl_`` key straight into the table; return the TOKEN.
+
+    ``mint_key(env=ENV_DEPLOYMENT)`` + :func:`store.issue_deployment_key`,
+    because the Console specifies **no** HTTP route that issues one: no
+    done-when asks for it, and issuing a real ``cc_depl_`` key into a live
+    deployment is OWNER-GATE (``customer_console.md`` §8 gate 7). Minting one
+    into a scratch database from a fixture is not that act and is agent-safe;
+    the capability SET is the only thing that varies, which is why it is the
+    only parameter.
+
+    ``capabilities=None`` takes the column default — exactly ``{resolve}``,
+    written in SQL by ``store.issue_deployment_key`` — so a caller that does
+    not care gets the narrow credential rather than an accidentally wide one.
+    Callers that mean a capability say its NAME from
+    ``customer_console.auth``; the string is defined once there precisely so it
+    is not retyped at the mint site, the check and the tests.
+    """
+    from customer_console import store
+    from customer_console.keys import ENV_DEPLOYMENT, mint_key
+
+    minted = mint_key(env=ENV_DEPLOYMENT)
+    store.issue_deployment_key(
+        conn,
+        deployment_id=deployment_id,
+        prefix=minted.prefix,
+        key_hash=minted.key_hash,
+        label="fixture",
+        created_by="fixture",
+        capabilities=capabilities,
+    )
+    return minted.token
 
 
 def apply_ladder(conn) -> None:

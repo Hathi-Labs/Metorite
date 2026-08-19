@@ -59,10 +59,12 @@ def client(monkeypatch):
 def deployment():
     """The box every organization here is provisioned onto.
 
-    ``deployment_label`` is REQUIRED since WS-29 MT-1j slice 4 and resolves
-    against a real row — the operator names the box and nothing infers it. This
-    suite's subject is seats and metering, not placement, so one shared row is
-    enough; it is ensured per test because a sibling fence empties the table.
+    ``deployment_label`` is required **under the operator arm** (the scheme this
+    suite uses since WS-31 CP-2c slice 1 made the field ``str | None`` and moved
+    both arms' rules into the handler) and resolves against a real row — the
+    operator names the box and nothing infers it. This suite's subject is seats
+    and metering, not placement, so one shared row is enough; it is ensured per
+    test because a sibling fence empties the table.
     """
     eng = create_engine(_URL, future=True)
     with eng.begin() as conn:

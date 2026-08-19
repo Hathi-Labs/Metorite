@@ -4,7 +4,9 @@
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
-**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-6
+**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2c
+SLICE 1 of 4 BUILT (2026-08-19 — the deployment-key provision arm; slices 2–4
+open) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
@@ -16,15 +18,24 @@ two P2s (2026-08-19)**: **115** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
 **0 skipped**, every load-bearing fence shown red first.
 
-**CP-2c (the self-serve signup flow — the form over CP-2a's API) and CP-2d
-(second factor / email OTP, documented-deferred) MINTED 2026-08-19 (D46,
-owner directive) — spec only, nothing built.** CP-2c's hard dependency —
+**CP-2c (the self-serve signup flow — the form over CP-2a's API) MINTED
+2026-08-19 (D46, owner directive); CP-2d (second factor / email OTP)
+documented-deferred, nothing built.** CP-2c's hard dependency —
 MT-1j slice 4 (`saas_multitenancy.md` §11), the Console↔tenant seam it
 orchestrates — is **✅ MET on the operator arm as of 2026-08-19**: the
 `org_placement` write and the `provision_local_organization` seam both ship.
-What CP-2c still owns is its own **deployment-key arm** (the key names itself,
-`{resolve, provision}`), which stays behind §8 gate 7; its live flip set is
-§8 gate 8. *(Header verified against code
+◐ **CP-2c SLICE 1 BUILT 2026-08-19 — the deployment-key provision arm**
+(done-when 6 + 8's Console half): a key holding `{resolve, provision}`
+provisions an organization onto itself, one holding only `{resolve}` is refused
+403 and the refusal is logged, and the D46.6-item-1 amendment landed with it
+(`deployment_label` → `str | None`, both arms' rules in the handler, operator
+missing-label **422→400**, slice 4's no-inference fence amended red-first).
+Zero migrations, zero new engine sites; 409 passed / 0 skipped; six mutations
+killed. **Slices 2 (gateway `POST /signup/provision` + the Console client), 3
+(the `signIn` limbo branch) and 4 (the `/signup` form) are OPEN** — nothing of
+the *form* exists. **Issuing or widening a REAL deployment key stays §8 gate
+7** — the code is built, the act is the owner's; the live flip set is §8 gate
+8. *(Header verified against code
 2026-08-19: no signup route, no `SELF_SERVE*` flag, no production caller of
 migration 179 — measured, cited in the ticket.)*
 
@@ -194,7 +205,9 @@ Two review notes were taken in the same round: the refusal code is
 engine it strands on setup. ·
 ✅ **CP-2b is BUILT on both sides of the wire (2026-08-18), and the split is
 still the thing to understand.** The **Customer Console side**: the fourth auth
-scheme (`cc_depl_…`, capability set exactly `{resolve}`, `auth.py`), migration
+scheme (`cc_depl_…`, capability set exactly `{resolve}` *as CP-2b shipped it —
+`provision` exists beside it since CP-2c slice 1, 2026-08-19, per-capability
+enforced, issuance still gate 7*, `auth.py`), migration
 `006_deployment_key.sql`, `POST /registry/resolve` answering **two schemes with
 two shapes** chosen by the credential (`main.py`), and — added with the
 deployment half — the per-organization **`capabilities` block** computed by the
@@ -2026,14 +2039,32 @@ export window.
 > and the route writes exactly one `org_placement` row for the named deployment,
 > `database_target` NULL, `ON CONFLICT (organization_id) DO NOTHING` —
 > provisioning places, it never moves (409 on a different label, 404 on an
-> unknown one, 422 on a missing field even with exactly one deployment seeded).
+> unknown one, ~~422~~ **400** on a missing field even with exactly one
+> deployment seeded).
+>
+> ⚠️ **AMENDED 2026-08-19 by CP-2c slice 1 — the missing-field answer is now
+> 400, not 422** (D46.6 item 1 as amended below in CP-2c; landed with slice 1's
+> PR). A two-arm route cannot keep `deployment_label` required AT THE MODEL,
+> because the deployment-key arm has to *refuse* a presented label and a
+> required field makes that unexpressible. So the field is `str | None` on the
+> `ResolveRequest.org_slug` precedent, both arms' rules moved into the handler,
+> and the operator arm's missing-label refusal moved with them. **What was lost
+> is a property, not just a status code:** the 422 meant *pydantic refuses
+> before the handler runs, so no code path can consult a count*. That is gone;
+> the handler now runs with no label. Slice 4's mutation-proved no-inference
+> fence was amended red-first in the same PR to pin the weaker property — *the
+> handler refuses without consulting a count* — and re-mutated both ways
+> (a working sole-deployment guess in the handler, and the original
+> `count(*) = 1` fallback in `deployment_by_label`); both go red.
+>
 > This is a **breaking change to `POST /orgs/provision`**, free because the
 > Console is deployed nowhere; the six CP-2a-era suites were updated in the same
 > PR. The end-to-end clause — *provision, then a deployment key resolves that
 > org* — is fenced by
 > `test_customer_console_resolve.py::TestProvisioningIsWhatPlacesAnOrg`.
-> The **deployment-key arm** (the key names itself) remains CP-2c's and stays
-> behind §8 gate 7 / §6 gate (f).
+> The **deployment-key arm** (the key names itself) was CP-2c's and **BUILT
+> 2026-08-19 as CP-2c slice 1**; *issuing or widening a REAL key* stays behind
+> §8 gate 7 / §6 gate (f), which is the act, not the code.
 >
 > ⚠️ **One acceptance clause is OWED, not met — recorded 2026-08-18 rather than
 > struck.** "a test kills it at each step" is **not implemented**.
@@ -2056,7 +2087,9 @@ prose since 2026-08-12, and now code on both sides of the wire.
 
 **What is built (the Console side of the wire).** The fourth auth scheme
 `cc_depl_<prefix>_<secret>` beside the three that existed, with a capability set
-of exactly `{resolve}` enforced as a dependency
+of exactly `{resolve}` *(as this ticket shipped it — CP-2c slice 1 minted
+`provision` beside it 2026-08-19; a key holds only what its issuer granted,
+enforcement stays per-capability)* enforced as a dependency
 (`customer_console/auth.py` — `DeploymentCaller`, `deployment_or_operator`,
 `AUTHENTICATING_DEPENDENCIES`); the sibling table
 `infra/customer_console/006_deployment_key.sql`; and `POST /registry/resolve`
@@ -2201,7 +2234,12 @@ email to *its* org, and the org is not known before the answer.
 So mint `cc_depl_<prefix>_<secret>`: issued **per deployment** by the operator in
 the Customer Console, stored in that deployment's env, with a capability set of
 **exactly `{resolve}`** — one endpoint, nothing else, enforced as a dependency
-rather than a per-route `if`. What it can learn about an organization is bounded
+rather than a per-route `if`. *(⚠️ Updated 2026-08-19, CP-2c slice 1: the
+capability VOCABULARY now also carries `provision` — the signup arm of
+`POST /orgs/provision` — so "one endpoint, nothing else" describes what a
+DEFAULT-issued key reaches, not the vocabulary's ceiling. A key reaches exactly
+the endpoints its issued set names; widening a real key's set stays §8 gate 7 /
+§6(h).)* What it can learn about an organization is bounded
 to what sign-in needs: **org id, slug, placement, lifecycle status, and
 seat-existence for the presented email.** Never a balance, never a credit
 figure, never an invoice, and never the existence of an organization this
@@ -3778,8 +3816,13 @@ one that is obviously right · entitlement/module sync to the deployment ·
 person visible in two orgs on one deployment · retiring the operator-auth shape
 · any Router or metering change.
 
-**CP-2c · The self-serve signup flow — the form over CP-2a's API.** 🔲 **MINTED
-2026-08-19 (D46, owner directive) — spec only, nothing built.** The owner's
+**CP-2c · The self-serve signup flow — the form over CP-2a's API.** ◐ **MINTED
+2026-08-19 (D46, owner directive); SLICE 1 BUILT 2026-08-19 — slices 2, 3 and 4
+open.** Slice 1 is the Console deployment-key provision arm (done-when 6 and
+done-when 8's Console half) and it carries the D46.6-item-1 amendment; the
+record is in the slice list at the end of this ticket. Nothing of the *form*
+exists yet: no `/signup` route, no `SELF_SERVE_SIGNUP_ENABLED` flag, no gateway
+`POST /signup/provision`. The owner's
 words: a basic website on `metorite.com` where users can sign up (that page is
 **WS-33**, `specs/marketing_site.md` — its CTA lands here); on signup *"they
 are taken through a full signup flow. They have to set up an organisation, and
@@ -3965,14 +4008,20 @@ mutation testing on auth/tenancy clauses)*:
    `test` job). ⚠️ This is CP-2c's flow-level test; CP-2a's own per-step
    `provisioning_run` kill test stays OWED under CP-2a and is not absorbed
    silently.
-6. A `{resolve}`-only deployment key calling provision is refused and the
-   refusal is logged; a `{resolve, provision}` key provisions. Fence: Console
+6. ✅ **MET — slice 1, 2026-08-19.** A `{resolve}`-only deployment key calling
+   provision is refused and the refusal is logged; a `{resolve, provision}` key
+   provisions. Fence: Console
    R8 suite, red-first by issuing the narrow key. **No Console migration is
    needed and none may be minted for this** — `deployment_key.capabilities`
    is `TEXT[]` with no CHECK (`006_deployment_key.sql:56`), so the wide set
    is insertable today; the enforcement is `deployment_or_operator(capability)`
-   (`auth.py:304-372`), already generic, registered via
-   `AUTHENTICATING_DEPENDENCIES` (`auth.py:447`).
+   (`auth.py`), already generic, registered via
+   `AUTHENTICATING_DEPENDENCIES`. *(Built as specified: `PROVISION_CAPABILITY`
+   beside `RESOLVE_CAPABILITY`, `_provision_dependency` from the same factory,
+   registered — and the registration is mutation-proved: removing it makes the
+   clause-1 fence report `{'/health', '/orgs/provision'} == {'/health'}`.
+   Fences in `test_customer_console_lifecycle.py::
+   TestTheDeploymentKeyProvisionArm`, seven R8 tests. Zero migrations.)*
 7. §6(j) **row vii** (authored by this remediation): under the signup flag,
    the `signIn` callback maps the EMPTY outcome's `ACCESS_DENIED` to an
    admitted org-less session, caching nothing; flag unset/other value → row
@@ -3984,6 +4033,11 @@ mutation testing on auth/tenancy clauses)*:
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,
    next free numbers at build time per R1, and the PR must argue why).
+   ◐ **Console half MET — slice 1, 2026-08-19**: no migration on either ladder
+   and no new engine site (the arm reuses the route's existing
+   `get_engine().begin()`; `test_db_engine_seam.py` 31/31 unchanged). The
+   tenant half rides slice 2, which is the ticket that first calls the seam
+   function.
 
 **Gates** (registered in §8 as gate 8 and in `work_plan.md` §6(h)):
 setting `SELF_SERVE_SIGNUP_ENABLED=true` on a live deployment — it opens org
@@ -4017,10 +4071,115 @@ optionally the resolve flip).
 2026-08-19: four surfaces, two languages, two databases, a new credential
 capability and an amendment to a shipped auth path — CP-2b was strictly
 smaller and took two slices and 14 blockers)*:
-1. **Slice 1 — the Console deployment-key provision arm** (done-whens 6 + 8's
-   Console half; carries the D46.6-item-1 amendment: model → `str | None`,
-   both arms' rules in the handler, operator missing-label 422→400, slice 4's
-   no-inference fence amended red-first in the same PR).
+1. ✅ **Slice 1 — the Console deployment-key provision arm — BUILT 2026-08-19**
+   (done-whens 6 + 8's Console half; carries the D46.6-item-1 amendment: model
+   → `str | None`, both arms' rules in the handler, operator missing-label
+   422→400, slice 4's no-inference fence amended red-first in the same PR).
+   **What shipped:** `auth.PROVISION_CAPABILITY` + `_provision_dependency`
+   (the same `deployment_or_operator` factory — unchanged, it was already
+   generic) + the `ProvisionCaller` alias, **registered in
+   `AUTHENTICATING_DEPENDENCIES`**; `ProvisionRequest.deployment_label` →
+   `str | None = None` with both arms' rules in the handler (operator: label
+   required, **400** when absent, 404 unknown; deployment key: the box is
+   `caller.deployment_id` and a presented label is **400, never ignored**,
+   refused on SHAPE before the value is read so naming its own box and naming
+   a nonexistent one are one refusal). Every placement-write semantic is
+   inherited from MT-1j slice 4 unchanged. **Zero migrations on either
+   ladder, zero new engine sites.** Evidence: **409 passed / 0 skipped** across
+   §7's ten Console suites on a real Postgres 16 (baseline 402, +7 new), 31/31
+   on `test_console_dependency_boundary.py` + `test_db_engine_seam.py`, 89/89
+   on the two tenant-ladder suites; every fence red first (7 new ERROR on the
+   capability not existing, the amended clause (a) `assert 422 == 400`, the
+   clause-1 fence `assert 401 == 403`); **six mutations, all killed** —
+   capability check disabled (3 red), registration removed (the clause-1 fence
+   reports `{'/health', '/orgs/provision'}`), the `count(*) = 1` fallback in
+   `deployment_by_label`, a WORKING sole-deployment guess in the handler
+   (the amendment's own risk — clause (a) still bites), the refusal log
+   removed, and a presented label ignored rather than refused. Ruff parity
+   with the branch point: identical findings by file and rule.
+
+   **Two agent-proposed defaults, the D16/D17 class — owner may overrule
+   either.** (i) *"the refusal is logged"* had no event name in the spec:
+   `deployment_or_operator` raised a bare 403 and logged nothing, so a key
+   reaching for a capability it was not issued for was unobservable. The name
+   chosen is **`deployment_key.capability_refused`**, at **warning** (a refusal
+   is the door working — the level `payments.webhook_refused` takes), carrying
+   `capability` and `key_prefix` and **never the secret**, which the fence
+   asserts over the whole captured log text rather than trusting. It fires for
+   *both* capabilities: the resolve arm's behaviour is unchanged (same status,
+   same body) and only gains the line it never had. (ii) The audit row's
+   **`actor` distinguishes the two arms** — `"deployment"` under the key,
+   `"operator"` unchanged — with the deployment recorded by id in both arms and
+   the acting key's prefix beside it. `_audit`'s own contract is the argument:
+   a trail calling every act "operator" *"would misattribute the one class of
+   write we most need to tell apart later"*, and a box provisioning a
+   self-serve customer is exactly that class — the one provisioning act with
+   no human in it.
+
+   **Inherited unchanged, by name:** `resolve_deployment_key` and
+   `deployment_by_label` still ignore `deployment.status`, so provisioning
+   onto a `retired`/`draining` box 200s. That is the WS-29 slice-4 reviewer's
+   P2-1, recorded as its own ticket, and slice 1 deliberately does not fix it —
+   it is now reachable by one more door, which raises its priority without
+   changing its owner.
+
+   **Independent verify (2026-08-19): FAIL-then-repaired, doc sweep only —
+   zero functional defects.** The verifier re-derived every clause on FRESH
+   scratch databases with its own 45-check probe and its own minted keys
+   (45/45), replayed seven mutations (all killed, including its own novel
+   "key arm HONOURS a presented label" plant), matched every count exactly
+   (409/0 · 31/31 · 89/89 · ruff identical by file and rule), and confirmed
+   the mutation pair covers disjoint paths (the lookup-side sole-deployment
+   fallback is unreachable once the handler 400s — which is why the
+   handler-side mutation exists). The FAIL: **eight sentences across the two
+   owning specs still described the pre-slice-1 world** (five in
+   `saas_multitenancy.md` §11 including the "Until that PR" conditional this
+   very PR was named to close; three "exactly `{resolve}`" claims in this
+   file) — all swept in the repair commit, dated in place. **Two verifier
+   observations, recorded not fixed:** (i) an explicit JSON `null`
+   `deployment_label` under a deployment key answers 200 — judged correct
+   (a `null` asserts no identity, so R11's hazard does not arise and nothing
+   is ignored) but unfenced and the prose does not distinguish it; (ii) a
+   `{provision}`-only key is unspecified — it could create an org it can
+   never resolve; harmless while issuance is gate 7's owner act, and the
+   issuance surface ticket should refuse or warn on that set.
+
+   **Adversarial review (2026-08-19): one P0, one P1, one P2 — all repaired
+   before merge; the P0 was a live privilege-escalation the 409/0 suite and
+   the independent verify both missed.** **P0 — the deployment-key arm could
+   HIJACK an existing org.** It inherited slice 4's idempotent-on-slug
+   re-provision wholesale, so a `provision` key POSTing an *existing* slug with
+   a different `owner_email` was granted an `owner`/`active` membership and a
+   Core seat in a stranger's org — a 200 (reviewer measured it live). Repaired
+   at the CONSOLE door (R11 — the slug is user-supplied from an unauthenticated
+   signup form in slice 2, so the gateway cannot be trusted to guard it): the
+   deployment-key arm now **creates only, never joins** via new
+   `store.org_owned_by_other` (keys on ownership, `CITEXT`-safe) — an org owned
+   by a DIFFERENT identity is refused writing nothing; the same-owner retry and
+   the crash-before-membership resume (org with no owner yet) both still
+   complete. **P1 — the 409/200 split was an existence oracle** over the global
+   slug namespace (`§5`'s forbidden "existence of an organization this
+   deployment does not serve"). Repaired: the key arm's placed-elsewhere AND
+   owned-by-other cases collapse to ONE bare **`409 "slug unavailable"`** naming
+   no placement/owner/deployment. *(Agent-proposed default, D16/D17 — owner may
+   overrule. Residual flagged honestly: slug **availability** stays observable
+   at any signup-provision door because global-unique-slug is a hard constraint
+   a form must report; this narrows the oracle to "taken: yes/no" and removes
+   the placement/ownership discrimination.)* The operator arm's 404/409
+   (cross-org staff, by design) is **unchanged**. **P2** — the ninth stale
+   sentence (`saas_multitenancy.md` §11 slice-4 item 4 still called the arm
+   "CP-2c's and unbuilt") — swept. Noted repairs: two test docstrings that said
+   `deployment_label` is "REQUIRED" (true only under the operator arm now); and
+   `owner_email` added to the `org.provision` audit detail so a create is
+   legible in the trail (a hijack now cannot exist to be confused with one — it
+   is refused before any audit row — but the field names WHO owns what, by
+   which credential). **Repair verified:** 444 passed across the ten Console
+   suites + the two boundary fences (0 skipped, real PG 16, up from 409 — four
+   new red-first fences: hijack-refused-writes-nothing, same-owner-idempotent,
+   ownerless-resume-completes, uniform-refusal-reveals-nothing); the ownership
+   guard mutation-proved (supervisor re-ran it: disabling
+   `org_owned_by_other` re-opens the 200 hijack and reddens both the P0 and P1
+   fences); ruff parity with the branch base.
 2. **Slice 2 — gateway `POST /signup/provision` + the Console-provision
    client in `console_resolve.py`** (done-whens 2, 3, 4, 5; the
    two-importer fence amendment).
