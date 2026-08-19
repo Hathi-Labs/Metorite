@@ -196,6 +196,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _asyncio.ensure_future(_warm_clone_agents())
 
     # Load provider API keys from encrypted Postgres store into litellm SDK.
+    #
+    # H4: lifespan startup — there is no request, no session and no bound
+    # tenant, and the destination (`configure_litellm` / `configure_integrations`
+    # → `litellm.<provider>_api_key` + `os.environ`) is process-global anyway.
+    # See `acb_llm.client._ensure_keys_loaded`'s H4 note for the full argument;
+    # MT-1j slice 5 records this site rather than threading a guessed tenant
+    # through it (`saas_multitenancy.md` §11).
     try:
         from acb_llm.key_store import get_key_store
         store = get_key_store()

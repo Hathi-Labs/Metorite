@@ -41,6 +41,7 @@ from acb_common import get_logger, get_settings
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from gateway.db import current_tenant
 from gateway.room_stream import publish_room_event
 from pydantic import BaseModel
 
@@ -1146,10 +1147,20 @@ _AGENT_ALIASES_KEY = "agent_aliases"
 
 
 def _load_agent_aliases() -> dict[str, str]:
-    """Return ``{canonical_name: alias}``.  Best-effort → ``{}`` on any error."""
+    """Return ``{canonical_name: alias}``.  Best-effort → ``{}`` on any error.
+
+    MT-1j slice 5: scoped to the request's bound organization. Both call sites
+    (`list_agents`/`get_agent` here and `observability.roster`) are HTTP
+    handlers under the app-wide `require_authenticated`, so the tenant
+    `_with_resolved_access` bound is in context; ``None`` outside a request
+    hands `model_config._resolve_org` the argument it already receives today.
+    Never taken from request input — R5 / `user_management_contract.md` R11.
+    """
     try:
         from acb_llm.model_config import load_blob  # noqa: PLC0415
-        blob = load_blob(_AGENT_ALIASES_KEY, {})
+        blob = load_blob(
+            _AGENT_ALIASES_KEY, {}, organization_id=current_tenant()
+        )
         if isinstance(blob, dict):
             return {
                 str(k): str(v).strip()
@@ -1168,7 +1179,8 @@ def _set_agent_alias(name: str, alias: str) -> str:
     failure so the caller can surface it.
     """
     from acb_llm.model_config import load_blob, save_blob  # noqa: PLC0415
-    blob = load_blob(_AGENT_ALIASES_KEY, {})
+    org = current_tenant()          # MT-1j slice 5 — see _load_agent_aliases
+    blob = load_blob(_AGENT_ALIASES_KEY, {}, organization_id=org)
     if not isinstance(blob, dict):
         blob = {}
     alias = (alias or "").strip()
@@ -1176,7 +1188,7 @@ def _set_agent_alias(name: str, alias: str) -> str:
         blob[name] = alias
     else:
         blob.pop(name, None)
-    save_blob(_AGENT_ALIASES_KEY, blob)
+    save_blob(_AGENT_ALIASES_KEY, blob, organization_id=org)
     return alias
 
 

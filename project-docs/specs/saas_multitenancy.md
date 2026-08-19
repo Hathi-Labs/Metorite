@@ -3,8 +3,9 @@
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
-⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED, and
-slices 6 + 1 + 2 + 3 are now BUILT** — the ticket four specs and one migration were
+⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
+slices 6 + 1 + 2 + 3 are BUILT, and slice 5 is on its RATCHET (round 1 landed)** — the
+ticket four specs and one migration were
 already disclaiming work to
 (`_implementation.md` §7.1/§8 trap 5 · `customer_console.md` CP-2b §6(k) ·
 `subscription_console.md` · `user_management_contract.md` §3 · `178:39-48`) and which
@@ -2152,7 +2153,7 @@ here — that spec owns them); `_ORG_MEMBER_SQL` (`access.py:400`) is org-filter
 from authoring time) is org-filtered — **that last one is a lockout RLS does not fix**
 and must be repaired by hand.
 
-#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slices 4 and 5 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
+#### MT-1j · Tenant-side organization provisioning · ◐ **SLICES 1 + 2 + 3 + 6 BUILT 2026-08-19 · slice 5 ◐ RATCHET ROUND 1 · slice 4 NOT BUILT** — minted 2026-08-19, every anchor below verified against code that day
 **Gate:** 🟢 **AGENT-SAFE to build and to R8-test against scratch databases** ·
 🔴 **OWNER-GATE to EXECUTE against a real second organization** (Decision C below;
 registered in `work_plan.md` §6).
@@ -2206,6 +2207,9 @@ org.
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
+   ◐ **RATCHET ROUND 1 landed 2026-08-19** — the ratchet itself plus the `model_config`
+   subgraph on the LLM/model surface. Banked **11 + 10 → 9 + 1**. The LIVE completion
+   path turned out to be H4 and is marked, not threaded (slice 5's box below).
 6. Repair the two `ON CONFLICT (email)` upserts that migration 162 invalidated.
    ✅ **BUILT 2026-08-19** — the predicted 42P10 reproduced red on a real ladder first, and
    it took out the fresh-insert path too, not just the conflict one (slice 6 below).
@@ -2503,7 +2507,8 @@ database)*, **two single-DB halves plus a reserved smoke:**
   that loads both ladders explicitly — named here so nobody invents it as an acceptance
   criterion; it is optional hardening, not the done-when.
 
-**Slice 5 · `key_store` / `model_config` tenant threading.**
+**Slice 5 · `key_store` / `model_config` tenant threading. · ◐ RATCHET ROUND 1 BUILT
+2026-08-19.**
 **Anchors + measurement (2026-08-19):**
 
 ```bash
@@ -2538,6 +2543,130 @@ the pattern is `tests/unit/test_db_engine_seam.py:310`'s H2 bank-your-progress m
 **38 (`get_key_store()`) + 10 (`load_blob`/`save_blob`)** and assert they only go DOWN;
 a converted package is pinned at zero. Slice 5 may land across several PRs on this
 ratchet's cadence; each PR banks its progress.
+
+> ### ◐ RATCHET ROUND 1 — BUILT 2026-08-19 · `tests/unit/test_credential_tenant_threading.py`
+>
+> **Banked: `11 + 10` → `9 + 1`.** Not `38 + 10` → see the correction below, which is the
+> most important thing this round produced.
+>
+> ⚠️ **CORRECTION — "38 call sites fail closed" over-states the blast radius by ~3.5x,
+> and the ratchet makes that auditable.** The spec's grep counts `get_key_store()`
+> *lines*; the fail-closed contract lives in `_resolve_org`, which only the
+> **tenant-scoped methods** reach. Parsed (AST, not grep) across `apps/` + `packages/`
+> minus `tests/`, the 38 lines yield **48** store-method calls:
+>
+> | Method | Calls | Resolves a tenant? |
+> |---|---|---|
+> | `decrypt` | 23 | **No** — Fernet over the deployment's single `ACB_MASTER_KEY` |
+> | `encrypt` | 10 | **No** — same |
+> | `put` | 6 | Yes |
+> | `get_all` / `get_by_type` | 2 / 2 | Yes |
+> | `delete` | 1 | Yes |
+> | `configure_litellm` / `configure_integrations` | 2 / 1 | process-global startup path |
+> | `_execute` | 1 | raw SQL; the statement carries its own scope |
+>
+> The 33 `encrypt`/`decrypt` calls seal `email_accounts.credentials_encrypted` and the
+> WhatsApp bridge's credentials — a second organization does not perturb them at all.
+> **The real surface is 11 `key_store` + 10 `model_config` = 21 sites**, and *that* is
+> what the ratchet counts. The spec's two greps are kept as **ceilings** (38 / 10), since
+> a correctly-threaded site still contains both strings and could never make them fall —
+> a fence that can only stay flat is not a ratchet, so the file pins both kinds and says
+> which is which.
+>
+> **Converted this round — the `model_config` subgraph on the LLM/model surface**
+> (9 of the 10 blob sites, plus the provider-key write on the same request):
+>
+> * `gateway/routes/settings.py` → **0** untenanted (was 6 blob + 2 store):
+>   `_load_tier_overrides`, `_save_tier_override`, `_load_catalogue`, `_save_catalogue`
+>   (`tier_overrides` + `enabled_models`), and `_sync_key_to_store` behind
+>   `POST /settings/llm/key`. ⚠️ **That last one was a live loss, not a latent one**:
+>   `put()` raises once org #2 exists and the raise is swallowed by the surrounding
+>   `except Exception: pass`, so org #2's admin saving a provider key lost it silently.
+> * `gateway/routes/agent.py` → **0** untenanted (was 3 blob): `_load_agent_aliases` /
+>   `_set_agent_alias`, read by the Agents page and by `observability.roster`.
+>
+> The tenant comes from `acb_common.db.current_tenant()` — the ContextVar
+> `acb_auth.deps._with_resolved_access` fills from the authenticated session — reached
+> through the gateway's existing `gateway.db` re-export, so no second seam. Every route
+> in both modules is under the app-wide `require_authenticated`, whose own dependency is
+> `get_current_user`, so the binding is in context. `None` outside a request is
+> **deliberate and not a fallback**: it hands `_resolve_org` exactly today's argument, so
+> the sole-org resolution and its fail-closed arm are byte-unchanged.
+>
+> ### 🔴 THE FINDING: the LIVE completion path is H4, and this round did NOT thread it
+>
+> The dispatch asked for the live LLM path first. Traced, it cannot be threaded without an
+> owner act, and guessing would have been the R5/R11 violation:
+>
+> | Site | Why no tenant is reachable |
+> |---|---|
+> | `acb_llm/client.py::_ensure_keys_loaded` (2 store calls) | a **once-per-process latch** whose whole output is process-global: `configure_litellm()` assigns `litellm.<provider>_api_key` and `os.environ`. Calling it per org would make the LAST org's key the one every caller sends. |
+> | `routes/v1_compat.py::_handle_chat_completions` (its caller) | authed by `require_llm_api_auth` — the deployment-wide `LITELLM_MASTER_KEY` **every agent holds**. That Bearer resolves through `get_current_user`'s branch 1b to `system:internal`, which never reaches `_with_resolved_access`, so `current_tenant()` is `None`. `X-CC-Agent`/the body are request input — R11 forbids both. |
+> | `acb_llm/client.py::_init_tier_models` (1 blob call) | runs at **import** time and fills the process-global `_TIER_MODEL`. |
+> | `gateway/main.py` lifespan (2 store calls) | startup: no request, no session, no tenant. |
+> | `routes/settings.py::_inject_env_into_litellm`'s `os.environ` half | same class, and it is a **cross-tenant write**: org #2 saving its key overwrites the process-wide env var for everyone. Marked, not fixed. |
+>
+> **What a real fix needs:** a **tenant-scoped API key** (`user_management_contract.md`
+> R11's second admitted identity source) plus per-request provider credentials instead of
+> per-process ones. Widening `LITELLM_MASTER_KEY`'s scope is a **credential-scope change —
+> `work_plan.md` §6 gate (f), the owner's act**, and it is the same shape slice 4 flags for
+> the Console's `{resolve}` capability set. Every site above carries an `H4:` comment in
+> place naming its reason, and each is pinned at its **EXACT** remaining count so the next
+> agent cannot make it "converted" by threading a guessed org either.
+>
+> **Fences (R7), all in `tests/unit/test_credential_tenant_threading.py` — 22 tests,
+> 0 skips.** `TestTheCredentialSurfaceDoesNotGrow` (the spec's two greps as ceilings) ·
+> `TestTheUntenantedRatchet` (the AST counts, `<=` plus a `test_the_baselines_are_not_stale`
+> that forces the number DOWN in the same commit) · `test_converted_files_stay_converted`
+> (parametric, zero) · `test_h4_*_sites_hold_their_exact_count` (exact in **both**
+> directions) · `test_every_h4_site_carries_its_marker_in_place` ·
+> `TestTheFailClosedContractIsNotRepaired` (pins the `count(*) = 1` predicate in **both**
+> copies by content and refuses a `slug = 'default'` fallback by name — D33 finding 3) ·
+> the R8 two-org half · `test_this_suite_is_named_in_the_ci_skip_guard`. Named on
+> `pr-check.yml`'s existing `TENANT_LADDER_DATABASE_URL unset` grep line.
+>
+> **Mutation-proved (each reverted after measuring):**
+>
+> | Mutation | Red |
+> |---|---|
+> | un-thread one banked site (`_load_catalogue`) | **3** |
+> | add a new untenanted `load_blob` call | **5** at the implementer's site; the count is SITE-DEPENDENT (verifier measured **4** planting in `agent.py`) — the property, not the number, is the fence |
+> | thread a *guessed* org at an H4 site | **5** at `_init_tier_models` (incl. the exact-count fence); site-dependent (verifier: **2** at `client.py`'s blob site) — every site tried went red |
+> | replace `count(*) = 1` with `WHERE slug = 'default'` in both copies | **7** |
+> | `key_store._resolve_org` ignores the org it is given | **6** (2 here + 4 in the mt0d suite) |
+> | `model_config._resolve_org` ignores the org it is given | **2** |
+> | delete the pytest argument from `pr-check.yml` | **1** |
+>
+> ⚠️ **Two of this suite's own tests were found vacuous by mutation and strengthened.**
+> The `slug = 'default'` mutation left both untenanted-read assertions GREEN, because the
+> fallback resolved to an organization that happened to hold nothing. They now seed the
+> **operator's** organization first, which is MT-0d's stated leak in one line ("serve the
+> operator's keys to a customer"); with that, the same mutation turns them red. The
+> CI-guard fence had the same shape — a substring search for the filename matched the
+> *comment* above the step, so deleting the pytest argument stayed green; it now matches
+> the argument line.
+>
+> **R8, and the transport is the only thing faked.** The two-org half seeds both
+> organizations through **migration 179's `provision_organization`** (slice 3 — the way
+> the product creates them, not a hand-written INSERT that could disagree), gives each a
+> key through the store's **own `put()`**, and asserts A reads A's and B reads B's while an
+> untenanted read returns `""` and an untenanted write raises. `key_store._execute` and
+> `model_config`'s `psycopg.connect` are redirected onto the test's connection; **the SQL
+> is the production module's, byte for byte**, so Postgres parses and plans the
+> `count(*) = 1` sub-select and the `(organization_id, provider)` conflict arbiter — the
+> class of thing slice 6 proved a fake cannot answer for. Rows live inside the test's
+> transaction and are rolled back.
+>
+> **The pinned pair is green and UNEDITED** (`test_mt0d_per_org_credentials.py` — 8
+> passed). ⚠️ Worth recording: that suite's `_FakeStore` intercepts the organization query
+> **by prefix**, so it is *blind* to the `slug = 'default'` softening — it stayed green
+> under that mutation. The tripwire is necessary and not sufficient, which is why this
+> round added the source-shape fence and the live two-org read.
+>
+> **Remaining for round 2+ (9 + 1):** `routes/integrations.py` (5 — `get_by_type` ×2,
+> `put` ×2, `delete` ×1; request-scoped and convertible exactly like `settings.py`, simply
+> a different subgraph and deliberately out of this round's scope) and the 4 + 1 H4 sites
+> above, which are blocked on the owner act, not on effort.
 
 **Slice 6 · The `ON CONFLICT (email)` repair. · ✅ BUILT 2026-08-19 — the prediction held,
 and it was WORSE than predicted.**
@@ -2639,7 +2768,8 @@ generated phases inside the fixture, so the build and its fences are unblocked t
 |---|---|
 | `test_every_organization_has_a_placement` | slice 3 — set-difference over the tenant plane, so a future provisioning path cannot skip the placement. ✅ **BUILT** in `tests/unit/test_org_provisioning.py` (not `test_tenant_placement.py`, which is hermetic by design and has no ladder harness) |
 | `test_a_freshly_provisioned_org_has_the_five_system_roles_and_an_owner` | slices 1+2. ⚠️ Assert the **set** of role slugs, not a count: 130 seeds **six** rows — the five assignable roles plus `agent_service`. ✅ **BUILT**, name kept verbatim, set asserted |
-| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved. ✅ Still green and still unedited after slices 1+2+3 (8 passed) |
+| `tests/unit/test_mt0d_per_org_credentials.py:163` + `:176` | slice 5's standing tripwire — green **unedited**, or the fail-closed contract moved. ✅ Still green and still unedited after slices 1+2+3 and slice 5 round 1 (8 passed). ⚠️ **Necessary, not sufficient**: its `_FakeStore` matches the organization query by PREFIX, so it stays green when `count(*) = 1` is replaced by a `slug = 'default'` fallback (measured 2026-08-19). Slice 5 round 1 added `TestTheFailClosedContractIsNotRepaired` (source shape, both copies) and a live two-org read that seeds the operator's key, which do catch it |
+| `tests/unit/test_credential_tenant_threading.py` | slice 5's completion ratchet — the untenanted **call** counts (parsed, not grepped) only go DOWN, converted files pin at zero, H4 leftovers pin at their EXACT count, and the spec's two greps stay as ceilings. ✅ **BUILT** round 1, 22 tests / 0 skips, banked **11 + 10 → 9 + 1** |
 | a grep-ratchet on `WHERE slug = 'default'` under `infra/postgres/` | slice 1 — allow-list-with-a-reason, same discipline as `_SYNC_ENGINE_ALLOWED`. Baseline measured 2026-08-19: **29 lines across 8 ladder files** (`grep -rn "slug = 'default'" infra/postgres --include=*.sql \| grep -v /generated/`), of which 130/131/133/178 are the four this ticket retires. ⚠️ The ratchet's own regex must be whitespace-proof: `slug\s*=\s*'default'` (the spaced literal above is the measuring command, not the fence — a `slug='default'` evades it; 2 such hits exist today, both in 161's comments). ⚠️ Scope the ratchet to the **ladder**: `generated/02_backfill.sql` carries **140** more by construction (one per scoped table) and is regenerated, not edited. ✅ **BUILT** as `TestTheDefaultSlugRatchet`, pinned at **31** — the whitespace-proof count, which is 29 + 161's two unspaced comment hits. Ratchets both ways: `test_the_baseline_is_not_stale` forces the number DOWN in the same commit as any retirement. ⚠️ **The four seeds were NOT retired** (R6: shipped migrations are history), so the baseline does not fall on this branch — it must simply never rise |
 
 **Rule exposure.** **R1** — the migration number is taken at build time (the ladder topped
