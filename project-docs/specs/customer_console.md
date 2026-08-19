@@ -48,7 +48,7 @@ at the route (`MissingState`/`InvalidGstin` 400s) and threaded to the Console
 org row; the Console-provision client added to `acb_auth.console_resolve` (the
 ONE Console httpx client) and `test_console_dependency_boundary.py`'s allow-list
 grown from ONE importer to EXACTLY TWO (`signin.py` + `signup.py`). Zero
-migrations, zero new engine sites; **28 route tests / 86 in the verify set, 0
+migrations, zero new engine sites; **30 route tests / 88 in the verify set, 0
 skipped on both ladders**; every auth/tenancy clause mutation-proved (drop the
 flag → `SignupDisabled` red; trust a body email → the R11 400 red; map the wrong
 exception → the code red; skip `org_owner_of` + uncaught step-1 raise → the
@@ -4126,9 +4126,23 @@ mutation testing on auth/tenancy clauses)*:
    PLANE level — the idempotence of BOTH provision operations on the slug, which
    is exactly what "idempotent-on-slug" names — rather than by replaying the full
    route. The org works dark meanwhile (the tenant `app_user` admits sign-in
-   while the resolve flag is OFF). ⚠️ This is CP-2c's flow-level test; CP-2a's
-   own per-step `provisioning_run` kill test stays OWED under CP-2a and is not
-   absorbed silently.
+   while the resolve flag is OFF). ⚠️ **NAMED KNOWN GAP (verify finding,
+   2026-08-20), because "works dark meanwhile" is not "converges":** a transient
+   Console failure DURING signup leaves the org live on the **tenant** plane but
+   **never mirrored to the Console** — a literal route resubmit short-circuits to
+   `AlreadyMember` at step 0a, so nothing in slice 2 re-drives step 2. The org is
+   un-metered / absent from the billing registry until reconciled, and **no
+   reconciliation path exists in this slice.** It cannot bite until BOTH the
+   Console is deployed (D47, owner-gated, not done) AND signup is flipped on AND a
+   Console failure races the tenant commit — so it ships dark, but it is a real
+   window, not a non-issue. Its closer is **CP-2e (the signup Console-mirror
+   reconciler)**, minted on the board as a small follow-up: a path that, for a
+   tenant org whose Console mirror is missing, re-drives `/orgs/provision`
+   (idempotent-on-slug) — either a retry that does NOT short-circuit when the
+   Console lacks the org, or an out-of-band sweep. NOT built here; named so the
+   dark-ship is honest rather than silent. ⚠️ This is CP-2c's flow-level test;
+   CP-2a's own per-step `provisioning_run` kill test stays OWED under CP-2a and is
+   not absorbed silently.
 6. ✅ **MET — slice 1, 2026-08-19.** A `{resolve}`-only deployment key calling
    provision is refused and the refusal is logged; a `{resolve, provision}` key
    provisions. Fence: Console
