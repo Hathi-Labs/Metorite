@@ -4,7 +4,9 @@
 `work_plan.md` §3): managed Postgres in Mumbai **plus** Supabase Auth as the
 authenticator, consumed as one provider inside NextAuth rather than replacing
 it. §3's disqualification of Firebase and §4's reasoning stand as the record of
-why. **Items 1, 2 and 3 of §5 are answered; items 4 and 5 remain open.** ·
+why. **Items 1, 2 and 3 of §5 are answered; item 4 was answered 2026-08-19
+(D47 — the SERVICE runs on the production VPS for now, overruling this
+document's own default; see §5) and item 5 remains open (H-14).** ·
 **Date:** 2026-08-12 · **Owner:** vjvarada (this is an owner call) ·
 **Companion:** `customer_console.md` (WS-31 — what runs), this document
 (**where** it runs) · **Blocks:** nothing. CP-1 is built and tested against
@@ -125,6 +127,19 @@ re-authenticate.
 3. **Region**, confirming India for R-f.
 4. **Whether the Customer Console gets its own environment** separate from tenant
    deployments (§R-e). My answer is yes; it is worth ten minutes to disagree.
+   ✅ **ANSWERED 2026-08-19 — the owner took the ten minutes and disagreed, for
+   now (D47, `work_plan.md` §3):** the Console SERVICE runs on the production
+   VPS as its **own systemd unit with its own env file**; the data plane stays
+   the Supabase Console project, so §R-e's single-point-of-failure cost is
+   bounded (a box loss loses no Console data) and CP-2b's fail-soft cache
+   covers sign-in through a Console outage ≤24h. Public surface is the
+   Razorpay webhook path ONLY — gateway/BFF calls go to `127.0.0.1`. Named
+   move trigger: **the day a second deployment exists**, the service leaves
+   the box (relocation = re-point `CUSTOMER_CONSOLE_URL`; data unmoved).
+   Named obligation on the way in: the deploy pipeline must gain the
+   `infra/customer_console/` ladder-apply step — the board's "on the box but
+   inert" gap. Deploying it remains 🔴 OWNER-GATE (§7 / `customer_console.md`
+   §8 gate 2).
 5. **Razorpay account and GST registration status** — both are prerequisites for
    CP-8 and neither is an engineering task. 🔴 OWNER-GATE.
 
