@@ -32,6 +32,8 @@ __all__ = [
     "count_redemptions",
     "create_order",
     "credit_deltas",
+    "current_placement",
+    "deployment_by_label",
     "deployment_visible_orgs",
     "detach_provider",
     "ensure_identity",
@@ -47,6 +49,7 @@ __all__ = [
     "order_lines",
     "order_row",
     "orders_page",
+    "place_organization",
     "plan_price",
     "priced_plan",
     "record_payment_event",
@@ -570,6 +573,84 @@ def resolve_deployment_key(
         {"prefix": prefix},
     ).first()
     return (str(row[0]), row[1], list(row[2])) if row else None
+
+
+# ── Placement (WS-29 MT-1j slice 4 · D46.6) ─────────────────────────────────
+#
+# The three statements provisioning needs to put an organization on a box. They
+# are separate rather than one "upsert the placement" helper because the
+# decision between them is a REFUSAL, and a helper that both moved and refused
+# would put that decision at every call site.
+
+def deployment_by_label(conn: Connection, *, label: str) -> str | None:
+    """The deployment carrying this ``label``, or ``None``.
+
+    ``deployment.label`` is ``UNIQUE`` (``001_customer_console.sql:84``), which
+    is what lets provisioning take a NAME from an operator instead of a UUID —
+    and what makes "which box" something a human can say out loud during an
+    incident.
+
+    ⚠️ **There is no ``count(*) = 1`` fallback and there must never be one.**
+    Inferring the deployment from "there is only one" would be a fourth copy of
+    the sole-organization guess MT-1j exists to retire (``key_store.py:114-139``
+    · ``model_config.py:40-48`` · ``acb_common/placement.py:46-50``), and it
+    would silently mis-place every organization the day a second box exists.
+    Forbidden by name — ``saas_multitenancy.md`` §11 MT-1j slice 4, D46.6
+    adjudication item 3. ``None`` here is the caller's 404.
+    """
+    row = conn.execute(
+        text("SELECT id FROM deployment WHERE label = :label"),
+        {"label": label},
+    ).first()
+    return str(row[0]) if row else None
+
+
+def current_placement(conn: Connection, *, org_id: str) -> str | None:
+    """The deployment this organization is placed on now, or ``None``.
+
+    Read *before* the write, because :func:`place_organization` conflicts to
+    ``DO NOTHING``: without this read, re-provisioning under a different label
+    would answer 200 while leaving the organization exactly where it was — the
+    caller believing a move happened is worse than the refusal.
+    """
+    row = conn.execute(
+        text(
+            "SELECT deployment_id FROM org_placement "
+            "WHERE organization_id = :org"
+        ),
+        {"org": org_id},
+    ).first()
+    return str(row[0]) if row else None
+
+
+def place_organization(
+    conn: Connection, *, org_id: str, deployment_id: str
+) -> None:
+    """Place an organization on a deployment. **Never moves one.**
+
+    ``ON CONFLICT (organization_id) DO NOTHING``: a re-run is a no-op and
+    ``moved_at`` is untouched, because a MOVE is a separate operator act with
+    its own semantics (the fixture at ``test_customer_console_resolve.py:249``
+    sketches them) owned by a future placement ticket — D46.6 adjudication item
+    4. This function refuses nothing and moves nothing; deciding whether the
+    row that is already there is the *right* one is :func:`current_placement`'s
+    answer and the caller's decision.
+
+    ``database_target`` is deliberately absent from the column list, so it
+    lands NULL: day one every row resolves to the same target and the
+    INDIRECTION is the point (``001_customer_console.sql:99-104``). A value
+    arrives when a real need names one — stated, not forgotten.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO org_placement (organization_id, deployment_id)
+            VALUES (:org, :dep)
+            ON CONFLICT (organization_id) DO NOTHING
+            """
+        ),
+        {"org": org_id, "dep": deployment_id},
+    )
 
 
 def deployment_visible_orgs(

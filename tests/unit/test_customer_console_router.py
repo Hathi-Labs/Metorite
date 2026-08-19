@@ -24,7 +24,11 @@ from fastapi.testclient import TestClient
 from customer_console import router as router_mod
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import (  # noqa: E402
+    DEFAULT_DEPLOYMENT_LABEL,
+    apply_ladder,
+    ensure_deployment,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -96,13 +100,27 @@ def db():
     return create_engine(_URL, future=True)
 
 
+@pytest.fixture(autouse=True)
+def _box():
+    """The deployment every org here is provisioned onto (MT-1j slice 4).
+
+    Autouse and per-test: this suite's subject is rating and metering, not
+    placement, and a sibling fence deliberately empties the table.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        ensure_deployment(conn)
+    eng.dispose()
+
+
 @pytest.fixture
 def org_key(client, db, monkeypatch):
     """A provisioned org, a live key, and a platform DeepSeek credential."""
     monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
     slug = f"router-{uuid.uuid4().hex[:8]}"
     client.post("/orgs/provision", headers=OP, json={
-        "slug": slug, "name": "N", "owner_email": f"o@{slug}.com"})
+        "slug": slug, "name": "N", "owner_email": f"o@{slug}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
     token = client.post("/keys", headers=OP, json={"org_slug": slug}).json()["token"]
 
     with db.begin() as c:
@@ -451,7 +469,9 @@ class TestProviderCredentials:
         slug = f"byok-{uuid.uuid4().hex[:8]}"
         org_id = client.post("/orgs/provision", headers=OP, json={
             "slug": slug, "name": "N",
-            "owner_email": f"o@{slug}.com"}).json()["organization_id"]
+            "owner_email": f"o@{slug}.com",
+            "deployment_label": DEFAULT_DEPLOYMENT_LABEL,
+        }).json()["organization_id"]
 
         with db.connect() as c:
             tx = c.begin()

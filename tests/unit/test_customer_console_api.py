@@ -18,7 +18,11 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 
-from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import (  # noqa: E402
+    DEFAULT_DEPLOYMENT_LABEL,
+    apply_ladder,
+    ensure_deployment,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -52,11 +56,28 @@ def client(monkeypatch):
 
 
 @pytest.fixture
-def org(client):
+def deployment():
+    """The box every organization here is provisioned onto.
+
+    ``deployment_label`` is REQUIRED since WS-29 MT-1j slice 4 and resolves
+    against a real row — the operator names the box and nothing infers it. This
+    suite's subject is seats and metering, not placement, so one shared row is
+    enough; it is ensured per test because a sibling fence empties the table.
+    """
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        ensure_deployment(conn)
+    eng.dispose()
+    return DEFAULT_DEPLOYMENT_LABEL
+
+
+@pytest.fixture
+def org(client, deployment):
     slug = f"org-{uuid.uuid4().hex[:8]}"
     r = client.post("/orgs/provision", headers=AUTH, json={
         "slug": slug, "name": "Acme Pumps", "owner_email": f"owner@{slug}.com",
         "gstin": "29ABCDE1234F1Z5", "billing_state": "KA", "core_seats": 2,
+        "deployment_label": deployment,
     })
     assert r.status_code == 200, r.text
     return slug
@@ -88,10 +109,12 @@ class TestTheDoor:
 
 
 class TestProvisioning:
-    def test_provisioning_twice_yields_one_org_and_one_grant(self, client):
+    def test_provisioning_twice_yields_one_org_and_one_grant(
+        self, client, deployment
+    ):
         slug = f"idem-{uuid.uuid4().hex[:8]}"
         body = {"slug": slug, "name": "N", "owner_email": "o@n.com",
-                "core_seats": 5}
+                "core_seats": 5, "deployment_label": deployment}
 
         first = client.post("/orgs/provision", headers=AUTH, json=body).json()
         second = client.post("/orgs/provision", headers=AUTH, json=body).json()
@@ -172,7 +195,9 @@ class TestCreditsOverHttp:
             "org_slug": org, "credits": "1000"})
         assert Decimal(r.json()["balance"]) == Decimal("1000")
 
-    def test_usage_draws_down_and_a_replay_does_not(self, client, org):
+    def test_usage_draws_down_and_a_replay_does_not(
+        self, client, org, deployment
+    ):
         client.post("/credits/grant", headers=AUTH,
                     json={"org_slug": org, "credits": "100"})
 
@@ -182,7 +207,8 @@ class TestCreditsOverHttp:
         # negative-value rejection are pinned in test_customer_console_key_auth.py.
         org_id = client.post("/orgs/provision", headers=AUTH, json={
             "slug": org, "name": "Acme Pumps",
-            "owner_email": f"owner@{org}.com"}).json()["organization_id"]
+            "owner_email": f"owner@{org}.com",
+            "deployment_label": deployment}).json()["organization_id"]
 
         rid = f"req-{uuid.uuid4().hex}"
         body = {"organization_id": org_id, "request_id": rid,

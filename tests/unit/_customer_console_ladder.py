@@ -1,4 +1,5 @@
-"""The Customer Console migration ladder — discovered, never transcribed.
+"""The Customer Console migration ladder — discovered, never transcribed —
+plus the ONE seed row every suite that provisions now needs.
 
 Every R8 suite that talks to the Customer Console database has to build the schema
 first, and each one used to carry its own hand-written tuple of
@@ -25,6 +26,14 @@ Sorting is on the leading integer, not on the string: ``010`` sorts before
 ``002`` lexically the moment the ladder reaches double digits, and a migration
 ladder applied out of order fails in ways that look like a schema bug rather
 than an ordering one.
+
+⚠️ **:func:`ensure_deployment` lives here for the same reason the ladder
+does.** Since WS-29 MT-1j slice 4 ``POST /orgs/provision`` requires a
+``deployment_label`` that resolves to a real ``deployment`` row, and the ladder
+seeds none — so every Console R8 suite that provisions needs one. Six copies of
+that INSERT is precisely the shape this module exists to prevent, and the
+alternative (a helper in whichever suite happened to need it first) would make
+five suites import a sixth.
 """
 from __future__ import annotations
 
@@ -71,6 +80,47 @@ def ladder() -> tuple[str, ...]:
         )
 
     return tuple(path for _, path in sorted(found))
+
+
+#: The deployment a Console R8 suite provisions onto when the box is not the
+#: subject of the test. Suites whose subject IS placement (``test_customer_
+#: console_resolve.py``) mint their own uniquely-labelled rows instead.
+DEFAULT_DEPLOYMENT_LABEL = "test-box"
+
+
+def ensure_deployment(
+    conn,
+    *,
+    label: str = DEFAULT_DEPLOYMENT_LABEL,
+    base_url: str = "https://box.invalid",
+) -> str:
+    """Ensure one ``deployment`` row with *label* exists; return its id.
+
+    ``DO UPDATE`` rather than ``DO NOTHING`` so the statement always RETURNS —
+    ``DO NOTHING`` returns no row on conflict, and a helper that returned
+    ``None`` on the second call would be an idempotent helper that is not.
+    (``store.ensure_organization`` makes the same argument for the same
+    reason.)
+
+    Called per TEST rather than per module on purpose: one fence deliberately
+    empties this table to construct the sole-deployment world adjudication item
+    3 forbids inferring from, and a module-scoped row would not come back.
+    """
+    from sqlalchemy import text
+
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO deployment (label, base_url)
+            VALUES (:label, :base_url)
+            ON CONFLICT (label) DO UPDATE SET base_url = EXCLUDED.base_url
+            RETURNING id
+            """
+        ),
+        {"label": label, "base_url": base_url},
+    ).first()
+    assert row is not None  # guaranteed by DO UPDATE
+    return str(row[0])
 
 
 def apply_ladder(conn) -> None:

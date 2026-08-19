@@ -120,6 +120,19 @@ app = FastAPI(
 class ProvisionRequest(BaseModel):
     slug: str
     name: str
+    #: Which deployment this organization is placed on. **Required, and named
+    #: by the operator** (WS-29 MT-1j slice 4, D46.6 adjudication item 1): the
+    #: `Operator` credential is cross-org by design and carries no deployment
+    #: identity of its own, so the box has to be said out loud. It resolves
+    #: against `deployment.label` (`001_customer_console.sql:82-94`, UNIQUE) —
+    #: a name rather than a UUID, because an operator can say a name.
+    #:
+    #: ⚠️ **Required is the whole point.** A missing field is a 422 even when
+    #: exactly one deployment exists; inferring the sole deployment is
+    #: forbidden by name (adjudication item 3) and fenced in
+    #: `test_customer_console_lifecycle.py`. The DEPLOYMENT-KEY arm, where the
+    #: key names itself, is CP-2c's and stays behind §6 gate (f)/(h).
+    deployment_label: str
     #: Captured at SIGNUP, not at first invoice (saas_operations_doctrine.md
     #: §3.1) — chasing a GSTIN after invoices have gone out is a customer
     #: conversation, not a migration.
@@ -589,12 +602,64 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
     key is what a retrying signup form actually resends. Provisioning is a
     multi-step action that WILL fail halfway; re-running it must converge on one
     organization rather than produce a second (§2.1).
+
+    **It also PLACES the organization** (WS-29 MT-1j slice 4). Until 2026-08-19
+    nothing in the tree wrote ``org_placement``, and ``store.
+    deployment_visible_orgs`` inner-joins it — so an organization created here
+    could never be resolved by any deployment key, forever, failing closed in a
+    way that reads as "the Console is down". The deployment is named by the
+    operator in ``deployment_label`` and never inferred.
+
+    Two refusals, and they are different questions:
+
+    * **404** — no deployment carries that label. Naming the label back is the
+      operator idiom :func:`_org_id` already ships: this credential is
+      cross-org by design, so telling it what it asked about is not an
+      existence oracle (``customer_console.md`` CP-9 clause 7 — "the contrast,
+      not the precedent").
+    * **409** — the organization is already placed on a *different*
+      deployment. Provisioning never MOVES a placement (D46.6 item 4); a move
+      is a separate operator act with its own semantics and its own ticket.
+
+    Re-running with the SAME label is a no-op on the placement row —
+    ``moved_at`` is untouched — exactly like every other step here.
     """
     with get_engine().begin() as conn:
+        # Resolved FIRST, before anything is written: an unknown label is a
+        # refusal, and a refusal discovered after five inserts is a rollback
+        # whose reason nobody can read in the log.
+        deployment_id = store.deployment_by_label(
+            conn, label=req.deployment_label
+        )
+        if deployment_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no deployment {req.deployment_label!r}",
+            )
+
         org_id = store.ensure_organization(
             conn, slug=req.slug, name=req.name,
             gstin=req.gstin, billing_state=req.billing_state,
         )
+
+        # Placement lands before seats and membership: where an organization
+        # lives is the most fundamental fact about it, and an org that has
+        # seats but no placement is the shape this slice exists to remove.
+        placed_on = store.current_placement(conn, org_id=org_id)
+        if placed_on is not None and placed_on != deployment_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{req.slug!r} is already placed on another deployment; "
+                    f"provisioning never moves a placement — moving it to "
+                    f"{req.deployment_label!r} is a separate operator act "
+                    f"(saas_multitenancy.md §11 MT-1j slice 4)"
+                ),
+            )
+        store.place_organization(
+            conn, org_id=org_id, deployment_id=deployment_id
+        )
+
         identity_id = store.ensure_identity(conn, email=req.owner_email)
 
         # Only grant on FIRST provision — a retry must not keep buying seats.
@@ -648,7 +713,8 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
                 INSERT INTO provisioning_run
                     (idempotency_key, organization_id, steps_done, status)
                 VALUES (:key, :org,
-                        ARRAY['org','identity','seats','membership','subscription'],
+                        ARRAY['org','placement','identity','seats',
+                              'membership','subscription'],
                         'complete')
                 ON CONFLICT (idempotency_key) DO UPDATE
                     SET organization_id = EXCLUDED.organization_id,
@@ -659,7 +725,8 @@ def provision(req: ProvisionRequest, _: Operator) -> dict[str, Any]:
             ),
             {"key": f"provision:{req.slug}", "org": org_id},
         )
-        _audit(conn, org_id, "org.provision", {"slug": req.slug})
+        _audit(conn, org_id, "org.provision",
+               {"slug": req.slug, "deployment": req.deployment_label})
 
     return {"organization_id": org_id, "slug": req.slug}
 
