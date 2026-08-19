@@ -2216,10 +2216,14 @@ org.
    ✅ **BUILT 2026-08-19** — `provision_organization(slug, …)`.
 4. Wire the Console↔tenant seam so a provisioned org **resolves** — including the
    Console-side half: `POST /orgs/provision` never writes `org_placement`.
-   ✅ **OPERATOR ARM BUILT 2026-08-19** — required `deployment_label`, the
-   placement write and its two refusals, and the tenant seam function
-   `provision_local_organization`. The **deployment-key arm is CP-2c's** and
-   stays behind §6 (f)/(h), by the same adjudication (D46.6 item 2).
+   ✅ **OPERATOR ARM BUILT 2026-08-19** — `deployment_label` (required at the
+   model as slice 4 shipped it; `str | None` since CP-2c slice 1, required in
+   the handler for this arm), the placement write and its two refusals, and the
+   tenant seam function `provision_local_organization`. The **deployment-key arm
+   shipped in CP-2c slice 1 (2026-08-19)** — the model/handler split, the
+   `provision` capability, and its create-only refusal; **issuing or widening a
+   real key stays behind §6 (f)/(h)** (D46.6 item 2, that gate unchanged — only
+   the code arm is built).
 5. Thread the tenant through the `key_store` / `model_config` call sites so a second
    org's credentials resolve — **without** weakening any fail-closed contract.
    ◐ **RATCHET ROUNDS 1 + 2 landed 2026-08-19** — round 1 the ratchet itself plus the

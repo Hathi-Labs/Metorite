@@ -392,10 +392,12 @@ class TestRejection:
         assert client.post("/usage/record",
                            headers={"Authorization": f"Bearer {key}"},
                            json=usage).status_code == 401
-        # The body is COMPLETE and valid — including slice 4's required
-        # `deployment_label` — so 401 can only be about the credential. A body
-        # the model would reject anyway would let a 422 masquerade as this
-        # refusal the day the door stopped shutting.
+        # The body is COMPLETE and valid — including a `deployment_label`, the
+        # operator arm's field (required only there since CP-2c slice 1 made it
+        # `str | None`) — so it is a well-formed operator-shaped request and the
+        # 401 can only be about the credential. A body the model would reject
+        # anyway would let a 422 masquerade as this refusal the day the door
+        # stopped shutting.
         assert client.post("/orgs/provision",
                            headers={"Authorization": f"Bearer {key}"},
                            json={"slug": "x", "name": "x",

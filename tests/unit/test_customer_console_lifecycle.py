@@ -202,6 +202,59 @@ def _orgs(db, slug: str) -> int:
         ).scalar_one()
 
 
+def _members(db, slug: str) -> list[tuple[str, str]]:
+    with db.begin() as c:
+        return sorted(
+            (r[0], r[1])
+            for r in c.execute(
+                text(
+                    "SELECT i.email, m.role FROM org_membership m "
+                    "  JOIN organization o ON o.id = m.organization_id "
+                    "  JOIN user_identity i ON i.id = m.user_identity_id "
+                    " WHERE o.slug = :s"
+                ),
+                {"s": slug},
+            ).all()
+        )
+
+
+def _owner_emails(db, slug: str) -> list[str]:
+    return sorted(e for e, role in _members(db, slug) if role == "owner")
+
+
+def _live_seat_emails(db, slug: str) -> list[str]:
+    with db.begin() as c:
+        return sorted(
+            r[0]
+            for r in c.execute(
+                text(
+                    "SELECT i.email FROM seat_assignment a "
+                    "  JOIN organization o ON o.id = a.organization_id "
+                    "  JOIN user_identity i ON i.id = a.user_identity_id "
+                    " WHERE o.slug = :s AND a.released_at IS NULL"
+                ),
+                {"s": slug},
+            ).all()
+        )
+
+
+def _provision_audit(db, slug: str) -> list[tuple[str, str]]:
+    """Every ``org.provision`` audit row for *slug*, as ``(actor, detail)``."""
+    with db.begin() as c:
+        return [
+            (r[0], r[1])
+            for r in c.execute(
+                text(
+                    "SELECT a.actor, a.detail::text FROM control_audit a "
+                    "  JOIN organization o ON o.id = a.organization_id "
+                    " WHERE o.slug = :s AND a.action = 'org.provision' "
+                    " ORDER BY a.created_at, a.detail::text"
+                ),
+                {"s": slug},
+            ).all()
+        ]
+
+
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -625,6 +678,149 @@ class TestTheDeploymentKeyProvisionArm:
         assert r.status_code == 409, r.text
         assert _placement(db, slug) == before
         assert _placement_rows(db, slug) == 1
+
+    def test_a_wide_key_cannot_join_an_org_owned_by_someone_else(
+        self, client, db, keyed_box
+    ):
+        """P0 — the deployment-key arm CREATES an org, it never JOINS one.
+
+        The org is born through the OPERATOR arm on the KEY's OWN box, owned by
+        X, so the placement 409 cannot fire (it is placed exactly where the key
+        would place it). The only thing then standing between a ``provision``
+        key and co-ownership of a stranger's organization is the ownership
+        guard. In slice 2 that slug is user-supplied from an UNAUTHENTICATED
+        signup form, so R11 puts the refusal at the CONSOLE door: a key posting
+        a DIFFERENT ``owner_email`` for an already-owned slug is refused and
+        writes **nothing** — no membership, no seat, no placement change, and no
+        audit row that would make a hijack indistinguishable from a real create.
+
+        Red-first before the ownership guard: the arm inherited slice 4's
+        idempotent-on-slug re-provision wholesale and answered **200**, writing
+        Y an ``owner``/``active`` membership and a Core seat in X's org.
+        """
+        slug = f"owned-{uuid.uuid4().hex[:8]}"
+        x = f"real-owner-{uuid.uuid4().hex[:8]}@x.com"
+        y = f"mallory-{uuid.uuid4().hex[:8]}@evil.example"
+        assert _provision(client, slug, keyed_box["label"],
+                          owner_email=x).status_code == 200
+        before_members = _members(db, slug)
+        before_audit = _provision_audit(db, slug)
+
+        r = _provision_as(client, keyed_box["wide"], slug=slug, owner_email=y)
+
+        assert r.status_code == 409, r.text
+        # X is still the sole owner; Y joined nothing and holds no seat.
+        assert _owner_emails(db, slug) == [x]
+        assert _members(db, slug) == before_members
+        assert y not in _live_seat_emails(db, slug)
+        # The refused attempt wrote no audit row — a hijack must never read as a
+        # create in the trail, which is why the guard refuses BEFORE the write.
+        assert _provision_audit(db, slug) == before_audit
+        assert all(actor == "operator"
+                   for actor, _ in _provision_audit(db, slug))
+
+    def test_a_wide_key_may_re_affirm_the_same_owner_idempotently(
+        self, client, db, keyed_box
+    ):
+        """The CP-2c cross-plane retry the natural-key doctrine needs.
+
+        Same slug, same ``owner_email``, under the key arm: a no-op **200**,
+        never a second membership and never a second owner. This is the case
+        the ownership guard must let THROUGH — refusing it would break the retry
+        a signup form makes when the first response was lost across the plane.
+        """
+        slug = f"reaffirm-{uuid.uuid4().hex[:8]}"
+        x = f"owner-{uuid.uuid4().hex[:8]}@x.com"
+        assert _provision(client, slug, keyed_box["label"],
+                          owner_email=x).status_code == 200
+        before = _members(db, slug)
+
+        r = _provision_as(client, keyed_box["wide"], slug=slug, owner_email=x)
+
+        assert r.status_code == 200, r.text
+        assert _members(db, slug) == before
+        assert _owner_emails(db, slug) == [x]
+        assert _orgs(db, slug) == 1
+
+    def test_a_wide_key_completes_an_org_left_ownerless_by_a_crash(
+        self, client, db, keyed_box
+    ):
+        """The crash-after-org-before-membership resume case.
+
+        Provisioning is multi-step and WILL fail halfway; an ``organization``
+        row with no owner membership yet is the shape a crash between
+        ``ensure_organization`` and the membership insert leaves behind. That
+        org must be COMPLETABLE by the same owner_email, not frozen out — the
+        guard keys on "already owned by someone ELSE", so no owner is not a
+        conflict, and the same key that started the run may finish it.
+        """
+        slug = f"resume-{uuid.uuid4().hex[:8]}"
+        x = f"owner-{uuid.uuid4().hex[:8]}@x.com"
+        # Simulate the crash: the organization exists, and nothing else does —
+        # no membership, no placement, no seats.
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO organization (slug, name) VALUES (:s, :n)"),
+                {"s": slug, "n": "Half-Provisioned"},
+            )
+        assert _owner_emails(db, slug) == []
+
+        r = _provision_as(client, keyed_box["wide"], slug=slug, owner_email=x)
+
+        assert r.status_code == 200, r.text
+        assert _owner_emails(db, slug) == [x]
+        row = _placement(db, slug)
+        assert row is not None and row["label"] == keyed_box["label"]
+        assert _orgs(db, slug) == 1
+
+    def test_the_slug_unavailable_refusal_reveals_nothing_distinguishing(
+        self, client, db, keyed_box, box
+    ):
+        """P1 — the key arm's "slug unavailable" is ONE shape for three causes.
+
+        A per-box ``provision`` key posting an arbitrary slug must not be able
+        to tell "taken on my box, owned by someone else" from "taken on another
+        box" from "free" beyond the bare fact *slug-taken: yes/no*. The old
+        409-vs-200 split was an existence oracle over the GLOBAL slug namespace,
+        contradicting ``customer_console.md`` §5's *"never the existence of an
+        organization this deployment does not serve"*: both refusals collapse to
+        one body that names no placement, no owner, no deployment id and no
+        label.
+
+        Agent-proposed default (D16/D17 class) — recorded for owner ratification
+        in the slice-1 build box. The residual (slug availability stays
+        observable at any signup-provision door, because global-unique-slug is a
+        hard constraint a form must report) is flagged there, not closed here.
+
+        Red-first: before the collapse, case (1) answered **200** (a silent
+        hijack) and case (2) answered **409 naming the deployment** — different
+        bytes for two causes, which is the oracle.
+        """
+        # (1) slug taken on THIS box, owned by someone else.
+        owned = f"owned-{uuid.uuid4().hex[:8]}"
+        assert _provision(client, owned, keyed_box["label"],
+                          owner_email=f"x-{owned}@x.com").status_code == 200
+        here = _provision_as(client, keyed_box["wide"], slug=owned,
+                             owner_email="attacker@evil.example")
+        # (2) slug taken on a DIFFERENT box.
+        elsewhere = f"elsewhere-{uuid.uuid4().hex[:8]}"
+        assert _provision(client, elsewhere, box,
+                          owner_email=f"x-{elsewhere}@x.com").status_code == 200
+        there = _provision_as(client, keyed_box["wide"], slug=elsewhere,
+                              owner_email="attacker@evil.example")
+
+        assert here.status_code == there.status_code == 409, (here.text,
+                                                              there.text)
+        # Byte-identical refusal — the two causes are indistinguishable.
+        assert here.json() == there.json()
+        # And it names nothing an oracle could read back.
+        body = here.text
+        assert keyed_box["label"] not in body
+        assert box not in body
+        assert keyed_box["deployment_id"] not in body
+        assert "owner" not in body.lower()
+        assert "placed" not in body.lower()
+        assert "deployment" not in body.lower()
 
     def test_re_provisioning_on_the_same_key_leaves_the_row_untouched(
         self, client, db, keyed_box

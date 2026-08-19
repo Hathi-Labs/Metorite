@@ -672,6 +672,22 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
 
     Re-running against the SAME deployment is a no-op on the placement row —
     ``moved_at`` is untouched — exactly like every other step here.
+
+    **The deployment-key arm CREATES an org, it never JOINS one** (WS-31 CP-2c
+    slice 1 repair, R11). ``ensure_organization`` is idempotent on the slug, so
+    a slug that already exists returns the existing org — and the operator arm's
+    idempotent re-provision (cross-org staff, by design) is fine there. The
+    deployment-key arm is not: driven in slice 2 by a USER-supplied slug from an
+    unauthenticated signup form, an unchecked re-provision would write the
+    request's ``owner_email`` an ``owner`` membership and a seat in *someone
+    else's* org. So under the key, an existing org already owned by a DIFFERENT
+    identity is refused, and — with the placed-elsewhere case — collapses to one
+    **409 "slug unavailable"** that names nothing (no placement, no owner, no
+    deployment, no "taken here" vs "taken elsewhere"): the old 409/200 split was
+    a hijack AND an existence oracle over the global slug namespace. The
+    idempotent same-owner retry and the crash-before-membership resume (org with
+    NO owner yet) both still complete, because the guard keys on *owned by
+    someone else*, not on *exists*.
     """
     with get_engine().begin() as conn:
         # Resolved FIRST, before anything is written: a refusal discovered
@@ -726,24 +742,61 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
         # lives is the most fundamental fact about it, and an org that has
         # seats but no placement is the shape this slice exists to remove.
         placed_on = store.current_placement(conn, org_id=org_id)
-        if placed_on is not None and placed_on != deployment_id:
-            # The target is named back in whichever vocabulary the caller used
-            # — the operator's own label, or the key's own deployment id. A
-            # deployment key learns nothing from being told its own id, so
-            # this is not the existence oracle clause 5 removes elsewhere.
-            target = (
-                repr(req.deployment_label) if caller is None
-                else f"deployment {deployment_id}"
-            )
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"{req.slug!r} is already placed on another deployment; "
-                    f"provisioning never moves a placement — moving it to "
-                    f"{target} is a separate operator act "
-                    f"(saas_multitenancy.md §11 MT-1j slice 4)"
-                ),
-            )
+        placed_elsewhere = placed_on is not None and placed_on != deployment_id
+
+        if caller is None:
+            # ── Operator arm — UNCHANGED from slice 4. ──────────────────────
+            # Cross-org staff BY DESIGN, so it names the target back in the
+            # operator's own vocabulary. Provisioning never MOVES a placement;
+            # a move is a separate operator act with its own ticket (D46.6
+            # item 4). The operator is a human who might otherwise believe a
+            # 200 moved a customer, so the refusal is explicit and legible.
+            if placed_elsewhere:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{req.slug!r} is already placed on another "
+                        f"deployment; provisioning never moves a placement — "
+                        f"moving it to {req.deployment_label!r} is a separate "
+                        f"operator act (saas_multitenancy.md §11 MT-1j "
+                        f"slice 4)"
+                    ),
+                )
+        else:
+            # ── Deployment-key arm — it CREATES an org, it never JOINS one. ──
+            # Two causes, ONE refusal that reveals NOTHING an oracle could read:
+            #   * the slug is placed on ANOTHER box (never move — inherited); or
+            #   * the slug already has an owner who is not this request's
+            #     `owner_email` (R11 — a per-box `provision` key is driven in
+            #     slice 2 by a USER-supplied slug from an unauthenticated signup
+            #     form, so making its caller a co-owner of a stranger's org must
+            #     be refused at THIS door, not the gateway).
+            # Both collapse to a bare 409 "slug unavailable": no placement, no
+            # owner, no deployment id, no label, no distinction between "taken
+            # here" / "taken elsewhere" / "owned by someone else". The old split
+            # (409 naming the box when placed elsewhere, a 200 that JOINED
+            # otherwise) was BOTH a hijack and an existence oracle over the
+            # GLOBAL slug namespace — the exact thing `customer_console.md` §5
+            # forbids ("never the existence of an organization this deployment
+            # does not serve"). Refused BEFORE any write (placement, membership,
+            # seat, audit), so the transaction rolls back having committed
+            # nothing.
+            #
+            # ⚠️ Agent-proposed default (D16/D17 class), recorded for owner
+            # ratification in `customer_console.md` CP-2c slice 1. Residual,
+            # flagged honestly there: slug AVAILABILITY stays observable at any
+            # signup-provision door because global-unique-slug is a hard
+            # constraint a form must report — this narrows the oracle to "slug
+            # taken: yes/no" and removes the placement/ownership discrimination;
+            # the residual is inherent, not closed here. The no-owner-yet resume
+            # case (org created, crash before membership) is NOT a conflict, so
+            # the same `owner_email` may complete it.
+            if placed_elsewhere or store.org_owned_by_other(
+                conn, org_id=org_id, owner_email=req.owner_email
+            ):
+                raise HTTPException(
+                    status_code=409, detail="slug unavailable"
+                )
         store.place_organization(
             conn, org_id=org_id, deployment_id=deployment_id
         )
@@ -825,8 +878,16 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
         # is a name for it, and a name can be re-pointed at a different row —
         # with the operator's own word kept beside it, and the key's PREFIX
         # (never its secret) so the trail names WHICH credential acted.
+        # `owner_email` is recorded so the trail names WHO was made owner: a
+        # deployment-key create and a hijack attempt are the same act shape
+        # (`org.provision` under `actor="deployment"`), and only the owner
+        # written tells a real self-serve create from an attempt to co-own a
+        # stranger's org (the ownership guard above refuses the latter before it
+        # can be audited, but the field is what makes the legitimate writes
+        # legible — who owns what, by which credential).
         detail: dict[str, Any] = {
             "slug": req.slug,
+            "owner_email": req.owner_email,
             "deployment": req.deployment_label,
             "deployment_id": deployment_id,
         }

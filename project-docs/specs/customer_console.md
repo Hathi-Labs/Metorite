@@ -4143,6 +4143,43 @@ smaller and took two slices and 14 blockers)*:
    `{provision}`-only key is unspecified — it could create an org it can
    never resolve; harmless while issuance is gate 7's owner act, and the
    issuance surface ticket should refuse or warn on that set.
+
+   **Adversarial review (2026-08-19): one P0, one P1, one P2 — all repaired
+   before merge; the P0 was a live privilege-escalation the 409/0 suite and
+   the independent verify both missed.** **P0 — the deployment-key arm could
+   HIJACK an existing org.** It inherited slice 4's idempotent-on-slug
+   re-provision wholesale, so a `provision` key POSTing an *existing* slug with
+   a different `owner_email` was granted an `owner`/`active` membership and a
+   Core seat in a stranger's org — a 200 (reviewer measured it live). Repaired
+   at the CONSOLE door (R11 — the slug is user-supplied from an unauthenticated
+   signup form in slice 2, so the gateway cannot be trusted to guard it): the
+   deployment-key arm now **creates only, never joins** via new
+   `store.org_owned_by_other` (keys on ownership, `CITEXT`-safe) — an org owned
+   by a DIFFERENT identity is refused writing nothing; the same-owner retry and
+   the crash-before-membership resume (org with no owner yet) both still
+   complete. **P1 — the 409/200 split was an existence oracle** over the global
+   slug namespace (`§5`'s forbidden "existence of an organization this
+   deployment does not serve"). Repaired: the key arm's placed-elsewhere AND
+   owned-by-other cases collapse to ONE bare **`409 "slug unavailable"`** naming
+   no placement/owner/deployment. *(Agent-proposed default, D16/D17 — owner may
+   overrule. Residual flagged honestly: slug **availability** stays observable
+   at any signup-provision door because global-unique-slug is a hard constraint
+   a form must report; this narrows the oracle to "taken: yes/no" and removes
+   the placement/ownership discrimination.)* The operator arm's 404/409
+   (cross-org staff, by design) is **unchanged**. **P2** — the ninth stale
+   sentence (`saas_multitenancy.md` §11 slice-4 item 4 still called the arm
+   "CP-2c's and unbuilt") — swept. Noted repairs: two test docstrings that said
+   `deployment_label` is "REQUIRED" (true only under the operator arm now); and
+   `owner_email` added to the `org.provision` audit detail so a create is
+   legible in the trail (a hijack now cannot exist to be confused with one — it
+   is refused before any audit row — but the field names WHO owns what, by
+   which credential). **Repair verified:** 444 passed across the ten Console
+   suites + the two boundary fences (0 skipped, real PG 16, up from 409 — four
+   new red-first fences: hijack-refused-writes-nothing, same-owner-idempotent,
+   ownerless-resume-completes, uniform-refusal-reveals-nothing); the ownership
+   guard mutation-proved (supervisor re-ran it: disabling
+   `org_owned_by_other` re-opens the 200 hijack and reddens both the P0 and P1
+   fences); ruff parity with the branch base.
 2. **Slice 2 — gateway `POST /signup/provision` + the Console-provision
    client in `console_resolve.py`** (done-whens 2, 3, 4, 5; the
    two-importer fence amendment).
