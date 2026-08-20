@@ -21,10 +21,11 @@ branch, it said "everything else … nothing built", and it said dispatch waits 
 MT-2's tables.)*
 
 **SC-1a re-shaped 2026-08-20 — R4** *(WS-31 `ws-31-seats-mvp`)*: the panel is
-**split** into a 🟢 dispatchable **seats block** (purchased / assigned / available
+**split** into a **seats block** (purchased / assigned / available
 / oversubscribed, rendered from the new customer seats read `GET /me/seats` —
-`customer_console.md` §6 item (g) / done-when 19, `can_pay` door) and an ⏸
-**entitlement half** (Centers/add-ons `active | trial | locked`) that stays
+`customer_console.md` §6 item (g) / done-when 19, `can_pay` door) — ✅ **BUILT
+2026-08-20 (WS-30 slice 2, `ws-30-sc1a-seats-panel`)**, see SC-1a below — and an
+⏸ **entitlement half** (Centers/add-ons `active | trial | locked`) that stays
 **DEFERRED behind MT-2 (unbuilt)**. The old done-when — *"driven entirely by
 `/auth/me`'s `modules` + one `GET /billing/summary`"* — was NO-GO: `/auth/me`
 modules is MT-2 and `GET /billing/summary` is the Operator / cross-org read. See
@@ -352,7 +353,8 @@ no figures.
   bundle beside them; `module_catalog` rows are the internal atoms and never the
   customer-facing frame.
 
-  🟢 **LAUNCH SLICE — the SEATS BLOCK, dispatchable now.** On the existing
+  ✅ **LAUNCH SLICE — the SEATS BLOCK, BUILT 2026-08-20 (WS-30 slice 2,
+  `ws-30-sc1a-seats-panel`).** On the existing
   `/settings/billing` page, render **per plan** the four seat numbers —
   **purchased · assigned · available · oversubscribed** — from the customer
   seats read `GET /me/seats` (`customer_console.md` §6 item (g), `can_pay` door),
@@ -369,6 +371,41 @@ no figures.
   neighbouring `AGENTS.md` bind — no app-local palette, headless primitives
   from `src/components/ui/`, and the real gate is the theme-switch check (Fluent →
   Material → Graphite) on this surface **and** its neighbour.
+
+  **What landed** (architectural order):
+  - A **new BFF read hop** `workbench/control_plane/src/app/api/billing/seats/route.ts`,
+    a session-gated GET **mirroring `catalog/route.ts`** and sharing `_console.ts`
+    (`consoleConfig` / `consoleHeaders` / `relayConsole` / the fail-closed 503) —
+    no new environment variables, no gateway hop. It presents this deployment's
+    own `cc_live_…` key to `GET /me/seats`, so the org is the credential's and
+    **the browser can name no tenant** (R11): the handler takes no argument, no
+    query, no body. It is added to `checkout.test.ts`'s `EXCLUDED` by name (a
+    read that mints nothing, like `catalog`), so the billing-route
+    gate-completeness sweep stays honest.
+  - The **seats block** on `src/app/settings/billing/page.tsx` (a `SeatsPanel`
+    section beside `CreditPanel`), reading the read verbatim: the counts through
+    `SEAT_COUNTS` (key-indexed off each plan) and the oversubscribed state
+    through the server's flag, surfaced as a `Badge tone="warning"`. Design-system
+    only — semantic tokens (`bg-card` / `border-border` / `text-muted-foreground`),
+    the `Badge` primitive, `<Icon name="AlertTriangle">`; the theme conformance
+    suite is green over it.
+  - The **view-model** `src/app/settings/billing/lib/seats.ts` — types plus
+    `SEAT_COUNTS` / `seatCells` / `isOversubscribed`, and **deliberately no
+    arithmetic** (the same posture `lib/billing.ts` takes toward the credit
+    balance).
+  - **Fence** `src/app/settings/billing/lib/seats.test.ts` (node-env source-pin +
+    pure view-model, the established billing-fence style): the four numbers equal
+    the payload for the 3/1/2 fixture, an inconsistent row survives untouched
+    (no recompute), `oversubscribed` is the server flag (proved by an
+    `available==0 & not oversubscribed` case and an `available>0 & oversubscribed`
+    case — SC-1a's exact "not a clamped available==0"), and the hop names no org.
+    Verified RED without the block/route first.
+
+  ⚠️ **Inert until the Console is deployed.** `CUSTOMER_CONSOLE_URL` /
+  `CUSTOMER_CONSOLE_ORG_KEY` are set in no environment, so the hop 503s and the
+  block does not render — it ships dark exactly like the rest of the billing
+  page. Built + test-green here; live behaviour needs the Console stood up, which
+  is owner-gated. No flag flip.
 
   ⏸ **DEFERRED behind MT-2 (unbuilt) — the ENTITLEMENT half.** The per-Center /
   add-on **entitlement state** (`active | trial(expiry) | locked`), locked
