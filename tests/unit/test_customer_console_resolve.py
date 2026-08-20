@@ -107,23 +107,29 @@ _UNAUTHENTICATED_ROUTES = frozenset({"/health"})
 _SIGNATURE_AUTHENTICATED_ROUTES = frozenset({"/billing/webhooks/razorpay"})
 
 #: Routes a deployment key is admitted at the DOOR of and refused INSIDE, for
-#: lacking the capability they require (WS-31 CP-2c slice 1, 2026-08-19).
+#: lacking the capability they require — mapped to the capability WORD the
+#: refusal must name (WS-31 CP-2c slice 1, 2026-08-19; item (h)'s two seat
+#: writes, 2026-08-21).
 #:
-#: ``POST /orgs/provision`` grew a second arm on the same
-#: ``deployment_or_operator`` dispatcher resolve uses, gated on ``provision``
-#: rather than ``resolve``. This suite's key carries the column default —
-#: exactly ``{resolve}`` — so it is a **valid credential that may not do this**,
-#: which is 403, not 401. The property clause 1 asserts is unchanged and this
-#: is not a relaxation of it: a ``{resolve}`` key still reaches resolve and
-#: nothing else. What changed is the vocabulary the refusal is stated in, the
-#: same amendment CP-9's signature door needed one line above — and stating it
-#: as *"anything but 2xx"* instead would pass on a 500.
+#: Each grew a second arm on the same ``deployment_or_operator`` dispatcher
+#: resolve uses, gated on a capability OTHER than ``resolve`` — ``provision``
+#: for ``POST /orgs/provision``, ``seat_admin`` for the two seat writes. This
+#: suite's key carries the column default — exactly ``{resolve}`` — so at each
+#: it is a **valid credential that may not do this**, which is 403, not 401, and
+#: the refusal names the capability it lacks. The property clause 1 asserts is
+#: unchanged and this is not a relaxation of it: a ``{resolve}`` key still
+#: reaches resolve and nothing else. Stating it as *"anything but 2xx"* would
+#: pass on a 500, and asserting a bare 403 would pass if two doors swapped the
+#: capability they demand — so the WORD is pinned per route.
 #:
-#: ⚠️ A set of ONE, named rather than derived. Deriving it from
-#: ``auth._provision_dependency`` would make the expectation and the subject
-#: the same fact, so a route that silently gained the wide capability would
-#: teach this fence to expect it.
-_CAPABILITY_GATED_ROUTES = frozenset({"/orgs/provision"})
+#: ⚠️ Named rather than derived. Deriving it from the ``auth._*_dependency``
+#: closures would make the expectation and the subject the same fact, so a route
+#: that silently gained the wrong capability would teach this fence to expect it.
+_CAPABILITY_GATED_ROUTES: dict[str, str] = {
+    "/orgs/provision": "provision",
+    "/registry/seats": "seat_admin",
+    "/registry/seats/release": "seat_admin",
+}
 
 
 #: How to drive a freshly-provisioned organization (``trial``, ``001:56``) to
@@ -404,7 +410,9 @@ class TestTheKeyReachesOneEndpoint:
                 "{resolve} must be refused here for the capability it lacks, "
                 "not for being an unknown credential"
             )
-            assert "provision" in r.json()["detail"]
+            # The refusal names the capability this route demands — pinned per
+            # route so two doors swapping the capability they gate on is red.
+            assert _CAPABILITY_GATED_ROUTES[path] in r.json()["detail"]
         elif path in _SIGNATURE_AUTHENTICATED_ROUTES:
             assert r.status_code in {400, 503}, (
                 f"{method} {path} -> {r.status_code}: a signature-authenticated "

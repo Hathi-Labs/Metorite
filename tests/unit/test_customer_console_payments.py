@@ -42,7 +42,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from customer_console import auth, credits, lifecycle, payments
+from customer_console import auth, credits, lifecycle, payments, store
 from customer_console.keys import ENV_DISCOUNT, mint_key, split_key
 from customer_console.main import app
 from fastapi.routing import APIRoute
@@ -55,6 +55,7 @@ from tests.unit._customer_console_ladder import (
     apply_ladder,
     ensure_deployment,
     ladder,
+    mint_deployment_key,
 )
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -1960,6 +1961,421 @@ class TestTheSeatsRead:
         r = client.get("/me/seats", headers=_headers(key))
         assert r.status_code == 200, r.text
         assert r.json() == {"plans": []}
+
+
+# ── §6 item (h) — the customer-authenticated seat WRITE ────────────────────
+#
+# The write-side twin of item (g). A THIRD deployment-key capability
+# (`seat_admin`) opens `POST /registry/seats` + `/registry/seats/release`, on
+# which the CONSOLE — not only the browser tier — authorises "admin, not any
+# member": the org and the acting admin are derived from
+# `store.deployment_visible_orgs(deployment_id, actor_email)` (placement∩
+# membership, never a body field — R11), the actor's `org_membership.role`/
+# `status` is read on the resolved pair, and an unknown target is refused
+# rather than `ensure_identity`-minted. The read after a write reconciles with
+# `GET /me/seats` — the same `_seat_grid` → `seat_counts`, no second SQL.
+
+def _default_box_id(db) -> str:
+    """The id of the deployment every payments-suite org is provisioned onto."""
+    with db.begin() as c:
+        return ensure_deployment(c)
+
+
+def _seat_admin_key(db, deployment_id: str) -> str:
+    """A TEST `cc_depl_` key carrying `seat_admin` — ship-dark: no live key does.
+
+    The capability NAME comes from `customer_console.auth`, defined once there,
+    so the mint site, the door and this fixture cannot drift on the string.
+    """
+    with db.begin() as c:
+        return mint_deployment_key(
+            c, deployment_id=deployment_id,
+            capabilities=[auth.SEAT_ADMIN_CAPABILITY],
+        )
+
+
+def _resolve_only_key(db, deployment_id: str) -> str:
+    """A key carrying only the column default `{resolve}` — no write capability."""
+    with db.begin() as c:
+        return mint_deployment_key(c, deployment_id=deployment_id)
+
+
+def _add_member(db, *, org_id: str, email: str, role: str = "member") -> str:
+    """Add an ACTIVE membership; return the identity id. The identity exists
+    because the target must be a member (clause 4) — never minted by the door."""
+    with db.begin() as c:
+        identity = store.ensure_identity(c, email=email)
+        c.execute(
+            text(
+                """
+                INSERT INTO org_membership
+                    (organization_id, user_identity_id, role, status, joined_at)
+                VALUES (:o, :i, :r, 'active', now())
+                ON CONFLICT (organization_id, user_identity_id) DO NOTHING
+                """
+            ),
+            {"o": org_id, "i": identity, "r": role},
+        )
+    return identity
+
+
+def _grant(db, *, org_id: str, plan_slug: str, quantity: int) -> None:
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO seat_grant (organization_id, plan_slug, "
+                 "quantity_purchased, reason) VALUES (:o, :p, :q, 'sa-test')"),
+            {"o": org_id, "p": plan_slug, "q": quantity},
+        )
+
+
+def _seat_directly(db, *, org_id: str, plan_slug: str, identity_id: str) -> None:
+    """Consume a seat WITHOUT going through the door — used to fill capacity."""
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO seat_assignment (organization_id, plan_slug, "
+                 "user_identity_id, source) VALUES (:o, :p, :i, 'alacarte')"),
+            {"o": org_id, "p": plan_slug, "i": identity_id},
+        )
+
+
+def _live_seat_count(db, *, org_id: str, plan_slug: str, email: str) -> int:
+    with db.begin() as c:
+        return int(c.execute(
+            text(
+                """
+                SELECT count(*) FROM seat_assignment sa
+                JOIN user_identity ui ON ui.id = sa.user_identity_id
+                WHERE sa.organization_id = :o AND sa.plan_slug = :p
+                  AND ui.email = :e AND sa.released_at IS NULL
+                """
+            ),
+            {"o": org_id, "p": plan_slug, "e": email},
+        ).scalar_one())
+
+
+def _provision_on(client, prefix: str, label: str) -> str:
+    """Provision an org onto a NAMED deployment (not the suite default box)."""
+    slug = f"{prefix}-{uuid.uuid4().hex[:8]}"
+    r = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "Other Co",
+        "owner_email": f"owner@{slug}.test",
+        "gstin": "29ABCDE1234F1Z5", "billing_state": "KA",
+        "core_seats": 3, "deployment_label": label,
+    })
+    assert r.status_code == 200, r.text
+    return slug
+
+
+def _assign(client, key: str, *, actor: str, member: str, plan: str = "sales"):
+    return client.post(
+        "/registry/seats", headers=_headers(key),
+        json={"actor_email": actor, "member_email": member, "plan_slug": plan},
+    )
+
+
+class TestTheSeatAdminWrite:
+    def test_a_seat_admin_key_assigns_a_member_and_the_read_reflects_it(
+        self, client, db
+    ):
+        """The happy path, end to end (§6 item (h), done-when).
+
+        A `seat_admin` key placed for org A assigns an org-A member to an
+        available `sales` seat; the row exists and `GET /me/seats` for A shows
+        `assigned+1 / available-1` - the same `_seat_grid` the read renders.
+
+        Mutation evidence (run and reverted during the build): commenting the
+        `store.try_assign_seat` call in `assign_seat_admin` leaves the read
+        unchanged — `sales.assigned` stays 0 — so this fence reddens on
+        `assigned == 1`.
+        """
+        slug = _new_org(client, "sa-assign")
+        org_id = _org_id(client, slug)
+        key = _org_key(client, slug)
+        owner = f"owner@{slug}.test"          # provisioned owner: admin, active
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = _assign(client, sa_key, actor=owner, member=target)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"assigned": True, "plan_slug": "sales"}
+
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 1
+
+        seats = client.get("/me/seats", headers=_headers(key)).json()["plans"]
+        sales = next(p for p in seats if p["plan_slug"] == "sales")
+        assert sales["assigned"] == 1, sales
+        assert sales["available"] == 1, sales  # purchased 2 - assigned 1
+
+    def test_a_seat_admin_assign_refuses_at_the_cap(self, client, db):
+        """No self-serve oversubscription (done-when).
+
+        `sales` bought 1, already filled → `available == 0`; a fresh member is
+        refused **409 `buy_more`** and no row is written. Oversubscription stays
+        the Operator-only escape hatch.
+
+        Mutation evidence (run and reverted): removing the `if not
+        decision.allowed` guard writes an over-cap row and answers 200 — this
+        fence reddens on the 409 assertion and on the row count.
+        """
+        slug = _new_org(client, "sa-cap")
+        org_id = _org_id(client, slug)
+        owner = f"owner@{slug}.test"
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=1)
+        # Fill the one seat directly so available == 0.
+        filler = _add_member(
+            db, org_id=org_id, email=f"filler-{uuid.uuid4().hex[:8]}@{slug}.test")
+        _seat_directly(db, org_id=org_id, plan_slug="sales", identity_id=filler)
+
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+
+        r = _assign(client, sa_key, actor=owner, member=target)
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["reason"] == "seat_cap_exceeded"
+        assert detail["buy_more"]["plan_slug"] == "sales"
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 0
+
+    def test_a_seat_admin_key_cannot_write_another_deployments_org(
+        self, client, db
+    ):
+        """The placement bound (done-when).
+
+        A key placed for A, naming an admin+member of B (a DIFFERENT box) →
+        refused, and B's seats never move. The org+actor is the placement∩
+        membership join, so B is invisible to A's key.
+
+        Mutation evidence (run and reverted): removing the `JOIN org_placement`
+        / `p.deployment_id = :dep` predicate from `store.deployment_visible_orgs`
+        makes B resolve on A's key and the write lands on B — this fence reddens
+        on the 403 and on B's unchanged seat count.
+        """
+        # A on the suite's default box; B on a distinct box.
+        _new_org(client, "sa-a")  # ensures the default box has a placed org
+        other_label = f"other-box-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            ensure_deployment(c, label=other_label)
+        slug_b = _provision_on(client, "sa-b", other_label)
+        org_b = _org_id(client, slug_b)
+        owner_b = f"owner@{slug_b}.test"       # admin of B, placed on other box
+        _grant(db, org_id=org_b, plan_slug="sales", quantity=3)
+        target_b = f"member-{uuid.uuid4().hex[:8]}@{slug_b}.test"
+        _add_member(db, org_id=org_b, email=target_b)
+
+        # Key placed for A's box, actor+target both from B.
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = _assign(client, sa_key, actor=owner_b, member=target_b)
+        assert r.status_code == 403, r.text
+        assert _live_seat_count(
+            db, org_id=org_b, plan_slug="sales", email=target_b) == 0
+
+    def test_a_non_admin_actor_is_refused(self, client, db):
+        """The CONSOLE, not only Next, enforces admin-not-member (done-when).
+
+        The resolved actor's `org_membership.role='member'` → **403**, nothing
+        written — refused by the console's own read of its registry vocabulary.
+
+        Mutation evidence (run and reverted): dropping the role/status check in
+        `_seat_admin_for_deployment` lets the plain member assign into the
+        available seat and answer 200 — this fence reddens on the 403.
+        """
+        slug = _new_org(client, "sa-member")
+        org_id = _org_id(client, slug)
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        actor = f"plain-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=actor, role="member")
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = _assign(client, sa_key, actor=actor, member=target)
+        assert r.status_code == 403, r.text
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 0
+
+    def test_an_unknown_or_cross_org_target_member_is_refused(self, client, db):
+        """No `ensure_identity`-minting of an arbitrary email (done-when).
+
+        A `member_email` with no membership in the resolved org → refused, and
+        **no `user_identity` is created** for it. The self-serve door validates
+        the target against membership; it does not mint like the operator path.
+        """
+        slug = _new_org(client, "sa-target")
+        org_id = _org_id(client, slug)
+        owner = f"owner@{slug}.test"
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        unknown = f"nobody-{uuid.uuid4().hex[:8]}@ghost.test"
+
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = _assign(client, sa_key, actor=owner, member=unknown)
+        assert r.status_code == 404, r.text
+        with db.begin() as c:
+            minted = int(c.execute(
+                text("SELECT count(*) FROM user_identity WHERE email = :e"),
+                {"e": unknown},
+            ).scalar_one())
+        assert minted == 0, "the door minted an identity for an unknown email"
+
+    def test_a_seat_admin_release_frees_the_seat(self, client, db):
+        """Release drops assigned by one; an unassigned release is a no-op."""
+        slug = _new_org(client, "sa-rel")
+        org_id = _org_id(client, slug)
+        key = _org_key(client, slug)
+        owner = f"owner@{slug}.test"
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+
+        assert _assign(client, sa_key, actor=owner, member=target).status_code == 200
+
+        rel = client.post(
+            "/registry/seats/release", headers=_headers(sa_key),
+            json={"actor_email": owner, "member_email": target,
+                  "plan_slug": "sales"},
+        )
+        assert rel.status_code == 200, rel.text
+        assert rel.json() == {"released": True}
+
+        seats = client.get("/me/seats", headers=_headers(key)).json()["plans"]
+        sales = next(p for p in seats if p["plan_slug"] == "sales")
+        assert sales["assigned"] == 0 and sales["available"] == 2, sales
+
+        # A second release of the now-unassigned member is a 200 no-op.
+        again = client.post(
+            "/registry/seats/release", headers=_headers(sa_key),
+            json={"actor_email": owner, "member_email": target,
+                  "plan_slug": "sales"},
+        )
+        assert again.status_code == 200, again.text
+        assert again.json() == {"released": False}
+
+    def test_the_seat_admin_door_needs_the_capability(self, client, db, caplog):
+        """The door: `{resolve}`-only → 403 logged; a `cc_live_` key → 401.
+
+        Proves the org key gained no write (401 at the door, before any body),
+        and that a valid deployment key without the capability is refused with
+        the capability it lacks named and a `capability_refused` log line.
+        """
+        slug = _new_org(client, "sa-door")
+        owner = f"owner@{slug}.test"  # already an active owner from provisioning
+        box = _default_box_id(db)
+
+        # A {resolve}-only deployment key → 403 at the write, capability named.
+        resolve_only = _resolve_only_key(db, box)
+        with caplog.at_level("WARNING", logger="platform.auth"):
+            r = _assign(client, resolve_only, actor=owner, member=owner)
+        assert r.status_code == 403, r.text
+        assert "seat_admin" in r.json()["detail"]
+        assert any(
+            rec.message == "deployment_key.capability_refused"
+            for rec in caplog.records
+        ), "the capability refusal was not logged"
+
+        # A cc_live_ ORG key → 401 at the door: it is not a deployment key and it
+        # is not the operator token, so it reaches no write.
+        org_key = _org_key(client, slug)
+        r2 = _assign(client, org_key, actor=owner, member=owner)
+        assert r2.status_code == 401, r2.text
+
+    def test_a_deployment_seat_admin_may_not_name_an_org(self, client, db):
+        """R11 shape-guard: a deployment key may not NAME an org (item (h)).
+
+        The deployment arm DERIVES the org from `deployment_visible_orgs`
+        (placement∩membership); a body that also sets `org_slug` is a caller who
+        believes it named its tenant, and that is **400, never ignored**.
+
+        Red-first (run and reverted in a scratch copy of `main.py`): dropping the
+        `if req.org_slug is not None: raise 400` guard in
+        `_seat_admin_for_deployment` makes this request **200** — `org_slug` is
+        ignored, not honoured, so the org still resolves from the credential and
+        the seat is written. This fence therefore pins the CONTRACT that naming
+        an org is REFUSED: it reddens on the 400 assertion (turns 200) and on the
+        seat-row count (turns 1).
+        """
+        slug = _new_org(client, "sa-name-org")
+        org_id = _org_id(client, slug)
+        owner = f"owner@{slug}.test"          # provisioned owner: admin, active
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = client.post(
+            "/registry/seats", headers=_headers(sa_key),
+            json={"actor_email": owner, "member_email": target,
+                  "plan_slug": "sales", "org_slug": slug},
+        )
+        assert r.status_code == 400, r.text
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 0
+
+    def test_an_operator_seat_admin_may_not_name_an_actor(self, client, db):
+        """R11 shape-guard: the operator arm has no actor (item (h)).
+
+        The operator NAMES the org and acts as staff, never as a member; an
+        `actor_email` under this scheme is a caller who believes the write is
+        acting-as someone, which is not a thing here — **400, never ignored**,
+        the mirror of the deployment arm's `org_slug` refusal.
+
+        Red-first (run and reverted in a scratch copy of `main.py`): dropping the
+        `if req.actor_email is not None: raise 400` guard in
+        `_seat_admin_for_operator` lets the request through — the org resolves
+        from `org_slug`, the target is a member, and the seat is written (**200**).
+        This fence reddens on the 400 assertion and on the seat-row count.
+        """
+        slug = _new_org(client, "sa-op-actor")
+        org_id = _org_id(client, slug)
+        owner = f"owner@{slug}.test"
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+
+        # The OPERATOR token (not a deployment key) → `caller is None` → the
+        # operator arm, which names the org and takes no actor.
+        r = client.post(
+            "/registry/seats", headers=OP,
+            json={"actor_email": owner, "member_email": target,
+                  "plan_slug": "sales", "org_slug": slug},
+        )
+        assert r.status_code == 400, r.text
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 0
+
+    def test_a_deployment_seat_admin_requires_an_actor_email(self, client, db):
+        """R11 shape-guard: the deployment arm REQUIRES `actor_email` (item (h)).
+
+        Org and acting admin are derived TOGETHER from
+        `deployment_visible_orgs(deployment_id, actor_email)`; with no
+        `actor_email` there is no member to resolve, so the write is refused
+        **400** up front rather than resolving on a `None` identity.
+
+        Red-first (run and reverted in a scratch copy of `main.py`): dropping the
+        `if not req.actor_email: raise 400` guard in `_seat_admin_for_deployment`
+        sends `email=None` into `deployment_visible_orgs`, which matches no
+        membership, so the arm falls through to a DIFFERENT refusal (**403**) —
+        never 200, never a row. This fence pins the 400 CONTRACT: it reddens the
+        moment the guard is gone (the status is no longer 400).
+        """
+        slug = _new_org(client, "sa-no-actor")
+        org_id = _org_id(client, slug)
+        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
+        _add_member(db, org_id=org_id, email=target)
+
+        sa_key = _seat_admin_key(db, _default_box_id(db))
+        r = client.post(
+            "/registry/seats", headers=_headers(sa_key),
+            json={"member_email": target, "plan_slug": "sales"},
+        )
+        assert r.status_code == 400, r.text
+        assert _live_seat_count(
+            db, org_id=org_id, plan_slug="sales", email=target) == 0
 
 
 # ── SC-4g — discount codes, the refusal partition, and the Rs 0 path ───────

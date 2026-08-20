@@ -82,6 +82,7 @@ __all__ = [
     "ORGANIZATION_KEY_DEPENDENCIES",
     "PROVISION_CAPABILITY",
     "RESOLVE_CAPABILITY",
+    "SEAT_ADMIN_CAPABILITY",
     "Caller",
     "DeploymentCaller",
     "Internal",
@@ -90,6 +91,7 @@ __all__ = [
     "PayingCaller",
     "ProvisionCaller",
     "ResolveCaller",
+    "SeatAdminCaller",
     "SignedWebhook",
     "deployment_or_operator",
     "organization_for_payment",
@@ -123,6 +125,27 @@ RESOLVE_CAPABILITY = "resolve"
 #: deployment key is OWNER-GATE (``customer_console.md`` §8 gate 7) and there
 #: is deliberately no HTTP route that issues or edits one.
 PROVISION_CAPABILITY = "provision"
+
+#: The THIRD capability — WS-31 §6 item (h). It gates the customer-authenticated
+#: seat WRITE (``POST /registry/seats`` + ``/registry/seats/release``), the
+#: write-side twin of item (g)'s ``GET /me/seats`` read. It is the door on which
+#: the Console can itself authorise "admin, not any member": a ``cc_live_`` org
+#: key is *the org* with no member, so it cannot reach a role; the deployment
+#: key resolves a MEMBER through ``store.deployment_visible_orgs``, whose role
+#: ``org_membership`` then carries.
+#:
+#: ⚠️ **Same three rules as ``provision``, and for the same reasons.** A
+#: capability is not a scheme — holding this one lets a box do seat admin for
+#: the orgs placed on it and makes it no operator, and every other door refuses
+#: it exactly as before. **No migration carries this string and none may be
+#: minted for it**: ``deployment_key.capabilities`` is ``TEXT[]`` with no
+#: ``CHECK`` (``006_deployment_key.sql:56``), so the enforcement is entirely
+#: :func:`deployment_or_operator`. Adding it to a REAL deployment key is
+#: OWNER-GATE (``customer_console.md`` §8 gate 8's capability-growth class), and
+#: there is deliberately no HTTP route that issues or edits a key's set — so the
+#: door ships dark by construction: no live key carries it until the owner adds
+#: it by hand.
+SEAT_ADMIN_CAPABILITY = "seat_admin"
 
 
 @dataclass(frozen=True)
@@ -484,6 +507,15 @@ _resolve_dependency = deployment_or_operator(RESOLVE_CAPABILITY)
 #: dispatcher would be a second answer to "which scheme is at the door".
 _provision_dependency = deployment_or_operator(PROVISION_CAPABILITY)
 
+#: The seat-admin arm's dependency — WS-31 §6 item (h). A THIRD closure from the
+#: same factory, differing from the two above only in the capability it demands.
+#: Built at module scope for the stable identity :data:`AUTHENTICATING_DEPENDENCIES`
+#: recognises, and registered there so item (h)'s two write routes read as
+#: authenticating — CP-2b clause 1's fence
+#: (``test_the_unauthenticated_route_set_is_exactly_health``) covers them the day
+#: they land.
+_seat_admin_dependency = deployment_or_operator(SEAT_ADMIN_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -494,6 +526,15 @@ ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
 #: body is refused rather than ignored (R11).
 ProvisionCaller = Annotated[
     DeploymentCaller | None, Depends(_provision_dependency)
+]
+
+#: The same two-arm shape for item (h)'s seat WRITE. ``None`` is the operator,
+#: who NAMES the org (a cross-org staff act, as at ``POST /billing/seats``); a
+#: :class:`DeploymentCaller` **is** the deployment, from which the org and the
+#: acting member are DERIVED via ``store.deployment_visible_orgs`` — naming an
+#: org in the body is refused rather than ignored (R11).
+SeatAdminCaller = Annotated[
+    DeploymentCaller | None, Depends(_seat_admin_dependency)
 ]
 
 #: Every dependency in this module that authenticates somebody.
@@ -518,6 +559,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     razorpay_webhook_event,
     _resolve_dependency,
     _provision_dependency,
+    _seat_admin_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — both of them.

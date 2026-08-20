@@ -243,7 +243,18 @@ source: the ONE shared `_seat_grid(conn, org_id)` helper (extracted from
 `seats.seat_counts` (no second SQL, no recompute), a `SeatsView`/`SeatPlanView`
 pair mirroring the catalog pair, two red-first R8 fences, **no migration**. The
 suite is now **119** against a real Postgres 16, **0 skipped**. The seat WRITES
-stay owner-gated (§8 gate 4) ·
+stay owner-gated (§8 gate 4) · **(h) is now ◐ BUILT 2026-08-21 (WS-31
+`ws-31-seat-assign`)** — the write-side twin of (g): a
+**customer-authenticated seat WRITE** on a new deployment-key `seat_admin`
+capability door (console-authoritative — org from placement∩membership, actor
+`org_membership.role`/`status` read on the resolved pair, no oversubscription via
+self-serve), reusing the `deployment_or_operator` seam and the operator
+`assign_seat` composition (no fork, no second seat SQL), **no migration**. Endpoint
++ door + **seven** red-first R8 fences (`TestTheSeatAdminWrite`) green against a
+real Postgres 16, 0 skipped; ships dark (no live key carries `seat_admin`). The
+live write against a real customer org and adding `seat_admin` to a real key stay
+owner-gated (§8 gate 4 / gate 8); the "manage seats" SURFACE is WS-30's. See §6
+item (h) and §9 residual 7 (the surface transport) ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -4983,6 +4994,247 @@ agent against a real database and a fake provider, and the surface half is not
 (it needs a capability decision, an account, or an owner's flip). Shipping them
 together is how a reviewable PR becomes an unreviewable one.
 
+**(h) The customer-authenticated seat WRITE — the write-side twin of item (g)'s
+read.** ◐ **BUILT 2026-08-21 (WS-31, `ws-31-seat-assign`)** — endpoint + door +
+seven red-first R8 fences (`TestTheSeatAdminWrite`), green against a real
+Postgres 16, 0 skipped. **No migration.** Ships dark: no live key carries
+`seat_admin`. The **live seat write against a real customer org** and **adding
+`seat_admin` to a real deployment key** stay owner-gated (§8 gate 4 / gate 8),
+as does deploying the Console; the customer-facing "manage seats" SURFACE is
+WS-30's (§9 residual 7). *(All code anchors below re-measured 2026-08-21 on
+`ws-31-seat-assign`; the §0 note's "~680 lines of drift" caveat applies — match by
+handler/symbol name, not by the line number a stale citation carries.)* Item (g)
+gave a customer credential a way to **see** its seats; the owner's "invite users
+to fill seats" needs the matching **write** — an org's own admin assigning a
+purchased seat to a member of THEIR org, and releasing it. Today the only seat
+writes are `POST /billing/seats` (`main.py:1370`, `assign_seat`) and
+`POST /billing/seats/release` (`main.py:1410`, `release_seat`), both `Operator`
+(cross-org staff) and both taking an `org_slug` a customer must never name. There
+is **no** customer-self-serve path: every seat write goes through the cross-org
+Operator door. This item designs the missing door and endpoint. Decided with the
+same agent-proposed defaults items (f)/(g) used (D16/D17 — the owner may overrule;
+the rejected alternative and the residual are recorded).
+
+**⚠️ The crux — investigated before designing, because the answer decides the
+door.** Two facts about the code as it stands:
+
+- **A customer credential today is *the org*, with no in-org role.** The
+  organization key (`cc_live_…`) resolves to an `organization_id` and nothing
+  else — `store.resolve_key` (`store.py:1337`) returns `(organization_id,
+  key_hash, org_status)`, the key table is org-scoped (`llm_api_key`,
+  `001_customer_console.sql:212-224`), and `Caller.member` is **attribution only,
+  "never used to select rows, never used to authorise"** (`auth.py:143-144`). So
+  the console cannot tell, from a `cc_live_` credential, *which member* is calling
+  or whether they are an admin. R11 forbids fixing this with a body field: an
+  `actor_email` the caller asserts "makes the caller the authority on who they
+  are" (`auth.py:59-62`), and is trivially spoofable by anyone holding the org
+  key. **The org-key door therefore cannot enforce "admin, not any member" —
+  structurally, not by omission.**
+- **But an admin CONCEPT already exists console-side, as its own vocabulary.**
+  `org_membership(organization_id, user_identity_id, role ∈ {owner,admin,member},
+  status ∈ {invited,active,suspended,removed})` ships in `001` (`:121-131`), is
+  **populated** — provisioning writes the founder as `role='owner', status=
+  'active'` (`main.py:889-899`) — and is labelled in the code as exactly this:
+  *"`org_membership.role` is registry/billing vocabulary"* (`main.py:1146`),
+  deliberately distinct from the tenant's permission vocabulary (`org_role` +
+  `acb_auth`, D12). Using it to gate a **billing** write is using it for its
+  stated purpose, not inventing a second grant vocabulary. What is missing is not
+  the role — it is a **customer credential that binds to a member** so the role is
+  reachable. The one credential that resolves a *member* is the deployment key,
+  via `store.deployment_visible_orgs` (`store.py:697`), the placement-bounded join
+  the sign-in resolve path already trusts.
+
+- **The DOOR (the core decision) — a deployment-key `seat_admin` capability,
+  console-authoritative.** Add a **third capability** to the existing
+  deployment-key scheme — `seat_admin`, beside `resolve`/`provision`
+  (`auth.py:106,125`) — and mint the write door from the **same
+  `deployment_or_operator` factory** (`auth.py:333`) that already serves
+  `POST /registry/resolve` and the provision arm. No new auth seam (root
+  `CLAUDE.md` §5); a third `deployment_or_operator("seat_admin")` closure,
+  registered in `AUTHENTICATING_DEPENDENCIES` (`auth.py:513`) so CP-2b clause 1's
+  unauthenticated-set fence covers it the day it lands. The console then enforces,
+  in its own code, everything the org-key door cannot:
+  1. a valid deployment key carrying `seat_admin` (create-only authorization,
+     exactly `provision`'s shape — holding it lets a box do seat admin for the
+     orgs placed on it, and makes it no operator; `auth.py:112-124`);
+  2. the **acting admin** and the **org** are derived together from
+     `deployment_visible_orgs(deployment_id, actor_email)` — the org is the
+     placement∩membership **join result, never a body field** (R11-clean the same
+     way `_resolve_for_deployment` is, `main.py:1151-1160`), and it must resolve to
+     **exactly one admissible org** or the write refuses, the chooser being a
+     named non-goal exactly as at resolve (`main.py:1210-1214`);
+  3. the acting member's `org_membership.role ∈ {owner,admin}` **and**
+     `status='active'` in that org — the console reads its OWN registry vocabulary
+     (`main.py:1146`), so a plain `member` is refused **by the console**, not only
+     by an upstream tier. This is an **ADDED read** on the resolved
+     `(org_id, identity_id)` (the precedent is the resolve path's own
+     `SELECT role, status FROM org_membership`, `main.py:1103-1109`), because
+     `deployment_visible_orgs` returns **neither** `role` nor `status` — its join
+     does not consult them (`store.py:720-724`) — so the join answers *which org*
+     but never *what standing*, and the standing is the whole point of this clause;
+  4. the **target** member holds a membership in the SAME org (reject unknown /
+     cross-org emails — do NOT `ensure_identity`-create a global identity for an
+     arbitrary typed-in email, which the operator path does and self-serve must
+     not);
+  5. the seat invariants below.
+  The trust boundary, stated honestly (the doctrine `store.py:203-206`/
+  `seats.py:70-77` set for seat writers): the deployment key is the trusted party,
+  vouching that the box authenticated the human whose email it presents — the
+  **same** trust the sign-in resolve path already extends, now for a write.
+  Minting a real key with `seat_admin` is OWNER-GATE (§8 gate 8's class — the
+  capability-growth gate), and there is deliberately no route that issues or edits
+  a key's set, so the door **ships dark by construction**: no live deployment key
+  carries the capability until the owner adds it by hand.
+
+- **The ALTERNATIVE, recorded and NOT chosen — an org-key `can_pay` write door
+  (`POST /me/seats`) with the admin gate pushed into the control-plane (Next) and
+  a carve-out to the CP-3 org-key fence.** It fits the *current* billing wiring
+  (Next holds `CUSTOMER_CONSOLE_ORG_KEY`, not a deployment key), and it is the
+  same door item (g)'s read uses. It is rejected as the default for two reasons,
+  both structural: (a) the console **cannot** enforce the admin axis on the org
+  key (crux above), so "admin, not any member" would live **entirely** in Next —
+  acceptable for a read (`GET /me/seats` is already "any signed-in member",
+  `seats/route.ts:26-28`), but a money-adjacent write should be authorised where
+  it lands; and (b) a seat write reaches `store.try_assign_seat` /
+  `store.release_seat`, both writers of `seat_assignment` ∈ `ENTITLEMENT_TABLES`,
+  so an org-key seat route turns
+  `test_no_org_key_route_writes_an_entitlement_or_ledger_row` **red** — the
+  mutation this fence records by name (`test_customer_console_payments.py:830-833`:
+  *"pointing `POST /billing/seats` at the organization-key dependency turns this
+  red"*). Making it pass would mean **relaxing the CP-3 read-only-org-key lesson**
+  with a third named carve-out beside `FULFIL_ALLOW_LIST`/`METERING_EXEMPTION`
+  (`:86,118`), which is an owner-ratified deviation (§9 residual, the shape
+  `METERING_EXEMPTION` took), not an agent's to add. The chosen deployment-key
+  door needs **neither** relaxation: it is not an org-key route, so the fence
+  stays green — and that green is the proof the org key stayed read-only.
+
+- **Assign / release semantics** — the write-side of item (g)'s vocabulary, no
+  second seat computation:
+  - **Assign** takes `{member_email, plan_slug}` (plus the actor resolved from the
+    credential+`actor_email`), refuses `plan_slug='core'` (membership IS the Core
+    seat, D19.3 — "Core seats are not managed here", `subscription_console.md`
+    SC-2; a self-serve `source` is one of `center|plan|alacarte`, never `core`),
+    then runs the **existing** cap path: `store.lock_seat_capacity` **before** the
+    count (this new writer takes the advisory lock the operator `assign_seat`
+    still does not — closing the race `seats.py:70-77` / §6 CP-2b names, rather
+    than inheriting it), `store.seat_rows` → `seats.seat_counts` →
+    `seats.decide_assignment`. **Refuse at the cap (no self-serve
+    oversubscription):** `available == 0` and not already-assigned → **409 with the
+    `buy_more` payload** `decide_assignment` already builds (`seats.py:147-158`);
+    the customer buys more seats first, and oversubscription stays the
+    Operator-only escape hatch. **Idempotent:** an already-assigned member is
+    `decide_assignment(already_assigned=True)` → allowed no-op, and
+    `store.try_assign_seat`'s `ON CONFLICT … DO NOTHING` (`store.py:243-258`) makes
+    it a 200 that consumes nothing.
+  - **Release** takes `{member_email, plan_slug}`, calls `store.release_seat`
+    (`store.py:261-280`, sets `released_at`, frees capacity immediately, D19.3),
+    and a release of an unassigned member is a **200 no-op `{released:false}`**,
+    mirroring the operator twin (`main.py:1410-1422`). Release does not gate on
+    `can_write_seats` (freeing a seat is safe when suspended), matching the
+    operator twin; assign DOES (403 for `suspended`/`cancelled`, exactly
+    `assign_seat`'s `capabilities_of(state).can_write_seats` check,
+    `main.py:1378-1381`).
+  - **Reconciles with the read:** after an assign, `GET /me/seats` shows
+    `assigned+1 / available−1`; after a release, `assigned−1 / available+1` — the
+    SAME `_seat_grid` (`main.py:524`) folded through the SAME `seat_counts`, no
+    parallel arithmetic. `_audit` records the act with `actor` set to the
+    customer/actor rather than `"operator"` (`main.py:561-577`, the kwarg CP-9
+    added for exactly this "first customer-credentialled write" reason).
+- **What stops org A writing org B:** the org is the placement∩membership join,
+  bounded to the deployment's own placements — a key placed for A resolves only
+  A's members (`deployment_visible_orgs`, `store.py:697-755`, clauses 4-5), and a
+  body naming an org is 400, never honoured (R11). **What stops a non-admin
+  member writing:** the console's own `org_membership.role`/`status` check on the
+  resolved actor (default (h)-3) — refused *by the console*.
+- **No migration.** `org_membership.role` already ships (`001:124-125`);
+  `seat_assignment` and its partial-unique/isolation indexes already ship
+  (`001:186-207`) with `source ∈ {core,center,plan,alacarte}`; and `seat_admin`
+  needs **no** column — `deployment_key.capabilities` is `TEXT[]` with no `CHECK`
+  (`006_deployment_key.sql:56`), so the string is insertable and the enforcement
+  is entirely the door, **exactly** the precedent `provision` set and recorded as
+  a rule (`auth.py:119-124`: *"No migration carries this string and none may be
+  minted for it"*). *(R1 note for completeness: were a migration ever needed, the
+  next free Customer-Console number is taken at build time by listing
+  `infra/customer_console/` — `007` is the highest on disk today — never written
+  ahead; this item needs none.)*
+- **Fences (R7), all shown red first, all R8 against a real Postgres 16 on the
+  Console ladder.** Behavioural fences beside `TestTheCatalogRead`/the seats-read
+  fences in `tests/unit/test_customer_console_payments.py` (already on §7's list
+  and `pr-check.yml`'s skip-guard — **nothing new to register**); the structural
+  ones join the no-DB suites already in §7:
+  - `test_a_seat_admin_key_assigns_a_member_and_the_read_reflects_it` — a
+    `seat_admin` deployment key placed for org A assigns an org-A member to an
+    available seat; the `seat_assignment` row exists and `GET /me/seats` for A
+    shows `assigned+1 / available−1`. Mutation: skipping the write leaves the read
+    unchanged — red.
+  - `test_a_seat_admin_assign_refuses_at_the_cap` — `available == 0`, unassigned
+    member → **409 `buy_more`**, no row written, `assigned` unchanged (no
+    oversubscription via self-serve). Mutation: dropping the `decide_assignment`
+    guard writes an over-cap row — red.
+  - `test_a_seat_admin_key_cannot_write_another_deployments_org` — a key placed
+    for A, naming a member of B → refused, and B's seats never move (the
+    placement bound; the two-org precedent is
+    `test_the_seats_read_is_scoped_to_the_key`). Mutation: dropping the
+    placement join lets A write B — red.
+  - `test_a_non_admin_actor_is_refused` — the resolved actor's
+    `org_membership.role='member'` (or `status!='active'`) → **403**, nothing
+    written. Mutation: removing the role check lets a plain member assign — red.
+    **This is the fence that proves the console, not only Next, enforces "admin,
+    not any member".**
+  - `test_an_unknown_or_cross_org_target_member_is_refused` — a `member_email`
+    with no membership in the resolved org → refused, and no `user_identity` is
+    created for it (self-serve must not `ensure_identity`-mint arbitrary emails).
+  - `test_a_seat_admin_release_frees_the_seat` — release drops `assigned` by one
+    and the read reflects it; releasing an unassigned member is a 200 no-op.
+  - `test_the_seat_admin_door_needs_the_capability` — a deployment key holding
+    only `{resolve}` is **403** at the write, logged, exactly the shape
+    `deployment_or_operator` already enforces for `provision`
+    (`auth.py:387-410`); an org key (`cc_live_…`) is refused at the door (401),
+    proving the org key gained no write.
+  - **Structural, no DB (already in §7's list):** the two write routes read as
+    **authenticating** (the new `_seat_admin_dependency` closure is in
+    `AUTHENTICATING_DEPENDENCIES`, so `test_the_unauthenticated_route_set_is_exactly_health`
+    — which lives in **`tests/unit/test_customer_console_resolve.py`**, NOT
+    `test_console_dependency_boundary.py` — stays green, and that suite's
+    parametrised clause-1 fence now maps both routes to `seat_admin` in
+    `_CAPABILITY_GATED_ROUTES`), and
+    `test_no_org_key_route_writes_an_entitlement_or_ledger_row` (in
+    **`test_customer_console_payments.py`**) **stays green** — the write is not an
+    org-key route, which is the whole reason the deployment-key door was chosen.
+    Both suites are already named in `pr-check.yml`'s skip-guard, so **nothing new
+    to register** — the behavioural fences ride `test_customer_console_payments.py`
+    and the structural ones the two suites above.
+- **Route naming (agent default, refinable at build):** site the two writes in
+  the deployment-key namespace beside `POST /registry/resolve` —
+  `POST /registry/seats` (assign) and `POST /registry/seats/release` — because the
+  DOOR is the registry (deployment) credential, not the org key; `/me/seats` is
+  reserved for the org-key read whose `/me` means "the credential's own org", which
+  a pooled deployment key is not. The builder may choose a `/billing/seats/*`
+  variant instead; the door, the vocabulary and the fences do not depend on the
+  path.
+- **Gate label.** The endpoint + the `seat_admin` capability door + the fences,
+  built against fixtures and a real Postgres with a **test** `seat_admin` key, are
+  🟢 **AGENT-SAFE** (ship dark; no live key carries the capability). The **live
+  seat write against a real customer org** stays 🔴 **OWNER-GATE (§8 gate 4)**, as
+  does **adding `seat_admin` to a real deployment key** (🔴 **§8 gate 8**'s
+  capability-growth class — the same door that gates `provision`), deploying the
+  Console, and any flag flip. Assigning a seat moves an entitlement; doing it on a
+  live org is the owner's act.
+- **Surface follow-up (WS-30), and the residual it carries.** The customer-facing
+  "manage seats" UI (assign/release from the SC-1a seats panel,
+  `subscription_console.md` SC-2) is **WS-30's**, not this item's — this ticket is
+  the backend write + door. Two things WS-30 must own, flagged so it does not
+  rediscover them: (1) the write is **admin-gated at the surface** on the tenant
+  billing-admin capability — a *hard* done-when, NOT inherited as the read's
+  "known-open any signed-in member" posture (`seats/route.ts:26-28`), because a
+  write is not a read; and (2) the transport, which is the **residual owner
+  decision** below — the deployment key is fenced OUT of the Next/browser tier
+  (`gateway.test.ts:232`, §6(f): *"read on the GATEWAY and never in Next"*), so a
+  browser "manage seats" action must reach this deployment-key door through the
+  **gateway tier** (where the key already lives and already speaks to the Console
+  at sign-in resolve), not through the Next billing BFF. That routing, or funding a
+  dedicated member-authenticated Console credential instead, is §9's new residual.
+
 ## 7. Verification
 
 ```bash
@@ -5142,7 +5394,9 @@ the dispatch board cannot enforce.*
 
 ## 9. Open owner inputs
 
-Everything needed to build §6 is decided. These are commercial, not blocking:
+Everything needed to build §6 is decided. Most of these are commercial and none
+blocks a §6 build (6 is an authorization ratification and 7 is the item-(h)
+surface transport — each gates a surface or a carve-out, not the backend door):
 
 1. **Seat price for the AI-only shape** — if an organization may buy AI credits
    without Center packages, that SKU is not in D23/D24's ladder. Assumed **no**
@@ -5179,6 +5433,30 @@ Everything needed to build §6 is decided. These are commercial, not blocking:
    credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
    goes red the day the draw moves, so the exemption is deleted rather than
    inherited either way.
+7. **How the browser reaches the customer seat WRITE — the surface transport for
+   §6 item (h)** *(added 2026-08-21 with WS-31 `ws-31-seat-assign`; not
+   commercial, and it gates the WS-30 "manage seats" surface, not the WS-31
+   backend door)*. Item (h) sites the write on a **deployment-key `seat_admin`
+   door** because that is the only customer credential from which the Console can
+   itself authorise "admin, not any member" (the org key is *the org*, with no
+   member — §6(h) crux). But the deployment key is **fenced out of the Next/
+   browser tier by name** (`gateway.test.ts:232` / §6(f): *"read on the GATEWAY
+   and never in Next"*), and "manage seats" is a Next billing-settings surface. So
+   the owner picks one of two transports, and it is an architecture call with
+   security weight, not an agent default: **(a)** route the browser action through
+   the **gateway tier** — where the deployment key already lives and already calls
+   the Console at sign-in resolve — so the Console keeps enforcing the admin axis
+   from `org_membership.role`; or **(b)** fund a dedicated **member-authenticated
+   Console credential** later (a real new auth primitive, entangled with the
+   still-unbuilt invite/sign-in leg) so a browser→Next→Console write can carry a
+   trusted member identity. The **rejected** third option — an org-key
+   `POST /me/seats` write with the admin gate pushed entirely into Next — is
+   recorded in §6(h) and needs a fourth carve-out to CP-3's org-key entitlement
+   fence (the `METERING_EXEMPTION` shape of ratification, §9 residual 6), which is
+   why it is not the default. **This does not block the WS-31 backend door**,
+   which is buildable, dark and fully fenced today; it blocks only the WS-30
+   surface wiring, and until it is decided the write is reachable by an operator
+   token and by a test `seat_admin` key alone.
 
 ## 10. References
 

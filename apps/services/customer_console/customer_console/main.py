@@ -67,6 +67,7 @@ from customer_console.auth import (
     PayingCaller,
     ProvisionCaller,
     ResolveCaller,
+    SeatAdminCaller,
     SignedWebhook,
 )
 from customer_console.credits import (
@@ -207,6 +208,40 @@ class SeatWriteRequest(BaseModel):
     org_slug: str
     email: str
     plan_slug: str
+    source: str = "alacarte"
+
+
+class SeatAdminRequest(BaseModel):
+    """The customer-authenticated seat write's body (§6 item (h)).
+
+    **The target member and the plan are the request; the org and the actor are
+    NOT.** Under the deployment-key scheme the org and the acting admin are
+    DERIVED together from ``store.deployment_visible_orgs(deployment_id,
+    actor_email)`` — the placement∩membership join — never asserted, which is
+    R11 at the same strength ``ResolveRequest`` applies it: the caller makes no
+    tenant claim, the org is the ANSWER. ``actor_email`` is the human the box
+    just authenticated (the same trust the sign-in resolve path already
+    extends, now for a write); the box vouches for it exactly as
+    ``ResolveRequest.email`` is vouched for.
+
+    ``org_slug`` mirrors ``ResolveRequest``'s: **absent under a deployment key,
+    and present is 400, never ignored** (an ignored field is a caller who
+    believes it named its tenant). It is the operator arm's required subject —
+    a cross-org staff act, as at ``POST /billing/seats``.
+    """
+
+    #: The target — the ONLY subject the body names. Validated against a
+    #: membership in the RESOLVED org (clause 4); never ``ensure_identity``-minted,
+    #: so an arbitrary typed-in email cannot become a global identity.
+    member_email: str
+    plan_slug: str
+    #: Present under the deployment-key scheme; the box vouches for the acting
+    #: admin. Absent under the operator scheme, which names the org instead.
+    actor_email: str | None = None
+    #: Named by the OPERATOR; a deployment key naming one is 400 (R11).
+    org_slug: str | None = None
+    #: The seat's billing category. Never ``core`` — membership IS the Core seat
+    #: (D19.3), so ``plan_slug='core'`` is refused outright below.
     source: str = "alacarte"
 
 
@@ -1418,6 +1453,290 @@ def release_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
         )
         _audit(conn, org_id, "seat.release",
                {"email": req.email, "plan": req.plan_slug, "released": released})
+
+    return {"released": released}
+
+
+# ── §6 item (h) — the customer-authenticated seat WRITE ─────────────────────
+#
+# The write-side twin of item (g)'s `GET /me/seats` read: an org's own admin
+# assigning a purchased seat to a member of THEIR org, and releasing it. The
+# only OTHER seat writes are the two Operator routes above — cross-org staff,
+# taking an `org_slug` a customer must never name. These two are the missing
+# self-serve door, on the deployment key's THIRD capability (`seat_admin`).
+#
+# ⚠️ **Why the deployment key and not the org key** (the crux, §6(h)): a
+# `cc_live_` org key resolves to an `organization_id` and NOTHING else — it is
+# *the org*, with no in-org member — so the Console cannot tell from it whether
+# the caller is an admin, and R11 forbids fixing that with a body field. The
+# deployment key is the one customer credential that resolves a MEMBER (via
+# `store.deployment_visible_orgs`, the placement-bounded join sign-in already
+# trusts), so the member's `org_membership.role` is reachable and the Console
+# can authorise "admin, not any member" IN ITS OWN CODE. The chosen door is not
+# an org-key route, so `test_no_org_key_route_writes_an_entitlement_or_ledger_row`
+# stays green — and that green is the proof the org key gained no write.
+
+#: A self-serve seat's billing category — never `core` (membership IS the Core
+#: seat, D19.3). A customer naming any other value gets a 400 rather than a
+#: CHECK-constraint 500 from `seat_assignment_source_chk`.
+_SELF_SERVE_SEAT_SOURCES = frozenset({"center", "plan", "alacarte"})
+
+
+def _seat_admin_context(
+    conn, req: SeatAdminRequest, caller: DeploymentCaller | None
+) -> tuple[str, str]:
+    """Resolve ``(org_id, actor)`` for a seat write — clauses 2-3, per scheme.
+
+    One door, two schemes, and the CREDENTIAL — never the body — chooses which,
+    exactly as resolve/provision do:
+
+    * **Deployment key** (``caller is not None``): the org and the acting admin
+      are DERIVED TOGETHER from ``deployment_visible_orgs(deployment_id,
+      actor_email)`` — placement∩membership, never a body field (R11). It must
+      resolve to EXACTLY ONE admissible org or the write refuses (the chooser is
+      a named non-goal, as at resolve). The acting member's registry
+      ``role``/``status`` is then read on the RESOLVED ``(org, identity)`` and
+      must be an **active owner/admin** — the Console's own vocabulary, so a
+      plain member is refused HERE, not only by an upstream tier (clause 3).
+    * **Operator** (``caller is None``): a cross-org staff act that NAMES the org,
+      as ``POST /billing/seats`` does. No actor, no role gate.
+    """
+    if caller is not None:
+        return _seat_admin_for_deployment(conn, req, caller)
+    return _seat_admin_for_operator(conn, req)
+
+
+def _seat_admin_for_deployment(
+    conn, req: SeatAdminRequest, caller: DeploymentCaller
+) -> tuple[str, str]:
+    """The deployment-key arm: derive org+actor and gate on the registry role."""
+    if req.org_slug is not None:
+        # 400, never ignored — an ignored field is a caller who believes it named
+        # its tenant. The org is the ANSWER here, derived below (R11).
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a deployment key may not name an organization; the org is "
+                "derived from membership and placement"
+            ),
+        )
+    if not req.actor_email:
+        raise HTTPException(
+            status_code=400,
+            detail="actor_email is required under the deployment-key scheme",
+        )
+
+    visible = store.deployment_visible_orgs(
+        conn, deployment_id=caller.deployment_id, email=req.actor_email
+    )
+    admissible = [
+        o for o in visible if capabilities_of(o["status"]).can_sign_in
+    ]
+    if not admissible:
+        # The placement bound: a key placed for A resolves only A's members, so
+        # naming a member of another deployment's org lands here. One 403,
+        # byte-identical whether the actor is unknown, a member only on another
+        # deployment, or a member of a `deleted` org — a distinguishable
+        # negative would be a cross-org existence oracle (CP-2b clause 5).
+        raise HTTPException(
+            status_code=403,
+            detail="the acting member is not an admin on this deployment",
+        )
+    if len(admissible) > 1:
+        # More than one visible org → the org cannot be inferred, and choosing
+        # among them is the chooser, a named non-goal (as at resolve).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "the acting member belongs to more than one organization on "
+                "this deployment; the organization cannot be inferred"
+            ),
+        )
+
+    org = admissible[0]
+    org_id = org["organization_id"]
+    actor_identity_id = org["identity_id"]
+
+    # Clause 3 — the acting member's registry role, on the RESOLVED (org,
+    # identity). `deployment_visible_orgs` returns NEITHER role nor status
+    # (its join does not consult them), so this is an added read — the
+    # precedent is the resolve path's own `SELECT role, status FROM
+    # org_membership`. `org_membership.role` is registry/billing vocabulary
+    # (D12), and gating a BILLING write on it is using it for its stated
+    # purpose, not inventing a second grant vocabulary.
+    membership = conn.execute(
+        text(
+            "SELECT role, status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": actor_identity_id},
+    ).first()
+    if (
+        membership is None
+        or membership[0] not in ("owner", "admin")
+        or membership[1] != "active"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="the acting member is not an active admin of this organization",
+        )
+    return org_id, req.actor_email
+
+
+def _seat_admin_for_operator(conn, req: SeatAdminRequest) -> tuple[str, str]:
+    """The operator arm: a cross-org staff act that NAMES the org."""
+    if req.actor_email is not None:
+        # The operator has no actor — an `actor_email` under this scheme is a
+        # caller who believes the write is acting-as someone, which is not a
+        # thing here. 400 rather than ignored, the same rule the deployment arm
+        # applies to `org_slug`.
+        raise HTTPException(
+            status_code=400,
+            detail="actor_email is not used under the operator scheme; name the org",
+        )
+    if req.org_slug is None:
+        raise HTTPException(
+            status_code=400,
+            detail="org_slug is required under the operator scheme",
+        )
+    return _org_id(conn, req.org_slug), "operator"
+
+
+def _seat_admin_target(conn, *, org_id: str, member_email: str) -> str:
+    """The target's identity IFF they hold a membership in ``org_id``.
+
+    ⚠️ **Never mints.** Unlike the operator ``assign_seat``, which
+    ``ensure_identity``-creates a global identity for any typed-in email, the
+    self-serve door REFUSES an unknown or cross-org target (clause 4): a
+    customer admin must not be able to mint arbitrary identities or write into a
+    membership their org does not hold. ``user_identity.email`` is ``CITEXT``
+    (001:110), so the match is case-insensitive without a ``lower()``.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT ui.id FROM user_identity ui
+            JOIN org_membership m ON m.user_identity_id = ui.id
+            WHERE ui.email = :email AND m.organization_id = :org
+            """
+        ),
+        {"email": member_email, "org": org_id},
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no such member in this organization",
+        )
+    return str(row[0])
+
+
+@app.post("/registry/seats")
+def assign_seat_admin(
+    req: SeatAdminRequest, caller: SeatAdminCaller
+) -> dict[str, Any]:
+    """Assign a seat under the customer's own admin credential (§6 item (h)).
+
+    Reuses the OPERATOR ``assign_seat`` composition verbatim
+    (``seat_rows`` → ``seat_counts`` → ``decide_assignment`` →
+    ``try_assign_seat``) — NOT a fork, so the counts after a write reconcile with
+    ``GET /me/seats`` (the same ``seat_rows``/``seat_counts``). What differs is
+    the door: org and actor are DERIVED from the credential (``_seat_admin_
+    context``), the target is validated against membership rather than minted,
+    and this writer takes ``lock_seat_capacity`` BEFORE the count — closing the
+    race the operator twin still carries.
+
+    **Refuses at the cap (no self-serve oversubscription):** ``available == 0``
+    and not already-assigned → 409 with the ``buy_more`` payload, byte-compatible
+    with ``POST /billing/seats``; the customer buys more seats first, and
+    oversubscription stays the Operator-only escape hatch. **Idempotent:** an
+    already-assigned member is a 200 that consumes nothing (``decide_assignment``
+    ``already_assigned`` + ``try_assign_seat``'s ``ON CONFLICT DO NOTHING``).
+    Gated on ``can_write_seats`` (403 for ``suspended``/``cancelled``).
+    """
+    if req.plan_slug == CORE_PLAN_SLUG:
+        raise HTTPException(
+            status_code=400,
+            detail="the Core seat is membership itself and is not assigned here",
+        )
+    if req.source not in _SELF_SERVE_SEAT_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{req.source!r} is not a self-serve seat source; expected one "
+                f"of {sorted(_SELF_SERVE_SEAT_SOURCES)}"
+            ),
+        )
+    with get_engine().begin() as conn:
+        org_id, actor = _seat_admin_context(conn, req, caller)
+        target_id = _seat_admin_target(
+            conn, org_id=org_id, member_email=req.member_email
+        )
+
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).can_write_seats:
+            raise HTTPException(
+                status_code=403,
+                detail=f"organization is {state}; seats are locked",
+            )
+
+        # BEFORE the count — this new writer takes the advisory lock the operator
+        # `assign_seat` twin still does not (store.lock_seat_capacity's note).
+        store.lock_seat_capacity(conn, org_id=org_id, plan_slug=req.plan_slug)
+        held = store.has_live_seat(
+            conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=target_id
+        )
+        grants, assigned = store.seat_rows(
+            conn, org_id=org_id, plan_slug=req.plan_slug
+        )
+        decision = decide_assignment(
+            seat_counts(req.plan_slug, grants, assigned),
+            already_assigned=held,
+            price_inr=store.plan_price(conn, plan_slug=req.plan_slug),
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=decision.status,
+                detail={"reason": decision.reason, "buy_more": decision.buy_more},
+            )
+        store.try_assign_seat(
+            conn, org_id=org_id, plan_slug=req.plan_slug,
+            identity_id=target_id, source=req.source,
+        )
+        _audit(conn, org_id, "seat.assign",
+               {"email": req.member_email, "plan": req.plan_slug}, actor=actor)
+
+    return {"assigned": True, "plan_slug": req.plan_slug}
+
+
+@app.post("/registry/seats/release")
+def release_seat_admin(
+    req: SeatAdminRequest, caller: SeatAdminCaller
+) -> dict[str, Any]:
+    """Release a seat under the customer's own admin credential (§6 item (h)).
+
+    Frees capacity immediately (D19.3), and **ungated** — freeing a seat is safe
+    when the org is suspended, matching the operator twin. A release of a member
+    who holds no live seat is a 200 no-op ``{released: false}``. Refuses
+    ``plan_slug='core'`` (membership IS the Core seat, not released here).
+    """
+    if req.plan_slug == CORE_PLAN_SLUG:
+        raise HTTPException(
+            status_code=400,
+            detail="the Core seat is membership itself and is not released here",
+        )
+    with get_engine().begin() as conn:
+        org_id, actor = _seat_admin_context(conn, req, caller)
+        target_id = _seat_admin_target(
+            conn, org_id=org_id, member_email=req.member_email
+        )
+        released = store.release_seat(
+            conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=target_id
+        )
+        _audit(conn, org_id, "seat.release",
+               {"email": req.member_email, "plan": req.plan_slug,
+                "released": released}, actor=actor)
 
     return {"released": released}
 
