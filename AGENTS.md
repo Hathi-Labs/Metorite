@@ -237,4 +237,5 @@ Check with `uv tree` / `uv pip list`. Key runtime pins: `agent-framework-*`
 | Infrastructure | infra/AGENTS.md | Docker Compose, Postgres, LLM tier config, Redis |
 | Deployment | deploy/AGENTS.md | Hostinger VPS deployment |
 | Planning docs | project-docs/AGENTS.md | Product requirements, project plan, architecture |
+| Marketing site | site/AGENTS.md | Static apex page (`metorite.com`); owner spec `project-docs/specs/marketing_site.md` (WS-33) |
 | Workbench UI | workbench/AGENTS.md | Control Plane (Next.js) and local dev tools |
