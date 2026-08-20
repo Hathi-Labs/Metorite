@@ -5,9 +5,11 @@ Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2c
-SLICES 1+2 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
+SLICES 1+2+3 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
 slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
-Console-provision client; slices 3–4 open) · CP-6
+Console-provision client; slice 3 2026-08-20 — the `signIn` callback
+self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
+`signup_eligible` signal), BUILD+TEST only; slice 4 open) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
@@ -55,8 +57,31 @@ ladders**; every auth/tenancy clause mutation-proved (drop the flag →
 `SignupDisabled` red; trust a body email → the R11 400 red; map the wrong
 exception → the code red; skip `org_owner_of` + uncaught step-1 raise → the
 `SlugTaken` path red; drop the slug shape gate → a blank slug returns the false
-`ConsoleUnavailable`/a spaced slug 200-admits, red). **Slices 3 (the `signIn` limbo branch) and 4 (the
-`/signup` form) remain OPEN** — nothing of the *form* exists. **Issuing or
+`ConsoleUnavailable`/a spaced slug 200-admits, red). ◐ **CP-2c SLICE 3 BUILT
+2026-08-20 — the `signIn` callback self-serve-signup "limbo" branch, NARROWED to
+zero-org-only after a P1 security review** (done-when 7 / §6(j) row vii): under
+`SELF_SERVE_SIGNUP_ENABLED === "true"` (Next-side env) the callback admits an
+org-less session ONLY for the genuinely org-less person, keyed on the gateway's
+new load-bearing `signup_eligible` signal (True for the zero-org
+`console-empty` outcome ALONE), so the ordinary redirect lands them where
+`/signup` is reachable; caches nothing (the callback writes no cache, the
+gateway's zero-org `invalidate` still fires); flag unset/any-other-value → row
+iv verbatim, byte-identical to today. ⚠️ **The funnel does NOT key on the
+`AccessDenied` code** — a SUSPENDED/non-paying org (`console-refused`,
+`cache-dead`) and a seat-capped one (`console-error`) carry that code too and
+must KEEP being refused, since registry suspension is enforced only at the
+resolve door; keying on the code would readmit a non-paying customer. **The
+repair DOES touch the gateway, additively** — `console_resolve.py`
+(`ResolveDecision.signup_eligible`, set True on the zero-org return alone),
+`gateway/routes/signin.py` (passes it through) and
+`test_deployment_resolve_cache.py` (R8 fence that the three suspended/seat-cap
+outcomes are `signup_eligible=False` against the LIVE DB) all changed;
+`console_resolve.py` still reads NO signup flag and the admit decision stays the
+callback's. Build+test only; the live `SELF_SERVE_SIGNUP_ENABLED` flip stays §8
+gate 8. Zero migrations, zero new engine sites; source-regex pins in
+`signin.test.ts` (positive trigger + negative no-`AccessDenied`-key pin) plus the
+R8 suspended→False assertions. **Slice 4 (the
+`/signup` form) remains OPEN** — nothing of the *form* exists. **Issuing or
 widening a REAL deployment key stays §8 gate 7; flipping
 `SELF_SERVE_SIGNUP_ENABLED` live is §8 gate 8** — the code is built, the acts are
 the owner's.
@@ -3055,7 +3080,7 @@ admission:
 | iv | **200**, **zero** organizations | **refuse** — `AccessDenied` | **nothing written**, and `invalidate(email)` fires |
 | **v** | **409 at the seat cap, or any other status in which the Console ANSWERED and the answer was not an admission** (400, 404, 422 — a request this box built wrong) | **refuse** — `AccessDenied` | **nothing written** *(added 2026-08-18 during the build: §6(j)'s four rows did not cover the 409 clause 12 documents. At the cap the person genuinely holds no seat and "ask your admin" is the remedy, so the shipped copy is true; a THIRD refusal code was deliberately not minted. Agent-proposed default, owner may overrule. Fence: `test_a_seat_cap_refusal_fails_closed_and_caches_nothing`. ⚠️ **Wording narrowed 2026-08-18** — it used to read "any other status this box cannot read", which is row vi's job)* |
 | **vi** | **5xx · 401 · 408 · 429** — the box got **no answer**: the Console or something in front of it is broken, or *this box's own credential* is wrong | **the UNREACHABLE path** — degrade on the cache up to `MAX_STALENESS`, else refuse with `ConsoleUnavailable` | **nothing written** *(added 2026-08-18, repair of review finding **P1-1**. Row v used to sweep these in and answer `AccessDenied`: an nginx 502 told even cache-fresh users "your account isn't authorized" — their cache was never consulted — and a rotated `cc_depl_` key told **every user of every tenant** the same, which is the wrong-looking denial D33.1 forbids by name. The identical outage over a **closed port** already degraded gracefully, so one event had two spellings and two opposite behaviours. The line is now drawn on **whether an answer was produced**, never on whether a status was recognised. Fences: `test_a_console_5xx_degrades_to_the_cache_like_any_other_outage`, `test_an_unreadable_status_with_nothing_cached_says_unavailable` (parametrised over 500/502/503/504/408/429), `test_a_rotated_deployment_key_is_an_outage_not_a_denial`, and `test_a_403_and_a_409_still_mean_what_they_meant` as the control)* |
-| **vii** | **row iv's outcome, seen by the `signIn` CALLBACK while `SELF_SERVE_SIGNUP_ENABLED === "true"` (Next-side env)** | **admit an ORG-LESS session** — the callback maps this one code to `return true`; the user lands where `/signup` is reachable and every tenant-bound surface stays behind the gateway's per-request resolution + fail-closed tenant binding | **nothing written** — row iv's cache-nothing rule intact, `invalidate(email)` still fires; the gateway, `console_resolve.py` and this table's rows i–vi are byte-identical under both flag positions *(added 2026-08-19 by CP-2c's remediation, audit B3 — the first draft cited this row before it existed. The decision is deliberately the CALLBACK's, not the resolve path's: nothing gateway-side reads the signup flag. Fence: the callback branch pinned in `signin.test.ts`, both positions; `test_deployment_resolve_cache.py` untouched by construction)* |
+| **vii** | **row iv's outcome ALONE (`console-empty`, `signup_eligible=True`), seen by the `signIn` CALLBACK while `SELF_SERVE_SIGNUP_ENABLED === "true"` (Next-side env)** | **admit an ORG-LESS session** — the callback keys on the gateway's `signup_eligible` signal (NOT on the `AccessDenied` code) and returns `true`; the user lands where `/signup` is reachable and every tenant-bound surface stays behind the gateway's per-request resolution + fail-closed tenant binding | **nothing written** — row iv's cache-nothing rule intact, `invalidate(email)` still fires; rows i–vi are behaviourally unchanged under both flag positions save for one ADDITIVE field *(NARROWED to zero-org-only 2026-08-20 by CP-2c's slice-3 repair, review P1. The first slice keyed the funnel on `code === "AccessDenied"` alone — which rows ii/v and the `cache-dead` short-circuit ALL carry — so a SUSPENDED/non-paying or seat-capped org, which the registry suspension keeps out at THIS door alone, would have regained access via an org-less session. The fix adds a purely-additive, load-bearing gateway signal `ResolveDecision.signup_eligible`, True on the zero-org return ALONE and set directly there (never inferred from `source`, which stays log-only), surfaced by `gateway/routes/signin.py`. `console_resolve.py` reads NO signup flag; the admit decision stays the CALLBACK's. Fences: the callback branch pinned in `signin.test.ts` (positive `signup_eligible === true` trigger + a NEGATIVE pin that `answer?.code === "AccessDenied"` is absent from the guard); and — because the security half must RUN — `test_deployment_resolve_cache.py::TestSignupEligibleIsZeroOrgOnly` asserts against the LIVE DB that `console-empty` is the ONLY `signup_eligible=True` outcome while `console-refused`, `cache-dead` and `console-error` are all False)* |
 
 Case by case, because each carries a decision:
 
@@ -4058,12 +4083,17 @@ overrule any numbered item)*:
    not exist and claimed an unenumerable "only usable surface"):** once the
    resolve flag is armed, an unknown email's resolve returns the EMPTY
    outcome, which the gateway maps to `admit=False, code=ACCESS_DENIED`
-   (`console_resolve.py:892-898`, §6(j) row iv) — refusing the very session
-   signup needs. **The limbo decision is the `signIn` CALLBACK's, Next-side,
-   nothing gateway-side changes:** under `SELF_SERVE_SIGNUP_ENABLED === "true"`,
-   the callback maps that one code to `return true` — a session with no org,
-   **nothing cached** (row iv's cache-nothing rule intact) — and the ordinary
-   redirect lands the user where `/signup` is reachable. **No new gating
+   (`console_resolve.py` row iv) — refusing the very session
+   signup needs. **The limbo *decision* is the `signIn` CALLBACK's, Next-side,
+   and `console_resolve.py` reads no signup flag** — but the callback keys on a
+   purely-additive gateway signal, so the gateway DID change additively (slice-3
+   repair, §6(j) row vii): under `SELF_SERVE_SIGNUP_ENABLED === "true"`, the
+   callback returns `true` when the gateway's `signup_eligible` is True — the
+   zero-org outcome ALONE, NOT every `AccessDenied` refusal — a session with no
+   org, **nothing cached** (row iv's cache-nothing rule intact) — and the
+   ordinary redirect lands the user where `/signup` is reachable. A
+   suspended/seat-cap refusal carries `AccessDenied` too but `signup_eligible`
+   False, so it stays refused. **No new gating
    claim is made**: `AccessGate.tsx:10-12` is presentation by its own header;
    the enforcement boundary stays the gateway's per-request access resolution
    plus fail-closed tenant binding (item 4's `TenantUnbound` note). See
@@ -4179,13 +4209,43 @@ mutation testing on auth/tenancy clauses)*:
    clause-1 fence report `{'/health', '/orgs/provision'} == {'/health'}`.
    Fences in `test_customer_console_lifecycle.py::
    TestTheDeploymentKeyProvisionArm`, seven R8 tests. Zero migrations.)*
-7. §6(j) **row vii** (authored by this remediation): under the signup flag,
-   the `signIn` callback maps the EMPTY outcome's `ACCESS_DENIED` to an
-   admitted org-less session, caching nothing; flag unset/other value → row
-   iv verbatim, byte-identical to today. Fence: the callback branch pinned in
-   `signin.test.ts` (both positions) — NOT `test_deployment_resolve_cache.py`,
-   which stays untouched because nothing gateway-side changes (audit B3's
-   third-reader correction).
+7. ✅ **MET — slice 3, 2026-08-20, NARROWED to zero-org-only after a P1**
+   (BUILD+TEST half only; the live `SELF_SERVE_SIGNUP_ENABLED` flip stays §8
+   gate 8). §6(j) **row vii**: under the signup flag, the `signIn` callback
+   admits an org-less session ONLY for the genuinely org-less person, caching
+   nothing; flag unset/other value → row iv verbatim, byte-identical to today.
+   *(Built as repaired: the branch `answer?.signup_eligible === true &&
+   process.env.SELF_SERVE_SIGNUP_ENABLED === "true"` → `return true`, inserted
+   after the admit check and before row iv's redirect; the callback caches
+   nothing by construction. `SELF_SERVE_SIGNUP_ENABLED` is a SEPARATE Next-side
+   env from CP-2b's `CUSTOMER_CONSOLE_RESOLVE_ENABLED`, read only here.*
+   ⚠️ **The funnel keys on the gateway's load-bearing `signup_eligible` signal,
+   NOT on the `AccessDenied` code.** The first slice keyed on
+   `code === "AccessDenied"` alone, which review rejected as a P1: that code is
+   also carried by a SUSPENDED/non-paying org (`console-refused`, `cache-dead`)
+   and a seat-capped one (`console-error`), and because registry suspension is
+   enforced ONLY at the resolve door, funnelling those into an org-less session
+   would hand a non-paying customer back full access on re-sign-in. So
+   `console_resolve.ResolveDecision.signup_eligible` was added — True on the
+   zero-org `console-empty` return ALONE, set directly there (never inferred
+   from `source`, which stays log-only) — and `gateway/routes/signin.py` passes
+   it through. **The wider "admit every `AccessDenied` refusal" reading is
+   REJECTED-for-security, not settled**: it was a surfaced agent-proposed
+   default that the OWNER may overrule with an explicit directive, but the
+   shipped behaviour keeps suspended/seat-cap orgs refused. **This done-when
+   DOES touch the gateway additively** — `console_resolve.py`, `signin.py` and
+   `test_deployment_resolve_cache.py` all changed; the earlier claim that
+   "nothing gateway-side changes / `test_deployment_resolve_cache.py` untouched"
+   is corrected here. `console_resolve.py` still reads NO signup flag; the admit
+   decision stays the callback's. Fences: `signin.test.ts` (positive
+   `signup_eligible === true` trigger + a NEGATIVE pin that
+   `answer?.code === "AccessDenied"` is absent from the guard, so a
+   suspended/seat-cap refusal cannot admit) AND — because the security half must
+   RUN, not just be shape-pinned — `test_deployment_resolve_cache.py::
+   TestSignupEligibleIsZeroOrgOnly`, an R8 suite that proves against the LIVE DB
+   that `console-empty` is the only `signup_eligible=True` outcome while
+   `console-refused`, `cache-dead` and `console-error` are all False; plus the
+   three route-dict updates in `test_signin_resolve_route.py`.)*
 8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,

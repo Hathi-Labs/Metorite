@@ -279,3 +279,78 @@ describe("the sign-in resolve hop (CP-2b)", () => {
     }
   });
 });
+
+// ── WS-31 CP-2c §6(j) row vii (customer_console.md done-when 7) ─────────────
+//
+// The self-serve-signup "limbo" branch, NARROWED to zero-org-only after review
+// found a P1: keying on `code === "AccessDenied"` alone admitted a SUSPENDED /
+// non-paying org and a seat-capped one into an org-less session, because the
+// gateway emits that same code for `console-refused`, `cache-dead` and
+// `console-error` as well as the genuinely org-less `console-empty`. Registry
+// suspension is enforced ONLY at the resolve door, so that would have handed a
+// non-paying customer back the access the suspension exists to deny. The funnel
+// now keys on the gateway's load-bearing `signup_eligible` signal — True for
+// the zero-org outcome ALONE — and `code` is no longer the trigger.
+//
+// Source-level over `auth.ts`, same reason the CP-2b hop above is: vitest in
+// this tree is node-env and `import("@/auth")` dies inside next-auth before any
+// callback can be called, so the branch is pinned by its SHAPE. What no test in
+// this tree can prove is that the shape behaves — that the flag being off is
+// byte-identical to today — so that is the review check (DESIGN_SYSTEM §8's
+// cousin), written down here rather than assumed. The SECURITY half — that a
+// suspended/seat-cap `AccessDenied` never gets `signup_eligible` — lives where
+// it can RUN, in `tests/unit/test_deployment_resolve_cache.py` against the live
+// DB; this file cannot execute the callback, so it pins the SHAPE only.
+describe("the self-serve signup limbo branch (CP-2c §6(j) row vii)", () => {
+  it('under SELF_SERVE_SIGNUP_ENABLED === "true", the zero-org signup_eligible case returns true', () => {
+    const signIn = callbackBody(authSrc, "signIn");
+
+    // The branch exists and keys on the gateway's `signup_eligible === true`
+    // signal ANDed with the signup flag → `return true`.
+    expect(signIn).toMatch(
+      /answer\?\.signup_eligible === true\s*&&\s*[\s\S]*?SELF_SERVE_SIGNUP_ENABLED === "true"[\s\S]*?return true;/,
+    );
+
+    // EQUALITY against "true" for the flag, never truthiness — an operator
+    // debugging a sign-in outage who sets the flag to "false" must get OFF, and
+    // every truthy-string reading arms the limbo instead. A `truthy instead of
+    // ===` mis-gate drops the `=== "true"` literal and fails this line RED.
+    expect(signIn).toContain('SELF_SERVE_SIGNUP_ENABLED === "true"');
+
+    // And `signup_eligible` is compared with `=== true`, not truthiness, so an
+    // absent/undefined value fails closed (no funnel).
+    expect(signIn).toContain("answer?.signup_eligible === true");
+  });
+
+  it("does NOT key the funnel on the AccessDenied code — suspended/seat-cap stay refused", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    // The P1 negative pin. `console-refused` (403 suspended), `cache-dead`
+    // (cached suspended) and `console-error` (409 seat-cap) all carry
+    // `AccessDenied`; only `console-empty` carries `signup_eligible`. If the
+    // guard ever re-keyed on the code, a non-paying org would regain access by
+    // re-signing-in. So the exact string `answer?.code === "AccessDenied"` must
+    // be ABSENT from the callback — the code is never the trigger.
+    expect(signIn).not.toContain('answer?.code === "AccessDenied"');
+    expect(signIn).not.toMatch(/answer\?\.code[\s\S]*?===\s*"AccessDenied"/);
+  });
+
+  it("flag unset/other value → row iv verbatim: the refusal redirect is unchanged", () => {
+    const signIn = callbackBody(authSrc, "signIn");
+    // Row iv is byte-identical to today: the encoded refusal redirect is still
+    // present and is still the fall-through below the limbo branch, never
+    // replaced by it. Returning a bare `false` (Auth.js `AccessDenied` copy,
+    // which D33.1 forbids) is still not the mechanism.
+    expect(signIn).toContain("/signin?error=${encodeURIComponent(");
+    expect(signIn).toContain('answer?.code || "ConsoleUnavailable"');
+    expect(signIn).not.toMatch(/\breturn false\b/);
+
+    // And the limbo branch sits AFTER the admit and BEFORE the redirect, so the
+    // flag-off path (and every non-zero-org refusal) reaches row iv unchanged.
+    const limbo = signIn.indexOf("answer?.signup_eligible === true");
+    const admit = signIn.indexOf("if (answer?.admit) return true;");
+    const redirect = signIn.indexOf("/signin?error=${encodeURIComponent(");
+    expect(admit).toBeGreaterThan(-1);
+    expect(limbo).toBeGreaterThan(admit);
+    expect(redirect).toBeGreaterThan(limbo);
+  });
+});
