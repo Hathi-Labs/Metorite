@@ -186,8 +186,40 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const answer = (await res.json()) as {
           admit?: boolean;
           code?: string | null;
+          signup_eligible?: boolean;
         };
         if (answer?.admit) return true;
+        // WS-31 CP-2c §6(j) row vii — the self-serve-signup "limbo" branch.
+        // Under the flag, the ZERO-ORG refusal alone admits an ORG-LESS session
+        // so the ordinary redirect below lands the person where `/signup` is
+        // reachable instead of on an error page. It keys on the gateway's
+        // load-bearing `signup_eligible` signal — TRUE for outcome iv, the
+        // genuinely org-less person, and FALSE for every other refusal — NOT on
+        // `code`. `AccessDenied` is shared by a SUSPENDED / non-paying org
+        // (`console-refused`, `cache-dead`) and a seat-capped one
+        // (`console-error`); registry suspension is enforced ONLY at this resolve
+        // door, so re-keying the funnel on the code would readmit a non-paying
+        // customer into an org-less session and hand back the access the
+        // suspension exists to deny. Those refusals must keep falling through to
+        // the redirect below. `source` is log-only and MUST NOT be branched on.
+        //
+        // Admitting caches NOTHING — this callback writes no cache, and the
+        // zero-org path's invalidate already fired gateway-side, so row iv's
+        // cache-nothing rule is intact and every tenant-bound surface stays
+        // behind the gateway's per-call resolution and fail-closed tenant
+        // binding.
+        //
+        // Ships dark, and fails closed: an absent/false `signup_eligible` opens
+        // no funnel. The flag is an EQUALITY against "true", the same discipline
+        // as the resolve gate above — unset, or any other value, skips the
+        // branch and the refusal below is byte-identical to today. Flipping it
+        // on a live deployment is OWNER-GATE (§8 gate 8).
+        if (
+          answer?.signup_eligible === true &&
+          process.env.SELF_SERVE_SIGNUP_ENABLED === "true"
+        ) {
+          return true;
+        }
         // `code` comes from ANOTHER service and lands in a URL, so it is
         // encoded rather than trusted to be URL-safe: a code carrying `&`,
         // `#` or a space would otherwise truncate the query string or arrive

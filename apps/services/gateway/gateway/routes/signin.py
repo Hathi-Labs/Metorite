@@ -119,6 +119,9 @@ async def resolve_sign_in(
             "admit": False,
             "code": CONSOLE_UNAVAILABLE,
             "source": "unwired",
+            # Wire-shape parity: an unwired box is not the zero-org case, so the
+            # self-serve funnel must never open here. Always False.
+            "signup_eligible": False,
         }
 
     decision = await resolve_for_signin(
@@ -137,4 +140,10 @@ async def resolve_sign_in(
         "admit": decision.admit,
         "code": decision.code,
         "source": decision.source,
+        # WS-31 CP-2c: the ONE load-bearing signal the BFF's limbo branch keys
+        # on. True for the zero-org outcome ALONE (``console-empty``); passed
+        # through verbatim, never re-derived from ``source`` (which is log-only).
+        # A suspended/seat-cap refusal carries ``AccessDenied`` too but leaves
+        # this False, so the self-serve funnel stays shut on them.
+        "signup_eligible": decision.signup_eligible,
     }

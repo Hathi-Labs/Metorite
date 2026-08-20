@@ -148,6 +148,9 @@ class TestAHalfProvisionedBoxRefuses:
             "admit": False,
             "code": CONSOLE_UNAVAILABLE,
             "source": "unwired",
+            # WS-31 CP-2c: wire-shape parity. An unwired box is not the zero-org
+            # case, so the self-serve funnel must stay shut — always False here.
+            "signup_eligible": False,
         }
 
     def test_the_unwired_refusal_never_consults_the_seat_allocating_module(
@@ -205,7 +208,12 @@ class TestAWiredBoxStillAsks:
             "/signin/resolve", json={"display_name": "Ada L"}
         ).json()
 
-        assert body == {"admit": True, "code": None, "source": "console"}
+        assert body == {
+            "admit": True,
+            "code": None,
+            "source": "console",
+            "signup_eligible": False,
+        }
         assert spy.calls == [("ada@customer.example", "Ada L")]
 
     def test_a_wired_refusal_is_a_200_carrying_the_code(self, wired, monkeypatch):
@@ -228,8 +236,37 @@ class TestAWiredBoxStillAsks:
             "admit": False,
             "code": CONSOLE_UNAVAILABLE,
             "source": "unreachable",
+            "signup_eligible": False,
         }
         assert recorder.names() == ["signin.resolve_refused"]
+
+    def test_the_route_passes_signup_eligible_through_unchanged(
+        self, wired, monkeypatch
+    ):
+        """WS-31 CP-2c: the zero-org signal rides the wire, verbatim.
+
+        The route neither derives nor re-computes ``signup_eligible`` — it hands
+        the module's decision to the BFF's limbo branch untouched. Here the
+        module answers the zero-org refusal (``console-empty``, the ONLY True
+        case), and the route's JSON must carry ``signup_eligible: True``. Every
+        other refusal leaves it False (the two dicts above), so the funnel opens
+        for the org-less person alone.
+        """
+        spy = Spy(
+            ResolveDecision(
+                admit=False,
+                code="AccessDenied",
+                source="console-empty",
+                signup_eligible=True,
+            )
+        )
+        monkeypatch.setattr(route, "resolve_for_signin", spy)
+
+        body = _client().post("/signin/resolve", json={}).json()
+
+        assert body["signup_eligible"] is True
+        assert body["admit"] is False
+        assert body["code"] == "AccessDenied"
 
 
 # ══ The posture the route inherits rather than declares ══════════════════════

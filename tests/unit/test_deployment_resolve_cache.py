@@ -690,6 +690,112 @@ class TestTheFourOutcomes:
         assert _membership(db, email) == []
 
 
+# ══ §6(j) row vii — `signup_eligible` is the ZERO-ORG outcome ALONE ══════════
+#
+# WS-31 CP-2c, repair of a P1. The self-serve-signup "limbo" branch admits an
+# org-less session, and it must funnel ONLY the genuinely org-less person —
+# outcome iv, `console-empty`. Every OTHER refusal that carries `AccessDenied`
+# is a tenant the registry is actively keeping OUT: a SUSPENDED / non-paying org
+# (a live 403 `console-refused`, or its cached form `cache-dead`) and a
+# seat-capped one (409 `console-error`). Registry suspension is enforced ONLY at
+# this resolve door, so if the funnel keyed on the shared `AccessDenied` code a
+# non-paying customer would regain full access by re-signing-in into an org-less
+# session. `signup_eligible` is the load-bearing signal that keeps that door
+# shut, and this is the fence that proves it — against the LIVE DB, because the
+# distinction between these four outcomes is exactly the SQL/HTTP behaviour a
+# hermetic fake cannot reproduce.
+
+class TestSignupEligibleIsZeroOrgOnly:
+    async def test_the_zero_org_outcome_is_the_one_eligible_case(self, wired, db):
+        """200-with-none → `signup_eligible is True`, and it is the ONLY one."""
+        from acb_auth import console_resolve
+
+        email = _email()
+        wired.answers_empty()
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is False
+        assert decision.code == console_resolve.ACCESS_DENIED
+        assert decision.source == "console-empty"
+        assert decision.signup_eligible is True
+
+    async def test_a_403_suspended_org_is_NOT_eligible(self, wired, db):
+        """`console-refused` carries `AccessDenied` but must not open the funnel.
+
+        The suspension door stays shut: this is the live 403 a non-paying org
+        takes, and admitting it into an org-less session would readmit them.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.refuses("suspended")
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is False
+        assert decision.code == console_resolve.ACCESS_DENIED
+        assert decision.source == "console-refused"
+        assert decision.signup_eligible is False
+
+    async def test_a_cached_suspended_org_is_NOT_eligible(self, wired, db):
+        """`cache-dead` — the SUSPENDED state served from the cache — is not eligible.
+
+        Reached the only way it can be: admit once, take a 403 (which writes
+        `{"sign_in": false}`), then resolve again inside the ceiling so the
+        dead-state short-circuit answers `cache-dead`. It shares `AccessDenied`
+        with the zero-org case and MUST leave `signup_eligible` False.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+        assert (await console_resolve.resolve_for_signin(email)).admit
+        wired.refuses("suspended")
+        _expire(db, email)
+        console_resolve.invalidate()
+        assert (await console_resolve.resolve_for_signin(email)).admit is False
+
+        # Now the record is dead and fresh; re-reading it short-circuits.
+        console_resolve.invalidate()
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.source == "cache-dead", "did not reach the cached path"
+        assert decision.admit is False
+        assert decision.code == console_resolve.ACCESS_DENIED
+        assert decision.signup_eligible is False
+
+    async def test_a_409_seat_cap_is_NOT_eligible(self, wired, db):
+        """`console-error` at the seat cap carries `AccessDenied`, not eligibility."""
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.is_at_cap()
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is False
+        assert decision.code == console_resolve.ACCESS_DENIED
+        assert decision.source == "console-error"
+        assert decision.signup_eligible is False
+
+    async def test_an_admitted_person_is_NOT_eligible(self, wired, db):
+        """A person WITH an org has nothing to sign up for; the admit is not a funnel."""
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug))
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is True
+        assert decision.signup_eligible is False
+
+
 # ══ The dead state is bounded by the CEILING, and self-heals ═════════════════
 #
 # Repair of review finding **P1-2** (2026-08-18). The 403 writes a PERSON fact

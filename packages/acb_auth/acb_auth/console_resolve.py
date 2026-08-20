@@ -235,6 +235,17 @@ class ResolveDecision:
     ``code`` is ``None`` exactly when ``admit`` is True. ``source`` says which
     of the four paths produced it and exists for operators reading logs, never
     for a caller to branch on.
+
+    ``signup_eligible`` is the ONE load-bearing signal a caller MAY branch on
+    (WS-31 CP-2c). It is ``True`` for exactly one outcome — a 200 with **zero**
+    organizations, the genuinely org-less person — and ``False`` for every
+    other, admissions and refusals alike. It exists so the self-serve-signup
+    "limbo" branch can funnel only the zero-org case: a SUSPENDED / non-paying
+    org (``console-refused``, ``cache-dead``) and a seat-capped one
+    (``console-error``) all carry ``AccessDenied`` too, and re-keying the funnel
+    on the code would readmit a non-paying customer into an org-less session,
+    regaining access the registry suspension is meant to deny. ``source`` stays
+    log-only and MUST NOT be branched on; this is the field that is.
     """
 
     admit: bool
@@ -243,6 +254,10 @@ class ResolveDecision:
     capabilities: dict[str, bool] = field(default_factory=dict)
     registry_status: str | None = None
     source: str = ""
+    #: True for the zero-org outcome ALONE (outcome iv, ``console-empty``); set
+    #: directly on that return, never inferred from ``source``. Default False,
+    #: so an undefined value fails closed — no funnel.
+    signup_eligible: bool = False
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────
@@ -1009,8 +1024,19 @@ async def resolve_for_signin(
     # deployment at all, and §6(c)'s named invalidate trigger.
     if not organizations:
         await _forget_all(key)
+        # ⚠️ The ONLY ``signup_eligible=True`` return in this module. Set here
+        # DIRECTLY — never derived from ``source`` — because this is the sole
+        # genuinely org-less outcome: the Console answered 200 and listed no
+        # organization at all, so there is no tenant to be suspended or capped.
+        # The refusals that also carry ``AccessDenied`` (``console-refused`` /
+        # ``cache-dead`` for a suspended org, ``console-error`` at the seat cap)
+        # leave this default False, so the self-serve funnel cannot readmit a
+        # non-paying customer.
         return ResolveDecision(
-            admit=False, code=ACCESS_DENIED, source="console-empty"
+            admit=False,
+            code=ACCESS_DENIED,
+            source="console-empty",
+            signup_eligible=True,
         )
 
     # ── Outcome i — exactly one ────────────────────────────────────────────
