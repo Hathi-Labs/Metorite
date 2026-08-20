@@ -162,10 +162,12 @@ __all__ = [
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleProvisionUnavailable",
+    "ReconcileSummary",
     "ResolveDecision",
     "invalidate",
     "is_wired",
     "provision_org_on_console",
+    "reconcile",
     "resolve_for_signin",
 ]
 
@@ -540,6 +542,153 @@ async def provision_org_on_console(
         # the org works dark, and a wired resubmit catches the Console up.
         raise ConsoleProvisionUnavailable("unwired")
     return await _post_provision(slug, name, owner_email, gstin, billing_state)
+
+
+# ── The signup Console-mirror reconciler (CP-2e slice) ───────────────────────
+#
+# ⚠️ **The closer for CP-2c done-when 5's named dark window.** A TRANSIENT Console
+# failure during signup leaves an org live on the TENANT plane but never mirrored
+# to the Console, and step 0a's `membership_of → AlreadyMember` short-circuits any
+# literal route resubmit — so the org is un-metered until reconciled and nothing
+# in the signup route re-drives it. This is that path: an out-of-band SWEEP over
+# tenant orgs whose Console mirror is missing, re-driving the SAME create-only-
+# guarded arm through the ONE existing Console client, `provision_org_on_console`.
+#
+# It lives HERE, not in a new module, because a second Console client anywhere is
+# root `CLAUDE.md` §5's defect by name and the reconciler must re-drive exactly
+# the arm the signup route does. It recovers `owner_email` with the SAME owner
+# join `access._ORG_OWNER_SQL` uses (via the public `access.org_owner_of` seam) —
+# no second owner grammar — and every read + the marker write go through
+# `get_session_factory`, the unbound idiom this module already uses ("the tenant
+# is the ANSWER"): no new engine site (R5(b)), no tenant/identity from request
+# input (R11 — the sweep takes nothing from a caller, it re-drives what the tenant
+# plane already persisted).
+#
+# ⚠️ **Ships dark, fail-closed.** With the box unwired it is a logged no-op that
+# touches neither the Console nor the tenant DB (the early guard below) — so the
+# `scripts/` CLI that triggers it is inert until §8 gates 2 + 8 (Console deployed,
+# a `{provision}` key wired) are the owner's acts. `provision_org_on_console`
+# raising `ConsoleProvisionUnavailable("unwired")` is the same guarantee one layer
+# down. Fence: `tests/unit/test_signup_reconciler.py`.
+
+#: Tenant orgs not yet mirrored to the Console. `first_party = false` EXCLUDES the
+#: operator's own bootstrap org (migration 157 backfilled `default` to true): it is
+#: not a metered self-serve customer, and mirroring it into the customer billing
+#: registry would route the first-party path through the customer Console — the
+#: bypass D36.2/D36.3 forbids. Every signup-born org is `first_party = false` by
+#: the 157 default, so this catches exactly them.
+_SELECT_UNMIRRORED_ORGS_SQL = """
+    SELECT slug          AS slug,
+           display_name  AS display_name,
+           gstin         AS gstin,
+           billing_state AS billing_state
+      FROM organization
+     WHERE console_mirrored_at IS NULL
+       AND first_party = false
+     ORDER BY slug
+"""
+
+
+@dataclass(frozen=True)
+class ReconcileSummary:
+    """Counts from one reconcile pass, for the operator reading the CLI output.
+
+    ``selected`` is the orgs the sweep predicate matched; ``mirrored`` those the
+    Console accepted (its row now exists and the marker was stamped);
+    ``unavailable`` those a transient Console failure (or an unwired box, or the
+    create-only refusal of a hijack attempt) left for a later pass, marker still
+    NULL; ``skipped_no_owner`` the crash-resume shape (an org with no owner yet)
+    the sweep cannot reconstruct a Console call for.
+    """
+
+    selected: int = 0
+    mirrored: int = 0
+    unavailable: int = 0
+    skipped_no_owner: int = 0
+
+
+async def reconcile() -> ReconcileSummary:
+    """Re-drive the Console mirror for every tenant org that is missing one.
+
+    One idempotent pass: select the unmirrored non-first-party orgs, reconstruct
+    each ``(slug, display_name, owner_email, gstin, billing_state)`` from the
+    tenant plane, call :func:`provision_org_on_console` (idempotent-on-slug,
+    create-only guarded on the Console side), and on SUCCESS stamp
+    ``console_mirrored_at`` so a later pass skips it. A transient failure leaves
+    the marker NULL and the org for the next pass; the reconciler writes NO tenant
+    org/owner, so it can neither fork the tenant plane nor move ownership.
+
+    Cadence is the operator's — this is a single pass, not a scheduler. Returns a
+    :class:`ReconcileSummary` of counts.
+    """
+    # Ship-dark, fail-closed: an unwired box has no Console to mirror onto, so the
+    # whole pass is a logged no-op that touches neither the Console nor the tenant
+    # DB. `provision_org_on_console` would raise `ConsoleProvisionUnavailable
+    # ("unwired")` per org anyway; this early guard makes the CLI inert BEFORE any
+    # query, which is what lets it run harmlessly on a box that predates the
+    # Console deployment.
+    if not is_wired():
+        _log.info("console_resolve.reconcile_unwired_noop")
+        return ReconcileSummary()
+
+    from sqlalchemy import text
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text(_SELECT_UNMIRRORED_ORGS_SQL))
+        ).mappings().all()
+
+    # Imported at call time (not module scope) so importing this module drags in
+    # neither `acb_auth.access` nor `acb_common.provisioning`, and so there is no
+    # import-time cycle with `access` (which may import this module).
+    from acb_common.provisioning import mark_console_mirrored
+
+    from acb_auth.access import org_owner_of
+
+    summary = {"selected": len(rows), "mirrored": 0,
+               "unavailable": 0, "skipped_no_owner": 0}
+
+    for row in rows:
+        slug = row["slug"]
+        # owner_email via the SAME join `access._ORG_OWNER_SQL` uses — reused, not
+        # re-derived. `org_owner_of` degrades to None on a transient read error,
+        # which is the safe direction here: skip and let a later pass retry.
+        owner_email = await org_owner_of(slug)
+        if not owner_email:
+            summary["skipped_no_owner"] += 1
+            _log.warning("console_resolve.reconcile_no_owner", slug=slug)
+            continue
+
+        try:
+            await provision_org_on_console(
+                slug,
+                row["display_name"],
+                owner_email,
+                gstin=row["gstin"],
+                billing_state=row["billing_state"],
+            )
+        except ConsoleProvisionUnavailable as exc:
+            # Transient (unwired mid-sweep, network, 5xx) OR the create-only guard
+            # refusing a slug owned by a DIFFERENT identity on the Console — a
+            # forced hijack. Either way: marker stays NULL, no second org/owner is
+            # written, the pass continues.
+            summary["unavailable"] += 1
+            _log.warning(
+                "console_resolve.reconcile_unavailable",
+                slug=slug, error=str(exc)[:200],
+            )
+            continue
+
+        summary["mirrored"] += 1
+        if not await mark_console_mirrored(slug):
+            # The Console has the row but the marker write did not stamp it (a
+            # best-effort miss, or a concurrent stamp). Harmless: the mirror is
+            # idempotent-on-slug, so a later pass re-affirms and re-marks.
+            _log.warning("console_resolve.reconcile_marker_missed", slug=slug)
+
+    _log.info("console_resolve.reconcile_pass", **summary)
+    return ReconcileSummary(**summary)
 
 
 # ── The projection (migration 159 + 177) ────────────────────────────────────

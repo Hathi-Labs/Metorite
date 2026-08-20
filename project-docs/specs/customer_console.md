@@ -10,7 +10,9 @@ slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
 self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 `signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
-form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-6
+form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
+(the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
+owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
@@ -106,8 +108,20 @@ three `errorCopy` codes + the hop's forbidden-key drop, shown red-first) and the
 behavioural `tests/unit/test_signup_provision_route.py` unchanged and green. **The
 full self-serve signup flow now exists in code, dark.** **Issuing or widening a
 REAL deployment key stays §8 gate 7; flipping `SELF_SERVE_SIGNUP_ENABLED` live is
-§8 gate 8; the Console is still deployed nowhere and CP-2e (the route-level
-reconciler) stays OPEN** — the code is built, the acts are the owner's.
+§8 gate 8; the Console is still deployed nowhere.** ◐ **CP-2e — the out-of-band
+Console-mirror reconciler that closes CP-2c done-when 5's named un-metered-org
+gap — is BUILT 2026-08-20 (this file's CP-2e ticket; build + R8 fence).** The
+owner-decided mechanism is a SWEEP plus the new `organization.console_mirrored_at`
+marker (with `gstin`/`billing_state` persisted tenant-side so the sweep can
+re-drive faithfully — they lived nowhere on the tenant plane before): the
+`reconcile` function (`acb_auth.console_resolve`), the tenant migration
+(`181_signup_console_mirror.sql`), the signup step-1 GST-profile write + step-2
+marker write (`acb_common.provisioning` seam), the `scripts/reconcile_console_mirror.py`
+CLI, and the R8 fence (`tests/unit/test_signup_reconciler.py`, both ladders, 0
+skips) are BUILT, dark. RUNNING the sweep against a live Console is owner-gated
+(§8 gates 2 + 8): `is_wired()` is False until then, so the CLI is a logged no-op.
+The code is built where the acts are the agent's; the acts that go live are the
+owner's.
 
 ⚠️ **The 2026-08-19 review round, because its P0 was a money-losing defect that
 all 110 tests were green over.** **P0 — a failed payment ATTEMPT permanently
@@ -4185,7 +4199,8 @@ mutation testing on auth/tenancy clauses)*:
    — no `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
    ConsoleOrgRow` (R8 against the Console ladder, the deployment-key arm) for
    the landing.
-5. ✅ **5b MET · 5a MET at plane level, route-level convergence is CP-2e —
+5. ✅ **5b MET · 5a MET at plane level; the missing route-level convergence is
+   deferred to CP-2e (an out-of-band sweep, not a route retry) —
    slice 2, 2026-08-20. The two-plane orchestration converges or
    refuses cleanly (audit blocker 3), parametrised over BOTH directions**
    (built — `pr-check.yml` provisions both Postgres services; MT-1j slice 7
@@ -4215,12 +4230,13 @@ mutation testing on auth/tenancy clauses)*:
    reconciliation path exists in this slice.** It cannot bite until BOTH the
    Console is deployed (D47, owner-gated, not done) AND signup is flipped on AND a
    Console failure races the tenant commit — so it ships dark, but it is a real
-   window, not a non-issue. Its closer is **CP-2e (the signup Console-mirror
-   reconciler)**, minted on the board as a small follow-up: a path that, for a
-   tenant org whose Console mirror is missing, re-drives `/orgs/provision`
-   (idempotent-on-slug) — either a retry that does NOT short-circuit when the
-   Console lacks the org, or an out-of-band sweep. NOT built here; named so the
-   dark-ship is honest rather than silent. ⚠️ This is CP-2c's flow-level test;
+   window, not a non-issue. **Its closer is `CP-2e` — the signup Console-mirror
+   reconciler, ◐ BUILT 2026-08-20, see the CP-2e ticket above** (an out-of-band
+   SWEEP over tenant orgs whose Console mirror is missing plus a new
+   `organization.console_mirrored_at` marker, re-driving `provision_org_on_console`
+   idempotent-on-slug; owner-decided mechanism, agent-safe to BUILD, owner-gated
+   to RUN). NOT built here; named so the dark-ship is honest rather than silent.
+   ⚠️ This is CP-2c's flow-level test;
    CP-2a's own per-step `provisioning_run` kill test stays OWED under CP-2a and is
    not absorbed silently.
 6. ✅ **MET — slice 1, 2026-08-19.** A `{resolve}`-only deployment key calling
@@ -4460,6 +4476,248 @@ smaller and took two slices and 14 blockers)*:
    `test_signup_provision_route.py` unchanged and green. The live
    `SELF_SERVE_SIGNUP_ENABLED` flip stays §8 gate 8.
 
+**CP-2e · The signup Console-mirror reconciler — the closer for CP-2c
+done-when 5's NAMED KNOWN GAP.** ◐ **BUILT 2026-08-20 (this section — build +
+R8 fence; RUN/deploy/key/flag stay owner-gated).** CP-2c done-when 5 ships a real
+dark window (verify finding,
+2026-08-20): a **transient** Console failure DURING signup leaves an org live
+on the **tenant** plane but **never mirrored to the Console**, and step 0a's
+`access.membership_of` → `AlreadyMember` short-circuits any literal route
+resubmit (`signup.py:231-234`), so nothing in slice 2 re-drives step 2. The org
+is **un-metered / absent from the billing registry until reconciled, and no
+reconciliation path exists**. This ticket is that path. The gap cannot bite
+until the Console is deployed (D47, §8 gate 2, not done) AND signup is flipped
+(§8 gate 8) AND a Console failure races the tenant commit — so it is built dark,
+like the flow it repairs.
+
+**Mechanism — owner-decided 2026-08-20, DO NOT RE-OPEN: an out-of-band SWEEP
+plus a marker column.** Deliberately NOT a retry-that-does-not-short-circuit
+inside the signup route: re-entering the two-plane orchestration would re-touch
+the tenant create-only guard for an org that already exists on the tenant plane,
+and it would couple the fix to the request path. Instead: a **callable
+`reconcile` function** that finds tenant orgs not yet mirrored and re-drives the
+Console mirror through the ONE existing seam
+`acb_auth.console_resolve.provision_org_on_console(slug, name, owner_email, *,
+gstin, billing_state)` (`console_resolve.py:515`, idempotent-on-slug, create-only
+on the Console arm via slice 1's `store.org_owned_by_other`), and a **new
+nullable marker column** `organization.console_mirrored_at` that both the signup
+route and the reconciler set to `now()` on a Console-mirror SUCCESS and that the
+sweep selects on being NULL.
+
+**Where it lives (Place Before Building).** The reconcile function EXTENDS the
+existing Console seam, `acb_auth.console_resolve` — the module that already owns
+the ONE Console httpx client and `provision_org_on_console`, and already reads
+the tenant plane cross-tenant through the unbound `get_session_factory` idiom
+("the tenant is the ANSWER", `console_resolve.py:146-156`). Reusing that module
+is mandatory, not incidental: a second Console client anywhere is root
+`CLAUDE.md` §5's defect by name, and the reconciler must re-drive the SAME
+create-only-guarded arm the signup route does. It recovers `owner_email` with
+the SAME owner join `access._ORG_OWNER_SQL` uses (`access.py:387-395` —
+`organization ⋈ org_role 'owner' ⋈ user_role ⋈ app_user`), so no second owner
+grammar is minted. **No new engine site (R5(b))** — every read and the marker
+write go through `get_session_factory`, the seam idiom, exactly as
+`console_resolve` and `acb_common.provisioning` already do; **no tenant/identity
+from request input (R11)** — the sweep takes nothing from a caller, it reads the
+tenant plane and re-drives what is already persisted there.
+
+**The trigger is a management CLI, not a gateway endpoint** — an operator-run
+script under `scripts/` (e.g. `uv run python -m scripts.reconcile_console_mirror`),
+a DIFFERENT job from the existing CRM `scripts/reconciler.py` (source-of-truth
+diff / escalation) and never merged into it. **Justification (the choice was
+between an operator/admin gateway endpoint and a CLI):** (i) the gap is itself
+out-of-band, so the fix belongs off the request path — a CLI needs no new
+authenticated route, no `PUBLIC_ROUTES` entry, and no operator-auth wiring, and
+adds zero public attack surface for a job that never needs HTTP reachability;
+(ii) RUNNING the sweep is the owner-gated act, and an on-box operator one-off is
+exactly the shape of the existing `scripts/` operational convention
+(`scripts/reconciler.py`, `scripts/apply_migrations.sh`); (iii) it cannot even
+FUNCTION until §8 gate 2 (Console deployed) and gate 8 (a `{provision}` key
+wired — the capability growth beyond `{resolve}`, §6(h), NOT gate 7's bare
+issuance) are satisfied — `is_wired()` is False otherwise, so
+`provision_org_on_console` raises `ConsoleProvisionUnavailable("unwired")` and
+the pass is a logged no-op — so running it against a live Console is
+transitively owner-gated by the same acts that gate the whole signup-live path.
+
+**The data-availability finding, and the migration shape it forces (the critical
+design question, resolved against the code on this branch).** The reconciler must
+reconstruct the FULL `provision_org_on_console(slug, name, owner_email, gstin,
+billing_state)` call FROM TENANT-PLANE DATA ALONE, because the Console row is
+exactly what is missing. What the tenant `organization` row + its owner
+role/`app_user` persist today:
+
+* **name — RECOVERABLE.** `organization.display_name` (migration 130:40, `TEXT
+  NOT NULL`, written by 179's `provision_organization` defaulting to the slug,
+  `179:303-306`). The signup route passes `display_name or slug` as the Console
+  `name` (`signup.py:278-284`, the arg on `:280`); `organization.display_name` is
+  never blank, so it
+  reconstructs that argument faithfully.
+* **owner_email — RECOVERABLE.** `organization ⋈ org_role 'owner' ⋈ user_role ⋈
+  app_user.email`, the `access._ORG_OWNER_SQL` join (`access.py:387-395`). A
+  signup-born org always has an owner (step 1 passes the session email;
+  `provision_org_owner` writes the `app_user` and the `owner` role,
+  `180:129-155`).
+* **gstin / billing_state — NOT RECOVERABLE. This is the blocker the migration
+  must clear.** Verified: `gstin` and `billing_state` occur **nowhere** under
+  `infra/postgres/` — the tenant `organization` INSERT writes only
+  `slug, display_name, domain` (`179:303`), and the signup route threads
+  `gstin`/`billing_state` ONLY to the Console in step 2
+  (`signup.py:278-284`). So they are **lost the instant step 2 fails** — the
+  exact rows the sweep needs. → **The marker migration therefore also persists
+  them tenant-side**, and the signup route writes them at signup so the sweep can
+  re-drive faithfully.
+
+Resulting migration (tenant ladder, `infra/postgres/`; **number taken by listing
+the directory at build time — highest on disk at spec time was
+`180_org_provisioning_create_only_guard.sql` — and re-checked at merge, R1; do
+NOT hardcode a number**):
+
+```
+ALTER TABLE organization
+    ADD COLUMN IF NOT EXISTS console_mirrored_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS gstin               TEXT,
+    ADD COLUMN IF NOT EXISTS billing_state       TEXT;
+```
+
+**R6 EXPAND, forward-only, no backfill, NO DEFAULT — on migration 177's
+precedent, argued not copied.** All three are nullable and default-free. On
+`console_mirrored_at` NULL is **load-bearing** — it means *"this org has never
+been mirrored to the Console"*, which is the sweep's whole selection predicate; a
+`DEFAULT now()` would stamp every pre-existing row "already mirrored" and hide
+the very gap this ticket closes (177's identical argument for `registry_status`).
+On `gstin`/`billing_state` NULL means *"not supplied / pre-dates this column"*,
+which is the honest state for the seeded `default` org and any pre-CP-2e row. Old
+code meets new schema safely (R6's purpose): nothing running before this
+migration reads any of the three columns.
+
+**R5 source gate — satisfied by inheritance, no new EXEMPT row, no new table.**
+This adds COLUMNS to `organization`, already in `scripts/gen_tenant_migration.py`'s
+EXEMPT map ("the tenant list itself" — a policy that hid it from the connection
+resolving *which tenant this is* would break the box's first question). A column
+on an exempt table inherits the table's reason and must add no exemption entry
+(177's ruling); `tests/unit/test_tenant_coverage.py`'s map is left untouched.
+Zero new tables, zero new engine sites.
+
+**The sweep predicate EXCLUDES first-party orgs** — `WHERE console_mirrored_at IS
+NULL AND first_party = false`. Migration 157 backfilled the operator's own
+`default` org (Fracktal Works) to `first_party = true`; it is the bootstrap org,
+not a metered self-serve customer, and mirroring it into the customer billing
+registry would route the first-party path through the customer Console — the
+bypass shape D36.2/D36.3 forbids. Every signup-born org is `first_party = false`
+by construction (the 157 default), so the predicate catches exactly them. *(An
+agent-proposed refinement, D16/D17 class — the owner may overrule if Fracktal is
+to be mirrored as customer-zero, but that is a deliberate separate act, never a
+sweep side-effect.)*
+
+**Where signup writes the two new values.** Additive, no signature churn on
+179/180. In the signup route, **immediately after step 1** (the tenant org now
+exists) and **before** step 2, a seam helper persists the GST profile on the
+tenant org (`UPDATE organization SET gstin = :gstin, billing_state =
+:billing_state WHERE slug = :slug`), so a step-2 failure still leaves them
+recorded for the sweep. On step-2 SUCCESS the route sets the marker
+(`UPDATE organization SET console_mirrored_at = now() WHERE slug = :slug AND
+console_mirrored_at IS NULL`) — the **SAME marker writer the reconciler calls**,
+one function, no second idiom (place it beside the tenant write in
+`acb_common.provisioning`). *(Residual, stated: a crash between the org insert
+and the profile write leaves `gstin`/`billing_state` NULL; the sweep still
+re-drives faithfully on what persisted. ⚠️ **Known rare gap (CP-2e review,
+2026-08-20):** if the step-1.5 profile write AND step 2 BOTH fail for one signup,
+the tenant GST stays NULL and a later sweep FIRST-provisions the Console org with
+NULL `gstin`/`billing_state` — and because the Console mirror `ensure_organization`
+is create-only on those columns (`ON CONFLICT (slug) DO UPDATE SET updated_at =
+now()`, never re-writing GST), the NULL is then FROZEN: there is no tenant→Console
+GST-update path in this slice, so it is unrecoverable here — NOT "suppliable
+later". `billing_state` drives IGST-vs-CGST/SGST, so this is a tax-correctness
+gap, not cosmetic. It needs a rare DOUBLE fault, is dark (Console deployed
+nowhere, signup flag OFF), and `reconcile` does not yet surface a NULL-profile
+mirror count. Its closer is a follow-up ticket: a Console-side profile-update path
+(so a re-drive refreshes GST on an existing row) PLUS a NULL-profile counter in
+`ReconcileSummary` for observability. Folding the profile write into
+`provision_organization` as two NULL-defaulting R6-expand params — one
+transaction — would shrink the pre-profile window to the org insert itself, an
+allowed tightening, not MVP, and only if 179's fences are re-proved in the same
+PR.)*
+
+**Done when** *(each clause names its fence; R8 binds every SQL clause — real
+Postgres on BOTH ladders, 0 skips; red-first; the create-only and marker clauses
+mutation-proved)*:
+
+1. **One pass mirrors and marks.** Given a tenant org with `console_mirrored_at
+   IS NULL`, `first_party = false`, and NO Console row on its slug, ONE
+   `reconcile` pass calls `provision_org_on_console` with the reconstructed
+   `(slug, display_name, owner_email, gstin, billing_state)`, the Console
+   `organization` row EXISTS on the slug afterward, and `console_mirrored_at` is
+   set non-NULL. Fence: `test_signup_reconciler.py::TestOnePassMirrorsAndMarks`,
+   red-first by asserting the Console row absent + marker NULL before, present +
+   set after; the reconstructed `gstin`/`billing_state` are asserted to equal
+   what signup persisted (proving the tenant-side persistence carried them).
+2. **A second pass is a no-op.** After clause 1 the marker excludes the org from
+   the sweep SELECT, so a second pass selects zero rows and makes NO Console call
+   (idempotent-on-slug is the backstop; the marker is the primary excluder).
+   Fence: `::TestSecondPassIsANoOp`, asserting the Console client is invoked zero
+   times on pass 2 (a `httpx.MockTransport` request count, the
+   `console_resolve._new_http_client` seam).
+3. **A mirrored org is never re-driven.** A row whose `console_mirrored_at` is
+   already non-NULL is not selected and `provision_org_on_console` is never
+   called for it. Fence: `::TestMarkedOrgIsNeverReDriven`.
+4. **The reconciler never mints a second org/owner and never moves ownership.**
+   By construction it performs NO tenant org/owner write — only the marker — so
+   it cannot fork the tenant plane. On the Console plane it re-drives the SAME
+   create-only-guarded arm: `store.org_owned_by_other` (slice 1's P0 fix,
+   `main.py:794` — the Console twin of tenant migration 180's guard) refuses a
+   slug already owned by a DIFFERENT identity, so a forced attempt (the Console
+   seeded with the slug owned by a stranger) is refused, writes no second
+   org/owner, and LEAVES THE MARKER NULL. Fence: `::TestReconcilerCannotHijack`,
+   mutation-proved — disabling `store.org_owned_by_other` re-opens the hijack and
+   reddens it. Because the reconciler passes the owner_email the tenant plane
+   already recorded, the guard passes for the legitimate case.
+5. **Signup step-2 SUCCESS sets the marker; a step-2 FAILURE leaves it NULL.** A
+   clean signup leaves NOTHING for the sweep (marker set, so the SELECT skips it);
+   a signup whose step-2 raises `ConsoleProvisionUnavailable` leaves the marker
+   NULL AND the `gstin`/`billing_state` persisted, so the sweep picks it up and
+   re-drives faithfully. Fences: `::TestSignupSuccessSetsMarker` and
+   `::TestSignupConsoleFailureLeavesMarkerNull` (the latter forces a transient
+   Console failure and then runs one reconcile pass to green — the end-to-end
+   proof that the gap is closed). Red-first by removing the step-2 marker write
+   (a clean signup then reads NULL and the sweep re-drives an already-mirrored
+   org).
+
+**The R7 fence: `tests/unit/test_signup_reconciler.py`** (R8, real Postgres, both
+ladders — `pr-check.yml` already provisions the tenant and Console services for
+the CP-2c suites). What makes it fail red, by clause: the Console row / marker
+assertions (1), the pass-2 request-count spy (2), the marked-row exclusion (3),
+the `org_owned_by_other` mutation (4), and the removed step-2 marker write (5). A
+new **structural** clause is added to
+`tests/unit/test_console_dependency_boundary.py` only if the reconcile function
+is placed in a NEW `packages/`-side module rather than inside `console_resolve`
+itself — the seat-cap allow-list (`signin.py` + `signup.py`) is scoped to
+`packages/` and `apps/services/gateway`, and the `scripts/` CLI is OUTSIDE those
+roots, so a CLI trigger does NOT grow it; keeping the function IN `console_resolve`
+keeps the fence green with exactly two tenant-source callers. **Honor the pytest
+hazards (root `CLAUDE.md` §6): run the fence by naming the file
+(`uv run pytest tests/unit/test_signup_reconciler.py`), never the `tests/unit/`
+directory.**
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** the `reconcile` function, the tenant marker
++ GST-profile migration, the signup step-1 profile write and step-2 marker write,
+the CLI trigger, and the R8 fence — all against fixtures / scratch Postgres, dark.
+🔴 **OWNER-GATE — refuse by name:** RUNNING the reconciler against a live Console
+(transitively gated — it is inert until the two acts below land) · deploying the
+Customer Console anywhere (§8 gate 2, D47) · widening a real deployment key to
+`{resolve, provision}` (the capability growth beyond `{resolve}` — §8 gate 8 /
+§6(h); its bare issuance is gate 7) · flipping
+`SELF_SERVE_SIGNUP_ENABLED` on a live deployment (§8 gate 8). No NEW gate number
+is minted: running the sweep is covered by gates 2 + 8, and registering any
+operational note on the board is the supervisor's act (`work_plan.md` §2/§6), not
+this file's.
+
+**Non-goals.** Does NOT flip any flag · does NOT deploy the Console or reach a VPS
+· does NOT run against a live Console · does NOT change the create-only guard on
+either plane (it REUSES `store.org_owned_by_other` / migration 180 unchanged) ·
+does NOT re-enter the signup route's two-plane orchestration or re-touch the
+tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
+never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
+function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
+
 **CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
 MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
 two-factor authentication and email OTP system set up. Not made it by MVP,
@@ -4475,7 +4733,7 @@ seam (`deps.py`), never per-app; (c) either lands behind its own default-OFF
 flag with both positions fenced. Anti-scope: SMS OTP (cost + SIM-swap
 surface) unless the owner asks by name.
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → CP-3 → CP-4 →
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6
 shipped before it, and it must land before the first Router caller, because
 every agent runtime streams. CP-4 is
@@ -4497,7 +4755,10 @@ set in WS-30 SC-4a.
 **CP-2c inserted after CP-2b 2026-08-19 (D46)** — it is the form over CP-2a's
 API and consumes CP-2b's resolve semantics, and it dispatches only after
 MT-1j slice 4. The board row in `work_plan.md` §2 carries the same line —
-updating it is the supervisor's act, not this file's.)*
+updating it is the supervisor's act, not this file's. **CP-2e inserted after
+CP-2c 2026-08-20** — the out-of-band Console-mirror reconciler that closes
+CP-2c done-when 5's named un-metered-org gap; it dispatches only after CP-2c is
+built, and going live is transitively the owner's, §8 gates 2 + 7.)*
 
 **What is dispatchable in CP-9's FIRST slice, and what is held back** *(the
 re-audit returned **GO-NARROWED** on 2026-08-18; this is that narrowing, written

@@ -266,3 +266,114 @@ async def provision_local_organization(
         owner=bool(owner_email),
     )
     return organization_id
+
+
+# ── CP-2e · the signup Console-mirror marker + GST profile (WS-31) ───────────
+#
+# Two additive writes onto the tenant `organization` row, both keyed on the slug
+# and both through the ONE shared engine (`get_session_factory`, the same idiom
+# `provision_local_organization` uses — no new engine site, R5(b); no new table;
+# COLUMNS on the already-exempt `organization`, migration 181).
+#
+# ⚠️ **Both are best-effort by design — they never raise.** They are MIRROR
+# writes onto a projection the Customer Console is the authority for, exactly the
+# posture `acb_auth.console_resolve`'s projection writes take ("a failed cache
+# write is a missing fallback, not a refusal"). A failed marker write only leaves
+# the org for the next reconciler pass (idempotent-on-slug), and a failed profile
+# write only degrades `gstin`/`billing_state` to NULL, which the sweep still
+# re-drives faithfully on (customer_console.md CP-2e's stated residual). Raising
+# would turn a SUCCESSFUL Console mirror into a 500 for the caller, which is the
+# one thing neither the signup route nor the sweep may allow.
+#
+# ⚠️ **`mark_console_mirrored` is the SAME writer the signup route (on step-2
+# success) and the reconciler (on a mirror success) both call — one function, one
+# idiom, no second copy.** `console_mirrored_at IS NULL` in the WHERE keeps it
+# monotonic: it stamps the marker exactly once and a re-drive of an already-marked
+# org touches nothing.
+
+_PERSIST_BILLING_PROFILE_SQL = """
+    UPDATE organization
+       SET gstin = :gstin,
+           billing_state = :billing_state,
+           updated_at = now()
+     WHERE slug = :slug
+"""
+
+_MARK_CONSOLE_MIRRORED_SQL = """
+    UPDATE organization
+       SET console_mirrored_at = now(),
+           updated_at = now()
+     WHERE slug = :slug
+       AND console_mirrored_at IS NULL
+"""
+
+
+async def persist_org_billing_profile(
+    slug: str,
+    *,
+    gstin: str | None,
+    billing_state: str | None,
+) -> None:
+    """Persist a signup's GST profile onto the tenant ``organization`` row.
+
+    Called by the signup route AFTER step 1 (the tenant org now exists) and
+    BEFORE step 2 (the Console mirror), so that a transient step-2 failure still
+    leaves ``gstin``/``billing_state`` recorded for the reconciler to re-drive on
+    — they are threaded to the Console in step 2 and persisted NOWHERE else on the
+    tenant plane (migration 179's INSERT writes only slug/display_name/domain).
+
+    Best-effort: a write failure is logged and swallowed. The org still exists and
+    still works dark; the profile simply degrades to NULL, which the sweep
+    tolerates (customer_console.md CP-2e).
+    """
+    try:
+        from sqlalchemy import text
+
+        from acb_common.db import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(
+                text(_PERSIST_BILLING_PROFILE_SQL),
+                {"slug": slug, "gstin": gstin, "billing_state": billing_state},
+            )
+            await session.commit()
+    except Exception as exc:
+        _log.warning(
+            "provisioning.billing_profile_write_failed",
+            slug=slug,
+            error=str(exc)[:200],
+        )
+
+
+async def mark_console_mirrored(slug: str) -> bool:
+    """Stamp ``organization.console_mirrored_at = now()`` for *slug*, once.
+
+    The marker the reconciler's sweep selects on being NULL. Called on a
+    Console-mirror SUCCESS by both the signup route (step-2 success) and the
+    reconciler. ``console_mirrored_at IS NULL`` in the WHERE makes it idempotent
+    and monotonic — a re-drive of an already-marked org marks nothing.
+
+    Returns True iff this call stamped a row (a previously-unmirrored org).
+    Best-effort: a write failure is logged, swallowed, and returns False, so the
+    org is simply left for the next sweep (the mirror is idempotent-on-slug).
+    """
+    try:
+        from sqlalchemy import text
+
+        from acb_common.db import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                text(_MARK_CONSOLE_MIRRORED_SQL), {"slug": slug}
+            )
+            await session.commit()
+            return (result.rowcount or 0) > 0
+    except Exception as exc:
+        _log.warning(
+            "provisioning.console_marker_write_failed",
+            slug=slug,
+            error=str(exc)[:200],
+        )
+        return False
