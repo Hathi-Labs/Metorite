@@ -5,11 +5,12 @@ Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2c
-SLICES 1+2+3 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
+SLICES 1+2+3+4 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
 slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
 self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
-`signup_eligible` signal), BUILD+TEST only; slice 4 open) · CP-6
+`signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
+form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
@@ -80,11 +81,33 @@ outcomes are `signup_eligible=False` against the LIVE DB) all changed;
 callback's. Build+test only; the live `SELF_SERVE_SIGNUP_ENABLED` flip stays §8
 gate 8. Zero migrations, zero new engine sites; source-regex pins in
 `signin.test.ts` (positive trigger + negative no-`AccessDenied`-key pin) plus the
-R8 suspended→False assertions. **Slice 4 (the
-`/signup` form) remains OPEN** — nothing of the *form* exists. **Issuing or
-widening a REAL deployment key stays §8 gate 7; flipping
-`SELF_SERVE_SIGNUP_ENABLED` live is §8 gate 8** — the code is built, the acts are
-the owner's.
+R8 suspended→False assertions. ◐ **CP-2c SLICE 4 BUILT 2026-08-20 — the
+`/signup` form UI** (done-when 1 + done-when 4's client half; BUILD+TEST only,
+dark). A NEW Next route `workbench/control_plane/src/app/signup/` mirroring
+`signin/`: a server `page.tsx` (`export const dynamic = "force-dynamic"`,
+providers derived from the one `configuredProviders` seam) that REDIRECTS to
+`/signin` when `SELF_SERVE_SIGNUP_ENABLED` is not exactly `"true"` (redirect, NOT
+a 404 — audit B4a) and otherwise renders a dark client form (org display name ·
+slug · registered state required · GSTIN optional), rendering the outcome codes
+through the ONE `errorCopy` seam (`signInErrorMessage` — no duplicated copy).
+Because the gateway's `POST /signup/provision` is BFF-internal-bearer and
+session-email-only, the form POSTs to a NEW `/api/signup` Next hop
+(`src/app/api/signup/route.ts`) that attaches the acting identity through the one
+door (`lib/gateway.ts` — `requireIdentity` + `gatewayHeaders`, mints no bearer of
+its own) and forwards ONLY `{slug, display_name, registered_state, gstin}` —
+never `email`/`org`/`deployment_label` (R11; the owner is the session email,
+resolved server-side, and the gateway 400s those as `InvalidBody`). The slug and
+GSTIN regexes are mirrored client-side as advisory UX (`signup.py` stays the
+fence); the state list is an agent-proposed default (D16/D17). Design-system
+primitives only (`Input`/`Select`/`Button`/`Icon`, semantic tokens —
+conformance-clean, theme-switch-ready). Zero migrations, zero new engine sites;
+source-regex fence `src/app/signup/signup.test.ts` (both flag positions + the
+three `errorCopy` codes + the hop's forbidden-key drop, shown red-first) and the
+behavioural `tests/unit/test_signup_provision_route.py` unchanged and green. **The
+full self-serve signup flow now exists in code, dark.** **Issuing or widening a
+REAL deployment key stays §8 gate 7; flipping `SELF_SERVE_SIGNUP_ENABLED` live is
+§8 gate 8; the Console is still deployed nowhere and CP-2e (the route-level
+reconciler) stays OPEN** — the code is built, the acts are the owner's.
 
 ⚠️ **The 2026-08-19 review round, because its P0 was a money-losing defect that
 all 110 tests were green over.** **P0 — a failed payment ATTEMPT permanently
@@ -4116,11 +4139,16 @@ overrule any numbered item)*:
 real Postgres on both ladders, 0 skips, both shells; red-first everywhere;
 mutation testing on auth/tenancy clauses)*:
 
-1. `/signup` **redirects to `/signin`** when the flag is not exactly `"true"`
-   (one behaviour, everywhere — the first draft said "404s" in one place and
-   "redirect" in another; redirect is the ruling, audit B4a) and renders under
-   it. Fence: `signup.test.ts` pins both positions (the `signin.test.ts:209`
-   pattern).
+1. ✅ **MET — slice 4, 2026-08-20.** `/signup` **redirects to `/signin`** when
+   the flag is not exactly `"true"` (one behaviour, everywhere — the first draft
+   said "404s" in one place and "redirect" in another; redirect is the ruling,
+   audit B4a) and renders under it. Fence: `src/app/signup/signup.test.ts` pins
+   both positions (the `signin.test.ts:209` source-pin pattern — the page is
+   `force-dynamic`, derives providers from `configuredProviders`, redirects when
+   the flag `!== "true"` and renders `<SignUpForm>` under it), shown red-first
+   against the redirect branch removed. `next-auth`/`next/navigation` cannot load
+   in this tree's node-env vitest, so the flag-off REDIRECT and flag-on RENDER are
+   pinned by SHAPE and the behaviour is the reviewer's manual gate.
 2. ✅ **MET — slice 2, 2026-08-20.** `POST /signup/provision` answers
    **200 `{"admit": false, "code": …}`** for the FOUR outcome refusals —
    `SignupDisabled` · `ConsoleUnavailable` · `AlreadyMember` · **`SlugTaken`**
@@ -4418,8 +4446,19 @@ smaller and took two slices and 14 blockers)*:
 3. **Slice 3 — the `signIn` callback limbo branch** (done-when 7; §6(j) row
    vii is already authored — the build is the callback branch + its
    `signin.test.ts` pins).
-4. **Slice 4 — the `/signup` form UI** (done-whens 1 + 4's client half;
-   DESIGN_SYSTEM rules bind — it is a product surface).
+4. ✅ **Slice 4 — the `/signup` form UI — BUILT 2026-08-20** (done-when 1 +
+   done-when 4's client half; BUILD+TEST only, dark). A server `page.tsx`
+   (`force-dynamic`, providers from `configuredProviders`) redirecting to
+   `/signin` off-flag and rendering the dark client `SignUpForm` on it (org name ·
+   slug · registered state · optional GSTIN); a `/api/signup` Next hop forwarding
+   ONLY the four fields with the session identity (R11 — never
+   email/org/deployment_label), because the gateway's provision route is
+   BFF-internal and session-email-only; outcome codes through the ONE `errorCopy`
+   seam; DESIGN_SYSTEM primitives only (`Input`/`Select`/`Button`/`Icon`,
+   conformance-clean). Fence `signup.test.ts` (both flag positions + the three
+   signup codes + the hop's forbidden-key drop, red-first);
+   `test_signup_provision_route.py` unchanged and green. The live
+   `SELF_SERVE_SIGNUP_ENABLED` flip stays §8 gate 8.
 
 **CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
 MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
