@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 
 import Checkout from "./Checkout";
@@ -35,6 +36,11 @@ import {
   runway,
   sortInvoices,
 } from "./lib/billing";
+import {
+  type SeatsPayload,
+  SEAT_COUNTS,
+  isOversubscribed,
+} from "./lib/seats";
 
 interface BillingPayload {
   credits: CreditSummary;
@@ -72,6 +78,7 @@ const STATUS_LABEL: Record<InvoiceRow["status"], string> = {
 export default function BillingPage() {
   const { access } = useAccess();
   const [data, setData] = useState<BillingPayload | null>(null);
+  const [seats, setSeats] = useState<SeatsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -91,14 +98,29 @@ export default function BillingPage() {
     }
   }, []);
 
+  // The seats block is driven ENTIRELY by `GET /me/seats` (SC-1a) and is
+  // independent of the credit summary: a seats read that fails or is
+  // unconfigured simply leaves the block absent rather than erroring the whole
+  // page. It ships dark like the rest of billing — the Console is deployed
+  // nowhere, so this 503s and the block does not render, exactly as intended.
+  const loadSeats = useCallback(async () => {
+    try {
+      const r = await fetch("/api/billing/seats", { cache: "no-store" });
+      setSeats(r.ok ? await r.json() : null);
+    } catch {
+      setSeats(null);
+    }
+  }, []);
+
   useEffect(() => {
     // Wrapped rather than called directly: the effect must not reach a
     // setState synchronously, and `load` is also used by the retry button.
     const run = async () => {
       await load();
+      await loadSeats();
     };
     void run();
-  }, [load]);
+  }, [load, loadSeats]);
 
   if (!access?.is_admin) {
     return (
@@ -141,6 +163,9 @@ export default function BillingPage() {
         ) : data ? (
           <div className="flex flex-col gap-6">
             <CreditPanel data={data} />
+            {Array.isArray(seats?.plans) && seats.plans.length > 0 ? (
+              <SeatsPanel payload={seats} />
+            ) : null}
             <InvoiceTable rows={data.invoices} />
           </div>
         ) : null}
@@ -219,6 +244,55 @@ function CreditPanel({ data }: { data: BillingPayload }) {
             To add credits, contact us — self-serve top-up is coming.
           </p>
         )}
+      </div>
+    </section>
+  );
+}
+
+function SeatsPanel({ payload }: { payload: SeatsPayload }) {
+  // SC-1a's seats block. Every number here is the read's — `SEAT_COUNTS` pulls
+  // each count off the plan by key and `isOversubscribed` returns the server's
+  // flag, so nothing on this surface recomputes a seat count. `oversubscribed`
+  // is surfaced as its own badge rather than hidden behind a clamped
+  // `available == 0`, which is the state SC-1a names.
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold text-foreground">Seats</h2>
+        <p className="text-xs text-muted-foreground">
+          Per plan, purchased and assigned
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {payload.plans.map((plan) => (
+          <div
+            key={plan.plan_slug}
+            className="rounded-xl border border-border bg-card p-4 sm:p-5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono text-xs text-foreground">
+                {plan.plan_slug}
+              </p>
+              {isOversubscribed(plan) ? (
+                <Badge tone="warning" icon="AlertTriangle">
+                  Oversubscribed
+                </Badge>
+              ) : null}
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              {SEAT_COUNTS.map((count) => (
+                <div key={count.key}>
+                  <p className="text-xs text-muted-foreground">{count.label}</p>
+                  <p className="mt-0.5 text-lg font-semibold text-foreground">
+                    {plan[count.key]}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );

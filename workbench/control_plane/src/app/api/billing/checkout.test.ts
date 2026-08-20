@@ -188,6 +188,11 @@ const EXCLUDED: Record<string, string> = {
     "session-gated on purpose: it returns the price list, identical for every " +
     "customer, so requiring `billing:purchase` would stop a member seeing " +
     "what things cost before being handed the right to buy them.",
+  "seats/route.ts":
+    "session-gated on purpose (SC-1a's seats block): a READ of the caller's " +
+    "own seat counts (`GET /me/seats`) that mints nothing and moves no money, " +
+    "so requiring `billing:purchase` would stop a member seeing their seats " +
+    "before being handed the right to buy more — the catalog read's argument.",
 };
 
 /**
@@ -676,6 +681,33 @@ describe("the excluded routes", () => {
     const res = await GET();
 
     expect(res.status).toBe(200);
+
+    session.email = null;
+    calls = [];
+    stubFetch([]);
+    const signedOut = await GET();
+    expect(signedOut.status).toBe(401);
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps the seats read on the session gate, and names no org on the wire", async () => {
+    // SC-1a's seats block: a signed-in member reads their own seats; a
+    // signed-out one reaches nothing. The organization is the deployment key's
+    // — never a query parameter the browser sent — so the whole read is a bare
+    // GET with no request input.
+    stubFetch([], new Response(JSON.stringify({ plans: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const { GET } = await import("@/app/api/billing/seats/route");
+    const res = await GET();
+
+    expect(res.status).toBe(200);
+    // It reached the Console's own seats read on the deployment's key, and no
+    // caller-named organization could have moved it elsewhere.
+    const seatsCall = consoleCalls().find((u) => u.endsWith("/me/seats"));
+    expect(seatsCall).toBeDefined();
+    expect(seatsCall).not.toMatch(/[?&]/); // no query string, no org param
 
     session.email = null;
     calls = [];
