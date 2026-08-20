@@ -210,6 +210,22 @@ def _body(**extra):
 
 # ══ done-when 2 · every outcome code + both 400 shape classes ════════════════
 
+@pytest.fixture
+def _stub_mirror_writes(monkeypatch):
+    """CP-2e's tenant-side mirror writes, stubbed for the fake/outcome layer.
+
+    ``persist_org_billing_profile`` (step 1.5) and ``mark_console_mirrored``
+    (step 2.5) are best-effort DB writes on the tenant ``organization`` row; in
+    the branch-mapping tests below there is no database, so they are stubbed to
+    keep those tests hermetic. Their REAL behaviour — the profile persists and
+    the marker is stamped — is proved against real Postgres in the R8 classes of
+    this suite (`TestTheTenantPlaneConverges`) and in the CP-2e reconciler suite
+    (`test_signup_reconciler.py`)."""
+    monkeypatch.setattr(route, "persist_org_billing_profile", _areturn(None))
+    monkeypatch.setattr(route, "mark_console_mirrored", _areturn(None))
+
+
+@pytest.mark.usefixtures("_stub_mirror_writes")
 class TestTheOutcomeCodes:
     """The four 200 outcome refusals and the success shape.
 
@@ -390,6 +406,7 @@ class TestStepOnesTypedRaisesAreTheBackstop:
         assert r.json() == {"admit": False, "code": "ConsoleUnavailable"}
 
 
+@pytest.mark.usefixtures("_stub_mirror_writes")
 class TestTheShapeClasses:
     """400 for shape violations — R11 body claims and the GST fields."""
 
@@ -542,6 +559,7 @@ class TestTheShapeClasses:
         assert r.json()["admit"] is True
 
 
+@pytest.mark.usefixtures("_stub_mirror_writes")
 class TestThePosture:
     def test_an_anonymous_caller_never_reaches_the_handler(self, flag_on):
         r = _client(ANON).post("/signup/provision", json=_body())

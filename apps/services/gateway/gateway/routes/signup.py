@@ -69,6 +69,8 @@ from acb_common import get_logger, get_settings
 from acb_common.provisioning import (
     OwnerBelongsElsewhere,
     SlugOwnedByAnother,
+    mark_console_mirrored,
+    persist_org_billing_profile,
     provision_local_organization,
 )
 from fastapi import APIRouter, Depends, Request
@@ -269,6 +271,16 @@ async def provision_signup(
         _log.error("signup.tenant_provision_failed", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
 
+    # ── Step 1.5 · persist the GST profile on the tenant org (CP-2e) ─────────
+    # AFTER step 1 (the org now exists) and BEFORE step 2, so a transient step-2
+    # failure still leaves `gstin`/`billing_state` recorded for the reconciler
+    # sweep to re-drive on — they thread to the Console below and are persisted
+    # NOWHERE else on the tenant plane. Best-effort (never raises); a miss only
+    # degrades them to NULL, which the sweep tolerates (customer_console.md CP-2e).
+    await persist_org_billing_profile(
+        slug, gstin=gstin or None, billing_state=registered_state
+    )
+
     # ── Step 2 · the CONSOLE plane, SECOND — the registry mirror ─────────────
     # A fresh tenant-born slug cannot be permanently refused here (the
     # create-only guard passes for the same owner); only transient failures
@@ -285,6 +297,13 @@ async def provision_signup(
     except ConsoleProvisionUnavailable as exc:
         _log.warning("signup.console_unavailable", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
+
+    # ── Step 2.5 · stamp the Console-mirror marker (CP-2e) ───────────────────
+    # Mirrored on both planes now, so record it and the reconciler's sweep skips
+    # it. The SAME writer the reconciler calls; best-effort and monotonic
+    # (`console_mirrored_at IS NULL` in the WHERE), so a miss only leaves the org
+    # for a later idempotent-on-slug pass — it can never double-mirror.
+    await mark_console_mirrored(slug)
 
     # Owner on both planes; the flow works dark (the tenant `app_user` admits
     # sign-in while the resolve flag is OFF).
