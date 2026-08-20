@@ -450,6 +450,24 @@ lands an audit row; the pushed processor quantity (once MT-4 exists) equals
 `COUNT(user_module_seat)` — until then the count is the invoice input the operator
 reads.
 
+> **⚠️ The customer-self-serve write behind this surface is
+> `customer_console.md` §6 item (h) (MINTED 2026-08-21, WS-31
+> `ws-31-seat-assign`), not `POST /billing/seats` — that route is `Operator`,
+> cross-org.** Item (h) sites the customer write on a **deployment-key
+> `seat_admin` capability door**, because a customer's org key is *the org* with
+> no in-org role and so cannot itself distinguish admin from member; the Console
+> authorises the write from `org_membership.role` on the resolved actor, scopes
+> the org by placement∩membership, and refuses self-serve oversubscription (the
+> cap 409 above). This SC-2 UI is therefore the **surface half** and owns two
+> things the backend door does not: it is **admin-gated at the surface** on the
+> tenant billing-admin capability — a hard done-when, NOT the read's known-open
+> "any signed-in member" posture, since a write is not a read — and it reaches
+> the door by the transport the owner picks in `customer_console.md` §9 residual
+> 7 (the deployment key is fenced out of the Next/browser tier, so the action
+> routes through the gateway tier, or waits on a dedicated member credential).
+> The seat counts it shows and mutates are the **one** vocabulary `GET /me/seats`
+> already surfaces (SC-1a); it holds no seat arithmetic of its own.
+
 ### SC-3 — Change requests *(the manual-fulfilment bridge)*
 `POST /billing/requests` (add module / change seat count / cancel). Creates a
 durable request row + notifies the operator; the customer sees request status.
