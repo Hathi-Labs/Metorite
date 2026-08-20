@@ -20,6 +20,16 @@ below rather than quietly deleted: it called the billing view "unmerged" on a
 branch, it said "everything else … nothing built", and it said dispatch waits on
 MT-2's tables.)*
 
+**SC-1a re-shaped 2026-08-20 — R4** *(WS-31 `ws-31-seats-mvp`)*: the panel is
+**split** into a 🟢 dispatchable **seats block** (purchased / assigned / available
+/ oversubscribed, rendered from the new customer seats read `GET /me/seats` —
+`customer_console.md` §6 item (g) / done-when 19, `can_pay` door) and an ⏸
+**entitlement half** (Centers/add-ons `active | trial | locked`) that stays
+**DEFERRED behind MT-2 (unbuilt)**. The old done-when — *"driven entirely by
+`/auth/me`'s `modules` + one `GET /billing/summary`"* — was NO-GO: `/auth/me`
+modules is MT-2 and `GET /billing/summary` is the Operator / cross-org read. See
+SC-1a below.
+
 **SC-4a's LAUNCH SLICE — ✅ BUILT 2026-08-19 (WS-30).** What landed, in the
 architectural order rather than the diff order:
 - **`billing:purchase`** joins `acb_auth.permissions.CAPABILITIES`
@@ -331,21 +341,47 @@ no figures.
 
 ## 2. The surfaces (each is an acceptance unit)
 
-### SC-1 — Read views *(after MT-2 tables + MT-3 ledger exist)*
-- **SC-1a Centers & add-ons panel** *(re-shaped by D23, 2026-08-10)*. **Center
-  packages are the primary purchase framing** (per-user counts on each Center,
-  ₹600 app-bearing / ₹300 slices-only), with the org-wide add-ons (Builder,
-  Workflows) and the Complete bundle beside them; `module_catalog` rows are the
-  internal atoms and never the customer-facing frame. Each shows the org's
-  entitlement state (`active | trial(expiry) | locked`), price, and seats
-  purchased vs assigned.
-  Locked modules render as upsell cards (the §2.4 rule 1 lever), never hidden.
-  When a user's stacked a-la-carte seats cost more than the covering tier, the
-  panel surfaces the swap as a savings prompt (§2.4a rule 2). **Done when:** a
-  two-org fixture shows org A its own entitlements and never org B's; a locked
-  module renders its card with a request-CTA; the savings prompt is pinned by a
-  test case where a-la-carte sum > tier price; the panel is driven entirely by
-  `/auth/me`'s `modules` + one `GET /billing/summary` call.
+### SC-1 — Read views *(after MT-2 tables + MT-3 ledger exist — **except SC-1a's seats block, dispatchable now over `GET /me/seats`; see below**)*
+- **SC-1a Centers & add-ons panel** *(re-shaped by D23, 2026-08-10; **split
+  2026-08-20 into a launch SEATS BLOCK and an MT-2-gated ENTITLEMENT half** — R4,
+  after a dispatch audit returned NO-GO on the old done-when: it named
+  `/auth/me`'s `modules` (MT-2, unbuilt) and `GET /billing/summary` (Operator /
+  cross-org — the wrong door for a customer))*. **Center packages are the primary
+  purchase framing** (per-user counts on each Center, ₹600 app-bearing / ₹300
+  slices-only), with the org-wide add-ons (Builder, Workflows) and the Complete
+  bundle beside them; `module_catalog` rows are the internal atoms and never the
+  customer-facing frame.
+
+  🟢 **LAUNCH SLICE — the SEATS BLOCK, dispatchable now.** On the existing
+  `/settings/billing` page, render **per plan** the four seat numbers —
+  **purchased · assigned · available · oversubscribed** — from the customer
+  seats read `GET /me/seats` (`customer_console.md` §6 item (g), `can_pay` door),
+  formatting the counts and **never** recomputing them (the seat vocabulary is
+  WS-31 §3.3's; the read returns it, the page renders it verbatim). An
+  oversubscribed plan (`assigned > purchased`) surfaces that state rather than
+  hiding behind a clamped `available == 0`. **Done when:** a two-org fixture
+  shows org A its own seat rows and **never** org B's; the four rendered numbers
+  equal the read's payload for a known grant/assignment fixture (e.g. purchased 3
+  / assigned 1 / available 2, plus an oversubscribed case); the block is driven
+  **entirely by `GET /me/seats`** and holds no seat arithmetic of its own.
+  It is a UI surface on the existing billing page, so
+  `workbench/control_plane/DESIGN_SYSTEM.md` and the eight rules in its
+  neighbouring `AGENTS.md` bind — no app-local palette, headless primitives
+  from `src/components/ui/`, and the real gate is the theme-switch check (Fluent →
+  Material → Graphite) on this surface **and** its neighbour.
+
+  ⏸ **DEFERRED behind MT-2 (unbuilt) — the ENTITLEMENT half.** The per-Center /
+  add-on **entitlement state** (`active | trial(expiry) | locked`), locked
+  modules as upsell cards (the §2.4 rule 1 lever, never hidden), the price beside
+  each, and the a-la-carte-vs-tier **savings prompt** (§2.4a rule 2) all read the
+  org's **module entitlements** — which live in **MT-2's tables** and its
+  `/auth/me` `modules` payload (`intersect()` / `ModuleGate`,
+  `saas_multitenancy.md`), and **MT-2 is not built**. This half returns with MT-2,
+  unchanged. **Done when (MT-2):** a two-org fixture shows org A its own
+  entitlements and never org B's; a locked module renders its card with a
+  request-CTA; the savings prompt is pinned by a test case where a-la-carte sum >
+  tier price. It is **not** driven by `GET /billing/summary` (Operator /
+  cross-org) and not by `/auth/me` modules until MT-2 ships that payload.
 - **SC-1b Credit monitor.** Balance (credits + ₹), burn this cycle, per-module
   burn chart from `usage_rollup`, the 80% alert state, BYOK orgs see consumption
   with "not billed — your key" labelling (§3.4). **Done when:** the displayed
@@ -695,12 +731,15 @@ it.
    it — enforcement inside the product is **MT-2**'s `intersect()` / `ModuleGate`
    / the 402-vs-403 split, and **SC-2 over MT-2 owns that**, not this clause.
    Two further facts about the route, both measured: it is the **Operator**,
-   cross-org read (`customer_console/main.py:1017`, `billing_summary` —
-   *re-anchored 2026-08-19 from `:875`*), so this acceptance runs operator-side
-   in the suite; the customer-reachable read is `GET /me/billing` (`:1355`,
-   `my_billing` — *re-anchored from `:1213`*) and it returns **no seats at all**
-   today — growing it a seats block is SC-1a's work, named here so nobody reads
-   clause 3 as a promise the customer's own page can keep.
+   cross-org read (`customer_console/main.py:1283`, `billing_summary` —
+   *re-anchored 2026-08-20 on `ws-31-seats-mvp` from `:1017`, earlier `:875`*), so
+   this acceptance runs operator-side in the suite; the customer-reachable billing
+   read is `GET /me/billing` (`:1621`, `my_billing` — *re-anchored 2026-08-20 from
+   `:1355`, earlier `:1213`*) and it returns **no seats at all**. The customer's
+   own seat grid is instead served by the dedicated `GET /me/seats` read
+   (`customer_console.md` §6 item (g) / done-when 19, `can_pay` door), which
+   SC-1a's launch seats block renders — named here so nobody reads clause 3 as a
+   promise the customer's own page can keep by itself.
 4. ⏸ **DEFERRED-until-hand-off → SC-4h** *(2026-08-19, F-A)* — see clause 3.
    **A duplicate webhook grants once** — CP-9 §9.5's **two** guards, not one:
    the `provider_event_id` key is transport dedup, and the **terminal-state

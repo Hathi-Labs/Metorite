@@ -1769,6 +1769,199 @@ class TestTheCatalogRead:
         assert dead.json()["detail"] == "organization is deleted"
 
 
+# ── §6 item (g) — the customer-key seats read ──────────────────────────────
+#
+# The seat grid the post-signup MVP (`subscription_console.md` SC-1a) needs.
+# `GET /billing/summary` computes the same numbers but is Operator/cross-org and
+# takes an `org_slug` a customer must never name; `/me/billing` carries no seats.
+# `GET /me/seats` is the customer-key read on the SAME `can_pay` door item (f)
+# used, and it shares `billing_summary`'s plan loop — the one `_seat_grid` helper
+# — with the org id from the credential: no second SQL, no recompute (done-when 19).
+
+class TestTheSeatsRead:
+    def test_the_seats_read_is_scoped_to_the_key(self, client, db, org):
+        """Org A's read never carries org B's rows (§6 item (g), done-when 19).
+
+        The two-org isolation precedent is
+        ``test_an_order_read_is_scoped_to_the_key``. The organization is the
+        CREDENTIAL's (``caller.organization_id``), so nothing on the wire can
+        redirect the read: A presents its own key AND — deliberately — B's slug
+        on the query string, and the slug is inert.
+
+        Mutation evidence (run and reverted during the build): giving ``my_seats``
+        an ``org_slug`` query param and reading ``_org_id(conn, org_slug)`` from it
+        makes A's request return B's ``sales`` row — this fence reddens on
+        ``"sales" not in slugs``.
+        """
+        other_slug = _new_org(client, "seats-other")
+        other_id = _org_id(client, other_slug)
+        # Give B a plan A does NOT hold, so "read B by slug" is observable on the
+        # wire rather than hidden behind two identical Core rows.
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO seat_grant (organization_id, plan_slug, "
+                     "quantity_purchased, reason) "
+                     "VALUES (:o, 'sales', 5, 'seats-read-test')"),
+                {"o": other_id},
+            )
+
+        r = client.get(f"/me/seats?org_slug={other_slug}",
+                       headers=_headers(org["key"]))
+        assert r.status_code == 200, r.text
+        slugs = {p["plan_slug"] for p in r.json()["plans"]}
+        # A's own provisioned Core seats are present (non-vacuous: the read
+        # returned rows), and B's plan never boards A's answer.
+        assert "core" in slugs, slugs
+        assert "sales" not in slugs, slugs
+
+    def test_the_seats_read_carries_the_seat_vocabulary_and_nothing_else(
+        self, client, db, org
+    ):
+        """The field set, the counts, the zero-clamp, and both doors (item (g)).
+
+        Four properties, one decision — *what a customer credential learns from
+        its seats*:
+
+        1. the field set is **exactly** the five seat names, structurally over the
+           ``SeatPlanView`` model AND over the wire, so an ``org`` or price field
+           argues with a red test;
+        2. the four counts equal ``seats.seat_counts`` fed the SAME
+           ``store.seat_rows`` — asserted by re-deriving them, so a second SQL or a
+           recompute is red;
+        3. an **oversubscribed** plan (``assigned > purchased``) reports
+           ``available == 0`` — the zero-clamp — not a negative, and surfaces
+           ``oversubscribed`` rather than hiding behind the clamp;
+        4. the door is ``can_pay``: a **suspended** org reads it, a **deleted** one
+           is 403.
+
+        Mutation evidence (run and reverted): recomputing ``available`` inline as
+        ``purchased - assigned`` without the zero-clamp fails property 3 on the
+        oversubscribed plan (``-1 != 0``); adding an ``organization_id`` or a
+        price field to ``SeatPlanView`` fails property 1's field-set equality.
+        """
+        from customer_console import store
+        from customer_console.main import SeatPlanView
+        from customer_console.seats import seat_counts
+
+        org_id = org["id"]
+
+        # The known fixture the spec names: provisioning grants Core 3 and
+        # assigns the owner one → purchased 3 / assigned 1 / available 2. Then a
+        # second, OVERSUBSCRIBED plan: one seat bought, two people assigned.
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO seat_grant (organization_id, plan_slug, "
+                     "quantity_purchased, reason) "
+                     "VALUES (:o, 'sales', 1, 'seats-read-test')"),
+                {"o": org_id},
+            )
+            for _ in range(2):
+                ident = c.execute(
+                    text("INSERT INTO user_identity (email) VALUES (:e) "
+                         "RETURNING id"),
+                    {"e": f"seat-{uuid.uuid4().hex[:12]}@t.test"},
+                ).scalar_one()
+                c.execute(
+                    text("INSERT INTO seat_assignment (organization_id, "
+                         "plan_slug, user_identity_id, source) "
+                         "VALUES (:o, 'sales', :i, 'alacarte')"),
+                    {"o": org_id, "i": ident},
+                )
+
+        # 1 — the field set, on the MODEL.
+        expected = {"plan_slug", "purchased", "assigned", "available",
+                    "oversubscribed"}
+        assert set(SeatPlanView.model_fields) == expected
+        assert not any(
+            "org" in name or "price" in name or "entitle" in name
+            for name in SeatPlanView.model_fields
+        )
+
+        r = client.get("/me/seats", headers=_headers(org["key"]))
+        assert r.status_code == 200, r.text
+        plans = r.json()["plans"]
+        by_slug = {p["plan_slug"]: p for p in plans}
+        assert set(by_slug) == {"core", "sales"}, by_slug
+
+        # 1 — the field set, on the WIRE.
+        assert all(set(p) == expected for p in plans), plans
+
+        # 2 — every count equals seat_counts fed the SAME seat_rows. This is the
+        # statement of "one vocabulary, never a second SQL": the wire is the fold.
+        with db.begin() as c:
+            for slug, row in by_slug.items():
+                grants, assigned = store.seat_rows(
+                    c, org_id=org_id, plan_slug=slug)
+                want = seat_counts(slug, grants, assigned)
+                assert row == {
+                    "plan_slug": slug,
+                    "purchased": want.purchased,
+                    "assigned": want.assigned,
+                    "available": want.available,
+                    "oversubscribed": want.oversubscribed,
+                }, row
+
+        # The Core anchor a reader can check by eye.
+        assert by_slug["core"] == {
+            "plan_slug": "core", "purchased": 3, "assigned": 1,
+            "available": 2, "oversubscribed": False,
+        }
+
+        # 3 — the oversubscribed plan: clamped to 0, never negative, and flagged.
+        sales = by_slug["sales"]
+        assert sales["purchased"] == 1 and sales["assigned"] == 2
+        assert sales["available"] == 0, "the zero-clamp, not purchased - assigned"
+        assert sales["oversubscribed"] is True
+
+        # 4 — the can_pay door. A suspended org still reads its seats...
+        _lifecycle(client, org["slug"], "suspended")
+        suspended = client.get("/me/seats", headers=_headers(org["key"]))
+        assert suspended.status_code == 200, suspended.text
+        # ...and the AI door is shut for the same key, so the two questions have
+        # not converged into one.
+        assert client.get("/me", headers=_headers(org["key"])).status_code == 403
+
+        # ...a deleted org is refused (cancelled is the only path to deleted).
+        _lifecycle(client, org["slug"], "cancelled")
+        _lifecycle(client, org["slug"], "deleted")
+        dead = client.get("/me/seats", headers=_headers(org["key"]))
+        assert dead.status_code == 403, dead.text
+        assert dead.json()["detail"] == "organization is deleted"
+
+    def test_the_seats_read_is_empty_for_an_org_that_holds_nothing(
+        self, client, db
+    ):
+        """A never-provisioned org reads ``200 {plans: []}`` (§6 item (g), R8).
+
+        The empty-holdings edge the shared ``_seat_grid`` loop must not crash on:
+        an org that holds a grant on no plan and an assignment on no plan. Every
+        active plan is skipped (``not grants and not assigned``), so the grid
+        folds to the empty list — not ``None``, not a 500, not a zero row for a
+        plan the org never touched.
+
+        Provisioning always seeds Core (``core_seats >= 1``, and the owner takes a
+        seat), so the zero-holdings org is made by stripping those seeds from a
+        freshly provisioned, ``active`` (``can_pay``) org — the state a real org
+        reaches the moment it releases its last seat and lets its last grant lapse.
+        """
+        slug = _new_org(client, "seats-empty")
+        org_id = _org_id(client, slug)
+        key = _org_key(client, slug)
+        with db.begin() as c:
+            c.execute(
+                text("DELETE FROM seat_assignment WHERE organization_id = :o"),
+                {"o": org_id},
+            )
+            c.execute(
+                text("DELETE FROM seat_grant WHERE organization_id = :o"),
+                {"o": org_id},
+            )
+
+        r = client.get("/me/seats", headers=_headers(key))
+        assert r.status_code == 200, r.text
+        assert r.json() == {"plans": []}
+
+
 # ── SC-4g — discount codes, the refusal partition, and the Rs 0 path ───────
 
 class TestDiscountCodes:
