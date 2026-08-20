@@ -1,7 +1,14 @@
 # Marketing Site — the public face on the apex (`metorite.com`)
 
-**Status: 🟡 SPEC MINTED 2026-08-19 (D46, owner directive) — verified against
-code 2026-08-19. Nothing is built.** Owning spec for board row **WS-33**. The
+**Status: 🟢 PAGE + FENCE BUILT 2026-08-20 (WS-33) — `site/index.html` and its
+R7 fence `tests/unit/test_marketing_site.py` land on branch `ws-33-landing`;
+`uv run pytest tests/unit/test_marketing_site.py -q` → 7 passed, page 13 285 B.
+Deliverables 1 (page) + 2 (fence) are DONE. Deliverables 3 (Caddy apex block),
+4 (apex DNS), and 5 (live verification) remain OWNER-GATED and unbuilt — the
+apex is not served yet; the ready-to-apply Caddy block and the
+`Caddyfile:8` `ops@fracktal.in` rebrand-leftover note travel in the PR body.**
+Minted 2026-08-19 (D46, owner directive) — verified against code 2026-08-19.
+Owning spec for board row **WS-33**. The
 apex has been reserved for exactly this since D41 (`work_plan.md:658`: *"The
 apex is reserved for a future marketing site"*). This spec is deliberately
 small: the owner asked for a **basic** website whose one job is to route a
