@@ -376,6 +376,42 @@ class CatalogView(BaseModel):
     plans: list[CatalogPlanView]
 
 
+class SeatPlanView(BaseModel):
+    """One plan's seat counts for the calling organization (§6 item (g)).
+
+    ⚠️ **Exactly five fields, and they ARE the one seat vocabulary** — pinned by
+    ``test_the_seats_read_carries_the_seat_vocabulary_and_nothing_else``, on the
+    model AND on the wire, for ``CatalogPlanView``'s reason: a field nothing reads
+    is a field somebody eventually reads. The four counts are
+    :class:`customer_console.seats.SeatCounts`'s — ``available`` zero-clamped,
+    ``oversubscribed`` its companion — surfaced, never recomputed.
+
+    Two absences are the design. **No organization id:** the organization is the
+    credential's, so putting it on the wire would echo back the one thing a
+    customer must never be able to NAME (R11). **No price:** a seat is a count,
+    not a quote — pricing is ``GET /billing/catalog``'s (and MT-2/SC-1a's), and a
+    seat grid that also quoted money would be a second denomination on a second
+    wire, exactly the ambiguity ``CatalogPlanView`` keeps off this API.
+    """
+
+    plan_slug: str
+    purchased: int
+    assigned: int
+    available: int
+    oversubscribed: bool
+
+
+class SeatsView(BaseModel):
+    """The caller's seats, one row per plan it has touched (§6 item (g)).
+
+    Plans with neither a grant nor a live assignment are **absent**, not zero
+    rows — the same skip ``billing_summary`` makes, so "the org never bought this"
+    and "the org bought zero of this" are not made to look alike.
+    """
+
+    plans: list[SeatPlanView]
+
+
 class UsageRequest(BaseModel):
     """Written by the **Router**, which holds the internal token — never by the
     customer whose usage it describes.
@@ -483,6 +519,43 @@ def _org_id(conn, slug: str) -> str:
     if row is None:
         raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
     return str(row[0])
+
+
+def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
+    """The per-plan seat grid for one organization — the ONE seat-grid loop.
+
+    Both the operator's ``GET /billing/summary`` (cross-org, by ``org_slug``) and
+    the customer's ``GET /me/seats`` (own org, from the credential) render exactly
+    this: every ACTIVE plan the org holds a grant or a live assignment on, in
+    ``sort_order``, folded through the one seat vocabulary — ``store.seat_rows``
+    through ``seat_counts`` (§3.3, D32.5). ``available``'s zero-clamp and
+    ``oversubscribed`` are ``seat_counts``'s, surfaced not recomputed, and a plan
+    the org never touched is skipped, not emitted as a zero row.
+
+    Extracted so the two surfaces cannot drift into two loops: one enumerate →
+    skip → fold, one SQL, computed once. ``billing_summary`` wraps the same grid
+    in its ``organization_id``/``credit_balance`` envelope; ``my_seats`` returns
+    it as a bare ``SeatsView``.
+    """
+    plans = [
+        r[0] for r in conn.execute(
+            text("SELECT slug FROM plan_catalog WHERE active ORDER BY sort_order")
+        )
+    ]
+    grid = []
+    for plan in plans:
+        grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=plan)
+        if not grants and not assigned:
+            continue  # never bought, never assigned — not worth a row
+        c = seat_counts(plan, grants, assigned)
+        grid.append(SeatPlanView(
+            plan_slug=plan,
+            purchased=c.purchased,
+            assigned=c.assigned,
+            available=c.available,
+            oversubscribed=c.oversubscribed,
+        ))
+    return grid
 
 
 def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any],
@@ -1284,24 +1357,7 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
     """Seats and credits for one organization — the console's single read."""
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug)
-        plans = [
-            r[0] for r in conn.execute(
-                text("SELECT slug FROM plan_catalog WHERE active ORDER BY sort_order")
-            )
-        ]
-        seats = []
-        for plan in plans:
-            grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=plan)
-            if not grants and not assigned:
-                continue  # never bought, never assigned — not worth a row
-            c = seat_counts(plan, grants, assigned)
-            seats.append({
-                "plan_slug": plan,
-                "purchased": c.purchased,
-                "assigned": c.assigned,
-                "available": c.available,
-                "oversubscribed": c.oversubscribed,
-            })
+        seats = _seat_grid(conn, org_id)
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
 
     return {
@@ -1750,6 +1806,38 @@ def billing_catalog(_: PayingCaller) -> CatalogView:
             )
             for plan in store.active_plans(conn)
         ])
+
+
+@app.get("/me/seats")
+def my_seats(caller: PayingCaller) -> SeatsView:
+    """The calling organization's OWN seats, per plan (§6 item (g)).
+
+    The sibling of ``GET /billing/catalog`` and the same move: a customer-key read
+    on the ``can_pay`` door. **Why ``can_pay`` and not the Operator door or
+    ``KeyCaller``**: a ``suspended`` organization is the one deciding whether to
+    buy more seats, so it must be able to SEE them — the §9.3(5) reasoning item
+    (f) records one route along — and a ``deleted`` one is refused like
+    everywhere else. ``GET /billing/summary`` computes these same numbers but is
+    the **Operator**, cross-org door and takes an ``org_slug`` a customer must
+    never name; ``GET /me/billing`` carries no seats at all. So the customer's own
+    seat grid (``subscription_console.md`` SC-1a) had no data source until this.
+
+    **The organization is a property of the credential** — ``caller.
+    organization_id``, never an ``org_slug`` on the wire (R11) — so org A can
+    never read org B's seats, by construction rather than by a ``WHERE`` clause a
+    reader has to remember, exactly as ``my_billing`` relies on one route up.
+
+    The four counts come from the ONE seat vocabulary: ``store.seat_rows`` folded
+    through ``seat_counts`` (§3.3, D32.5), the SAME computation ``billing_summary``
+    runs — literally the one shared ``_seat_grid`` loop, with the org id taken from
+    the credential instead of ``_org_id(conn, org_slug)``. There is no second SQL
+    and no recompute: ``available``'s zero-clamp and ``oversubscribed`` are
+    ``seat_counts``'s, surfaced not reimplemented, and the frontend renders them
+    verbatim. A plan the org never touched is skipped exactly as
+    ``billing_summary`` skips it, not emitted as a zero row.
+    """
+    with get_engine().begin() as conn:
+        return SeatsView(plans=_seat_grid(conn, caller.organization_id))
 
 
 def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:

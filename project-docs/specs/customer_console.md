@@ -233,7 +233,17 @@ them — and **(f) is now ✅ BUILT, 2026-08-19**: `GET /billing/catalog` on the
 `payments.paise`, two red-first fences, **no migration**, carried by **done-when
 18**. The suite is **117** against a real Postgres 16, **0 skipped**; the
 ten-suite Console block **395**. **(e) stays held back** — it needs a
-capability decision and the owner-gated Razorpay account ·
+capability decision and the owner-gated Razorpay account · **(g) is now ✅ BUILT,
+2026-08-20 (WS-31 `ws-31-seats-mvp`)** — a customer-key **seats read**
+(`GET /me/seats`, `can_pay` door), item (g) / done-when 19, so the post-signup
+MVP's seat grid (`subscription_console.md` SC-1a) has a customer-reachable
+source: the ONE shared `_seat_grid(conn, org_id)` helper (extracted from
+`billing_summary`'s plan loop; both routes now call it) with the org id from
+`caller.organization_id`, the four counts folded from `store.seat_rows` through
+`seats.seat_counts` (no second SQL, no recompute), a `SeatsView`/`SeatPlanView`
+pair mirroring the catalog pair, two red-first R8 fences, **no migration**. The
+suite is now **119** against a real Postgres 16, **0 skipped**. The seat WRITES
+stay owner-gated (§8 gate 4) ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -407,8 +417,10 @@ moved again with CP-2b** (`resolve` gained a second scheme and two helper
 functions); re-derive them at dispatch. *(The previous header's "repo-wide grep: zero
 hits … none of the commercial substrate exists" was true at authoring on
 2026-08-12 and false from CP-1 onward; likewise "CP-2 … spec only" — CP-2 is
-**✅ BUILT**: `main.py:603` `GET /billing/summary`, `:635` `POST /billing/seats`,
-`:675` release, pinned by `test_customer_console_seats.py:59`
+**✅ BUILT**: `main.py:1283` `GET /billing/summary`, `:1315` `POST /billing/seats`,
+`:1355` release *(three anchors re-measured 2026-08-20 on `ws-31-seats-mvp` from
+`:603`/`:635`/`:675` — they drifted ~680 lines as CP-9/CP-2c/CP-2e landed; match
+by handler name, not by number)*, pinned by `test_customer_console_seats.py:59`
 (409 + buy-more, never an auto-upgrade), `test_customer_console_api.py:142`
 (the cap over HTTP) and `test_customer_console_sql.py:183,217` (the partial
 unique index and the cap against a real database). Line anchors re-derived
@@ -1420,9 +1432,9 @@ builds an amount from a `float`.
 neither of which can move value.** This is the question the audit stopped on —
 `main.py:5-24` declares four schemes, the `cc_live_` organization key is
 **read-only by design** (it reaches `/me` and `/me/billing`), every write route
-takes `Operator`, and `main.py:1386-1397` (*re-anchored 2026-08-19 from
-`:1213-1224`, and again the same day when §6 item (f)'s route landed above
-it*) forbids the workbench from holding the operator token. A checkout is a customer write, so something had to give. The
+takes `Operator`, and `main.py:1621-1634` (`my_billing` — *re-anchored 2026-08-20
+on `ws-31-seats-mvp` from `:1386-1397`; earlier `:1213-1224`*) forbids the
+workbench from holding the operator token. A checkout is a customer write, so something had to give. The
 answer that gives least:
 
 1. **The org key stays read-only for every existing route.** Nothing already
@@ -2045,6 +2057,34 @@ a real Postgres can close on their own.*
     the conversion, so quote and charge cannot drift into two denominations.
     **No migration:** a read over tables 001 and 007 already ship.
 
+*Clause 19 authored 2026-08-20 (WS-31, `ws-31-seats-mvp`) with §6 item (g) — the
+customer seats read the post-signup MVP needs. **✅ BUILT 2026-08-20**: `GET
+/me/seats` (`main.py`, `my_seats`), the `SeatsView`/`SeatPlanView` pair, and the
+two red-first R8 fences below; suite 119/119 against a real Postgres 16, 0
+skipped. Seat WRITES / Console deploy / flags stay owner-gated (§8 gate 4).*
+
+19. ✅ **BUILT — A customer credential can read its OWN seats (§6 item (g)):**
+    `GET /me/seats` answers, for each plan the calling organization holds a grant
+    or a live assignment on, `plan_slug · purchased · assigned · available ·
+    oversubscribed` under the organization key on the **`can_pay`** door — so the
+    post-signup MVP's seat grid (`subscription_console.md` SC-1a) has a
+    customer-reachable data source, and a **suspended** organization can see the
+    seats it is deciding whether to pay for; a **deleted** one 403s. The four
+    counts come from the ONE seat vocabulary — `store.seat_rows` folded through
+    `seats.seat_counts` (§3.3, D32.5), the same computation `billing_summary`
+    runs — never a second SQL, and the frontend renders them verbatim. — Two
+    fences, both to be shown red first, both R8 against a real Postgres on the
+    Console ladder, beside `TestTheCatalogRead` in
+    `tests/unit/test_customer_console_payments.py` (already on §7's list and
+    pr-check's skip-guard, so the read rides item (f)'s suite):
+    `test_the_seats_read_is_scoped_to_the_key` (two orgs; org A's read never
+    carries org B's rows) and
+    `test_the_seats_read_carries_the_seat_vocabulary_and_nothing_else` (the field
+    set pinned exactly on the `SeatPlanView` model *and* on the wire; the counts
+    equal `seat_counts` fed the same `seat_rows`; a `suspended` org reads it, a
+    `deleted` org 403s). **No migration:** a read over the seat tables in `001`
+    already ships.
+
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
 a comment**. *(All three ✅ made 2026-08-18 in the build.)*
@@ -2378,7 +2418,8 @@ input* when a caller has a tenant of their own to be inferred from. The operator
 credential has no tenant — it is cross-organization by design and by §0.9.2 —
 so there is nothing for the slug to override; naming the org is the operator
 *performing an act on a named customer*, exactly as `POST /billing/seats`
-(`main.py:635`) and `POST /credits/grant` (`main.py:690`) already do. Under a
+(`main.py:1315`, `assign_seat`) and `POST /credits/grant` (`main.py:1370`,
+`grant_credits`) already do *(both re-measured 2026-08-20 from `:635`/`:690`)*. Under a
 **deployment** key the same field is the forbidden shape, because that caller
 *does* have an identity from which the answer must be derived. **One endpoint,
 two schemes, one shape rule:** a deployment key presenting `org_slug` is
@@ -4777,8 +4818,9 @@ two reads · 9.4's `PaymentProvider` seam, `RazorpayProvider` over `httpx`, the
 storage, percent-against-the-pre-GST-base, the redeem route and the ₹0 path ·
 every fence named in this ticket. Its acceptance is CP-9 done-when 1–17 and
 SC-4g done-when 1–8. *(Item **(f)** below was then built on 2026-08-19 as its
-own small slice and carries **done-when 18** — the list is 1–18, and the
-substrate half's own acceptance is unchanged at 1–17.)*
+own small slice and carries **done-when 18**; item **(g)** — the customer seats
+read, ✅ built 2026-08-20 — carries **done-when 19**, so the list is 1–19, and
+the substrate half's own acceptance is unchanged at 1–17.)*
 
 **🔴 The surface half — held back, and named rather than left to drift.**
 **(a)** WS-30 **SC-4a's checkout UI** and its two write proxies, **because
@@ -4827,10 +4869,12 @@ Both fences shown red first — dropping `WHERE active` fails
 `…_carries_no_per_org_state_and_paise_only` on `600 == 60000`, and adding an
 `organization_id` field to `CatalogPlanView` fails its field-set equality.
 *The finding as recorded:* *no route exposes the priced `plan_catalog` to a
-customer credential.* `GET /billing/summary` (`main.py:1048`) is `Operator`, cross-org,
+customer credential.* `GET /billing/summary` (`main.py:1283`) is `Operator`, cross-org,
 and returns only slugs the org already holds seats on; `GET /me/billing`
-(`:1386`) and `GET /me` (`:1212`) carry no catalog. *(All three re-anchored
-2026-08-19 by the build itself — the new models and route sit above them.)* SC-4a launch done-when 1
+(`:1621`) and `GET /me` (`:1447`) carry no catalog. *(All three re-measured
+2026-08-20 on `ws-31-seats-mvp` from `:1048`/`:1386`/`:1212` — the 2026-08-19
+build's numbers drifted ~235 lines as CP-2c/CP-2e landed above them; matched by
+handler name.)* SC-4a launch done-when 1
 forbids a hard-coded ladder in TypeScript, so **without a customer-key catalog
 read the launch slice cannot meet it honestly.** Recorded here as WS-31's, not
 built by WS-30. *(Made buildable 2026-08-19 after the dispatch confirmation
@@ -4856,6 +4900,83 @@ found the first draft too loose to build from — agent-proposed defaults, D16/D
   assert absent) and
   `test_the_catalog_read_carries_no_per_org_state_and_paise_only` (field-set
   equality incl. `price_paise`; a suspended org reads it; a deleted org 403s).
+
+**(g) One more SMALL customer-key read the same MVP needs, and it belongs to this
+service** — ✅ **BUILT 2026-08-20 (WS-31, `ws-31-seats-mvp`)**: one route
+(`GET /me/seats`, `main.py` `my_seats`, on the `can_pay` door), one response-model
+pair (`SeatsView`/`SeatPlanView`), no new store function, no migration; two
+red-first R8 fences (below), suite 119/119 against a real Postgres 16, 0 skipped.
+The post-signup in-app MVP needs the customer to SEE its seats —
+purchased, assigned, available, oversubscribed **per plan** — but the only read
+that computes them today is `GET /billing/summary` (`main.py:1283`,
+`billing_summary`), which is the **Operator**, cross-org door: the wrong door for
+a customer, and it takes an `org_slug` a customer must never name. The customer
+read `GET /me/billing` (`main.py:1621`, `my_billing`) returns credits + invoices
+and **no seats at all**, so a customer's own page cannot render its seat grid.
+*(Both anchors re-measured 2026-08-20 on `ws-31-seats-mvp`.)* Decided here with
+the same agent-proposed defaults item (f) used (D16/D17):
+
+- **Route:** a dedicated `GET /me/seats`, the sibling of `GET /billing/catalog`
+  (item (f)) — **not** a `seats` block bolted onto `GET /me/billing`. That
+  billing read sits on `KeyCaller`/`can_use_ai`, which **403s a `suspended`
+  organization** (`organization_from_key`, `auth.py:265-289`); the seats read
+  must be reachable by exactly that organization (next bullet), so hanging seats
+  on `/me/billing` would either shut the door on the customer who most needs it
+  or force a re-door of a shipped route — a separate behavioural change this
+  ticket does not take. A new `PayingCaller` read is the same move item (f) made
+  and the SAME seam, not a parallel one. *(The alternative — extend `/me/billing`
+  and re-door it to `can_pay` so the page makes one call — is left as an owner
+  decision, §9's residuals: it widens who may read credits/burn on a shipped
+  route and wants its own fence, so it does not ride a seats-read PR.)*
+- **Auth:** the **`can_pay` door** (`organization_for_payment` / `PayingCaller`,
+  `auth.py:292-309`) — NOT the Operator door and NOT `KeyCaller`. A **suspended**
+  organization may read its seats, because it is the organization deciding
+  whether to buy more — the §9.3(5) reasoning item (f) used one route along — and
+  a **deleted** one 403s. The organization is a property of the credential
+  (`caller.organization_id`), so no `org_slug` reaches the wire and org A can
+  never name org B.
+- **Payload:** for each plan the org holds a grant or a live assignment on,
+  `plan_slug · purchased · assigned · available · oversubscribed` — the **exact
+  five** `billing_summary` already emits (`main.py:1298-1304`), computed by the
+  ONE seat vocabulary and **nothing else**: `store.seat_rows(conn,
+  org_id=caller.organization_id, plan_slug=…)` folded through `seats.seat_counts`
+  (§3.3, D32.5). **No recompute on any surface** — the handler calls the ONE
+  shared `_seat_grid(conn, org_id)` helper (extracted from `billing_summary`'s
+  loop; `billing_summary` calls it too) with the org id taken from the credential
+  instead of `_org_id(conn, org_slug)`, and a plan the org never touched is
+  skipped exactly as `billing_summary` skips it (`main.py:1295-1296`), not
+  emitted as a zero row. Shape it with a `SeatsView` / `SeatPlanView` pair
+  mirroring `CatalogView` / `CatalogPlanView` (`main.py:349-376`), so the field
+  set is pinned on the model as well as on the wire.
+- **Tenant isolation:** the read is scoped to `caller.organization_id` from the
+  org-key door — by construction, not a `WHERE` a reader has to remember, the
+  same property `my_billing` relies on (`main.py:1635`). Org A's read never
+  returns org B's rows.
+- **Fences (R7), in `tests/unit/test_customer_console_payments.py`** — already on
+  §7's list and pr-check's skip-guard, so the seats read rides item (f)'s suite
+  and there is **nothing new to register** — both shown red first and both **R8**
+  against a real Postgres 16 on the Console ladder, sitting beside
+  `TestTheCatalogRead`:
+  - `test_the_seats_read_is_scoped_to_the_key` — provision two orgs, grant and
+    assign seats on each, and assert org A's `GET /me/seats` never carries a plan
+    row or count belonging to org B (the two-org isolation precedent is
+    `test_an_order_read_is_scoped_to_the_key`). Mutation evidence to run and
+    revert: driving the read from an `org_slug` query param instead of
+    `caller.organization_id` returns org B's seats — red.
+  - `test_the_seats_read_carries_the_seat_vocabulary_and_nothing_else` — the
+    field set is **exactly** `{plan_slug, purchased, assigned, available,
+    oversubscribed}` on the `SeatPlanView` model AND on the wire; the four counts
+    equal `seats.seat_counts` fed the same `store.seat_rows` for a known fixture
+    (e.g. purchased 3 / assigned 1 / available 2, plus an oversubscribed
+    assigned > purchased case), never a second SQL; a **suspended** org reads it,
+    a **deleted** org 403s. Mutation evidence: recomputing `available` inline
+    without the zero-clamp fails the oversubscribed case; adding an `org` or
+    price field to `SeatPlanView` fails the field-set equality.
+- **Gate label:** the READ is 🟢 **AGENT-SAFE** (fixtures / real Postgres). The
+  live seat **writes** — `POST /billing/seats` (`main.py:1315`, `assign_seat`)
+  and its release — stay 🔴 **OWNER-GATE** (§8 gate 4), as do deploying the
+  Console and flipping any flag. Reading seats moves no value and mints nothing.
+- **No migration:** a read over the seat tables in `001` already ships.
 
 The split is not cosmetic: the substrate half is verifiable end-to-end by an
 agent against a real database and a fake provider, and the surface half is not
