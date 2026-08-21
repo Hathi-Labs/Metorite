@@ -193,6 +193,13 @@ const EXCLUDED: Record<string, string> = {
     "own seat counts (`GET /me/seats`) that mints nothing and moves no money, " +
     "so requiring `billing:purchase` would stop a member seeing their seats " +
     "before being handed the right to buy more — the catalog read's argument.",
+  "members/route.ts":
+    "session-gated on purpose (SC-2b's manage-seats roster): a READ of the " +
+    "caller's own membership list (`GET /me/members`, {email, role, status}) " +
+    "that mints nothing and moves no money — the exact sibling of `seats/route.ts`. " +
+    "The per-member WRITE controls it feeds ARE `billing:purchase`-gated at the " +
+    "surface, but the roster read itself takes the seats read's session gate. " +
+    "Covered by `members/members.test.ts`.",
   "seats/assign/route.ts":
     "NOT an org-key money route (SC-2a): a gateway-tier seat WRITE proxy that " +
     "presents NO `cc_live_` org key and never touches `_console.ts` — it " +

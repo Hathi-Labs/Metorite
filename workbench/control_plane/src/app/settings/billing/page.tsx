@@ -21,8 +21,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
-import Badge from "@/components/ui/Badge";
+import { hasCapability } from "@/lib/access";
+import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import { Select } from "@/components/ui/Input";
 
 import Checkout from "./Checkout";
 import {
@@ -37,10 +39,22 @@ import {
   sortInvoices,
 } from "./lib/billing";
 import {
+  type SeatPlan,
   type SeatsPayload,
   SEAT_COUNTS,
   isOversubscribed,
 } from "./lib/seats";
+import {
+  type Member,
+  type MembersPayload,
+  type SeatActionResult,
+  assignBody,
+  buyMoreMessage,
+  canAssign,
+  interpretSeatAction,
+  readMembers,
+  releaseBody,
+} from "./lib/manage";
 
 interface BillingPayload {
   credits: CreditSummary;
@@ -79,6 +93,7 @@ export default function BillingPage() {
   const { access } = useAccess();
   const [data, setData] = useState<BillingPayload | null>(null);
   const [seats, setSeats] = useState<SeatsPayload | null>(null);
+  const [members, setMembers] = useState<MembersPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -112,15 +127,28 @@ export default function BillingPage() {
     }
   }, []);
 
+  // The roster (SC-2b) is driven by `GET /me/members` and, like the seats
+  // block, degrades to absent rather than erroring the page: a 503 (the Console
+  // is deployed nowhere) leaves `members` null and the panel does not render.
+  const loadMembers = useCallback(async () => {
+    try {
+      const r = await fetch("/api/billing/members", { cache: "no-store" });
+      setMembers(r.ok ? await r.json() : null);
+    } catch {
+      setMembers(null);
+    }
+  }, []);
+
   useEffect(() => {
     // Wrapped rather than called directly: the effect must not reach a
     // setState synchronously, and `load` is also used by the retry button.
     const run = async () => {
       await load();
       await loadSeats();
+      await loadMembers();
     };
     void run();
-  }, [load, loadSeats]);
+  }, [load, loadSeats, loadMembers]);
 
   if (!access?.is_admin) {
     return (
@@ -129,6 +157,15 @@ export default function BillingPage() {
       </div>
     );
   }
+
+  // The seat WRITE controls are gated on `billing:purchase` here, ON TOP of the
+  // page's admin arm. ⚠️ This surface gate is a COURTESY, not a security
+  // boundary: the real authorization for a seat write is Console-side
+  // (`_seat_admin_for_deployment`, reached through the SC-2a transport). Hiding
+  // the control keeps a non-purchaser from a button they cannot use; it does
+  // not — and must not be relied on to — stop the request.
+  const canManage = !!access && hasCapability(access, "billing:purchase");
+  const roster = readMembers(members);
 
   return (
     <div className="flex h-full flex-col">
@@ -165,6 +202,14 @@ export default function BillingPage() {
             <CreditPanel data={data} />
             {Array.isArray(seats?.plans) && seats.plans.length > 0 ? (
               <SeatsPanel payload={seats} />
+            ) : null}
+            {roster.length > 0 ? (
+              <ManagePanel
+                members={roster}
+                plans={Array.isArray(seats?.plans) ? seats.plans : []}
+                canManage={canManage}
+                onChanged={loadSeats}
+              />
             ) : null}
             <InvoiceTable rows={data.invoices} />
           </div>
@@ -295,6 +340,192 @@ function SeatsPanel({ payload }: { payload: SeatsPayload }) {
         ))}
       </div>
     </section>
+  );
+}
+
+// The membership status vocabulary → a semantic Badge tone. Membership status
+// (`001_customer_console.sql`) is a different concept from a task/lane status,
+// so it maps to Badge's own house tones rather than `statusAccent`'s hues (which
+// own tags/lanes). Unknown statuses fall back to neutral rather than crashing.
+const MEMBER_STATUS_TONE: Record<string, BadgeTone> = {
+  active: "success",
+  invited: "warning",
+  pending: "warning",
+  suspended: "destructive",
+  removed: "neutral",
+  cancelled: "neutral",
+};
+
+function statusTone(status: string): BadgeTone {
+  return MEMBER_STATUS_TONE[status] ?? "neutral";
+}
+
+/**
+ * SC-2b's manage-seats roster. The rows are `GET /me/members`'s (email · role ·
+ * status), rendered verbatim; the assign/release controls drive SC-2a's Next
+ * hops and, on success, refetch `GET /me/seats` so the SeatsPanel counts update.
+ * NOTHING here computes a seat count — every number the customer sees is the
+ * read's (`onChanged` re-runs it).
+ */
+function ManagePanel({
+  members,
+  plans,
+  canManage,
+  onChanged,
+}: {
+  members: Member[];
+  plans: SeatPlan[];
+  canManage: boolean;
+  onChanged: () => void | Promise<void>;
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold text-foreground">Members</h2>
+        <p className="text-xs text-muted-foreground">
+          {canManage
+            ? "Assign or release a seat, per member"
+            : "Roster only — seat changes need the billing capability"}
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {members.map((member) => (
+          <MemberRow
+            key={member.email}
+            member={member}
+            plans={plans}
+            canManage={canManage && plans.length > 0}
+            onChanged={onChanged}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MemberRow({
+  member,
+  plans,
+  canManage,
+  onChanged,
+}: {
+  member: Member;
+  plans: SeatPlan[];
+  canManage: boolean;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [planSlug, setPlanSlug] = useState(plans[0]?.plan_slug ?? "");
+  const [busy, setBusy] = useState<null | "assign" | "release">(null);
+  const [feedback, setFeedback] = useState<
+    { tone: "cap" | "error"; message: string } | null
+  >(null);
+
+  const selected = plans.find((p) => p.plan_slug === planSlug) ?? null;
+
+  const act = async (
+    kind: "assign" | "release",
+    hop: string,
+    body: Record<string, unknown>,
+  ) => {
+    setBusy(kind);
+    setFeedback(null);
+    try {
+      const r = await fetch(hop, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await r.json().catch(() => null);
+      const result: SeatActionResult = interpretSeatAction(r.status, payload);
+      if (result.kind === "ok") {
+        // The counts are the read's — refetch SC-1a rather than adjust locally.
+        await onChanged();
+      } else if (result.kind === "cap") {
+        // The cap's `buy_more` copy, from the server's own numbers, verbatim.
+        setFeedback({ tone: "cap", message: buyMoreMessage(result.buyMore) });
+      } else {
+        setFeedback({ tone: "error", message: result.message });
+      }
+    } catch {
+      setFeedback({ tone: "error", message: "Could not reach billing." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm text-foreground">{member.email}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{member.role}</p>
+        </div>
+        <Badge tone={statusTone(member.status)}>{member.status}</Badge>
+      </div>
+
+      {canManage ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="w-44">
+            <Select
+              inputSize="sm"
+              value={planSlug}
+              onChange={(e) => setPlanSlug(e.target.value)}
+              aria-label={`Seat plan for ${member.email}`}
+            >
+              {plans.map((plan) => (
+                <option key={plan.plan_slug} value={plan.plan_slug}>
+                  {plan.plan_slug}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Button
+            size="sm"
+            icon="UserPlus"
+            loading={busy === "assign"}
+            disabled={busy !== null || !selected || !canAssign(selected)}
+            onClick={() =>
+              void act(
+                "assign",
+                "/api/billing/seats/assign",
+                assignBody(member.email, planSlug),
+              )
+            }
+          >
+            Assign
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="UserMinus"
+            loading={busy === "release"}
+            disabled={busy !== null || !selected}
+            onClick={() =>
+              void act(
+                "release",
+                "/api/billing/seats/release",
+                releaseBody(member.email, planSlug),
+              )
+            }
+          >
+            Release
+          </Button>
+        </div>
+      ) : null}
+
+      {feedback ? (
+        <p
+          className={`mt-3 rounded-lg p-3 text-xs ${
+            feedback.tone === "cap"
+              ? "bg-warning/10 text-warning"
+              : "bg-destructive/10 text-destructive"
+          }`}
+        >
+          {feedback.message}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

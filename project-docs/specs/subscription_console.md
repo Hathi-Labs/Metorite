@@ -48,8 +48,30 @@ wire + the unwired-refusal + the 403-relay), the dependency-boundary grow **two�
 deployment key never reaches Next) and the Next-side `seats/manage.test.ts`.
 **Still 🔴 OWNER-GATE / deferred:** granting `seat_admin` to the REAL deployment key
 (`customer_console.md` §8 gate 8), setting the key/URL live (§8 gate 7), the live
-seat write (§8 gate 4), deploying the Console (§8 gate 2), and **SC-2b — the
-assign/release UI (build SECOND)**, below.
+seat write (§8 gate 4), deploying the Console (§8 gate 2). SC-2b — the
+assign/release UI — is now ✅ BUILT (next block).
+
+**SC-2b manage-seats UI ✅ BUILT 2026-08-21 — R4** *(WS-30 `ws-30-sc2b-manage-ui`)*:
+the assign/release surface is built dark on the admin-gated `/settings/billing`
+page, beside the SC-1a `SeatsPanel`. What landed: a members read hop
+(`workbench/control_plane/src/app/api/billing/members/route.ts`, a verbatim mirror
+of the SC-1a `seats/route.ts` read — session-gated `GET`, presents the deployment's
+own `cc_live_` org key via `_console.ts`, `force-dynamic`, fail-closed 503, names
+no tenant on the wire per R11); the roster + per-member assign/release controls on
+`page.tsx` (driving SC-2a's `/api/billing/seats/{assign,release}` hops) with a
+view-model (`lib/manage.ts`) that holds **no** seat arithmetic — every count is the
+read's, refetched via `GET /me/seats` on success, and the cap-409 `buy_more` copy
+is relayed verbatim from the server's own numbers. **Gate: reuse `billing:purchase`
+at the surface (a courtesy on top of the `is_admin` arm), owner-resolved — no
+`seats:admin` minted.** Fences green (R7): `lib/manage.test.ts` (the roster/write-
+bodies/no-arithmetic/refetch/cap-409 view-model, red-first), `members/members.test.ts`
+(the read hop is session-gated and org-pinned to the key, red-first), and the
+`checkout.test.ts` completeness sweep gains a `members/route.ts` EXCLUDED entry
+(red-first). **Still 🔴 OWNER-GATE (NOT this build):** the live seat write (§8 gate
+4), granting `seat_admin` to the real deployment key (§8 gate 8), deploying the
+Console (§8 gate 2), any flag flip. The surface is inert until the transport is
+live: the members read 503s (Console deployed nowhere) and the roster renders
+absent, exactly as the SC-1a panel handles its own 503.
 
 **SC-2 manage-seats surface SPECCED 2026-08-21 — R4** *(WS-30 `ws-30-manage-seats`,
 docs-only)*: with `customer_console.md` §6 item (h)'s backend seat WRITE + door
@@ -629,20 +651,28 @@ directory, never written ahead.)*
   gate 7), the **live** seat write against a real customer org (§8 gate 4),
   deploying the Console (§8 gate 2), and any flag flip.
 
-#### SC-2b — the manage-seats UI *(BUILD SECOND, after SC-2a · 🟢 AGENT-SAFE, design-system + dark)*
+#### SC-2b — the manage-seats UI *(✅ BUILT 2026-08-21 · 🟢 AGENT-SAFE, design-system + dark)*
 
 Assign/release controls on the SC-1a seats panel
 (`src/app/settings/billing/page.tsx`, beside the `SeatsPanel`), driving SC-2a's
 Next hop. **Admin-gated at the surface** on the tenant billing-admin capability —
 the hard done-when, NOT the read's "any signed-in member" posture, since a write
-is not a read. *Agent-proposed default:* reuse the existing admin-only
-`billing:purchase` capability (`acb_auth.permissions`, seeded onto the `default`
-org's admin by `infra/postgres/178_billing_purchase_permission.sql`; manager and
-member excluded); the owner may overrule with a dedicated `seats:admin` capability
-— **the one residual UI decision, flagged here rather than assumed.** DESIGN_SYSTEM
-binds: no app-local palette, headless primitives from `src/components/ui/`, and
-the real gate is the theme-switch check (Fluent → Material → Graphite) on this
-surface **and** its neighbour. **Done when:** a non-admin session sees no controls
+is not a read. **Gate RESOLVED (owner call, 2026-08-21): reuse the existing
+admin-only `billing:purchase` capability** (`acb_auth.permissions`, seeded onto
+the `default` org's admin by `infra/postgres/178_billing_purchase_permission.sql`;
+manager and member excluded) — `hasCapability(access, "billing:purchase")` at the
+surface, on top of the page's `access?.is_admin` arm. ~~the owner may overrule
+with a dedicated `seats:admin` capability — the one residual UI decision~~
+**STRUCK: no `seats:admin` is minted; the owner resolved this to
+`billing:purchase`, so the write reuses the checkout's one capability rather than
+splitting seat-management onto a second gate.** ⚠️ The surface gate is a
+**courtesy**, not a security boundary — the real authorization for a seat write
+is Console-side (`_seat_admin_for_deployment`, reached through the SC-2a
+transport); hiding the control keeps a non-purchaser off a button they cannot
+use. DESIGN_SYSTEM binds: no app-local palette, headless primitives from
+`src/components/ui/`, and the real gate is the theme-switch check (Fluent →
+Material → Graphite) on this surface **and** its neighbour. **Done when:** a
+non-admin session sees no controls
 (or is refused); after an assign the SC-1a read refetches to `assigned+1 /
 available−1` and a release the reverse; the cap 409 renders the `buy_more` copy
 verbatim (no client arithmetic); an already-assigned member is an idempotent
