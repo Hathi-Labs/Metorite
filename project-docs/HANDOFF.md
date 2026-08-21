@@ -165,21 +165,6 @@ this file grows a graveyard and the graveyard is what goes stale.
   §9.9
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-10 · A conflicted PR runs NO checks — the R1 guard's blind window · [AGENT]
-- **Check:** `rg -n "pull_request" .github/workflows/pr-check.yml` → if the
-  migration-prefix guard still runs only on `pull_request` (which checks out
-  `refs/pull/N/merge`, a ref GitHub does not compute while a PR is conflicted),
-  the window is still open. A `merge_group`/`push`-on-branch trigger, or a job
-  that checks out the head ref and merges the base itself, would close it.
-- **Why:** ⚠️ Measured, not guessed. `test_migration_prefixes.py` DOES catch two
-  migrations at one number — verified by putting the duplicate back. It was
-  simply never run: #439 sat `dirty` and reported `check_runs: 0`, **no jobs at
-  all**. So the window in which a cross-branch collision is most likely is
-  exactly the window in which nothing is watching, and the collision surfaces
-  only when somebody hand-resolves the conflict — i.e. while editing the very
-  tree that hides it.
-- **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
-- **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
 - **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
