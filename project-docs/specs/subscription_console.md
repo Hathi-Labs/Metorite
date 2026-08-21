@@ -31,6 +31,37 @@ MT-2's tables.)*
 modules is MT-2 and `GET /billing/summary` is the Operator / cross-org read. See
 SC-1a below.
 
+**SC-2a manage-seats TRANSPORT ✅ BUILT 2026-08-21 — R4** *(WS-30 `ws-30-manage-seats`)*:
+the gateway-tier transport (SC-2a) is built dark, against a **test** `seat_admin`
+key / fixtures / `httpx.MockTransport` — no real key, no flag flip, no deploy.
+What landed: the two Next hops
+(`workbench/control_plane/src/app/api/billing/seats/{assign,release}/route.ts`,
+holding NO deployment key, forwarding the session identity only, R11); the gateway
+seat-admin proxy (`apps/services/gateway/gateway/routes/seats.py`,
+`POST /seats/assign` + `/seats/release`, registered like `routes/signup.py`, NOT
+in `PUBLIC_ROUTES`, `_FORBIDDEN_BODY_KEYS`→400, session `actor_email`); and the two
+Console-client functions on the ONE client (`assign_seat_on_console` /
+`release_seat_on_console` in `acb_auth/console_resolve.py`, deployment key + session
+`actor_email`, NO `org_slug`). Fences green: `test_seat_admin_proxy_route.py` (the
+wire + the unwired-refusal + the 403-relay), the dependency-boundary grow **two→three**
+(`test_console_dependency_boundary.py`, red-first), `gateway.test.ts:232` (the
+deployment key never reaches Next) and the Next-side `seats/manage.test.ts`.
+**Still 🔴 OWNER-GATE / deferred:** granting `seat_admin` to the REAL deployment key
+(`customer_console.md` §8 gate 8), setting the key/URL live (§8 gate 7), the live
+seat write (§8 gate 4), deploying the Console (§8 gate 2), and **SC-2b — the
+assign/release UI (build SECOND)**, below.
+
+**SC-2 manage-seats surface SPECCED 2026-08-21 — R4** *(WS-30 `ws-30-manage-seats`,
+docs-only)*: with `customer_console.md` §6 item (h)'s backend seat WRITE + door
+BUILT (`ws-31-seat-assign`), the customer-facing "manage seats" surface is now
+**dispatchable**. Its transport residual (`customer_console.md` §9 residual 7) is
+**RESOLVED to the gateway tier** (owner call): the deployment key is fenced out of
+the Next/browser tier, so the browser action routes **browser→Next→gateway→Console**
+— the gateway attaching the deployment key + the session `actor_email`, the admin
+gate staying console-side. SC-2 is split into **SC-2a (the transport — ✅ BUILT,
+above)** and **SC-2b (the assign/release UI — build SECOND)**, both authored below
+with testable done-whens, named R7 fences and no migration.
+
 **SC-4a's LAUNCH SLICE — ✅ BUILT 2026-08-19 (WS-30).** What landed, in the
 architectural order rather than the diff order:
 - **`billing:purchase`** joins `acb_auth.permissions.CAPABILITIES`
@@ -462,11 +493,162 @@ reads.
 > things the backend door does not: it is **admin-gated at the surface** on the
 > tenant billing-admin capability — a hard done-when, NOT the read's known-open
 > "any signed-in member" posture, since a write is not a read — and it reaches
-> the door by the transport the owner picks in `customer_console.md` §9 residual
-> 7 (the deployment key is fenced out of the Next/browser tier, so the action
-> routes through the gateway tier, or waits on a dedicated member credential).
-> The seat counts it shows and mutates are the **one** vocabulary `GET /me/seats`
-> already surfaces (SC-1a); it holds no seat arithmetic of its own.
+> the door by the **gateway-tier transport RESOLVED 2026-08-21** in
+> `customer_console.md` §9 residual 7 (the deployment key is fenced out of the
+> Next/browser tier, so the browser action routes browser→Next→**gateway**→Console,
+> the gateway attaching the deployment key + the session `actor_email`; the
+> rejected dedicated-member-credential alternative is recorded there). The
+> transport and the UI are **two slices**, split and done-whenned in **SC-2a/SC-2b
+> below.** The seat counts it shows and mutates are the **one** vocabulary
+> `GET /me/seats` already surfaces (SC-1a); it holds no seat arithmetic of its own.
+
+#### SC-2a — the gateway-tier transport *(✅ BUILT 2026-08-21 · 🟢 AGENT-SAFE, dark by construction · no migration)*
+
+The transport that carries a browser "manage seats" action to `customer_console.md`
+§6 item (h)'s deployment-key `seat_admin` door. Resolved to the **gateway tier**
+(that spec's §9 residual 7, 2026-08-21): the deployment key is fenced OUT of the
+Next/browser tier (`gateway.test.ts:232` / §6(f)), so the action goes
+**browser → Next hop → gateway → Console**, the gateway supplying the credential
+and the acting identity. It reuses the CP-2c signup hop's seam verbatim — a
+gateway route that reaches the **one** Console client (`acb_auth/console_resolve.py`)
+with a session-only identity — so there is **no second gateway→Console client**
+(root `CLAUDE.md` §5) and no new auth primitive. Three hops:
+
+1. **The Next hop** — new BFF route(s) under
+   `workbench/control_plane/src/app/api/billing/seats/…` (e.g. `assign/route.ts`
+   + `release/route.ts`, the builder may fold them). It establishes the signed-in
+   member **server-side** through the existing seam (`src/lib/gateway.ts` —
+   `requireIdentity()` / `gatewayHeaders()` / `proxyToGateway()`), forwards to the
+   gateway with the **internal bearer + `X-User-Email`**, and **holds no
+   deployment key**. The browser body is `{member_email, plan_slug, source}`
+   ONLY — the browser names **no org and no actor** (R11). `force-dynamic`, like
+   every gateway-forwarding route.
+2. **The gateway seat-admin proxy route** — new
+   `apps/services/gateway/gateway/routes/seats.py` (`POST /seats/assign` +
+   `POST /seats/release`), registered exactly like `routes/signup.py`: behind the
+   app-wide `require_authenticated`, **NOT in `PUBLIC_ROUTES`**, session email via
+   `get_current_user` (which labels, never binds). The body from Next is
+   `{member_email, plan_slug, source}`; a body naming `org` / `actor_email` /
+   `email` is **400, never ignored** (mirror `routes/signup.py`'s
+   `_FORBIDDEN_BODY_KEYS`, R11). It calls the new console client functions below.
+3. **Two new functions on the one Console client** —
+   `assign_seat_on_console(actor_email, member_email, plan_slug, source)` and
+   `release_seat_on_console(actor_email, member_email, plan_slug)` in
+   `acb_auth/console_resolve.py`, presenting the **deployment key** (`Bearer`,
+   from `settings.customer_console_deployment_key`) to the Console
+   `POST /registry/seats` (+ `/registry/seats/release`) with body
+   `{member_email, plan_slug, actor_email = the session email, source}` and **no
+   `org_slug`** (the Console derives the org from `deployment_visible_orgs`, R11).
+   They reuse `_new_http_client` / `is_wired` / the settings reads — the module is
+   "the ONE Console httpx client and the sole reader of `CUSTOMER_CONSOLE_URL` /
+   `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`" (`console_resolve.py:450-457`), so they go
+   HERE, not in a new module.
+
+**The admin gate stays CONSOLE-side.** `_seat_admin_for_deployment`
+(`customer_console/main.py:1509`) derives `(org, actor)` from
+`deployment_visible_orgs(deployment_id, actor_email)` and refuses any
+`actor_email` that is not an **active owner/admin** in that org's
+`org_membership`. The gateway is a thin authenticated proxy: it supplies the
+credential and vouches for the session email as `actor_email`; it makes **no**
+authorization decision of its own. This is the same trust the sign-in resolve
+path already extends, now for a write.
+
+**Ships dark by construction — no new flag needed** *(agent-proposed default; the
+owner may add one)*. Two independent locks already hold it shut: `is_wired()` is
+false in every environment today (neither `CUSTOMER_CONSOLE_URL` nor
+`CUSTOMER_CONSOLE_DEPLOYMENT_KEY` is set anywhere → the gateway route **refuses**,
+fail-closed, mirroring `routes/signin.py`'s F5 posture that a WRITE must never
+silently succeed on an unwired box); and even a wired box **403s at the Console
+door** until the owner adds `seat_admin` to the real deployment key (§8 gate 8).
+Unlike the sign-in resolve hop, a seat write fires only on an explicit admin
+click, so there is no "arms on every sign-in" hazard — which is why no
+`CUSTOMER_CONSOLE_RESOLVE_ENABLED`-style Next flag is required for safety.
+
+**Transport done-whens (concrete, testable — this is the slice to build first):**
+1. **The gateway proxy forwards the write with the deployment key + the session
+   `actor_email`, and NO `org_slug` on the wire.** Fence (gateway-side R7): a new
+   `tests/unit/test_seat_admin_proxy_route.py` (the mirror of
+   `test_signup_provision_route.py`), driving the route against an
+   `httpx.MockTransport` Console, asserts the outbound request carries
+   `Authorization: Bearer <deployment key>`, body `actor_email` = the request's
+   `X-User-Email`, and **no** `org_slug`. Mutation: sending the browser-supplied
+   email instead of the session email, or attaching an `org_slug`, fails it.
+2. **The browser/Next never holds the deployment key — the `gateway.test.ts`
+   fence stays green.** The "builds no Authorization header from a secret of its
+   own" test (`ALLOWED = /^(LITELLM_KEY|githubToken|CUSTOMER_CONSOLE_ORG_KEY)$/`,
+   with the `:232` note that `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` must never join it)
+   is the **Next-side R7 fence**; the new Next route is additionally swept by
+   "establishes who is asking wherever it reaches the gateway" and "marks every
+   gateway-forwarding route dynamic". A hop that read the deployment key in Next
+   turns the `:232` fence red — the correct alarm.
+3. **The Next hop names no org and no actor from the browser (R11).** The handler
+   takes `{member_email, plan_slug, source}` and derives the identity from the
+   session (`requireIdentity()`); a browser body naming `org` / `actor_email` /
+   `email` is rejected. Fence (Next-side): a vitest on the route in the
+   `checkout.test.ts` / `signin.test.ts` idiom.
+4. **An unauthenticated caller fails closed.** No session → the Next hop 401s
+   (`gatewayHeaders` throws `NoIdentityError` → `unauthenticated()`); the gateway
+   route, reachable only with the internal bearer, refuses while `is_wired()` is
+   false. Fence: `gateway.test.ts`'s "refuses to mint a bearer when nobody is
+   signed in" covers the seam, and the route's unwired-refusal mirrors
+   `tests/unit/test_signin_resolve_route.py`.
+5. **A non-admin session is refused, surfaced through the proxy.** The Console's
+   `_seat_admin_for_deployment` 403s an `actor_email` whose `org_membership.role
+   ∉ {owner,admin}` or `status != 'active'` (item (h)'s
+   `test_a_non_admin_actor_is_refused`, in `tests/unit/test_customer_console_payments.py`),
+   and the gateway relays that refusal rather than turning it into a 200. Fence:
+   `test_seat_admin_proxy_route.py::TestTheRelay::test_a_non_admin_403_surfaces_as_a_refusal`
+   drives a Console that 403s and asserts the gateway relays 403, not a 200.
+6. **The dependency-boundary fence grows from two importers to three.**
+   `tests/unit/test_console_dependency_boundary.py::test_resolve_is_reachable_only_from_the_signin_path`'s
+   `_ALLOWED_CALLERS` gains the seat gateway route — **exactly as CP-2c slice 2
+   grew it from one to two** — with the reason recorded at the fence: the seat
+   route calls `assign_seat_on_console` / `release_seat_on_console`, which
+   allocate **no** seat via `resolve_for_signin` (they call the admin-gated,
+   capped `/registry/seats`) and are **session-email-only**; what stays forbidden
+   is wiring either behind `resolve_access` (six callers, one a room fan-out) =
+   farmable seat burn. The route is added to `_CP2B_TENANT_MODULES` too, so the
+   lifecycle-string fence covers it. The build agent MUST make this change
+   **red-first** (add the import, watch the two-caller assertion fail, extend the
+   allow-list with the reason). This is the load-bearing gateway-side R7 fence.
+
+**No migration.** Reuses the `seat_admin` capability (built, item (h)),
+`POST /registry/seats` (+ release) (built), the deployment key + gateway settings,
+the one Console client, and the Next→gateway seam. *(R1 note: none is needed; were
+one ever required, the number is taken at build time by listing the owning
+directory, never written ahead.)*
+
+**Gate split.**
+- 🟢 **AGENT-SAFE:** the gateway proxy route + the Next hop + the two
+  `console_resolve` functions + all six fences, built against a **TEST**
+  `seat_admin` deployment key / fixtures / `httpx.MockTransport`. Dark by
+  construction (above); moves no value and mints nothing on any live org.
+- 🔴 **OWNER-GATE** (refuse by name, build it, hand it over): granting `seat_admin`
+  to the **REAL** gateway deployment key (`customer_console.md` §8 gate 8's
+  capability-growth class), setting the deployment key/URL in a **live** env (§8
+  gate 7), the **live** seat write against a real customer org (§8 gate 4),
+  deploying the Console (§8 gate 2), and any flag flip.
+
+#### SC-2b — the manage-seats UI *(BUILD SECOND, after SC-2a · 🟢 AGENT-SAFE, design-system + dark)*
+
+Assign/release controls on the SC-1a seats panel
+(`src/app/settings/billing/page.tsx`, beside the `SeatsPanel`), driving SC-2a's
+Next hop. **Admin-gated at the surface** on the tenant billing-admin capability —
+the hard done-when, NOT the read's "any signed-in member" posture, since a write
+is not a read. *Agent-proposed default:* reuse the existing admin-only
+`billing:purchase` capability (`acb_auth.permissions`, seeded onto the `default`
+org's admin by `infra/postgres/178_billing_purchase_permission.sql`; manager and
+member excluded); the owner may overrule with a dedicated `seats:admin` capability
+— **the one residual UI decision, flagged here rather than assumed.** DESIGN_SYSTEM
+binds: no app-local palette, headless primitives from `src/components/ui/`, and
+the real gate is the theme-switch check (Fluent → Material → Graphite) on this
+surface **and** its neighbour. **Done when:** a non-admin session sees no controls
+(or is refused); after an assign the SC-1a read refetches to `assigned+1 /
+available−1` and a release the reverse; the cap 409 renders the `buy_more` copy
+verbatim (no client arithmetic); an already-assigned member is an idempotent
+no-op; the UI holds **no** seat arithmetic of its own — the counts are the read's
+(`GET /me/seats`, SC-1a). Ships dark: inert until the Console is deployed and the
+transport is live (owner-gated, above).
 
 ### SC-3 — Change requests *(the manual-fulfilment bridge)*
 `POST /billing/requests` (add module / change seat count / cancel). Creates a

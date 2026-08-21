@@ -193,6 +193,18 @@ const EXCLUDED: Record<string, string> = {
     "own seat counts (`GET /me/seats`) that mints nothing and moves no money, " +
     "so requiring `billing:purchase` would stop a member seeing their seats " +
     "before being handed the right to buy more — the catalog read's argument.",
+  "seats/assign/route.ts":
+    "NOT an org-key money route (SC-2a): a gateway-tier seat WRITE proxy that " +
+    "presents NO `cc_live_` org key and never touches `_console.ts` — it " +
+    "forwards through `lib/gateway.ts` (internal bearer + session `X-User-Email`) " +
+    "to the gateway's `/seats/assign`, where the deployment-key `seat_admin` " +
+    "door lives. So `requirePurchaser`/`WHOAMI` is the wrong gate entirely; the " +
+    "admin authorization is CONSOLE-side (`_seat_admin_for_deployment`). Fenced " +
+    "by `seats/manage.test.ts` + `test_seat_admin_proxy_route.py`.",
+  "seats/release/route.ts":
+    "NOT an org-key money route (SC-2a): the release twin of `seats/assign` — " +
+    "a gateway-tier proxy with no org key, gated Console-side. Same reason as " +
+    "`seats/assign/route.ts`.",
 };
 
 /**

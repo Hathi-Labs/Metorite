@@ -162,12 +162,15 @@ __all__ = [
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleProvisionUnavailable",
+    "ConsoleSeatWriteUnavailable",
     "ReconcileSummary",
     "ResolveDecision",
+    "assign_seat_on_console",
     "invalidate",
     "is_wired",
     "provision_org_on_console",
     "reconcile",
+    "release_seat_on_console",
     "resolve_for_signin",
 ]
 
@@ -454,7 +457,9 @@ async def _post_resolve(
 # second httpx client for the Console anywhere — e.g. one built inside the
 # signup route — is root `CLAUDE.md` §5's defect by name (a second way to do an
 # existing thing). CP-2c's route calls `provision_org_on_console` and holds no
-# client, no URL and no key of its own.
+# client, no URL and no key of its own; WS-30 SC-2a's seat writes
+# (`assign_seat_on_console` / `release_seat_on_console`, below) are here for the
+# same reason, and the gateway seat route likewise holds no client, URL or key.
 
 
 async def _post_provision(
@@ -542,6 +547,146 @@ async def provision_org_on_console(
         # the org works dark, and a wired resubmit catches the Console up.
         raise ConsoleProvisionUnavailable("unwired")
     return await _post_provision(slug, name, owner_email, gstin, billing_state)
+
+
+# ── The seat-admin WRITE client (WS-30 SC-2a / customer_console.md §6 item (h)) ─
+#
+# ⚠️ **Still the ONE Console httpx client** (the note above): these two functions
+# are the gateway's path to the Console's deployment-key `seat_admin` door
+# (`POST /registry/seats` + `/registry/seats/release`), and they live HERE —
+# beside `_post_provision`/`_post_resolve`, reusing `_new_http_client` /
+# `is_wired` / the settings reads — because a second Console client anywhere is
+# root `CLAUDE.md` §5's defect by name. The gateway route
+# (`gateway/routes/seats.py`) holds no client, no URL and no key; it supplies the
+# acting `actor_email` (the authenticated SESSION email, R11) and relays what the
+# Console answers.
+#
+# ⚠️ **The body carries `actor_email` and NO `org_slug`.** The org is the ANSWER,
+# derived Console-side from `deployment_visible_orgs(deployment_id, actor_email)`
+# — the same R11 shape `_post_resolve`/`_post_provision` apply (the caller makes
+# no tenant claim), and the Console 400s a deployment key that names an
+# `org_slug`. The "admin, not any member" decision also stays Console-side
+# (`_seat_admin_for_deployment` 403s a non-admin actor); this client relays that
+# refusal rather than pre-judging it.
+
+
+class ConsoleSeatWriteUnavailable(Exception):
+    """The Customer Console produced no seat-write answer we could relay.
+
+    Transport-only, the line `_post_resolve` draws: the box is not wired, the
+    network failed, or the Console answered with a status proving no ANSWER was
+    produced (a 5xx, a 401 on this box's own deployment key, a 408 or a 429). A
+    genuine verdict — 200, or the 400/403/404/409 the ``seat_admin`` door itself
+    issues — is NOT this: it is returned as ``(status_code, body)`` for the
+    gateway route to relay, so a member's "not an admin" (403) or "at the cap"
+    (409) reaches the surface as itself, never as an outage.
+    """
+
+
+async def _post_seat_write(
+    endpoint: str,
+    *,
+    actor_email: str,
+    member_email: str,
+    plan_slug: str,
+    source: str | None,
+) -> tuple[int, dict[str, Any]]:
+    """Present the deployment key to a ``seat_admin`` write arm and read the answer.
+
+    ⚠️ ``actor_email`` is the acting admin (the authenticated SESSION email) and
+    the body names NO ``org_slug`` — the org is derived Console-side (R11, the
+    deployment-key arm shape). A 5xx / 401 / 408 / 429 proves no answer was
+    produced and raises :class:`ConsoleSeatWriteUnavailable`; every other status
+    is a verdict and is returned for the route to relay.
+    """
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_deployment_key.strip()
+
+    payload: dict[str, Any] = {
+        "member_email": member_email,
+        "plan_slug": plan_slug,
+        "actor_email": actor_email,
+    }
+    if source is not None:
+        payload["source"] = source
+
+    try:
+        client = _new_http_client()
+        async with client:
+            response = await client.post(
+                f"{base}{endpoint}",
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+            )
+    except Exception as exc:
+        raise ConsoleSeatWriteUnavailable(str(exc)[:200]) from exc
+
+    # A status that proves we got no ANSWER is an outage, not a verdict — the
+    # same line `_post_resolve` draws (finding P1-1): 5xx (the Console is broken),
+    # 401 (this box's own deployment key is wrong — never a fact about the
+    # member), 408/429 (no answer produced). Everything else (200, and the
+    # 400/403/404/409 the door issues) is an answer the caller may act on.
+    if response.status_code >= 500 or response.status_code in (401, 408, 429):
+        raise ConsoleSeatWriteUnavailable(f"HTTP {response.status_code}")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return response.status_code, body
+
+
+async def assign_seat_on_console(
+    *,
+    actor_email: str,
+    member_email: str,
+    plan_slug: str,
+    source: str,
+) -> tuple[int, dict[str, Any]]:
+    """Assign a seat via the Console's deployment-key ``seat_admin`` door.
+
+    Returns the Console's ``(status_code, body)`` verbatim for the gateway route
+    to relay. Raises :class:`ConsoleSeatWriteUnavailable` when the box is unwired
+    or the Console produced no answer (see :func:`_post_seat_write`).
+    """
+    if not is_wired():
+        # Ship-dark: an unwired box has no Console to write to. The gateway route
+        # also guards this itself (F5) and refuses before calling; this is the
+        # same guarantee one layer down.
+        raise ConsoleSeatWriteUnavailable("unwired")
+    return await _post_seat_write(
+        "/registry/seats",
+        actor_email=actor_email,
+        member_email=member_email,
+        plan_slug=plan_slug,
+        source=source,
+    )
+
+
+async def release_seat_on_console(
+    *,
+    actor_email: str,
+    member_email: str,
+    plan_slug: str,
+) -> tuple[int, dict[str, Any]]:
+    """Release a seat via the Console's deployment-key ``seat_admin`` door.
+
+    The release arm takes no ``source`` (freeing a seat needs no billing
+    category). Returns the Console's ``(status_code, body)`` verbatim; raises
+    :class:`ConsoleSeatWriteUnavailable` on an unwired box or a no-answer status.
+    """
+    if not is_wired():
+        raise ConsoleSeatWriteUnavailable("unwired")
+    return await _post_seat_write(
+        "/registry/seats/release",
+        actor_email=actor_email,
+        member_email=member_email,
+        plan_slug=plan_slug,
+        source=None,
+    )
 
 
 # ── The signup Console-mirror reconciler (CP-2e slice) ───────────────────────
