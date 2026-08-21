@@ -354,3 +354,92 @@ describe("the self-serve signup limbo branch (CP-2c §6(j) row vii)", () => {
     expect(redirect).toBeGreaterThan(limbo);
   });
 });
+
+// ── WS-31 CP-2d · passwordless email OTP via Resend (customer_console.md) ────
+//
+// Source-level over `auth.ts` and the sign-in surface, the same measured reason
+// (`signin.test.ts:38-45`): vitest here is node-env and `import("@/auth")` dies
+// inside `next-auth` before the config can be built, so the RUNTIME fact — that
+// a dark box (flag off / key absent) registers no provider and `/api/auth/
+// providers` is unchanged — is pinned by its SHAPE here and by the *executed*
+// gate in `src/lib/emailOtp.test.ts` (which CAN run, being framework-free). That
+// the shape then behaves is the reviewer's manual gate, written down rather than
+// assumed.
+const form = readFileSync(new URL("./SignInForm.tsx", import.meta.url), "utf-8");
+
+describe("the email OTP provider ships dark and rides the one session (CP-2d)", () => {
+  it("registers the Resend provider ONLY under the isEmailOtpProviderReady gate", () => {
+    // The gate is the single source of truth: env configured (flag `=== \"true\"`
+    // AND key) AND the adapter wired (`EMAIL_OTP_ADAPTER_READY`), all tested for
+    // real in emailOtp.test.ts. Here we pin that the provider push is INSIDE it
+    // and that no other `Resend(` call exists to register it unconditionally —
+    // an unadapter-ed email provider 500s ALL /api/auth/* (not just OTP), so the
+    // gate must not be the env flag alone.
+    expect(authSrc).toContain(
+      "if (isEmailOtpProviderReady(process.env as EmailOtpEnv)) {",
+    );
+    const gate = authSrc.indexOf("isEmailOtpProviderReady(process.env");
+    const register = authSrc.indexOf("Resend({");
+    const nextAuth = authSrc.indexOf("NextAuth({");
+    expect(gate).toBeGreaterThan(-1);
+    expect(register).toBeGreaterThan(gate);
+    expect(nextAuth).toBeGreaterThan(register);
+    // Exactly one provider construction, and it is the gated one.
+    expect(authSrc.match(/Resend\(\{/g)?.length).toBe(1);
+  });
+
+  it("uses the Auth.js email provider, never a hand-rolled credentials path", () => {
+    // Passwordless (D46.3): the provider is Auth.js's Resend email provider, so
+    // the code round-trip verifies ownership. A `Credentials` provider would be
+    // a second, unverified door and a parallel path — forbidden.
+    expect(authSrc).toContain('from "next-auth/providers/resend"');
+    expect(authSrc).not.toMatch(/\bCredentials\b/);
+  });
+
+  it("is NUMERIC OTP, not the default magic link (owner's ask)", () => {
+    // The two overrides that turn the built-in magic-link Resend provider into a
+    // 6-digit code the person types.
+    expect(authSrc).toContain("generateVerificationToken: generateOtp");
+    expect(authSrc).toContain("sendVerificationRequest:");
+  });
+
+  it("rides the ONE NextAuth session — no second config, no database strategy swap", () => {
+    // One session idiom. A second `NextAuth(` or a `strategy: \"database\"`
+    // introduced here would be a parallel auth path.
+    expect(authSrc.match(/NextAuth\(\{/g)?.length).toBe(1);
+    expect(authSrc).not.toContain('strategy: "database"');
+  });
+
+  it("takes the verified email from Auth.js, never from request input (R11)", () => {
+    // In the send, the recipient is Auth.js's resolved `identifier`; in the jwt
+    // callback, the session email falls back to the verified `user.email`. There
+    // is no request body reached for either.
+    expect(authSrc).toContain("to: identifier");
+    expect(authSrc).toContain("token.email = user.email");
+    const jwt = callbackBody(authSrc, "jwt");
+    for (const forbidden of ["searchParams", "req.body", "request.body"]) {
+      expect(jwt).not.toContain(forbidden);
+    }
+  });
+
+  it("keeps the Resend key out of the browser tier — the surface derives from the seam", () => {
+    // page.tsx derives buttons from `configuredProviders`; neither it nor the
+    // client form may read the flag or the key directly (the parallel-env-read
+    // defect `signin.test.ts` already fences for the OAuth providers).
+    expect(page).not.toContain("RESEND_API_KEY");
+    expect(page).not.toContain("EMAIL_OTP_ENABLED");
+    expect(form).not.toContain("RESEND_API_KEY");
+    expect(form).not.toContain("EMAIL_OTP_ENABLED");
+    expect(form).not.toContain("process.env");
+  });
+
+  it("renders the email field only for the email-kind provider, through the shared Input", () => {
+    // The surface reuses the ONE provider-rendering seam: an email-kind entry
+    // draws a field and calls `signIn(id, { email })`; an OAuth entry stays a
+    // one-click button. The field is the themed `Input` primitive, not a bare
+    // hand-rolled control (DESIGN_SYSTEM rule 3).
+    expect(form).toContain('p.kind === "email"');
+    expect(form).toMatch(/signIn\(p\.id,\s*\{\s*email/);
+    expect(form).toContain('from "@/components/ui/Input"');
+  });
+});
