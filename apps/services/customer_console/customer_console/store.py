@@ -49,6 +49,7 @@ __all__ = [
     "order_lines",
     "order_row",
     "orders_page",
+    "org_members",
     "place_organization",
     "plan_price",
     "priced_plan",
@@ -751,6 +752,45 @@ def deployment_visible_orgs(
                 """
             ),
             {"email": email, "dep": deployment_id},
+        )
+    ]
+
+
+def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
+    """Every membership row in one organization: ``email · role · status``.
+
+    The ONE per-org roster read (§6 item (i), done-when 20). It composes the
+    established ``org_membership ⋈ user_identity`` join idiom — the SAME join
+    :func:`org_owned_by_other` (654-660) and :func:`deployment_visible_orgs`
+    (743-749) already use, ``ON ui.id = m.user_identity_id`` — into one helper,
+    rather than a second membership-query pattern. It exists as a new helper
+    because none of the existing membership reads returns a per-org roster: they
+    are single-member-by-identity, by-email-across-orgs, or an owner ``EXISTS``.
+
+    ``email`` is ``CITEXT`` (``001_customer_console.sql:110``); ``role`` and
+    ``status`` are the CHECK-constrained membership vocabularies (001:121-131).
+    **This module decides nothing** (§1): every membership row is returned with
+    its ``status`` on the wire — no ``status`` filter, no per-member policy — so
+    the surface, not the read, chooses which statuses to render, exactly as
+    :func:`deployment_visible_orgs` records for *not* consulting ``status``.
+
+    ``ORDER BY ui.email`` so the answer is stable — a caller comparing two
+    responses, and a fence asserting a list, must not depend on the planner,
+    exactly as :func:`deployment_visible_orgs` orders by ``o.slug``.
+    """
+    return [
+        {"email": r[0], "role": r[1], "status": r[2]}
+        for r in conn.execute(
+            text(
+                """
+                SELECT ui.email, m.role, m.status
+                FROM org_membership m
+                JOIN user_identity ui ON ui.id = m.user_identity_id
+                WHERE m.organization_id = :org
+                ORDER BY ui.email
+                """
+            ),
+            {"org": org_id},
         )
     ]
 
