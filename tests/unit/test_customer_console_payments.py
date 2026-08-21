@@ -1963,6 +1963,143 @@ class TestTheSeatsRead:
         assert r.json() == {"plans": []}
 
 
+# The member roster the manage-seats surface (`subscription_console.md` SC-2b)
+# needs to pick WHOM to seat. `GET /me/members` is the exact sibling of item
+# (g)'s `GET /me/seats`: a customer-key read on the SAME `can_pay` door, whose
+# roster is the ONE new membership-list read `store.org_members` (the
+# `org_membership ⋈ user_identity` join idiom) with the org id from the
+# credential — no second SQL, no per-member recompute, no `org_slug` on the wire
+# (done-when 20).
+
+class TestTheMembersRead:
+    def test_the_members_read_is_scoped_to_the_key(self, client, db, org):
+        """Org A's read never carries org B's members (§6 item (i), done-when 20).
+
+        The two-org isolation precedent is
+        ``test_the_seats_read_is_scoped_to_the_key``. The organization is the
+        CREDENTIAL's (``caller.organization_id``), so nothing on the wire can
+        redirect the read: A presents its own key AND — deliberately — B's slug
+        on the query string, and the slug is inert.
+
+        Mutation evidence (run and reverted during the build): driving the read
+        from an ``org_slug`` query param instead of ``caller.organization_id`` —
+        ``store.org_members(conn, org_id=_org_id(conn, org_slug))`` — makes A's
+        request carry B's member, so this fence reddens on ``b_email not in
+        emails``.
+        """
+        b_slug = _new_org(client, "members-other")
+        b_id = _org_id(client, b_slug)
+        # Give B a member with an email A does NOT hold, so "read B by slug" is
+        # observable on the wire rather than hidden behind two identical founders.
+        b_email = f"only-in-b-{uuid.uuid4().hex[:12]}@t.test"
+        with db.begin() as c:
+            ident = c.execute(
+                text("INSERT INTO user_identity (email) VALUES (:e) RETURNING id"),
+                {"e": b_email},
+            ).scalar_one()
+            c.execute(
+                text("INSERT INTO org_membership (organization_id, "
+                     "user_identity_id, role, status, joined_at) "
+                     "VALUES (:o, :i, 'member', 'active', now())"),
+                {"o": b_id, "i": ident},
+            )
+
+        r = client.get(f"/me/members?org_slug={b_slug}",
+                       headers=_headers(org["key"]))
+        assert r.status_code == 200, r.text
+        emails = {m["email"] for m in r.json()["members"]}
+        # A's own founder is present (non-vacuous: the read returned rows), and
+        # B's member never boards A's answer.
+        assert f"owner@{org['slug']}.test" in emails, emails
+        assert b_email not in emails, emails
+
+    def test_the_members_read_carries_the_membership_triple_and_nothing_else(
+        self, client, db, org
+    ):
+        """The field set is exactly ``{email, role, status}``, and both doors (item (i)).
+
+        Four properties, one decision — *what a customer credential learns from
+        its member list*:
+
+        1. the field set is **exactly** ``{email, role, status}``, structurally
+           over the ``MemberView`` model AND over the wire, so an
+           ``organization_id``, an ``identity_id`` or a ``seats`` field argues
+           with a red test;
+        2. the roster equals ``store.org_members`` for the same org — asserted by
+           re-deriving it, so a second SQL or a recompute is red;
+        3. the door is ``can_pay``: a **suspended** org reads its members...
+        4. ...and a **deleted** one is 403.
+
+        Mutation evidence (run and reverted): adding an ``organization_id``, an
+        ``identity_id`` or a ``seats`` field to ``MemberView`` fails property 1's
+        field-set equality; a second query that recomputes the roster (e.g. one
+        that drops the ``ORDER BY`` or the ``JOIN``) diverges from
+        ``store.org_members`` and fails property 2.
+        """
+        from customer_console import store
+        from customer_console.main import MemberView
+
+        org_id = org["id"]
+        # The provisioned founder is owner/active; add one member/invited so the
+        # roster is a genuine multi-row list spanning two roles and two statuses.
+        member_email = f"member-{uuid.uuid4().hex[:12]}@t.test"
+        with db.begin() as c:
+            ident = c.execute(
+                text("INSERT INTO user_identity (email) VALUES (:e) RETURNING id"),
+                {"e": member_email},
+            ).scalar_one()
+            c.execute(
+                text("INSERT INTO org_membership (organization_id, "
+                     "user_identity_id, role, status, joined_at) "
+                     "VALUES (:o, :i, 'member', 'invited', NULL)"),
+                {"o": org_id, "i": ident},
+            )
+
+        # 1 — the field set, on the MODEL.
+        expected = {"email", "role", "status"}
+        assert set(MemberView.model_fields) == expected
+        assert not any(
+            "org" in name or "identity" in name or "seat" in name
+            for name in MemberView.model_fields
+        )
+
+        r = client.get("/me/members", headers=_headers(org["key"]))
+        assert r.status_code == 200, r.text
+        members = r.json()["members"]
+
+        # 1 — the field set, on the WIRE.
+        assert all(set(m) == expected for m in members), members
+
+        # 2 — the roster equals store.org_members: the wire IS the fold, never a
+        # second SQL, and the ORDER BY email is the same stable order.
+        with db.begin() as c:
+            want = store.org_members(c, org_id=org_id)
+        assert members == want, (members, want)
+
+        # The anchor a reader can check by eye: founder owner/active plus the
+        # added member/invited, exactly the two rows, ordered by email.
+        by_email = {m["email"]: m for m in members}
+        assert by_email[f"owner@{org['slug']}.test"] == {
+            "email": f"owner@{org['slug']}.test", "role": "owner",
+            "status": "active",
+        }
+        assert by_email[member_email] == {
+            "email": member_email, "role": "member", "status": "invited",
+        }
+
+        # 3 — the can_pay door: a suspended org still reads its members...
+        _lifecycle(client, org["slug"], "suspended")
+        suspended = client.get("/me/members", headers=_headers(org["key"]))
+        assert suspended.status_code == 200, suspended.text
+
+        # 4 — ...a deleted org is refused (cancelled is the only path to deleted).
+        _lifecycle(client, org["slug"], "cancelled")
+        _lifecycle(client, org["slug"], "deleted")
+        dead = client.get("/me/members", headers=_headers(org["key"]))
+        assert dead.status_code == 403, dead.text
+        assert dead.json()["detail"] == "organization is deleted"
+
+
 # ── §6 item (h) — the customer-authenticated seat WRITE ────────────────────
 #
 # The write-side twin of item (g). A THIRD deployment-key capability

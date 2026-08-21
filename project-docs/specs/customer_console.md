@@ -254,7 +254,18 @@ self-serve), reusing the `deployment_or_operator` seam and the operator
 real Postgres 16, 0 skipped; ships dark (no live key carries `seat_admin`). The
 live write against a real customer org and adding `seat_admin` to a real key stay
 owner-gated (§8 gate 4 / gate 8); the "manage seats" SURFACE is WS-30's. See §6
-item (h) and §9 residual 7 (the surface transport) ·
+item (h) and §9 residual 7 (the surface transport) · **(i) is now ✅ BUILT
+2026-08-21 (WS-31 `ws-31-members-read`)** — the customer
+**member-list read** the manage-seats surface (SC-2b) needs to pick WHOM to seat:
+`GET /me/members`, the exact sibling of item (g)'s seats read (org-key `can_pay`
+door), returning `email · role · status` per member from the ONE new
+membership-list read `store.org_members` (the `org_membership ⋈ user_identity`
+join idiom), org-scoped by `caller.organization_id`, two red-first R8 fences on
+item (f)/(g)'s suite, **no migration**. Member EMAILS are PII → rides item (g)'s
+"any signed-in member" hardening ticket; per-member seat summary DEFERRED;
+admin-gating the roster recorded as an owner-overrulable alternative. Carried by
+done-when 20; a separate agent built it and an independent audit validated the
+clause first. See §6 item (i) ·
 ⚠️ **CP-2b's deployment half then FAILED independent verification on one
 blocking finding, F1, and was REPAIRED the same day (2026-08-18).** The
 ship-dark guarantee was false in the half-configured case — the `signIn`
@@ -2095,6 +2106,41 @@ skipped. Seat WRITES / Console deploy / flags stay owner-gated (§8 gate 4).*
     equal `seat_counts` fed the same `seat_rows`; a `suspended` org reads it, a
     `deleted` org 403s). **No migration:** a read over the seat tables in `001`
     already ships.
+
+*Clause 20 authored + ✅ **BUILT** 2026-08-21 (WS-31, `ws-31-members-read`) with
+§6 item (i) — the customer member-list read the manage-seats surface (SC-2b)
+needs; a separate agent built it against these done-whens and an independent
+audit validated this clause first. The READ is agent-safe (fixtures / real
+Postgres); Console deploy / flags / a live key carrying it stay owner-gated
+exactly as item (g)'s, and the owner ratifies the door (the PII/gating note
+below) at flip-time.*
+
+20. ✅ **BUILT — A customer credential can read its OWN members (§6 item (i)):**
+    `GET /me/members` answers, for each membership row in the calling
+    organization, `email · role · status` under the organization key on the
+    **`can_pay`** door — the exact sibling of item (g)'s `GET /me/seats` — so the
+    manage-seats surface (SC-2b, `subscription_console.md` SC-2) has a
+    customer-reachable roster to assign seats against, and a **suspended**
+    organization can see whom to seat while it decides whether to pay; a
+    **deleted** one 403s. The roster comes from the ONE new membership-list read
+    `store.org_members` (the established `org_membership ⋈ user_identity` join
+    idiom, `store.org_owned_by_other`/`deployment_visible_orgs`' own join),
+    org-scoped by `caller.organization_id` — never a second SQL, no per-member
+    recompute, no `org_slug` on the wire (R11). Member EMAILS are PII: this read
+    rides the same "any signed-in member" hardening posture item (g) flags
+    (`seats/route.ts:26-28`, its own ticket); admin-gating the roster is a
+    recorded owner-overrulable alternative (§6 item (i)). No per-member seat
+    summary (a second `seat_assignment` query — DEFERRED). — Two fences, both to
+    be shown red first, both R8 against a real Postgres on the Console ladder,
+    beside `TestTheSeatsRead` in `tests/unit/test_customer_console_payments.py`
+    (already on §7's list and pr-check's skip-guard, so the read rides item
+    (f)/(g)'s suite): `test_the_members_read_is_scoped_to_the_key` (two orgs; org
+    A's read never carries org B's members) and
+    `test_the_members_read_carries_the_membership_triple_and_nothing_else` (the
+    field set pinned exactly `{email, role, status}` on the `MemberView` model
+    *and* on the wire; the roster equals `store.org_members`; a `suspended` org
+    reads it, a `deleted` org 403s). **No migration:** a read over `org_membership`
+    + `user_identity` in `001` already ships.
 
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
@@ -4830,8 +4876,9 @@ storage, percent-against-the-pre-GST-base, the redeem route and the ₹0 path ·
 every fence named in this ticket. Its acceptance is CP-9 done-when 1–17 and
 SC-4g done-when 1–8. *(Item **(f)** below was then built on 2026-08-19 as its
 own small slice and carries **done-when 18**; item **(g)** — the customer seats
-read, ✅ built 2026-08-20 — carries **done-when 19**, so the list is 1–19, and
-the substrate half's own acceptance is unchanged at 1–17.)*
+read, ✅ built 2026-08-20 — carries **done-when 19**; item **(i)** — the customer
+member-list read, ✅ built 2026-08-21 — carries **done-when 20**, so the list is
+1–20, and the substrate half's own acceptance is unchanged at 1–17.)*
 
 **🔴 The surface half — held back, and named rather than left to drift.**
 **(a)** WS-30 **SC-4a's checkout UI** and its two write proxies, **because
@@ -5239,6 +5286,149 @@ door.** Two facts about the code as it stands:
   alternative — a dedicated member-authenticated Console credential — is recorded
   in §9 residual 7. The two-slice split and the transport done-whens are
   `subscription_console.md` SC-2.
+
+**(i) One more SMALL customer-key read the manage-seats surface needs, and it
+belongs to this service — the member-list read.** ✅ **BUILT 2026-08-21
+(WS-31, `ws-31-members-read`)** — a separate agent built it and an independent
+audit validated this clause first; the READ is agent-safe, Console deploy /
+flags / a live key carrying it stay owner-gated and the owner ratifies the door
+(the PII/gating consideration below) at flip-time. It is the **exact sibling of
+item (g)'s seats read**: item (g) gave a customer credential a way to see its
+seats *(how many)*; the "manage seats" surface (SC-2b — the assign-a-seat panel,
+`subscription_console.md` SC-2) also needs to see **WHO** to assign them to. Item
+(h) shipped the seat WRITE, whose assign step takes a `member_email`; a surface
+cannot offer that email without a roster to pick from. Today **no
+customer-reachable read returns an organization's member list.** The membership
+reads that exist are all single-member or by-email-across-orgs, never a per-org
+roster: `_seat_admin_for_deployment`'s `SELECT role, status FROM org_membership …
+WHERE organization_id = :org AND user_identity_id = :i` (`main.py`, one member by
+identity) and `_resolve_for_operator`'s identical single-member read; `store.
+deployment_visible_orgs` (`store.py:697-755`) joins membership but keys on an
+EMAIL and returns *orgs*, not a roster; `store.org_owned_by_other`
+(`store.py:626-665`) is an `EXISTS` owner check. So the customer's own member
+grid (SC-1a/SC-2) had no data source until this. *(All anchors re-measured
+2026-08-21 on `ws-31-members-read`; the §0 drift caveat applies — match by
+handler/symbol name, not by the line a stale citation carries.)* Decided with the
+same agent-proposed defaults items (f)/(g) used (D16/D17 — the owner may overrule;
+the rejected alternative and the residual are recorded):
+
+- **Route:** a dedicated `GET /me/members`, the **exact sibling of `GET /me/seats`
+  (item (g)) and `GET /billing/catalog` (item (f))** — a single `PayingCaller`
+  org-key read, not a `members` block bolted onto `GET /me/billing` or `GET /me`.
+  A new `PayingCaller` read is the same move items (f)/(g) made and the SAME seam,
+  not a parallel one.
+- **Auth:** the **`can_pay` door** (`organization_for_payment` / `PayingCaller`,
+  `auth.py`) — NOT the Operator door, NOT `KeyCaller`, and NOT the
+  deployment-key/`seat_admin` door (that is item (h)'s WRITE door). A
+  **suspended** organization may read its members (it is the org deciding whom to
+  seat as it decides whether to pay — the §9.3(5) reasoning item (g) records one
+  route along), and a **deleted** one 403s. The organization is a property of the
+  credential (`caller.organization_id`), so no `org_slug` reaches the wire and org
+  A can never name org B — the same construction `my_seats`/`my_billing` rely on
+  (R11), not a `WHERE` a reader has to remember.
+- **Payload:** for each membership row in the calling org, the triple
+  `email · role · status` — `user_identity.email` (`CITEXT`) joined on
+  `user_identity_id`, `org_membership.role ∈ {owner,admin,member}` and
+  `status ∈ {invited,active,suspended,removed}` (`001_customer_console.sql:121-131`)
+  — and **nothing else**. Shape it with a `MembersView` / `MemberView` pair
+  mirroring `SeatsView` / `SeatPlanView` (`main.py`), so the field set is pinned on
+  the model as well as on the wire. **No status filter and no per-member policy**
+  (the store's "fetches rows, decides nothing" doctrine, `store.py:1-6`): every
+  membership row is returned with its `status` on the wire, and the surface
+  chooses which statuses to render — the same decision `deployment_visible_orgs`
+  records for *not* consulting `status` (`store.py:720-724`). *(The alternative —
+  the read itself filters to `{invited,active}` so a `removed` member's email
+  never boards — is left as an owner-overrulable refinement, §9's residuals: it
+  bakes surface policy into a read and narrows a roster the write path
+  (`_seat_admin_target`) does not narrow, so it does not ride this read's PR.)*
+- **Reuse, not fork — the ONE membership-list read.** The read composes the
+  established `org_membership ⋈ user_identity` join idiom — the **same join**
+  `store.org_owned_by_other` (`store.py:654-660`) and `store.deployment_visible_
+  orgs` (`store.py:743-749`) already use — into a single new store helper
+  (`store.org_members(conn, *, org_id) -> [{email, role, status}]`,
+  `SELECT ui.email, m.role, m.status FROM org_membership m JOIN user_identity ui
+  ON ui.id = m.user_identity_id WHERE m.organization_id = :org ORDER BY ui.email`).
+  It is a **new helper because none of the existing reads returns a per-org
+  roster** (they are single-member-by-identity, by-email-across-orgs, or an
+  owner-`EXISTS`), not a fork of one — and it becomes the ONE member-list read
+  future consumers extend rather than re-query. `ORDER BY ui.email` for a stable
+  answer, exactly as `deployment_visible_orgs` orders by `o.slug`. The route folds
+  it into `MembersView`; there is no second membership SQL and no recompute.
+- **Tenant isolation:** the read is scoped to `caller.organization_id` from the
+  org-key door (`WHERE m.organization_id = :org`) — by construction, the same
+  property `my_seats` relies on. Org A's read never returns org B's members.
+- **Per-member seat summary — DEFERRED, investigated.** A per-member "which seats
+  does this member hold" summary is **not** a pure read off `org_membership`: it
+  needs a second query over `seat_assignment` grouped by `user_identity_id`
+  (`WHERE released_at IS NULL`), i.e. a recompute this read is defined not to
+  carry. So the launch payload is the membership triple only; the surface joins
+  `GET /me/members` with `GET /me/seats` (item (g)) client-side, or a **later
+  slice** adds a per-member seat column when a done-when needs it. Recorded here so
+  the builder does not fold a second seat computation into a membership read.
+- **⚠️ PII/gating consideration (surfaced, with a recommendation).**
+  `GET /me/members` exposes member **EMAILS** (PII) to any signed-in org member —
+  materially more sensitive than the seats read's bare counts. It rides the **same
+  session-gated-org-reads "any signed-in member" hardening posture item (g)
+  already flags** (`workbench/control_plane/src/app/api/billing/seats/route.ts:26-28`,
+  *"known-open 'any signed-in member' posture … its own ticket to fix"*, the B7
+  block's foot): the Next BFF gates the read on *signed-in*, not on a
+  billing-admin capability. This read does **not make that posture worse in kind**
+  (it is one more org-scoped read on the same door) but it does **widen what a
+  non-admin member can see** from counts to a roster of emails, so it is called
+  out explicitly and carried on that existing hardening ticket rather than left
+  implicit. **The ALTERNATIVE, recorded and NOT chosen (owner-overrulable):**
+  admin-gate the member read — either at the surface on the tenant billing-admin
+  capability (as item (h)'s WRITE surface is), or console-side behind the
+  deployment-key door like the write — so only an admin sees the roster. It is
+  rejected as the default for two reasons, both matching item (g): (a) the read
+  **moves no value and mints nothing**, and item (g)'s precedent puts mint-nothing
+  customer reads on the org-key `can_pay` door, not the write's `seat_admin` door;
+  and (b) admin-gating a READ would fork it off the seats-read sibling shape onto
+  the write's transport for no write. **Recommendation:** ship on `can_pay` as the
+  exact sibling of the seats read, carry the email-PII flag on the existing
+  "any signed-in member" hardening ticket, and leave admin-gating the roster as an
+  owner decision. *(If the owner judges the email exposure unacceptable on a
+  session-only gate, the admin-gate alternative is the pre-recorded overrule — but
+  that is an owner call, not an agent default.)*
+- **Fences (R7), in `tests/unit/test_customer_console_payments.py`** — beside
+  `TestTheSeatsRead`, and **already on §7's command list and `pr-check.yml`'s
+  skip-guard, so there is nothing new to register** (the read rides item (f)/(g)'s
+  suite). Both shown red first, both **R8** against a real Postgres 16 on the
+  Console ladder:
+  - `test_the_members_read_is_scoped_to_the_key` — provision two orgs, give each a
+    distinct extra member, and assert org A's `GET /me/members` never carries a
+    member (email/role/status) belonging to org B; A presents its own key AND
+    (deliberately) B's slug on the query string, and the slug is inert. The
+    two-org isolation precedent is `test_the_seats_read_is_scoped_to_the_key`.
+    Mutation evidence to run and revert: driving the read from an `org_slug` query
+    param instead of `caller.organization_id` returns org B's members — red.
+  - `test_the_members_read_carries_the_membership_triple_and_nothing_else` — the
+    field set is **exactly** `{email, role, status}` on the `MemberView` model AND
+    on the wire (no `organization_id`, no `identity_id`, no seat count), pinned for
+    `SeatPlanView`'s reason (a field nothing reads is a field somebody eventually
+    reads); the roster equals `store.org_members` for the org fed the same fixture
+    (e.g. the provisioned founder as `owner/active` plus an added `member/invited`),
+    never a second SQL; a **suspended** org reads it, a **deleted** org 403s.
+    Mutation evidence: adding an `organization_id`, an `identity_id` or a `seats`
+    field to `MemberView` fails the field-set equality; a second query that
+    recomputes the roster diverges from `store.org_members`.
+- **Gate label:** the READ is 🟢 **AGENT-SAFE** (fixtures / real Postgres). It
+  moves no value and mints nothing. Deploying the Console and flipping any flag
+  stay 🔴 **OWNER-GATE**, as does admin-gating the roster if the owner overrules
+  the door above.
+- **No migration:** a read over `org_membership` + `user_identity` in `001`
+  already ships — no new table, no new column. *(R1 note for completeness: were a
+  migration ever needed, the next free Customer-Console number is taken at build
+  time by listing `infra/customer_console/` — never written ahead; this item needs
+  none.)*
+- **The SC-2b consumer.** The manage-seats UI (SC-2b, `subscription_console.md`
+  SC-2, WS-30's) renders this member list **beside** the seats (item (g)) and the
+  assign/release controls (item (h)) — the admin picks a member from the roster
+  and assigns them an available seat. The read's **surface transport mirrors the
+  seats read's** (`seats/route.ts` / `catalog/route.ts`): a Next BFF hop
+  presenting this deployment's own `cc_live_…` org key, NOT the gateway
+  `seat_admin` proxy (that proxy is the WRITE's transport, §9 residual 7). The
+  surface slice is WS-30's; this item is the backend read + its data source.
 
 ## 7. Verification
 

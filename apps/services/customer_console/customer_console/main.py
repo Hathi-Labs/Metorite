@@ -447,6 +447,41 @@ class SeatsView(BaseModel):
     plans: list[SeatPlanView]
 
 
+class MemberView(BaseModel):
+    """One membership row for the calling organization (§6 item (i)).
+
+    ⚠️ **Exactly three fields — the membership triple** — pinned by
+    ``test_the_members_read_carries_the_membership_triple_and_nothing_else``, on
+    the model AND on the wire, for ``SeatPlanView``'s reason: a field nothing
+    reads is a field somebody eventually reads. ``email`` is the joined
+    ``user_identity.email`` (``CITEXT``); ``role`` and ``status`` are the
+    membership vocabularies (``001_customer_console.sql:121-131``). Surfaced from
+    ``store.org_members``, never recomputed.
+
+    The absences are the design. **No organization id / identity id:** the
+    organization is the credential's, so echoing it back would name the one thing
+    a customer must never be able to NAME (R11), and an internal ``user_identity``
+    id is not the customer's to hold. **No seat summary:** a member is a person,
+    not a seat count — "which seats does this member hold" is a second query over
+    ``seat_assignment`` this read is defined not to carry (DEFERRED, §6 item (i)).
+    """
+
+    email: str
+    role: str
+    status: str
+
+
+class MembersView(BaseModel):
+    """The calling organization's members, one row per membership (§6 item (i)).
+
+    Every membership row is present with its ``status`` on the wire — the read
+    applies no status filter and no per-member policy (``store``'s "fetches rows,
+    decides nothing" doctrine); the surface chooses which statuses to render.
+    """
+
+    members: list[MemberView]
+
+
 class UsageRequest(BaseModel):
     """Written by the **Router**, which holds the internal token — never by the
     customer whose usage it describes.
@@ -2157,6 +2192,41 @@ def my_seats(caller: PayingCaller) -> SeatsView:
     """
     with get_engine().begin() as conn:
         return SeatsView(plans=_seat_grid(conn, caller.organization_id))
+
+
+@app.get("/me/members")
+def my_members(caller: PayingCaller) -> MembersView:
+    """The calling organization's OWN members: ``email · role · status`` (§6 item (i)).
+
+    The exact sibling of ``GET /me/seats`` and the same move: a customer-key read
+    on the ``can_pay`` door, so the manage-seats surface (``subscription_console.md``
+    SC-2b) has a roster to pick WHOM to seat. **Why ``can_pay`` and not the
+    Operator door or ``KeyCaller``**: a ``suspended`` organization is the one
+    deciding whom to seat as it decides whether to pay, so it must be able to SEE
+    its members — the §9.3(5) reasoning ``my_seats`` records — and a ``deleted``
+    one is refused like everywhere else. No existing customer read returned a
+    per-org roster: the membership reads are single-member-by-identity,
+    by-email-across-orgs, or an owner ``EXISTS`` — so this is the org's own member
+    grid's first data source.
+
+    **The organization is a property of the credential** — ``caller.
+    organization_id``, never an ``org_slug`` on the wire (R11) — so org A can
+    never read org B's members, by construction rather than by a ``WHERE`` clause a
+    reader has to remember, exactly as ``my_seats`` relies on one route up.
+
+    The roster is the ONE membership-list read ``store.org_members`` (the
+    established ``org_membership ⋈ user_identity`` join idiom), surfaced verbatim
+    into ``MembersView``: there is no second SQL and no per-member recompute. The
+    read applies no ``status`` filter — every membership row boards with its
+    ``status`` and the surface chooses which to render (``store``'s "fetches rows,
+    decides nothing" doctrine); a per-member seat summary is a second query this
+    read is defined not to carry (DEFERRED, §6 item (i)).
+    """
+    with get_engine().begin() as conn:
+        return MembersView(members=[
+            MemberView(**row)
+            for row in store.org_members(conn, org_id=caller.organization_id)
+        ])
 
 
 def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:
