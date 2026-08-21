@@ -8,7 +8,27 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:3101",
+    // ── `localhost`, NOT `127.0.0.1`, and this is load-bearing ──────────────
+    //
+    // Next 16's dev server blocks `/_next/*` dev resources from an origin it
+    // does not recognise, and it does NOT treat `127.0.0.1` as the same origin
+    // as `localhost`. On the IP the server-rendered HTML still arrives — so the
+    // page LOOKS right, shell and all — but the client bundle is refused,
+    // hydration never completes, no effect runs, and no fetch is ever issued.
+    // Every spec then times out waiting for data nothing requested, and the
+    // page snapshot shows a permanent "Loading …".
+    //
+    // Measured 2026-08-21: identical run, identical stubs, hostname the only
+    // variable — `127.0.0.1` renders "Loading projects…" forever, `localhost`
+    // renders the tree. The server prints the reason, but it goes to the
+    // webServer log where a failing run does not surface it:
+    //   ⚠ Blocked cross-origin request to Next.js dev resource
+    //     /_next/webpack-hmr from "127.0.0.1".
+    //
+    // The alternative fix is `allowedDevOrigins: ['127.0.0.1']` in
+    // next.config — deliberately NOT taken: it relaxes a dev-server safety
+    // default across the whole app to solve a test-only addressing problem.
+    baseURL: "http://localhost:3101",
     headless: true,
     viewport: { width: 1280, height: 800 },
     trace: "on-first-retry",

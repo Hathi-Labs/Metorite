@@ -23,6 +23,7 @@ const handlers = () => ({
   onSetState: vi.fn(),
   onArchive: vi.fn(),
   onUnarchive: vi.fn(),
+  onRename: vi.fn(),
 });
 
 const labels = (items: ReturnType<typeof projectMenuItems>) =>
@@ -124,5 +125,55 @@ describe("projectMenuItems", () => {
       .map((i) => (i as { icon?: string }).icon);
     expect(icons.every(Boolean)).toBe(true);
     expect(new Set(icons).size).toBe(icons.length);
+  });
+
+  // ── Rename (WS-27bg slice 2 remainder) ────────────────────────────────────
+
+  it("offers Rename only when the surface can raise a rename field", () => {
+    // A read-only tree passes no `ui`, and offering an edit nothing can open
+    // would be a menu entry that does nothing on click.
+    expect(labels(projectMenuItems(project(), handlers()))).not.toContain(
+      "Rename"
+    );
+    const ui = { onBeginRename: vi.fn() };
+    expect(labels(projectMenuItems(project(), handlers(), ui))).toContain(
+      "Rename"
+    );
+  });
+
+  it("puts Rename first — it is the only entry that edits the project", () => {
+    const items = projectMenuItems(project(), handlers(), {
+      onBeginRename: vi.fn(),
+    });
+    expect(labels(items)[0]).toBe("Rename");
+    // And it is separated from the state list, so it does not read as a state.
+    expect(items[1].kind).toBe("sep");
+  });
+
+  it("Rename raises the field and writes nothing by itself", () => {
+    // The menu opens the editor; the WRITE happens when the field is
+    // submitted. An entry that PATCHed on click would rename a project to the
+    // name it already has, on every accidental selection.
+    const h = handlers();
+    const ui = { onBeginRename: vi.fn() };
+    const items = projectMenuItems(project(), h, ui);
+    const rename = items.find(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Rename"
+    );
+    (rename as { onSelect: () => void }).onSelect();
+    expect(ui.onBeginRename).toHaveBeenCalledTimes(1);
+    expect(h.onRename).not.toHaveBeenCalled();
+    expect(h.onSetState).not.toHaveBeenCalled();
+  });
+
+  it("offers Rename on an archived project too", () => {
+    // Filing a project does not make its name wrong, and the endpoint has
+    // never refused the write. Hiding it here would be a rule invented by the
+    // menu rather than one the server holds.
+    const filed = project({ archived_at: "2026-08-13T00:00:00Z" });
+    const items = projectMenuItems(filed, handlers(), {
+      onBeginRename: vi.fn(),
+    });
+    expect(labels(items)).toContain("Rename");
   });
 });
