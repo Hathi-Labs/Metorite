@@ -1515,12 +1515,31 @@ def activate_subscription_manual(
     seat and credit routes, never by re-activating it. A ``trial`` (or any
     non-active) subscription, and an org with no subscription row, activate.
 
+    The 409 is a check-then-grant, so it is serialised by
+    ``store.lock_org_activation`` — an org-keyed advisory lock taken as the first
+    statement of this transaction, before the status read. Without it two
+    concurrent activations of one fresh org would both pass the 409 and both
+    grant (the append-only INSERTs have no conflict target); with it the second
+    blocks, then reads ``active`` and 409s. The one-grant guarantee therefore
+    holds under CONCURRENCY, not merely for a sequential repeat.
+
     ⚠️ Ships DARK: the Console deploys nowhere yet, and both the operator token
     and issuing it are OWNER-GATE (§8). This is the route existing, not running.
     """
     term = req.term_months or payments.SUBSCRIPTION_TERM_MONTHS
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
+
+        # Serialise the whole guard-then-grant on this org BEFORE the status
+        # read (see the docstring's double-grant note). The seat/discount caps'
+        # idiom one plane along: at READ COMMITTED two concurrent activations of
+        # a fresh org would both read status≠'active', both pass the 409, and —
+        # since `grant_seats`/`add_credit` are conflict-free INSERTs — both
+        # grant. `FOR UPDATE` cannot help (a fresh org has no `org_subscription`
+        # row to lock), so it must be an org-keyed advisory lock; it releases at
+        # txn end. Taken here, not after the read, or the stale status is
+        # already in hand.
+        store.lock_org_activation(conn, org_id=org_id)
 
         plan = store.priced_plan(conn, plan_slug=req.plan_slug)
         if plan is None:

@@ -29,8 +29,13 @@ two P2s (2026-08-19)**: **115** tests in
 the Operator-only offline twin of `payments.fulfil` — `org_subscription`
 `provider='manual'` + the paid seat grant + an optional `manual`-reason credit,
 one transaction over the existing store seams (no new seam), refusing **409** on
-an org that already holds an active subscription (the double-grant guard). Suite
-**144/144** against a real Postgres 16, 0 skipped; the authz 401 mutation-proved.
+an org that already holds an active subscription (the double-grant guard). The
+check-then-grant is serialised by an org-keyed advisory lock
+(`store.lock_org_activation`, the seat/discount-cap idiom), so the one-grant
+guarantee holds under CONCURRENCY, not merely for a sequential repeat — a real
+two-thread race is the fence (`test_two_concurrent_activations_grant_exactly_once`,
+red-first without the lock). Suite **145/145** against a real Postgres 16, 0
+skipped; the authz 401 mutation-proved.
 Ships **DARK** — the Console deploys nowhere, and both the operator token and
 issuing it stay **OWNER-GATE** (§8). `credits.LEDGER_REASONS` grew one member
 (`manual`); no migration.
@@ -2176,7 +2181,15 @@ token and issuing it stay owner-gated (§8), and the route ships DARK.*
     `add_credit` are append-only, so an org that already holds an **active**
     subscription is refused **409** (an operator adjusts a live term through the
     seat/credit routes, never by re-activating) — a `trial` (or any non-active)
-    org, and one with no subscription row, activate. An unknown/inactive
+    org, and one with no subscription row, activate. The 409 is a
+    check-then-grant, so it is **serialised by an org-keyed advisory lock**
+    (`store.lock_org_activation`, the `lock_seat_capacity` / `lock_discount_capacity`
+    idiom — `pg_advisory_xact_lock(hashtext('activation:<org_id>'))`, taken as the
+    first statement of the transaction, before the status read, auto-released at
+    txn end): without it two concurrent activations of one fresh org would both
+    pass the 409 and both grant (the append-only INSERTs have no conflict target),
+    so the one-grant guarantee holds under **concurrency**, not merely a sequential
+    repeat. Per-org key, so different orgs never serialise. An unknown/inactive
     `plan_slug` is **400** (priced active rows only, as the checkout), an unknown
     org **404**. Not an org-key route, so
     `test_no_org_key_route_writes_an_entitlement_or_ledger_row` stays green — this
@@ -2185,7 +2198,10 @@ token and issuing it stay owner-gated (§8), and the route ships DARK.*
     (already on §7's list and pr-check's skip-guard), all R8 against a real
     Postgres: the happy path (active + `provider='manual'` + period; paid seats;
     credits; the audit reference), idempotency (a repeat activate 409s and
-    double-grants nothing), authz (Operator required — org key / deployment key /
+    double-grants nothing) **and its concurrency proof** (two threads activating
+    one fresh org, released on a barrier, land exactly one grant / credit /
+    subscription — red-first without `lock_org_activation`, the
+    `test_a_concurrent_double_redeem` idiom), authz (Operator required — org key / deployment key /
     no auth each 401, mutation-proved via `dependency_overrides`, and the
     operator IS admitted), plan validation (unknown/inactive → 400, nothing
     written), and the provider + ledger-reason fences unweakened
@@ -5516,8 +5532,16 @@ schema pre-provisioned exactly this door.
   **active** subscription is refused **409** (`already_active`) — the simpler safe
   rule the ticket named. An operator adjusts a live term through the seat/credit
   routes, never by re-activating; a `trial` (or any non-active) subscription, and
-  an org with no subscription row, activate. Proven under a repeat call: exactly
-  one seat grant, one ledger row, one subscription row.
+  an org with no subscription row, activate. Because the 409 is a check-then-grant,
+  it is **serialised by an org-keyed advisory lock** —
+  `store.lock_org_activation(conn, org_id=…)`, the `lock_seat_capacity` /
+  `lock_discount_capacity` idiom (`pg_advisory_xact_lock(hashtext('activation:<org_id>'))`),
+  taken as the first statement of the transaction, before the status read, and
+  auto-released at txn end. Per-org key, so activations of different orgs never
+  serialise. `FOR UPDATE` alone would not do (a fresh org has no `org_subscription`
+  row to lock). So the guarantee — **exactly one seat grant, one ledger row, one
+  subscription row** — holds under **concurrency** (two simultaneous activations of
+  one fresh org), not merely a sequential repeat.
 - **Audit:** `_audit(action="subscription.activate_manual", actor="operator")`
   with `reason='manual'`, the operator's free-text `reference`, the plan, seats
   and term in the JSONB `detail` (`control_audit` has no `reason` column, so the
@@ -5534,7 +5558,11 @@ schema pre-provisioned exactly this door.
   `tests/unit/test_customer_console_payments.py::TestTheManualActivation`**
   (already on §7's list and pr-check's skip-guard), all against a real Postgres:
   the happy path; credits-optional; `provider='manual'` not `'none'`; a custom
-  term; idempotency (409, no double-grant); unknown/inactive plan → 400 writing
+  term; idempotency (409, no double-grant); **the concurrency proof** (two threads
+  activating one fresh org, released on a `threading.Barrier`, land exactly one
+  grant / credit / subscription and results `[200, 409]` — red-first without
+  `lock_org_activation`, ten iterations, the `test_a_concurrent_double_redeem`
+  idiom); unknown/inactive plan → 400 writing
   nothing; unknown org → 404; **authz mutation-proved** (org key / deployment key
   / no-auth → 401 and write nothing, the operator admitted; the 401 shown red
   first by neutralising the guard via FastAPI `dependency_overrides` and

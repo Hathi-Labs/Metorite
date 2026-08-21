@@ -2659,6 +2659,56 @@ class TestTheManualActivation:
         )
         assert _subscription_count(db, org_id) == 1, "one subscription row"
 
+    def test_two_concurrent_activations_grant_exactly_once(self, client, db):
+        """The double-grant guard under CONCURRENCY — RACED, not reasoned about.
+
+        Two threads activate the SAME fresh org, released together on a barrier
+        so both read ``org_subscription.status`` before either commits. Without
+        ``store.lock_org_activation`` both pass the 409 (status≠'active') and,
+        because ``grant_seats``/``add_credit`` are conflict-free INSERTs, both
+        grant — a 5-seat/250-credit transfer mints 10 seats/500 credits, and the
+        two results are ``[200, 200]`` with two seat_grant + two credit_ledger
+        rows. The org-keyed advisory lock makes the second block, then read
+        'active' and 409 — so exactly one grant lands.
+
+        Confirmed red-first: reverting the ``lock_org_activation`` call in
+        ``activate_subscription_manual`` (scratch copy of ``main.py``, restored
+        byte-identical) reddens this on the FIRST iteration — results
+        ``[200, 200]`` and ``sales`` grants == 2. Ten iterations, because a race
+        that reproduces once in five is still a race. The sibling
+        ``test_a_concurrent_double_redeem_yields_one_success_and_one_refusal``
+        (discount cap) is the idiom.
+        """
+        for _ in range(10):
+            slug = _new_org(client, "manual-race")
+            org_id = _org_id(client, slug)
+            payload = {"org_slug": slug, "plan_slug": "sales", "seats": 5,
+                       "credits": "250", "reference": "NEFT-RACE"}
+            gate = threading.Barrier(2, timeout=30)
+
+            def _race(_slug=slug, _payload=payload, _gate=gate):
+                c = TestClient(app)
+                _gate.wait()
+                return c.post(_ACTIVATE, headers=OP, json=_payload)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [f.result() for f in
+                           [pool.submit(_race) for _ in range(2)]]
+
+            assert sorted(r.status_code for r in results) == [200, 409], (
+                [r.status_code for r in results]
+            )
+            refused = next(r for r in results if r.status_code == 409)
+            assert refused.json()["detail"]["reason"] == "already_active"
+
+            assert _grants_for(db, org_id, "sales") == 1, (
+                "seats double-granted under the race"
+            )
+            assert len(_ledger_with_reason(db, org_id, "manual")) == 1, (
+                "credits double-added under the race"
+            )
+            assert _subscription_count(db, org_id) == 1, "one subscription row"
+
     @pytest.mark.parametrize("plan", ["no_such_plan", "rnd", "support"])
     def test_an_unknown_or_inactive_plan_is_refused_and_writes_nothing(
         self, client, db, plan
