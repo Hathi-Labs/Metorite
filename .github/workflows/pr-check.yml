@@ -246,6 +246,7 @@ jobs:
             tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
             tests/unit/test_customer_console_resolve.py \
             tests/unit/test_customer_console_payments.py \
+            tests/unit/test_customer_console_operator_list.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \

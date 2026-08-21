@@ -1,0 +1,128 @@
+import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  callConsole,
+  operatorHeaders,
+  readConsoleEnv,
+  listOrganizations,
+  billingSummary,
+  ConsoleUnconfigured,
+  type FetchLike,
+} from "./console";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const APP_ROOT = join(HERE, "..");
+
+const ENV = {
+  CUSTOMER_CONSOLE_URL: "https://console.internal",
+  CUSTOMER_CONSOLE_OPERATOR_TOKEN: "op-secret-token",
+};
+
+function captureFetch(response: { status: number; body: string }) {
+  const calls: { url: string; init: Parameters<FetchLike>[1] }[] = [];
+  const fetchImpl: FetchLike = async (url, init) => {
+    calls.push({ url, init });
+    return { status: response.status, text: async () => response.body };
+  };
+  return { calls, fetchImpl };
+}
+
+describe("the operator token is server-side and fails closed", () => {
+  it("puts the token ONLY in the outgoing Authorization header", async () => {
+    const { calls, fetchImpl } = captureFetch({ status: 200, body: "{}" });
+    await callConsole("/orgs", { method: "GET" }, {
+      env: readConsoleEnv(ENV),
+      fetchImpl,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.headers.Authorization).toBe("Bearer op-secret-token");
+  });
+
+  it("never returns the token to the caller — only the Console's body", async () => {
+    const consoleBody = JSON.stringify({ organizations: [] });
+    const { fetchImpl } = captureFetch({ status: 200, body: consoleBody });
+    const result = await callConsole("/orgs", { method: "GET" }, {
+      env: readConsoleEnv(ENV),
+      fetchImpl,
+    });
+    expect(result.body).toBe(consoleBody);
+    expect(result.body).not.toContain("op-secret-token");
+  });
+
+  it("fails CLOSED when the token is unset (no unauthenticated call)", () => {
+    expect(() =>
+      operatorHeaders(readConsoleEnv({ CUSTOMER_CONSOLE_URL: "x" })),
+    ).toThrow(ConsoleUnconfigured);
+  });
+
+  it("fails CLOSED when the URL is unset", () => {
+    expect(() =>
+      operatorHeaders(
+        readConsoleEnv({ CUSTOMER_CONSOLE_OPERATOR_TOKEN: "t" }),
+      ),
+    ).toThrow(ConsoleUnconfigured);
+  });
+
+  it("targets only CUSTOMER_CONSOLE_URL (no per-deployment round trip)", async () => {
+    const { calls, fetchImpl } = captureFetch({ status: 200, body: "{}" });
+    await listOrganizations({ env: readConsoleEnv(ENV), fetchImpl });
+    expect(calls[0].url).toBe("https://console.internal/orgs");
+  });
+
+  it("encodes the org slug on the per-org detail read", async () => {
+    const { calls, fetchImpl } = captureFetch({ status: 200, body: "{}" });
+    await billingSummary("a b/c", { env: readConsoleEnv(ENV), fetchImpl });
+    expect(calls[0].url).toBe(
+      "https://console.internal/billing/summary?org_slug=a%20b%2Fc",
+    );
+  });
+
+  it("relays the Console's status verbatim (a refusal stays a refusal)", async () => {
+    const { fetchImpl } = captureFetch({ status: 409, body: '{"reason":"x"}' });
+    const r = await callConsole("/billing/subscriptions/activate", {
+      method: "POST",
+      body: { org_slug: "s" },
+    }, { env: readConsoleEnv(ENV), fetchImpl });
+    expect(r.status).toBe(409);
+  });
+});
+
+// ── Source scan: the token cannot be bundled into client output ─────────────
+
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out.push(...walk(p));
+    else if (/\.(ts|tsx)$/.test(name)) out.push(p);
+  }
+  return out;
+}
+
+describe("the token never reaches a client bundle", () => {
+  const files = walk(APP_ROOT).filter((f) => !f.endsWith(".test.ts"));
+
+  it("names CUSTOMER_CONSOLE_OPERATOR_TOKEN only in server lib/console.ts", () => {
+    const namers = files.filter((f) =>
+      readFileSync(f, "utf-8").includes("CUSTOMER_CONSOLE_OPERATOR_TOKEN"),
+    );
+    // Exactly one file reads the token env, and it is the server client.
+    expect(namers.map((f) => f.replace(APP_ROOT, "").replace(/\\/g, "/"))).toEqual(
+      ["/lib/console.ts"],
+    );
+  });
+
+  it("no `use client` file imports the server Console client", () => {
+    const clientFiles = files.filter((f) =>
+      /^["']use client["']/.test(readFileSync(f, "utf-8").trimStart()),
+    );
+    for (const f of clientFiles) {
+      const body = readFileSync(f, "utf-8");
+      expect(body, `${f} must not import lib/console`).not.toMatch(
+        /from\s+["'].*lib\/console["']/,
+      );
+    }
+  });
+});

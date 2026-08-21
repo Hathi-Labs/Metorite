@@ -239,3 +239,4 @@ Check with `uv tree` / `uv pip list`. Key runtime pins: `agent-framework-*`
 | Planning docs | project-docs/AGENTS.md | Product requirements, project plan, architecture |
 | Marketing site | site/AGENTS.md | Static apex page (`metorite.com`); owner spec `project-docs/specs/marketing_site.md` (WS-33) |
 | Workbench UI | workbench/AGENTS.md | Control Plane (Next.js) and local dev tools |
+| Operator Console | workbench/operator_console/AGENTS.md | CP-8's SEPARATE staff-only cross-org customer console (D35); theming-exempt; ships dark |

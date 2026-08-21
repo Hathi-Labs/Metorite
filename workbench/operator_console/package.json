@@ -1,0 +1,26 @@
+{
+  "name": "operator_console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Metorite Operator Console — the staff-only, cross-org customer-management surface (CP-8, D35). A SEPARATE Next.js app from the customer workbench: shares tables, never routes. Theming-exempt (D35.4).",
+  "scripts": {
+    "dev": "next dev -p 3002",
+    "build": "next build",
+    "start": "next start -p 3002",
+    "typecheck": "tsc --noEmit",
+    "typecheck:lib": "tsc --noEmit -p tsconfig.lib.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "16.2.6",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}
