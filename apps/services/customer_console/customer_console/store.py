@@ -1081,6 +1081,39 @@ def set_order_status(
     )
 
 
+def lock_org_activation(conn: Connection, *, org_id: str) -> None:
+    """Serialise the manual-activation double-grant guard for one organization.
+
+    The seat cap's idiom (:func:`lock_seat_capacity`) one plane along:
+    ``POST /billing/subscriptions/activate`` reads ``org_subscription.status``
+    and refuses ``active`` with a 409, then — for a ``trial``/no-row org —
+    appends paid seats and credits. At READ COMMITTED that check-then-append
+    does not hold: two concurrent activations of the SAME fresh org both read
+    status≠``active``, both pass the guard, and because ``grant_seats`` /
+    ``add_credit`` are conflict-free INSERTs, **both grant** — a 5-seat/250-credit
+    transfer mints 10 seats/500 credits. The 409 only protects the SEQUENTIAL
+    repeat, and ``FOR UPDATE`` cannot help because a fresh org has no
+    ``org_subscription`` row to lock — which is why this is an advisory lock.
+
+    Taken as the FIRST statement of the route's transaction, **before** the
+    status read: a lock acquired after the read protects nothing, because the
+    stale status is already in hand. Transaction-scoped (``_xact_``), so it is
+    released by COMMIT or ROLLBACK and there is no unlock to forget on the 409
+    path.
+
+    The key is PER-ORG (``activation:<org_id>``) so activations of *different*
+    orgs never serialise, and namespaced so it cannot collide with the seat
+    lock's ``<org>:<plan>`` space or the discount lock's ``discount:<id>`` space
+    in ``hashtext``'s single keyspace. A hash collision costs one needless
+    serialisation and is otherwise harmless — the failure mode is slowness,
+    never a double grant.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"activation:{org_id}"},
+    )
+
+
 def activate_subscription(
     conn: Connection, *, org_id: str, term_months: int,
     provider: str | None, provider_customer_id: str | None,

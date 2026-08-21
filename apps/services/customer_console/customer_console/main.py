@@ -72,6 +72,7 @@ from customer_console.auth import (
 )
 from customer_console.credits import (
     CREDIT_QUANTUM,
+    LEDGER_REASON_MANUAL,
     LEDGER_REASON_PURCHASE,
     LEDGER_REASONS,
     OverdraftPolicy,
@@ -275,6 +276,51 @@ class CreditGrantRequest(BaseModel):
                 f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
             )
         return value
+
+
+class ManualActivationRequest(BaseModel):
+    """Operator-only. Activate a PAID plan a customer paid for OUT OF BAND.
+
+    The offline twin of ``payments.fulfil`` (§6 item (j)): it composes the same
+    three writers — the subscription, the seat grant, the optional credit —
+    **minus the Razorpay order**, because there is none. The money arrived by
+    bank transfer and an operator is recording it, so ``provider='manual'`` (the
+    name ``001_customer_console.sql:163``'s CHECK pre-provisioned for exactly
+    this) and the provider id columns stay NULL.
+
+    ``org_slug`` names the customer. **R11 does not bind a NAMED-org staff route**
+    — ``Operator`` is cross-org and carries no tenant of its own, exactly as
+    ``POST /billing/seats``'s ``SeatWriteRequest`` names one — but the org is
+    still resolved from the validated slug, never taken from an unauthenticated
+    body identity.
+    """
+
+    #: The customer whose PAID plan is being activated. Resolved to an
+    #: ``organization_id`` by ``_org_id`` (404 if unknown), never trusted as an
+    #: identity — the credential is the operator's, cross-org by design.
+    org_slug: str
+    #: The plan the seats are granted on. Must be an ACTIVE ``plan_catalog`` row
+    #: (``store.priced_plan``) or the route answers 400 — a manual activation
+    #: sells only what the catalog prices, exactly as the checkout does (§9.1).
+    plan_slug: str
+    #: PAID seats to grant on ``plan_slug`` — the plan's paid capacity, not a
+    #: per-member assignment. A signed ``seat_grant`` quantity (``grant_seats``);
+    #: at least one, because activating zero paid seats is not an activation.
+    seats: int = Field(ge=1)
+    #: AI credits to add, when the bank transfer included them. Decimal, never
+    #: float — the ledger is a customer's dispute evidence (``credits`` doctrine).
+    credits: Decimal | None = None
+    #: The subscription term. Defaults to ``payments.SUBSCRIPTION_TERM_MONTHS``
+    #: (the one purchased term the checkout path also uses) — the catalog defines
+    #: no per-plan term, so there is nothing narrower to read.
+    term_months: int | None = Field(default=None, ge=1)
+    #: The operator's free-text note — e.g. the bank-transfer reference. Recorded
+    #: in the audit detail and, when credits are added, as the ledger ``ref``.
+    reference: str | None = None
+
+    #: A value-moving write: an unknown field is a caller mistake, refused rather
+    #: than silently ignored (as ``CreateOrderRequest``/``IssueDiscountRequest``).
+    model_config = {"extra": "forbid"}
 
 
 class IssueKeyRequest(BaseModel):
@@ -1432,6 +1478,154 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
 
     return {
         "organization_id": org_id,
+        "seats": seats,
+        "credit_balance": str(balance),
+    }
+
+
+@app.post("/billing/subscriptions/activate")
+def activate_subscription_manual(
+    req: ManualActivationRequest, _: Operator
+) -> dict[str, Any]:
+    """MANUAL / bank-transfer activation — the offline twin of ``payments.fulfil``
+    (§6 item (j)).
+
+    Platform staff activate a PAID plan for a customer that paid OUT OF BAND,
+    with **no Razorpay order**. It composes ``fulfil``'s grant, minus the order,
+    through the SAME store seams — no new seam:
+
+    * ``store.activate_subscription`` with ``provider='manual'`` and NULL provider
+      ids: ``org_subscription`` goes ``status='active'`` with a real period, the
+      value ``001_customer_console.sql:163``'s ``CHECK`` pre-provisioned and
+      nothing wrote until now. Never ``'none'`` — that belongs to
+      ``payment_order.provider``, not here (``store.activate_subscription``).
+    * ``store.grant_seats`` for the plan's PAID seats (``reason='manual'``).
+    * ``store.add_credit`` when the request carries AI credits, under
+      :data:`credits.LEDGER_REASON_MANUAL` with the bank reference as ``ref``.
+
+    It does **not** touch ``organization.status`` — like ``fulfil``, a suspended
+    org that pays holds an active paid term and stays suspended until an operator
+    posts the transition (done-when 16). Only ``org_subscription`` moves here.
+
+    **Idempotency / the double-grant guard.** Activating grants PAID capacity, and
+    ``grant_seats``/``add_credit`` are append-only INSERTs — a second call would
+    grant twice (``activate_subscription`` upserts and is harmless alone; the
+    seats and credits are not). So an org already holding an **active**
+    subscription is refused **409**: an operator adjusts a live term through the
+    seat and credit routes, never by re-activating it. A ``trial`` (or any
+    non-active) subscription, and an org with no subscription row, activate.
+
+    The 409 is a check-then-grant, so it is serialised by
+    ``store.lock_org_activation`` — an org-keyed advisory lock taken as the first
+    statement of this transaction, before the status read. Without it two
+    concurrent activations of one fresh org would both pass the 409 and both
+    grant (the append-only INSERTs have no conflict target); with it the second
+    blocks, then reads ``active`` and 409s. The one-grant guarantee therefore
+    holds under CONCURRENCY, not merely for a sequential repeat.
+
+    ⚠️ Ships DARK: the Console deploys nowhere yet, and both the operator token
+    and issuing it are OWNER-GATE (§8). This is the route existing, not running.
+    """
+    term = req.term_months or payments.SUBSCRIPTION_TERM_MONTHS
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+
+        # Serialise the whole guard-then-grant on this org BEFORE the status
+        # read (see the docstring's double-grant note). The seat/discount caps'
+        # idiom one plane along: at READ COMMITTED two concurrent activations of
+        # a fresh org would both read status≠'active', both pass the 409, and —
+        # since `grant_seats`/`add_credit` are conflict-free INSERTs — both
+        # grant. `FOR UPDATE` cannot help (a fresh org has no `org_subscription`
+        # row to lock), so it must be an org-keyed advisory lock; it releases at
+        # txn end. Taken here, not after the read, or the stale status is
+        # already in hand.
+        store.lock_org_activation(conn, org_id=org_id)
+
+        plan = store.priced_plan(conn, plan_slug=req.plan_slug)
+        if plan is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{req.plan_slug!r} is not an active plan; a manual "
+                    "activation grants seats only on priced, active catalog rows"
+                ),
+            )
+
+        # The double-grant guard (see the docstring). Read BEFORE any write, so
+        # the refusal rolls nothing back.
+        current = conn.execute(
+            text("SELECT status FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id},
+        ).scalar_one_or_none()
+        if current == "active":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "already_active",
+                    "message": (
+                        "organization already holds an active subscription; "
+                        "adjust its seats or credits directly rather than "
+                        "re-activating"
+                    ),
+                },
+            )
+
+        # Mirror `payments.fulfil`, minus the order: `provider='manual'`, NULL
+        # provider ids (no provider was involved), the period from the database
+        # clock.
+        store.activate_subscription(
+            conn, org_id=org_id, term_months=term, provider="manual",
+            provider_customer_id=None, provider_subscription_id=None,
+        )
+        store.grant_seats(
+            conn, org_id=org_id, plan_slug=req.plan_slug,
+            quantity=req.seats, reason="manual",
+        )
+        if req.credits is not None:
+            store.add_credit(
+                conn, org_id=org_id, delta=req.credits,
+                reason=LEDGER_REASON_MANUAL, ref=req.reference,
+            )
+
+        # Recorded as a manual staff grant. `control_audit` has no `reason`
+        # column — actor/action/detail(JSONB) — so `reason='manual'` and the
+        # operator's free-text `reference` ride in the detail, where the seat and
+        # credit facts already sit.
+        detail: dict[str, Any] = {
+            "plan": req.plan_slug,
+            "seats": req.seats,
+            "term_months": term,
+            "reason": "manual",
+            "reference": req.reference,
+        }
+        if req.credits is not None:
+            detail["credits"] = str(req.credits)
+        _audit(conn, org_id, "subscription.activate_manual", detail,
+               actor="operator")
+
+        # Surface the result from the same view models the reads use — never a
+        # recompute: the seat grid is `_seat_grid` (as `billing_summary`), the
+        # balance is `balance_of(credit_deltas)`.
+        sub = conn.execute(
+            text(
+                "SELECT status, provider, current_period_start, "
+                "current_period_end FROM org_subscription "
+                "WHERE organization_id = :i"
+            ),
+            {"i": org_id},
+        ).one()
+        seats = _seat_grid(conn, org_id)
+        balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+
+    return {
+        "organization_id": org_id,
+        "subscription": {
+            "status": sub.status,
+            "provider": sub.provider,
+            "current_period_start": sub.current_period_start.isoformat(),
+            "current_period_end": sub.current_period_end.isoformat(),
+        },
         "seats": seats,
         "credit_balance": str(balance),
     }

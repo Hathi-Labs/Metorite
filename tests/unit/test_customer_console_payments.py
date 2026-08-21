@@ -2515,6 +2515,278 @@ class TestTheSeatAdminWrite:
             db, org_id=org_id, plan_slug="sales", email=target) == 0
 
 
+# ── §6 item (j) — the MANUAL / bank-transfer activation ────────────────────
+#
+# The offline twin of `payments.fulfil`: an Operator activates a PAID plan a
+# customer paid for OUT OF BAND, composing the SAME three store writers
+# (activate_subscription / grant_seats / add_credit) MINUS the Razorpay order.
+# `provider='manual'` is the value `001_customer_console.sql:163`'s CHECK
+# pre-provisioned and that nothing wrote until now. It takes the Operator token,
+# NOT an org key, so `test_no_org_key_route_writes_an_entitlement_or_ledger_row`
+# stays green and this grant never rides a customer credential.
+
+_ACTIVATE = "/billing/subscriptions/activate"
+
+
+def _subscription(db, org_id: str) -> dict:
+    with db.begin() as c:
+        row = c.execute(
+            text("SELECT status, provider, current_period_start, "
+                 "current_period_end FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id},
+        ).one()
+    return dict(row._mapping)
+
+
+def _subscription_count(db, org_id: str) -> int:
+    with db.begin() as c:
+        return int(c.execute(
+            text("SELECT count(*) FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id}).scalar_one())
+
+
+def _ledger_with_reason(db, org_id: str, reason: str) -> list[dict]:
+    return [r for r in _rows(db, "credit_ledger", org_id)
+            if r["reason"] == reason]
+
+
+def _audit_with_action(db, org_id: str, action: str) -> list[dict]:
+    return [r for r in _rows(db, "control_audit", org_id)
+            if r["action"] == action]
+
+
+class TestTheManualActivation:
+    """§6 item (j) — the offline twin of `payments.fulfil`, R8 against real PG."""
+
+    def test_a_fresh_trial_org_activates_a_paid_plan(self, client, db):
+        """Happy path: subscription active + provider='manual' + period set; the
+        paid seats granted; credits added; an audit row names the reference."""
+        slug = _new_org(client, "manual")
+        org_id = _org_id(client, slug)
+
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": "sales", "seats": 5,
+            "credits": "250", "reference": "NEFT-ABC123",
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["subscription"]["status"] == "active"
+        assert body["subscription"]["provider"] == "manual"
+        assert body["subscription"]["current_period_start"]
+        assert body["subscription"]["current_period_end"]
+
+        sub = _subscription(db, org_id)
+        assert sub["status"] == "active"
+        assert sub["provider"] == "manual"
+        assert sub["current_period_start"] is not None
+        assert sub["current_period_end"] > sub["current_period_start"]
+
+        grants = [g for g in _rows(db, "seat_grant", org_id)
+                  if g["plan_slug"] == "sales"]
+        assert len(grants) == 1
+        assert grants[0]["quantity_purchased"] == 5
+        assert grants[0]["reason"] == "manual"
+
+        ledger = _ledger_with_reason(db, org_id, "manual")
+        assert len(ledger) == 1
+        assert ledger[0]["delta"] == Decimal("250")
+        assert ledger[0]["ref"] == "NEFT-ABC123"
+
+        audit = _audit_with_action(db, org_id, "subscription.activate_manual")
+        assert len(audit) == 1
+        assert audit[0]["actor"] == "operator"
+        assert audit[0]["detail"]["reason"] == "manual"
+        assert audit[0]["detail"]["reference"] == "NEFT-ABC123"
+        assert audit[0]["detail"]["seats"] == 5
+
+    def test_activation_without_credits_writes_no_ledger_row(self, client, db):
+        """Credits are optional; omitting them adds no ledger row — the branch is
+        conditional, exactly as `fulfil`'s credit-pack branch is."""
+        slug = _new_org(client, "manual-nocred")
+        org_id = _org_id(client, slug)
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": "builder", "seats": 2})
+        assert r.status_code == 200, r.text
+        assert _rows(db, "credit_ledger", org_id) == []
+        assert _grants_for(db, org_id, "builder") == 1
+
+    def test_the_provider_is_manual_not_none(self, client, db):
+        """`org_subscription.provider` is CHECK (razorpay|manual). The manual path
+        writes 'manual'; 'none' — legal only on `payment_order` — would 500."""
+        slug = _new_org(client, "manual-prov")
+        org_id = _org_id(client, slug)
+        assert client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": "sales", "seats": 1,
+        }).status_code == 200
+        assert _subscription(db, org_id)["provider"] == "manual"
+
+    def test_a_custom_term_extends_the_period(self, client, db):
+        """`term_months` is honoured; absent, it defaults to
+        `payments.SUBSCRIPTION_TERM_MONTHS` (the checkout's one term)."""
+        slug = _new_org(client, "manual-term")
+        org_id = _org_id(client, slug)
+        assert client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": "sales", "seats": 1,
+            "term_months": 12,
+        }).status_code == 200
+        sub = _subscription(db, org_id)
+        # 12 months out — comfortably beyond the 1-month default.
+        assert (sub["current_period_end"]
+                - sub["current_period_start"]).days >= 360
+
+    def test_a_repeat_activation_does_not_double_grant(self, client, db):
+        """Idempotency / the double-grant guard: a second activate on an org that
+        is ALREADY active is 409, and grants / credits / subscription stay at one
+        each. This is the safe rule the ticket asked for — refuse rather than key
+        on an idempotency token — proven by the counts after the repeat call."""
+        slug = _new_org(client, "manual-again")
+        org_id = _org_id(client, slug)
+        payload = {"org_slug": slug, "plan_slug": "sales", "seats": 3,
+                   "credits": "100", "reference": "NEFT-1"}
+
+        first = client.post(_ACTIVATE, headers=OP, json=payload)
+        assert first.status_code == 200, first.text
+
+        second = client.post(_ACTIVATE, headers=OP, json=payload)
+        assert second.status_code == 409, second.text
+        assert second.json()["detail"]["reason"] == "already_active"
+
+        assert _grants_for(db, org_id, "sales") == 1, "seats not double-granted"
+        assert len(_ledger_with_reason(db, org_id, "manual")) == 1, (
+            "credits not double-added"
+        )
+        assert _subscription_count(db, org_id) == 1, "one subscription row"
+
+    def test_two_concurrent_activations_grant_exactly_once(self, client, db):
+        """The double-grant guard under CONCURRENCY — RACED, not reasoned about.
+
+        Two threads activate the SAME fresh org, released together on a barrier
+        so both read ``org_subscription.status`` before either commits. Without
+        ``store.lock_org_activation`` both pass the 409 (status≠'active') and,
+        because ``grant_seats``/``add_credit`` are conflict-free INSERTs, both
+        grant — a 5-seat/250-credit transfer mints 10 seats/500 credits, and the
+        two results are ``[200, 200]`` with two seat_grant + two credit_ledger
+        rows. The org-keyed advisory lock makes the second block, then read
+        'active' and 409 — so exactly one grant lands.
+
+        Confirmed red-first: reverting the ``lock_org_activation`` call in
+        ``activate_subscription_manual`` (scratch copy of ``main.py``, restored
+        byte-identical) reddens this on the FIRST iteration — results
+        ``[200, 200]`` and ``sales`` grants == 2. Ten iterations, because a race
+        that reproduces once in five is still a race. The sibling
+        ``test_a_concurrent_double_redeem_yields_one_success_and_one_refusal``
+        (discount cap) is the idiom.
+        """
+        for _ in range(10):
+            slug = _new_org(client, "manual-race")
+            org_id = _org_id(client, slug)
+            payload = {"org_slug": slug, "plan_slug": "sales", "seats": 5,
+                       "credits": "250", "reference": "NEFT-RACE"}
+            gate = threading.Barrier(2, timeout=30)
+
+            def _race(_slug=slug, _payload=payload, _gate=gate):
+                c = TestClient(app)
+                _gate.wait()
+                return c.post(_ACTIVATE, headers=OP, json=_payload)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [f.result() for f in
+                           [pool.submit(_race) for _ in range(2)]]
+
+            assert sorted(r.status_code for r in results) == [200, 409], (
+                [r.status_code for r in results]
+            )
+            refused = next(r for r in results if r.status_code == 409)
+            assert refused.json()["detail"]["reason"] == "already_active"
+
+            assert _grants_for(db, org_id, "sales") == 1, (
+                "seats double-granted under the race"
+            )
+            assert len(_ledger_with_reason(db, org_id, "manual")) == 1, (
+                "credits double-added under the race"
+            )
+            assert _subscription_count(db, org_id) == 1, "one subscription row"
+
+    @pytest.mark.parametrize("plan", ["no_such_plan", "rnd", "support"])
+    def test_an_unknown_or_inactive_plan_is_refused_and_writes_nothing(
+        self, client, db, plan
+    ):
+        """`rnd`/`support` are seeded INACTIVE — a manual activation, like the
+        checkout, grants only on priced active rows. 400, and nothing written."""
+        slug = _new_org(client, "manual-badplan")
+        org_id = _org_id(client, slug)
+        before = _snapshot(db, org_id)
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": plan, "seats": 2})
+        assert r.status_code == 400, r.text
+        assert _snapshot(db, org_id) == before
+
+    def test_an_unknown_org_is_404(self, client):
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": "no-such-org", "plan_slug": "sales", "seats": 1})
+        assert r.status_code == 404, r.text
+
+    def test_only_the_operator_may_activate(self, client, db):
+        """Authz, mutation-proved. A customer org key, a deployment key (a valid
+        credential) and no auth are each refused 401 and write nothing; the
+        operator is admitted, which is what proves the 401s are the guard
+        refusing non-operators rather than the route being broken.
+
+        Red-first evidence (run and reverted in a scratch copy of `main.py`):
+        dropping the `_: Operator` dependency from `activate_subscription_manual`
+        lets the org-key and no-auth calls reach the body — they answer 200 and
+        WRITE the grant — so the assertions below redden the moment the guard is
+        gone. Reverted byte-identical."""
+        slug = _new_org(client, "manual-authz")
+        org_id = _org_id(client, slug)
+        org_key = _org_key(client, slug)
+        dep_key = _resolve_only_key(db, _default_box_id(db))
+        payload = {"org_slug": slug, "plan_slug": "sales", "seats": 2}
+
+        before = _snapshot(db, org_id)
+        assert client.post(_ACTIVATE, headers=_headers(org_key),
+                           json=payload).status_code == 401
+        assert client.post(_ACTIVATE, headers=_headers(dep_key),
+                           json=payload).status_code == 401
+        assert client.post(_ACTIVATE, json=payload).status_code == 401
+        assert _snapshot(db, org_id) == before, "no refused caller wrote a row"
+
+        # The door is not simply always-401: the operator IS admitted and the
+        # activation lands. That is what makes the 401s above a guard, not a bug.
+        assert client.post(_ACTIVATE, headers=OP,
+                           json=payload).status_code == 200
+
+    def test_the_provider_check_constraint_is_not_weakened(self, db, org):
+        """The provider fence stays green: 'manual' is a legal
+        `org_subscription.provider`, and a bogus value is still refused by the
+        CHECK this slice relies on — unchanged."""
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO org_subscription (organization_id, status, "
+                     "provider) VALUES (:o, 'active', 'manual') "
+                     "ON CONFLICT (organization_id) DO UPDATE "
+                     "SET provider = 'manual'"),
+                {"o": org["id"]},
+            )
+        with pytest.raises((IntegrityError, DBAPIError)), db.begin() as c:
+            c.execute(
+                text("INSERT INTO org_subscription (organization_id, status, "
+                     "provider) VALUES (:o, 'active', 'bogus') "
+                     "ON CONFLICT (organization_id) DO UPDATE "
+                     "SET provider = 'bogus'"),
+                {"o": org["id"]},
+            )
+
+    def test_the_ledger_reason_fence_is_not_weakened(self):
+        """The vocabulary grew by exactly one legal reason and the add_credit call
+        site uses the constant — both ledger fences stay green with 'manual' in
+        them (`…passes_a_named_reason` and the vocabulary set), never weakened."""
+        assert credits.LEDGER_REASON_MANUAL == "manual"
+        assert "manual" in credits.LEDGER_REASONS
+
+
 # ── SC-4g — discount codes, the refusal partition, and the Rs 0 path ───────
 
 class TestDiscountCodes:
@@ -3146,9 +3418,14 @@ class TestTheLedgerVocabulary:
             "reason": "adjustment", "ref": "note-1"})
         assert ok.status_code == 200, ok.text
 
-    def test_the_vocabulary_is_the_five_named_reasons(self):
+    def test_the_vocabulary_is_the_six_named_reasons(self):
+        """Six since §6 item (j)'s manual activation: `'manual'` is the offline
+        twin of `'purchase'` — a paid term settled by bank transfer, written by
+        `POST /billing/subscriptions/activate`, kept its own word so a manual
+        settlement stays distinguishable from a processor capture a year later."""
         assert {
             "usage", "purchase", "discount_redemption", "adjustment", "grant",
+            "manual",
         } == credits.LEDGER_REASONS
 
     def test_the_launch_subscription_path_writes_no_ledger_rows(

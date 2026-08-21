@@ -24,6 +24,22 @@ two P2s (2026-08-19)**: **115** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
 **0 skipped**, every load-bearing fence shown red first.
 
+**§6 item (j) — the MANUAL / bank-transfer activation
+(`POST /billing/subscriptions/activate`) BUILT 2026-08-21 (`cc-manual-activate`)**:
+the Operator-only offline twin of `payments.fulfil` — `org_subscription`
+`provider='manual'` + the paid seat grant + an optional `manual`-reason credit,
+one transaction over the existing store seams (no new seam), refusing **409** on
+an org that already holds an active subscription (the double-grant guard). The
+check-then-grant is serialised by an org-keyed advisory lock
+(`store.lock_org_activation`, the seat/discount-cap idiom), so the one-grant
+guarantee holds under CONCURRENCY, not merely for a sequential repeat — a real
+two-thread race is the fence (`test_two_concurrent_activations_grant_exactly_once`,
+red-first without the lock). Suite **145/145** against a real Postgres 16, 0
+skipped; the authz 401 mutation-proved.
+Ships **DARK** — the Console deploys nowhere, and both the operator token and
+issuing it stay **OWNER-GATE** (§8). `credits.LEDGER_REASONS` grew one member
+(`manual`); no migration.
+
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) MINTED
 2026-08-19 (D46, owner directive); CP-2d (second factor / email OTP)
 documented-deferred, nothing built.** CP-2c's hard dependency —
@@ -2141,6 +2157,57 @@ below) at flip-time.*
     *and* on the wire; the roster equals `store.org_members`; a `suspended` org
     reads it, a `deleted` org 403s). **No migration:** a read over `org_membership`
     + `user_identity` in `001` already ships.
+
+*Clause 21 authored + ✅ **BUILT** 2026-08-21 (WS-31, `cc-manual-activate`) with
+§6 item (j) — the MANUAL / bank-transfer activation, the offline twin of
+`payments.fulfil`. R8 against a real Postgres 16; the Console deploy, the operator
+token and issuing it stay owner-gated (§8), and the route ships DARK.*
+
+21. ✅ **BUILT — An operator can activate a PAID plan a customer paid for OUT OF
+    BAND (§6 item (j)):** `POST /billing/subscriptions/activate` (Operator-only,
+    `main.py` `activate_subscription_manual`) writes `org_subscription`
+    `status='active'` with `provider='manual'` (the value
+    `001_customer_console.sql:163`'s CHECK pre-provisioned and nothing wrote
+    until now, NULL provider ids), grants the plan's PAID seats
+    (`grant_seats`, `reason='manual'`), and — when the request carries AI credits
+    — adds them (`add_credit`, `reason=credits.LEDGER_REASON_MANUAL`, the bank
+    reference as `ref`), all in ONE transaction over the SAME store seams
+    `payments.fulfil` uses, minus the order — no new seam. It does **not** touch
+    `organization.status` (like `fulfil`, a suspended org that pays holds an
+    active term and stays suspended until an operator posts the transition,
+    done-when 16). The operator's free-text `reference` and `reason='manual'` land
+    in the `control_audit` detail (the table has no `reason` column). **The
+    double-grant guard:** activating grants paid capacity and `grant_seats` /
+    `add_credit` are append-only, so an org that already holds an **active**
+    subscription is refused **409** (an operator adjusts a live term through the
+    seat/credit routes, never by re-activating) — a `trial` (or any non-active)
+    org, and one with no subscription row, activate. The 409 is a
+    check-then-grant, so it is **serialised by an org-keyed advisory lock**
+    (`store.lock_org_activation`, the `lock_seat_capacity` / `lock_discount_capacity`
+    idiom — `pg_advisory_xact_lock(hashtext('activation:<org_id>'))`, taken as the
+    first statement of the transaction, before the status read, auto-released at
+    txn end): without it two concurrent activations of one fresh org would both
+    pass the 409 and both grant (the append-only INSERTs have no conflict target),
+    so the one-grant guarantee holds under **concurrency**, not merely a sequential
+    repeat. Per-org key, so different orgs never serialise. An unknown/inactive
+    `plan_slug` is **400** (priced active rows only, as the checkout), an unknown
+    org **404**. Not an org-key route, so
+    `test_no_org_key_route_writes_an_entitlement_or_ledger_row` stays green — this
+    grant never rides a customer credential. — Fences in
+    `tests/unit/test_customer_console_payments.py::TestTheManualActivation`
+    (already on §7's list and pr-check's skip-guard), all R8 against a real
+    Postgres: the happy path (active + `provider='manual'` + period; paid seats;
+    credits; the audit reference), idempotency (a repeat activate 409s and
+    double-grants nothing) **and its concurrency proof** (two threads activating
+    one fresh org, released on a barrier, land exactly one grant / credit /
+    subscription — red-first without `lock_org_activation`, the
+    `test_a_concurrent_double_redeem` idiom), authz (Operator required — org key / deployment key /
+    no auth each 401, mutation-proved via `dependency_overrides`, and the
+    operator IS admitted), plan validation (unknown/inactive → 400, nothing
+    written), and the provider + ledger-reason fences unweakened
+    (`credits.LEDGER_REASONS` gains exactly `'manual'`). **No migration:** the
+    `'manual'` provider value already ships in `001`; the ledger reason is not
+    CHECK-constrained (R6, `credits.py`).
 
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
@@ -5429,6 +5496,84 @@ the rejected alternative and the residual are recorded):
   presenting this deployment's own `cc_live_…` org key, NOT the gateway
   `seat_admin` proxy (that proxy is the WRITE's transport, §9 residual 7). The
   surface slice is WS-30's; this item is the backend read + its data source.
+
+**(j) The MANUAL / bank-transfer activation — the OFFLINE twin of
+`payments.fulfil`** — ✅ **BUILT 2026-08-21 (WS-31, `cc-manual-activate`)**: one
+route, one request model, one new ledger reason, no migration. Platform staff
+activate a PAID plan for a customer that paid OUT OF BAND (bank transfer, cash,
+cheque) — there is no Razorpay order, and `payments.fulfil` (the checkout writer)
+is fenced to exactly its two capture/redemption call sites (done-when 9), so the
+offline path is a **sibling** that reuses the same store seams, never a third
+`fulfil` call site. `org_subscription.provider` is `CHECK (razorpay | manual)`
+(`001_customer_console.sql:163`) and `'manual'` had no writer until this — the
+schema pre-provisioned exactly this door.
+
+- **Route:** `POST /billing/subscriptions/activate`
+  (`main.py::activate_subscription_manual`).
+- **Auth:** the **`Operator`** door — a cross-org staff act that NAMES the org by
+  `org_slug`, exactly as `POST /billing/seats` does. **R11 does not bind a
+  named-org staff route** (the operator credential carries no tenant), but the org
+  is still resolved from the validated slug (`_org_id`, 404 if unknown), never
+  taken as a body identity. A customer `cc_live_` org key, a `cc_depl_`
+  deployment key and no-auth are each **401** — the same refusal every other
+  Operator route gives, and it is NOT reachable by any customer or deployment
+  credential.
+- **Behaviour (one transaction, the same seams `fulfil` uses, minus the order):**
+  `store.activate_subscription(provider='manual', …NULL provider ids…)` writes
+  `status='active'` with a real period (term from the request, default
+  `payments.SUBSCRIPTION_TERM_MONTHS`); `store.grant_seats(reason='manual')`
+  grants the plan's PAID seats; `store.add_credit(reason=LEDGER_REASON_MANUAL,
+  ref=<reference>)` runs only when the request carries `credits`. It does **not**
+  touch `organization.status` — same as `fulfil` (done-when 16). The response
+  surfaces the activated subscription plus the `_seat_grid` and credit balance the
+  reads already emit — never a recompute.
+- **Idempotency (the double-grant guard):** activating grants paid capacity and
+  `grant_seats`/`add_credit` are append-only INSERTs, so an org already holding an
+  **active** subscription is refused **409** (`already_active`) — the simpler safe
+  rule the ticket named. An operator adjusts a live term through the seat/credit
+  routes, never by re-activating; a `trial` (or any non-active) subscription, and
+  an org with no subscription row, activate. Because the 409 is a check-then-grant,
+  it is **serialised by an org-keyed advisory lock** —
+  `store.lock_org_activation(conn, org_id=…)`, the `lock_seat_capacity` /
+  `lock_discount_capacity` idiom (`pg_advisory_xact_lock(hashtext('activation:<org_id>'))`),
+  taken as the first statement of the transaction, before the status read, and
+  auto-released at txn end. Per-org key, so activations of different orgs never
+  serialise. `FOR UPDATE` alone would not do (a fresh org has no `org_subscription`
+  row to lock). So the guarantee — **exactly one seat grant, one ledger row, one
+  subscription row** — holds under **concurrency** (two simultaneous activations of
+  one fresh org), not merely a sequential repeat.
+- **Audit:** `_audit(action="subscription.activate_manual", actor="operator")`
+  with `reason='manual'`, the operator's free-text `reference`, the plan, seats
+  and term in the JSONB `detail` (`control_audit` has no `reason` column, so the
+  structured facts ride there, as every other audit does).
+- **The ledger reason:** `credits.LEDGER_REASONS` grew one member,
+  `LEDGER_REASON_MANUAL = "manual"` — the offline twin of `purchase`, its own word
+  so a term settled by bank transfer stays distinguishable from a processor
+  capture, and the same word `seat_grant.reason`, the audit row and
+  `org_subscription.provider` all carry for this activation. `credit_ledger.reason`
+  is bare TEXT with no CHECK (R6, `credits.py`), so the addition needs no
+  migration; the value-level fence is the vocabulary set and the `add_credit`
+  call-site scan, both green with `'manual'` in them.
+- **Fences (R7/R8), in
+  `tests/unit/test_customer_console_payments.py::TestTheManualActivation`**
+  (already on §7's list and pr-check's skip-guard), all against a real Postgres:
+  the happy path; credits-optional; `provider='manual'` not `'none'`; a custom
+  term; idempotency (409, no double-grant); **the concurrency proof** (two threads
+  activating one fresh org, released on a `threading.Barrier`, land exactly one
+  grant / credit / subscription and results `[200, 409]` — red-first without
+  `lock_org_activation`, ten iterations, the `test_a_concurrent_double_redeem`
+  idiom); unknown/inactive plan → 400 writing
+  nothing; unknown org → 404; **authz mutation-proved** (org key / deployment key
+  / no-auth → 401 and write nothing, the operator admitted; the 401 shown red
+  first by neutralising the guard via FastAPI `dependency_overrides` and
+  restoring it — no source edit); the provider CHECK and the ledger vocabulary
+  unweakened.
+- **Owner-gated, unchanged:** the Console deploys nowhere (ships DARK, no flag,
+  following the reads), the operator token is owner-held, and issuing a
+  `cc_depl_`/operator credential is §8's. This item is the route existing, not
+  running. *(R1: no migration is needed here; were one ever required, the next
+  free Customer-Console number is taken at build time by listing
+  `infra/customer_console/`, never written ahead.)*
 
 ## 7. Verification
 
