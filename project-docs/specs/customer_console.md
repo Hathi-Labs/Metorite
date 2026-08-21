@@ -4,7 +4,10 @@
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
-**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2c
+**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2d
+FIRST SLICE BUILT 2026-08-22 (passwordless email OTP via Resend — the Auth.js
+provider + `EMAIL_OTP_ENABLED` flag, DARK; DB-adapter + code-entry-page deferred;
+the RESEND_API_KEY secret + the live flag flip are OWNER-GATE) · CP-2c
 SLICES 1+2+3+4 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
 slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
@@ -41,8 +44,11 @@ issuing it stay **OWNER-GATE** (§8). `credits.LEDGER_REASONS` grew one member
 (`manual`); no migration.
 
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) MINTED
-2026-08-19 (D46, owner directive); CP-2d (second factor / email OTP)
-documented-deferred, nothing built.** CP-2c's hard dependency —
+2026-08-19 (D46, owner directive); CP-2d (passwordless email OTP via Resend)
+MINTED + FIRST SLICE BUILT 2026-08-22 (owner directive) — the provider + flag
+(`EMAIL_OTP_ENABLED`) ship DARK; the DB-adapter + code-entry-page prerequisites
+are named-deferred and the two runtime flips are OWNER-GATE.** CP-2c's hard
+dependency —
 MT-1j slice 4 (`saas_multitenancy.md` §11), the Console↔tenant seam it
 orchestrates — is **✅ MET on the operator arm as of 2026-08-19**: the
 `org_placement` write and the `provision_local_organization` seam both ship.
@@ -4883,20 +4889,126 @@ tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
 never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
 function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
 
-**CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
-MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
-two-factor authentication and email OTP system set up. Not made it by MVP,
-but documented for eventual build up.").** 🔲 **No board row until minted;
-nothing may build against this stub.** The shape when it is built: identity
-stays IdP-attested (Google, Entra when un-deferred) — there is **no password
-system in the tree to add a factor to** (verified: no credentials provider in
-`auth.ts`), so (a) **email OTP** becomes relevant only when a non-OAuth
-identity is admitted (an Auth.js v5 magic-link/OTP provider), and it must ride
-the ONE existing session idiom, never a parallel one; (b) **TOTP/passkey
-step-up** rides the Auth.js session and is enforced at the gateway identity
-seam (`deps.py`), never per-app; (c) either lands behind its own default-OFF
-flag with both positions fenced. Anti-scope: SMS OTP (cost + SIM-swap
-surface) unless the owner asks by name.
+**CP-2d · Passwordless email OTP via Resend — MINTED + FIRST SLICE BUILT
+2026-08-22 (owner directive, D46.3).** ◐ **The provider + flag ship DARK; the
+two go-live prerequisites are named and deferred (below).** *(Owner's words
+2026-08-19: "Eventually, we should also have a two-factor authentication and
+email OTP system set up. Not made it by MVP, but documented for eventual build
+up." Dispatched 2026-08-22 as the email-OTP half; TOTP/passkey step-up stays
+deferred — see anti-scope.)*
+
+**What this slice IS.** A **passwordless email one-time-code** sign-in provider:
+the person enters an address, Resend emails a 6-digit numeric code, and the code
+round-trip verifies email ownership (the anti-spam gate). Identity stays
+IdP-attested for OAuth; this adds a **non-OAuth** identity path — and it does so
+by riding the **ONE** Auth.js v5 NextAuth session (`workbench/control_plane/src/
+auth.ts`), never a parallel auth/session store. **OTP, not magic-link** (owner's
+ask): Auth.js's built-in `Resend` provider is magic-link by default, and the two
+overrides `generateVerificationToken` (→ `generateOtp`, a crypto-strong 6-digit
+code) and `sendVerificationRequest` (→ emails THAT code) turn it into numeric OTP
+without leaving the one provider mechanism.
+
+**Where it lands.** The framework-free pure half — code generator, message, the
+Resend transport (injectable so tests never touch the network), and the config
+gate — is `workbench/control_plane/src/lib/emailOtp.ts`. The Auth.js wiring is a
+conditional block in `auth.ts` mirroring the Google `if (process.env.
+AUTH_GOOGLE_ID)` idiom. The surface reuses the ONE provider-rendering seam:
+`authPosture.ts::configuredProviders` gains a `resend` entry (`kind:"email"`)
+when configured, and `signin/SignInForm.tsx` renders an email field for the
+email-kind provider through the shared `Input` primitive. **Zero migrations**
+(the adapter is deferred — see below), **no new engine/DB/Redis site** (R5).
+
+**Flag: `EMAIL_OTP_ENABLED`** — minted here (existed nowhere, verified);
+default unset = OFF; the exact-string-`"true"` idiom of `auth.ts:163`, never
+truthiness. `EMAIL_OTP_FROM` optionally overrides the verified sender.
+
+🛑 **The flag alone does NOT register the provider — and that is a safety
+requirement, not a nicety** *(hardening from the CP-2d review, 2026-08-22)*. An
+Auth.js email provider registered **without a database adapter** makes
+`@auth/core`'s `assertConfig` return **`MissingAdapter`** on **every**
+`/api/auth/*` request — so it **500s ALL sign-in, Google and Microsoft
+included**, not merely OTP. Gating registration on `EMAIL_OTP_ENABLED` alone
+would make one documented owner flag a **site-wide auth outage**. So the real
+gate is `isEmailOtpProviderReady` = env configured (`EMAIL_OTP_ENABLED ===
+"true"` **AND** `RESEND_API_KEY`) **AND** `EMAIL_OTP_ADAPTER_READY` — a single
+module constant, `false` until slice-2 wires the adapter. It is read by both
+`auth.ts` (the provider) and `configuredProviders` (the button), so a half-armed
+flag (key set, adapter absent) registers **nothing**: no provider, no button, no
+`MissingAdapter`, no outage, `/api/auth/providers` unchanged, byte-identical to
+today. `isEmailOtpConfigured` (the env half) stays separate and fully tested.
+
+**Done when** *(each clause names its fence; the fences that CAN run do, in this
+tree's node-env vitest — the framework-bound ones are source-regex + a review
+note, the `signin.test.ts:38-45` reason)*:
+
+1. ✅ **MET 2026-08-22.** Flag off OR key absent ⇒ the provider is NOT
+   registered and the sign-in surface offers no email option — byte-identical to
+   pre-CP-2d. Fence: `src/lib/emailOtp.test.ts` — the EXECUTED gate matrix
+   (`isEmailOtpConfigured` off unless flag `=== "true"` **and** key present; every
+   truthy-string reading of the flag stays OFF) and the seam proof
+   (`configuredProviders` yields no `resend` entry until configured), shown
+   red-first by mutating the gate to truthiness. The RUNTIME "`/api/auth/
+   providers` unchanged" is the source guard in `signin.test.ts`
+   (*"registers the Resend provider ONLY under the isEmailOtpProviderReady gate"*)
+   plus the reviewer's manual gate (next-auth cannot load here).
+1a. ✅ **MET 2026-08-22 (hardening — the flag cannot cause a site-wide auth
+   DoS).** Even with `EMAIL_OTP_ENABLED=true` **and** `RESEND_API_KEY` set, the
+   provider is NOT registered and the button does NOT appear while the adapter is
+   unwired (`EMAIL_OTP_ADAPTER_READY === false`, today) — so flipping the flag
+   before slice-2 is inert, never `MissingAdapter`. Fence:
+   `src/lib/emailOtp.test.ts` — *"the adapter guard makes the flag
+   un-footgun-able"* (env configured ⇒ `isEmailOtpConfigured` true but
+   `isEmailOtpProviderReady` false and `configuredProviders` has no `resend`
+   entry; the combined gate is exactly env-AND-adapter). Removing the
+   `&& adapterReady` term from either gate turns it RED.
+2. ✅ **MET 2026-08-22.** The provider only admits a **verified** email: the
+   recipient is Auth.js's resolved `identifier` and the session email is the
+   verified `user.email` (jwt callback), never a request body field (R11).
+   Fence: `signin.test.ts` — *"takes the verified email from Auth.js, never from
+   request input (R11)"*.
+3. ✅ **MET 2026-08-22.** No parallel session/auth path: the provider rides the
+   single `NextAuth({…})` config with the JWT strategy unchanged, and is the
+   Auth.js email provider, not a hand-rolled `Credentials` door. Fence:
+   `signin.test.ts` — *"rides the ONE NextAuth session"* + *"uses the Auth.js
+   email provider, never a hand-rolled credentials path"*.
+4. ✅ **MET 2026-08-22.** The sender is **Resend** and is never invoked over the
+   network in tests (injected + mocked); a non-2xx from Resend fails **CLOSED**
+   (throws, so a sign-in cannot silently appear to succeed). Fence:
+   `emailOtp.test.ts` — the fake-`fetch` transport assertions and the 422
+   fail-closed case.
+5. ✅ **MET 2026-08-22.** The Resend key never reaches the browser tier: the
+   surface derives from the seam props, and neither `signin/page.tsx` nor
+   `SignInForm.tsx` reads `RESEND_API_KEY`/`EMAIL_OTP_ENABLED`. Fence:
+   `signin.test.ts` — *"keeps the Resend key out of the browser tier"*.
+
+**What actually ARMS OTP is slice-2 — a flag flip alone does not, and cannot.**
+*(named so the dark-ship is honest, and because the review found the earlier
+"meaningless until…" wording understated the risk)*. Two pieces, both slice-2:
+(i) wiring an Auth.js **database adapter** into `NextAuth({ adapter })` — every
+Auth.js email provider needs one to persist the verification token, and its
+absence is not a soft failure but the `MissingAdapter` **site-wide auth 500**
+above; it is a table + migration (next free number at build time, **R1**),
+tenant-scoped by **R5**, landing in the SAME change that sets
+`EMAIL_OTP_ADAPTER_READY` true. (ii) the numeric-code **entry page** that submits
+the typed code to the callback — which **MUST rate-limit verification attempts
+per identifier**: a 6-digit code over a ~10-minute window is brute-forceable and
+`@auth/core` does **not** rate-limit verification, so an unthrottled entry page
+is an online guessing oracle. Both are their own decisions and are not built
+here; the combined `isEmailOtpProviderReady` gate is exactly what makes their
+absence safe today (the flag+key are inert without the adapter).
+
+**Gates** (🔴 OWNER-GATE): providing `RESEND_API_KEY` on a real deployment (a
+**secret**, §6(f)'s class) and flipping `EMAIL_OTP_ENABLED=true` on a live box
+(an **enforcement flip**) are the owner's acts; building the provider dark is
+agent-safe. Because of the adapter guard, either flip **before slice-2 is a
+no-op**, not an outage — but neither does anything useful until slice-2 lands.
+
+**Anti-scope.** **TOTP/passkey step-up** stays DEFERRED (its shape is unchanged:
+it rides the Auth.js session and is enforced at the gateway identity seam
+`deps.py`, never per-app, behind its own default-OFF flag with both positions
+fenced). **SMS OTP** is out (cost + SIM-swap surface) unless the owner asks by
+name. This slice does NOT add a database adapter, does NOT build the code-entry
+page, and does NOT flip any flag or deploy.
 
 **Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6

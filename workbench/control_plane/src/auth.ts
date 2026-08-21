@@ -2,6 +2,17 @@ import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import MicrosoftEntraId from "next-auth/providers/microsoft-entra-id";
 import Google from "next-auth/providers/google";
+import Resend from "next-auth/providers/resend";
+
+import {
+  DEFAULT_OTP_MAX_AGE_S,
+  type EmailOtpEnv,
+  emailOtpFrom,
+  generateOtp,
+  isEmailOtpProviderReady,
+  resendSender,
+  sendOtpEmail,
+} from "@/lib/emailOtp";
 
 /**
  * Sign-in for Metorite — **a platform, not one company's app** (WS-31 CP-0,
@@ -96,6 +107,63 @@ if (process.env.AUTH_GOOGLE_ID) {
     Google({
       clientId: process.env.AUTH_GOOGLE_ID,
       clientSecret: process.env.AUTH_GOOGLE_SECRET ?? "",
+    }),
+  );
+}
+// ── CP-2d · passwordless email OTP via Resend — ships DARK ──────────────────
+//
+// Registered ONLY when `isEmailOtpProviderReady` — env configured
+// (`EMAIL_OTP_ENABLED === "true"` AND a Resend key, the Google
+// `if (process.env.AUTH_GOOGLE_ID)` idiom one notch stricter) **AND** the
+// Auth.js database adapter is wired (`EMAIL_OTP_ADAPTER_READY`, `false` today).
+// With any of those absent the provider is never in the array and NextAuth
+// initialises **byte-identical** to today: no send, no crash,
+// `/api/auth/providers` unchanged. It rides the ONE NextAuth session below —
+// same handlers, same `jwt`/`session` callbacks, JWT strategy unchanged — never
+// a second auth path.
+//
+// 🛑 **The adapter half is not a nicety — it is a site-safety gate.**
+// `@auth/core`'s `assertConfig` returns `MissingAdapter` for ANY email provider
+// registered without an adapter, and it does so on **every** `/api/auth/*`
+// request — so an email provider without an adapter **500s ALL sign-in, Google
+// and Microsoft included**, not merely OTP. Gating on the env flag alone would
+// make `EMAIL_OTP_ENABLED=true` a one-line documented owner action that takes
+// the whole site's auth down. `isEmailOtpProviderReady` is what makes that
+// impossible: with the adapter unwired (today) the flag+key are inert.
+//
+// **OTP, not magic-link** (owner's ask, D46.3): `generateVerificationToken`
+// mints a 6-digit numeric code and `sendVerificationRequest` emails THAT code
+// via the injectable Resend transport, so the person types a code rather than
+// following a link. Auth.js v5's built-in `Resend` provider is magic-link by
+// default; the two overrides below turn it into numeric OTP without leaving the
+// one provider mechanism. The verified address is Auth.js's `identifier`, never
+// a request body field (R11).
+//
+// ⚠️ **What actually ARMS OTP is slice-2, not a flag** (customer_console.md
+// §CP-2d; board gate note): (1) wiring an Auth.js **database adapter** in as
+// NextAuth's `adapter` option — a table + migration (R1 next-free number,
+// R5-tenant-scoped) — in the same change that sets `EMAIL_OTP_ADAPTER_READY`
+// true; (2) the numeric-code **entry page** (which must rate-limit attempts per
+// identifier — a 6-digit code over a ~10-min window is brute-forceable and
+// `@auth/core` does not rate-limit verification). Neither is built here; the
+// combined gate is what makes their absence safe today.
+if (isEmailOtpProviderReady(process.env as EmailOtpEnv)) {
+  const apiKey = process.env.RESEND_API_KEY as string;
+  const from = emailOtpFrom(process.env as EmailOtpEnv);
+  const send = resendSender(apiKey);
+  providers.push(
+    Resend({
+      apiKey,
+      from,
+      maxAge: DEFAULT_OTP_MAX_AGE_S,
+      generateVerificationToken: generateOtp,
+      sendVerificationRequest: ({ identifier, token, provider }) =>
+        sendOtpEmail(send, {
+          to: identifier,
+          from: provider.from ?? from,
+          code: token,
+          maxAgeS: DEFAULT_OTP_MAX_AGE_S,
+        }),
     }),
   );
 }
@@ -236,9 +304,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return "/signin?error=ConsoleUnavailable";
       }
     },
-    async jwt({ token, profile, account }) {
+    async jwt({ token, profile, account, user }) {
       if (profile?.email) {
         token.email = profile.email as string;
+      } else if (typeof user?.email === "string") {
+        // CP-2d: the email OTP provider carries no OAuth `profile`. The verified
+        // address rides `user.email` from Auth.js's completed round-trip — the
+        // code proved ownership — never from request input (R11).
+        token.email = user.email;
       }
       if (account?.provider) {
         token.provider = account.provider;

@@ -6,6 +6,7 @@ import { Suspense, useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 import { signInErrorMessage } from "./errorCopy";
 
@@ -14,6 +15,11 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const errorMessage = signInErrorMessage(searchParams.get("error"));
   const [pending, setPending] = useState<string | null>(null);
+  // CP-2d: the address the email-OTP provider sends the code to. It is USER
+  // INPUT here on purpose and that is not an R11 breach — it is not trusted as
+  // identity; ownership is proven by the code round-trip, and the SESSION email
+  // is Auth.js's verified value (`auth.ts`'s jwt callback), never this field.
+  const [email, setEmail] = useState("");
 
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
@@ -35,21 +41,53 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
           </p>
         ) : (
           <div className="mt-6 flex flex-col gap-2">
-            {providers.map((p) => (
-              <Button
-                key={p.id}
-                size="lg"
-                className="w-full"
-                loading={pending === p.id}
-                disabled={pending !== null}
-                onClick={() => {
-                  setPending(p.id);
-                  signIn(p.id, { callbackUrl });
-                }}
-              >
-                {p.label}
-              </Button>
-            ))}
+            {providers.map((p) =>
+              p.kind === "email" ? (
+                <form
+                  key={p.id}
+                  className="flex flex-col gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setPending(p.id);
+                    signIn(p.id, { email, callbackUrl });
+                  }}
+                >
+                  <Input
+                    type="email"
+                    required
+                    autoComplete="email"
+                    inputSize="lg"
+                    placeholder="you@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    disabled={pending !== null}
+                  />
+                  <Button
+                    type="submit"
+                    size="lg"
+                    className="w-full"
+                    loading={pending === p.id}
+                    disabled={pending !== null || email.trim() === ""}
+                  >
+                    {p.label}
+                  </Button>
+                </form>
+              ) : (
+                <Button
+                  key={p.id}
+                  size="lg"
+                  className="w-full"
+                  loading={pending === p.id}
+                  disabled={pending !== null}
+                  onClick={() => {
+                    setPending(p.id);
+                    signIn(p.id, { callbackUrl });
+                  }}
+                >
+                  {p.label}
+                </Button>
+              ),
+            )}
           </div>
         )}
       </div>
