@@ -7,6 +7,15 @@ Deliverables 1 (page) + 2 (fence) are DONE. Deliverables 3 (Caddy apex block),
 4 (apex DNS), and 5 (live verification) remain OWNER-GATED and unbuilt — the
 apex is not served yet; the ready-to-apply Caddy block and the
 `Caddyfile:8` `ops@fracktal.in` rebrand-leftover note travel in the PR body.**
+**Branding applied 2026-08-21 (owner-supplied comet artwork): the placeholder
+mark is replaced by the real logo as an inline, theme-aware SVG in the header +
+a hero watermark; the palette is retuned to the logo purple (`--brand #5b4ae0`
+light / `#8b7cf6` dark); SVG + apple-touch favicons are inlined as `data:` URIs.
+Source masters live in `brand/`. Page 38 936 B; `uv run pytest
+tests/unit/test_marketing_site.py -q` → 7 passed. Look-and-feel only — serving
+(deliverables 3–5) stays OWNER-GATED. Pre-existing finding, not this change:
+`site/index.html` overflows horizontally at ~390 px (header CTA + hero text clip
+on a phone) — present on `main` before the rebrand; owns its own follow-up.**
 Minted 2026-08-19 (D46, owner directive) — verified against code 2026-08-19.
 Owning spec for board row **WS-33**. The
 apex has been reserved for exactly this since D41 (`work_plan.md:658`: *"The
