@@ -165,21 +165,6 @@ this file grows a graveyard and the graveyard is what goes stale.
   §9.9
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-10 · A conflicted PR runs NO checks — the R1 guard's blind window · [AGENT]
-- **Check:** `rg -n "pull_request" .github/workflows/pr-check.yml` → if the
-  migration-prefix guard still runs only on `pull_request` (which checks out
-  `refs/pull/N/merge`, a ref GitHub does not compute while a PR is conflicted),
-  the window is still open. A `merge_group`/`push`-on-branch trigger, or a job
-  that checks out the head ref and merges the base itself, would close it.
-- **Why:** ⚠️ Measured, not guessed. `test_migration_prefixes.py` DOES catch two
-  migrations at one number — verified by putting the duplicate back. It was
-  simply never run: #439 sat `dirty` and reported `check_runs: 0`, **no jobs at
-  all**. So the window in which a cross-branch collision is most likely is
-  exactly the window in which nothing is watching, and the collision surfaces
-  only when somebody hand-resolves the conflict — i.e. while editing the very
-  tree that hides it.
-- **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
-- **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
 - **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
@@ -287,6 +272,27 @@ this file grows a graveyard and the graveyard is what goes stale.
   verify by evidence, never by a green job.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
+
+### H-19 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
+- **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
+  false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
+  Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
+  module, package, files, or command."*
+- **Why:** `pass_filenames: false` tells pre-commit not to append the staged paths,
+  and nothing supplies targets in their place, so the hook fails on **every** commit
+  that touches Python — it has never been able to pass. The comment above it says it
+  is "diff-scoped", which is the opposite of what `pass_filenames: false` does; the
+  intent and the setting disagree and only the setting runs. ⚠️ The fix is not
+  simply `args: [apps, packages]`: that type-checks the whole tree on every commit,
+  which is slow and would surface the existing strict-mode backlog as a block on
+  unrelated work. Wanted: the diff-scoped behaviour the comment describes, which
+  probably means dropping `pass_filenames: false` and letting the staged paths
+  through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
+  landed with `SKIP=mypy` (every other hook ran and passed).
+- **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
+  CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
+  smuggled into an unrelated PR)
+- **Added:** 2026-08-21 · session that closed H-10
 
 ---
 
