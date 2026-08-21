@@ -203,18 +203,24 @@ def test_no_tenant_module_imports_customer_console() -> None:
 #: per participant per room load, which is exactly the farmable cap clause 11
 #: exists to prevent.
 #:
-#: ⚠️ **Two importers as of CP-2c slice 2 (2026-08-20), and no more.**
+#: ⚠️ **Three importers as of WS-30 SC-2a (2026-08-21), and no more.**
 #: ``routes/signup.py`` calls a DIFFERENT function on this module —
 #: ``provision_org_on_console``, which mirrors a provision and allocates no seat
 #: by itself — and is likewise a **session-email-only** route (the owner is the
-#: authenticated session, never the body). What stays forbidden is wiring
-#: EITHER function behind ``resolve_access`` = farmable seat burn. A third
-#: importer is a new call site that no runtime assertion sees until a customer's
-#: seat cap is exhausted.
+#: authenticated session, never the body). ``routes/seats.py`` (WS-30 SC-2a)
+#: calls ``assign_seat_on_console`` / ``release_seat_on_console``, which allocate
+#: **no** seat via ``resolve_for_signin`` — they drive the Console's admin-gated,
+#: capped ``seat_admin`` door (``POST /registry/seats``) — and it is likewise a
+#: **session-email-only** route (the acting admin is the authenticated session's
+#: ``actor_email``, never the body; the org is derived Console-side). What stays
+#: forbidden is wiring ANY of the three functions behind ``resolve_access`` =
+#: farmable seat burn. A FOURTH importer is a new call site that no runtime
+#: assertion sees until a customer's seat cap is exhausted.
 _RESOLVE_CLIENT = "packages/acb_auth/acb_auth/console_resolve.py"
 _THE_ONE_CALLER = "apps/services/gateway/gateway/routes/signin.py"
 _THE_SIGNUP_CALLER = "apps/services/gateway/gateway/routes/signup.py"
-_ALLOWED_CALLERS = (_THE_ONE_CALLER, _THE_SIGNUP_CALLER)
+_THE_SEAT_CALLER = "apps/services/gateway/gateway/routes/seats.py"
+_ALLOWED_CALLERS = (_THE_ONE_CALLER, _THE_SIGNUP_CALLER, _THE_SEAT_CALLER)
 
 
 def _imports_console_resolve(path: Path) -> bool:
@@ -233,17 +239,20 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly TWO callers, and both are named here.
+    """``console_resolve`` has exactly THREE callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
     customer's seat cap is exhausted.
 
-    ⚠️ Grown from ONE to TWO importers by CP-2c slice 2 (2026-08-20):
-    ``routes/signin.py`` (``resolve_for_signin``) and ``routes/signup.py``
-    (``provision_org_on_console``). Both are **session-email-only** routes;
-    what stays forbidden is wiring either behind ``resolve_access`` (six
-    callers, one a room fan-out) = farmable seat burn. A THIRD is the drift.
+    ⚠️ Grown ONE → TWO by CP-2c slice 2 (2026-08-20) and TWO → THREE by WS-30
+    SC-2a (2026-08-21): ``routes/signin.py`` (``resolve_for_signin``),
+    ``routes/signup.py`` (``provision_org_on_console``) and ``routes/seats.py``
+    (``assign_seat_on_console`` / ``release_seat_on_console`` — the admin-gated,
+    capped ``seat_admin`` door, which allocates NO seat via ``resolve_for_signin``).
+    All three are **session-email-only** routes; what stays forbidden is wiring
+    any of them behind ``resolve_access`` (six callers, one a room fan-out) =
+    farmable seat burn. A FOURTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -266,12 +275,13 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly two sites may call "
-        "it — the completion of a sign-in and the self-serve signup provision, "
-        "both with a provider-verified session email. Never `resolve_access` "
-        "(six callers, one of them a fan-out over a room's participants), "
-        "never `_with_resolved_access` (every authenticated request). "
-        "customer_console.md §6 clause 11 · CP-2c slice 2."
+        "It allocates a SEAT (`resolve_for_signin`). Exactly three sites may "
+        "call it — the completion of a sign-in, the self-serve signup provision, "
+        "and the customer seat-admin write — each with a provider-verified "
+        "session email. Never `resolve_access` (six callers, one of them a "
+        "fan-out over a room's participants), never `_with_resolved_access` "
+        "(every authenticated request). customer_console.md §6 clause 11 · "
+        "CP-2c slice 2 · WS-30 SC-2a."
     )
 
 
@@ -298,6 +308,7 @@ _CP2B_TENANT_MODULES: tuple[str, ...] = (
     _RESOLVE_CLIENT,
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
+    _THE_SEAT_CALLER,
 )
 
 

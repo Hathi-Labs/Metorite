@@ -249,6 +249,7 @@ jobs:
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
+            tests/unit/test_seat_admin_proxy_route.py \
             tests/unit/test_signup_provision_route.py \
             tests/unit/test_signup_reconciler.py \
             tests/unit/test_billing_purchase_capability.py \
@@ -298,9 +299,13 @@ jobs:
           # test_signin_resolve_route.py joins them for the same reason: it is
           # the ONLY test of the route's own refusal (finding F5's fence), it
           # opens no session on purpose, and a DB gate leaking into it would
-          # disarm a P0 fence silently.
-          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route)" /tmp/platform.txt; then
-            echo "::error::A no-database fence skipped — the dependency-boundary and signin-route fences must always run."
+          # disarm a P0 fence silently. WS-30 SC-2a's
+          # test_seat_admin_proxy_route.py joins for the same reason again: it
+          # is the transport's R7 fence (the seat WRITE carries the deployment
+          # key + the session actor, no org on the wire) and drives a
+          # MockTransport Console — no database, and it must never skip.
+          if grep -qE "SKIPPED.*(test_console_dependency_boundary|test_signin_resolve_route|test_seat_admin_proxy_route)" /tmp/platform.txt; then
+            echo "::error::A no-database fence skipped — the dependency-boundary, signin-route and seat-proxy fences must always run."
             exit 1
           fi
 

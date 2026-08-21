@@ -1247,6 +1247,18 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-30 SC-2a — the customer seat-admin WRITE proxy (subscription_console.md
+    # SC-2a / customer_console.md §6 item (h)). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; it
+    # forwards a session-authenticated seat write to the Console's deployment-key
+    # `seat_admin` door. Ships dark — `is_wired()` false ⇒ 503, nothing written.
+    from gateway.routes.seats import router as _seats_router
+
+    app.include_router(_seats_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

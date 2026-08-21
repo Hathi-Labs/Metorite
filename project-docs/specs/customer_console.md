@@ -5227,13 +5227,18 @@ door.** Two facts about the code as it stands:
   rediscover them: (1) the write is **admin-gated at the surface** on the tenant
   billing-admin capability — a *hard* done-when, NOT inherited as the read's
   "known-open any signed-in member" posture (`seats/route.ts:26-28`), because a
-  write is not a read; and (2) the transport, which is the **residual owner
-  decision** below — the deployment key is fenced OUT of the Next/browser tier
-  (`gateway.test.ts:232`, §6(f): *"read on the GATEWAY and never in Next"*), so a
-  browser "manage seats" action must reach this deployment-key door through the
+  write is not a read; and (2) the transport, **RESOLVED 2026-08-21 to the gateway
+  tier** (§9 residual 7) — the deployment key is fenced OUT of the Next/browser
+  tier (`gateway.test.ts:232`, §6(f): *"read on the GATEWAY and never in Next"*),
+  so a browser "manage seats" action reaches this deployment-key door through the
   **gateway tier** (where the key already lives and already speaks to the Console
-  at sign-in resolve), not through the Next billing BFF. That routing, or funding a
-  dedicated member-authenticated Console credential instead, is §9's new residual.
+  at sign-in resolve, mirroring the CP-2c signup hop), not through the Next
+  billing BFF: a Next hop forwards the SESSION identity only (R11), and a gateway
+  seat-admin proxy attaches the deployment key + `actor_email = session email` and
+  calls `POST /registry/seats`, so the admin gate stays console-side. The rejected
+  alternative — a dedicated member-authenticated Console credential — is recorded
+  in §9 residual 7. The two-slice split and the transport done-whens are
+  `subscription_console.md` SC-2.
 
 ## 7. Verification
 
@@ -5395,8 +5400,9 @@ the dispatch board cannot enforce.*
 ## 9. Open owner inputs
 
 Everything needed to build §6 is decided. Most of these are commercial and none
-blocks a §6 build (6 is an authorization ratification and 7 is the item-(h)
-surface transport — each gates a surface or a carve-out, not the backend door):
+blocks a §6 build (6 is an authorization ratification; **7 — the item-(h)
+surface transport — is RESOLVED 2026-08-21 to the gateway tier**, below, and now
+gates only how WS-30 wires it, not whether):
 
 1. **Seat price for the AI-only shape** — if an organization may buy AI credits
    without Center packages, that SKU is not in D23/D24's ladder. Assumed **no**
@@ -5433,30 +5439,77 @@ surface transport — each gates a surface or a carve-out, not the backend door)
    credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
    goes red the day the draw moves, so the exemption is deleted rather than
    inherited either way.
-7. **How the browser reaches the customer seat WRITE — the surface transport for
-   §6 item (h)** *(added 2026-08-21 with WS-31 `ws-31-seat-assign`; not
-   commercial, and it gates the WS-30 "manage seats" surface, not the WS-31
-   backend door)*. Item (h) sites the write on a **deployment-key `seat_admin`
-   door** because that is the only customer credential from which the Console can
-   itself authorise "admin, not any member" (the org key is *the org*, with no
-   member — §6(h) crux). But the deployment key is **fenced out of the Next/
-   browser tier by name** (`gateway.test.ts:232` / §6(f): *"read on the GATEWAY
-   and never in Next"*), and "manage seats" is a Next billing-settings surface. So
-   the owner picks one of two transports, and it is an architecture call with
-   security weight, not an agent default: **(a)** route the browser action through
-   the **gateway tier** — where the deployment key already lives and already calls
-   the Console at sign-in resolve — so the Console keeps enforcing the admin axis
-   from `org_membership.role`; or **(b)** fund a dedicated **member-authenticated
-   Console credential** later (a real new auth primitive, entangled with the
-   still-unbuilt invite/sign-in leg) so a browser→Next→Console write can carry a
-   trusted member identity. The **rejected** third option — an org-key
-   `POST /me/seats` write with the admin gate pushed entirely into Next — is
-   recorded in §6(h) and needs a fourth carve-out to CP-3's org-key entitlement
-   fence (the `METERING_EXEMPTION` shape of ratification, §9 residual 6), which is
-   why it is not the default. **This does not block the WS-31 backend door**,
-   which is buildable, dark and fully fenced today; it blocks only the WS-30
-   surface wiring, and until it is decided the write is reachable by an operator
-   token and by a test `seat_admin` key alone.
+7. ✅ **RESOLVED 2026-08-21 (owner call) — the GATEWAY TIER carries the customer
+   seat WRITE; the deployment key stays gateway-side.** *(Opened 2026-08-21 with
+   WS-31 `ws-31-seat-assign`; not commercial, and it gates the WS-30 "manage
+   seats" surface, not the WS-31 backend door — which shipped dark and fully
+   fenced regardless.)* Item (h) sites the write on a **deployment-key
+   `seat_admin` door** because that is the only customer credential from which the
+   Console can itself authorise "admin, not any member" (the org key is *the org*,
+   with no member — §6(h) crux). But the deployment key is **fenced out of the
+   Next/browser tier by name** (`gateway.test.ts:232` / §6(f): *"read on the
+   GATEWAY and never in Next"*), and "manage seats" is a Next billing-settings
+   surface — so a browser action cannot present the key.
+
+   **The resolution (option (a), chosen):** route the browser action through the
+   **gateway tier**, where the deployment key already lives and already speaks to
+   the Console at sign-in resolve. The shape, mirroring the CP-2c signup hop
+   (`routes/signup.py`, which already reaches `console_resolve` with a
+   session-only identity):
+   - the seats panel calls a **Next hop** (`app/api/**`) that forwards the
+     assign/release with the **SESSION identity only** — the browser names no org
+     and no actor (R11); the hop reaches the gateway through the existing
+     BFF-internal bearer seam (`lib/gateway.ts` — `gatewayHeaders` /
+     `requireIdentity`, so the internal bearer never travels without an identity),
+     and holds **no** deployment key, so `gateway.test.ts:232` stays green;
+   - a **gateway seat-admin proxy route** (posture copied from `routes/signup.py`:
+     BFF-internal bearer, NOT in `PUBLIC_ROUTES`, session email via
+     `get_current_user` which labels and never binds) attaches the **deployment
+     key** (which must carry `seat_admin`) and the **acting `actor_email` = the
+     authenticated session email**, then calls the Console `POST /registry/seats`
+     (+ `/registry/seats/release`) through the **one** Console client
+     (`acb_auth/console_resolve.py` — no second gateway→Console client, root
+     `CLAUDE.md` §5);
+   - the **admin gate stays CONSOLE-side**: `_seat_admin_for_deployment`
+     (`main.py:1509`) derives the org from `deployment_visible_orgs(deployment_id,
+     actor_email)` and refuses any `actor_email` that is not an **active
+     owner/admin** in that org's `org_membership` — so the gateway is a thin
+     authenticated proxy that supplies the credential and the acting identity, and
+     the money-adjacent authorisation lands where it always did.
+
+   **The rejected alternative — option (b), a dedicated member-authenticated
+   Console credential** (a real new auth primitive, entangled with the
+   still-unbuilt invite/sign-in leg, so a browser→Next→Console write could carry a
+   trusted member identity). Rejected as the default because it funds a **new
+   credential and its issuance/rotation surface** to obtain an actor identity the
+   gateway tier already holds for free at sign-in resolve — the deployment key is
+   already the credential that resolves a *member*, and reusing it costs no new
+   auth primitive. It remains the owner's fallback if the gateway is ever to be
+   removed from the seat-write path. The earlier **third** option — an org-key
+   `POST /me/seats` write with the admin gate pushed entirely into Next — stays
+   recorded in §6(h) and rejected there: it needs a fourth carve-out to CP-3's
+   org-key entitlement fence (the `METERING_EXEMPTION` shape of ratification, §9
+   residual 6) and it cannot enforce the admin axis console-side at all.
+
+   **Inherited residual, stated not hidden** (the same one `routes/signin.py` and
+   `routes/signup.py` carry): a holder of the **internal token alone** can assert
+   any `X-User-Email`, so it can drive a seat write for an arbitrary `actor_email`
+   using this box's deployment key. It is **narrower** here than at sign-in,
+   because the Console's own admin gate admits only an `actor_email` that is an
+   active owner/admin of a placed org — the attacker can act as a real admin, not
+   mint one — and the write is capped and idempotent. Narrowed further by §4.3's
+   `GATEWAY_INTERNAL_TOKEN` / `LITELLM_MASTER_KEY` split (§8 gate 1). Accepted and
+   recorded, unchanged by this resolution.
+
+   The transport clause, its two-slice split (slice 1 = the gateway proxy + Next
+   hop; slice 2 = the assign/release UI), the concrete transport done-whens and
+   the named R7 fences live in **`subscription_console.md` SC-2**. **What stays
+   OWNER-GATE and is NOT unlocked by this call:** granting `seat_admin` to the
+   REAL gateway deployment key (§8 gate 8's capability-growth class), setting the
+   deployment key/URL in a live env (§8 gate 7), the live seat write against a
+   real customer org (§8 gate 4), and deploying the Console (§8 gate 2). BUILDING
+   the transport against a **test** `seat_admin` key / fixtures, dark by
+   construction, is AGENT-SAFE.
 
 ## 10. References
 
