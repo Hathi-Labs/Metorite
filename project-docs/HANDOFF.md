@@ -273,6 +273,27 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
+### H-19 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
+- **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
+  false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
+  Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
+  module, package, files, or command."*
+- **Why:** `pass_filenames: false` tells pre-commit not to append the staged paths,
+  and nothing supplies targets in their place, so the hook fails on **every** commit
+  that touches Python — it has never been able to pass. The comment above it says it
+  is "diff-scoped", which is the opposite of what `pass_filenames: false` does; the
+  intent and the setting disagree and only the setting runs. ⚠️ The fix is not
+  simply `args: [apps, packages]`: that type-checks the whole tree on every commit,
+  which is slow and would surface the existing strict-mode backlog as a block on
+  unrelated work. Wanted: the diff-scoped behaviour the comment describes, which
+  probably means dropping `pass_filenames: false` and letting the staged paths
+  through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
+  landed with `SKIP=mypy` (every other hook ran and passed).
+- **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
+  CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
+  smuggled into an unrelated PR)
+- **Added:** 2026-08-21 · session that closed H-10
+
 ---
 
 # DONE — deleted, not archived
