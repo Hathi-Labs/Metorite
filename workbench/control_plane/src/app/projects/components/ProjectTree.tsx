@@ -15,6 +15,7 @@
 import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
 import { useState } from "react";
 
@@ -99,6 +100,15 @@ function Node({
 }) {
   const [open, setOpen] = useState(depth < 1);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // WS-27bg slice 2 remainder — the rename field, inline on the row.
+  //
+  // Inline rather than a dialog, and the choice is the TagManager idiom (§9.11
+  // `components/TagManager.tsx:155`) rather than a preference: renaming a node
+  // in a tree wants the surrounding rows visible, because the name's job is to
+  // be distinguishable from its siblings. A modal hides exactly the context
+  // that makes a good name obvious.
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(node.name);
   const children = node.children ?? [];
   const isSelected = node.id === selectedId;
   // Derived on the way down, never written (D-PM-26): this node's effective
@@ -140,27 +150,71 @@ function Node({
         ) : (
           <span className="w-[18px] shrink-0" />
         )}
-        <button
-          type="button"
-          onClick={() => onSelect(node)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          <StateDot
-            state={run.state}
-            inherited={run.inherited}
-            projectName={node.name}
-          />
-          <span className="truncate">{node.name}</span>
-          {node.clickup_id ? (
-            <span
-              title="Imported from ClickUp"
-              className="ml-auto shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground"
-            >
-              CU
-            </span>
-          ) : null}
-        </button>
-        {onAddChild ? (
+        {renaming && actions ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const next = draft.trim();
+              // An empty field and an unchanged one are both "never mind",
+              // not errors: the row is already named, so there is nothing to
+              // report and nothing to write.
+              if (next && next !== node.name) actions.onRename(node, next);
+              setRenaming(false);
+            }}
+          >
+            <StateDot
+              state={run.state}
+              inherited={run.inherited}
+              projectName={node.name}
+            />
+            <Input
+              autoFocus
+              inputSize="sm"
+              value={draft}
+              aria-label={`Rename ${node.name}`}
+              onChange={(e) => setDraft(e.target.value)}
+              // Deliberately NO `onBlur` cancel. Clicking Save blurs the field
+              // first, so a blur-cancel closes the form before the click can
+              // submit it — the button would be dead and only Enter would
+              // work. Escape and Save are the two ways out, both explicit.
+              onKeyDown={(e) => {
+                if (e.key !== "Escape") return;
+                // The same rule TagManager records: the substrate binds
+                // Escape on `document`, above React's root container, so an
+                // unstopped key would cancel the rename AND dismiss whatever
+                // surface the tree is drawn inside — the drawer, on a phone.
+                e.stopPropagation();
+                setRenaming(false);
+              }}
+            />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onSelect(node)}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <StateDot
+              state={run.state}
+              inherited={run.inherited}
+              projectName={node.name}
+            />
+            <span className="truncate">{node.name}</span>
+            {node.clickup_id ? (
+              <span
+                title="Imported from ClickUp"
+                className="ml-auto shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground"
+              >
+                CU
+              </span>
+            ) : null}
+          </button>
+        )}
+        {onAddChild && !renaming ? (
           // A subproject is created HERE rather than from a dialog that asks
           // "which parent?" — the answer is already on screen, and asking for
           // it again is how a tree with fifty nodes gets mis-parented rows.
@@ -179,7 +233,14 @@ function Node({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={projectMenuItems(node, actions).map((entry) =>
+          items={projectMenuItems(node, actions, {
+            onBeginRename: () => {
+              // Seed from the row, not from whatever the last cancelled edit
+              // left behind: reopening the field must offer the CURRENT name.
+              setDraft(node.name);
+              setRenaming(true);
+            },
+          }).map((entry) =>
             entry.kind === "item"
               ? {
                   ...entry,
