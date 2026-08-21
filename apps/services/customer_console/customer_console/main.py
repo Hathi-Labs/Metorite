@@ -528,6 +528,53 @@ class MembersView(BaseModel):
     members: list[MemberView]
 
 
+class OrgSummaryView(BaseModel):
+    """One organization's line on the Operator Console customer list (§4.1a, CP-8).
+
+    The cross-org twin of ``GET /billing/summary``'s per-org envelope: the same
+    ``seats`` (the ONE seat vocabulary, :class:`SeatPlanView`) and
+    ``credit_balance`` (``SUM(delta)`` as a decimal string), plus the fields a
+    staff list needs that a single-org detail read does not — the lifecycle
+    ``status``, the billing ``subscription_status``, trial expiry, and MRR.
+
+    ⚠️ **``mrr_paise`` is PAISE**, the one money denomination on this API
+    (``CatalogPlanView`` keeps rupees off the wire for ``payments.paise``'s
+    reason, §9.2): the browser formats, it never converts. It is the recurring
+    value of the org's *purchased* seats and is **zero unless the subscription is
+    active** — a trial is not revenue yet and a suspended or cancelled org is
+    churned, so an MRR that counted them would misreport the book. That gate is
+    an agent-proposed default the owner may overrule (D16/D17).
+
+    **Two statuses, because they legitimately diverge.** ``status`` is the
+    ``organization`` lifecycle (§4.1d) the suspend/resume act moves;
+    ``subscription_status`` is ``org_subscription.status``, which a manual
+    activation sets to ``active`` without touching the lifecycle. Both are on the
+    wire so the operator reads the real state rather than an inferred one.
+    """
+
+    slug: str
+    name: str
+    status: str
+    subscription_status: str | None
+    provider: str | None
+    trial_ends_at: str | None
+    current_period_end: str | None
+    export_until: str | None
+    credit_balance: str
+    mrr_paise: int
+    seats: list[SeatPlanView]
+
+
+class OrgListView(BaseModel):
+    """Every organization, one :class:`OrgSummaryView` each (§4.1a, CP-8).
+
+    In ``created_at, slug`` order (``store.cross_org_summary``) so the list is
+    stable across reads; the surface sorts and filters, this read does not.
+    """
+
+    organizations: list[OrgSummaryView]
+
+
 class UsageRequest(BaseModel):
     """Written by the **Router**, which holds the internal token — never by the
     customer whose usage it describes.
@@ -635,6 +682,16 @@ def _org_id(conn, slug: str) -> str:
     if row is None:
         raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
     return str(row[0])
+
+
+def _iso(value) -> str | None:
+    """ISO-8601 a nullable ``date``/``datetime`` for the wire, or ``None``.
+
+    A timestamp column that is unset (a never-trialled org's ``trial_ends_at``,
+    a live org's ``export_until``) is ``NULL`` and stays ``null`` on the wire —
+    not coerced to a sentinel date the surface would render as a real deadline.
+    """
+    return value.isoformat() if value is not None else None
 
 
 def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
@@ -1481,6 +1538,69 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
         "seats": seats,
         "credit_balance": str(balance),
     }
+
+
+@app.get("/orgs")
+def list_organizations(_: Operator) -> OrgListView:
+    """Every organization, with plan/MRR, seats, credits, status and trial
+    expiry — the Operator Console's customer list (§4.1a, CP-8).
+
+    The cross-org *list* to ``GET /billing/summary``'s per-org *detail*, and the
+    read CP-8's separate app renders its customer table from. ``Operator``-only
+    and cross-tenant BY DESIGN: this is THE read that spans organizations
+    (``saas_multitenancy.md`` §0.9.2), and no customer credential can reach it —
+    ``store.cross_org_summary`` carries no ``organization_id`` filter because its
+    whole job is to answer "which customers exist and how are they doing", the
+    question no single tenant deployment can answer.
+
+    **Every number is surfaced, never recomputed.** The seat grid is
+    :func:`seat_counts` over the rows the store fetched — byte-identical to
+    ``billing_summary``'s, the ONE seat vocabulary (§3.3, D32.5) — and MRR is the
+    ONE money conversion ``payments.paise`` (§9.2) applied to the recurring value
+    of *purchased* seats. MRR is **zero unless the subscription is active**: a
+    trial is not revenue yet and a suspended/cancelled org is churned, so a book
+    that counted them would overstate. That gate is an agent-proposed default the
+    owner may overrule (D16/D17); the lifecycle and subscription statuses are
+    both on the wire so an operator sees the real state, not an inferred one.
+
+    ⚠️ Ships DARK: the Console deploys nowhere yet and the operator token is
+    OWNER-GATE (§8). This is the route existing, not running.
+    """
+    with get_engine().begin() as conn:
+        rows = store.cross_org_summary(conn)
+
+    organizations: list[OrgSummaryView] = []
+    for r in rows:
+        seats: list[SeatPlanView] = []
+        mrr_inr = Decimal(0)
+        for line in r["seats"]:
+            counts = seat_counts(line["plan_slug"], line["grants"],
+                                 line["assigned"])
+            seats.append(SeatPlanView(
+                plan_slug=counts.plan_slug,
+                purchased=counts.purchased,
+                assigned=counts.assigned,
+                available=counts.available,
+                oversubscribed=counts.oversubscribed,
+            ))
+            mrr_inr += counts.purchased * line["price_inr"]
+
+        active = r["subscription_status"] == "active"
+        organizations.append(OrgSummaryView(
+            slug=r["slug"],
+            name=r["name"],
+            status=r["status"],
+            subscription_status=r["subscription_status"],
+            provider=r["provider"],
+            trial_ends_at=_iso(r["trial_ends_at"]),
+            current_period_end=_iso(r["current_period_end"]),
+            export_until=_iso(r["export_until"]),
+            credit_balance=str(r["credit_balance"]),
+            mrr_paise=payments.paise(mrr_inr) if active else 0,
+            seats=seats,
+        ))
+
+    return OrgListView(organizations=organizations)
 
 
 @app.post("/billing/subscriptions/activate")

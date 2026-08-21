@@ -32,6 +32,7 @@ __all__ = [
     "count_redemptions",
     "create_order",
     "credit_deltas",
+    "cross_org_summary",
     "current_placement",
     "deployment_by_label",
     "deployment_visible_orgs",
@@ -793,6 +794,139 @@ def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
             {"org": org_id},
         )
     ]
+
+
+# ── Operator Console: the cross-org read (§4.1a / CP-8) ─────────────────────
+
+def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
+    """Every organization with the numbers the Operator Console renders (§4.1a).
+
+    The ONE cross-org read behind CP-8's customer list: per company, its
+    lifecycle and subscription status, trial expiry, credit balance, and the raw
+    seat rows the surface folds through the ONE seat vocabulary. It is the
+    cross-org twin of :func:`billing_summary`'s per-org read — the Operator
+    door's *list* where ``billing_summary`` is its *detail* — and it decides
+    nothing: it returns rows for the caller (``main._org_list``) to fold through
+    :func:`customer_console.seats.seat_counts` and :func:`payments.paise`, so the
+    list's per-plan counts and money cannot drift from every other surface's.
+
+    ⚠️ **Cross-tenant BY DESIGN, and reachable only under the Operator scheme.**
+    This is the one read that spans organizations (``saas_multitenancy.md``
+    §0.9.2); it carries no ``organization_id`` filter because its whole job is to
+    answer "which customers exist and how are they doing" — the question no
+    single tenant deployment can answer and no customer credential may ask.
+
+    **Bounded queries, never N+1.** Four statements regardless of how many
+    organizations exist: the org/subscription/balance join, the effective seat
+    grants, the live assignment counts, and the active catalog. A per-org loop
+    that called :func:`billing_summary`'s helpers would issue O(orgs * plans)
+    round trips on a staff surface that lists every customer.
+
+    * ``credit_balance`` is ``SUM(delta)`` grouped by org — the SAME sum
+      :func:`credit_deltas` + :func:`customer_console.credits.balance_of`
+      compute one org at a time, never a cached balance column (which destroys
+      the audit trail §3.3 keeps). Orgs with no ledger row read ``0``.
+    * ``grants`` is the list of signed ``quantity_purchased`` whose
+      ``effective_from`` has passed — exactly :func:`seat_rows`' list, so a
+      future-dated grant is not counted and a reduction stays a negative row;
+      ``assigned`` is the live-assignment count. Both are handed to
+      :func:`seat_counts` by the caller, unfolded here, so ``available``'s
+      zero-clamp and ``oversubscribed`` remain that module's alone.
+    * a plan the org holds neither a grant nor a live assignment on is
+      **skipped**, not emitted as a zero row — the same rule :func:`_seat_grid`
+      makes, so "never bought" and "bought zero" are not made to look alike.
+
+    Two statuses ride together because they legitimately diverge:
+    ``status`` is ``organization.status`` (the §4.1d lifecycle the suspend/resume
+    act moves) and ``subscription_status`` is ``org_subscription.status`` (the
+    billing truth a manual activation sets without touching the lifecycle). MRR
+    is the caller's, computed from the seat rows against the active subscription.
+
+    ``ORDER BY o.created_at, o.slug`` so two reads of an unchanged database agree
+    and a fence can assert a list — ``created_at`` carries no UNIQUE constraint,
+    so the ``slug`` tie-break is not decoration (``active_plans`` makes the same
+    argument for its own ordering).
+    """
+    orgs = conn.execute(
+        text(
+            """
+            SELECT o.id, o.slug, o.name, o.status, o.export_until,
+                   o.created_at,
+                   s.status AS sub_status, s.trial_ends_at, s.provider,
+                   s.current_period_end,
+                   COALESCE(c.balance, 0) AS credit_balance
+            FROM organization o
+            LEFT JOIN org_subscription s ON s.organization_id = o.id
+            LEFT JOIN (
+                SELECT organization_id, SUM(delta) AS balance
+                FROM credit_ledger
+                GROUP BY organization_id
+            ) c ON c.organization_id = o.id
+            ORDER BY o.created_at, o.slug
+            """
+        )
+    ).mappings().all()
+
+    grants: dict[tuple[str, str], list[int]] = {}
+    for r in conn.execute(
+        text(
+            """
+            SELECT organization_id, plan_slug, quantity_purchased
+            FROM seat_grant
+            WHERE effective_from <= now()
+            """
+        )
+    ):
+        grants.setdefault((str(r[0]), r[1]), []).append(int(r[2]))
+
+    assigned: dict[tuple[str, str], int] = {}
+    for r in conn.execute(
+        text(
+            """
+            SELECT organization_id, plan_slug, count(*)
+            FROM seat_assignment
+            WHERE released_at IS NULL
+            GROUP BY organization_id, plan_slug
+            """
+        )
+    ):
+        assigned[(str(r[0]), r[1])] = int(r[2])
+
+    plans = active_plans(conn)  # the ONE active-catalog read, in catalog order
+
+    summary: list[dict[str, Any]] = []
+    for o in orgs:
+        org_id = str(o["id"])
+        seats = []
+        for plan in plans:
+            slug = plan["slug"]
+            g = grants.get((org_id, slug), [])
+            a = assigned.get((org_id, slug), 0)
+            if not g and not a:
+                continue  # never bought, never assigned — not worth a row
+            seats.append(
+                {
+                    "plan_slug": slug,
+                    "grants": g,
+                    "assigned": a,
+                    "price_inr": plan["price_inr"],
+                }
+            )
+        summary.append(
+            {
+                "slug": o["slug"],
+                "name": o["name"],
+                "status": o["status"],
+                "export_until": o["export_until"],
+                "subscription_status": o["sub_status"],
+                "provider": o["provider"],
+                "trial_ends_at": o["trial_ends_at"],
+                "current_period_end": o["current_period_end"],
+                "credit_balance": o["credit_balance"],
+                "seats": seats,
+            }
+        )
+    return summary
 
 
 # ── Orders, events and discounts (CP-9 · SC-4g) ─────────────────────────────

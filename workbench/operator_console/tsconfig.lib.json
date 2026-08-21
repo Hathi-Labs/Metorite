@@ -1,0 +1,16 @@
+{
+  "//": "Isolated type-check of the PURE server/display lib — no React, no Next, no vitest. Lets `tsc` verify the load-bearing logic (BFF token handling, the staff gate, paise formatting) with only `typescript` + `@types/node` installed, so the fence runs without the full Next toolchain. The app-wide check is `tsconfig.json` (needs the Next deps).",
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2021"],
+    "strict": true,
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/lib/console.ts", "src/lib/staff.ts", "src/lib/format.ts"]
+}

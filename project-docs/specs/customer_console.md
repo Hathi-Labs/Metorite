@@ -40,6 +40,32 @@ Ships **DARK** — the Console deploys nowhere, and both the operator token and
 issuing it stay **OWNER-GATE** (§8). `credits.LEDGER_REASONS` grew one member
 (`manual`); no migration.
 
+**CP-8 SLICE 1 BUILT 2026-08-22 (`cp-8-operator-console`) — the Operator
+Console's live customer-management surface.** Two halves, both DARK. **Backend:**
+the §4.1a cross-org read `GET /orgs` (`store.cross_org_summary` + `OrgListView`),
+the one read that spans organizations — Operator-only (a `cc_live_` customer key
+is 401), returning per company its plan/seat grid (folded through the ONE
+`seat_counts` vocabulary, byte-identical to `GET /billing/summary`), credit
+balance, lifecycle + subscription status, trial expiry, and MRR (paise, the one
+`payments.paise` denomination, **zero unless the subscription is active** — an
+agent-proposed default, D16/D17). No new seam, no migration.
+`tests/unit/test_customer_console_operator_list.py` — R8 against a real Postgres
+16, **0 skipped**, joined to §7's command block and `pr-check.yml`'s skip-guard
+(Console hand-list 7 → 8) in this same change. **App:** a SEPARATE Next.js app
+`workbench/operator_console/` (D35 — its own package.json/build, NOT a route in
+the customer workbench; theming-exempt per D35.4), with a customers list + a
+customer-detail surface wiring the management ACTIONS (activate subscription,
+grant seats, add AI credits, suspend/resume) through **server-side BFF routes**
+that hold `CUSTOMER_CONSOLE_OPERATOR_TOKEN` + `CUSTOMER_CONSOLE_URL` — the token
+NEVER reaches the browser. Staff auth is gated behind an **interim server-side
+staff secret** (`OPERATOR_CONSOLE_STAFF_SECRET`, clearly marked); the staff
+Entra directory (D35.3) is an OWNER dependency, not built. **DEFERRED to later
+CP-8 slices:** the payment-reconciliation queue (NULL-`order_id` +
+capture-after-terminal `payment_event` rows), the nightly seat/subscription
+drift job, invoice rendering. **OWNER-GATE go-live:** deploy the app, wire a
+hostname/Caddy route, set the operator token in its env, stand up the staff
+Entra app.
+
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) MINTED
 2026-08-19 (D46, owner directive); CP-2d (second factor / email OTP)
 documented-deferred, nothing built.** CP-2c's hard dependency —
@@ -1258,6 +1284,19 @@ them.
 per-deployment round trip on the request path; the reconciler alerts on a seeded
 drift between seat counts and subscription items; no route of the customer
 workbench can reach a cross-org read.
+
+> **Slice 1 — the live customer-management surface — BUILT 2026-08-22
+> (`cp-8-operator-console`, DARK).** ✅ *renders from the Customer Console alone,
+> no per-deployment round trip* — the app's BFF calls only `CUSTOMER_CONSOLE_URL`
+> (the operator API), never a tenant box. ✅ *no route of the customer workbench
+> can reach a cross-org read* — the cross-org read is `GET /orgs` on the Console
+> behind the `Operator` scheme, and its sole consumer is `workbench/
+> operator_console/` (a DIFFERENT app), so the customer workbench has no route to
+> it by construction (D35's deployment boundary). ⏳ *the reconciler alerts on a
+> seeded drift* — the nightly seat/subscription drift job is DEFERRED to a later
+> slice, with the reconciliation queue and invoice rendering. The management MVP
+> (list every customer; activate a subscription, allocate seats, grant AI
+> credits, suspend/resume) is the whole of slice 1.
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
@@ -5586,13 +5625,21 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_api.py tests/unit/test_customer_console_key_auth.py \
               tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
               tests/unit/test_customer_console_resolve.py \
-              tests/unit/test_customer_console_payments.py
-# ⚠️ The last line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR THAT
-# CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py
+# ⚠️ The `_payments.py` line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR
+# THAT CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
 # hand-list went 6 -> 7). It needs no Razorpay account: the seam runs against
 # `payments.FakeProvider`, which signs with the REAL HMAC-SHA256 algorithm, so
 # only the network is fake. It reads this file and the workflow and fails if
 # its own name is dropped from either.
+# ⚠️ The `_operator_list.py` line is CP-8 slice 1's suite (the cross-org
+# customer list, `GET /orgs`), added 2026-08-22 IN THE PR THAT CREATED IT, with
+# `pr-check.yml`'s skip-guard entry (the hand-list went 7 -> 8). It proves the
+# read is Operator-only (a cc_live_ customer key is 401), that its seat grid is
+# byte-identical to `GET /billing/summary`'s (the ONE seat vocabulary), and that
+# MRR is paise and zero unless the subscription is active. It reads this file
+# and the workflow and fails if its own name is dropped from either.
 
 # CP-2b DEPLOYMENT half (added 2026-08-18 with the B3 answer, §6(i);
 # the VARIABLE NAME corrected the same day with the B-a answer).
