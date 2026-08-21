@@ -93,10 +93,13 @@ CUSTOMER_CONSOLE_DEPLOYMENT_KEY=cc_depl_…
 Set on the box, then restart the gateway/workbench. Requires an
 `enforcement-flip` grant.
 
-- `CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` — turns on Console-backed sign-in +
-  entitlements. **Needed for both** manual onboarding and self-serve signup.
-- `SELF_SERVE_SIGNUP_ENABLED=true` — turns on the landing page's "Sign up"
-  self-serve flow (CP-2c). Optional; only for self-serve.
+- `SELF_SERVE_SIGNUP_ENABLED=true` — turns on the `/signup` flow. **Required** —
+  it is how a customer gets their tenant account (see onboarding below) *and*
+  what the landing-page "Sign up" CTA needs. Default OFF.
+- `CUSTOMER_CONSOLE_RESOLVE_ENABLED=true` — makes sign-in CONSULT the Console for
+  admit/entitlements. **Optional for the MVP:** leave OFF and sign-in is admitted
+  by the tenant account self-signup created; turn it ON when you want Console-
+  enforced sign-in/entitlements. Either position lets a signed-up customer in.
 
 ## 6 — Customer sign-in config (owner, Azure/Google consoles)
 
@@ -110,27 +113,47 @@ account; email/OTP is CP-2d, unbuilt):
 
 ## Manually onboarding a customer (bank transfer)
 
-With the operator token (`$OP`), against `http://127.0.0.1:8090`:
+The tenant-side account a customer signs in with is created **only by self-serve
+signup** — the gateway provision route is session-email-only (the owner is always
+the signed-in user, R11), and no operator route or script creates a customer's
+tenant org, while the Console's `/orgs/provision` writes only the Console
+registry (it can't reach the tenant DB). So the flow is **self-serve signup +
+your manual paid activation**:
+
+**1 — Customer self-signs-up** (needs `SELF_SERVE_SIGNUP_ENABLED=true`, step 5).
+They sign in via Microsoft/Google (org-less), open
+`https://app.metorite.com/signup`, and submit their org slug + display name +
+registered state (+ optional GSTIN). That single submit creates their **tenant
+org + owner account** AND the **Console registry row + Core seats** (the gateway
+mirrors to the Console via the deployment key). They can sign in and use the
+product **immediately** — on Core seats, no subscription yet.
+
+**2 — You activate their paid plan** once the bank transfer clears, with the
+operator token, against the Console:
 
 ```bash
-# 1. Create their org; their admin's email becomes the owner (gets a tenant
-#    account + owner role, so they can sign in immediately).
-curl -fsS -X POST http://127.0.0.1:8090/orgs/provision \
-  -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
-  -d '{"slug":"acme","owner_email":"admin@acme.com","core_seats":5,
-       "deployment_label":"…"}'
-
-# 2. Activate their PAID plan + seats + credits — no Razorpay (the bank-transfer
-#    grant, §6 item (j)). `reference` records the transfer.
+OP="$(grep '^CUSTOMER_CONSOLE_OPERATOR_TOKEN=' apps/services/customer_console/.env | cut -d= -f2-)"
 curl -fsS -X POST http://127.0.0.1:8090/billing/subscriptions/activate \
   -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
   -d '{"org_slug":"acme","plan_slug":"…","seats":5,"credits":250,
        "reference":"NEFT ref 12345"}'
 ```
 
-The customer signs in at `https://app.metorite.com` with Microsoft/Google and is
-admitted to their org; their admin invites the rest of the team
-(`POST /admin/members` → set active).
+→ `org_subscription` goes `active` (provider `manual`), paid seats + AI credits
+granted (§6 item (j)). `org_slug` is the slug the customer chose at signup.
+
+**3 —** Their admin invites the rest of the team (`POST /admin/members` → set
+`active`, in-app).
+
+> **Pure operator onboarding** — creating the customer's tenant org WITHOUT them
+> self-signing-up — is NOT wired. It would need a small tenant-side CLI calling
+> `provision_local_organization(slug, owner_email=<customer>)` inside the tenant
+> container, then mirroring to the Console via the `/orgs/provision` deployment-key
+> arm. Add it only if the single self-signup step is unacceptable.
+
+> Exact request fields: confirm against the route models in
+> `apps/services/customer_console/customer_console/main.py`
+> (`ManualActivationRequest`) and the signup form — they are the source of truth.
 
 > Exact request fields: confirm against the route models in
 > `apps/services/customer_console/customer_console/main.py`
