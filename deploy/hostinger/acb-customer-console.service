@@ -1,0 +1,27 @@
+[Unit]
+Description=Metorite Customer Console (FastAPI)
+# The Console's DATA plane is the dedicated Supabase Console project (D34),
+# reached over the network — NOT the local docker Postgres. So, unlike
+# acb-gateway.service, this unit has no `Requires=acb.service`: it depends on
+# the network being up, nothing on this box. (D47: the SERVICE runs here for
+# now; the DATA is elsewhere, which is what bounds the single-point-of-failure.)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=acb
+WorkingDirectory=/opt/acb/app
+Environment=PATH=/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The Console keeps its OWN env file (D47) — Supabase DSN + its tokens/keys —
+# separate from the tenant plane's /opt/acb/app/.env.
+EnvironmentFile=/opt/acb/app/apps/services/customer_console/.env
+# Bound to 127.0.0.1: the gateway/BFF reach it locally; its only PUBLIC surface
+# is the Razorpay webhook, which is deferred, so nothing is exposed and no Caddy
+# vhost is needed. When Razorpay lands, add a webhook-only Caddy route (D47).
+ExecStart=/home/acb/.local/bin/uv run uvicorn customer_console.main:app --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
