@@ -710,10 +710,31 @@ RLS-forced), so status must live current in the RLS-EXEMPT `org_membership.statu
   reconcile aligns a drifted row and re-runs at 0 changes, and `app_user` is byte-identical
   after the mirror. `app_user` stays authoritative; the mirror is additive on separate
   statements/session.
-The two OTHER slice-1 inputs above (the create-only ORPHAN over-count, and the
-byte-identical-to-`console_resolve` constants not pinned equal) are UNCHANGED by 3a — still
-owed to the read cutover (slice 3b). **Slice 3b (the read cutover) and the `IDENTITY_CUTOVER`
-flag are NOT in 3a and stay OWNER-GATE.**
+🚨 **CUTOVER CHECKLIST — active `org_membership` rows that reconcile 183 CANNOT fix, so the
+read cutover (slice 3b) MUST read status only for rows still present in `app_user` (join /
+intersect), and slice 5 (D48 terminal) must make the mirror atomic + prune on delete.** All
+are DARK today (no reader consumes `org_membership.status`); each becomes a wrong-admit the
+moment a read moves:
+1. **PURGE orphan** — `members.py` `purge_member` (`_PURGE_DELETES` ~:488) deletes `app_user`
+   but NOT `org_membership`/`user_identity`; an active member purged directly leaves an active
+   shadow row with no `app_user`. 183 joins `app_user`, so it can never touch it.
+2. **APPROVE-ROLLBACK orphan** — the provision-path mirror commits on its OWN session INSIDE
+   the caller's txn (`_common.provision_member` ~:791; unlike `update_member`/`remove_member`
+   which mirror AFTER their `_tenant_session` commits). A concurrent-approve 409
+   (`access_requests.py` `_decide`) rolls back `app_user` while the committed shadow stays
+   `active` → active shadow over `invited`/absent `app_user`. Same class as slice 1's
+   create-only over-count orphan; slice 5's atomic-write is the real fix.
+3. **Create-only over-count orphan** (slice 1) — a caller rollback after `provision_member`
+   returns leaves an existence orphan (`resolved_at` NULL); 183 (`DO NOTHING`/no DELETE)
+   cannot prune it.
+4. **Un-pinned SQL** — `access._MIRROR_IDENTITY_SQL`/`_MIRROR_ORG_BY_SLUG_SQL` are
+   byte-identical to `console_resolve._UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL` but no test
+   pins them equal (silent-drift risk; a module-level import is blocked by
+   `test_console_dependency_boundary`'s importer cap — add an equality assert or lift to a
+   shared module).
+
+**Slice 3b (the read cutover) and the `IDENTITY_CUTOVER` flag are NOT in 3a and stay
+OWNER-GATE.**
 
 **Still OWNER-GATE / not done in slice 1:** the read cutover (done-when 1 + 4), any
 `IDENTITY_CUTOVER` flip, H3 promotion, the `app_user` carve-out, and executing the backfill

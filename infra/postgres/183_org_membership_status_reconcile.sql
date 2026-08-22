@@ -13,7 +13,20 @@
 -- (`acb_auth.access.mirror_membership_status`, called from `members.py`'s
 -- suspend/remove/reactivate and `provision_member`) keeps it CURRENT going
 -- forward; THIS migration is the one-time catch-up that aligns the rows that
--- already drifted, so the shadow is trustworthy for status BEFORE any read moves.
+-- already drifted.
+--
+-- ⚠️ **Trustworthy for the status of EXISTING, app_user-backed rows — NOT for
+-- active-orphan rows the read cutover must still handle.** This UPDATE joins
+-- `app_user`, so it can only align a membership that still HAS an `app_user` row;
+-- it cannot fix an `org_membership` row whose `app_user` is gone or was never
+-- committed. Two such active-orphan cases remain the read-cutover's job (see §H6):
+-- (a) PURGE — `members.py` `purge_member` deletes `app_user` but not the shadow,
+-- leaving an active membership with no `app_user`; (b) APPROVE-ROLLBACK — the
+-- provision-path mirror commits on its own session inside the caller's txn, so a
+-- concurrent-approve 409 rolls back `app_user` while the shadow stays active. The
+-- cutover MUST read status only for rows that still exist in `app_user` (join /
+-- intersect), OR slice 5 must make the mirror atomic with the authoritative write
+-- and prune on purge (D48 terminal slice). Until a read moves, all of this is dark.
 --
 -- ⚠️ **Reconcile FORWARD, not backward — this is the ONLY direction available.**
 -- Under H3's FORCE-RLS promotion the identity leg reads `user_identity` ⋈
