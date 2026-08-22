@@ -76,7 +76,9 @@ export default function NewCustomer({
     slug.trim().length > 0 &&
     name.trim().length > 0 &&
     ownerEmail.trim().length > 0 &&
-    deploymentLabel.trim().length > 0;
+    deploymentLabel.trim().length > 0 &&
+    Number.isInteger(Number(coreSeats)) &&
+    Number(coreSeats) >= 1;
 
   if (!open) {
     return (
