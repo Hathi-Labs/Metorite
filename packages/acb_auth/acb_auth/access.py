@@ -375,6 +375,94 @@ async def mirror_identity_membership(
         )
 
 
+# ── Identity shadow: forward STATUS mirror (WS-29 H6 slice 3a, D48) — DARK ────
+#
+# Slice 1's `mirror_identity_membership` above is CREATE-ONLY: `ON CONFLICT DO
+# NOTHING` mirrors membership EXISTENCE and never touches an existing row. So the
+# lifecycle paths that mutate `app_user.status` — `members.py`'s suspend / remove
+# / reactivate, and approve's invited→active transition — did NOT propagate, and
+# `org_membership.status` drifted STALE (migration 182's header + §H6:671-681
+# document this as a latent P0 for the read cutover). D48 (2026-08-22, owner-
+# ratified) mirrors status FORWARD into the RLS-EXEMPT `org_membership.status`,
+# because reconciling from `app_user` post-RLS is impossible — the identity leg
+# reads UNBOUND while `app_user` is RLS-forced. STILL DARK: no reader consumes
+# `org_membership.status` yet (that is slice 3b).
+
+#: ⚠️ **A SCOPED UPDATE of an EXISTING (org, identity) row — it NEVER creates a
+#: row and NEVER moves an identity between orgs (§H6:672-674; R7).** It sets ONLY
+#: `status` (and `joined_at` on activation, exactly as the authoritative
+#: `app_user` write does — see `members.update_member` / `_PROVISION_MEMBER_SQL`).
+#: `organization_id` and `user_id` appear ONLY in the WHERE and are NEVER in a
+#: SET clause; the identity is resolved by `lower(email)` (162's functional
+#: index; R10) inside the predicate. If no membership row exists (a member who
+#: predates the shadow, or whose slice-1 existence mirror failed) the UPDATE
+#: no-ops (0 rows) — existence is the reconcile migration's + slice-1's job, and
+#: the status path must never mint a row. `last_active_at` is deliberately NOT
+#: written: the `app_user` status write does not touch it either, so mirroring it
+#: would make the shadow DIVERGE from what it mirrors rather than converge.
+_MIRROR_STATUS_SQL = """
+    UPDATE org_membership
+       SET status = :status,
+           joined_at = CASE WHEN :status = 'active'
+                            THEN COALESCE(joined_at, now())
+                            ELSE joined_at END
+     WHERE organization_id = CAST(:org AS UUID)
+       AND user_id = (
+           SELECT id FROM user_identity WHERE lower(email) = lower(:email)
+       )
+"""
+
+
+async def mirror_membership_status(
+    *,
+    email: str,
+    org_id: str,
+    status: str,
+) -> None:
+    """Propagate an ``app_user`` status change into ``org_membership.status``.
+
+    WS-29 H6 slice 3a (D48), DARK. The forward half of the status-drift the
+    slice-1 create-only mirror left open: ``members.py``'s suspend / remove /
+    reactivate and approve's invited→active transition mutate ``app_user.status``
+    and the create-only :func:`mirror_identity_membership`
+    (``ON CONFLICT DO NOTHING``) never touches the existing row, so
+    ``org_membership.status`` drifted stale (§H6:671-681, migration 182's header).
+
+    Best-effort, and **never raises, never changes the caller's answer** — the
+    exact posture of :func:`mirror_identity_membership` and
+    :func:`_record_signin_request`, and for the same reason: ``app_user`` is
+    authoritative and its write must be BYTE-IDENTICAL to today
+    (`saas_multitenancy_handover.md` §H6). It opens its OWN short session rather
+    than riding the caller's transaction, so a failed shadow write cannot poison
+    the authoritative one; the shadow tables are RLS-EXEMPT, so no tenant bind is
+    needed.
+
+    ⚠️ **Preserves slice 1's invariant: this is a SCOPED UPDATE of an EXISTING
+    (org, identity) row.** It updates ONLY ``status`` (and ``joined_at`` on
+    activation); it never writes ``organization_id`` or ``user_id`` and so can
+    never move an identity between orgs (R7 — fenced by
+    ``test_h6_identity_shadow.py``). A missing membership row is a 0-row no-op:
+    the status path never creates a row.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email or not org_id or not status:
+        return
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            await session.execute(
+                text(_MIRROR_STATUS_SQL),
+                {"status": status, "org": str(org_id), "email": email},
+            )
+            await session.commit()
+    except Exception as exc:
+        _log.warning(
+            "identity_status_mirror_failed", email=email, error=str(exc)[:200],
+        )
+
+
 async def resolve_access(
     email: str | None,
     *,

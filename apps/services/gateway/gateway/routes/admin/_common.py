@@ -47,7 +47,7 @@ from acb_auth import (
 # WS-29 H6 slice 1: the identity-shadow dual-write. Imported from `acb_auth.access`
 # (NOT `console_resolve`, whose importer set is capped by a farmable-seat fence);
 # `provision_member` calls it after the authoritative `app_user` write.
-from acb_auth.access import mirror_identity_membership
+from acb_auth.access import mirror_identity_membership, mirror_membership_status
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -780,6 +780,16 @@ async def provision_member(
         display_name=member.get("display_name") or "",
         org_id=org_id,
         status=member["status"],
+    )
+    # H6 slice 3a (WS-29, DARK, D48): the create-only mirror above only ensures
+    # the row EXISTS. Approving an already-`invited` member transitions
+    # invited→active on `app_user` (`_PROVISION_MEMBER_SQL`), which
+    # `ON CONFLICT DO NOTHING` would NOT propagate — so mirror the final status
+    # FORWARD too. A scoped UPDATE that never moves an identity; a no-op for a
+    # brand-new invite whose row was just created at the same status. Best-effort,
+    # own session. See `acb_auth.access.mirror_membership_status`.
+    await mirror_membership_status(
+        email=member["email"], org_id=org_id, status=member["status"],
     )
     return member, [slug for _rid, slug in role_ids]
 

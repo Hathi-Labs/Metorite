@@ -647,7 +647,7 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICE 1 SHIPPED (dark)
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
@@ -687,6 +687,33 @@ to `console_resolve`'s (`_UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL`) but not pinne
 test (silent-drift risk — a later slice should add the equality assertion or lift them to a
 shared module; a module-level import is blocked by `test_console_dependency_boundary`'s
 importer cap).
+
+✅ **SLICE 3a SHIPPED 2026-08-22 (WS-29, DARK — D48 RATIFIED) closes the FORWARD half of
+the status-drift P0 above.** D48 (2026-08-22, owner-ratified; `work_plan.md` §3) re-keys
+RBAC onto `user_identity` in two phases with status mirrored FORWARD — reconcile-from-
+`app_user` is impossible post-RLS (the identity leg reads UNBOUND while `app_user` is
+RLS-forced), so status must live current in the RLS-EXEMPT `org_membership.status`. Slice
+3a builds exactly that, still moving NO read:
+- **Forward status mirror** — `acb_auth.access.mirror_membership_status` (best-effort, own
+  session, mirroring `mirror_identity_membership`) called after the authoritative
+  `app_user` write in `members.py`'s `update_member` (suspend/reactivate/activate) and
+  `remove_member` (remove), and in `_common.provision_member` (approve's invited→active,
+  which the create-only mirror could not propagate). It is a **scoped UPDATE of an EXISTING
+  (org, identity) row** — sets ONLY `status` (+ `joined_at` on activation, as `app_user`
+  does), NEVER `organization_id`/`user_id`, so it can never move an identity between orgs;
+  a missing row is a 0-row no-op (existence stays 159/182/slice-1's job).
+- **Reconcile migration** — `infra/postgres/183_org_membership_status_reconcile.sql` aligns
+  every already-drifted `org_membership.status` to `app_user.status`
+  (`IS DISTINCT FROM`-guarded, idempotent, no INSERT/DELETE, never touches `resolved_at`).
+- Fence: `tests/unit/test_h6_identity_shadow.py` extended (R8) — suspend/remove/reactivate
+  propagate, the mirror + reconcile never move an identity (org-B row untouched), the
+  reconcile aligns a drifted row and re-runs at 0 changes, and `app_user` is byte-identical
+  after the mirror. `app_user` stays authoritative; the mirror is additive on separate
+  statements/session.
+The two OTHER slice-1 inputs above (the create-only ORPHAN over-count, and the
+byte-identical-to-`console_resolve` constants not pinned equal) are UNCHANGED by 3a — still
+owed to the read cutover (slice 3b). **Slice 3b (the read cutover) and the `IDENTITY_CUTOVER`
+flag are NOT in 3a and stay OWNER-GATE.**
 
 **Still OWNER-GATE / not done in slice 1:** the read cutover (done-when 1 + 4), any
 `IDENTITY_CUTOVER` flip, H3 promotion, the `app_user` carve-out, and executing the backfill

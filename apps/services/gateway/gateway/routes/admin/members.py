@@ -27,6 +27,7 @@ from acb_auth import (
     require_permission,
     validate_permission,
 )
+from acb_auth.access import mirror_membership_status
 from acb_auth.permissions import matched_by
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -240,6 +241,19 @@ async def update_member(
         member = await get_member(db, org_id, email)
         roles = await roles_for_user(db, member["id"])
 
+    # H6 slice 3a (WS-29, DARK, D48): keep the RLS-EXEMPT identity shadow's
+    # status CURRENT. A suspend / reactivate / activate here mutates
+    # `app_user.status`; the create-only slice-1 mirror never touches the
+    # existing `org_membership` row, so status would drift stale and the H6 read
+    # cutover could admit a suspended member from it. Best-effort, own session,
+    # after the authoritative commit — it moves no read and the `app_user` write
+    # stays byte-identical. Only on a status change; a display-name-only patch
+    # touches nothing. See `acb_auth.access.mirror_membership_status`.
+    if patch.status is not None:
+        await mirror_membership_status(
+            email=member["email"], org_id=org_id, status=member["status"],
+        )
+
     invalidate_for(member["email"])
     _log.info("member_updated", email=member["email"], by=admin.email,
               status=member["status"])
@@ -291,6 +305,16 @@ async def remove_member(
             ),
             {"uid": member["id"]},
         )
+
+    # H6 slice 3a (WS-29, DARK, D48): propagate the off-boarding into the
+    # RLS-EXEMPT shadow so `org_membership.status` is 'removed' too, or the H6
+    # read cutover admits an off-boarded member from a stale row. Best-effort,
+    # own session, after the authoritative commit — moves no read, the
+    # `app_user` write stays byte-identical. See
+    # `acb_auth.access.mirror_membership_status`.
+    await mirror_membership_status(
+        email=member["email"], org_id=org_id, status="removed",
+    )
 
     invalidate_for(member["email"])
     _log.info("member_removed", email=member["email"], by=admin.email)
