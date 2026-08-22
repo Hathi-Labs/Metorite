@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -617,6 +617,29 @@ Jobs have no request, so no session to inherit from. Cover: the ingestion schedu
 **Done when:** every queued/scheduled unit carries `organization_id` on its record and
 binds it before any DB access; a job constructed **without** one **refuses to run** rather
 than defaulting; a test proves the refusal.
+
+> ✅ **Tasks + Calendar SHIPPED 2026-08-22 (WS-29, DARK — byte-identical pre-flip).**
+> The 5 scheduler + rollover background sites now bind each job's own tenant via
+> `tenant_session(org)` (the one GUC seam) and REFUSE (`TenantUnbound`, never
+> default) when no org is resolvable:
+> - `routes/tasks/scheduler.py` — `_run_one_cycle` / `_read_interval` bound
+>   single-org (org threaded from the loop); `start_background_sync` /
+>   `_enabled_accounts_by_org` is now a **per-org sweep** — it enumerates orgs
+>   from the RLS-EXEMPT `organization` table on an unbound session, then binds
+>   `tenant_session(org)` per org to read that org's `task_accounts`.
+> - `routes/tasks/calendar.py` — `_rollover_one_user` bound single-user/org;
+>   `_run_rollover_sweep` is the matching per-org sweep over `gtd_settings`.
+>
+> Each single-org job wraps its DB work in `tenant_session(org)`; the two sweeps
+> keep ONE unbound `get_db()` each for the exempt-`organization` enumeration
+> (`test_db_engine_seam.py` elsewhere-baseline 111 → 108). R7 fences (R8, real
+> non-priv `acb_app` role on the phase-4 catalog, in
+> `tests/unit/test_h3_rls_promotion_rehearsal.py`): `calendar-rollover-bound-under-rls`
+> and `tasks-scheduler-bound-under-rls` — GREEN bound (each sweep releases/reads
+> only its own org's rows across TWO seeded orgs), RED unbound (0 rows read /
+> WITH-CHECK refused), and a no-org unit RAISES `TenantUnbound`.
+> ⚠️ **The tasks broker handler (`routes/tasks/broker_handlers.py`) is NOT in
+> this change** — a separate later PR, dormant unless `ACTION_BROKER_ENFORCE`.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

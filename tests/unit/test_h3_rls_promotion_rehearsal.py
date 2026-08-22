@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -72,7 +73,7 @@ from acb_auth.access import (
 )
 from acb_auth.deps import _with_resolved_access
 from acb_auth.roles import UserContext, UserRole
-from acb_common.db import bind_tenant, clear_tenant
+from acb_common.db import TenantUnbound, bind_tenant, clear_tenant
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
@@ -1318,6 +1319,314 @@ class TestProvisionOrgBindUnderForceRls:
         finally:
             eng.dispose()
             _purge_provisioned_org(promoted.admin_engine, slug)
+
+
+# ==========================================================================
+# WS-29 H4 · BACKGROUND-JOB TENANT BINDING — tasks/calendar (MT-1d).
+# The tasks scheduler + calendar rollover open UNBOUND `get_db()` sessions and
+# touch RLS-FORCED tables (task_accounts, gtd_*), so under phase-4 RLS they read
+# 0 rows / have writes refused → tasks & calendar automation silently stops for
+# every customer. H4 threads each job's own `organization_id` and opens
+# `tenant_session(org)`; cross-tenant sweeps enumerate orgs from the RLS-EXEMPT
+# `organization` table (readable unbound) then bind per org. Driven HERE as the
+# non-privileged `acb_app` role on the phase-4-promoted catalog: GREEN bound (via
+# the fix), RED on the unbound raw SQL, and a no-org unit REFUSES `TenantUnbound`.
+# A bypass-role run is blind to all of it (scratch `acb` has `rolbypassrls`),
+# which is the whole reason these reuse `promoted()`'s dedicated non-priv role.
+# ==========================================================================
+@_DB_GATE
+class TestCalendarRolloverBindUnderForceRls:
+    """`_run_rollover_sweep` / `_rollover_one_user` under FORCE RLS (H4, MT-1d).
+
+    R7 name: ``calendar-rollover-bound-under-rls``. `gtd_settings` / `gtd_items` /
+    `gtd_rollover_log` are FORCE-RLS'd, so the pre-H4 unbound sweep read 0 rows
+    and released nothing post-phase-4. The fix enumerates orgs from the EXEMPT
+    `organization` table then binds `tenant_session(org)` per org / per user.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    @staticmethod
+    def _seed_rollover_user(admin_engine, *, org_id: str, user_id: str) -> str:
+        """Seed (as the RLS-bypassing admin) an auto_rollover ``gtd_settings`` row
+        + one OVERDUE flexible block for ``user_id`` in ``org_id``. Every INSERT
+        stamps ``organization_id`` explicitly (the phase-1 DEFAULT reads the unset
+        GUC as NULL for the admin). Returns the item id."""
+        item_id = str(uuid.uuid4())
+        with admin_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO gtd_settings (user_id, timezone, auto_rollover, "
+                "last_rollover_date, organization_id) "
+                "VALUES (:u, 'UTC', true, NULL, :o)"),
+                {"u": user_id, "o": org_id})
+            conn.execute(text(
+                "INSERT INTO gtd_items (id, user_id, title, disposition, "
+                "flexible, scheduled_start, scheduled_end, organization_id) "
+                "VALUES (:id, :u, 'overdue block', 'NEXT', true, "
+                "now() - interval '2 days', now() - interval '1 day', :o)"),
+                {"id": item_id, "u": user_id, "o": org_id})
+        return item_id
+
+    @staticmethod
+    def _cleanup(admin_engine, *, user_ids: list[str]) -> None:
+        with admin_engine.begin() as conn:
+            for u in user_ids:
+                conn.execute(text(
+                    "DELETE FROM gtd_rollover_log WHERE user_id = :u"), {"u": u})
+                conn.execute(text(
+                    "DELETE FROM gtd_items WHERE user_id = :u"), {"u": u})
+                conn.execute(text(
+                    "DELETE FROM gtd_settings WHERE user_id = :u"), {"u": u})
+
+    async def test_the_sweep_rolls_over_each_org_green(self, promoted):
+        """GREEN + cross-tenant: two orgs, each an auto-rollover user with an
+        overdue block. The REAL `_run_rollover_sweep` — enumerating orgs from the
+        exempt table, binding `tenant_session(org)` per org — RELEASES BOTH users'
+        blocks and logs BOTH, never leaking one org's rows into the other's
+        processing. The `gtd_rollover_log` rows are stamped with the RIGHT tenant
+        (the phase-1 DEFAULT under the bind), proving the per-org bind is real."""
+        from gateway.routes.tasks.calendar import _run_rollover_sweep
+
+        ua = f"rollover.a.{uuid.uuid4().hex[:8]}@h4.test"
+        ub = f"rollover.b.{uuid.uuid4().hex[:8]}@h4.test"
+        ia = self._seed_rollover_user(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        ib = self._seed_rollover_user(
+            promoted.admin_engine, org_id=promoted.org_b, user_id=ub)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                await _run_rollover_sweep()
+                with promoted.admin_engine.connect() as a:
+                    cleared_a = a.execute(text(
+                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
+                        {"id": ia}).scalar_one()
+                    cleared_b = a.execute(text(
+                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
+                        {"id": ib}).scalar_one()
+                    log_a = a.execute(text(
+                        "SELECT count(*) FROM gtd_rollover_log WHERE user_id=:u"),
+                        {"u": ua}).scalar_one()
+                    log_b = a.execute(text(
+                        "SELECT count(*) FROM gtd_rollover_log WHERE user_id=:u"),
+                        {"u": ub}).scalar_one()
+                    org_of_a = a.execute(text(
+                        "SELECT organization_id FROM gtd_rollover_log "
+                        "WHERE user_id = :u LIMIT 1"), {"u": ua}).scalar_one()
+                    org_of_b = a.execute(text(
+                        "SELECT organization_id FROM gtd_rollover_log "
+                        "WHERE user_id = :u LIMIT 1"), {"u": ub}).scalar_one()
+                assert cleared_a is None, "org A's overdue block was not released"
+                assert cleared_b is None, "org B's overdue block was not released"
+                assert log_a == 1, "org A rollover was not logged"
+                assert log_b == 1, "org B rollover was not logged"
+                assert str(org_of_a) == promoted.org_a, (
+                    "org A's rollover_log row was stamped with the wrong tenant")
+                assert str(org_of_b) == promoted.org_b, (
+                    "org B's rollover_log row was stamped with the wrong tenant")
+            finally:
+                self._cleanup(promoted.admin_engine, user_ids=[ua, ub])
+
+    async def test_a_bound_rollover_cannot_touch_another_orgs_rows(self, promoted):
+        """GREEN isolation: `_rollover_one_user` bound to org A releases org A's
+        block; org B's block is UNTOUCHED — the bound session cannot even see it
+        (USING), so the sweep can never cross a tenant boundary."""
+        from gateway.routes.tasks.calendar import _rollover_one_user
+
+        ua = f"rollover.iso.a.{uuid.uuid4().hex[:8]}@h4.test"
+        ub = f"rollover.iso.b.{uuid.uuid4().hex[:8]}@h4.test"
+        ia = self._seed_rollover_user(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        ib = self._seed_rollover_user(
+            promoted.admin_engine, org_id=promoted.org_b, user_id=ub)
+
+        class _Row:
+            user_id = ua
+            timezone = "UTC"
+            last_rollover_date = None
+
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                await _rollover_one_user(_Row(), promoted.org_a)
+                with promoted.admin_engine.connect() as a:
+                    a_cleared = a.execute(text(
+                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
+                        {"id": ia}).scalar_one()
+                    b_still = a.execute(text(
+                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
+                        {"id": ib}).scalar_one()
+                assert a_cleared is None, "the bound org-A rollover did not run"
+                assert b_still is not None, (
+                    "org B's block was released by an org-A-bound rollover — the "
+                    "bind leaked across tenants")
+            finally:
+                self._cleanup(promoted.admin_engine, user_ids=[ua, ub])
+
+    async def test_the_unbound_rollover_reads_and_writes_nothing_red(self, promoted):
+        """RED (the brick): the exact overdue-read and rollover-log INSERT the job
+        runs, on an UNBOUND `acb_app` session under phase-4 RLS. The FORCE-RLS'd
+        `gtd_items` read returns 0 rows (nothing would be released) and the
+        `gtd_rollover_log` INSERT's DEFAULT org is the unset GUC (NULL) → WITH
+        CHECK refuses. This is the silent stop the per-org bind removes.
+
+        NullPool + a fresh backend: a SET LOCAL GUC resets to '' (not NULL) on a
+        reused pooled connection; a fresh connection is genuinely NULL, the real
+        background posture (the bootstrap fence documents this at length)."""
+        from gateway.routes.tasks.calendar import _OVERDUE_WHERE
+        from gateway.routes.tasks.core import ITEM_SELECT
+
+        ua = f"rollover.red.{uuid.uuid4().hex[:8]}@h4.test"
+        ia = self._seed_rollover_user(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        eng = create_engine(promoted.app_url, future=True, poolclass=NullPool)
+        try:
+            now = datetime.now(UTC)
+            with eng.connect() as c, c.begin():
+                rows = c.execute(text(ITEM_SELECT + _OVERDUE_WHERE),
+                                 {"uid": ua, "now": now}).fetchall()
+            assert rows == [], (
+                f"unbound overdue read saw {len(rows)} rows — gtd_items is not "
+                "FORCE-RLS'd, so the brick would not reproduce")
+            with eng.connect() as c, c.begin():  # noqa: SIM117
+                with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+                    c.execute(text(
+                        "INSERT INTO gtd_rollover_log (user_id, item_id, title, "
+                        "rolled_from, rolled_to) "
+                        "VALUES (:u, :id, 't', now(), NULL)"),
+                        {"u": ua, "id": ia})
+            assert "row-level security" in str(exc.value).lower(), (
+                "expected a WITH CHECK violation on the unbound rollover-log "
+                f"insert, got: {exc.value}")
+        finally:
+            eng.dispose()
+            self._cleanup(promoted.admin_engine, user_ids=[ua])
+
+    async def test_a_rollover_with_no_org_refuses(self, promoted):
+        """A `_rollover_one_user` constructed with NO resolvable org RAISES
+        `TenantUnbound` (refuses, never defaults / inherits an ambient tenant) —
+        proven directly. No DB access: the org guard is the first statement."""
+        from gateway.routes.tasks.calendar import _rollover_one_user
+
+        class _Row:
+            user_id = "nobody@h4.test"
+            timezone = "UTC"
+            last_rollover_date = None
+
+        with pytest.raises(TenantUnbound):
+            await _rollover_one_user(_Row(), "")
+
+
+@_DB_GATE
+class TestSchedulerBindUnderForceRls:
+    """Task-manager scheduler enumeration/read under FORCE RLS (H4, MT-1d).
+
+    R7 name: ``tasks-scheduler-bound-under-rls``. `task_accounts` / `gtd_settings`
+    are FORCE-RLS'd, so a single unbound read returned 0 rows post-phase-4 and the
+    scheduler launched nothing. The fix enumerates orgs from the EXEMPT
+    `organization` table then binds `tenant_session(org)` per org.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    @staticmethod
+    def _seed_account(admin_engine, *, org_id: str, user_id: str) -> str:
+        aid = str(uuid.uuid4())
+        with admin_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO task_accounts (id, user_id, provider, workspace_id, "
+                "credentials_encrypted, sync_enabled, sync_interval_secs, "
+                "organization_id) VALUES (:id, :u, 'clickup', 'ws-1', 'enc', "
+                "true, 300, :o)"),
+                {"id": aid, "u": user_id, "o": org_id})
+        return aid
+
+    @staticmethod
+    def _cleanup(admin_engine, *, account_ids: list[str]) -> None:
+        with admin_engine.begin() as conn:
+            for aid in account_ids:
+                conn.execute(text(
+                    "DELETE FROM task_accounts WHERE id = :id"), {"id": aid})
+
+    async def test_the_enumeration_reads_each_orgs_accounts_green(self, promoted):
+        """GREEN + cross-tenant: two orgs each with a sync-enabled account. The
+        REAL `_enabled_accounts_by_org` — enumerating orgs from the exempt table,
+        binding `tenant_session(org)` per org — returns BOTH accounts, EACH mapped
+        to its OWN org, never leaking one org's account into the other's tenant."""
+        from gateway.routes.tasks.scheduler import _enabled_accounts_by_org
+
+        ua = f"sched.a.{uuid.uuid4().hex[:8]}@h4.test"
+        ub = f"sched.b.{uuid.uuid4().hex[:8]}@h4.test"
+        aa = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        ab = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_b, user_id=ub)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                by_org = await _enabled_accounts_by_org()
+                assert aa in by_org, "org A's account was not enumerated"
+                assert ab in by_org, "org B's account was not enumerated"
+                assert by_org[aa][0] == promoted.org_a, (
+                    "org A's account was bound to the wrong tenant")
+                assert by_org[ab][0] == promoted.org_b, (
+                    "org B's account was bound to the wrong tenant")
+            finally:
+                self._cleanup(promoted.admin_engine, account_ids=[aa, ab])
+
+    async def test_read_interval_is_scoped_to_the_bound_org_green(self, promoted):
+        """GREEN: `_read_interval` bound to the account's own org reads its
+        (interval, enabled=True); bound to the OTHER org it sees nothing (USING)
+        → (default, False). A loop can never read another tenant's account row."""
+        from gateway.routes.tasks.scheduler import _read_interval
+
+        ua = f"sched.ri.{uuid.uuid4().hex[:8]}@h4.test"
+        aa = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                interval, enabled = await _read_interval(aa, promoted.org_a)
+                assert enabled is True, "the account's own org could not read it"
+                assert interval == 300
+                _, enabled_b = await _read_interval(aa, promoted.org_b)
+                assert enabled_b is False, (
+                    "org B read org A's account row — task_accounts is not "
+                    "FORCE-RLS'd or the bind leaked")
+            finally:
+                self._cleanup(promoted.admin_engine, account_ids=[aa])
+
+    async def test_the_unbound_account_read_returns_nothing_red(self, promoted):
+        """RED (the brick): the sync-enabled account read the enumeration/loop
+        runs, on an UNBOUND `acb_app` session → 0 rows. Without the per-org bind
+        the scheduler finds no accounts and sync silently stops for everyone."""
+        ua = f"sched.red.{uuid.uuid4().hex[:8]}@h4.test"
+        aa = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
+        eng = create_engine(promoted.app_url, future=True, poolclass=NullPool)
+        try:
+            with eng.connect() as c, c.begin():
+                n = c.execute(text(
+                    "SELECT count(*) FROM task_accounts WHERE sync_enabled=true"
+                )).scalar_one()
+            assert n == 0, (
+                f"unbound task_accounts read saw {n} rows — not FORCE-RLS'd, so "
+                "the brick would not reproduce")
+        finally:
+            eng.dispose()
+            self._cleanup(promoted.admin_engine, account_ids=[aa])
+
+    async def test_the_scheduler_jobs_with_no_org_refuse(self, promoted):
+        """A scheduler unit constructed with NO resolvable org RAISES
+        `TenantUnbound` (refuses, never defaults / inherits) — `_read_interval`
+        and `_run_one_cycle` both, proven directly. The org guard is the first
+        statement in each, so neither touches the database."""
+        from gateway.routes.tasks.scheduler import _read_interval, _run_one_cycle
+
+        with pytest.raises(TenantUnbound):
+            await _read_interval("some-account", "")
+        with pytest.raises(TenantUnbound):
+            await _run_one_cycle("some-account", "", refresh_schema=False)
 
 
 # ==========================================================================
