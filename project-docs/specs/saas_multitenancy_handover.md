@@ -1,14 +1,20 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
 **Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
-scratch 2026-08-22; H6 SLICES 1 + 3a + ORPHAN-CLOSURE SHIPPED (dark) 2026-08-22** (see H1's
+scratch 2026-08-22; H6 SLICES 1 + 3a + ORPHAN-CLOSURE SHIPPED (dark) 2026-08-22; H6 SLICE 3b
+(THE READ CUTOVER) SHIPPED (dark, behind `IDENTITY_CUTOVER`, default OFF) 2026-08-22** (see H1's
 result block and the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick
 characterization landed as `tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user
 sign-in brick is now written up as an OWNER DECISION in §H3.2; **the H6 dark slices** = the
 identity-shadow dual-write + catch-up backfill (migration 182), the forward status mirror +
-reconcile (migration 183, D48), and the orphan-closure — purge now deletes the shadow and the
-invite/approve mirror moved post-commit — all fenced by
-`tests/unit/test_h6_identity_shadow.py` — **no read moved**, see §H6. Building the read
+reconcile (migration 183, D48), the orphan-closure — purge now deletes the shadow and the
+invite/approve mirror moved post-commit — and **slice 3b, the read cutover: `resolve_identity`'s
+tenant-discovery read moves to the RLS-EXEMPT `user_identity ⋈ org_membership` (active-only) and
+`deps._with_resolved_access` binds BEFORE the bound role leg, all behind `IDENTITY_CUTOVER`
+(default OFF = byte-identical to today)** — all fenced by
+`tests/unit/test_h6_identity_shadow.py` + `test_h3_rls_promotion_rehearsal.py` — **no read moved
+while the flag is OFF; the flag-ON identity leg resolves an active member GREEN unbound under
+phase-4 RLS while the flag-OFF app_user read still bricks RED**, see §H6. Building the read
 cutover (slice 3b) DARK is AGENT-SAFE per D48; only the `IDENTITY_CUTOVER` flip, H3 phase-4
 promotion, and running the prod backfill remain OWNER-GATE, not enacted**) ·
 **Created:** 2026-08-08 ·
@@ -650,7 +656,7 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE SHIPPED (dark)
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
@@ -780,6 +786,32 @@ GREEN under phase-4 RLS with the session UNBOUND and `IDENTITY_CUTOVER` ON, whil
 pre-cutover brick (the `app_user` UNBOUND read returning zero rows) reproduces RED with the flag
 OFF — the same red/green characterization the H3 rehearsal already lands, now driven through the
 identity leg.
+
+✅ **SLICE 3b SHIPPED 2026-08-22 (WS-29, DARK behind `IDENTITY_CUTOVER`, default OFF).** The read
+cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4):
+- **The flag** — `acb_auth.access.identity_cutover_enabled()` reads `IDENTITY_CUTOVER` (unset =
+  OFF, fail-closed, the `deps._refuse_llm_key_identity` env idiom). Read server-side in
+  `deps._with_resolved_access` (the one place that resolves + binds); NOT the Next-side
+  `CUSTOMER_CONSOLE_RESOLVE_ENABLED` — the two-phase resolve is entirely server-side in `acb_auth`.
+- **The identity leg** — `acb_auth.access.resolve_identity` reads the new `_IDENTITY_LEG_SQL`
+  (`user_identity ⋈ org_membership ⋈ organization`, all RLS-EXEMPT, filtered `status='active'` —
+  the `console_resolve._READ_SQL` shape, reused not forked) when the flag is ON, and the
+  byte-identical `app_user` statement when OFF.
+- **The orchestration** — `deps._with_resolved_access` runs the identity leg FIRST, `bind_tenant`s
+  the resolved org, THEN calls `resolve_access` (the role leg) on the now-BOUND session, so its
+  `app_user`-derived permission read stays the ACCESS authority (a residual shadow orphan resolves
+  to bind-with-no-access, never a wrong-admit). Flag OFF keeps today's exact order/SQL.
+- Fences (R7, R8): `test_h3_rls_promotion_rehearsal.py::TestTheReadCutoverIdentityLeg` — flag-ON
+  GREEN, flag-OFF RED (brick, even with the shadow seeded), and a SUSPENDED member refused by the
+  `status='active'` filter, all through `resolve_identity`'s own call path against the phase-4
+  catalog as `acb_app` UNBOUND; `test_h6_identity_shadow.py::TestTheReadCutoverFlag` — the DB-free
+  flag-switch (OFF→`app_user`, ON→exempt shadow) and default-OFF env idiom.
+- **DEFERRED to a later slice (not the sign-in brick, and RBAC-blocked):** `org_owner_of` /
+  `_HAS_OWNER_SQL` / `ensure_owner_bootstrap` resolve the OWNER *role*, which lives in the
+  FORCE-RLS'd `user_role` table with no exempt-table equivalent (`org_membership` has no `role`
+  column) — moving them IS the slice-4 RBAC re-key this slice's gate excludes. `membership_of` is
+  a signup-path read whose active-only semantics belong with that path's decision, not the
+  sign-in cutover.
 
 **Gate (D48 — H6 "ships dark, lands dark BEFORE H3").** Building H6 slices DARK — flag OFF,
 byte-identical `app_user` writes/reads, no read moved — is 🟢 AGENT-SAFE, and that INCLUDES

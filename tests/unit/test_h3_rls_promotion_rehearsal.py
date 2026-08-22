@@ -58,12 +58,18 @@ pytest.importorskip("sqlalchemy")
 # characterizes THE code's own SQL under phase-4 policies; a copy would keep
 # passing after the brick is fixed (H6 / an app_user carve-out), the one moment
 # the characterization must change.
-from acb_auth.access import _ACCESS_SQL, _BOOTSTRAP_OWNER_SQL
+from acb_auth.access import (
+    _ACCESS_SQL,
+    _BOOTSTRAP_OWNER_SQL,
+    _IDENTITY_LEG_SQL,
+    mirror_identity_membership,
+    resolve_identity,
+)
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
-from tests.unit._tenant_ladder import apply_ladder
+from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _ROOT / "infra" / "postgres" / "generated"
@@ -392,6 +398,146 @@ class TestSignInBrickCharacterization:
                           {"email": "newowner@h3rls.test", "org_slug": "h3rls-a"})
         assert "row-level security" in str(exc.value).lower(), (
             f"expected a WITH CHECK violation on the app_user insert, got: {exc.value}")
+
+
+# ==========================================================================
+# H6 slice 3b — THE READ CUTOVER (the sign-in brick fix), DARK behind
+# IDENTITY_CUTOVER. The same red/green the brick class above lands, now driven
+# through `resolve_identity`'s own call path against the promoted phase-4
+# catalog as the non-privileged acb_app role, UNBOUND: flag ON, an ACTIVE
+# member resolves GREEN off the RLS-EXEMPT `user_identity ⋈ org_membership`;
+# flag OFF, the `app_user` read still bricks RED; a suspended member is refused
+# by the `status='active'` filter. Seeded through `mirror_identity_membership`
+# (the shadow's own writer) so the whole path is the product's, not the test's.
+# ==========================================================================
+@_DB_GATE
+class TestTheReadCutoverIdentityLeg:
+    """The slice-3b done-when, R8 against the phase-4-promoted two-org catalog.
+
+    Runs `resolve_identity` through the shared seam (`tenant_engine_scope` points
+    it at the dedicated DB as the non-privileged `acb_app` role) on an UNBOUND
+    session — exactly how `deps._with_resolved_access` reaches it before a tenant
+    is bound. `app_user` is FORCE-RLS'd here, so the flag-OFF path returns zero
+    rows (the brick) while the flag-ON path resolves off the exempt shadow.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    @staticmethod
+    async def _purge_shadow(factory, email: str) -> None:
+        async with factory() as s:
+            await s.execute(
+                text(
+                    "DELETE FROM org_membership m USING user_identity ui "
+                    " WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e)"
+                ),
+                {"e": email},
+            )
+            await s.execute(
+                text("DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+                {"e": email},
+            )
+            await s.commit()
+
+    async def test_an_active_member_resolves_green_with_the_flag_on(
+        self, promoted, monkeypatch
+    ):
+        """GREEN: `IDENTITY_CUTOVER` ON, the identity leg resolves the tenant of
+        a clean ACTIVE member on an UNBOUND session — the exact place the
+        pre-cutover `app_user` read returned nothing and sign-in bricked."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=promoted.owner_email,
+                    display_name=promoted.owner_email,
+                    org_id=promoted.org_a,
+                    status="active",
+                )
+                user_id, org = await resolve_identity(promoted.owner_email)
+                assert org == promoted.org_a, (
+                    "the identity leg did not resolve the tenant UNBOUND — the "
+                    "read cutover is not GREEN")
+                assert user_id is not None, "no user_identity id was resolved"
+            finally:
+                await self._purge_shadow(factory, promoted.owner_email)
+
+    async def test_the_app_user_read_still_bricks_red_with_the_flag_off(
+        self, promoted, monkeypatch
+    ):
+        """RED: with the flag OFF, `resolve_identity` reads `app_user` (unbound,
+        FORCE-RLS'd → zero rows) — the brick, unchanged — EVEN WITH the shadow
+        seeded, proving the shadow is never consulted while the flag is unset
+        (the flag-OFF-byte-identical fence, in its live form)."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                # Seed the shadow so the ONLY reason flag-OFF returns nothing is
+                # that it reads app_user, not the (present) shadow.
+                await mirror_identity_membership(
+                    email=promoted.owner_email,
+                    org_id=promoted.org_a,
+                    status="active",
+                )
+                user_id, org = await resolve_identity(promoted.owner_email)
+                assert (user_id, org) == (None, None), (
+                    "flag OFF must read app_user unbound and brick RED — the "
+                    "shadow must not be consulted when IDENTITY_CUTOVER is unset")
+            finally:
+                await self._purge_shadow(factory, promoted.owner_email)
+
+    async def test_a_suspended_member_is_not_admitted_by_the_identity_leg(
+        self, promoted, monkeypatch
+    ):
+        """The `status='active'` filter is SELECTIVE, not blanket: with the flag
+        ON, an ACTIVE member resolves while a SUSPENDED one (same org) does not
+        — so a suspended member's stale-but-present shadow row can never bind a
+        tenant (and the bound role leg is the second gate anyway)."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        active = "active.member@h3rls.test"
+        suspended = "suspended.member@h3rls.test"
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=active, org_id=promoted.org_a, status="active")
+                await mirror_identity_membership(
+                    email=suspended, org_id=promoted.org_a, status="suspended")
+
+                _, active_org = await resolve_identity(active)
+                assert active_org == promoted.org_a, (
+                    "the active member was not admitted — the filter is not "
+                    "selective")
+
+                sus_id, sus_org = await resolve_identity(suspended)
+                assert (sus_id, sus_org) == (None, None), (
+                    "a SUSPENDED member was admitted by the identity leg — the "
+                    "status='active' filter is not applied")
+            finally:
+                await self._purge_shadow(factory, active)
+                await self._purge_shadow(factory, suspended)
+
+    def test_the_identity_leg_sql_reads_only_the_rls_exempt_tables(self):
+        """Structural companion (no seam): the imported `_IDENTITY_LEG_SQL` reads
+        the exempt shadow join, filters `status='active'`, and NEVER names
+        `app_user` — which is FORCE-RLS'd and would return zero rows unbound."""
+        assert "user_identity" in _IDENTITY_LEG_SQL
+        assert "org_membership" in _IDENTITY_LEG_SQL
+        assert "organization" in _IDENTITY_LEG_SQL
+        assert "status = 'active'" in _IDENTITY_LEG_SQL
+        assert "app_user" not in _IDENTITY_LEG_SQL, (
+            "the identity leg names app_user — it must read only the RLS-exempt "
+            "shadow tables, or it bricks unbound post-phase-4")
 
 
 # ==========================================================================

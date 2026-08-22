@@ -75,7 +75,12 @@ from fastapi import Depends, Header, HTTPException, Request
 from acb_common import get_logger
 from acb_common.db import bind_tenant
 
-from acb_auth.access import SERVICE_ACCESS, resolve_access, resolve_identity
+from acb_auth.access import (
+    SERVICE_ACCESS,
+    identity_cutover_enabled,
+    resolve_access,
+    resolve_identity,
+)
 from acb_auth.permissions import NO_ACCESS
 from acb_auth.roles import UserContext, UserRole, _coerce_role
 
@@ -278,26 +283,53 @@ async def _with_resolved_access(user: UserContext) -> UserContext:
     """
     if not user.email:
         return user
-    access = await resolve_access(
-        user.email, legacy_role=user.role.value, record_request=True,
-    )
-    user_id, organization_id = await resolve_identity(user.email)
-    enriched = user.with_access(
-        access, user_id=user_id, organization_id=organization_id
-    )
 
     # MT-1c / H2 — the ONE place a request binds its tenant
     # (`saas_multitenancy_handover.md` H2: "bind once, centrally, from the
     # authenticated session", never from a header/query/body — R11; the
-    # organization_id above came from the app_user row, not from the caller).
-    # `tenant_session()` then needs no argument anywhere on the request path.
-    # No release here: the gateway's TenantScopeMiddleware opened this
-    # request's scope and releases it after the response, so the binding
-    # cannot outlive the request even on servers that reuse a task. An
-    # unresolved identity (no app_user row) binds nothing, and a converted
+    # organization_id below came from a DB read keyed on the authenticated
+    # email, not from the caller). `tenant_session()` then needs no argument
+    # anywhere on the request path. No release here: the gateway's
+    # TenantScopeMiddleware opened this request's scope and releases it after
+    # the response, so the binding cannot outlive the request even on servers
+    # that reuse a task. An unresolved identity binds nothing, and a converted
     # handler then fails closed with TenantUnbound rather than defaulting.
-    if enriched.organization_id:
-        bind_tenant(enriched.organization_id)
+    if identity_cutover_enabled():
+        # ── H6 slice 3b — the read cutover (DARK behind IDENTITY_CUTOVER) ──
+        # TWO-PHASE resolve, so sign-in survives H3's phase-4 RLS:
+        #   1. IDENTITY LEG — `resolve_identity` reads the RLS-EXEMPT
+        #      `user_identity ⋈ org_membership` on the UNBOUND session (the
+        #      tenant is what it resolves), filtered to an ACTIVE membership.
+        #      Under phase-4 the old `app_user` reads returned 0 rows here and
+        #      sign-in bricked; the exempt tables do not.
+        #   2. BIND the resolved tenant — BEFORE the role leg, so `app_user`
+        #      becomes visible to it.
+        #   3. ROLE LEG — `resolve_access` reads roles/permissions from
+        #      `app_user` on the now-BOUND session, UNCHANGED from today (RBAC
+        #      re-key is slice 4). It remains the ACCESS authority: a residual
+        #      shadow orphan resolves to bind-with-no-access (fail-closed),
+        #      never a wrong-admit (§H6).
+        user_id, organization_id = await resolve_identity(user.email)
+        if organization_id:
+            bind_tenant(organization_id)
+        access = await resolve_access(
+            user.email, legacy_role=user.role.value, record_request=True,
+        )
+        enriched = user.with_access(
+            access, user_id=user_id, organization_id=organization_id
+        )
+    else:
+        # Flag OFF — byte-identical to today: same calls, same order, same SQL
+        # (`resolve_access` first, then `resolve_identity`, then bind).
+        access = await resolve_access(
+            user.email, legacy_role=user.role.value, record_request=True,
+        )
+        user_id, organization_id = await resolve_identity(user.email)
+        enriched = user.with_access(
+            access, user_id=user_id, organization_id=organization_id
+        )
+        if enriched.organization_id:
+            bind_tenant(enriched.organization_id)
 
     # Keep the legacy coarse role consistent with the org model, so a member
     # promoted to `admin` in the members UI immediately passes the

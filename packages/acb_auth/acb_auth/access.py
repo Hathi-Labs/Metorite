@@ -50,6 +50,34 @@ _cache: dict[str, tuple[float, EffectiveAccess]] = {}
 _tables_missing = False
 
 
+# ── H6 slice 3b — the read cutover flag (DARK, default OFF) ──────────────────
+
+def identity_cutover_enabled() -> bool:
+    """Whether sign-in resolves identity through the RLS-EXEMPT shadow tables.
+
+    WS-29 H6 slice 3b (D48). After H3's phase-4 RLS the tenant-DISCOVERY read on
+    the sign-in path runs on an UNBOUND session — the tenant is what it is trying
+    to resolve — so a read of the FORCE-RLS'd ``app_user`` returns ZERO rows and
+    every sign-in bricks (`saas_multitenancy_handover.md` §H6, characterized by
+    ``test_h3_rls_promotion_rehearsal.py``). With this flag ON,
+    :func:`resolve_identity` reads ``user_identity ⋈ org_membership ⋈
+    organization`` instead — the same RLS-EXEMPT tables ``console_resolve``
+    already reads unbound — filtered to an ACTIVE membership, and
+    ``deps._with_resolved_access`` binds the resolved tenant BEFORE the bound
+    role leg (``resolve_access``) reads ``app_user``.
+
+    **Default is UNSET = OFF, fail-closed — byte-identical to today.** Building
+    the branch DARK is AGENT-SAFE (D48); FLIPPING it on a live box is OWNER-GATE,
+    as are H3 phase-4 promotion and the prod backfill. Read here (not the
+    Next-side ``CUSTOMER_CONSOLE_RESOLVE_ENABLED``): the two-phase resolve is
+    entirely server-side in ``acb_auth``. The env idiom matches
+    ``deps._refuse_llm_key_identity`` / ``_trust_unverified_sso_headers``.
+    """
+    return os.getenv("IDENTITY_CUTOVER", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 # ── Engine (the one shared pool — acb_common.db, BO-10) ─────────────────────
 #
 # This module used to build its own 5+10 engine. It ran *inside* the gateway
@@ -673,10 +701,52 @@ async def resolve_access(
     return access
 
 
+#: ⚠️ **H6 slice 3b — the IDENTITY LEG (DARK behind ``IDENTITY_CUTOVER``).**
+#: The tenant-discovery read that resolves *which tenant* and *is this member
+#: live*, from the RLS-EXEMPT ``user_identity ⋈ org_membership ⋈ organization``
+#: — the SAME tables (and unbound posture) ``console_resolve._READ_SQL`` already
+#: reads at sign-in, reused not forked. Filtered to an ACTIVE membership: a
+#: suspended / removed / invited member (or one with no shadow row) resolves to
+#: no org, so nothing binds and the bound role leg then refuses — fail-closed.
+#: Returns ``id``/``org`` under the SAME column aliases as the ``app_user`` read
+#: below, so :func:`resolve_identity` is source-agnostic. NEVER names
+#: ``app_user`` (FORCE-RLS'd → 0 rows unbound, the brick this replaces). The
+#: status filter is only SAFE because the orphan-closure slice keeps
+#: ``org_membership`` free of purged/rolled-back ghosts (§H6).
+_IDENTITY_LEG_SQL = """
+    SELECT ui.id::text AS id,
+           o.id::text  AS org
+      FROM user_identity ui
+      JOIN org_membership m ON m.user_id = ui.id
+      JOIN organization o   ON o.id = m.organization_id
+     WHERE lower(ui.email) = :email
+       AND m.status = 'active'
+     ORDER BY m.joined_at DESC NULLS LAST, o.slug
+     LIMIT 1
+"""
+
+
 async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
-    """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``."""
+    """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``.
+
+    ⚠️ **H6 slice 3b — the read cutover, DARK behind ``IDENTITY_CUTOVER``.** This
+    is the tenant-DISCOVERY read on the sign-in path
+    (``deps._with_resolved_access``): it runs UNBOUND, because the tenant is what
+    it resolves, so after H3's phase-4 RLS the default ``app_user`` read returns
+    ZERO rows (``app_user`` is FORCE-RLS'd) and sign-in bricks. With
+    :func:`identity_cutover_enabled` ON it reads :data:`_IDENTITY_LEG_SQL` — the
+    RLS-EXEMPT ``user_identity ⋈ org_membership ⋈ organization``, filtered to an
+    ACTIVE membership — and ``deps`` binds the resolved tenant BEFORE the bound
+    role leg (:func:`resolve_access`) reads ``app_user``. Flag OFF is
+    byte-identical to today: the same ``app_user`` statement, so the shadow is
+    never consulted while the flag is unset.
+    """
     if not email:
         return None, None
+    sql = _IDENTITY_LEG_SQL if identity_cutover_enabled() else (
+        "SELECT id::text AS id, organization_id::text AS org "
+        "FROM app_user WHERE lower(email) = :email LIMIT 1"
+    )
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
@@ -684,11 +754,7 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
         async with factory() as session:
             row = (
                 await session.execute(
-                    text(
-                        "SELECT id::text AS id, organization_id::text AS org "
-                        "FROM app_user WHERE lower(email) = :email LIMIT 1"
-                    ),
-                    {"email": email.lower().strip()},
+                    text(sql), {"email": email.lower().strip()},
                 )
             ).mappings().first()
     except Exception:  # noqa: BLE001
