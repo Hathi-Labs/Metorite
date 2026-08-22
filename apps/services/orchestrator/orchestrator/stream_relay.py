@@ -940,6 +940,16 @@ async def run_detached(
             with contextlib.suppress(Exception):
                 from acb_common.db import bind_tenant
                 _tenant_token = bind_tenant(organization_id)
+        else:
+            # No tenant threaded to this detached run. The /copilot/chat surface
+            # runs the MAF agent directly (NOT run_agent_stream, so the
+            # executor's own missing-org warning never fires for it) and does not
+            # resolve org yet (slice 6) — LOG so that plumbing gap is VISIBLE in
+            # logs (WS-29 slice 3, P1). Signal only; org threading is slice 6.
+            _log.warning(
+                "stream_relay.detached_run_missing_org",
+                thread_id=thread_id[:12], source=source,
+            )
         try:
             async for line in gen:
                 if tee:

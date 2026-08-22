@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **561 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **first call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3)**; **~557 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -698,6 +698,49 @@ than defaulting; a test proves the refusal.
 > `event_payload` never becomes the run's org (spoofing guard); and an AST fence
 > proves the route sources `organization_id` from the authenticated user, never
 > `req.payload`.
+
+> ✅ **acb_graph slice 3 — chat_session writes/reads bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's four `chat_session` touch points now go through the slice-1
+> sync seam when the flag is ON: the two writes `_store_session_id` /
+> `_clear_stored_session_id` (fired inside `loop.run_in_executor(...)` worker
+> threads) and the two reads `_get_stored_session_id` /
+> `_session_workspace_override`. One helper, `_graph_session_opener(thread_id)`,
+> makes the choice on the CALLER's frame — flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a resolvable tenant → a
+> `lambda: acb_graph.tenant_session(org)`; flag ON + NO tenant → `None`. **The
+> org is captured on the EVENT LOOP before the `run_in_executor` hop and closed
+> over** (a worker thread never reads `_RUN_ORG` or a ContextVar — neither
+> survives the hop). **Fail-closed:** flag ON + no tenant → the write is SKIPPED
+> and logged (`executor.session_store_skipped_no_org` /
+> `…session_clear_skipped_no_org`), never written unbound, and the run never
+> crashes (best-effort session bookkeeping); the reads fall back (a fresh
+> session / the agent clone). The single flag reader is
+> `acb_graph.tenant_bind_enabled()` — later slices convert more `acb_graph` paths
+> behind it; do not add a second reader.
+> **Two slice-2 review findings folded in (load-bearing NOW that this slice reads
+> `_RUN_ORG` fail-closed):**
+> - **P2 — guarded pop.** `run_agent_stream`'s `finally` now calls
+>   `_guarded_pop_run_org(thread_id, organization_id)`, which drops the record
+>   ONLY if it is STILL this run's org (mirrors `_DETACHED_TASKS.pop` in
+>   stream_relay). A superseded run's late `finally` can no longer delete a newer
+>   same-thread run's org.
+> - **P1 — missing-org signal broadened.** The executor's missing-org warning
+>   now fires for EVERY source (`executor.run_missing_org`, was chat-only), and
+>   `run_detached` logs `stream_relay.detached_run_missing_org` when no org is
+>   threaded — so the plumbing gap on `/copilot/chat` (runs the MAF agent
+>   directly, not `run_agent_stream`) and email-automation chat (`source !=
+>   "chat"`) is VISIBLE in logs. Org threading for those two surfaces is still
+>   slice 6; this is signal only.
+> R7 fences (`tests/unit/test_acb_graph_chatsession_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `chat-session-write-bound-under-rls` (flag ON + orgA: the UPSERT lands and is
+> visible ONLY to orgA; flag ON + no org: SKIPPED + logged, no raise; RED-on-
+> removal: reverting to the unbound `get_session()` is RLS-refused so the row
+> never lands); `run-org-guarded-pop` (a superseded run's late finally preserves
+> a newer run's org — RED if the pop is made unconditional); and the flag-OFF
+> regression (opener IS `get_session`). Both RED-on-removal properties were
+> demonstrated by mutation on 2026-08-23.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

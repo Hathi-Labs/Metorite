@@ -1,6 +1,7 @@
 """SQLAlchemy engine + session factory. Schema lives in infra/postgres/01_schema.sql."""
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
@@ -13,7 +14,35 @@ from acb_common.db import TenantUnbound
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-__all__ = ["TenantUnbound", "get_engine", "get_session", "tenant_session"]
+__all__ = [
+    "TenantUnbound",
+    "get_engine",
+    "get_session",
+    "tenant_bind_enabled",
+    "tenant_session",
+]
+
+
+def tenant_bind_enabled() -> bool:
+    """Whether converted ``acb_graph`` call sites bind the caller's tenant.
+
+    WS-29 acb_graph slice 3. **Default UNSET = OFF, fail-closed.** When OFF a
+    converted call site opens the unbound :func:`get_session`, byte-identical to
+    the pre-slice runtime (this is what makes the conversions DARK). When ON it
+    opens :func:`tenant_session` instead, and a caller that cannot resolve a
+    tenant fails CLOSED (skips a best-effort write, or falls back on a read)
+    rather than reading/writing with an unbound tenant on a FORCE-RLS'd catalog.
+
+    This is the ONE reader of ``ACB_GRAPH_TENANT_BIND`` — later slices convert
+    more ``acb_graph`` paths behind the same flag; do not add a second reader.
+    The env idiom matches ``acb_auth.access.identity_cutover_enabled`` /
+    ``acb_auth.deps._refuse_llm_key_identity``. FLIPPING it on a live box is
+    OWNER-GATE (it presumes H3 phase-4 promotion); building the branch DARK is
+    agent-safe.
+    """
+    return os.getenv("ACB_GRAPH_TENANT_BIND", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def _engine_kwargs(settings) -> dict:
