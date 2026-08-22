@@ -473,11 +473,23 @@ async def mirror_membership_status(
 # harmless (nothing reads `org_membership.status`), but the moment the H6 read
 # cutover stops gating on `app_user` that orphan is a wrong-ADMIT, and reconcile
 # 183 CANNOT fix it (it joins `app_user`, which is gone). This closes it at the
-# SOURCE: purge deletes the org's membership row, and the GLOBAL `user_identity`
-# row too — but ONLY when it was the human's LAST membership. `user_identity` is
-# a cross-org record, so it must survive while any OTHER org still has the human
-# as a member; deleting it unconditionally would be the account-takeover
-# primitive's inverse (erasing a human from tenants that never purged them).
+# SOURCE by deleting ONLY THIS org's `org_membership` row.
+#
+# ⚠️ **The purge NEVER deletes `user_identity` — that is load-bearing, not an
+# omission (R7 fence: `no-user_identity-delete-on-purge`,
+# `test_h6_identity_shadow.py`).** Deleting the GLOBAL identity on the human's
+# LAST membership was a check-then-cascade RACE: the `NOT EXISTS` re-eval runs on
+# the purge's ORIGINAL snapshot and cannot see a concurrent (other-org,
+# same-human) membership committed in between, so `org_membership.user_id ...
+# ON DELETE CASCADE` then erased that OTHER org's row — org A's purge wiping org
+# B's member, the exact cross-tenant erasure this closure was meant to make
+# impossible. A membership-less `user_identity` row is instead HARMLESS: the read
+# cutover's identity leg reads `user_identity ⋈ org_membership`, so an identity
+# with zero memberships resolves to no org → no access (fail-closed), and a later
+# re-join reuses it via `ON CONFLICT (lower(email))`. Dropping the identity
+# delete removes the race BY CONSTRUCTION; global `user_identity`
+# lifecycle/pruning of the membership-less leftover is deferred to slice 5's
+# atomic mirror+prune (§H6).
 
 #: Delete THIS org's membership for the identity resolved by `lower(email)`
 #: (162's functional index; R10). Scoped to `(org, identity)` — it removes at
@@ -490,30 +502,30 @@ _PURGE_MEMBERSHIP_SQL = """
        AND m.organization_id = CAST(:org AS UUID)
 """
 
-#: Delete the GLOBAL identity ONLY when no membership remains — the mirror image
-#: of the create-only insert. A human still a member of ANOTHER org keeps their
-#: `user_identity` row (and, via ON DELETE CASCADE, all its memberships), so a
-#: purge in one tenant never erases them from another. The `NOT EXISTS` is
-#: evaluated AFTER the membership delete above, in the same session.
-_PURGE_IDENTITY_IF_ORPHAN_SQL = """
-    DELETE FROM user_identity ui
-     WHERE lower(ui.email) = lower(:email)
-       AND NOT EXISTS (
-           SELECT 1 FROM org_membership m WHERE m.user_id = ui.id
-       )
-"""
-
 
 async def purge_identity_shadow(*, email: str, org_id: str) -> None:
-    """Remove the identity shadow for a member being PURGED from ``org_id``.
+    """Remove THIS org's identity-shadow membership for a member being PURGED.
 
     WS-29 H6 orphan-closure (D48), DARK. The mirror image of
     :func:`mirror_identity_membership`: where provisioning create-only-INSERTs
-    the shadow, a purge deletes it — the org's ``org_membership`` row
-    unconditionally, and the GLOBAL ``user_identity`` row ONLY when it was the
-    human's LAST membership. ``user_identity`` is a cross-org record, so it is
-    kept while any other org still has the human as a member (§H6); erasing it
-    unconditionally would delete a human from tenants that never purged them.
+    the shadow, a purge deletes ONLY the org's ``org_membership`` row — the
+    active shadow the read cutover would otherwise wrong-ADMIT (a member of
+    another org keeps every one of their memberships untouched, because this is
+    scoped to ``(org, identity)``).
+
+    ⚠️ **It NEVER deletes ``user_identity``, and that is deliberate (R7 fence:
+    ``no-user_identity-delete-on-purge``).** Deleting the GLOBAL identity on the
+    human's LAST membership was a check-then-cascade RACE: the ``NOT EXISTS``
+    re-eval ran on the purge's ORIGINAL snapshot and could not see a concurrent
+    (other-org, same-human) membership committed in between, so
+    ``org_membership.user_id ... ON DELETE CASCADE`` then erased that OTHER org's
+    row — org A's purge wiping org B's member. A membership-less ``user_identity``
+    is HARMLESS instead: the read cutover's identity leg reads
+    ``user_identity ⋈ org_membership``, so zero memberships resolve to no org →
+    no access (fail-closed), and a later re-join reuses the row via
+    ``ON CONFLICT (lower(email))``. Global ``user_identity`` lifecycle/pruning of
+    the membership-less leftover is deferred to slice 5's atomic mirror+prune
+    (§H6).
 
     Best-effort, and **never raises, never changes the caller's answer** — the
     exact posture of :func:`mirror_identity_membership` /
@@ -521,10 +533,17 @@ async def purge_identity_shadow(*, email: str, org_id: str) -> None:
     authoritative and the purge transaction must be untouched by a shadow write.
     It opens its OWN short session AFTER the authoritative purge has committed,
     so a failed shadow delete cannot poison (or roll back) the irreversible
-    purge; the shadow tables are RLS-EXEMPT, so no tenant bind is needed. A
-    failure leaves the row for migration 182/183's idempotent reconcile — but
-    the P0 it closes is the ACTIVE orphan the read cutover would wrong-ADMIT, so
-    a failed delete is logged loudly.
+    purge; the shadow tables are RLS-EXEMPT, so no tenant bind is needed.
+
+    ⚠️ **A failed best-effort delete is NOT self-healed by migration 182/183.**
+    182 only ``INSERT ... DO NOTHING`` (it never deletes) and 183
+    ``UPDATE ... FROM app_user`` joins the now-purged ``app_user`` row, so
+    neither can reach a purge orphan (stated in 183's header, §H6 and
+    ``members.py``). If this throws after the authoritative purge commits, the
+    active ``org_membership`` shadow orphan REMAINS — closing that
+    swallowed-failure window is slice 5's atomic prune (or a dedicated
+    purge-reconcile), so the failure is logged rather than silently trusted to
+    reconcile.
     """
     email = (email or "").strip()
     if not email or "@" not in email or not org_id:
@@ -537,9 +556,6 @@ async def purge_identity_shadow(*, email: str, org_id: str) -> None:
             await session.execute(
                 text(_PURGE_MEMBERSHIP_SQL),
                 {"email": email, "org": str(org_id)},
-            )
-            await session.execute(
-                text(_PURGE_IDENTITY_IF_ORPHAN_SQL), {"email": email},
             )
             await session.commit()
     except Exception as exc:

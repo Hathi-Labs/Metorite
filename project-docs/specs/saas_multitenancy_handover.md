@@ -722,13 +722,22 @@ becomes a wrong-ADMIT the moment RBAC stops gating on `app_user`, and reconcile 
 reach it (it joins the deleted/rolled-back `app_user`). So each orphan had to be closed where
 it is CREATED, not where it is read. All four were DARK (no reader consumes
 `org_membership.status` yet); all four are now closed:
-1. **PURGE orphan — CLOSED.** `members.py` `purge_member` (`_PURGE_DELETES` ~:431) deletes
+1. **PURGE orphan — CLOSED.** `members.py` `purge_member` (`_PURGE_DELETES` ~:452) deletes
    `app_user` but not the shadow, so it now also calls `acb_auth.access.purge_identity_shadow`
-   post-commit (best-effort, own session): it deletes the org's `org_membership` row
-   unconditionally and the GLOBAL `user_identity` row ONLY when it was the human's LAST
-   membership — the create-only mirror's inverse, so a member of another org keeps the identity.
-   Fence: `test_h6_identity_shadow.py` `TestThePurgeClosure` (R8) + `TestTheOrphanClosure`
-   (shape).
+   post-commit (the call is `members.py` ~:678; best-effort, own session): it deletes ONLY the
+   org's `org_membership` row — the active-shadow wrong-ADMIT source. It **NEVER** touches the
+   GLOBAL `user_identity`: deleting it on the human's LAST membership was a check-then-cascade
+   cross-tenant erasure RACE (a concurrent other-org membership committed between the
+   `NOT EXISTS` re-eval and the delete was CASCADE-erased — org A's purge wiping org B's
+   member), so the identity delete was dropped and the race eliminated by construction. A
+   membership-less `user_identity` is harmless (the identity leg reads
+   `user_identity ⋈ org_membership` → no org → no access, fail-closed) and re-used on re-join
+   via `ON CONFLICT (lower(email))`; global `user_identity` lifecycle/pruning of the
+   membership-less leftover is deferred to slice 5's atomic mirror+prune. A failed best-effort
+   purge is NOT self-healed by 182/183 (182 never deletes; 183 joins the now-gone `app_user`) —
+   that swallowed-failure window is also slice 5's. Fence: `test_h6_identity_shadow.py`
+   `TestThePurgeClosure` (R8, incl. the kept-identity case) + `TestTheOrphanClosure`'s
+   `no-user_identity-delete-on-purge` (shape).
 2. **APPROVE-ROLLBACK orphan — CLOSED.** The provision-path mirror used to commit on its OWN
    session INSIDE the caller's still-open txn. Both mirror calls moved OUT of
    `_common.provision_member` into its callers (`members.invite_member`,

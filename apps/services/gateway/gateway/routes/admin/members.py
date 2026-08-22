@@ -670,11 +670,12 @@ async def purge_member(
     # `app_user` but NOT the RLS-EXEMPT shadow, so without this a purged ACTIVE
     # member left an active `org_membership` ORPHAN (no `app_user`) that reconcile
     # 183 can never fix (it joins `app_user`) and the H6 read cutover would
-    # wrong-ADMIT. Delete the org's membership row, and the GLOBAL `user_identity`
-    # only when this was the human's LAST membership (it is cross-org — a member of
-    # another org keeps it). Best-effort, own session, AFTER the irreversible purge
-    # committed, so a failed shadow delete can never roll the purge back. See
-    # `acb_auth.access.purge_identity_shadow`.
+    # wrong-ADMIT. Deletes ONLY the org's `org_membership` row — the GLOBAL
+    # `user_identity` is NEVER touched (deleting it on the last membership was a
+    # check-then-cascade cross-tenant erasure race; a membership-less identity is
+    # harmless and re-used on re-join — see `purge_identity_shadow`). Best-effort,
+    # own session, AFTER the irreversible purge committed, so a failed shadow
+    # delete can never roll the purge back.
     await purge_identity_shadow(email=addr, org_id=org_id)
 
     invalidate_for(member["email"])
