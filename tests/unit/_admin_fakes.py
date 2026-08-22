@@ -674,6 +674,20 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
         yield fake
         await fake.commit()
 
+    # WS-29 H6 slice 1: `provision_member` dual-writes the RLS-EXEMPT identity
+    # shadow through `acb_auth.access.mirror_identity_membership`, which opens its
+    # OWN session (mirroring `_record_signin_request`). It is best-effort and
+    # never touches this fake or its observable state (`committed`, `statements`),
+    # but left un-patched it would attempt a REAL connection from a hermetic test.
+    # No-op'd here on the module that owns `provision_member`; its behaviour is
+    # proven against real Postgres in `tests/unit/test_h6_identity_shadow.py`.
+    from gateway.routes.admin import _common as _common_mod
+
+    async def _no_mirror(**_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(_common_mod, "mirror_identity_membership", _no_mirror)
+
     for module in modules:
         monkeypatch.setattr(module, "_tenant_session", _tenant_session)
         monkeypatch.setattr(

@@ -1,11 +1,14 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
 **Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
-scratch 2026-08-22** (see H1's result block and the H3 REHEARSAL RESULT block; the
-two-org isolation fixture + brick characterization landed as
-`tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user sign-in brick is
-now written up as an OWNER DECISION in §H3.2 — **live promotion + the app_user fix
-remain OWNER-GATE, not enacted**) · **Created:** 2026-08-08 ·
+scratch 2026-08-22; H6 SLICE 1 SHIPPED (dark) 2026-08-22** (see H1's result block and
+the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick characterization
+landed as `tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user sign-in brick
+is now written up as an OWNER DECISION in §H3.2; **H6 slice 1** = the identity-shadow
+dual-write + catch-up backfill (migration 182), fenced by
+`tests/unit/test_h6_identity_shadow.py` — **no read moved**, see §H6 — **live promotion,
+the read cutover, the app_user fix + any prod backfill remain OWNER-GATE, not enacted**) ·
+**Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
 `saas_multitenancy.md` §11 **MT-1j · Tenant-side organization provisioning**.** It is not
@@ -644,10 +647,98 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
+
+⚠️ **SLICE 1 SHIPPED 2026-08-22 (WS-29, DARK — no read moved).** The shadow tables were
+COMPLETE only for members present at 159 and STALE for every invite/bootstrap since. Slice
+1 closes that so H6's read cutover has current tables to move onto, WITHOUT moving any read:
+- **Dual-write** on both `app_user` write paths — `acb_auth.access.mirror_identity_membership`
+  (best-effort, own session, mirroring `_record_signin_request`) is called after
+  `_BOOTSTRAP_OWNER_SQL` (in `ensure_owner_bootstrap`) and after `_PROVISION_MEMBER_SQL` (in
+  `_common.provision_member`). It upserts one `user_identity` per `lower(email)` and a
+  **create-only** `org_membership` (`ON CONFLICT (organization_id, user_id) DO NOTHING`,
+  no `SET organization_id`) — so it can NEVER move an identity between orgs (done-when 3).
+- **Catch-up backfill** — `infra/postgres/182_identity_membership_catchup.sql` re-runs 159's
+  idempotent seed for every member added since (additive, `DO NOTHING`, re-run = 0 net change).
+- Fence: `tests/unit/test_h6_identity_shadow.py` (R8, in `pr-check.yml`'s skip guard) proves
+  one email holds membership in TWO orgs, the create-only guard never rewrites the first, and
+  the backfill reconciles + is idempotent (done-when 2 + 3). `app_user` reads and both upserts
+  are byte-identical — the dual-write is purely additive on separate statements/session.
+
+🚨 **SLICE 1 MIRRORS EXISTENCE, NOT STATUS — a HARD INPUT the read cutover MUST handle
+(reviewer P2, could become a P0 in the cutover).** The dual-write is create-only and fires
+only on invite/approve/bootstrap; the suspend / remove / reactivate paths (`members.py`
+`update_member`/`remove_member`) mutate `app_user.status` and do NOT call the mirror, and
+`ON CONFLICT DO NOTHING` suppresses any status update on the existing row. So
+`org_membership.status` (and `joined_at`/`last_active_at`) drift STALE from `app_user`.
+Harmless while dark — no tenant-plane reader consumes `org_membership.status`
+(`console_resolve` filters `resolved_at IS NOT NULL` only). **Before the read cutover reads
+status from the shadow, it MUST either (a) add status mirroring to the suspend/remove/
+reactivate paths, or (b) reconcile status against `app_user` — otherwise a suspended/removed
+member is admitted from a stale shadow row.** Two related, deferred inputs for the cutover:
+the create-only invite path can leave an over-count ORPHAN row (`resolved_at` NULL, no
+`app_user`) if the caller's txn rolls back after `provision_member` returns — migration 182
+(`DO NOTHING`, no `DELETE`) cannot prune it, so the cutover must filter `resolved_at IS NOT
+NULL` or intersect with `app_user`; and the two identity/org SQL constants are byte-identical
+to `console_resolve`'s (`_UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL`) but not pinned equal by a
+test (silent-drift risk — a later slice should add the equality assertion or lift them to a
+shared module; a module-level import is blocked by `test_console_dependency_boundary`'s
+importer cap).
+
+✅ **SLICE 3a SHIPPED 2026-08-22 (WS-29, DARK — D48 RATIFIED) closes the FORWARD half of
+the status-drift P0 above.** D48 (2026-08-22, owner-ratified; `work_plan.md` §3) re-keys
+RBAC onto `user_identity` in two phases with status mirrored FORWARD — reconcile-from-
+`app_user` is impossible post-RLS (the identity leg reads UNBOUND while `app_user` is
+RLS-forced), so status must live current in the RLS-EXEMPT `org_membership.status`. Slice
+3a builds exactly that, still moving NO read:
+- **Forward status mirror** — `acb_auth.access.mirror_membership_status` (best-effort, own
+  session, mirroring `mirror_identity_membership`) called after the authoritative
+  `app_user` write in `members.py`'s `update_member` (suspend/reactivate/activate) and
+  `remove_member` (remove), and in `_common.provision_member` (approve's invited→active,
+  which the create-only mirror could not propagate). It is a **scoped UPDATE of an EXISTING
+  (org, identity) row** — sets ONLY `status` (+ `joined_at` on activation, as `app_user`
+  does), NEVER `organization_id`/`user_id`, so it can never move an identity between orgs;
+  a missing row is a 0-row no-op (existence stays 159/182/slice-1's job).
+- **Reconcile migration** — `infra/postgres/183_org_membership_status_reconcile.sql` aligns
+  every already-drifted `org_membership.status` to `app_user.status`
+  (`IS DISTINCT FROM`-guarded, idempotent, no INSERT/DELETE, never touches `resolved_at`).
+- Fence: `tests/unit/test_h6_identity_shadow.py` extended (R8) — suspend/remove/reactivate
+  propagate, the mirror + reconcile never move an identity (org-B row untouched), the
+  reconcile aligns a drifted row and re-runs at 0 changes, and `app_user` is byte-identical
+  after the mirror. `app_user` stays authoritative; the mirror is additive on separate
+  statements/session.
+🚨 **CUTOVER CHECKLIST — active `org_membership` rows that reconcile 183 CANNOT fix, so the
+read cutover (slice 3b) MUST read status only for rows still present in `app_user` (join /
+intersect), and slice 5 (D48 terminal) must make the mirror atomic + prune on delete.** All
+are DARK today (no reader consumes `org_membership.status`); each becomes a wrong-admit the
+moment a read moves:
+1. **PURGE orphan** — `members.py` `purge_member` (`_PURGE_DELETES` ~:488) deletes `app_user`
+   but NOT `org_membership`/`user_identity`; an active member purged directly leaves an active
+   shadow row with no `app_user`. 183 joins `app_user`, so it can never touch it.
+2. **APPROVE-ROLLBACK orphan** — the provision-path mirror commits on its OWN session INSIDE
+   the caller's txn (`_common.provision_member` ~:791; unlike `update_member`/`remove_member`
+   which mirror AFTER their `_tenant_session` commits). A concurrent-approve 409
+   (`access_requests.py` `_decide`) rolls back `app_user` while the committed shadow stays
+   `active` → active shadow over `invited`/absent `app_user`. Same class as slice 1's
+   create-only over-count orphan; slice 5's atomic-write is the real fix.
+3. **Create-only over-count orphan** (slice 1) — a caller rollback after `provision_member`
+   returns leaves an existence orphan (`resolved_at` NULL); 183 (`DO NOTHING`/no DELETE)
+   cannot prune it.
+4. **Un-pinned SQL** — `access._MIRROR_IDENTITY_SQL`/`_MIRROR_ORG_BY_SLUG_SQL` are
+   byte-identical to `console_resolve._UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL` but no test
+   pins them equal (silent-drift risk; a module-level import is blocked by
+   `test_console_dependency_boundary`'s importer cap — add an equality assert or lift to a
+   shared module).
+
+**Slice 3b (the read cutover) and the `IDENTITY_CUTOVER` flag are NOT in 3a and stay
+OWNER-GATE.**
+
+**Still OWNER-GATE / not done in slice 1:** the read cutover (done-when 1 + 4), any
+`IDENTITY_CUTOVER` flip, H3 promotion, the `app_user` carve-out, and executing the backfill
+against prod.
 
 ⚠️ **The two upserts that block this — anchors re-measured 2026-08-19:**
 `acb_auth/access.py` (`_BOOTSTRAP_OWNER_SQL`) and
