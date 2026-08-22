@@ -141,6 +141,11 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
 
     return {
         "email": user.email or "",
+        # An opaque identity token for display/correlation, NOT an app_user
+        # foreign key — the backend keys on email. Its id-space depends on
+        # IDENTITY_CUTOVER (H6 slice 3b): OFF it is `app_user.id`, ON it is the
+        # RLS-EXEMPT `user_identity.id` (a stable per-human id). A consumer that
+        # joins this to `app_user.id` breaks the day the flag flips; use email.
         "user_id": user.user_id or "",
         "authenticated": bool(user.email),
         "is_active": access.is_active,

@@ -798,20 +798,67 @@ cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4
   the `console_resolve._READ_SQL` shape, reused not forked) when the flag is ON, and the
   byte-identical `app_user` statement when OFF.
 - **The orchestration** — `deps._with_resolved_access` runs the identity leg FIRST, `bind_tenant`s
-  the resolved org, THEN calls `resolve_access` (the role leg) on the now-BOUND session, so its
-  `app_user`-derived permission read stays the ACCESS authority (a residual shadow orphan resolves
-  to bind-with-no-access, never a wrong-admit). Flag OFF keeps today's exact order/SQL.
+  the resolved org, THEN calls `resolve_access` (the role leg), so its `app_user`-derived
+  permission read stays the ACCESS authority (a residual shadow orphan resolves to
+  bind-with-no-access, never a wrong-admit). ⚠️ **The role leg is GUC-bound INSIDE `resolve_access`,
+  not by `bind_tenant` (P0 repair 2026-08-22 — see below).** `bind_tenant` sets only the
+  `_TENANT` ContextVar; the GUC `app.tenant_id` that phase-4 RLS keys on is applied ONLY by
+  `tenant_session()` (`set_config(..., true)`, db.py). So when the flag is ON and a tenant is
+  bound, `resolve_access` opens its `app_user` read through `tenant_session()` (the ONE GUC seam,
+  reused not forked — R5); flag OFF, or ON with nothing bound, keeps the raw unbound session
+  byte-identical to today.
 - Fences (R7, R8): `test_h3_rls_promotion_rehearsal.py::TestTheReadCutoverIdentityLeg` — flag-ON
   GREEN, flag-OFF RED (brick, even with the shadow seeded), and a SUSPENDED member refused by the
-  `status='active'` filter, all through `resolve_identity`'s own call path against the phase-4
-  catalog as `acb_app` UNBOUND; `test_h6_identity_shadow.py::TestTheReadCutoverFlag` — the DB-free
-  flag-switch (OFF→`app_user`, ON→exempt shadow) and default-OFF env idiom.
+  `status='active'` filter, through `resolve_identity`'s own call path; **`::TestTheReadCutoverEndToEnd`
+  (the end-to-end-two-phase fence, P0 repair) — the FULL `deps._with_resolved_access` composition
+  (identity leg → bind → role leg) UNBOUND with the flag ON admits a clean ACTIVE member
+  is_active=True WITH their real role (GREEN), and the mutation (role leg blind to the bound tenant)
+  → is_active=False (RED), plus the multi-org-safe deny**; all against the phase-4 catalog as
+  `acb_app` UNBOUND. `test_h6_identity_shadow.py::TestTheReadCutoverFlag` — the DB-free flag-switch
+  (OFF→`app_user`, ON→exempt shadow), default-OFF env idiom, and the multi-org COUNT decision
+  (one binds, two deny).
 - **DEFERRED to a later slice (not the sign-in brick, and RBAC-blocked):** `org_owner_of` /
   `_HAS_OWNER_SQL` / `ensure_owner_bootstrap` resolve the OWNER *role*, which lives in the
   FORCE-RLS'd `user_role` table with no exempt-table equivalent (`org_membership` has no `role`
   column) — moving them IS the slice-4 RBAC re-key this slice's gate excludes. `membership_of` is
   a signup-path read whose active-only semantics belong with that path's decision, not the
   sign-in cutover.
+
+🔧 **SLICE 3b REPAIR ROUND 2026-08-22 (WS-29, branch `ws-29-h6-slice3b-readcutover-v2`) — one P0 + two P2s from diff-review, all closed DARK.**
+- **P0 — the role leg was NOT actually RLS-bound (total-lockout brick unfixed).** `bind_tenant`
+  (db.py) sets only the `_TENANT` ContextVar; the GUC `app.tenant_id` phase-4 RLS keys on is
+  applied in EXACTLY ONE place — `tenant_session()`'s `set_config(..., true)`. But `resolve_access`
+  opened a RAW `get_session_factory()` session with no GUC, so under phase-4 RLS + `IDENTITY_CUTOVER`
+  ON its read of the FORCE-RLS'd `app_user`/`user_role` returned 0 rows → `EffectiveAccess(is_active=False)`
+  → **every member locked out**, the exact brick the cutover exists to remove (it only "worked"
+  pre-phase-4, where `app_user` is readable unbound — the condition under which the slice is
+  pointless). **Fix:** when the flag is ON and a tenant is bound (`current_tenant()` set),
+  `resolve_access` opens its read through `tenant_session()` — the existing GUC seam, reused not
+  forked (R5); the OFF/unbound path stays the raw session, byte-identical. Fence: the new
+  `TestTheReadCutoverEndToEnd` (R8) — GREEN admits, mutation (role leg blind to the bind) → RED
+  is_active=False. This is the fence whose absence let the P0 through: the prior GREEN drove only
+  `resolve_identity` in isolation, never `resolve_access` under the bind.
+- **P2a — multi-org identity-leg determinism.** `_IDENTITY_LEG_SQL`'s `ORDER BY joined_at DESC …
+  LIMIT 1` could bind the WRONG org for a human with >1 active membership (console-created
+  memberships leave `joined_at` NULL → tiebreak on slug). Now `LIMIT 2` + a COUNT decision in
+  `resolve_identity`: exactly one active membership binds; more than one with no disambiguating host
+  is the WorkspaceChooserRequired / deny case (`(None, None)`; host-based selection is MT-1f) —
+  never a silent arbitrary bind. Fences: the multi-org-safe cases in `TestTheReadCutoverEndToEnd`
+  (R8, two real memberships) and `TestTheReadCutoverFlag` (DB-free COUNT).
+- **P2b — `user_id` id-space divergence.** ON, `resolve_identity` returns `user_identity.id`; OFF,
+  `app_user.id` — different UUID spaces, surfaced by `/auth/me` (`routes/admin/me.py`). No consumer
+  keys on it (the backend keys on email; chat.py's "user_id" is the email), so it is DOCUMENTED as
+  an opaque per-human identity token, never an `app_user` FK, at `resolve_identity`,
+  `UserContext.user_id` (roles.py) and the `/auth/me` payload — so a future consumer cannot silently
+  treat it as an `app_user` key.
+- ⚠️ **STILL-OPEN WRITE-BRICK before the flip (co-located here from §H3.2).** `resolve_access`'s
+  READ is now GUC-bound, but `ensure_owner_bootstrap()` still runs `_BOOTSTRAP_OWNER_SQL`'s INSERT
+  into the RLS-FORCED `app_user` at gateway startup on an UNBOUND session (no request, so nothing
+  binds), so under phase-4 RLS its `WITH CHECK` compares `organization_id` against the unset GUC
+  (NULL) and REFUSES the write — an ownerless box can never bootstrap its first owner (§H3.2, and
+  `test_the_unbound_owner_bootstrap_write_is_rejected` characterizes it). That is a WRITE on the
+  slice-4 RBAC path (owner role lives in FORCE-RLS'd `user_role`), not the sign-in READ this slice
+  fixes; it must be handled before `IDENTITY_CUTOVER` is flipped alongside phase-4.
 
 **Gate (D48 — H6 "ships dark, lands dark BEFORE H3").** Building H6 slices DARK — flag OFF,
 byte-identical `app_user` writes/reads, no read moved — is 🟢 AGENT-SAFE, and that INCLUDES

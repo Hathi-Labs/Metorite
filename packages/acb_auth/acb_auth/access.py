@@ -20,8 +20,13 @@ import time
 
 from acb_common import get_logger
 
-# The one shared pool (BO-10) — see the Engine section below. Re-exported under
-# the private name this module has always used.
+# The one shared pool (BO-10) — see the Engine section below. `get_session_factory`
+# is re-exported under the private name this module has always used
+# (`tests/unit/test_signin_requests.py` monkeypatches it onto a fixture engine).
+# `current_tenant` + `tenant_session` are the ONE tenant-GUC seam (db.py); the
+# bound role leg in `resolve_access` reuses them under IDENTITY_CUTOVER rather
+# than applying `app.tenant_id` a second way (R5).
+from acb_common.db import current_tenant, tenant_session
 from acb_common.db import get_session_factory as _get_session_factory
 
 from acb_auth.permissions import (
@@ -632,8 +637,21 @@ async def resolve_access(
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
-        factory = _get_session_factory()
-        async with factory() as session:
+        # H6 slice 3b — the ROLE LEG session. Under H3 phase-4 RLS ``app_user``
+        # is FORCE-RLS'd, so when the cutover is ON and ``deps._with_resolved_access``
+        # has already bound the tenant (the identity leg resolved the org), this
+        # read MUST run on a session whose ``app.tenant_id`` GUC is set — else RLS
+        # returns zero rows and a live member resolves ``is_active=False``, the
+        # total-lockout brick the cutover exists to fix. Reuse the ONE GUC seam
+        # (``tenant_session`` → ``set_config``, db.py); do NOT apply the GUC a
+        # second way (R5). Flag OFF — or ON with nothing bound (a background
+        # fan-out over someone else's email) — is byte-identical to today: a raw
+        # unbound session, no GUC, ``app_user`` read by email as it always was.
+        if identity_cutover_enabled() and current_tenant() is not None:
+            session_cm = tenant_session()
+        else:
+            session_cm = _get_session_factory()()
+        async with session_cm as session:
             row = (
                 await session.execute(text(_ACCESS_SQL), {"email": key})
             ).mappings().first()
@@ -713,6 +731,16 @@ async def resolve_access(
 #: ``app_user`` (FORCE-RLS'd → 0 rows unbound, the brick this replaces). The
 #: status filter is only SAFE because the orphan-closure slice keeps
 #: ``org_membership`` free of purged/rolled-back ghosts (§H6).
+#:
+#: ⚠️ **``LIMIT 2``, not ``LIMIT 1`` — the P2a multi-org-safe fetch.** A human
+#: may hold an ACTIVE membership in more than one org, and console-created
+#: memberships leave ``joined_at`` NULL, so the old ``ORDER BY joined_at DESC …
+#: LIMIT 1`` would tiebreak on ``slug`` and silently bind the WRONG org.
+#: Fetching TWO lets :func:`resolve_identity` decide by COUNT: exactly one
+#: active membership binds; MORE THAN ONE with no disambiguating host is the
+#: WorkspaceChooserRequired / deny case (host-based selection is MT-1f, not this
+#: slice). The ``ORDER BY o.slug`` only stabilises the two-row window; it never
+#: DECIDES which org wins, because two rows always deny.
 _IDENTITY_LEG_SQL = """
     SELECT ui.id::text AS id,
            o.id::text  AS org
@@ -721,8 +749,8 @@ _IDENTITY_LEG_SQL = """
       JOIN organization o   ON o.id = m.organization_id
      WHERE lower(ui.email) = :email
        AND m.status = 'active'
-     ORDER BY m.joined_at DESC NULLS LAST, o.slug
-     LIMIT 1
+     ORDER BY o.slug
+     LIMIT 2
 """
 
 
@@ -740,21 +768,47 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     role leg (:func:`resolve_access`) reads ``app_user``. Flag OFF is
     byte-identical to today: the same ``app_user`` statement, so the shadow is
     never consulted while the flag is unset.
+
+    ⚠️ **The returned ``user_id`` is id-space-dependent (P2b).** OFF it is
+    ``app_user.id``; ON it is the RLS-EXEMPT ``user_identity.id`` — a stable
+    per-human identity id, a DIFFERENT UUID space. It is an opaque identity token
+    for display/correlation only (``/auth/me`` surfaces it), never an
+    ``app_user`` foreign key: the backend keys on email, and the org is the
+    second element, bound before :func:`resolve_access`'s ``app_user`` read.
+
+    ⚠️ **Multi-org SAFE, never silently-wrong (P2a).** A human with exactly ONE
+    active membership binds it. A human with >1 active membership and no
+    disambiguating host resolves to ``(None, None)`` — the deny / chooser case
+    (host-based selection is MT-1f); this NEVER arbitrarily picks one.
     """
     if not email:
         return None, None
-    sql = _IDENTITY_LEG_SQL if identity_cutover_enabled() else (
-        "SELECT id::text AS id, organization_id::text AS org "
-        "FROM app_user WHERE lower(email) = :email LIMIT 1"
-    )
+    key = email.lower().strip()
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
         factory = _get_session_factory()
         async with factory() as session:
+            if identity_cutover_enabled():
+                # P2a: fetch up to TWO active memberships and decide by COUNT —
+                # exactly one binds; zero is "not a member"; more than one is the
+                # deny / WorkspaceChooserRequired case, never an arbitrary bind.
+                rows = (
+                    await session.execute(
+                        text(_IDENTITY_LEG_SQL), {"email": key},
+                    )
+                ).mappings().all()
+                if len(rows) != 1:
+                    return None, None
+                return rows[0]["id"], rows[0]["org"]
+            # Flag OFF — byte-identical to today: the single ``app_user`` read.
             row = (
                 await session.execute(
-                    text(sql), {"email": email.lower().strip()},
+                    text(
+                        "SELECT id::text AS id, organization_id::text AS org "
+                        "FROM app_user WHERE lower(email) = :email LIMIT 1"
+                    ),
+                    {"email": key},
                 )
             ).mappings().first()
     except Exception:  # noqa: BLE001

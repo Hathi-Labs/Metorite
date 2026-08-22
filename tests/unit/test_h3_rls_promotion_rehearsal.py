@@ -58,6 +58,7 @@ pytest.importorskip("sqlalchemy")
 # characterizes THE code's own SQL under phase-4 policies; a copy would keep
 # passing after the brick is fixed (H6 / an app_user carve-out), the one moment
 # the characterization must change.
+import acb_auth.access as access_mod
 from acb_auth.access import (
     _ACCESS_SQL,
     _BOOTSTRAP_OWNER_SQL,
@@ -65,6 +66,9 @@ from acb_auth.access import (
     mirror_identity_membership,
     resolve_identity,
 )
+from acb_auth.deps import _with_resolved_access
+from acb_auth.roles import UserContext, UserRole
+from acb_common.db import clear_tenant
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
@@ -538,6 +542,207 @@ class TestTheReadCutoverIdentityLeg:
         assert "app_user" not in _IDENTITY_LEG_SQL, (
             "the identity leg names app_user — it must read only the RLS-exempt "
             "shadow tables, or it bricks unbound post-phase-4")
+
+
+# ==========================================================================
+# H6 slice 3b — THE END-TO-END TWO-PHASE FENCE (repair round, the P0 the
+# identity-leg-in-isolation fence above missed). The role leg is NOT
+# RLS-bound by `bind_tenant` alone — `bind_tenant` sets only the ContextVar,
+# never the GUC — so under phase-4 RLS + IDENTITY_CUTOVER=ON a live member's
+# `resolve_access` read of the FORCE-RLS'd `app_user` returned 0 rows and
+# every member was locked out (the cutover did not fix the brick it exists
+# for). This drives the FULL `deps._with_resolved_access` composition (identity
+# leg → bind → role leg) against the promoted two-org catalog as `acb_app`,
+# UNBOUND: GREEN a clean ACTIVE member resolves is_active=True WITH their real
+# role; RED the mutation (role leg blind to the bound tenant) → is_active=False.
+# ==========================================================================
+async def _purge_shadow_rows(factory, email: str) -> None:
+    """Delete an identity's shadow (org_membership + user_identity) — the
+    module-level twin of ``TestTheReadCutoverIdentityLeg._purge_shadow``, so the
+    end-to-end fence cleans up without reaching into that class."""
+    async with factory() as s:
+        await s.execute(
+            text(
+                "DELETE FROM org_membership m USING user_identity ui "
+                " WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e)"
+            ),
+            {"e": email},
+        )
+        await s.execute(
+            text("DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+            {"e": email},
+        )
+        await s.commit()
+
+
+def _seed_active_member(admin_engine, *, org_id: str, email: str,
+                        role_slug: str) -> None:
+    """Seed (as the RLS-BYPASSING superuser admin) an ACTIVE ``app_user`` in
+    ``org_id`` holding a real ``org_role`` — so the BOUND role leg resolves
+    is_active=True WITH a role. Every INSERT stamps ``organization_id``
+    explicitly: the phase-1 DEFAULT reads the unset GUC as NULL and these role
+    tables are NOT NULL / FORCE-RLS'd after phases 3+4."""
+    uid = str(uuid.uuid4())
+    role_id = str(uuid.uuid4())
+    with admin_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO org_role (id, organization_id, slug, display_name, "
+            "is_system, rank) VALUES (:rid, :org, :slug, :slug, false, 100)"),
+            {"rid": role_id, "org": org_id, "slug": role_slug})
+        conn.execute(text(
+            "INSERT INTO org_role_permission (role_id, permission, "
+            "organization_id) VALUES (:rid, 'feature:chat', :org)"),
+            {"rid": role_id, "org": org_id})
+        conn.execute(text(
+            "INSERT INTO app_user (id, email, display_name, role, status, "
+            "organization_id) VALUES (:uid, :e, :e, 'employee', 'active', :org)"),
+            {"uid": uid, "e": email, "org": org_id})
+        conn.execute(text(
+            "INSERT INTO user_role (user_id, role_id, assigned_by, "
+            "organization_id) VALUES (:uid, :rid, 'h3rls-test', :org)"),
+            {"uid": uid, "rid": role_id, "org": org_id})
+
+
+def _unseed_member(admin_engine, *, email: str, role_slug: str,
+                   org_id: str) -> None:
+    with admin_engine.begin() as conn:
+        # ``app_user`` delete cascades ``user_role``; ``org_role`` delete
+        # cascades ``org_role_permission``.
+        conn.execute(text("DELETE FROM app_user WHERE lower(email) = lower(:e)"),
+                     {"e": email})
+        conn.execute(text(
+            "DELETE FROM org_role WHERE organization_id = :org AND slug = :slug"),
+            {"org": org_id, "slug": role_slug})
+
+
+@_DB_GATE
+class TestTheReadCutoverEndToEnd:
+    """The end-to-end two-phase fence (R7 name: ``end-to-end-two-phase``; R8).
+
+    Drives ``deps._with_resolved_access`` — the real production composition — on
+    the phase-4-promoted catalog as ``acb_app``, session UNBOUND, flag ON. The
+    identity-leg-only fence above could not catch the P0 because it never drove
+    the ROLE leg under the bind.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    async def test_a_clean_active_member_resolves_active_with_roles_flag_on(
+        self, promoted, monkeypatch
+    ):
+        """GREEN: UNBOUND session, ``IDENTITY_CUTOVER`` ON, the full two-phase
+        path admits a clean ACTIVE member — is_active=True WITH their real role —
+        because the role leg now reads ``app_user`` on a GUC-bound session."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        email = "e2e.active@h3rls.test"
+        role_slug = "e2e-green-role"
+        _seed_active_member(
+            promoted.admin_engine, org_id=promoted.org_a,
+            email=email, role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                access_mod.invalidate()
+                clear_tenant()  # the precondition: the session starts UNBOUND
+
+                enriched = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+
+                assert enriched.access.is_active is True, (
+                    "a clean ACTIVE member resolved is_active=False under the "
+                    "cutover — the role leg is not GUC-bound (the P0)")
+                assert role_slug in enriched.access.roles, (
+                    f"the member's real role {role_slug!r} did not resolve: "
+                    f"{sorted(enriched.access.roles)} — the bound role leg did "
+                    "not read app_user")
+                assert str(enriched.organization_id) == promoted.org_a
+            finally:
+                clear_tenant()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(
+                    promoted.admin_engine, email=email,
+                    role_slug=role_slug, org_id=promoted.org_a)
+
+    async def test_the_role_leg_blind_to_the_bind_locks_the_member_out_red(
+        self, promoted, monkeypatch
+    ):
+        """RED (the mutation): with the role leg blind to the bound tenant
+        (``current_tenant()`` → None inside ``resolve_access``, i.e. the pre-fix
+        raw-session behaviour ``bind_tenant`` never actually cured), the SAME
+        clean ACTIVE member resolves is_active=False — total lockout. This is the
+        P0; the GREEN above proves the GUC bind, not something else, admits them.
+        """
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        email = "e2e.red@h3rls.test"
+        role_slug = "e2e-red-role"
+        _seed_active_member(
+            promoted.admin_engine, org_id=promoted.org_a,
+            email=email, role_slug=role_slug)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                access_mod.invalidate()
+                clear_tenant()
+                # The mutation: the role leg does not see the bound tenant, so
+                # resolve_access falls back to the raw UNBOUND session — exactly
+                # what shipped before this repair. bind_tenant still fires in
+                # _with_resolved_access; it just sets the ContextVar, never the
+                # GUC, which is the whole point.
+                monkeypatch.setattr(access_mod, "current_tenant", lambda: None)
+
+                enriched = await _with_resolved_access(
+                    UserContext(email=email, role=UserRole.EMPLOYEE))
+
+                assert enriched.access.is_active is False, (
+                    "the member resolved is_active=True with the role leg blind "
+                    "to the bind — the fence does NOT catch the P0, so a "
+                    "regression to the raw unbound role leg would ship green")
+            finally:
+                clear_tenant()
+                await _purge_shadow_rows(factory, email)
+                _unseed_member(
+                    promoted.admin_engine, email=email,
+                    role_slug=role_slug, org_id=promoted.org_a)
+
+    async def test_a_multi_org_human_is_denied_not_arbitrarily_bound(
+        self, promoted, monkeypatch
+    ):
+        """P2a (R7 name: ``multi-org-safe``): a human with TWO active memberships
+        and no disambiguating host resolves to ``(None, None)`` — the deny /
+        WorkspaceChooserRequired case — NEVER an arbitrary org bind."""
+        from acb_common.db import get_session_factory
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        email = "e2e.multiorg@h3rls.test"
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            factory = get_session_factory()
+            try:
+                # Two ACTIVE memberships for one identity, across the two orgs —
+                # seeded through the shadow's own writer (the identity leg reads
+                # only the exempt shadow, so no app_user row is needed).
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_a, status="active")
+                await mirror_identity_membership(
+                    email=email, org_id=promoted.org_b, status="active")
+
+                user_id, org = await resolve_identity(email)
+
+                assert (user_id, org) == (None, None), (
+                    "a human with two active memberships was bound to "
+                    f"{org!r} — the identity leg silently picked one instead of "
+                    "denying (P2a)")
+            finally:
+                await _purge_shadow_rows(factory, email)
 
 
 # ==========================================================================

@@ -70,10 +70,9 @@ import secrets
 from collections.abc import Collection
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
-
 from acb_common import get_logger
 from acb_common.db import bind_tenant
+from fastapi import Depends, Header, HTTPException, Request
 
 from acb_auth.access import (
     SERVICE_ACCESS,
@@ -305,10 +304,15 @@ async def _with_resolved_access(user: UserContext) -> UserContext:
         #   2. BIND the resolved tenant — BEFORE the role leg, so `app_user`
         #      becomes visible to it.
         #   3. ROLE LEG — `resolve_access` reads roles/permissions from
-        #      `app_user` on the now-BOUND session, UNCHANGED from today (RBAC
-        #      re-key is slice 4). It remains the ACCESS authority: a residual
-        #      shadow orphan resolves to bind-with-no-access (fail-closed),
-        #      never a wrong-admit (§H6).
+        #      `app_user`, UNCHANGED SQL (RBAC re-key is slice 4). Because a
+        #      tenant is now bound, `resolve_access` opens its read through
+        #      `tenant_session()` — the ONE GUC seam — so `app.tenant_id` is set
+        #      and phase-4 RLS lets it see `app_user`; WITHOUT that the FORCE-RLS
+        #      read returns 0 rows and every member is locked out (the P0 the
+        #      cutover exists to fix — `bind_tenant` sets only the ContextVar,
+        #      never the GUC). It remains the ACCESS authority: a residual shadow
+        #      orphan resolves to bind-with-no-access (fail-closed), never a
+        #      wrong-admit (§H6).
         user_id, organization_id = await resolve_identity(user.email)
         if organization_id:
             bind_tenant(organization_id)
