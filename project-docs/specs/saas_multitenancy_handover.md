@@ -1,11 +1,14 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
 **Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
-scratch 2026-08-22** (see H1's result block and the H3 REHEARSAL RESULT block; the
-two-org isolation fixture + brick characterization landed as
-`tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user sign-in brick is
-now written up as an OWNER DECISION in §H3.2 — **live promotion + the app_user fix
-remain OWNER-GATE, not enacted**) · **Created:** 2026-08-08 ·
+scratch 2026-08-22; H6 SLICE 1 SHIPPED (dark) 2026-08-22** (see H1's result block and
+the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick characterization
+landed as `tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user sign-in brick
+is now written up as an OWNER DECISION in §H3.2; **H6 slice 1** = the identity-shadow
+dual-write + catch-up backfill (migration 182), fenced by
+`tests/unit/test_h6_identity_shadow.py` — **no read moved**, see §H6 — **live promotion,
+the read cutover, the app_user fix + any prod backfill remain OWNER-GATE, not enacted**) ·
+**Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
 `saas_multitenancy.md` §11 **MT-1j · Tenant-side organization provisioning**.** It is not
@@ -644,10 +647,30 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICE 1 SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
+
+⚠️ **SLICE 1 SHIPPED 2026-08-22 (WS-29, DARK — no read moved).** The shadow tables were
+COMPLETE only for members present at 159 and STALE for every invite/bootstrap since. Slice
+1 closes that so H6's read cutover has current tables to move onto, WITHOUT moving any read:
+- **Dual-write** on both `app_user` write paths — `acb_auth.access.mirror_identity_membership`
+  (best-effort, own session, mirroring `_record_signin_request`) is called after
+  `_BOOTSTRAP_OWNER_SQL` (in `ensure_owner_bootstrap`) and after `_PROVISION_MEMBER_SQL` (in
+  `_common.provision_member`). It upserts one `user_identity` per `lower(email)` and a
+  **create-only** `org_membership` (`ON CONFLICT (organization_id, user_id) DO NOTHING`,
+  no `SET organization_id`) — so it can NEVER move an identity between orgs (done-when 3).
+- **Catch-up backfill** — `infra/postgres/182_identity_membership_catchup.sql` re-runs 159's
+  idempotent seed for every member added since (additive, `DO NOTHING`, re-run = 0 net change).
+- Fence: `tests/unit/test_h6_identity_shadow.py` (R8, in `pr-check.yml`'s skip guard) proves
+  one email holds membership in TWO orgs, the create-only guard never rewrites the first, and
+  the backfill reconciles + is idempotent (done-when 2 + 3). `app_user` reads and both upserts
+  are byte-identical — the dual-write is purely additive on separate statements/session.
+
+**Still OWNER-GATE / not done in slice 1:** the read cutover (done-when 1 + 4), any
+`IDENTITY_CUTOVER` flip, H3 promotion, the `app_user` carve-out, and executing the backfill
+against prod.
 
 ⚠️ **The two upserts that block this — anchors re-measured 2026-08-19:**
 `acb_auth/access.py` (`_BOOTSTRAP_OWNER_SQL`) and

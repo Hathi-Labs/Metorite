@@ -246,6 +246,126 @@ async def _record_signin_request(email: str, display_name: str = "") -> None:
         )
 
 
+# ── Identity shadow mirror (WS-29 H6 slice 1, MT-1a-2) — DARK ────────────────
+#
+# After H3's phase-4 RLS, identity resolution (which reads `app_user` on an
+# UNBOUND session) bricks; H6 moves it onto the RLS-EXEMPT tables `user_identity`
+# + `org_membership`. Before ANY read can move, those tables must be COMPLETE and
+# kept CURRENT. Migration 159 seeded them once; migration 182 catches up the gap
+# since; this keeps them current going forward by DUAL-WRITING on the two
+# `app_user` write paths (`_BOOTSTRAP_OWNER_SQL` here, `_PROVISION_MEMBER_SQL` in
+# the gateway admin package). It moves NO read — `app_user` stays authoritative —
+# so this is dark by construction (`saas_multitenancy_handover.md` §H6).
+#
+# ⚠️ **Same SHAPE as `console_resolve._UPSERT_IDENTITY_SQL` / `_ORG_BY_SLUG_SQL`
+# — the tenant-plane identity-write idiom — reused, not forked.** The constants
+# are DEFINED here rather than imported from `console_resolve` on purpose:
+# `test_console_dependency_boundary.py` caps that module's importers at the three
+# sign-in-path callers because it allocates a SEAT (`resolve_for_signin`), and
+# this dual-write allocates none. Two structurally-identical statements on the
+# `(lower(email))` functional index cannot drift into two behaviours; a fourth
+# `console_resolve` importer would break a farmable-cap fence.
+
+#: One row per human, keyed on `lower(email)` (162's functional index; R10). The
+#: `display_name` arm never blanks a stored name — same COALESCE as the Console
+#: projection's upsert.
+_MIRROR_IDENTITY_SQL = """
+    INSERT INTO user_identity (email, display_name)
+    VALUES (:email, :name)
+    ON CONFLICT (lower(email)) DO UPDATE
+       SET display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''),
+                                   user_identity.display_name),
+           updated_at = now()
+    RETURNING id::text AS id
+"""
+
+#: ⚠️ **CREATE-ONLY, and that is the load-bearing invariant (§H6:672-674).**
+#: `ON CONFLICT (organization_id, user_id) DO NOTHING` — a membership already
+#: mirrored is left EXACTLY as it was, and a human who belongs to a second org
+#: gets a SECOND row rather than having the first rewritten. There is deliberately
+#: NO `SET organization_id`: the invite path is "an account-takeover primitive
+#: under two orgs", and an UPDATE of the identity's org between orgs is exactly
+#: what this refuses. `resolved_at` is left NULL — a bootstrap/invite is NOT a
+#: registry resolution (that column is `console_resolve`'s), and NULL is what 159
+#: seeded and 182 backfills, so a dual-written row and a backfilled row match. No
+#: `role` column exists on this table.
+_MIRROR_MEMBERSHIP_SQL = """
+    INSERT INTO org_membership (organization_id, user_id, status, joined_at)
+    VALUES (CAST(:org AS UUID), CAST(:uid AS UUID), :status,
+            CASE WHEN :status = 'active' THEN now() END)
+    ON CONFLICT (organization_id, user_id) DO NOTHING
+"""
+
+#: §6(k)'s join key is the SLUG, never the Console's UUID. Same shape as
+#: `console_resolve._ORG_BY_SLUG_SQL`; used only by the bootstrap caller, which
+#: knows its org by slug rather than by id.
+_MIRROR_ORG_BY_SLUG_SQL = "SELECT id::text AS id FROM organization WHERE slug = :slug"
+
+
+async def mirror_identity_membership(
+    *,
+    email: str,
+    display_name: str = "",
+    org_id: str | None = None,
+    org_slug: str | None = None,
+    status: str = "active",
+) -> None:
+    """Mirror an ``app_user`` write into ``user_identity`` + ``org_membership``.
+
+    Best-effort, and **never raises, never changes the caller's answer** — the
+    exact posture of :func:`_record_signin_request` above, and for the same
+    reason: ``app_user`` is authoritative and its write must be BYTE-IDENTICAL to
+    today (`saas_multitenancy_handover.md` §H6). It opens its OWN short session
+    rather than riding the caller's transaction so a failed shadow write cannot
+    poison the authoritative one; the shadow tables are RLS-EXEMPT, so no tenant
+    bind is needed. A failure leaves the row for migration 182's idempotent
+    catch-up to reconcile.
+
+    Pass ``org_id`` when the caller already holds it (the invite path) or
+    ``org_slug`` when it knows the org by name (the bootstrap path). One row per
+    ``lower(email)`` in ``user_identity``; a create-only INSERT into
+    ``org_membership`` that never moves an identity between orgs.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email:
+        return
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            resolved_org = org_id
+            if resolved_org is None:
+                if not org_slug:
+                    return
+                row = (
+                    await session.execute(
+                        text(_MIRROR_ORG_BY_SLUG_SQL), {"slug": org_slug}
+                    )
+                ).mappings().first()
+                if row is None:
+                    return
+                resolved_org = row["id"]
+
+            identity = (
+                await session.execute(
+                    text(_MIRROR_IDENTITY_SQL),
+                    {"email": email, "name": display_name or ""},
+                )
+            ).mappings().first()
+            if identity is None:
+                return
+            await session.execute(
+                text(_MIRROR_MEMBERSHIP_SQL),
+                {"org": str(resolved_org), "uid": identity["id"], "status": status},
+            )
+            await session.commit()
+    except Exception as exc:
+        _log.warning(
+            "identity_mirror_failed", email=email, error=str(exc)[:200],
+        )
+
+
 async def resolve_access(
     email: str | None,
     *,
@@ -751,6 +871,13 @@ async def ensure_owner_bootstrap() -> str | None:
             )
             await session.commit()
         invalidate(candidate)
+        # H6 slice 1: keep the identity shadow current. Best-effort and after the
+        # authoritative commit above — a failure here changes nothing about the
+        # owner that was just provisioned.
+        await mirror_identity_membership(
+            email=candidate, display_name=candidate,
+            org_slug=_BOOTSTRAP_ORG_SLUG, status="active",
+        )
         _log.warning(
             "ownership_bootstrapped",
             email=candidate,

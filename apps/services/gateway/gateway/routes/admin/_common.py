@@ -43,6 +43,11 @@ from acb_auth import (
     invalidate_access,
     permission_matches,
 )
+
+# WS-29 H6 slice 1: the identity-shadow dual-write. Imported from `acb_auth.access`
+# (NOT `console_resolve`, whose importer set is capped by a farmable-seat fence);
+# `provision_member` calls it after the authoritative `app_user` write.
+from acb_auth.access import mirror_identity_membership
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -763,6 +768,19 @@ async def provision_member(
     # could not have written to in the first place.
     member = await get_member(db, org_id, email)
     await set_roles(db, member["id"], role_ids, admin.email)
+
+    # H6 slice 1 (WS-29, DARK): keep the RLS-EXEMPT identity shadow current.
+    # `get_member` above proves the authoritative `app_user` row exists in THIS
+    # tenant, so the mirror is a create-only INSERT into `org_membership` that
+    # never moves an identity between orgs (§H6:672-674). Best-effort and on its
+    # OWN session — it moves no read and cannot change the `app_user` write,
+    # which stays byte-identical. See `acb_auth.access.mirror_identity_membership`.
+    await mirror_identity_membership(
+        email=member["email"],
+        display_name=member.get("display_name") or "",
+        org_id=org_id,
+        status=member["status"],
+    )
     return member, [slug for _rid, slug in role_ids]
 
 

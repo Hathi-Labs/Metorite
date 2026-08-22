@@ -259,6 +259,7 @@ jobs:
             tests/unit/test_owner_bootstrap.py \
             tests/unit/test_credential_tenant_threading.py \
             tests/unit/test_h3_rls_promotion_rehearsal.py \
+            tests/unit/test_h6_identity_shadow.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -298,6 +299,14 @@ jobs:
           # isolation + WITH-CHECK write refusal + the sign-in brick — none of
           # which a fake can answer for. A skip here would mean the H3 gate is
           # disarmed, which is exactly the state this whole step exists to catch.
+          #
+          # WS-29 H6 slice 1 adds the eighth, same string again:
+          # `test_h6_identity_shadow.py`. It proves against the real ladder that
+          # the identity-shadow dual-write lets one email hold membership in TWO
+          # orgs (create-only, never a move) and that the catch-up backfill
+          # (migration 182) reconciles and is idempotent — a two-org membership
+          # and a composite ON CONFLICT arbiter are exactly slice 6's class of
+          # bug, invisible to a fake.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1
