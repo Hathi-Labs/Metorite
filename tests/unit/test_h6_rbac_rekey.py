@@ -1,0 +1,1112 @@
+"""WS-29 H6 slice 4 (D48) — the RBAC re-key EXPAND: migration 184 + dual-write.
+
+Spec: ``project-docs/specs/saas_multitenancy_handover.md`` §H6 (Slice 4 — RBAC
+re-key, EXPAND) · ``saas_multitenancy.md`` §11 · D48.
+
+**What this slice is.** D48 re-keys the three RBAC tables — ``user_role``,
+``user_permission_override``, ``org_group_member`` — from ``app_user.id`` →
+``user_identity.id``, in an expand/contract shipped dark behind
+``IDENTITY_CUTOVER``. This is the EXPAND, and it moves NO read:
+
+* **Migration 184** adds a nullable ``user_identity_id`` column to each table,
+  BACKFILLS it via the ``lower(email)`` bridge
+  (RBAC.user_id → app_user.id → lower(app_user.email) → user_identity.id) and
+  INDEXES it; and
+* the **five Python** RBAC **INSERTs** dual-write ``user_identity_id`` through
+  that same bridge at insert time (the identity-FIRST order), so the column stays
+  current going forward.
+
+⚠️ **There is a SIXTH RBAC INSERT the dual-write cannot reach.**
+``provision_org_owner`` (the tenant-plane SQL function, migration 180) INSERTs the
+owner's ``user_role`` DURING provisioning — before any ``user_identity`` exists,
+because provisioning mints the owner's identity only AFTER it commits. So the
+"exactly five" framing was wrong: the sixth is bridged not by an in-INSERT
+dual-write but at **mirror-time** — when ``mirror_identity_membership`` ensures a
+human's identity it ALSO backfills that human's existing RBAC rows
+(``_bridge_rbac_to_identity``), closing the provisioned owner and every future
+RBAC-FIRST order in one place. Without it a provisioned owner's
+``user_role.user_identity_id`` stays NULL and, once ``IDENTITY_CUTOVER`` flips the
+role leg onto that column, they resolve to NO roles → locked out of their org.
+
+``app_user.id`` stays the AUTHORITATIVE key; nothing reads ``user_identity_id``
+yet (the per-module READ cutovers are separate, later, flag-gated PRs).
+
+⚠️ **The fences this suite names (R7).**
+
+* **backfill-correctness / dual-write-correctness** — every RBAC row's
+  ``user_identity_id`` equals the ``user_identity.id`` whose ``lower(email)``
+  matches its ``user_id``'s ``app_user.email``; NULL only where no identity
+  exists; and a fresh INSERT populates both columns to the same identity.
+* **idempotent-expand** — re-running the migration is a zero-net-change no-op
+  (``IS DISTINCT FROM`` guard), and it moves no grant (sets ONLY
+  ``user_identity_id``).
+* **provision-owner-bridged** — the provision path reuses the mirror seam and the
+  provisioned owner ends with ``user_role.user_identity_id`` == their identity
+  (``TestTheProvisionOwnerBridgeMechanism`` + ``TestTheProvisionOwnerIsBridged``).
+* **rbac-created-before-identity** — an RBAC row written before the identity
+  existed is bridged when the mirror later ensures it, robust to creation order
+  (``TestRbacCreatedBeforeIdentityIsBridged``).
+
+Two halves, the ``test_h6_identity_shadow.py`` model:
+
+* the **structural** half takes no database and must never skip — it pins the
+  five dual-write sites, the sixth INSERT's mirror-time bridge, the migration's
+  idempotent/additive shape and its no-move guarantee; and
+* the **R8** half answers to ``TENANT_LADDER_DATABASE_URL`` — never to
+  ``DATABASE_URL`` — and proves against a REAL Postgres that the backfill bridges
+  correctly, is idempotent, and that ``set_roles`` / the owner bootstrap
+  dual-write both columns to the same identity. A fake agrees with any SQL it is
+  handed (R8).
+
+Run::
+
+    export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5443/acb_tenant
+    uv run pytest tests/unit/test_h6_rbac_rekey.py -v -rs
+"""
+from __future__ import annotations
+
+import inspect
+import os
+import re
+import uuid
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("sqlalchemy")
+
+#: Subjects are IMPORTED, never transcribed — a copy here would keep passing
+#: after somebody edited the real statement.
+from acb_auth.access import _BOOTSTRAP_OWNER_SQL, _BRIDGE_RBAC_SQL
+from gateway.routes.admin import groups as groups_mod
+from gateway.routes.admin import members as members_mod
+from gateway.routes.admin._common import set_roles
+from sqlalchemy import create_engine, text
+
+from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
+
+# Reuse the H3 rehearsal's phase-4-promoted catalog + NON-PRIV acb_app role
+# fixtures VERBATIM for the bridge-under-FORCE-RLS fence at the bottom of this
+# file. Importing them makes them fixtures in this module too (pytest resolves by
+# name in the module namespace); both R8 suites then promote ONE dedicated catalog
+# and never the shared ladder DB. They are resolved BY NAME, not called, so ruff
+# sees them as unused (F401) and the test-method params as re-defining them (F811);
+# both are suppressed on the sites they are reported.
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    app_engine,
+    promoted,
+)
+
+_SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
+_URL = (
+    _SNAPSHOT
+    if _SNAPSHOT is not None
+    else os.environ.get("TENANT_LADDER_DATABASE_URL", "")
+).strip()
+
+_DB_GATE = pytest.mark.skipif(
+    not _URL,
+    reason=(
+        "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres with "
+        "pgvector (infra/postgres/01_schema.sql needs uuid-ossp AND vector). "
+        "A skip here is not a pass; CI must set it. ⚠️ Do NOT export it as "
+        "DATABASE_URL — see this module's docstring."
+    ),
+)
+
+_ROOT = Path(__file__).resolve().parents[2]
+_LADDER_DIR = _ROOT / "infra" / "postgres"
+
+#: The three RBAC tables D48 re-keys.
+_RBAC_TABLES = ("user_role", "user_permission_override", "org_group_member")
+
+
+# ── The structural half: no database, and it must never skip ────────────────
+
+def _rekey_migration() -> Path:
+    """The RBAC re-key EXPAND migration, found BY CONTENT never by number (R1).
+
+    It is the only ``.sql`` file that adds ``user_identity_id`` to all THREE RBAC
+    tables and backfills them through the ``lower(email)`` bridge under an
+    ``IS DISTINCT FROM`` guard — that trio is the content discriminator, so a
+    merge renumber cannot make this fence point at the wrong file or go vacuous.
+    """
+    matches = []
+    for path in sorted(_LADDER_DIR.glob("*.sql")):
+        if not re.match(r"^\d+_", path.name):
+            continue
+        body = path.read_text(encoding="utf-8")
+        if (
+            body.count("ADD COLUMN IF NOT EXISTS user_identity_id") >= 3
+            and "IS DISTINCT FROM ui.id" in body
+            and "lower(ui.email) = lower(au.email)" in body
+        ):
+            matches.append(path)
+    assert len(matches) == 1, (
+        "expected exactly one RBAC re-key EXPAND migration (adds user_identity_id "
+        "to all three RBAC tables and backfills via the lower(email) bridge, "
+        f"IS DISTINCT FROM-guarded); found {[p.name for p in matches]}"
+    )
+    return matches[0]
+
+
+def _sql_only(body: str) -> str:
+    """The executable SQL of a migration, with ``--`` comment content stripped.
+
+    A header comment legitimately NAMES columns (``user_id``, ``SET NULL``) in
+    prose; a fence must read the STATEMENTS, not the commentary."""
+    lines = []
+    for line in body.splitlines():
+        code = re.split(r"--", line, maxsplit=1)[0]
+        if code.strip():
+            lines.append(code)
+    return "\n".join(lines)
+
+
+def _update_set_clauses(sql: str) -> list[str]:
+    """Every UPDATE's assignment list — the text between ``SET`` and the first
+    ``FROM``/``WHERE``, for UPDATE statements ONLY. Lets a fence assert the grant
+    key columns are never WRITTEN even though they legitimately appear in the
+    predicate (and in the ALTER's ``ON DELETE SET NULL``)."""
+    return re.findall(
+        r"UPDATE\s+\w+\s+\w+\s+SET\s+(.*?)\s*\bFROM\b",
+        sql, flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+class TestTheMigrationShape:
+    """The ratchet. Breaking the EXPAND's invariants must fail here, no database."""
+
+    def test_the_migration_is_additive_and_idempotent(self):
+        """R6 EXPAND: ADD COLUMN / CREATE INDEX are IF NOT EXISTS, and every
+        backfill UPDATE is IS DISTINCT FROM-guarded (re-run = 0 rows)."""
+        sql = _sql_only(_rekey_migration().read_text(encoding="utf-8"))
+        assert sql.count("ADD COLUMN IF NOT EXISTS user_identity_id") == 3, (
+            "the migration must add user_identity_id to all three RBAC tables"
+        )
+        assert sql.count("CREATE INDEX IF NOT EXISTS") == 3, (
+            "each new column must be indexed (org_id-free — it is a join key)"
+        )
+        assert sql.count("IS DISTINCT FROM ui.id") == 3, (
+            "each backfill must be IS DISTINCT FROM-guarded — else a re-run "
+            "rewrites rows and it is not idempotent (R6)"
+        )
+        assert "CREATE TABLE" not in sql.upper(), (
+            "the EXPAND creates a table — it must only ALTER (R5: no new table)"
+        )
+
+    def test_the_backfill_moves_no_grant(self):
+        """Each UPDATE sets ONLY user_identity_id — never the grant key columns —
+        so it can never move a role/permission/group membership."""
+        sql = _sql_only(_rekey_migration().read_text(encoding="utf-8"))
+        clauses = _update_set_clauses(sql)
+        assert len(clauses) == 3, (
+            f"expected three backfill UPDATEs; found {len(clauses)}"
+        )
+        for clause in clauses:
+            assert "user_identity_id" in clause, (
+                "an UPDATE sets something other than user_identity_id"
+            )
+            for forbidden in ("user_id", "role_id", "permission", "group_id"):
+                assert not re.search(rf"\b{forbidden}\b", clause), (
+                    f"the backfill writes {forbidden} — it must set only "
+                    "user_identity_id, never a grant key"
+                )
+
+    def test_the_fk_nulls_rather_than_cascades(self):
+        """The shadow FK is ON DELETE SET NULL, not CASCADE: app_user.id is still
+        the authoritative key, so a deleted user_identity must NULL the shadow,
+        never cascade-delete an RBAC grant app_user.id still backs. The CONTRACT
+        slice (OWNER-GATE) re-keys to CASCADE when user_identity_id takes over."""
+        body = _rekey_migration().read_text(encoding="utf-8")
+        assert body.count("REFERENCES user_identity(id) ON DELETE SET NULL") == 3, (
+            "each user_identity_id FK must be ON DELETE SET NULL"
+        )
+        # A shadow-FK cascade would delete authoritative grants when an identity
+        # is removed — never in the EXPAND.
+        assert "REFERENCES user_identity(id) ON DELETE CASCADE" not in body, (
+            "a user_identity_id FK cascades — that would delete an authoritative "
+            "app_user-keyed grant on an identity delete"
+        )
+
+    def test_the_migration_does_not_touch_rls(self):
+        """R6 expand re-keys no RLS. ENABLE/FORCE/POLICY live in
+        generated/04_policies.sql and stay unchanged."""
+        body = _rekey_migration().read_text(encoding="utf-8").upper()
+        for token in ("ENABLE ROW LEVEL SECURITY", "FORCE  ROW LEVEL SECURITY",
+                      "FORCE ROW LEVEL SECURITY", "CREATE POLICY", "DROP POLICY"):
+            assert token not in body, (
+                f"the EXPAND changes RLS ({token}) — RLS is generated/'s"
+            )
+
+
+# ── The five dual-write sites — each carries the same lower(email) bridge ────
+#
+# The bridge is IDENTICAL across the four `:uid`-keyed INSERTs; the bootstrap
+# INSERT resolves the identity by `:email` (its app_user is inside the same WITH
+# and unreadable, and at bootstrap the identity is created AFTER — NULL on a fresh
+# box). These fragments each fit on ONE source line, so they survive
+# `inspect.getsource`; the R8 half proves the bridge SQL actually resolves.
+
+#: The bridge tokens every `:uid`-keyed dual-write must carry.
+_UID_BRIDGE_TOKENS = (
+    "user_identity_id",
+    "SELECT ui.id FROM user_identity ui",
+    "lower(au.email) = lower(ui.email)",
+    "WHERE au.id = CAST(:uid AS uuid)",
+)
+
+
+class TestTheDualWriteSites:
+    """All five RBAC INSERTs dual-write user_identity_id (no database)."""
+
+    def _uid_site_carries_the_bridge(self, label: str, src: str) -> None:
+        for token in _UID_BRIDGE_TOKENS:
+            assert token in src, f"{label} is missing dual-write token: {token!r}"
+
+    def test_set_roles_dual_writes(self):
+        """user_role INSERT — admin/_common.set_roles."""
+        self._uid_site_carries_the_bridge(
+            "set_roles", inspect.getsource(set_roles)
+        )
+
+    def test_add_group_member_dual_writes_both_inserts(self):
+        """org_group_member INSERT + the center-access user_permission_override
+        INSERT — admin/groups.add_group_member. Both are `:uid`-keyed."""
+        src = inspect.getsource(groups_mod.add_group_member)
+        self._uid_site_carries_the_bridge("add_group_member", src)
+        assert "INSERT INTO org_group_member" in src
+        assert "INSERT INTO user_permission_override" in src
+        # BOTH inserts name the new column (two occurrences of the FK column).
+        assert src.count("user_identity_id") >= 2, (
+            "add_group_member has an INSERT that does not dual-write "
+            "user_identity_id"
+        )
+
+    def test_set_member_overrides_dual_writes(self):
+        """user_permission_override INSERT — admin/members.set_member_overrides."""
+        self._uid_site_carries_the_bridge(
+            "set_member_overrides",
+            inspect.getsource(members_mod.set_member_overrides),
+        )
+
+    def test_the_bootstrap_owner_insert_dual_writes_by_email(self):
+        """user_role INSERT in _BOOTSTRAP_OWNER_SQL — resolves by lower(:email)
+        because its app_user is written in the same WITH (unreadable) and the
+        identity is minted AFTER the bootstrap commit (NULL on a fresh box)."""
+        sql = _BOOTSTRAP_OWNER_SQL
+        assert "user_identity_id" in sql, "the bootstrap INSERT does not dual-write"
+        assert "LEFT JOIN user_identity ui" in sql, (
+            "the bootstrap INSERT does not LEFT JOIN user_identity (a fresh box "
+            "has no identity yet — an inner join would drop the owner's role)"
+        )
+        assert "lower(ui.email) = lower(:email)" in sql, (
+            "the bootstrap INSERT does not resolve the identity by lower(:email)"
+        )
+
+    def test_this_suite_is_named_in_the_ci_skip_guard(self):
+        """An R8 suite absent from pr-check.yml's hand-list skips silently and
+        leaves the job green (that file's own warning)."""
+        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
+            encoding="utf-8")
+        assert "tests/unit/test_h6_rbac_rekey.py" in workflow
+
+    def test_the_owning_spec_names_this_suite(self):
+        spec = (_ROOT / "project-docs/specs/saas_multitenancy_handover.md").read_text(
+            encoding="utf-8")
+        assert "test_h6_rbac_rekey.py" in spec
+
+
+# ── The SIXTH RBAC INSERT — provision_org_owner, bridged at mirror-time ───────
+#
+# The five dual-write sites above are the five PYTHON RBAC INSERTs. There is a
+# SIXTH, live RBAC INSERT the dual-write cannot reach: `provision_org_owner` (the
+# tenant-plane SQL function, `infra/postgres/180_...:153-155`), which INSERTs the
+# owner's `user_role` DURING provisioning — before any `user_identity` exists,
+# because provisioning mints the owner's identity only AFTER it commits. So the
+# earlier "exactly five, no sixth" framing was wrong: the sixth is bridged not by
+# an in-INSERT dual-write but by the mirror, when it ensures the human's identity
+# and backfills their existing RBAC rows. These fences name that mechanism (R7)
+# without a database; the R8 half below drives it against real Postgres.
+
+class TestTheProvisionOwnerBridgeMechanism:
+    """R7 — the provisioned owner is bridged by reusing the ONE identity seam."""
+
+    def test_the_provision_caller_reuses_the_identity_mirror(self):
+        """`provision_local_organization` mirrors the owner's identity — reusing
+        `mirror_identity_membership`, NOT forking identity creation and NOT
+        adding a second `user_identity` writer. Without this call a provisioned
+        owner's `user_role.user_identity_id` stays NULL and, once
+        `IDENTITY_CUTOVER` flips the role leg onto that column, they resolve to
+        NO roles → locked out of their own org."""
+        from acb_common.provisioning import provision_local_organization
+
+        src = inspect.getsource(provision_local_organization)
+        assert "mirror_identity_membership(" in src, (
+            "the provision caller no longer mirrors the owner's identity"
+        )
+        assert "INSERT INTO user_identity" not in src, (
+            "the provision caller writes user_identity directly — it must reuse "
+            "the mirror seam, not fork identity creation"
+        )
+
+    def test_the_mirror_bridges_rbac_rows_after_ensuring_the_identity(self):
+        """`mirror_identity_membership` backfills the human's RBAC rows once the
+        identity exists — the RBAC-FIRST order the migration-184 dual-write does
+        not cover (a provisioned owner, a bootstrap owner, any future one)."""
+        from acb_auth.access import mirror_identity_membership
+
+        assert "_bridge_rbac_to_identity(" in inspect.getsource(
+            mirror_identity_membership
+        ), (
+            "the mirror no longer bridges RBAC rows — an RBAC row written before "
+            "the identity existed keeps a NULL user_identity_id forever"
+        )
+
+    def test_the_bridge_sets_only_the_null_shadow_column_across_all_three_tables(self):
+        """The bridge UPDATEs are idempotent (`IS NULL`-guarded) and move no
+        grant — one per RBAC table, setting ONLY user_identity_id."""
+        from acb_auth.access import _BRIDGE_RBAC_SQL
+
+        assert len(_BRIDGE_RBAC_SQL) == 3, "the bridge must cover all three RBAC tables"
+        joined = "\n".join(_BRIDGE_RBAC_SQL)
+        for tbl in _RBAC_TABLES:
+            assert f"UPDATE {tbl} " in joined, f"the bridge does not UPDATE {tbl}"
+        assert joined.count("SET user_identity_id = CAST(:identity AS uuid)") == 3, (
+            "each bridge UPDATE must set user_identity_id to the resolved identity"
+        )
+        assert joined.count("user_identity_id IS NULL") == 3, (
+            "each bridge UPDATE must be IS NULL-guarded — else a re-run rewrites "
+            "rows and it is not idempotent, or it overwrites a dual-written value"
+        )
+        # Word-boundary match so `user_id` does not spuriously hit inside the
+        # legitimate `user_identity_id` it DOES set.
+        for forbidden in ("role_id", "permission", "group_id", "user_id"):
+            assert not re.search(rf"SET\s+{forbidden}\b", joined), (
+                f"the bridge writes {forbidden} — it must set only user_identity_id"
+            )
+
+
+# ── The R8 half: the backfill + dual-write against the replayed ladder ───────
+
+@pytest.fixture(scope="module")
+def replayed():
+    """Build the tenant schema from ``infra/postgres/`` (incl. migration 184),
+    then replay it — twice, to prove replay-safety like the deploy."""
+    eng = create_engine(_URL, future=True)
+    with eng.begin() as conn:
+        apply_ladder(conn)
+    with eng.begin() as conn:
+        apply_ladder(conn)
+    yield eng
+    eng.dispose()
+
+
+@pytest.fixture
+def conn(replayed):
+    """One rolled-back transaction per test — writes never outlive a test."""
+    with replayed.connect() as connection:
+        trans = connection.begin()
+        try:
+            yield connection
+        finally:
+            trans.rollback()
+
+
+def _new_org(conn, slug: str) -> str:
+    return str(
+        conn.execute(
+            text("INSERT INTO organization (slug, display_name) "
+                 "VALUES (:s, :s) RETURNING id"),
+            {"s": slug},
+        ).scalar_one()
+    )
+
+
+def _new_role(conn, org: str, slug: str = "member") -> str:
+    return str(
+        conn.execute(
+            text("INSERT INTO org_role (organization_id, slug, display_name) "
+                 "VALUES (CAST(:o AS uuid), :s, :s) RETURNING id"),
+            {"o": org, "s": slug},
+        ).scalar_one()
+    )
+
+
+def _new_group(conn, org: str, slug: str = "grp") -> str:
+    return str(
+        conn.execute(
+            text("INSERT INTO org_group (organization_id, slug, display_name) "
+                 "VALUES (CAST(:o AS uuid), :s, :s) RETURNING id"),
+            {"o": org, "s": slug},
+        ).scalar_one()
+    )
+
+
+def _seed_app_user(conn, org: str, email: str, status: str = "active") -> str:
+    return str(
+        conn.execute(
+            text(
+                "INSERT INTO app_user (email, display_name, role, status, "
+                "                      organization_id, joined_at) "
+                "VALUES (:e, :e, 'employee', :s, CAST(:o AS uuid), now()) "
+                "RETURNING id"
+            ),
+            {"e": email, "s": status, "o": org},
+        ).scalar_one()
+    )
+
+
+def _seed_identity(conn, email: str) -> str:
+    return str(
+        conn.execute(
+            text("INSERT INTO user_identity (email, display_name) "
+                 "VALUES (:e, :e) RETURNING id"),
+            {"e": email},
+        ).scalar_one()
+    )
+
+
+def _run_rekey(conn) -> int:
+    """Execute migration 184 verbatim inside ``conn``'s txn; return the rowcount
+    of its LAST statement (the org_group_member backfill UPDATE). ADD COLUMN /
+    CREATE INDEX are IF NOT EXISTS so re-applying the already-built schema is
+    inert; only the guarded UPDATEs do work."""
+    sql = _rekey_migration().read_text(encoding="utf-8")
+    with conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+        return cur.rowcount
+
+
+def _identity_of(conn, table: str, user_id: str) -> str | None:
+    # `table` is always one of _RBAC_TABLES (fixed literals), never user input.
+    assert table in _RBAC_TABLES
+    row = conn.execute(
+        text(f"SELECT user_identity_id::text FROM {table} "
+             " WHERE user_id = CAST(:u AS uuid) LIMIT 1"),
+        {"u": user_id},
+    ).first()
+    return None if row is None or row[0] is None else row[0]
+
+
+@_DB_GATE
+class TestTheBackfill:
+    """§H6 done-when (EXPAND): the migration bridges every RBAC row to the
+    lower(email) identity, NULL only where none, and is idempotent (R6)."""
+
+    def _seed_rbac_rows(self, conn, org, uid) -> None:
+        """One row in each RBAC table, keyed on app_user.id, user_identity_id
+        left NULL (the pre-EXPAND state a backfill must reconcile)."""
+        role = _new_role(conn, org, f"role-{uuid.uuid4().hex[:6]}")
+        grp = _new_group(conn, org, f"grp-{uuid.uuid4().hex[:6]}")
+        conn.execute(
+            text("INSERT INTO user_role (user_id, role_id) "
+                 "VALUES (CAST(:u AS uuid), CAST(:r AS uuid))"),
+            {"u": uid, "r": role},
+        )
+        conn.execute(
+            text("INSERT INTO user_permission_override "
+                 "  (user_id, permission, effect) "
+                 "VALUES (CAST(:u AS uuid), 'feature:x', 'allow')"),
+            {"u": uid},
+        )
+        conn.execute(
+            text("INSERT INTO org_group_member (group_id, user_id) "
+                 "VALUES (CAST(:g AS uuid), CAST(:u AS uuid))"),
+            {"g": grp, "u": uid},
+        )
+
+    def test_the_backfill_bridges_every_rbac_row_to_its_identity(self, conn):
+        org = _new_org(conn, "h6rk-bf")
+        email = "member@h6rk.example"
+        uid = _seed_app_user(conn, org, email)
+        wanted = _seed_identity(conn, email)
+        self._seed_rbac_rows(conn, org, uid)
+
+        # Pre-backfill: the shadow column is NULL on every RBAC row.
+        for tbl in _RBAC_TABLES:
+            assert _identity_of(conn, tbl, uid) is None
+
+        self._run_and_assert_bridged(conn, uid, wanted)
+
+    def _run_and_assert_bridged(self, conn, uid, wanted) -> None:
+        _run_rekey(conn)
+        for tbl in _RBAC_TABLES:
+            got = _identity_of(conn, tbl, uid)
+            assert got == wanted, (
+                f"{tbl}.user_identity_id backfilled to {got}, not the "
+                f"lower(email)-bridged identity {wanted}"
+            )
+
+    def test_the_bridge_is_case_insensitive(self, conn):
+        """R10: a case-variant between app_user.email and user_identity.email
+        still bridges (lower() on both sides)."""
+        org = _new_org(conn, "h6rk-case")
+        uid = _seed_app_user(conn, org, "Casey@H6rk.Example")
+        wanted = _seed_identity(conn, "casey@h6rk.example")
+        self._seed_rbac_rows(conn, org, uid)
+        self._run_and_assert_bridged(conn, uid, wanted)
+
+    def test_a_row_whose_app_user_has_no_identity_stays_null(self, conn):
+        """"NULL only where no identity exists": a member who predates the shadow
+        and never signed in has no user_identity, so the bridge finds nothing."""
+        org = _new_org(conn, "h6rk-noident")
+        uid = _seed_app_user(conn, org, "orphan@h6rk.example")  # no identity
+        self._seed_rbac_rows(conn, org, uid)
+
+        _run_rekey(conn)
+        for tbl in _RBAC_TABLES:
+            assert _identity_of(conn, tbl, uid) is None, (
+                f"{tbl}.user_identity_id was set for a member with no identity"
+            )
+
+    def test_the_backfill_is_idempotent(self, conn):
+        """R6: a re-run is a zero-net-change no-op — values unchanged and the
+        last guarded UPDATE touches 0 rows."""
+        org = _new_org(conn, "h6rk-idem")
+        email = "idem@h6rk.example"
+        uid = _seed_app_user(conn, org, email)
+        wanted = _seed_identity(conn, email)
+        self._seed_rbac_rows(conn, org, uid)
+
+        _run_rekey(conn)
+        snapshot = {t: _identity_of(conn, t, uid) for t in _RBAC_TABLES}
+        assert all(v == wanted for v in snapshot.values())
+
+        # Re-run = zero NET change: the `IS DISTINCT FROM ui.id` guard means no
+        # value moves. (A multi-statement DDL+DML script's `cur.rowcount` is not a
+        # reliable per-statement count under the simple query protocol, so
+        # idempotence is proven by the snapshot NOT changing — the true invariant.)
+        _run_rekey(conn)
+        assert {t: _identity_of(conn, t, uid) for t in _RBAC_TABLES} == snapshot, (
+            "a re-run changed a user_identity_id value — not idempotent"
+        )
+
+
+@_DB_GATE
+class TestTheDualWriteAtRuntime:
+    """§H6 done-when (EXPAND): a fresh RBAC INSERT populates both columns to the
+    same identity — proven through the REAL write paths, not a transcription."""
+
+    def test_the_bootstrap_owner_role_dual_writes_when_the_identity_exists(
+        self, conn,
+    ):
+        """Drive the imported ``_BOOTSTRAP_OWNER_SQL`` against real PG: with the
+        identity already present, the bootstrapped owner's user_role carries
+        user_identity_id == that identity (both columns agree)."""
+        org = _new_org(conn, "h6rk-boot")
+        _new_role(conn, org, "owner")  # _BOOTSTRAP_OWNER_SQL needs the owner role
+        email = "founder@h6rk.example"
+        wanted = _seed_identity(conn, email)  # identity exists BEFORE bootstrap
+
+        conn.execute(
+            text(_BOOTSTRAP_OWNER_SQL), {"email": email, "org_slug": "h6rk-boot"}
+        )
+
+        row = conn.execute(
+            text(
+                "SELECT ur.user_identity_id::text "
+                "  FROM user_role ur "
+                "  JOIN app_user au ON au.id = ur.user_id "
+                " WHERE lower(au.email) = lower(:e)"
+            ),
+            {"e": email},
+        ).one()
+        assert row[0] == wanted, (
+            "the bootstrap owner user_role did not dual-write user_identity_id "
+            "equal to the pre-existing identity"
+        )
+
+    async def test_set_roles_dual_writes_through_its_own_call_path(self):
+        """Drive the REAL async ``set_roles`` against real PG (committing +
+        cleaning up, the ``test_h6_identity_shadow`` call-path model): the
+        assigned user_role carries user_identity_id == the member's identity."""
+        from acb_common.db import get_session_factory
+
+        slug = f"h6rk-sr-{uuid.uuid4().hex[:8]}"
+        email = f"setroles-{uuid.uuid4().hex[:8]}@h6rk.example"
+
+        async with tenant_engine_scope(_URL):
+            factory = get_session_factory()
+            async with factory() as session:
+                org_id = str((await session.execute(
+                    text("INSERT INTO organization (slug, display_name) "
+                         "VALUES (:s, :s) RETURNING id"),
+                    {"s": slug},
+                )).scalar_one())
+                role_id = str((await session.execute(
+                    text("INSERT INTO org_role (organization_id, slug, "
+                         "display_name) VALUES (CAST(:o AS uuid), 'member', "
+                         "'Member') RETURNING id"),
+                    {"o": org_id},
+                )).scalar_one())
+                uid = str((await session.execute(
+                    text("INSERT INTO app_user (email, display_name, role, "
+                         "status, organization_id, joined_at) VALUES "
+                         "(:e, :e, 'employee', 'active', CAST(:o AS uuid), now()) "
+                         "RETURNING id"),
+                    {"e": email, "o": org_id},
+                )).scalar_one())
+                wanted = str((await session.execute(
+                    text("INSERT INTO user_identity (email, display_name) "
+                         "VALUES (:e, :e) RETURNING id"),
+                    {"e": email},
+                )).scalar_one())
+                await session.commit()
+            try:
+                async with factory() as session:
+                    await set_roles(session, uid, [(role_id, "member")], "pytest")
+                    await session.commit()
+                async with factory() as session:
+                    got = (await session.execute(
+                        text("SELECT user_identity_id::text FROM user_role "
+                             " WHERE user_id = CAST(:u AS uuid)"),
+                        {"u": uid},
+                    )).scalar_one()
+                assert got == wanted, (
+                    "set_roles did not dual-write user_identity_id equal to the "
+                    "member's lower(email)-derived identity"
+                )
+            finally:
+                async with factory() as session:
+                    await session.execute(
+                        text("DELETE FROM organization WHERE slug = :s"),
+                        {"s": slug},
+                    )
+                    await session.execute(
+                        text("DELETE FROM user_identity WHERE lower(email) = "
+                             "lower(:e)"),
+                        {"e": email},
+                    )
+                    await session.commit()
+
+    def test_the_ladder_dsn_does_not_leak_out_of_this_suite(self):
+        """``DATABASE_URL`` must be untouched — setting it re-arms
+        ``test_tenant_coverage.py``'s two DB-gated tests."""
+        assert os.environ.get("DATABASE_URL", "") != _URL
+
+
+# ── The SIXTH INSERT + the RBAC-first order, against real Postgres (R8) ───────
+#
+# The decisive fences for this repair: driving the PROVISION path end-to-end and
+# the generalized RBAC-created-before-identity case. Both COMMIT (the provision
+# seam and the mirror take their own sessions from the shared engine and cannot
+# ride the rolled-back `conn` fixture), so they use uuid'd identifiers and clean
+# up after themselves — the `TestSliceFourTheSeamCaller` model.
+
+@_DB_GATE
+class TestTheProvisionOwnerIsBridged:
+    """§H6 (EXPAND) — a freshly-PROVISIONED owner is identity-and-RBAC-complete."""
+
+    async def test_the_provision_path_bridges_the_owner(self):
+        """Drive ``provision_local_organization`` end-to-end against real PG:
+        after provisioning a brand-new org, the OWNER has a ``user_identity`` AND
+        their owner ``user_role.user_identity_id`` == that identity (NOT NULL).
+
+        This is the sixth RBAC INSERT (``provision_org_owner``) the five Python
+        dual-writes miss, bridged at mirror-time. RED-FIRST: drop the mirror call
+        from the provision caller (or the RBAC bridge from the mirror) and the
+        owner's ``user_role.user_identity_id`` is NULL — they resolve to NO roles
+        once ``IDENTITY_CUTOVER`` flips the role leg (locked out of their org).
+        """
+        from acb_common.db import get_session_factory
+        from acb_common.provisioning import provision_local_organization
+
+        slug = f"h6rk-prov-{uuid.uuid4().hex[:8]}"
+        owner = f"prov-owner-{uuid.uuid4().hex[:8]}@h6rk.example"
+
+        async with tenant_engine_scope(_URL):
+            await provision_local_organization(slug, "Provisioned Org", owner)
+            factory = get_session_factory()
+            try:
+                async with factory() as session:
+                    ident = (await session.execute(
+                        text("SELECT id::text AS id FROM user_identity "
+                             " WHERE lower(email) = lower(:e)"),
+                        {"e": owner},
+                    )).mappings().first()
+                    assert ident is not None, (
+                        "provisioning minted no user_identity for the owner"
+                    )
+                    got = (await session.execute(
+                        text(
+                            "SELECT ur.user_identity_id::text "
+                            "  FROM user_role ur "
+                            "  JOIN app_user au ON au.id = ur.user_id "
+                            "  JOIN org_role r ON r.id = ur.role_id "
+                            "                 AND r.slug = 'owner' "
+                            "  JOIN organization o ON o.id = r.organization_id "
+                            " WHERE o.slug = :s AND lower(au.email) = lower(:e)"
+                        ),
+                        {"s": slug, "e": owner},
+                    )).scalar_one()
+                    assert got == ident["id"], (
+                        "the provisioned owner's user_role.user_identity_id was "
+                        "not bridged to their identity — they get NO roles once "
+                        "IDENTITY_CUTOVER flips the role leg (locked out)"
+                    )
+            finally:
+                async with factory() as session:
+                    await session.execute(
+                        text("DELETE FROM organization WHERE slug = :s"),
+                        {"s": slug},
+                    )
+                    await session.execute(
+                        text("DELETE FROM user_identity WHERE lower(email) = "
+                             "lower(:e)"),
+                        {"e": owner},
+                    )
+                    await session.commit()
+
+
+@_DB_GATE
+class TestRbacCreatedBeforeIdentityIsBridged:
+    """§H6 (EXPAND) — the generalized timing fix, robust to creation order."""
+
+    async def test_rbac_rows_created_before_the_identity_are_bridged_by_the_mirror(
+        self,
+    ):
+        """An RBAC row written BEFORE the human's ``user_identity`` exists
+        (``user_identity_id`` NULL, no identity) is bridged when the mirror later
+        ensures that identity — across all three RBAC tables, idempotently.
+
+        This closes EVERY RBAC-first case in one place (the provisioned owner and
+        any future one), not just the provision path. RED-FIRST: without the
+        mirror-time backfill these rows keep NULL after the mirror runs.
+        """
+        from acb_auth.access import mirror_identity_membership
+        from acb_common.db import get_session_factory
+
+        slug = f"h6rk-rbf-{uuid.uuid4().hex[:8]}"
+        email = f"rbac-first-{uuid.uuid4().hex[:8]}@h6rk.example"
+
+        async with tenant_engine_scope(_URL):
+            factory = get_session_factory()
+            async with factory() as session:
+                org_id = str((await session.execute(
+                    text("INSERT INTO organization (slug, display_name) "
+                         "VALUES (:s, :s) RETURNING id"),
+                    {"s": slug},
+                )).scalar_one())
+                role_id = str((await session.execute(
+                    text("INSERT INTO org_role (organization_id, slug, "
+                         "display_name) VALUES (CAST(:o AS uuid), 'member', "
+                         "'Member') RETURNING id"),
+                    {"o": org_id},
+                )).scalar_one())
+                grp_id = str((await session.execute(
+                    text("INSERT INTO org_group (organization_id, slug, "
+                         "display_name) VALUES (CAST(:o AS uuid), 'grp', 'Grp') "
+                         "RETURNING id"),
+                    {"o": org_id},
+                )).scalar_one())
+                uid = str((await session.execute(
+                    text("INSERT INTO app_user (email, display_name, role, "
+                         "status, organization_id, joined_at) VALUES "
+                         "(:e, :e, 'employee', 'active', CAST(:o AS uuid), now()) "
+                         "RETURNING id"),
+                    {"e": email, "o": org_id},
+                )).scalar_one())
+                # RBAC rows keyed on app_user.id, user_identity_id left NULL, and
+                # NO user_identity for this human yet — the RBAC-FIRST order.
+                await session.execute(
+                    text("INSERT INTO user_role (user_id, role_id) "
+                         "VALUES (CAST(:u AS uuid), CAST(:r AS uuid))"),
+                    {"u": uid, "r": role_id},
+                )
+                await session.execute(
+                    text("INSERT INTO user_permission_override "
+                         "  (user_id, permission, effect) "
+                         "VALUES (CAST(:u AS uuid), 'feature:x', 'allow')"),
+                    {"u": uid},
+                )
+                await session.execute(
+                    text("INSERT INTO org_group_member (group_id, user_id) "
+                         "VALUES (CAST(:g AS uuid), CAST(:u AS uuid))"),
+                    {"g": grp_id, "u": uid},
+                )
+                await session.commit()
+            try:
+                # Pre: no identity, and every RBAC row's shadow column is NULL.
+                async with factory() as session:
+                    assert (await session.execute(
+                        text("SELECT count(*) FROM user_identity "
+                             " WHERE lower(email) = lower(:e)"),
+                        {"e": email},
+                    )).scalar_one() == 0
+                    for tbl in _RBAC_TABLES:
+                        v = (await session.execute(
+                            text(f"SELECT user_identity_id FROM {tbl} "
+                                 " WHERE user_id = CAST(:u AS uuid)"),
+                            {"u": uid},
+                        )).scalar_one()
+                        assert v is None, f"{tbl} started with a non-NULL shadow"
+
+                # The mirror ensures the identity AND bridges the RBAC rows.
+                await mirror_identity_membership(
+                    email=email, display_name="RBAC First",
+                    org_id=org_id, status="active",
+                )
+
+                async with factory() as session:
+                    wanted = str((await session.execute(
+                        text("SELECT id::text FROM user_identity "
+                             " WHERE lower(email) = lower(:e)"),
+                        {"e": email},
+                    )).scalar_one())
+                    for tbl in _RBAC_TABLES:
+                        got = (await session.execute(
+                            text(f"SELECT user_identity_id::text FROM {tbl} "
+                                 " WHERE user_id = CAST(:u AS uuid)"),
+                            {"u": uid},
+                        )).scalar_one()
+                        assert got == wanted, (
+                            f"{tbl}.user_identity_id not bridged by the mirror "
+                            "(the RBAC-first order left it NULL)"
+                        )
+
+                # Idempotent: a second mirror run leaves the bridged values put.
+                await mirror_identity_membership(
+                    email=email, display_name="RBAC First",
+                    org_id=org_id, status="active",
+                )
+                async with factory() as session:
+                    for tbl in _RBAC_TABLES:
+                        got = (await session.execute(
+                            text(f"SELECT user_identity_id::text FROM {tbl} "
+                                 " WHERE user_id = CAST(:u AS uuid)"),
+                            {"u": uid},
+                        )).scalar_one()
+                        assert got == wanted, f"{tbl} moved on a mirror re-run"
+            finally:
+                async with factory() as session:
+                    await session.execute(
+                        text("DELETE FROM organization WHERE slug = :s"),
+                        {"s": slug},
+                    )
+                    await session.execute(
+                        text("DELETE FROM user_identity WHERE lower(email) = "
+                             "lower(:e)"),
+                        {"e": email},
+                    )
+                    await session.commit()
+
+
+# ── The bridge under REAL FORCE RLS, as the NON-PRIV acb_app role (R8) ─────────
+#
+# THE decisive fence for this repair (round 2), closing the harness BLIND-SPOT.
+# The R8 suites above run the ladder WITHOUT `generated/` (no RLS applied) and as
+# the `acb` role (`rolbypassrls=True` on scratch), so the bridge's UPDATE matched
+# rows whether or not it bound `app.tenant_id` — which is exactly why an UNBOUND
+# bridge passed re-verification while it would silently no-op under real phase-4
+# RLS. This suite promotes the FULLY phase-4-promoted catalog and connects as the
+# NON-privileged `acb_app` role subject to FORCE RLS, reusing
+# `test_h3_rls_promotion_rehearsal.promoted` verbatim (full ladder +
+# generated/{01,02,03,04} + the NOSUPERUSER NOBYPASSRLS role + two seeded orgs).
+# It proves it TWO ways, both as the non-priv role:
+#   * `TestTheBridgeSqlNeedsTheGucBindUnderForceRls` drives the bridge's OWN SQL
+#     (`_BRIDGE_RBAC_SQL`, imported — a copy would keep passing after the real
+#     statement changed): GUC-bound → GREEN (3 rows), unbound → RED (0 rows, NULL);
+#   * `TestTheRealBridgeFunctionUnderForceRls` drives the REAL async
+#     `_bridge_rbac_to_identity` through the process engine repointed at the
+#     acb_app DSN — the one that goes RED if the function's `tenant_session` bind is
+#     ever removed (the bypass-role R8 tests above cannot see that regression).
+
+
+def _seed_rbac_human(promo, org: str, email: str, tag: str):
+    """Seed, as the admin (superuser bypasses RLS), a human in ``org`` with one row
+    in EACH RBAC table (organization_id = ``org``, shadow NULL) and a
+    ``user_identity`` to bridge TO. ``organization_id`` is EXPLICIT — the phase-1
+    DEFAULT reads ``app.tenant_id``, unset on the admin connection. Returns
+    ``(uid, role_id, grp_id, identity_id)``."""
+    with promo.admin_engine.begin() as c:
+        uid = str(c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, "
+            "organization_id) VALUES (:e, :e, 'employee', 'active', :o) "
+            "RETURNING id"), {"e": email, "o": org}).scalar_one())
+        role_id = str(c.execute(text(
+            "INSERT INTO org_role (organization_id, slug, display_name) "
+            "VALUES (:o, :s, :s) RETURNING id"),
+            {"o": org, "s": f"role-{tag}"}).scalar_one())
+        grp_id = str(c.execute(text(
+            "INSERT INTO org_group (organization_id, slug, display_name) "
+            "VALUES (:o, :s, :s) RETURNING id"),
+            {"o": org, "s": f"grp-{tag}"}).scalar_one())
+        c.execute(text(
+            "INSERT INTO user_role (user_id, role_id, organization_id) "
+            "VALUES (CAST(:u AS uuid), CAST(:r AS uuid), :o)"),
+            {"u": uid, "r": role_id, "o": org})
+        c.execute(text(
+            "INSERT INTO user_permission_override (user_id, permission, "
+            "effect, organization_id) VALUES (CAST(:u AS uuid), 'feature:x', "
+            "'allow', :o)"), {"u": uid, "o": org})
+        c.execute(text(
+            "INSERT INTO org_group_member (group_id, user_id, organization_id) "
+            "VALUES (CAST(:g AS uuid), CAST(:u AS uuid), :o)"),
+            {"g": grp_id, "u": uid, "o": org})
+        wanted = str(c.execute(text(
+            "INSERT INTO user_identity (email, display_name) "
+            "VALUES (:e, :e) RETURNING id"), {"e": email}).scalar_one())
+    return uid, role_id, grp_id, wanted
+
+
+def _purge_rbac_human(promo, uid: str, role_id: str, grp_id: str, wanted: str):
+    """Remove a seeded human via the admin engine. Deleting ``app_user`` cascades
+    its three RBAC rows (all ``user_id`` FKs ON DELETE CASCADE); the rest go
+    explicitly."""
+    with promo.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM app_user WHERE id = CAST(:u AS uuid)"),
+                  {"u": uid})
+        c.execute(text("DELETE FROM org_role WHERE id = CAST(:r AS uuid)"),
+                  {"r": role_id})
+        c.execute(text("DELETE FROM org_group WHERE id = CAST(:g AS uuid)"),
+                  {"g": grp_id})
+        c.execute(text("DELETE FROM user_identity WHERE id = CAST(:i AS uuid)"),
+                  {"i": wanted})
+
+
+def _shadow(promo, table: str, user_id: str) -> str | None:
+    """Read ``table.user_identity_id`` for ``user_id`` via the ADMIN engine.
+
+    ``promo`` is the ``promoted`` fixture namespace (named ``promo`` here only so it
+    does not shadow the module-level fixture import). The admin (superuser) bypasses
+    RLS, so a read-back is never itself hidden by the policy under test — the RED
+    assertion needs to SEE the (still-NULL) row the non-priv role could not touch.
+    ``table`` is a fixed literal from ``_RBAC_TABLES``, never user input.
+    """
+    assert table in _RBAC_TABLES
+    with promo.admin_engine.connect() as c:
+        row = c.execute(
+            text(f"SELECT user_identity_id::text FROM {table} "
+                 " WHERE user_id = CAST(:u AS uuid) LIMIT 1"),
+            {"u": user_id},
+        ).first()
+    return None if row is None or row[0] is None else row[0]
+
+
+def _assert_non_priv(app_eng) -> None:
+    """The role really IS subject to RLS, else every assertion below is vacuous.
+
+    ``app_eng`` is the ``app_engine`` fixture (named ``app_eng`` here only so it does
+    not shadow the module-level fixture import).
+    """
+    with app_eng.connect() as c:
+        role = c.execute(text(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles "
+            "WHERE rolname = current_user")).first()
+    assert role is not None and not role[0] and not role[1], (
+        "the bridge fence connects as a SUPERUSER/BYPASSRLS role — RLS bypassed"
+    )
+
+
+@_DB_GATE
+class TestTheBridgeSqlNeedsTheGucBindUnderForceRls:
+    """R7 fence ``bridge-under-FORCE-RLS`` (mechanism): GUC-bound → GREEN,
+    unbound → RED, as the non-priv ``acb_app`` role.
+
+    Drives ``_BRIDGE_RBAC_SQL`` directly. **GREEN** — bound to the human's org, the
+    UPDATEs see and write the RLS-FORCED RBAC rows. **RED** (the mutation the repair
+    fixes) — run UNBOUND, FORCE RLS hides the rows so every UPDATE touches 0 rows and
+    the shadow stays NULL: the silent no-op that left a provisioned owner with a NULL
+    ``user_role.user_identity_id`` and, once ``IDENTITY_CUTOVER`` flips the role leg,
+    locked out of their own org.
+    """
+
+    def test_bound_bridge_populates_and_unbound_bridge_noops(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        org = promoted.org_a
+        tag = uuid.uuid4().hex[:8]
+        email = f"bridge-sql-{tag}@h6rk.example"
+        uid, role_id, grp_id, wanted = _seed_rbac_human(promoted, org, email, tag)
+
+        try:
+            # ── RED — the MUTATION: run the bridge UNBOUND (no set_config). FORCE
+            #    RLS hides every RBAC row from the non-priv role, so each UPDATE
+            #    touches 0 rows and the shadow stays NULL. It passed re-verification
+            #    before only because the harness used a bypass role.
+            with app_engine.connect() as c, c.begin():
+                red_rows = sum(
+                    (c.execute(text(sql),
+                               {"identity": wanted, "email": email}).rowcount or 0)
+                    for sql in _BRIDGE_RBAC_SQL
+                )
+            assert red_rows == 0, (
+                f"the UNBOUND bridge updated {red_rows} rows under FORCE RLS — it "
+                "must no-op (0 rows); a non-zero count means RLS is not enforced"
+            )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) is None, (
+                    f"{tbl}.user_identity_id was populated by the UNBOUND bridge — "
+                    "the RED mutation did not reproduce the silent no-op"
+                )
+
+            # ── GREEN: bind app.tenant_id to the human's org, then the SAME bridge
+            #    SQL sees + writes the RLS-forced rows.
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": org})
+                green_rows = sum(
+                    (c.execute(text(sql),
+                               {"identity": wanted, "email": email}).rowcount or 0)
+                    for sql in _BRIDGE_RBAC_SQL
+                )
+            assert green_rows == 3, (
+                f"the GUC-bound bridge updated {green_rows} rows, expected 3 (one "
+                "per RBAC table) — the bind must make the RLS-forced rows visible"
+            )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) == wanted, (
+                    f"{tbl}.user_identity_id was not bridged to the identity under "
+                    "FORCE RLS as the non-priv role even when GUC-bound"
+                )
+        finally:
+            _purge_rbac_human(promoted, uid, role_id, grp_id, wanted)
+
+
+@_DB_GATE
+class TestTheRealBridgeFunctionUnderForceRls:
+    """R7 fence ``bridge-under-FORCE-RLS`` (the function): the REAL async
+    ``_bridge_rbac_to_identity`` populates the shadow under FORCE RLS as the
+    non-priv role — and goes RED if its ``tenant_session`` bind is removed.
+
+    This is the half the bypass-role R8 tests (``TestTheProvisionOwnerIsBridged`` /
+    ``TestRbacCreatedBeforeIdentityIsBridged``) cannot provide: they drive the real
+    function but connect as the ``acb`` superuser (``rolbypassrls=True``), so an
+    UNBOUND bridge passes there too. Here the process engine is repointed at the
+    acb_app DSN (non-priv, on the phase-4-promoted DB), so removing the bind makes
+    every UPDATE match 0 rows and the swallowed best-effort leaves the shadow NULL —
+    RED. Confirmed red-first during this repair by reverting the bind.
+    """
+
+    async def test_the_real_bridge_populates_the_shadow_as_the_non_priv_role(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        from acb_auth.access import _bridge_rbac_to_identity
+
+        _assert_non_priv(app_engine)
+        org = promoted.org_a
+        tag = uuid.uuid4().hex[:8]
+        email = f"bridge-fn-{tag}@h6rk.example"
+        uid, role_id, grp_id, wanted = _seed_rbac_human(promoted, org, email, tag)
+
+        # The acb_app DSN, password included — `str(URL)` masks it, which would make
+        # asyncpg auth fail; `render_as_string(hide_password=False)` keeps it.
+        app_dsn = promoted.app_url.render_as_string(hide_password=False)
+        try:
+            # Repoint the ONE process engine at the non-priv DSN so the real
+            # function (via `tenant_session` → `get_session_factory`) connects as
+            # acb_app, subject to FORCE RLS — not as the bypass ladder role.
+            async with tenant_engine_scope(app_dsn):
+                await _bridge_rbac_to_identity(
+                    email=email, identity_id=wanted, org_id=org,
+                )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) == wanted, (
+                    f"{tbl}.user_identity_id was not populated by the REAL bridge "
+                    "under FORCE RLS as the non-priv role — the tenant_session bind "
+                    "is missing or ineffective (the round-1 P0)"
+                )
+        finally:
+            _purge_rbac_human(promoted, uid, role_id, grp_id, wanted)

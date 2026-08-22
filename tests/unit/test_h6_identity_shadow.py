@@ -195,18 +195,36 @@ class TestTheDualWriteShape:
         ), "the identity mirror does not target (lower(email))"
 
     def test_the_app_user_statements_are_not_polluted_by_the_dual_write(self):
-        """The regression fence: ``app_user`` writes stay byte-identical.
+        """The regression fence: the authoritative ``app_user`` UPSERT stays a
+        pure ``app_user`` write — the EXISTENCE mirror (``user_identity`` +
+        ``org_membership``) lives in a SEPARATE statement on a SEPARATE session,
+        so neither upsert may WRITE a shadow table.
 
-        The dual-write is purely additive and lives in a SEPARATE statement on a
-        SEPARATE session, so neither authoritative upsert may name a shadow
-        table. If one does, the ``app_user`` write is no longer what it was.
+        ``_PROVISION_MEMBER_SQL`` is a lone ``app_user`` upsert and names no shadow
+        table at all. ``_BOOTSTRAP_OWNER_SQL`` is a combined ``WITH`` whose
+        ``member`` CTE upserts ``app_user`` and whose trailing statement INSERTs
+        ``user_role`` — and H6 slice 4 (D48, the RBAC re-key EXPAND) dual-writes
+        ``user_identity_id`` on THAT ``user_role`` INSERT, which READS
+        ``user_identity`` to resolve the FK. A READ is not pollution; WRITING a
+        shadow table from the ``app_user`` path is, so the fence tightens to "no
+        INSERT/UPDATE/DELETE of a shadow table here". ``org_membership`` is never
+        touched by either statement, and the lone member upsert names no shadow
+        table whatsoever.
         """
         for label, sql in (
             ("_BOOTSTRAP_OWNER_SQL", _BOOTSTRAP_OWNER_SQL),
             ("_PROVISION_MEMBER_SQL", _PROVISION_MEMBER_SQL),
         ):
-            assert "user_identity" not in sql, f"{label} now names user_identity"
             assert "org_membership" not in sql, f"{label} now names org_membership"
+        assert "user_identity" not in _PROVISION_MEMBER_SQL, (
+            "_PROVISION_MEMBER_SQL now names user_identity"
+        )
+        for verb in ("INSERT INTO user_identity", "UPDATE user_identity",
+                     "DELETE FROM user_identity"):
+            assert verb not in _BOOTSTRAP_OWNER_SQL, (
+                f"_BOOTSTRAP_OWNER_SQL now writes user_identity ({verb}) — "
+                "the FK dual-write must only READ it"
+            )
 
     def test_the_mirror_is_best_effort(self):
         """Mirrors ``_record_signin_request``: it catches and never re-raises, so

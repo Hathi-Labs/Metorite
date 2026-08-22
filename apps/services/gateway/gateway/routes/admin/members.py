@@ -959,9 +959,15 @@ async def set_member_overrides(
         for perm, effect, reason in cleaned:
             await db.execute(
                 text(
+                    # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via
+                    # the lower(email) bridge so migration 184's column stays
+                    # current. app_user.id stays authoritative; READS user_identity.
                     "INSERT INTO user_permission_override "
-                    "  (user_id, permission, effect, reason, set_by) "
-                    "VALUES (CAST(:uid AS uuid), :perm, :effect, :reason, :by)"
+                    "  (user_id, permission, effect, reason, set_by, user_identity_id) "
+                    "VALUES (CAST(:uid AS uuid), :perm, :effect, :reason, :by, "
+                    "        (SELECT ui.id FROM user_identity ui "
+                    "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                    "          WHERE au.id = CAST(:uid AS uuid)))"
                 ),
                 {"uid": member["id"], "perm": perm, "effect": effect,
                  "reason": reason, "by": admin.email},

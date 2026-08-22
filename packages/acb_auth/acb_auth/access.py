@@ -23,9 +23,10 @@ from acb_common import get_logger
 # The one shared pool (BO-10) — see the Engine section below. `get_session_factory`
 # is re-exported under the private name this module has always used
 # (`tests/unit/test_signin_requests.py` monkeypatches it onto a fixture engine).
-# `current_tenant` + `tenant_session` are the ONE tenant-GUC seam (db.py); the
-# bound role leg in `resolve_access` reuses them under IDENTITY_CUTOVER rather
-# than applying `app.tenant_id` a second way (R5).
+# `current_tenant` + `tenant_session` are the ONE tenant-GUC seam (db.py), reused
+# (never re-implemented) by BOTH the bound role leg in `resolve_access` (under
+# IDENTITY_CUTOVER) and the RBAC bridge (which writes RLS-FORCED tables and so
+# must SET LOCAL `app.tenant_id` before its UPDATEs) — R5.
 from acb_common.db import current_tenant, tenant_session
 from acb_common.db import get_session_factory as _get_session_factory
 
@@ -350,9 +351,12 @@ async def mirror_identity_membership(
     reason: ``app_user`` is authoritative and its write must be BYTE-IDENTICAL to
     today (`saas_multitenancy_handover.md` §H6). It opens its OWN short session
     rather than riding the caller's transaction so a failed shadow write cannot
-    poison the authoritative one; the shadow tables are RLS-EXEMPT, so no tenant
-    bind is needed. A failure leaves the row for migration 182's idempotent
-    catch-up to reconcile.
+    poison the authoritative one; **this function's own writes touch
+    ``user_identity`` + ``org_membership``, which are RLS-EXEMPT, so THOSE need no
+    tenant bind.** (The RBAC bridge it calls at the end writes RLS-FORCED tables and
+    so DOES run GUC-bound — see :func:`_bridge_rbac_to_identity`; do not read this
+    exemption as covering it.) A failure leaves the row for migration 182's
+    idempotent catch-up to reconcile.
 
     Pass ``org_id`` when the caller already holds it (the invite path) or
     ``org_slug`` when it knows the org by name (the bootstrap path). One row per
@@ -371,6 +375,8 @@ async def mirror_identity_membership(
     email = (email or "").strip()
     if not email or "@" not in email:
         return
+    identity_id: str | None = None
+    bridge_org: str | None = None
     try:
         from sqlalchemy import text
 
@@ -402,9 +408,162 @@ async def mirror_identity_membership(
                 {"org": str(resolved_org), "uid": identity["id"], "status": status},
             )
             await session.commit()
+            identity_id = identity["id"]
+            # The human's org — carried out of the (RLS-exempt) mirror session so
+            # the RBAC bridge below can GUC-bind it. It equals the human's
+            # `app_user.organization_id` (a human is in ONE org, migration 162), and
+            # binding it is the ONLY way the bridge's UPDATEs can see the RLS-FORCED
+            # RBAC rows; `app_user` cannot be re-read here to derive it (unbound → 0
+            # rows). See `_bridge_rbac_to_identity`.
+            bridge_org = str(resolved_org)
     except Exception as exc:
         _log.warning(
             "identity_mirror_failed", email=email, error=str(exc)[:200],
+        )
+        return
+
+    # H6 slice 4 (D48) — the identity is now DURABLE, so bridge this human's RBAC
+    # rows that were written BEFORE it existed. The canonical case is a
+    # PROVISIONED owner: `provision_org_owner` (the tenant-plane SQL, migration
+    # 180) INSERTs the owner's `user_role` with no identity yet to resolve, and
+    # this mirror mints that identity only AFTER provisioning commits — so the
+    # dual-write's identity-FIRST bridge (migration 184) never fired for it. A
+    # bootstrap owner and any future RBAC-first order are the same shape. Running
+    # the backfill HERE — inside the ONE identity-creation seam, called by
+    # invite / approve / bootstrap AND now provision — closes every such case in
+    # one place, robust to creation order. Separate best-effort step on its OWN
+    # session, so a failure never touches the identity/membership write just
+    # committed (see `_bridge_rbac_to_identity`).
+    await _bridge_rbac_to_identity(
+        email=email, identity_id=identity_id, org_id=bridge_org,
+    )
+
+
+# ── Identity shadow: RBAC re-key bridge (WS-29 H6 slice 4, D48) — DARK ──
+#
+# Migration 184 added a nullable `user_identity_id` to the three RBAC tables and
+# DUAL-WRITES it on the five Python RBAC INSERTs (`set_roles`, `add_group_member`
+# x2, `set_member_overrides`, `_BOOTSTRAP_OWNER_SQL`), each resolving the identity
+# through the `lower(email)` bridge at INSERT time — the identity-FIRST order.
+#
+# There is a SIXTH RBAC INSERT the dual-write cannot reach: `provision_org_owner`
+# (the tenant-plane SQL function, `infra/postgres/180_...:153-155`), which INSERTs
+# the owner's `user_role` DURING provisioning — before any `user_identity` exists,
+# because provisioning mints the owner's identity only AFTER it commits (via this
+# module's mirror, called from the provision caller). That is the RBAC-FIRST order,
+# and migration 184's one-shot backfill only catches rows that predate IT. So
+# whenever the mirror ensures a human's identity, it ALSO backfills that human's
+# existing RBAC rows here — closing the provisioned owner (who would otherwise get
+# a NULL `user_role.user_identity_id` and, once IDENTITY_CUTOVER flips the role leg
+# onto it, NO roles → locked out of their own org) and every future RBAC-first
+# case in ONE place. `app_user.id` stays authoritative; this writes only the shadow
+# column, which nothing reads yet (dark).
+#
+# ⚠️ **The bridge writes the three RLS-FORCED RBAC tables, so it runs GUC-BOUND —
+# unlike the mirror's OWN writes above, which touch the RLS-EXEMPT `user_identity`
+# / `org_membership` and need no bind.** `user_role` / `user_permission_override` /
+# `org_group_member` all carry `FORCE ROW LEVEL SECURITY` keyed on
+# `organization_id = current_setting('app.tenant_id', true)::uuid`
+# (`generated/04_policies.sql`), so an UPDATE on an UNBOUND session sees the GUC as
+# NULL → 0 visible rows → it silently no-ops (best-effort swallows it), leaving the
+# provisioned owner's `user_identity_id` NULL — the same class of bug as slice 3b's
+# unbound resolve. The fix binds `app.tenant_id` to the human's org (a human is in
+# ONE org — `app_user` is globally unique on `lower(email)`, migration 162) via the
+# ONE GUC seam `tenant_session()` (`SET LOCAL`, so it never leaks back to the pool),
+# so the UPDATE sees + writes the rows. The org is the mirror's already-resolved
+# org (== the human's `app_user.organization_id`); it CANNOT be re-derived by
+# reading `app_user` here, because that read is itself unbound → 0 rows (the H3
+# rehearsal's chicken-and-egg, `test_the_unbound_tenant_discovery_read_returns_
+# nothing`). This same GUC-bind requirement binds ANY H6 write path that touches an
+# RLS-FORCED table — see migration 179's "REVISIT AT H3" note and 184's header.
+
+#: The three RBAC tables D48 re-keys.
+_BRIDGE_RBAC_TABLES = ("user_role", "user_permission_override", "org_group_member")
+
+#: One scoped UPDATE per RBAC table, via the SAME `lower(email)` bridge migration
+#: 184 uses (RBAC.user_id → app_user.id → lower(email) → identity), narrowed to
+#: ONE human and setting ONLY the still-NULL shadow column — never a grant key, so
+#: it can never move a role/permission/group membership, and `IS NULL` makes a
+#: re-run touch zero rows (idempotent). `table` is a fixed literal from the tuple
+#: above, never request input.
+#:
+#: ⚠️ **These UPDATEs target RLS-FORCED tables, so they run inside
+#: `tenant_session()` bound to the human's org** (see `_bridge_rbac_to_identity`):
+#: unbound, FORCE RLS makes each match 0 rows. Neither statement names
+#: `organization_id` — the bound tenant is what makes the row visible (USING) and
+#: the unchanged `organization_id` is what passes WITH CHECK.
+_BRIDGE_RBAC_SQL: tuple[str, ...] = tuple(
+    f"""
+    UPDATE {table} rbac
+       SET user_identity_id = CAST(:identity AS uuid)
+      FROM app_user au
+     WHERE rbac.user_id = au.id
+       AND lower(au.email) = lower(:email)
+       AND rbac.user_identity_id IS NULL
+    """
+    for table in _BRIDGE_RBAC_TABLES
+)
+
+
+async def _bridge_rbac_to_identity(
+    *, email: str, identity_id: str, org_id: str | None,
+) -> None:
+    """Backfill a human's existing RBAC rows' ``user_identity_id`` (H6 slice 4).
+
+    Called by :func:`mirror_identity_membership` AFTER the identity is durable, so
+    the "RBAC row created before the identity existed" order — a PROVISIONED owner
+    (`provision_org_owner`'s ``user_role`` INSERT), a bootstrap owner, any future
+    one — ends with the shadow column populated, matching migration 184's
+    dual-write of the identity-FIRST order. One scoped UPDATE per RBAC table via
+    the same ``lower(email)`` bridge, setting ONLY ``user_identity_id`` and only
+    where it is still NULL: idempotent, moves no grant, and never overwrites a
+    value 184 or a dual-write already set correctly.
+
+    ⚠️ **GUC-BOUND, because the three RBAC tables are RLS-FORCED.** ``user_role`` /
+    ``user_permission_override`` / ``org_group_member`` all carry ``FORCE ROW LEVEL
+    SECURITY`` keyed on ``organization_id = current_setting('app.tenant_id',
+    true)::uuid`` (``generated/04_policies.sql``). Run UNBOUND, each UPDATE sees the
+    GUC as NULL → 0 visible rows → it silently no-ops and the provisioned owner's
+    ``user_identity_id`` stays NULL — the SAME class as slice 3b's unbound resolve,
+    NOT the exempt-table case the mirror's own ``user_identity`` / ``org_membership``
+    writes are (those legitimately need no bind). So this runs inside the ONE GUC
+    seam :func:`acb_common.db.tenant_session` (``SET LOCAL app.tenant_id`` — never a
+    session ``SET``, so it cannot leak to the next pooled borrower), bound to
+    ``org_id`` = the human's org. That org is threaded in from the mirror's
+    already-resolved org (== the human's ``app_user.organization_id``; a human is in
+    ONE org — ``app_user`` is globally unique on ``lower(email)``, migration 162).
+    It is NOT re-derived by reading ``app_user`` here: that read is itself unbound →
+    0 rows, the chicken-and-egg the H3 rehearsal pins
+    (``test_the_unbound_tenant_discovery_read_returns_nothing``). The UPDATE writes
+    ONLY ``user_identity_id`` (never ``organization_id``), so the bound tenant makes
+    the rows visible (USING) and the unchanged ``organization_id`` passes WITH CHECK.
+
+    Best-effort, and **never raises, never changes the caller's answer** — the
+    exact posture of :func:`mirror_identity_membership`. It opens its OWN short
+    session via the shared engine seam (``tenant_session`` → ``get_session_factory``
+    — no new connection site and no second GUC-application path, R5) AFTER the
+    identity commit, so a failure here (e.g. a deployment where migration 184 has
+    not yet added the column, or no org to bind) is logged and swallowed and can
+    never roll back the identity/membership write. DARK: it writes only the shadow
+    column, which nothing reads yet.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email or not identity_id or not org_id:
+        return
+    try:
+        from sqlalchemy import text
+
+        # tenant_session applies SET LOCAL app.tenant_id for org_id and commits on
+        # exit; the UPDATEs run inside that one bound transaction. Reusing it keeps
+        # this to the ONE GUC seam (R5) — no set_config re-implementation here.
+        async with tenant_session(str(org_id)) as session:
+            for sql in _BRIDGE_RBAC_SQL:
+                await session.execute(
+                    text(sql), {"identity": str(identity_id), "email": email},
+                )
+    except Exception as exc:
+        _log.warning(
+            "identity_rbac_bridge_failed", email=email, error=str(exc)[:200],
         )
 
 
@@ -1111,9 +1270,16 @@ member AS (
                                        EXCLUDED.organization_id)
     RETURNING id
 )
-INSERT INTO user_role (user_id, role_id, assigned_by)
-SELECT member.id, r.id, 'bootstrap:executive_emails'
+-- H6 slice 4 (D48) DUAL-WRITE: the RBAC re-key EXPAND shadows `user_identity_id`
+-- on every RBAC INSERT so migration 184's column stays current. At bootstrap the
+-- identity is created by `mirror_identity_membership` AFTER this commit, so the
+-- LEFT JOIN resolves NULL on a fresh box (correct — "NULL only where no identity
+-- exists"; the mirror + a later backfill re-run reconcile it). `app_user.id`
+-- stays the AUTHORITATIVE key; this only READS `user_identity`, never writes it.
+INSERT INTO user_role (user_id, role_id, assigned_by, user_identity_id)
+SELECT member.id, r.id, 'bootstrap:executive_emails', ui.id
 FROM member, org_role r, org
+LEFT JOIN user_identity ui ON lower(ui.email) = lower(:email)
 WHERE r.organization_id = org.id AND r.slug = 'owner'
 ON CONFLICT DO NOTHING
 """

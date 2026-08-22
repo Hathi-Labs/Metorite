@@ -1,22 +1,27 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
 **Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
-scratch 2026-08-22; H6 SLICES 1 + 3a + ORPHAN-CLOSURE SHIPPED (dark) 2026-08-22; H6 SLICE 3b
-(THE READ CUTOVER) SHIPPED (dark, behind `IDENTITY_CUTOVER`, default OFF) 2026-08-22** (see H1's
-result block and the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick
+scratch 2026-08-22; H6 SLICES 1 + 3a + ORPHAN-CLOSURE + 3b (READ CUTOVER, behind `IDENTITY_CUTOVER`
+default OFF) + 4-EXPAND (RBAC RE-KEY) SHIPPED (dark) 2026-08-22** (see
+H1's result block and the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick
 characterization landed as `tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user
 sign-in brick is now written up as an OWNER DECISION in §H3.2; **the H6 dark slices** = the
 identity-shadow dual-write + catch-up backfill (migration 182), the forward status mirror +
 reconcile (migration 183, D48), the orphan-closure — purge now deletes the shadow and the
-invite/approve mirror moved post-commit — and **slice 3b, the read cutover: `resolve_identity`'s
-tenant-discovery read moves to the RLS-EXEMPT `user_identity ⋈ org_membership` (active-only) and
-`deps._with_resolved_access` binds BEFORE the bound role leg, all behind `IDENTITY_CUTOVER`
-(default OFF = byte-identical to today)** — all fenced by
-`tests/unit/test_h6_identity_shadow.py` + `test_h3_rls_promotion_rehearsal.py` — **no read moved
-while the flag is OFF; the flag-ON identity leg resolves an active member GREEN unbound under
-phase-4 RLS while the flag-OFF app_user read still bricks RED**, see §H6. Building the read
-cutover (slice 3b) DARK is AGENT-SAFE per D48; only the `IDENTITY_CUTOVER` flip, H3 phase-4
-promotion, and running the prod backfill remain OWNER-GATE, not enacted**) ·
+invite/approve mirror moved post-commit — **slice 3b, the read cutover** (`resolve_identity`'s
+tenant-discovery read moves to the RLS-EXEMPT `user_identity ⋈ org_membership` (active-only);
+`deps._with_resolved_access` binds BEFORE the bound role leg, which now runs GUC-bound via
+`tenant_session`; all behind `IDENTITY_CUTOVER`, default OFF = byte-identical to today) — and the
+**RBAC re-key EXPAND** (migration 184: nullable `user_identity_id` on the three RBAC tables,
+backfilled via the lower(email) bridge, dual-written on the five Python RBAC INSERTs + bridged
+GUC-bound at mirror-time for the sixth, `provision_org_owner`). All fenced by
+`tests/unit/test_h6_identity_shadow.py` + `tests/unit/test_h6_rbac_rekey.py` +
+`test_h3_rls_promotion_rehearsal.py` — **no read moved while the flag is OFF; the flag-ON
+identity leg resolves an active member GREEN unbound under phase-4 RLS while the flag-OFF
+app_user read still bricks RED**, see §H6. Building the read cutover (slice 3b) + the per-module
+RBAC read cutovers DARK is AGENT-SAFE per D48; only the `IDENTITY_CUTOVER` flip, the CONTRACT drop
+of the old `user_id`, H3 phase-4 promotion, and running the prod backfill remain OWNER-GATE, not
+enacted**) ·
 **Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
@@ -656,7 +661,7 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b SHIPPED (dark)
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
@@ -786,6 +791,120 @@ GREEN under phase-4 RLS with the session UNBOUND and `IDENTITY_CUTOVER` ON, whil
 pre-cutover brick (the `app_user` UNBOUND read returning zero rows) reproduces RED with the flag
 OFF — the same red/green characterization the H3 rehearsal already lands, now driven through the
 identity leg.
+
+### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · repaired 2026-08-22 (provision-owner + RBAC-first bridge; round 2 — the bridge is now GUC-BOUND under FORCE RLS) · the shared first PR
+
+D48 re-keys the three RBAC tables — `user_role`, `user_permission_override`, `org_group_member` —
+from `app_user.id` → `user_identity.id` in an expand/contract. **This EXPAND is the shared first
+PR:** it adds the column, backfills it, indexes it and dual-writes it, so the per-module READ
+cutovers below can each move onto a populated column in their own later PR. It moves **NO read**.
+
+- **Migration 184** (`184_rbac_user_identity_rekey_expand.sql`; highest was 183, re-check at
+  merge per R1) adds nullable `user_identity_id UUID` to each of the three tables, BACKFILLS it
+  via the `lower(email)` bridge (RBAC.user_id → `app_user.id` → `lower(app_user.email)` →
+  `user_identity.id`), and indexes the new column per table. Additive, forward-only, idempotent
+  (`IS DISTINCT FROM ui.id`-guarded → re-run = 0 rows), mirroring 158's credential re-key + 182's
+  backfill shape. The FK is **`ON DELETE SET NULL`, not 158's `CASCADE`** — `user_identity_id` is
+  a nullable SHADOW while `app_user.id` stays the authoritative key, so a deleted identity must
+  NULL the shadow, never cascade-delete a still-authoritative grant (the CONTRACT slice re-keys
+  to `CASCADE` when the shadow takes over). It creates no table and does **not** touch the three
+  tables' RLS (ENABLE/FORCE/policies stay in `generated/04_policies.sql`).
+- **Dual-write** `user_identity_id` on the FIVE Python RBAC INSERTs (the identity-FIRST order),
+  resolving the identity through the same bridge at insert time. The write sites (re-verified by
+  grep, one bridge each):
+  - `user_role` — `acb_auth/access.py` `_BOOTSTRAP_OWNER_SQL` (resolves by `lower(:email)` — its
+    `app_user` is in the same `WITH` and unreadable, and at bootstrap the identity is minted
+    AFTER the commit, so a fresh box writes NULL, reconciled by the mirror-time backfill below +
+    a later migration re-run) and `gateway/routes/admin/_common.py` `set_roles`;
+  - `user_permission_override` — `admin/groups.py` (the center-access grant) and `admin/members.py`
+    `set_member_overrides`;
+  - `org_group_member` — `admin/groups.py` `add_group_member`.
+  The `DELETE`s keyed on `user_id` stay correct during the dark expand and are unchanged
+  (`_common.set_roles`, `members.set_member_overrides`'s delete-then-insert, `members.remove_member`).
+- **The SIXTH RBAC INSERT — `provision_org_owner`, bridged at mirror-time (repair 2026-08-22).**
+  `provision_org_owner` (the tenant-plane SQL function, `infra/postgres/180_...:153-155`) INSERTs
+  the owner's `user_role` DURING provisioning — before any `user_identity` exists (provisioning
+  mints the owner's identity only AFTER it commits), so the five in-INSERT dual-writes cannot reach
+  it. It is instead bridged when the identity is ensured: the provision caller
+  (`acb_common.provisioning.provision_local_organization`) reuses the ONE identity-creation seam
+  (`acb_auth.access.mirror_identity_membership`, best-effort, own session, after the authoritative
+  commit — no second `user_identity` writer, no SQL fork of `provision_org_owner`), and that mirror
+  now ALSO backfills the human's existing RBAC rows (`_bridge_rbac_to_identity`: a scoped UPDATE per
+  RBAC table via the same `lower(email)` bridge, setting ONLY the still-NULL `user_identity_id`,
+  idempotent, moves no grant). Because the mirror is called by invite / approve / bootstrap AND now
+  provision, this closes the RBAC-FIRST order (a provisioned owner, a bootstrap owner, any future
+  one) in one place — so the earlier "exactly five, no sixth missed" claim was wrong. **Why it
+  matters:** without it a freshly-provisioned owner's `user_role.user_identity_id` stays NULL and,
+  once `IDENTITY_CUTOVER` flips the role leg onto that column, they resolve to NO roles → locked
+  out of their own org (fail-closed, but a real break, on a path run continuously).
+- **The bridge is GUC-BOUND, because the three RBAC tables are RLS-FORCED (repair 2026-08-22, round
+  2).** `user_role` / `user_permission_override` / `org_group_member` all carry `FORCE ROW LEVEL
+  SECURITY` keyed on `organization_id = current_setting('app.tenant_id', true)::uuid`
+  (`generated/04_policies.sql`), so `_bridge_rbac_to_identity`'s UPDATEs run on an UNBOUND session
+  see the GUC as NULL → 0 visible rows → they silently no-op (the best-effort catch swallows it) and
+  the owner's `user_identity_id` stays NULL under real phase-4 RLS — the SAME class as slice 3b's
+  unbound `resolve_access`. The fix runs the bridge inside the ONE GUC seam `tenant_session()`
+  (`SET LOCAL app.tenant_id`, no second GUC path) bound to the human's org — threaded in from the
+  mirror's already-resolved org (== the human's `app_user.organization_id`; a human is in ONE org,
+  migration 162). The org is NOT re-derived by reading `app_user` in the bridge: that read is itself
+  unbound → 0 rows, the chicken-and-egg the H3 rehearsal pins. This **corrects the earlier R5
+  justification that over-generalized** "the shadow tables are RLS-EXEMPT so no bind is needed" from
+  the mirror's OWN writes (`user_identity` / `org_membership`, genuinely exempt) to the bridge's
+  writes (RLS-FORCED). The same GUC-bind requirement binds **any** H6 write path touching an
+  RLS-forced table — the SECURITY-INVOKER-under-FORCE-RLS tension migration 179's header flagged as
+  "REVISIT AT H3". Fence: `test_h6_rbac_rekey.py::TestTheRealBridgeFunctionUnderForceRls` (drives
+  the real bridge as the non-priv `acb_app` role — RED if the bind is removed; the bypass-role R8
+  tests are blind to it) + `::TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound
+  RED at the SQL level).
+- **Testable EXPAND done-when (R8, real PG):** after migration 184 on a ladder-replayed DB,
+  `user_identity_id` becomes correct for EVERY RBAC row once the human's identity exists — it equals
+  the `user_identity.id` whose `lower(email)` matches its `user_id`'s `app_user.email` (dual-write
+  when identity-FIRST; mirror-time backfill when RBAC-FIRST), NULL only where no identity exists yet;
+  the migration re-run and the mirror re-run are both 0-change no-ops (idempotent); a fresh Python
+  RBAC INSERT (via `set_roles` / bootstrap / group add) populates both columns to the same identity;
+  and driving `provision_local_organization` end-to-end leaves the owner with a `user_identity` AND
+  their owner `user_role.user_identity_id` == that identity. The migration-184 backfill still
+  reconciles pre-existing rows. Fence: **`tests/unit/test_h6_rbac_rekey.py`** (structural half incl.
+  `TestTheProvisionOwnerBridgeMechanism`; R8 half — `TestTheBackfill`, `TestTheDualWriteAtRuntime`,
+  `TestTheProvisionOwnerIsBridged`, `TestRbacCreatedBeforeIdentityIsBridged`, and — the round-2
+  FORCE-RLS fences — `TestTheRealBridgeFunctionUnderForceRls` (real bridge as the non-priv `acb_app`
+  role) + `TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound RED); the last two
+  reuse `test_h3_rls_promotion_rehearsal.promoted` for the phase-4-promoted catalog — on
+  `TENANT_LADDER_DATABASE_URL`, in `pr-check.yml`'s skip guard).
+
+### Slice 4 — per-module READ cutover · 🟡 later parallel PRs, one per module
+
+Each module's `app_user.id`-keyed RBAC read moves onto `user_identity_id` in its OWN PR, behind
+`IDENTITY_CUTOVER`. **Per-module done-when:** with the flag ON, that module's access answer is
+**byte-identical** to the `app_user.id`-keyed answer for a clean member, and **zero**
+`app_user.id`-keyed RBAC joins remain in that module. The 15 read sites, grouped by module
+(⚠️ = TRICKY, see below):
+
+- **acb_auth** — `access.py` `_ACCESS_SQL` (:166-194), `_ORG_OWNER_SQL` (:705-713),
+  `_GROUP_MEMBER_SQL` (:836-846)⚠️
+- **admin** — `_common.py` `roles_for_user` (:270-281), `caller_rank` (:292-305),
+  `owner_count` (:308-321)⚠️ · `members.py` list subquery (:117-129), `_load_overrides` (:749-760),
+  `_role_permission_map` (:763-777)
+- **projects** — `core.py` `_MY_GROUPS_SQL` (:599-605)⚠️, `_EFFECTIVE_PERMISSIONS_SQL` (:760-771)⚠️ ·
+  `mapping.py` `_GROUP_MEMBERS_SQL` (:98-104)⚠️
+- **people** — `chart.py` (:98-105)
+- **gateway** — `rooms.py` `MY_GROUPS_SQL` (:165-173), session-visibility `EXISTS` (:404-413)
+
+⚠️ **The 5 TRICKY reads** (`access._GROUP_MEMBER_SQL`, `_common.owner_count`,
+`projects/core._MY_GROUPS_SQL`, `projects/core._EFFECTIVE_PERMISSIONS_SQL`,
+`projects/mapping._GROUP_MEMBERS_SQL`) read `app_user.status`/`app_user.organization_id`
+ALONGSIDE the RBAC join. Under phase-4 RLS `app_user` is unreadable on the unbound leg, so a bare
+key-swap breaks them: **status/org must come from `org_membership`** (slice 3a's forward mirror is
+what makes that safe), not from an `app_user` join. These are not a mechanical rename.
+
+(The audit found **zero** RBAC refs in `crm`/`auto_lead`, `people/core`, `workflows/service`,
+`projects/assignees` — they are not in the cutover set.)
+
+**Dependency order.** The EXPAND builds **parallel to slice 3b** (they touch different regions of
+`access.py` — 3b the READ functions, this the `_BOOTSTRAP_OWNER_SQL` INSERT). The per-module READ
+cutovers build **AFTER both 3b (the resolve split + `IDENTITY_CUTOVER` flag) AND this EXPAND
+land**. 🔴 **OWNER-GATE, do NOT enact:** the CONTRACT migration dropping the old `user_id` column,
+flipping `IDENTITY_CUTOVER`, H3 phase-4 promotion, and running the 184 backfill against prod.
 
 ✅ **SLICE 3b SHIPPED 2026-08-22 (WS-29, DARK behind `IDENTITY_CUTOVER`, default OFF).** The read
 cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4):

@@ -265,6 +265,42 @@ async def provision_local_organization(
         organization_id=organization_id,
         owner=bool(owner_email),
     )
+
+    # ── H6 slice 4 (D48) · the provisioned owner is IDENTITY-AND-RBAC-COMPLETE ──
+    # `provision_org_owner` (migration 180) INSERTs the owner's `user_role` but
+    # mints no `user_identity` — so a freshly-provisioned owner had a NULL
+    # `user_role.user_identity_id`, and once `IDENTITY_CUTOVER` flips the role leg
+    # onto that column they would resolve to NO roles → locked out of their own
+    # org (fail-closed, but a real break, on a path the owner runs continuously).
+    # Reuse the ONE identity-creation seam — `acb_auth.access.mirror_identity_
+    # membership` — which mints the owner's `user_identity` + `org_membership` AND
+    # (as of this repair) bridges the owner's RBAC rows' `user_identity_id`. No
+    # second `user_identity` writer, no SQL fork of `provision_org_owner`.
+    #
+    # Best-effort and AFTER the authoritative commit above: a failure here can
+    # never break the provision that already succeeded (the same posture as this
+    # module's CP-2e mirror writes and `mirror_identity_membership` itself). The
+    # import is local — provisioning creating a tenant is `acb_common`'s job while
+    # the identity shadow is `acb_auth`'s, so the cross-seam call is made lazily at
+    # the call site rather than binding the packages at import time.
+    if owner_email:
+        try:
+            from acb_auth.access import mirror_identity_membership
+
+            await mirror_identity_membership(
+                email=owner_email,
+                display_name=display_name or owner_email,
+                org_id=organization_id,
+                status="active",
+            )
+        except Exception as exc:
+            # Provisioning must not break on a best-effort identity mirror.
+            _log.warning(
+                "provisioning.owner_identity_mirror_failed",
+                slug=slug,
+                error=str(exc)[:200],
+            )
+
     return organization_id
 
 
