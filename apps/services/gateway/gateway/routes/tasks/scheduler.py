@@ -40,17 +40,23 @@ from typing import Any
 
 from acb_common import get_logger
 
-# ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this module is
-# a BACKGROUND CONSUMER, not a request handler — every loop below runs from
-# `asyncio.create_task` long after any request (and its tenant binding) is
-# gone. The runbook's rule for that category is "do not let a job inherit an
-# ambient tenant", so converting these sites to the ambient `tenant_session()`
-# would be exactly the inheritance it forbids (and would raise `TenantUnbound`
-# anyway). They stay on the unbound `get_db()` until H4 threads an EXPLICIT
-# tenant — from the `task_accounts` row being synced — into
-# `tenant_session(org_id)`. Sequencing is safe: RLS phase 4 (which would starve
-# these reads) is gated on H2+H4 both being complete.
-from gateway.routes.tasks.core import _get_db
+# ✅ H4 DONE for this module (WS-29 MT-1d, `saas_multitenancy_handover.md` §H4).
+# This is a BACKGROUND CONSUMER, not a request handler — every loop below runs
+# from `asyncio.create_task` long after any request (and its tenant binding) is
+# gone, so the runbook forbids inheriting an ambient tenant. The fix is the H4
+# shape (exemplars: `crm/auto_lead` + `projects/run_lifecycle_sweep`): thread an
+# EXPLICIT `organization_id` down the call chain and open `tenant_session(org)`
+# per unit of DB work, REFUSING (`TenantUnbound`, never defaulting) if no org is
+# resolvable. `task_accounts`/`gtd_settings` are FORCE-RLS'd under phase 4, so a
+# single unbound read returns ZERO rows — the enumeration is therefore a per-org
+# sweep over the RLS-EXEMPT `organization` table (readable unbound, it is the
+# "which tenants exist" decision), binding `tenant_session(org)` per org.
+# DARK (pre-phase-4, RLS off): additive bind-wrapping only, no schema change; the
+# per-org reads are unscoped and deduped back to a byte-identical launch set.
+# The last remaining unbound `get_db()` here is `broker_handlers.py`'s (a separate
+# PR — dormant unless `ACTION_BROKER_ENFORCE`).
+from gateway.db import TenantUnbound, current_tenant
+from gateway.routes.tasks.core import _get_db, _tenant_session
 from sqlalchemy import text
 
 _log = get_logger("gateway.tasks.scheduler")
@@ -72,77 +78,97 @@ _scheduler_running = False
 
 # ── One sync cycle for one account ───────────────────────────────────────────
 
-async def _run_one_cycle(account_id: str, *, refresh_schema: bool) -> None:
+async def _run_one_cycle(account_id: str, org_id: str, *,
+                         refresh_schema: bool) -> None:
     """Pull tasks for one account (and, on schema cycles, re-fetch its full
     provider schema). Each step is isolated so one failing doesn't skip the
-    other; the pull itself records ``sync_status``/``sync_error`` on the row."""
+    other; the pull itself records ``sync_status``/``sync_error`` on the row.
+
+    ⚠️ **H4 (MT-1d):** ``org_id`` is the account's tenant, threaded from the
+    enumerating sweep — never inherited from an ambient binding, never defaulted.
+    Each of the up-to-three steps runs in its OWN ``tenant_session(org_id)``
+    transaction: ``_sync_account`` commits internally as its last action and
+    ``SET LOCAL app.tenant_id`` resets on commit, so one wrapping block would
+    leave the schema/reconcile steps UNBOUND (0 rows under phase-4 RLS)."""
+    if not org_id:
+        raise TenantUnbound(
+            "tasks.scheduler._run_one_cycle needs an explicit organization_id — "
+            "a scheduled sync must bind the account's own tenant, never inherit "
+            "an ambient one or default (saas_multitenancy_handover.md §H4)")
+
     from gateway.routes.tasks.accounts import _reconcile_people, _refresh_schema
     from gateway.routes.tasks.sync import _sync_account
 
-    db = await _get_db()
+    # 1) Pull tasks into the mirror. `_sync_account` commits internally as its
+    #    LAST action (updating sync_status/last_synced_at/last_delta_token and
+    #    refreshing the member cache), so it is the sole DB writer in this block
+    #    and the wrapper's commit on clean exit is an empty no-op; the account
+    #    read above it runs under the same tenant GUC. It CAN raise (bad creds /
+    #    provider 401), so the block is wrapped and the failure logged — the
+    #    schema-refresh step below still runs (on its own fresh transaction).
+    account = None
     try:
-        account = (await db.execute(
-            text("SELECT * FROM task_accounts WHERE id = :id"),
-            {"id": account_id},
-        )).fetchone()
-        if account is None:
-            _log.info("tasks.scheduler.account_gone", account_id=account_id[:12])
-            return
-        if not account.sync_enabled:
-            return
-
-        # 1) Pull tasks into the mirror (commits internally; updates
-        #    sync_status/last_synced_at/last_delta_token and refreshes the
-        #    member cache). It CAN raise (bad creds / provider 401 surface
-        #    before its own try), so we wrap it and roll back on failure so the
-        #    schema-refresh step below runs on a clean session.
-        try:
+        async with _tenant_session(org_id) as db:
+            account = (await db.execute(
+                text("SELECT * FROM task_accounts WHERE id = :id"),
+                {"id": account_id},
+            )).fetchone()
+            if account is None:
+                _log.info("tasks.scheduler.account_gone",
+                          account_id=account_id[:12])
+                return
+            if not account.sync_enabled:
+                return
             result = await _sync_account(db, account, full=False)
             if result.error:
                 _log.warning("tasks.scheduler.pull_error",
-                             account_id=account_id[:12], error=result.error[:160])
+                             account_id=account_id[:12],
+                             error=result.error[:160])
             else:
                 _log.info("tasks.scheduler.pulled",
                           account_id=account_id[:12], pulled=result.pulled,
                           created=result.created, updated=result.updated)
-        except Exception as exc:  # defence in depth — _sync_account shouldn't raise
-            await db.rollback()
-            _log.warning("tasks.scheduler.pull_failed",
-                         account_id=account_id[:12], error=str(exc)[:160])
+    except Exception as exc:  # defence in depth — _sync_account shouldn't raise
+        _log.warning("tasks.scheduler.pull_failed",
+                     account_id=account_id[:12], error=str(exc)[:160])
 
-        # 2) Periodically re-fetch the full schema so projects/stages the
-        #    clarify pickers (and the agent) rely on stay current.
-        if refresh_schema:
-            try:
-                # H2 note: `_refresh_schema` no longer commits or reconciles
-                # itself (request handlers run it inside a tenant transaction),
-                # so this unbound caller commits explicitly and sequences the
-                # roster reconcile — same effective behaviour as before.
+    if account is None:
+        return  # account gone or the read itself failed — nothing to refresh
+
+    # 2) Periodically re-fetch the full schema so projects/stages the clarify
+    #    pickers (and the agent) rely on stay current. Its own tenant-bound
+    #    transaction — the wrapper commits on clean exit (H2: `_refresh_schema`
+    #    no longer commits itself, so a mid-block commit can't drop the GUC).
+    if refresh_schema:
+        try:
+            async with _tenant_session(org_id) as db:
                 await _refresh_schema(db, account_id, account.user_id)
-                await db.commit()
-                _log.info("tasks.scheduler.schema_refreshed",
-                          account_id=account_id[:12])
-            except Exception as exc:
-                await db.rollback()
-                _log.warning("tasks.scheduler.schema_refresh_failed",
-                             account_id=account_id[:12], error=str(exc)[:160])
-            else:
-                try:
+            _log.info("tasks.scheduler.schema_refreshed",
+                      account_id=account_id[:12])
+        except Exception as exc:
+            _log.warning("tasks.scheduler.schema_refresh_failed",
+                         account_id=account_id[:12], error=str(exc)[:160])
+        else:
+            # 3) Reconcile the roster (best-effort), its own tenant transaction.
+            try:
+                async with _tenant_session(org_id) as db:
                     await _reconcile_people(db, account.user_id)
-                    await db.commit()
-                except Exception as exc:  # best-effort, like the helper itself
-                    await db.rollback()
-                    _log.warning("tasks.scheduler.reconcile_failed",
-                                 account_id=account_id[:12],
-                                 error=str(exc)[:160])
-    finally:
-        await db.close()
+            except Exception as exc:  # best-effort, like the helper itself
+                _log.warning("tasks.scheduler.reconcile_failed",
+                             account_id=account_id[:12],
+                             error=str(exc)[:160])
 
 
-async def _account_sync_loop(account_id: str, interval_secs: int) -> None:
+async def _account_sync_loop(account_id: str, org_id: str,
+                             interval_secs: int) -> None:
     """Sync one account forever: pull every cycle, full schema refresh every
-    Nth cycle, then sleep the (re-read) interval."""
-    interval_secs = max(interval_secs or _DEFAULT_INTERVAL_SECS, _MIN_INTERVAL_SECS)
+    Nth cycle, then sleep the (re-read) interval.
+
+    ``org_id`` (H4) is the account's tenant, threaded in at launch and passed
+    EXPLICITLY into every DB unit — the loop runs detached, so it can never
+    inherit a request's binding."""
+    interval_secs = max(interval_secs or _DEFAULT_INTERVAL_SECS,
+                        _MIN_INTERVAL_SECS)
     _log.info("tasks.scheduler.loop_started",
               account_id=account_id[:12], interval=interval_secs)
     cycle = 0
@@ -151,7 +177,8 @@ async def _account_sync_loop(account_id: str, interval_secs: int) -> None:
             # Refresh the full schema on the first cycle and every Nth after,
             # so a freshly (re)started loop primes projects/stages immediately.
             refresh_schema = (cycle % _SCHEMA_REFRESH_EVERY_N_CYCLES) == 0
-            await _run_one_cycle(account_id, refresh_schema=refresh_schema)
+            await _run_one_cycle(account_id, org_id,
+                                 refresh_schema=refresh_schema)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # never let one bad cycle kill the loop
@@ -161,7 +188,7 @@ async def _account_sync_loop(account_id: str, interval_secs: int) -> None:
 
         # Re-read the interval so a settings change (or sync_enabled=false)
         # takes effect without a restart.
-        interval_secs, still_enabled = await _read_interval(account_id)
+        interval_secs, still_enabled = await _read_interval(account_id, org_id)
         if not still_enabled:
             # Self-stop: just return. We deliberately do NOT pop
             # _scheduler_tasks here — mutating the registry outside
@@ -176,14 +203,25 @@ async def _account_sync_loop(account_id: str, interval_secs: int) -> None:
         await asyncio.sleep(interval_secs)
 
 
-async def _read_interval(account_id: str) -> tuple[int, bool]:
+async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
     """(interval_secs, enabled) for an account, clamped to the floor. "enabled"
     is the account's sync_enabled AND the owner's background_sync toggle (a
     LEFT JOIN so a user with no settings row defaults to on). Missing account →
     (default, False) so the loop stops itself; a user turning background_sync
-    off mid-run also self-stops the loop next cycle."""
-    db = await _get_db()
-    try:
+    off mid-run also self-stops the loop next cycle.
+
+    ⚠️ **H4:** reads ``task_accounts``/``gtd_settings`` (both FORCE-RLS'd) inside
+    ``tenant_session(org_id)`` — bound to the account's own tenant, threaded from
+    the loop. Refuses (``TenantUnbound``) rather than reading on an unbound
+    session (0 rows under phase-4 RLS → a spurious self-stop) or inheriting an
+    ambient tenant."""
+    if not org_id:
+        raise TenantUnbound(
+            "tasks.scheduler._read_interval needs an explicit organization_id — "
+            "a background loop must bind the account's own tenant, never read on "
+            "an unbound session or inherit an ambient one "
+            "(saas_multitenancy_handover.md §H4)")
+    async with _tenant_session(org_id) as db:
         row = (await db.execute(
             text("""SELECT a.sync_interval_secs, a.sync_enabled,
                            coalesce(s.background_sync, true) AS background_sync
@@ -192,8 +230,6 @@ async def _read_interval(account_id: str) -> tuple[int, bool]:
                    WHERE a.id = :id"""),
             {"id": account_id},
         )).fetchone()
-    finally:
-        await db.close()
     if row is None:
         return _DEFAULT_INTERVAL_SECS, False
     interval = max(row.sync_interval_secs or _DEFAULT_INTERVAL_SECS,
@@ -203,6 +239,52 @@ async def _read_interval(account_id: str) -> tuple[int, bool]:
 
 # ── Lifecycle (start/stop/refresh/remove + status) ───────────────────────────
 
+async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
+    """Every sync-enabled account, mapped ``account_id -> (organization_id,
+    interval_secs)``.
+
+    ⚠️ **H4 (MT-1d) CROSS-TENANT SWEEP.** ``task_accounts``/``gtd_settings`` are
+    FORCE-RLS'd, so a single unbound read returns ZERO rows under phase-4 (the
+    fail-closed cliff) — the sync would silently stop for every customer. So
+    enumerate organizations from the RLS-EXEMPT ``organization`` table on an
+    unbound session (the one legitimately tenant-less read — it is deciding WHICH
+    tenants exist), then bind ``tenant_session(org)`` per org and read that org's
+    accounts under the policy.
+
+    Deduped by ``account_id`` (first tenant wins): pre-phase-4 (RLS off, DARK)
+    each per-org read is unscoped and returns every account, so the dedup keeps
+    the launched set byte-identical to the old single unbound read; post-phase-4
+    the per-org reads are disjoint and the dedup is a no-op."""
+    resolver = await _get_db()
+    try:
+        org_rows = (await resolver.execute(
+            text("SELECT id FROM organization"))).fetchall()
+    finally:
+        await resolver.close()
+
+    out: dict[str, tuple[str, int]] = {}
+    for org_row in org_rows:
+        org_id = str(org_row.id)
+        # Launch only for accounts whose owner hasn't turned background_sync off
+        # (LEFT JOIN → users with no settings row default to on).
+        async with _tenant_session(org_id) as db:
+            rows = (await db.execute(
+                text("""SELECT a.id, a.sync_interval_secs
+                        FROM task_accounts a
+                   LEFT JOIN gtd_settings s ON s.user_id = a.user_id
+                       WHERE a.sync_enabled = true
+                         AND coalesce(s.background_sync, true) = true"""),
+            )).fetchall()
+        for row in rows:
+            account_id = str(row.id)
+            if account_id in out:
+                continue  # first tenant that saw it wins (pre-phase-4 dedup)
+            interval = max(row.sync_interval_secs or _DEFAULT_INTERVAL_SECS,
+                           _MIN_INTERVAL_SECS)
+            out[account_id] = (org_id, interval)
+    return out
+
+
 async def start_background_sync() -> dict[str, int]:
     """Launch one sync loop per sync-enabled account. Called from the gateway
     lifespan on startup. Returns {account_id: interval_secs}."""
@@ -211,27 +293,12 @@ async def start_background_sync() -> dict[str, int]:
         if _scheduler_running:
             _log.info("tasks.scheduler.already_running")
             return {}
-        db = await _get_db()
-        try:
-            # Launch only for accounts whose owner hasn't turned background_sync
-            # off (LEFT JOIN → users with no settings row default to on).
-            rows = (await db.execute(
-                text("""SELECT a.id, a.sync_interval_secs
-                        FROM task_accounts a
-                   LEFT JOIN gtd_settings s ON s.user_id = a.user_id
-                       WHERE a.sync_enabled = true
-                         AND coalesce(s.background_sync, true) = true"""),
-            )).fetchall()
-        finally:
-            await db.close()
+        accounts = await _enabled_accounts_by_org()
 
         launched: dict[str, int] = {}
-        for row in rows:
-            interval = max(row.sync_interval_secs or _DEFAULT_INTERVAL_SECS,
-                           _MIN_INTERVAL_SECS)
-            account_id = str(row.id)
+        for account_id, (org_id, interval) in accounts.items():
             _scheduler_tasks[account_id] = asyncio.create_task(
-                _account_sync_loop(account_id, interval))
+                _account_sync_loop(account_id, org_id, interval))
             launched[account_id] = interval
         _scheduler_running = True
         _log.info("tasks.scheduler.started", accounts=len(launched))
@@ -257,7 +324,15 @@ async def stop_background_sync() -> None:
 async def refresh_account_sync(account_id: str) -> None:
     """Start or restart the loop for one account — call after connecting a
     workspace or toggling ``sync_enabled`` on. No-op if the scheduler hasn't
-    started (startup will pick the account up)."""
+    started (startup will pick the account up).
+
+    ⚠️ **H4:** the launched loop runs detached, so it needs an EXPLICIT tenant
+    threaded in. This is only ever called from a tenant-bound REQUEST handler
+    (account connect / PATCH), so the account's tenant is exactly
+    :func:`current_tenant` — captured here as a plain value and passed on. It
+    REFUSES (``TenantUnbound``) rather than launch an unbound loop if somehow
+    reached with no tenant bound. The tenant is resolved only when the scheduler
+    is actually running, so the "not started yet" no-op still needs none."""
     async with _scheduler_lock:
         if not _scheduler_running:
             return
@@ -266,12 +341,19 @@ async def refresh_account_sync(account_id: str) -> None:
             existing.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await existing
-    interval, enabled = await _read_interval(account_id)
+    org_id = current_tenant()
+    if not org_id:
+        raise TenantUnbound(
+            "tasks.scheduler.refresh_account_sync must be called from a "
+            "tenant-bound request — the loop it launches runs detached and "
+            "needs an EXPLICIT tenant threaded in (saas_multitenancy_handover.md "
+            "§H4); refusing rather than launching an unbound loop")
+    interval, enabled = await _read_interval(account_id, org_id)
     if not enabled:
         return
     async with _scheduler_lock:
         _scheduler_tasks[account_id] = asyncio.create_task(
-            _account_sync_loop(account_id, interval))
+            _account_sync_loop(account_id, org_id, interval))
         _log.info("tasks.scheduler.loop_refreshed",
                   account_id=account_id[:12], interval=interval)
 

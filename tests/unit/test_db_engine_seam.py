@@ -394,7 +394,15 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: 166 → 111: routes/crm (28) + routes/people (4) + routes/admin (23)
 #: (2026-08-10); crm's 3 leaves are named in H2_EXEMPT_FILES and still
 #: count here.
-H2_BASELINE_ELSEWHERE = 111
+#: 111 → 108: WS-29 H4 tasks/calendar (2026-08-22) — the 5 scheduler + rollover
+#: background sites moved from unbound `get_db()` to `tenant_session(org)`
+#: (`_run_one_cycle`, `_read_interval`, `_rollover_one_user` bound single-org;
+#: `start_background_sync`/`_enabled_accounts_by_org` + `_run_rollover_sweep`
+#: became per-org sweeps that KEEP ONE unbound `get_db()` each for the
+#: RLS-EXEMPT `organization` enumeration). routes/tasks' remaining 3 unbound
+#: sites are those two exempt enumerations + broker_handlers.py (a separate PR,
+#: dormant unless ACTION_BROKER_ENFORCE).
+H2_BASELINE_ELSEWHERE = 108
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
