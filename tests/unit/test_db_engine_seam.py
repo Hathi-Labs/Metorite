@@ -674,10 +674,14 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
     ),
     "packages/acb_auth/acb_auth/access.py": (
         10,
-        "reviewed access-resolution sites: `_record_signin_request` / "
-        "`mirror_identity_membership` / `mirror_membership_status` / "
-        "`purge_identity_shadow` (RLS-EXEMPT shadow + signin_requests, unbound "
-        "by design); `resolve_access`'s role-leg unbound FALLBACK (bound via "
+        "reviewed access-resolution sites: `mirror_identity_membership` / "
+        "`mirror_membership_status` / `purge_identity_shadow` (write only the "
+        "RLS-EXEMPT shadow tables user_identity/org_membership — unbound by "
+        "design); ⚠️ `_record_signin_request` (INSERTs `access_request`, which "
+        "IS FORCE-RLS'd and NOT exempt — a best-effort, tenant-less write that "
+        "REFUSES under phase-4: an OWNER-DECISION brick, tracked in the §H6 "
+        "pre-flip checklist item (b) — allow-listed as a known-open brick, not "
+        "as benign); `resolve_access`'s role-leg unbound FALLBACK (bound via "
         "`tenant_session()` when the cutover is on + a tenant is bound — slice "
         "3b); `resolve_identity`'s tenant-DISCOVERY read (must be unbound — it "
         "resolves WHICH tenant); `org_owner_of` / `membership_of` (EXEMPT "
