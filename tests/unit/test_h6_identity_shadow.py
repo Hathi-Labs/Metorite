@@ -503,6 +503,181 @@ class TestTheOrphanClosure:
         )
 
 
+# ── The read-cutover flag (slice 3b) — no database, must never skip ──────────
+#
+# The DARK read cutover: `resolve_identity` reads the RLS-EXEMPT
+# `user_identity ⋈ org_membership` under `IDENTITY_CUTOVER`, and is byte-
+# identical to today (the `app_user` read) while the flag is unset. The R8
+# red/green + suspended-not-admitted fences live in
+# `test_h3_rls_promotion_rehearsal.py` (they need the phase-4-promoted RLS
+# catalog); this DB-free fence pins the FLAG SWITCH itself — which source each
+# state reads — so a change to the dark default fails here without a database.
+
+
+class _SqlCapture:
+    """A minimal session factory that records the SQL a call issues and returns
+    an empty result — enough to see which statement `resolve_identity` chose."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def __call__(self) -> _SqlCapture:
+        return self
+
+    async def __aenter__(self) -> _SqlCapture:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, sql: object, params: dict | None = None) -> object:
+        self.statements.append(" ".join(str(sql).split()))
+
+        class _Result:
+            def mappings(self) -> object:
+                class _M:
+                    def first(self) -> None:
+                        return None
+
+                    def all(self) -> list:
+                        # The flag-ON identity leg fetches up to two rows
+                        # (P2a multi-org-safe COUNT) via `.all()`.
+                        return []
+
+                return _M()
+
+        return _Result()
+
+
+class _RowsCapture:
+    """A session factory returning a fixed set of mapping rows — enough to
+    exercise `resolve_identity`'s flag-ON COUNT decision (P2a) without a DB."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def __call__(self) -> _RowsCapture:
+        return self
+
+    async def __aenter__(self) -> _RowsCapture:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, sql: object, params: dict | None = None) -> object:
+        rows = self._rows
+
+        class _Result:
+            def mappings(self) -> object:
+                class _M:
+                    def all(self) -> list:
+                        return rows
+
+                    def first(self) -> dict | None:
+                        return rows[0] if rows else None
+
+                return _M()
+
+        return _Result()
+
+
+class TestTheReadCutoverFlag:
+    """The ratchet for slice 3b's flag switch — no database required."""
+
+    async def test_resolve_identity_reads_app_user_when_the_flag_is_off(
+        self, monkeypatch
+    ):
+        """Flag OFF is byte-identical to today: `resolve_identity` issues the
+        `app_user` statement and NEVER touches the shadow — the dark default."""
+        import acb_auth.access as access_mod
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        cap = _SqlCapture()
+        monkeypatch.setattr(access_mod, "_get_session_factory", lambda: cap)
+
+        await access_mod.resolve_identity("someone@example.com")
+
+        assert len(cap.statements) == 1
+        assert "FROM app_user" in cap.statements[0], (
+            "flag OFF must read app_user — the dark default changed"
+        )
+        assert "user_identity" not in cap.statements[0]
+        assert "org_membership" not in cap.statements[0]
+
+    async def test_resolve_identity_reads_the_exempt_shadow_when_the_flag_is_on(
+        self, monkeypatch
+    ):
+        """Flag ON: `resolve_identity` issues the identity-leg join over the
+        RLS-EXEMPT shadow tables and NEVER app_user (the brick it replaces)."""
+        import acb_auth.access as access_mod
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        cap = _SqlCapture()
+        monkeypatch.setattr(access_mod, "_get_session_factory", lambda: cap)
+
+        await access_mod.resolve_identity("someone@example.com")
+
+        assert len(cap.statements) == 1
+        stmt = cap.statements[0]
+        assert "user_identity" in stmt and "org_membership" in stmt
+        assert "status = 'active'" in stmt
+        assert "app_user" not in stmt, (
+            "flag ON must read the exempt shadow, never app_user (the brick)"
+        )
+
+    def test_the_flag_defaults_off_and_reads_the_env_idiom(self, monkeypatch):
+        """UNSET = OFF, fail-closed, and only the truthy tokens flip it on — the
+        same idiom as `deps._refuse_llm_key_identity`."""
+        from acb_auth.access import identity_cutover_enabled
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        assert identity_cutover_enabled() is False
+        for off in ("", "0", "no", "off", "false", "  ", "maybe"):
+            monkeypatch.setenv("IDENTITY_CUTOVER", off)
+            assert identity_cutover_enabled() is False, f"{off!r} enabled it"
+        for on in ("1", "true", "yes", "on", "TRUE", " On "):
+            monkeypatch.setenv("IDENTITY_CUTOVER", on)
+            assert identity_cutover_enabled() is True, f"{on!r} did not enable it"
+
+    async def test_a_single_active_membership_binds_when_the_flag_is_on(
+        self, monkeypatch
+    ):
+        """P2a, the common case (DB-free): exactly ONE active membership binds
+        it. The R8 twin (two real memberships) lives in
+        `test_h3_rls_promotion_rehearsal.py::TestTheReadCutoverEndToEnd`."""
+        import acb_auth.access as access_mod
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        monkeypatch.setattr(
+            access_mod, "_get_session_factory",
+            lambda: _RowsCapture([{"id": "uid-1", "org": "org-1"}]))
+
+        user_id, org = await access_mod.resolve_identity("solo@example.com")
+        assert (user_id, org) == ("uid-1", "org-1"), (
+            "a single active membership must bind — the common case broke")
+
+    async def test_a_multi_org_human_is_denied_not_bound_when_the_flag_is_on(
+        self, monkeypatch
+    ):
+        """P2a, the safety property (DB-free): TWO active memberships resolve to
+        `(None, None)` — the deny / chooser case — NEVER an arbitrary bind."""
+        import acb_auth.access as access_mod
+
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        monkeypatch.setattr(
+            access_mod, "_get_session_factory",
+            lambda: _RowsCapture([
+                {"id": "uid-a", "org": "org-a"},
+                {"id": "uid-b", "org": "org-b"},
+            ]))
+
+        user_id, org = await access_mod.resolve_identity("multi@example.com")
+        assert (user_id, org) == (None, None), (
+            "a human with two active memberships was bound instead of denied "
+            "(P2a — the identity leg must never arbitrarily pick one)")
+
+
 # ── The R8 half: the dual-write + backfill against the replayed ladder ───────
 
 @pytest.fixture(scope="module")

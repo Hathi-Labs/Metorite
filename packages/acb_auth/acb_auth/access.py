@@ -20,8 +20,13 @@ import time
 
 from acb_common import get_logger
 
-# The one shared pool (BO-10) — see the Engine section below. Re-exported under
-# the private name this module has always used.
+# The one shared pool (BO-10) — see the Engine section below. `get_session_factory`
+# is re-exported under the private name this module has always used
+# (`tests/unit/test_signin_requests.py` monkeypatches it onto a fixture engine).
+# `current_tenant` + `tenant_session` are the ONE tenant-GUC seam (db.py); the
+# bound role leg in `resolve_access` reuses them under IDENTITY_CUTOVER rather
+# than applying `app.tenant_id` a second way (R5).
+from acb_common.db import current_tenant, tenant_session
 from acb_common.db import get_session_factory as _get_session_factory
 
 from acb_auth.permissions import (
@@ -48,6 +53,34 @@ _cache: dict[str, tuple[float, EffectiveAccess]] = {}
 #: Set once the access tables are confirmed missing, so we degrade to the
 #: legacy mapping without re-querying a failing table on every request.
 _tables_missing = False
+
+
+# ── H6 slice 3b — the read cutover flag (DARK, default OFF) ──────────────────
+
+def identity_cutover_enabled() -> bool:
+    """Whether sign-in resolves identity through the RLS-EXEMPT shadow tables.
+
+    WS-29 H6 slice 3b (D48). After H3's phase-4 RLS the tenant-DISCOVERY read on
+    the sign-in path runs on an UNBOUND session — the tenant is what it is trying
+    to resolve — so a read of the FORCE-RLS'd ``app_user`` returns ZERO rows and
+    every sign-in bricks (`saas_multitenancy_handover.md` §H6, characterized by
+    ``test_h3_rls_promotion_rehearsal.py``). With this flag ON,
+    :func:`resolve_identity` reads ``user_identity ⋈ org_membership ⋈
+    organization`` instead — the same RLS-EXEMPT tables ``console_resolve``
+    already reads unbound — filtered to an ACTIVE membership, and
+    ``deps._with_resolved_access`` binds the resolved tenant BEFORE the bound
+    role leg (``resolve_access``) reads ``app_user``.
+
+    **Default is UNSET = OFF, fail-closed — byte-identical to today.** Building
+    the branch DARK is AGENT-SAFE (D48); FLIPPING it on a live box is OWNER-GATE,
+    as are H3 phase-4 promotion and the prod backfill. Read here (not the
+    Next-side ``CUSTOMER_CONSOLE_RESOLVE_ENABLED``): the two-phase resolve is
+    entirely server-side in ``acb_auth``. The env idiom matches
+    ``deps._refuse_llm_key_identity`` / ``_trust_unverified_sso_headers``.
+    """
+    return os.getenv("IDENTITY_CUTOVER", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 # ── Engine (the one shared pool — acb_common.db, BO-10) ─────────────────────
@@ -604,8 +637,21 @@ async def resolve_access(
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
-        factory = _get_session_factory()
-        async with factory() as session:
+        # H6 slice 3b — the ROLE LEG session. Under H3 phase-4 RLS ``app_user``
+        # is FORCE-RLS'd, so when the cutover is ON and ``deps._with_resolved_access``
+        # has already bound the tenant (the identity leg resolved the org), this
+        # read MUST run on a session whose ``app.tenant_id`` GUC is set — else RLS
+        # returns zero rows and a live member resolves ``is_active=False``, the
+        # total-lockout brick the cutover exists to fix. Reuse the ONE GUC seam
+        # (``tenant_session`` → ``set_config``, db.py); do NOT apply the GUC a
+        # second way (R5). Flag OFF — or ON with nothing bound (a background
+        # fan-out over someone else's email) — is byte-identical to today: a raw
+        # unbound session, no GUC, ``app_user`` read by email as it always was.
+        if identity_cutover_enabled() and current_tenant() is not None:
+            session_cm = tenant_session()
+        else:
+            session_cm = _get_session_factory()()
+        async with session_cm as session:
             row = (
                 await session.execute(text(_ACCESS_SQL), {"email": key})
             ).mappings().first()
@@ -673,22 +719,96 @@ async def resolve_access(
     return access
 
 
+#: ⚠️ **H6 slice 3b — the IDENTITY LEG (DARK behind ``IDENTITY_CUTOVER``).**
+#: The tenant-discovery read that resolves *which tenant* and *is this member
+#: live*, from the RLS-EXEMPT ``user_identity ⋈ org_membership ⋈ organization``
+#: — the SAME tables (and unbound posture) ``console_resolve._READ_SQL`` already
+#: reads at sign-in, reused not forked. Filtered to an ACTIVE membership: a
+#: suspended / removed / invited member (or one with no shadow row) resolves to
+#: no org, so nothing binds and the bound role leg then refuses — fail-closed.
+#: Returns ``id``/``org`` under the SAME column aliases as the ``app_user`` read
+#: below, so :func:`resolve_identity` is source-agnostic. NEVER names
+#: ``app_user`` (FORCE-RLS'd → 0 rows unbound, the brick this replaces). The
+#: status filter is only SAFE because the orphan-closure slice keeps
+#: ``org_membership`` free of purged/rolled-back ghosts (§H6).
+#:
+#: ⚠️ **``LIMIT 2``, not ``LIMIT 1`` — the P2a multi-org-safe fetch.** A human
+#: may hold an ACTIVE membership in more than one org, and console-created
+#: memberships leave ``joined_at`` NULL, so the old ``ORDER BY joined_at DESC …
+#: LIMIT 1`` would tiebreak on ``slug`` and silently bind the WRONG org.
+#: Fetching TWO lets :func:`resolve_identity` decide by COUNT: exactly one
+#: active membership binds; MORE THAN ONE with no disambiguating host is the
+#: WorkspaceChooserRequired / deny case (host-based selection is MT-1f, not this
+#: slice). The ``ORDER BY o.slug`` only stabilises the two-row window; it never
+#: DECIDES which org wins, because two rows always deny.
+_IDENTITY_LEG_SQL = """
+    SELECT ui.id::text AS id,
+           o.id::text  AS org
+      FROM user_identity ui
+      JOIN org_membership m ON m.user_id = ui.id
+      JOIN organization o   ON o.id = m.organization_id
+     WHERE lower(ui.email) = :email
+       AND m.status = 'active'
+     ORDER BY o.slug
+     LIMIT 2
+"""
+
+
 async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
-    """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``."""
+    """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``.
+
+    ⚠️ **H6 slice 3b — the read cutover, DARK behind ``IDENTITY_CUTOVER``.** This
+    is the tenant-DISCOVERY read on the sign-in path
+    (``deps._with_resolved_access``): it runs UNBOUND, because the tenant is what
+    it resolves, so after H3's phase-4 RLS the default ``app_user`` read returns
+    ZERO rows (``app_user`` is FORCE-RLS'd) and sign-in bricks. With
+    :func:`identity_cutover_enabled` ON it reads :data:`_IDENTITY_LEG_SQL` — the
+    RLS-EXEMPT ``user_identity ⋈ org_membership ⋈ organization``, filtered to an
+    ACTIVE membership — and ``deps`` binds the resolved tenant BEFORE the bound
+    role leg (:func:`resolve_access`) reads ``app_user``. Flag OFF is
+    byte-identical to today: the same ``app_user`` statement, so the shadow is
+    never consulted while the flag is unset.
+
+    ⚠️ **The returned ``user_id`` is id-space-dependent (P2b).** OFF it is
+    ``app_user.id``; ON it is the RLS-EXEMPT ``user_identity.id`` — a stable
+    per-human identity id, a DIFFERENT UUID space. It is an opaque identity token
+    for display/correlation only (``/auth/me`` surfaces it), never an
+    ``app_user`` foreign key: the backend keys on email, and the org is the
+    second element, bound before :func:`resolve_access`'s ``app_user`` read.
+
+    ⚠️ **Multi-org SAFE, never silently-wrong (P2a).** A human with exactly ONE
+    active membership binds it. A human with >1 active membership and no
+    disambiguating host resolves to ``(None, None)`` — the deny / chooser case
+    (host-based selection is MT-1f); this NEVER arbitrarily picks one.
+    """
     if not email:
         return None, None
+    key = email.lower().strip()
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
         factory = _get_session_factory()
         async with factory() as session:
+            if identity_cutover_enabled():
+                # P2a: fetch up to TWO active memberships and decide by COUNT —
+                # exactly one binds; zero is "not a member"; more than one is the
+                # deny / WorkspaceChooserRequired case, never an arbitrary bind.
+                rows = (
+                    await session.execute(
+                        text(_IDENTITY_LEG_SQL), {"email": key},
+                    )
+                ).mappings().all()
+                if len(rows) != 1:
+                    return None, None
+                return rows[0]["id"], rows[0]["org"]
+            # Flag OFF — byte-identical to today: the single ``app_user`` read.
             row = (
                 await session.execute(
                     text(
                         "SELECT id::text AS id, organization_id::text AS org "
                         "FROM app_user WHERE lower(email) = :email LIMIT 1"
                     ),
-                    {"email": email.lower().strip()},
+                    {"email": key},
                 )
             ).mappings().first()
     except Exception:  # noqa: BLE001
