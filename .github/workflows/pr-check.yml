@@ -260,6 +260,7 @@ jobs:
             tests/unit/test_credential_tenant_threading.py \
             tests/unit/test_h3_rls_promotion_rehearsal.py \
             tests/unit/test_h6_identity_shadow.py \
+            tests/unit/test_h6_rbac_rekey.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -307,6 +308,14 @@ jobs:
           # (migration 182) reconciles and is idempotent — a two-org membership
           # and a composite ON CONFLICT arbiter are exactly slice 6's class of
           # bug, invisible to a fake.
+          #
+          # WS-29 H6 slice 4 (D48) adds the ninth, same string again:
+          # `test_h6_rbac_rekey.py`. It proves against the real ladder that
+          # migration 184 backfills every RBAC row's `user_identity_id` through
+          # the lower(email) bridge (NULL only where no identity), is idempotent,
+          # and that the dual-write on `set_roles` / the owner bootstrap populates
+          # both columns to the same identity — a lower(email) join and an
+          # IS DISTINCT FROM guard are exactly the class a fake cannot answer for.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1

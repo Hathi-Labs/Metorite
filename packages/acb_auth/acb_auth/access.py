@@ -991,9 +991,16 @@ member AS (
                                        EXCLUDED.organization_id)
     RETURNING id
 )
-INSERT INTO user_role (user_id, role_id, assigned_by)
-SELECT member.id, r.id, 'bootstrap:executive_emails'
+-- H6 slice 4 (D48) DUAL-WRITE: the RBAC re-key EXPAND shadows `user_identity_id`
+-- on every RBAC INSERT so migration 184's column stays current. At bootstrap the
+-- identity is created by `mirror_identity_membership` AFTER this commit, so the
+-- LEFT JOIN resolves NULL on a fresh box (correct — "NULL only where no identity
+-- exists"; the mirror + a later backfill re-run reconcile it). `app_user.id`
+-- stays the AUTHORITATIVE key; this only READS `user_identity`, never writes it.
+INSERT INTO user_role (user_id, role_id, assigned_by, user_identity_id)
+SELECT member.id, r.id, 'bootstrap:executive_emails', ui.id
 FROM member, org_role r, org
+LEFT JOIN user_identity ui ON lower(ui.email) = lower(:email)
 WHERE r.organization_id = org.id AND r.slug = 'owner'
 ON CONFLICT DO NOTHING
 """

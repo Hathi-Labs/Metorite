@@ -541,8 +541,16 @@ async def set_roles(
     for role_id, _slug in role_ids:
         await db.execute(
             text(
-                "INSERT INTO user_role (user_id, role_id, assigned_by) "
-                "VALUES (CAST(:uid AS uuid), CAST(:rid AS uuid), :by) "
+                # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via the
+                # lower(email) bridge (RBAC.user_id → app_user → user_identity) so
+                # migration 184's column stays current. app_user.id stays the
+                # authoritative key; this only READS user_identity. NULL only where
+                # no identity exists (backfill 184 / CONTRACT slice reconcile).
+                "INSERT INTO user_role (user_id, role_id, assigned_by, user_identity_id) "
+                "VALUES (CAST(:uid AS uuid), CAST(:rid AS uuid), :by, "
+                "        (SELECT ui.id FROM user_identity ui "
+                "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                "          WHERE au.id = CAST(:uid AS uuid))) "
                 "ON CONFLICT DO NOTHING"
             ),
             {"uid": user_id, "rid": role_id, "by": assigned_by},
