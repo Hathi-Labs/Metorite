@@ -9,6 +9,14 @@ first two customers live on the shared-DB multi-tenant platform. Owner: vjvarada
 > live. The scratch rehearsal (`tests/unit/test_h3_rls_promotion_rehearsal.py`) proved the
 > mechanism; do it once more against the real dump.
 >
+> ✅ **REHEARSED ON THE REAL DUMP — 2026-08-23 (PASS).** A fresh `pg_dump` of the live tenant
+> DB (55 MB, 260 base tables, 1 org, 2 app_users) was restored to a scratch DB and taken through
+> `01→02→03→04` under the non-priv `acb_app` role. All four phases applied cleanly; **140
+> policies / 140 forced tables**; every genuinely tenant-scoped table backfilled with **0 NULL
+> `organization_id`**; isolation held (unbound read = 0 rows, bound read = the org's rows). The
+> only NULLs are in the three CRM homonym tables, which are **correctly not scoped** — see the
+> CRM guard rail below. Scratch DB dropped after. Phase 1 is push-button.
+>
 > **D45:** each phase that touches the box is OWNER-GATE. An agent may drive the grant-covered
 > mechanics only under a dated `ALLOW YYYY-MM-DD <gate>` line in `.claude/OWNER_GRANTS.md`.
 > The flag flips are `enforcement-flip`; the H3 promotion + provisioning against real orgs are
@@ -29,6 +37,23 @@ first two customers live on the shared-DB multi-tenant platform. Owner: vjvarada
 `access_request`→RLS-exempt (sign-in *knock* queue), the dormant broker/ingestion/reconciler
 H4 jobs, the per-module RBAC read re-key (multi-org / MT-1f — 3b already resolves roles without
 it), the slice-5 CONTRACT drop of the old `user_id`, and Razorpay.
+
+### ⚠️ CRM homonym — deferred, but with a HARD GUARD RAIL
+`crm_contacts` / `crm_deals` / `crm_activities` carry **no tenant isolation** and are
+deliberately excluded from RLS: their `organization_id` is a *homonym* — it FKs to
+`crm_organizations` (the customer *company* on a deal), **not** the tenant root
+(`144_crm.sql:74,197,289`). The generator's `HOMONYM_BLOCKED` list refuses to scope them (a
+naive tenant policy would abort mid-window on that FK). This is a **known, documented hole**
+(`specs/multi_tenancy_leak_audit.md` §2); closing it is an owner call — rename the column to
+`tenant_id`/`account_id` and touch every CRM route/query — and is the **top post-launch tenancy
+item**. The rehearsal confirmed the cliff correctly leaves these three untouched.
+
+**GUARD RAIL for this launch:** the CRM app is gated on `feature:crm` (D-CRM-3), which ships with
+a **Sales Center** package — *not* with Core. Provisioning (Phase 4) grants **Core seats only**,
+so a new tenant cannot reach CRM data and the hole stays dormant. **Do NOT grant `feature:crm` /
+a Sales Center package to Fractalworks or customer #2** (or any tenant) until the column is
+renamed — doing so would expose the default org's ~2.5k CRM rows across tenants. The two launch
+customers use Tasks/Calendar/Projects (the H4 scope), so this costs nothing today.
 
 ---
 
@@ -72,6 +97,9 @@ restart services. So:
   (fields: slug, name, owner_email, deployment_label = `gateway`). Creates org + owner + Core
   seats + trial + placement, under RLS.
 - **Manual-activate** each plan (no Razorpay) + allot seats/AI credits.
+- **GUARD RAIL:** activate only Core / Tasks-Calendar-Projects entitlements. Do **NOT** grant
+  `feature:crm` / a Sales Center package to either customer — the CRM tables are not tenant-scoped
+  (see the CRM homonym note above) and doing so leaks the default org's CRM data cross-tenant.
 - Each customer owner signs in via Google → resolves to their own isolated org. Done.
 
 ---
