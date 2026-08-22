@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -662,6 +662,42 @@ than defaulting; a test proves the refusal.
 > `acb-graph-cross-engine-bind-drift` (both engines grep-match the identical bind
 > statement and share one `TenantUnbound` type). `test_db_engine_seam.py`'s
 > `_ALLOWED_SYNC` reason for `acb_graph/db.py` is updated to record the seam.
+
+> ✅ **acb_graph slice 2 — executor org threading SHIPPED 2026-08-23 (WS-29,
+> DARK — plumbing + run state ONLY, no DB write converted, runtime unchanged).**
+> The core agent run (`run_agent_stream` → the drained detached task) writes
+> tenant tables through the sync `acb_graph` engine inside
+> `loop.run_in_executor(...)` worker threads — where Python contextvars are NOT
+> copied, and where the detached run has already outlived the request scope, so
+> the request's ambient tenant binding is gone. This slice threads the tenant
+> explicitly so later slices' worker-thread writes can bind it:
+> - `run_agent_stream` / `run_agent` (executor.py) and `run_detached`
+>   (stream_relay.py) gain an `organization_id: str | None = None` parameter.
+> - `executor._RUN_ORG: dict[str, str]` — a run-keyed plain dict (the tenant twin
+>   of `_RUN_QUEUES`) set at the top of `run_agent_stream` and deleted in its
+>   `finally`; this is what a worker-thread write reads (captured into the
+>   closure before the executor hop) in slice 3+.
+> - `run_agent_stream` also calls `acb_common.db.bind_tenant(org)` at run start
+>   (released in the `finally`), and `run_detached` binds it for the detached
+>   drain task's whole life (so the `on_complete` persist hook, which runs after
+>   the generator's own binding is released, still sees the tenant). No
+>   fail-closed refusal yet — a chat run with no org LOGS a warning; the
+>   refuse-on-missing behaviour lands with the write conversions behind
+>   `ACB_GRAPH_TENANT_BIND` (later slices).
+> - **The org is stamped SERVER-SIDE** at the gateway chat route
+>   (`routes/agent.py`) from the authenticated `UserContext.organization_id`,
+>   **never from `event_payload`** — sourcing the tenant from the client/agent-
+>   visible payload is R11's tenant-spoofing hole; the route carries a comment
+>   saying so.
+> - **Scope = the CHAT source only.** Workflow / schedule / sub-agent runs
+>   (the batch `run_agent` path) get the parameter but are NOT yet wired — a
+>   `TODO(WS-29 slice 6)` marks where their own org resolution lands.
+> R7 fence `executor-run-carries-org` (`tests/unit/test_executor_org_threading.py`):
+> driving a chat `run_agent_stream` with a known org asserts `_RUN_ORG[thread_id]`
+> equals it DURING the run and is absent AFTER (cleared in `finally`); a value in
+> `event_payload` never becomes the run's org (spoofing guard); and an AST fence
+> proves the route sources `organization_id` from the authenticated user, never
+> `req.payload`.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

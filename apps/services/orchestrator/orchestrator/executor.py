@@ -177,6 +177,20 @@ _active_run_queue: contextvars.ContextVar["asyncio.Queue[dict[str, Any] | None] 
 # runs. Set/cleared alongside _active_run_queue by every run path.
 _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 
+# Plain (non-ContextVar) registry of the active run's tenant (organization_id),
+# keyed by session/thread id — the tenant twin of ``_RUN_QUEUES`` above, and it
+# exists for the SAME reason. The core agent run writes tenant tables through the
+# SYNC ``acb_graph`` engine inside ``loop.run_in_executor(...)`` worker threads,
+# and Python contextvars are NOT copied across ``run_in_executor`` — so the
+# request's ambient tenant binding (a ContextVar) is already gone by the time
+# those worker-thread writes run, and the detached run outlives the request
+# scope anyway. Later slices' worker-thread writes read the org from HERE
+# (captured into the closure BEFORE the ``run_in_executor`` hop) to open
+# ``acb_graph.tenant_session(org)``. Set at the top of ``run_agent_stream`` and
+# deleted in its ``finally``. WS-29 MT-1d (H4), slice 2 — DARK: nothing reads it
+# yet (no write is converted this slice).
+_RUN_ORG: dict[str, str] = {}
+
 
 def _register_run_queue(
     key: str | None, queue: "asyncio.Queue[dict[str, Any] | None]",
@@ -1733,6 +1747,7 @@ async def run_agent(
     run_id: str | None = None,
     thread_id: str | None = None,
     model: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """Dynamically load and execute a named agent.
 
@@ -1747,6 +1762,11 @@ async def run_agent(
         event_payload: Arbitrary event data injected as the initial state.
         run_id:        Unique execution ID (auto-generated if ``None``).
         thread_id:     Conversation thread ID (defaults to ``"{agent_name}:{run_id}"``).
+        organization_id: The caller's tenant, threaded through for the
+                       worker-thread ``acb_graph`` writes later slices bind
+                       (WS-29 MT-1d / H4). Plumbing only in slice 2 — the batch
+                       path's callers (workflow / schedule / sub-agent) do NOT
+                       resolve it yet, so this is ``None`` in practice today.
 
         The final MAF agent result dict.
 
@@ -1758,6 +1778,7 @@ async def run_agent(
         return await _run_agent_inner(
             agent_name, event_payload,
             run_id=run_id, thread_id=thread_id, model=model,
+            organization_id=organization_id,
         )
     finally:
         _unbind_run_identity(_identity)
@@ -1770,9 +1791,18 @@ async def _run_agent_inner(
     run_id: str | None = None,
     thread_id: str | None = None,
     model: str | None = None,
+    # Threaded but not yet honoured — see TODO(WS-29 slice 6) in the docstring.
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """The batch run itself. Call :func:`run_agent`, not this — this one assumes
-    the acting-user scope is already open."""
+    the acting-user scope is already open.
+
+    TODO(WS-29 slice 6): wire ``_RUN_ORG[thread_id]`` + ``bind_tenant`` here,
+    exactly as ``run_agent_stream`` does, once the batch-path callers (workflow /
+    schedule / sub-agent dispatch) resolve and pass ``organization_id``. Slice 2
+    scopes the CHAT source only, so this parameter is threaded but not yet
+    honoured — leaving it unwired keeps the batch path byte-identical (DARK).
+    """
     _disable_agent_telemetry_once()
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
@@ -2202,6 +2232,7 @@ async def run_agent_stream(
     thread_id: str | None = None,
     model: str | None = None,
     think_mode: str = "auto",
+    organization_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -2264,6 +2295,42 @@ async def run_agent_stream(
         )
     except Exception:
         pass
+
+    # ── Tenant binding for this run's writes (WS-29 MT-1d / H4, slice 2 — DARK) ─
+    # ``organization_id`` is stamped SERVER-SIDE by the gateway chat route from
+    # the authenticated ``UserContext.organization_id`` — NEVER from
+    # ``event_payload``, which is agent/client-visible and would be a tenant-
+    # spoofing hole (R11, user_management_contract.md). Do NOT source the org
+    # from ``event_payload`` here: ``_corr_user`` / ``_corr_source`` above read
+    # the payload for correlation only, and the tenant deliberately does not.
+    #
+    # Two mechanisms, both dark this slice (no DB write is converted yet — the
+    # refuse-on-missing behaviour lands with the write conversions behind
+    # ``ACB_GRAPH_TENANT_BIND`` in later slices):
+    #   1. ``_RUN_ORG[thread_id]`` — a plain dict the worker-thread writes read
+    #      AFTER the ``loop.run_in_executor`` hop, where contextvars do not
+    #      propagate (that hop is the whole reason this dict exists).
+    #   2. ``bind_tenant(org)`` — so any async ``acb_common.tenant_session`` read
+    #      on THIS run's own event loop resolves the tenant.
+    _tenant_token = None
+    if organization_id:
+        _RUN_ORG[thread_id] = organization_id
+        try:
+            from acb_common.db import bind_tenant
+            _tenant_token = bind_tenant(organization_id)
+        except Exception:
+            _tenant_token = None
+    elif _corr_source == "chat":
+        # A chat run always has an authenticated caller behind it, so a missing
+        # org is a gap in the plumbing worth seeing — LOGGED, not refused
+        # (fail-closed refusal lands with the write conversions, later slices).
+        _log.warning(
+            "executor.chat_run_missing_org",
+            agent=agent_name, thread_id=thread_id,
+        )
+    # TODO(WS-29 slice 6): workflow / schedule / sub-agent runs resolve their own
+    # organization_id (from the workflow/schedule record, or the parent run for a
+    # sub-agent) and pass it in — NOT wired here; slice 2 covers CHAT only.
 
     # ── Live activity feed (E2): agent activation START ───────────────────────
     # Publish to the global bus so /observability shows this run the instant it
@@ -4097,6 +4164,16 @@ async def run_agent_stream(
         # Same reason, for the thing that says WHO this run was: an acting user
         # left bound is inherited by whatever runs next on this task (S1-4).
         _unbind_run_identity(_identity_binding)
+        # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
+        # worker-thread org record and release the async tenant binding, so a
+        # tenant left bound is never inherited by whatever runs next on this task.
+        _RUN_ORG.pop(thread_id, None)
+        if _tenant_token is not None:
+            try:
+                from acb_common.db import release_tenant
+                release_tenant(_tenant_token)
+            except Exception:
+                pass
         # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
         # they don't linger in the shared process env for the next agent.
         _release_run_credentials(_integration_env_token)
