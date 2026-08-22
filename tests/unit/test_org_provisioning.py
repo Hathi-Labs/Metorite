@@ -109,11 +109,14 @@ def _numbered_migrations() -> list[Path]:
     ]
 
 
-#: The two SEEDING callables carry D43-A's *one* seeding doctrine — exactly one
-#: file may define each, so a competing copy fails rather than silently winning
-#: by sort order. The OWNER path is EXEMPT: slice 7 redefines it forward-only in
-#: migration 180 (R6), which is last-body-wins replay, not a scattered doctrine.
-SINGLY_DEFINED_FUNCTIONS = ("provision_org_roles", "provision_organization")
+#: The SEEDING-doctrine callable carries D43-A's *one* seeding doctrine — exactly
+#: one file may define it, so a competing copy fails rather than silently winning
+#: by sort order. The other two are EXEMPT because each is redefined forward-only
+#: in a LATER migration (R6, last-body-wins replay, not a scattered doctrine):
+#: ``provision_org_owner`` in 180 (slice 7's create-only guard) and
+#: ``provision_organization`` in 185 (WS-29 H6's app.tenant_id RLS bind). Only the
+#: grant-set seed carries the single-definition invariant.
+SINGLY_DEFINED_FUNCTIONS = ("provision_org_roles",)
 
 
 def _defining_migrations(function_name: str) -> list[Path]:
@@ -271,9 +274,11 @@ class TestTheMigrationIsOnTheLadder:
     def test_the_seeding_callables_are_defined_exactly_once(self):
         """D43-A: ONE seeding doctrine, so a competing copy fails here.
 
-        ``provision_org_owner`` is EXEMPT — slice 7 redefines it forward-only in
-        180 (R6), which is last-body-wins replay, not a scattered doctrine. Only
-        the two SEEDING callables carry the single-definition invariant.
+        Two callables are EXEMPT because each is redefined forward-only in a
+        later migration (R6, last-body-wins replay, not a scattered doctrine):
+        ``provision_org_owner`` in 180 (slice 7's create-only guard) and
+        ``provision_organization`` in 185 (WS-29 H6's app.tenant_id RLS bind).
+        Only the grant-set seed carries the single-definition invariant.
         """
         for name in SINGLY_DEFINED_FUNCTIONS:
             homes = _defining_migrations(name)

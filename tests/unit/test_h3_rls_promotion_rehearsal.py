@@ -1065,6 +1065,262 @@ class TestEnsureOwnerBootstrapBindUnderForceRls:
 
 
 # ==========================================================================
+# WS-29 H6 · NEW-ORG PROVISIONING under FORCE RLS (migration 185).
+# `provision_organization` creates the org row + placement (RLS-EXEMPT, land
+# unbound) then PERFORMs `provision_org_roles` + `provision_org_owner`, which
+# write org_role_permission + app_user + user_role (all FORCE-RLS'd). On an
+# UNBOUND session those writes are refused under phase-4 RLS → provisioning a
+# customer post-flip fails. Migration 185 SETs `app.tenant_id` LOCAL to the org
+# it just created (before the forced writes), so the create act's own writes
+# satisfy the policy. Driven HERE as the non-privileged `acb_app` role on the
+# phase-4-promoted catalog: GREEN the real 185 function provisions unbound; RED
+# the no-set_config mutation is refused; the create-only guard (180) still holds.
+# A bypass-role run is blind to all of it (scratch `acb` has `rolbypassrls`),
+# which is the whole reason this reuses `promoted()`'s dedicated non-priv role.
+# ==========================================================================
+_PROVISION_MIGRATION = _ROOT / "infra" / "postgres" / "185_provision_org_rls_bind.sql"
+
+#: The one line migration 185 adds to 179's provision_organization body. The RED
+#: mutation removes exactly this and shows the create act then refuses under
+#: FORCE RLS — so the SET LOCAL is load-bearing, not cosmetic.
+_SET_LOCAL_LINE = "    PERFORM set_config('app.tenant_id', v_org_id::text, true);\n"
+
+
+def _exec_admin_sql(admin_engine, sql: str) -> None:
+    """Run *sql* verbatim as the superuser admin (installs/restores a function).
+
+    Via the DBAPI cursor for the same reason ``_apply_generated_phase`` and
+    ``_tenant_ladder._exec_file`` document: the simple query protocol carries a
+    dollar-quoted CREATE OR REPLACE without SQLAlchemy handing psycopg an empty
+    parameter set.
+    """
+    with admin_engine.begin() as conn, \
+            conn.connection.dbapi_connection.cursor() as cur:
+        cur.execute(sql)
+
+
+def _purge_provisioned_org(admin_engine, slug: str) -> None:
+    """Delete everything a provision left for *slug* (as the RLS-bypassing admin).
+
+    ``app_user`` cascades ``user_role``; ``org_role`` cascades
+    ``org_role_permission``. Keeps the shared module-scoped ``promoted`` catalog
+    clean between provision tests."""
+    with admin_engine.begin() as conn:
+        oid = conn.execute(
+            text("SELECT id FROM organization WHERE slug = :s"), {"s": slug}
+        ).scalar()
+        if oid is None:
+            return
+        conn.execute(text("DELETE FROM app_user WHERE organization_id = :o"),
+                     {"o": oid})
+        conn.execute(text("DELETE FROM org_role WHERE organization_id = :o"),
+                     {"o": oid})
+        conn.execute(text("DELETE FROM tenant_placement WHERE organization_id = :o"),
+                     {"o": oid})
+        conn.execute(text("DELETE FROM organization WHERE id = :o"), {"o": oid})
+
+
+@_DB_GATE
+class TestProvisionOrgBindUnderForceRls:
+    """``provision_organization`` provisions under FORCE RLS via its own GUC bind.
+
+    R7 name: ``provision-under-force-rls``. Drives the REAL migration-185
+    ``provision_organization`` on the promoted two-org catalog as the
+    non-privileged ``acb_app`` role, session UNBOUND — the exact posture the
+    owner provisions a customer in post-flip.
+    """
+
+    @staticmethod
+    def _app_engine(promoted):
+        # NullPool + a fresh backend per op: a SET LOCAL GUC resets to '' (not
+        # NULL) on a reused pooled connection, which is a pool artefact, not the
+        # unbound-startup reality this fence reproduces (the bootstrap fence
+        # above documents the same reason at length).
+        return create_engine(promoted.app_url, future=True, poolclass=NullPool)
+
+    def test_provisioning_succeeds_unbound_under_force_rls_green(self, promoted):
+        """GREEN: as ``acb_app`` with NO ``app.tenant_id`` bound, the real 185
+        function provisions a FULL org — org + placement (exempt) AND the
+        FORCE-RLS'd org_role_permission + owner app_user + owner user_role — all
+        land, because it binds ``app.tenant_id`` to the org it just created before
+        the forced writes."""
+        slug = f"prov-rls-green-{uuid.uuid4().hex[:8]}"
+        owner = f"owner-{uuid.uuid4().hex[:8]}@prov.example"
+        eng = self._app_engine(promoted)
+        try:
+            with eng.connect() as c, c.begin():
+                org_id = c.execute(
+                    text("SELECT provision_organization(:slug, :name, :owner)"),
+                    {"slug": slug, "name": "Prov RLS", "owner": owner},
+                ).scalar_one()
+            assert org_id is not None, "provision_organization returned no id"
+
+            # Verify what landed as the RLS-bypassing admin (sees every row).
+            with promoted.admin_engine.connect() as a:
+                placement = a.execute(text(
+                    "SELECT count(*) FROM tenant_placement "
+                    "WHERE organization_id = :o"), {"o": org_id}).scalar_one()
+                perms = a.execute(text(
+                    "SELECT count(*) FROM org_role_permission "
+                    "WHERE organization_id = :o"), {"o": org_id}).scalar_one()
+                owner_users = a.execute(text(
+                    "SELECT count(*) FROM app_user "
+                    "WHERE organization_id = :o AND lower(email) = lower(:e)"),
+                    {"o": org_id, "e": owner}).scalar_one()
+                owner_roles = a.execute(text(
+                    "SELECT count(*) FROM user_role ur "
+                    "  JOIN org_role r ON r.id = ur.role_id AND r.slug = 'owner' "
+                    " WHERE r.organization_id = :o"), {"o": org_id}).scalar_one()
+            assert placement == 1, "the exempt tenant_placement row did not land"
+            assert perms > 0, (
+                "org_role_permission (FORCE-RLS'd) got 0 rows — the roles seed "
+                "was refused, so the internal bind did not reach it")
+            assert owner_users == 1, "the owner app_user (FORCE-RLS'd) did not land"
+            assert owner_roles == 1, "the owner user_role (FORCE-RLS'd) did not land"
+        finally:
+            eng.dispose()
+            _purge_provisioned_org(promoted.admin_engine, slug)
+
+    def test_reverting_the_set_local_refuses_the_provision_red(self, promoted):
+        """RED (the mutation): install 185's body with the SET LOCAL line removed;
+        as ``acb_app`` UNBOUND the create act's first FORCE-RLS'd write is refused
+        and the whole atomic act writes NOTHING — proving the bind is load-bearing.
+
+        The real 185 body is restored in ``finally`` so the mutation cannot leak
+        into any other test on the shared ``promoted`` catalog."""
+        original = _PROVISION_MIGRATION.read_text(encoding="utf-8")
+        mutated = original.replace(_SET_LOCAL_LINE, "", 1)
+        assert mutated != original, (
+            "the SET LOCAL line was not found to remove — this mutation would be "
+            "vacuous; check _SET_LOCAL_LINE still matches migration 185")
+
+        slug = f"prov-rls-red-{uuid.uuid4().hex[:8]}"
+        owner = f"owner-{uuid.uuid4().hex[:8]}@prov.example"
+        eng = self._app_engine(promoted)
+        try:
+            _exec_admin_sql(promoted.admin_engine, mutated)  # install the mutant
+            with eng.connect() as c, c.begin():  # noqa: SIM117
+                with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+                    c.execute(
+                        text("SELECT provision_organization(:slug, :name, :owner)"),
+                        {"slug": slug, "name": "Prov RLS Red", "owner": owner})
+            msg = str(exc.value).lower()
+            assert ("row-level security" in msg
+                    or "violates not-null constraint" in msg), (
+                "the unbound mutant was refused for an unexpected reason — expected "
+                f"an RLS WITH CHECK or a NULL-org (unset-GUC DEFAULT) refusal: {exc.value}")
+            # Atomic: the whole act rolled back, so not even the exempt org row
+            # survives.
+            with promoted.admin_engine.connect() as a:
+                left = a.execute(text(
+                    "SELECT count(*) FROM organization WHERE slug = :s"),
+                    {"s": slug}).scalar_one()
+            assert left == 0, "the refused provision left an organization row behind"
+        finally:
+            eng.dispose()
+            _exec_admin_sql(promoted.admin_engine, original)  # restore the real 185
+            _purge_provisioned_org(promoted.admin_engine, slug)
+
+    def test_the_owner_forced_writes_need_the_guc_bind_red_green(self, promoted):
+        """The app_user/user_role write, isolated: with the org + roles seeded,
+        ``provision_org_owner``'s ``app_user`` INSERT (explicit ``organization_id``)
+        is WITH-CHECK refused on an UNBOUND session (RED) and lands on a GUC-bound
+        one (GREEN) — the exact ``app_user``/``user_role`` refusal migration 185's
+        internal bind removes, pinned at the SQL level (the bootstrap fence's
+        shape, on the provisioning owner path)."""
+        slug = f"prov-rls-owner-{uuid.uuid4().hex[:8]}"
+        unbound_evil = f"evil-{uuid.uuid4().hex[:8]}@prov.example"
+        bound_ok = f"ok-{uuid.uuid4().hex[:8]}@prov.example"
+        eng = self._app_engine(promoted)
+        try:
+            # Seed the org + its roles as the admin (bypasses RLS), leaving it
+            # OWNERLESS — so provision_org_owner is the FIRST forced owner write.
+            with promoted.admin_engine.begin() as a:
+                org_id = a.execute(text(
+                    "INSERT INTO organization (slug, display_name) "
+                    "VALUES (:s, :s) RETURNING id"), {"s": slug}).scalar_one()
+                a.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": str(org_id)})
+                a.execute(text("SELECT provision_org_roles(:o)"), {"o": org_id})
+
+            # ── UNBOUND → the app_user WITH CHECK refuses (the brick) ──
+            with eng.connect() as c, c.begin():  # noqa: SIM117
+                with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+                    c.execute(text("SELECT provision_org_owner(:o, :e)"),
+                              {"o": org_id, "e": unbound_evil})
+            assert "row-level security" in str(exc.value).lower(), (
+                "expected a WITH CHECK violation on the unbound owner app_user "
+                f"insert, got: {exc.value}")
+
+            # ── BOUND → the owner app_user + user_role land ──
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": str(org_id)})
+                c.execute(text("SELECT provision_org_owner(:o, :e)"),
+                          {"o": org_id, "e": bound_ok})
+            with promoted.admin_engine.connect() as a:
+                landed = a.execute(text(
+                    "SELECT count(*) FROM user_role ur "
+                    "  JOIN app_user au ON au.id = ur.user_id "
+                    "  JOIN org_role r ON r.id = ur.role_id AND r.slug = 'owner' "
+                    " WHERE r.organization_id = :o "
+                    "   AND lower(au.email) = lower(:e)"),
+                    {"o": org_id, "e": bound_ok}).scalar_one()
+                evil = a.execute(text(
+                    "SELECT count(*) FROM app_user WHERE lower(email) = lower(:e)"),
+                    {"e": unbound_evil}).scalar_one()
+            assert landed == 1, "the bound owner app_user + user_role did not land"
+            assert evil == 0, "the refused unbound owner insert left a row behind"
+        finally:
+            eng.dispose()
+            _purge_provisioned_org(promoted.admin_engine, slug)
+
+    def test_the_create_only_guard_still_holds_under_force_rls(self, promoted):
+        """180's create-only guard survives the bind (and the bind is what lets it
+        WORK): as ``acb_app`` unbound the real 185 function provisions ``alice`` as
+        owner, then a FRESH ``carol`` claiming the same slug is refused with the
+        dedicated SQLSTATE ``P1002``, and re-provisioning as ``alice`` grants the
+        owner role exactly once."""
+        from acb_common.provisioning import SQLSTATE_SLUG_OWNED_BY_ANOTHER
+
+        slug = f"prov-rls-guard-{uuid.uuid4().hex[:8]}"
+        alice = f"alice-{uuid.uuid4().hex[:8]}@prov.example"
+        carol = f"carol-{uuid.uuid4().hex[:8]}@prov.example"
+        eng = self._app_engine(promoted)
+        try:
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT provision_organization(:s, :s, :e)"),
+                          {"s": slug, "e": alice})
+            # A fresh carol claiming alice's slug → P1002 (create-only), refused.
+            with eng.connect() as c, c.begin():  # noqa: SIM117
+                with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+                    c.execute(text("SELECT provision_organization(:s, :s, :e)"),
+                              {"s": slug, "e": carol})
+            assert getattr(exc.value.orig, "sqlstate", None) == \
+                SQLSTATE_SLUG_OWNED_BY_ANOTHER, (
+                    f"expected the create-only SQLSTATE {SQLSTATE_SLUG_OWNED_BY_ANOTHER}, "
+                    f"got {getattr(exc.value.orig, 'sqlstate', None)}")
+            # Idempotent: re-provisioning as alice grants the owner role once.
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT provision_organization(:s, :s, :e)"),
+                          {"s": slug, "e": alice})
+            with promoted.admin_engine.connect() as a:
+                owners = a.execute(text(
+                    "SELECT count(*) FROM user_role ur "
+                    "  JOIN org_role r ON r.id = ur.role_id AND r.slug = 'owner' "
+                    "  JOIN organization o ON o.id = r.organization_id "
+                    " WHERE o.slug = :s"), {"s": slug}).scalar_one()
+                carol_rows = a.execute(text(
+                    "SELECT count(*) FROM app_user WHERE lower(email) = lower(:e)"),
+                    {"e": carol}).scalar_one()
+            assert owners == 1, f"the create-only slug has {owners} owners, not 1"
+            assert carol_rows == 0, "the refused carol got an app_user row anyway"
+        finally:
+            eng.dispose()
+            _purge_provisioned_org(promoted.admin_engine, slug)
+
+
+# ==========================================================================
 # Structural — no database, and these must NEVER skip (they arm the R8 gate).
 # ==========================================================================
 class TestThisSuiteIsArmed:
