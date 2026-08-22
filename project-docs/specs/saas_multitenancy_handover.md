@@ -661,7 +661,7 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND SHIPPED (dark)
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
@@ -970,14 +970,95 @@ cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4
   an opaque per-human identity token, never an `app_user` FK, at `resolve_identity`,
   `UserContext.user_id` (roles.py) and the `/auth/me` payload — so a future consumer cannot silently
   treat it as an `app_user` key.
-- ⚠️ **STILL-OPEN WRITE-BRICK before the flip (co-located here from §H3.2).** `resolve_access`'s
-  READ is now GUC-bound, but `ensure_owner_bootstrap()` still runs `_BOOTSTRAP_OWNER_SQL`'s INSERT
-  into the RLS-FORCED `app_user` at gateway startup on an UNBOUND session (no request, so nothing
-  binds), so under phase-4 RLS its `WITH CHECK` compares `organization_id` against the unset GUC
-  (NULL) and REFUSES the write — an ownerless box can never bootstrap its first owner (§H3.2, and
-  `test_the_unbound_owner_bootstrap_write_is_rejected` characterizes it). That is a WRITE on the
-  slice-4 RBAC path (owner role lives in FORCE-RLS'd `user_role`), not the sign-in READ this slice
-  fixes; it must be handled before `IDENTITY_CUTOVER` is flipped alongside phase-4.
+- ✅ ~~**STILL-OPEN WRITE-BRICK before the flip (co-located here from §H3.2).**~~ **CLOSED
+  2026-08-22 by the H6 RLS-BIND HARDENING slice (WS-29) — see the PRE-FLIP RLS-BINDING CHECKLIST
+  below.** `resolve_access`'s READ was GUC-bound in the 3b repair; `ensure_owner_bootstrap()` now
+  resolves the `default` org's id from the RLS-EXEMPT `organization` table and runs its
+  `_HAS_OWNER_SQL` read + `_BOOTSTRAP_OWNER_SQL` INSERT inside `tenant_session(default_org_id)` (the
+  ONE GUC seam, reused not forked — R5), so an ownerless box CAN bootstrap its first owner under
+  phase-4 RLS. For historical context the note read: *`ensure_owner_bootstrap()` still runs
+  `_BOOTSTRAP_OWNER_SQL`'s INSERT into the RLS-FORCED `app_user` at gateway startup on an UNBOUND
+  session … its `WITH CHECK` compares `organization_id` against the unset GUC (NULL) and REFUSES the
+  write — an ownerless box can never bootstrap its first owner (§H3.2, and
+  `test_the_unbound_owner_bootstrap_write_is_rejected` characterizes it).* The raw-SQL
+  characterization stays RED by design (the unbound INSERT is still refused); the FIX is proven
+  GREEN by `test_h3_rls_promotion_rehearsal.py::TestEnsureOwnerBootstrapBindUnderForceRls` (the real
+  function bootstraps under FORCE RLS as `acb_app`, unbound at entry; bound GREEN / unbound RED at
+  the SQL level).
+
+### H6 PRE-FLIP RLS-BINDING CHECKLIST · ◐ 3 fixes SHIPPED (dark) 2026-08-22 · 3 OWNER-DECISION items + the H4 dependency OPEN
+
+The systematic RLS-binding audit that this checklist records asked one question of
+every site that touches an RLS-FORCED table: *does it run on a session with
+`app.tenant_id` bound?* The GUC is set in EXACTLY ONE place —
+`tenant_session()`'s `set_config('app.tenant_id', …, true)` (`acb_common/db.py`);
+`bind_tenant()` sets only the `_TENANT` ContextVar, never the GUC. A site that
+reads/writes a FORCE-RLS'd table on an UNBOUND session reads 0 rows / refuses
+writes once phase-4 is live — the class the 3b P0 and the slice-4 bridge already
+hit. The audit closed the three agent-safe sites and itemised the rest for the
+owner. **Nothing here flips a flag or promotes RLS — all of it is DARK (binds are
+no-ops until phase-4 is live).**
+
+**(a) FIXED here (WS-29 H6 RLS-bind hardening, DARK):**
+1. **`resolve_session_access`** (`acb_auth/access.py`) — its participant/member
+   fold reads `chat_session_participant` + `org_group_member` + `app_user` (all
+   FORCE-RLS'd). Now reads through `tenant_session()` when the cutover is ON and a
+   tenant is bound (the request path); the unbound/no-tenant path (the background
+   folds — see the H4 dependency below) stays byte-identical and fail-closed.
+   Fence: `test_h3_rls_promotion_rehearsal.py::TestResolveSessionAccessBindUnderForceRls`
+   (bound GREEN / unbound-mutation RED, non-priv `acb_app`).
+2. **`ensure_owner_bootstrap`** (`acb_auth/access.py`) — resolves the `default`
+   org id from the RLS-EXEMPT `organization` table, then runs `_HAS_OWNER_SQL` +
+   `_BOOTSTRAP_OWNER_SQL` inside `tenant_session(default_org_id)`, so first-owner
+   bootstrap is no longer bricked under phase-4. Fence:
+   `::TestEnsureOwnerBootstrapBindUnderForceRls` (real function GREEN; bound/unbound
+   RED at the SQL level).
+3. **The ratchet blind-spot fence** — `test_db_engine_seam.py`'s `get_db` ratchet
+   matched only `await get_db()` and was BLIND to sites that open
+   `get_session_factory()()` / `_get_session_factory()()` directly, which is the
+   EXACT class every unbound-RLS bug hid in. NEW `test_no_new_unbound_factory_opens`
+   pins every direct factory open in `apps/`+`packages/` to a reviewed per-file
+   count (`_FACTORY_OPEN_ALLOW`), so a new unreviewed one goes RED. This is what
+   stops the whole class recurring silently.
+
+**(b) OWNER-DECISION — NOT fixed here (each needs an owner act; all stay 🔴):**
+1. **New-org provisioning writes** — `acb_common/provisioning.py`
+   (`provision_local_organization` → the tenant-plane `provision_org_owner` /
+   `provision_org_roles` SQL, `179`/`180`) INSERT the owner + roles into
+   FORCE-RLS'd `app_user`/`user_role`/`org_role` **while the org is being
+   created**, so there is no tenant to bind yet (the GUC would be the org that
+   does not exist). Un-bricking these needs a **migration or a SECURITY DEFINER
+   callable** that stamps/bypasses inside the create act — the SECURITY-INVOKER
+   posture migration 179's header flagged as "REVISIT AT H3". Allow-listed by name
+   in `_FACTORY_OPEN_ALLOW` so the ratchet does not go red on them, but they are
+   an owner call, not agent-safe.
+2. **`access_request`** — FORCE-RLS'd (`generated/04_policies.sql`), but its
+   writers are **tenant-less by construction**: a sign-in request
+   (`_record_signin_request`) is filed for an UNPROVISIONED email, before any
+   tenant is known, so nothing can bind. Decision owed: **add `access_request` to
+   `gen_tenant_migration.EXEMPT`** (it is control-plane-ish — a queue of people
+   who are not yet members) **or** give it a deliberate tenant column + a bound
+   writer. Until decided, its writes refuse under phase-4.
+3. **`reconcile_orphaned_runs`** (`routes/workflows/service.py:628`, `_get_db()`
+   at `:640`) — a CROSS-TENANT startup sweep: `UPDATE workflow_runs SET
+   status='failed' WHERE status='running'` over EVERY org's rows. `workflow_runs`
+   is FORCE-RLS'd, so unbound under phase-4 it updates 0 rows and dead runs never
+   get marked failed. Needs a **per-org loop** (bind each tenant in turn) **or a
+   BYPASSRLS maintenance role** — an owner call on the deploy/role side.
+
+**(c) THE H4 DEPENDENCY (the largest open item, blocks the flip for background
+features).** ~111 unbound `get_db()` sites remain outside `routes/projects`
+(`test_db_engine_seam.py`'s `H2_BASELINE_ELSEWHERE`), each a scheduler / webhook /
+consumer / service-identity path that carries no request and so binds no tenant.
+Under phase-4 RLS every one reads 0 rows / refuses writes — the feature goes DARK
+at the flip, silently. The two background callers of `resolve_session_access`
+(`executor._integration_authorizer`, `chat_fold._run_authority`) are in this set:
+their fold correctly fails closed to actor-only today, but the shared-run
+authority only comes back once they thread an explicit tenant. **H4 (explicit-
+tenant threading for these jobs/consumers) MUST land before `IDENTITY_CUTOVER` is
+flipped alongside phase-4**, or those features are the ones that go dark. H4 owns
+retiring the whole set; this checklist is the flip's precondition list, not H4's
+work.
 
 **Gate (D48 — H6 "ships dark, lands dark BEFORE H3").** Building H6 slices DARK — flag OFF,
 byte-identical `app_user` writes/reads, no read moved — is 🟢 AGENT-SAFE, and that INCLUDES

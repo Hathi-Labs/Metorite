@@ -61,17 +61,22 @@ pytest.importorskip("sqlalchemy")
 import acb_auth.access as access_mod
 from acb_auth.access import (
     _ACCESS_SQL,
+    _BOOTSTRAP_ORG_SLUG,
     _BOOTSTRAP_OWNER_SQL,
+    _HAS_OWNER_SQL,
     _IDENTITY_LEG_SQL,
+    ensure_owner_bootstrap,
     mirror_identity_membership,
     resolve_identity,
+    resolve_session_access,
 )
 from acb_auth.deps import _with_resolved_access
 from acb_auth.roles import UserContext, UserRole
-from acb_common.db import clear_tenant
+from acb_common.db import bind_tenant, clear_tenant
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.pool import NullPool
 
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
@@ -615,6 +620,67 @@ def _unseed_member(admin_engine, *, email: str, role_slug: str,
             {"org": org_id, "slug": role_slug})
 
 
+def _seed_shared_room(admin_engine, *, org_id: str, actor_email: str,
+                      member_email: str, actor_role: str, member_role: str,
+                      group_slug: str, session_id: str) -> None:
+    """Seed (as the RLS-BYPASSING superuser admin) a TWO-member shared session in
+    ``org_id``: an actor (owner participant) and a second member reached through a
+    ``group:<slug>`` subject — so ``resolve_session_access``'s expansion touches
+    ``chat_session_participant`` (the participant read), ``org_group_member`` and
+    ``app_user`` (the ``_GROUP_MEMBER_SQL`` group leg), ALL FORCE-RLS'd after
+    phases 3+4. ``org_group`` itself is RLS-EXEMPT (``gen_tenant_migration``:
+    "carries organization_id since 138"), so the group ROW is readable unbound —
+    the members are not. Every INSERT stamps ``organization_id`` explicitly: the
+    phase-1 DEFAULT reads the unset GUC (NULL) as the admin, and these tables are
+    NOT NULL / FORCE-RLS'd after promotion."""
+    _seed_active_member(admin_engine, org_id=org_id, email=actor_email,
+                        role_slug=actor_role)
+    _seed_active_member(admin_engine, org_id=org_id, email=member_email,
+                        role_slug=member_role)
+    gid = str(uuid.uuid4())
+    with admin_engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO org_group (id, organization_id, slug, display_name) "
+            "VALUES (:gid, :org, :slug, :slug)"),
+            {"gid": gid, "org": org_id, "slug": group_slug})
+        conn.execute(text(
+            "INSERT INTO org_group_member (group_id, user_id, organization_id) "
+            "SELECT :gid, au.id, :org FROM app_user au "
+            "WHERE lower(au.email) = lower(:e)"),
+            {"gid": gid, "org": org_id, "e": member_email})
+        conn.execute(text(
+            "INSERT INTO chat_session (id, user_id, organization_id) "
+            "VALUES (:sid, :owner, :org)"),
+            {"sid": session_id, "owner": actor_email, "org": org_id})
+        conn.execute(text(
+            "INSERT INTO chat_session_participant "
+            "(session_id, subject, role, organization_id) "
+            "VALUES (:sid, :subj, 'owner', :org)"),
+            {"sid": session_id, "subj": actor_email, "org": org_id})
+        conn.execute(text(
+            "INSERT INTO chat_session_participant "
+            "(session_id, subject, role, organization_id) "
+            "VALUES (:sid, :subj, 'member', :org)"),
+            {"sid": session_id, "subj": f"group:{group_slug}", "org": org_id})
+
+
+def _unseed_shared_room(admin_engine, *, org_id: str, actor_email: str,
+                        member_email: str, actor_role: str, member_role: str,
+                        group_slug: str, session_id: str) -> None:
+    with admin_engine.begin() as conn:
+        # ``chat_session`` delete cascades its participants; ``org_group`` delete
+        # cascades ``org_group_member``.
+        conn.execute(text("DELETE FROM chat_session WHERE id = :sid"),
+                     {"sid": session_id})
+        conn.execute(text(
+            "DELETE FROM org_group WHERE organization_id = :org AND slug = :slug"),
+            {"org": org_id, "slug": group_slug})
+    _unseed_member(admin_engine, email=actor_email, role_slug=actor_role,
+                   org_id=org_id)
+    _unseed_member(admin_engine, email=member_email, role_slug=member_role,
+                   org_id=org_id)
+
+
 @_DB_GATE
 class TestTheReadCutoverEndToEnd:
     """The end-to-end two-phase fence (R7 name: ``end-to-end-two-phase``; R8).
@@ -743,6 +809,259 @@ class TestTheReadCutoverEndToEnd:
                     "denying (P2a)")
             finally:
                 await _purge_shadow_rows(factory, email)
+
+
+# ==========================================================================
+# H6 RLS-BIND HARDENING (WS-29) — the remaining unbound-RLS access sites.
+# The systematic audit found two more sites that read/write RLS-FORCED tables on
+# an UNBOUND session (no `app.tenant_id` GUC) and so collapse under phase-4 RLS,
+# the SAME class as slice 3b's role leg and slice 4's RBAC bridge. Each is driven
+# HERE as the non-privileged `acb_app` role on the phase-4-promoted catalog: GREEN
+# bound (via the fix), RED on the unbound mutation. A bypass-role run is blind to
+# both (scratch `acb` has `rolbypassrls`), which is the whole reason these use the
+# `promoted()` fixture's dedicated non-priv role.
+# ==========================================================================
+@_DB_GATE
+class TestResolveSessionAccessBindUnderForceRls:
+    """``resolve_session_access``'s participant/member expansion under FORCE RLS.
+
+    R7 name: ``session-authority-bound-under-rls``. Drives the REAL
+    ``resolve_session_access`` on the promoted two-org catalog as ``acb_app``.
+    Its fold reads ``chat_session_participant`` + ``org_group_member`` +
+    ``app_user`` (all FORCE-RLS'd) — so on an UNBOUND session under phase-4 RLS
+    they return ZERO rows and the shared-run authority silently collapses to the
+    actor alone. GREEN: with the request tenant bound (as ``deps`` binds it) and
+    ``IDENTITY_CUTOVER`` ON, the fix reads through ``tenant_session()`` and the
+    second member resolves via the ``group:<slug>`` subject. RED (the mutation):
+    with the fold blind to the bound tenant it falls back to the raw unbound
+    session and the member drops — the pre-fix behaviour.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    async def test_a_bound_fold_resolves_the_shared_member_green(
+        self, promoted, monkeypatch
+    ):
+        """GREEN: bound + flag ON, the fold reads the FORCE-RLS'd participant /
+        group / app_user rows and resolves the second member."""
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        actor = "rsa.actor@h3rls.test"
+        member = "rsa.member@h3rls.test"
+        group = "rsa-green-group"
+        sid = f"rsa-green-{uuid.uuid4().hex[:8]}"
+        _seed_shared_room(
+            promoted.admin_engine, org_id=promoted.org_a, actor_email=actor,
+            member_email=member, actor_role="rsa-green-actor",
+            member_role="rsa-green-member", group_slug=group, session_id=sid)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                access_mod.invalidate()
+                monkeypatch.setattr(access_mod, "_tables_missing", False)
+                clear_tenant()
+                bind_tenant(promoted.org_a)  # deps binds the resolved org
+
+                _folded, members = await resolve_session_access(sid, actor)
+
+                assert member in members, (
+                    "the shared member did not resolve — the fold read the "
+                    "FORCE-RLS'd participant/group tables on a session with no "
+                    "GUC bound and got 0 rows (the authority collapse the fix "
+                    "removes)")
+                assert set(members) == {actor, member}, (
+                    f"expected exactly the two members, got {members}")
+            finally:
+                clear_tenant()
+                _unseed_shared_room(
+                    promoted.admin_engine, org_id=promoted.org_a,
+                    actor_email=actor, member_email=member,
+                    actor_role="rsa-green-actor", member_role="rsa-green-member",
+                    group_slug=group, session_id=sid)
+
+    async def test_an_unbound_fold_collapses_to_the_actor_red(
+        self, promoted, monkeypatch
+    ):
+        """RED (the mutation): the fold blind to the bound tenant (the pre-fix
+        raw-session behaviour ``bind_tenant`` never cured) resolves the SAME room
+        to the actor alone — the second member silently drops. The ContextVar is
+        bound exactly as GREEN; only the GUC seam differs, so this pins the GUC
+        bind — not something else — as what admits the member."""
+        monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+        actor = "rsa.actor.red@h3rls.test"
+        member = "rsa.member.red@h3rls.test"
+        group = "rsa-red-group"
+        sid = f"rsa-red-{uuid.uuid4().hex[:8]}"
+        _seed_shared_room(
+            promoted.admin_engine, org_id=promoted.org_a, actor_email=actor,
+            member_email=member, actor_role="rsa-red-actor",
+            member_role="rsa-red-member", group_slug=group, session_id=sid)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                access_mod.invalidate()
+                monkeypatch.setattr(access_mod, "_tables_missing", False)
+                clear_tenant()
+                bind_tenant(promoted.org_a)
+                # The mutation: the fold cannot see the bound tenant, so it opens
+                # the raw UNBOUND session (no GUC) — exactly what shipped before
+                # this hardening. `current_tenant` is the name the fix branches on.
+                monkeypatch.setattr(access_mod, "current_tenant", lambda: None)
+
+                _folded, members = await resolve_session_access(sid, actor)
+
+                assert member not in members, (
+                    "the shared member resolved with the fold blind to the bind "
+                    "— the FORCE-RLS'd participant read must return 0 rows "
+                    "unbound, so this passing means the tables are not actually "
+                    "FORCE-RLS'd or the fence does not exercise them")
+                assert members == [actor], (
+                    f"the unbound fold must collapse to the actor, got {members}")
+            finally:
+                clear_tenant()
+                _unseed_shared_room(
+                    promoted.admin_engine, org_id=promoted.org_a,
+                    actor_email=actor, member_email=member,
+                    actor_role="rsa-red-actor", member_role="rsa-red-member",
+                    group_slug=group, session_id=sid)
+
+
+@_DB_GATE
+class TestEnsureOwnerBootstrapBindUnderForceRls:
+    """``ensure_owner_bootstrap`` un-bricked under FORCE RLS.
+
+    R7 name: ``owner-bootstrap-bound-under-rls``. At gateway STARTUP the function
+    ran UNBOUND, so under phase-4 RLS its ``_HAS_OWNER_SQL`` read (via the
+    FORCE-RLS'd ``user_role``) saw no owner and its ``_BOOTSTRAP_OWNER_SQL``
+    INSERT into the FORCE-RLS'd ``app_user``/``user_role`` was WITH-CHECK-refused
+    — an ownerless box could never bootstrap its first owner
+    (``test_the_unbound_owner_bootstrap_write_is_rejected`` characterizes the raw
+    write). The fix resolves the ``default`` org id from the RLS-EXEMPT
+    ``organization`` table, then binds ``tenant_session(default_org_id)`` around
+    both statements. The ``default`` org + its ``owner`` role are seeded by
+    migration 130 and left ownerless, so the real function can be driven
+    end-to-end here.
+    """
+
+    @staticmethod
+    def _app_dsn(promoted) -> str:
+        return promoted.app_url.render_as_string(hide_password=False)
+
+    @staticmethod
+    def _default_org_id(admin_engine) -> str:
+        with admin_engine.connect() as c:
+            return str(c.execute(text(
+                "SELECT id FROM organization WHERE slug = :s"),
+                {"s": _BOOTSTRAP_ORG_SLUG}).scalar_one())
+
+    @staticmethod
+    def _clean_default_owner(admin_engine, email: str) -> None:
+        with admin_engine.begin() as conn:
+            # app_user delete cascades its user_role; also drop any shadow rows
+            # ensure_owner_bootstrap's post-commit mirror may have written.
+            conn.execute(text(
+                "DELETE FROM app_user WHERE lower(email) = lower(:e)"), {"e": email})
+            conn.execute(text(
+                "DELETE FROM org_membership m USING user_identity ui "
+                " WHERE m.user_id = ui.id AND lower(ui.email) = lower(:e)"),
+                {"e": email})
+            conn.execute(text(
+                "DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+                {"e": email})
+
+    async def test_the_real_bootstrap_provisions_the_owner_under_force_rls(
+        self, promoted, monkeypatch
+    ):
+        """GREEN, end-to-end: the REAL ``ensure_owner_bootstrap`` — called as
+        ``acb_app`` with the session UNBOUND, the exact startup posture — resolves
+        the default org from the exempt table, binds it, and lands the owner. The
+        re-run returns ``None`` because the now-bound ``_HAS_OWNER_SQL`` read sees
+        the owner it just wrote: the has-owner read AND the INSERT, both bound."""
+        candidate = "bootstrap.green@h3rls.test"
+        self._clean_default_owner(promoted.admin_engine, candidate)
+        monkeypatch.setenv("EXECUTIVE_EMAILS", f"{candidate}, second@h3rls.test")
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                access_mod.invalidate()
+                monkeypatch.setattr(access_mod, "_tables_missing", False)
+                clear_tenant()  # the precondition: startup runs UNBOUND
+
+                first = await ensure_owner_bootstrap()
+                assert first == candidate, (
+                    "the bootstrap INSERT did not land under FORCE RLS — the "
+                    "has-owner read/INSERT ran on a session with no GUC bound "
+                    "and RLS refused/hid them (the write-brick the fix removes)")
+
+                # The bound has-owner read now sees the owner → a no-op re-run.
+                second = await ensure_owner_bootstrap()
+                assert second is None, (
+                    "the re-run did not see the owner it just wrote — the bound "
+                    "_HAS_OWNER_SQL read is not actually seeing the FORCE-RLS'd "
+                    "user_role row")
+            finally:
+                clear_tenant()
+                self._clean_default_owner(promoted.admin_engine, candidate)
+
+    def test_the_bootstrap_write_needs_the_guc_bind_under_force_rls(
+        self, promoted
+    ):
+        """RED/GREEN at the SQL level: the exact ``_BOOTSTRAP_OWNER_SQL`` the
+        function runs lands the owner on a GUC-bound session and is WITH-CHECK
+        refused on an unbound one — so the fix's bind is load-bearing, not
+        cosmetic. Paired with the has-owner read: bound sees the owner, unbound
+        sees nothing.
+
+        ⚠️ **NullPool, one connection per op.** A custom GUC set with ``SET
+        LOCAL`` (``set_config(..., true)``) does not reset to NULL when the
+        transaction ends — it resets to ``''``, which then makes the policy's
+        ``current_setting('app.tenant_id', true)::uuid`` cast raise
+        ``invalid input syntax for type uuid: ""`` on a REUSED pooled
+        connection. Real startup is a FRESH connection that never bound a tenant,
+        where the GUC is genuinely NULL and the read returns 0 rows cleanly — so
+        each op here opens its own backend connection to reproduce that, not a
+        pool artefact."""
+        org_id = self._default_org_id(promoted.admin_engine)
+        bound_ok = "bootstrap.sqlbound@h3rls.test"
+        unbound_evil = "bootstrap.sqlunbound@h3rls.test"
+        self._clean_default_owner(promoted.admin_engine, bound_ok)
+        self._clean_default_owner(promoted.admin_engine, unbound_evil)
+        eng = create_engine(promoted.app_url, future=True, poolclass=NullPool)
+        try:
+            # ── the WRITE, unbound → WITH CHECK refuses (the brick) ──
+            with eng.connect() as c, c.begin():  # noqa: SIM117
+                with pytest.raises((DBAPIError, ProgrammingError)) as exc:
+                    c.execute(text(_BOOTSTRAP_OWNER_SQL),
+                              {"email": unbound_evil,
+                               "org_slug": _BOOTSTRAP_ORG_SLUG})
+            assert "row-level security" in str(exc.value).lower(), (
+                f"expected a WITH CHECK violation unbound, got: {exc.value}")
+
+            # ── the WRITE, bound → the owner lands ──
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": org_id})
+                c.execute(text(_BOOTSTRAP_OWNER_SQL),
+                          {"email": bound_ok, "org_slug": _BOOTSTRAP_ORG_SLUG})
+
+            # ── the has-owner READ: bound sees the owner, unbound sees nothing ──
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": org_id})
+                bound_owner = c.execute(
+                    text(_HAS_OWNER_SQL),
+                    {"org_slug": _BOOTSTRAP_ORG_SLUG}).first()
+            with eng.connect() as c, c.begin():
+                unbound_owner = c.execute(
+                    text(_HAS_OWNER_SQL),
+                    {"org_slug": _BOOTSTRAP_ORG_SLUG}).first()
+            assert bound_owner is not None, (
+                "the bound has-owner read did not see the owner just written")
+            assert unbound_owner is None, (
+                "the unbound has-owner read saw an owner — user_role is not "
+                "actually FORCE-RLS'd, so the brick would not reproduce")
+        finally:
+            eng.dispose()
+            self._clean_default_owner(promoted.admin_engine, bound_ok)
+            self._clean_default_owner(promoted.admin_engine, unbound_evil)
 
 
 # ==========================================================================

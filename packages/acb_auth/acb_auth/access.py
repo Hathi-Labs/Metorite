@@ -1177,8 +1177,29 @@ async def resolve_session_access(
     try:
         from sqlalchemy import text
 
-        factory = _get_session_factory()
-        async with factory() as session:
+        # H6 — the participant/member expansion under phase-4 RLS. This block
+        # reads `chat_session_participant`, `org_group_member` and `app_user`
+        # (via `_PARTICIPANT_SQL` / `_ORG_MEMBER_SQL` / `_GROUP_MEMBER_SQL`), all
+        # FORCE-RLS'd (`generated/04_policies.sql`), so an UNBOUND read returns
+        # ZERO rows once the cutover is live and the shared-run authority would
+        # silently collapse to actor-only. When the cutover is ON and a tenant is
+        # bound — the request path, where `deps._with_resolved_access` binds the
+        # resolved org before `assert_can_run_agent_in_session` reaches here —
+        # read through the ONE GUC seam `tenant_session()` (`SET LOCAL
+        # app.tenant_id`, reused not forked — R5), exactly as `resolve_access`'s
+        # role leg does. Flag OFF, or ON with nothing bound, stays the raw
+        # unbound session: byte-identical to today. The two BACKGROUND callers —
+        # `executor._integration_authorizer` and `chat_fold._run_authority` —
+        # run with no request context, so `current_tenant()` is None and they
+        # take that same unbound branch: never `TenantUnbound` (the bind branch
+        # is entered only when a tenant is actually bound), fail-closed under
+        # phase-4 RLS (0 rows → the fold degrades to actor-only) until H4 threads
+        # an explicit tenant through those service paths (§H6 pre-flip checklist).
+        if identity_cutover_enabled() and current_tenant() is not None:
+            session_cm = tenant_session()
+        else:
+            session_cm = _get_session_factory()()
+        async with session_cm as session:
             subjects = [
                 r[0]
                 for r in (
@@ -1332,8 +1353,38 @@ async def ensure_owner_bootstrap() -> str | None:
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
+        # H6 — bind the has-owner read + the bootstrap INSERT under phase-4 RLS.
+        # `_HAS_OWNER_SQL` (via `user_role`) and `_BOOTSTRAP_OWNER_SQL`'s INSERT
+        # both touch the FORCE-RLS'd `app_user`/`user_role`, and this runs at
+        # gateway STARTUP with no request — so nothing binds and, under phase-4,
+        # the read says "ownerless" while the INSERT's WITH CHECK compares
+        # `organization_id` against the unset GUC (NULL) and REFUSES it: an
+        # ownerless box could never bootstrap its first owner (the still-open
+        # write-brick §H6 flagged; characterized by
+        # `test_the_unbound_owner_bootstrap_write_is_rejected`). Fix: resolve the
+        # default org's id from the RLS-EXEMPT `organization` table (readable
+        # unbound — `gen_tenant_migration.EXEMPT`), then run both statements
+        # inside `tenant_session(default_org_id)` — the ONE GUC seam, reused not
+        # forked (R5). The `default` org row is seeded (migration 178), so the
+        # bind is possible; if it is somehow absent there is nothing to bootstrap
+        # into, so fall back to the raw unbound session, byte-identical to the
+        # pre-H6 path (and a no-op under phase-4 RLS — fail-closed).
         factory = _get_session_factory()
-        async with factory() as session:
+        async with factory() as probe:
+            org_row = (
+                await probe.execute(
+                    text("SELECT id FROM organization WHERE slug = :org_slug"),
+                    {"org_slug": _BOOTSTRAP_ORG_SLUG},
+                )
+            ).first()
+        default_org_id = str(org_row[0]) if org_row else None
+
+        session_cm = (
+            tenant_session(default_org_id)
+            if default_org_id is not None
+            else factory()
+        )
+        async with session_cm as session:
             has_owner = await session.execute(
                 text(_HAS_OWNER_SQL), {"org_slug": _BOOTSTRAP_ORG_SLUG},
             )
@@ -1353,7 +1404,10 @@ async def ensure_owner_bootstrap() -> str | None:
                 text(_BOOTSTRAP_OWNER_SQL),
                 {"email": candidate, "org_slug": _BOOTSTRAP_ORG_SLUG},
             )
-            await session.commit()
+            # `tenant_session()` commits on exit; the raw-session fallback does
+            # not, so commit explicitly only in that branch.
+            if default_org_id is None:
+                await session.commit()
         invalidate(candidate)
         # H6 slice 1: keep the identity shadow current. Best-effort and after the
         # authoritative commit above — a failure here changes nothing about the
