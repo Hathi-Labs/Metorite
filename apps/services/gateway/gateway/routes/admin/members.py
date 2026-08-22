@@ -27,12 +27,13 @@ from acb_auth import (
     require_permission,
     validate_permission,
 )
-from acb_auth.access import mirror_membership_status
+from acb_auth.access import (
+    mirror_identity_membership,
+    mirror_membership_status,
+    purge_identity_shadow,
+)
 from acb_auth.permissions import matched_by
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import text
-
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
@@ -52,6 +53,8 @@ from gateway.routes.admin._common import (
     router,
     set_roles,
 )
+from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 VALID_STATUSES = ("invited", "active", "suspended", "removed")
 
@@ -175,6 +178,24 @@ async def invite_member(
             status="invited",
         )
         roles = await roles_for_user(db, member["id"])
+
+    # H6 (WS-29, DARK, D48): mirror the identity shadow AFTER the authoritative
+    # `app_user` write is durably committed — the same post-commit posture
+    # `update_member`/`remove_member` already use. Moved OUT of `provision_member`
+    # (WS-29 H6 orphan-closure): mirroring inside the still-open caller txn meant
+    # a caller rollback left a committed shadow orphan. The existence mirror is
+    # create-only; the status mirror keeps `org_membership.status` current for the
+    # invited→active/reactivate cases. Best-effort, own session, moves no read,
+    # `app_user` byte-identical. See `acb_auth.access`.
+    await mirror_identity_membership(
+        email=member["email"],
+        display_name=member.get("display_name") or "",
+        org_id=org_id,
+        status=member["status"],
+    )
+    await mirror_membership_status(
+        email=member["email"], org_id=org_id, status=member["status"],
+    )
 
     invalidate_for(email)
     _log.info("member_invited", email=email, by=admin.email, roles=roles)
@@ -644,6 +665,18 @@ async def purge_member(
         # Before the commit, on its own connection — see the docstring.
         record_admin_change(admin.email, "org.member_purged", f"user:{addr}",
                             deleted=deleted, kept=kept)
+
+    # H6 (WS-29, DARK, D48) orphan-closure: the authoritative purge above deletes
+    # `app_user` but NOT the RLS-EXEMPT shadow, so without this a purged ACTIVE
+    # member left an active `org_membership` ORPHAN (no `app_user`) that reconcile
+    # 183 can never fix (it joins `app_user`) and the H6 read cutover would
+    # wrong-ADMIT. Deletes ONLY the org's `org_membership` row — the GLOBAL
+    # `user_identity` is NEVER touched (deleting it on the last membership was a
+    # check-then-cascade cross-tenant erasure race; a membership-less identity is
+    # harmless and re-used on re-join — see `purge_identity_shadow`). Best-effort,
+    # own session, AFTER the irreversible purge committed, so a failed shadow
+    # delete can never roll the purge back.
+    await purge_identity_shadow(email=addr, org_id=org_id)
 
     invalidate_for(member["email"])
     _log.info("member_purged", email=member["email"], by=admin.email,
