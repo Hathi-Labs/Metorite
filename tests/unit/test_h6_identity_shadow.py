@@ -58,9 +58,13 @@ from acb_auth.access import (
     _BOOTSTRAP_OWNER_SQL,
     _MIRROR_IDENTITY_SQL,
     _MIRROR_MEMBERSHIP_SQL,
+    _MIRROR_ORG_BY_SLUG_SQL,
     _MIRROR_STATUS_SQL,
+    _PURGE_IDENTITY_IF_ORPHAN_SQL,
+    _PURGE_MEMBERSHIP_SQL,
     mirror_identity_membership,
     mirror_membership_status,
+    purge_identity_shadow,
 )
 from gateway.routes.admin._common import _PROVISION_MEMBER_SQL
 from sqlalchemy import create_engine, text
@@ -314,6 +318,168 @@ class TestTheDualWriteShape:
         assert "test_h6_identity_shadow.py" in spec
 
 
+# ── The orphan-closure slice: post-commit ordering, purge shape, pinned SQL ──
+#
+# WS-29 H6 orphan-closure (D48). Three named fences (R7), none needs a database:
+#   * post-commit-ordering — the invite/approve mirror runs only AFTER its
+#     `_tenant_session` commits (moved OUT of `provision_member`), so a rolled-
+#     back caller txn commits NO active shadow orphan;
+#   * purge-removes-shadow (shape) — a member purge deletes the org's membership
+#     unconditionally and the GLOBAL `user_identity` only when it was the LAST
+#     membership (the R8 proof is `TestThePurgeClosure` below);
+#   * constant-equality — the identity-write SQL is byte-identical to
+#     `console_resolve`'s (a TEST importing it does not trip that module's
+#     PRODUCTION importer cap — `test_console_dependency_boundary` sweeps
+#     `packages/` + `apps/`, never `tests/`).
+
+
+def _tenant_block_end(lines: list[str], with_idx: int, with_indent: int) -> int:
+    """Index of the first non-blank line dedented back OUT of the
+    `_tenant_session` block opened at ``with_idx`` — i.e. where the block (and
+    its single commit) ends. ``len(lines)`` if it never dedents."""
+    for i in range(with_idx + 1, len(lines)):
+        if not lines[i].strip():
+            continue
+        if (len(lines[i]) - len(lines[i].lstrip())) <= with_indent:
+            return i
+    return len(lines)
+
+
+def _all_calls_are_post_commit(src: str, call: str) -> bool:
+    """Every occurrence of ``call`` sits AFTER the one `_tenant_session` block
+    ends — never inside the still-open transaction."""
+    lines = src.splitlines()
+    with_lines = [
+        i for i, ln in enumerate(lines) if "async with _tenant_session()" in ln
+    ]
+    assert len(with_lines) == 1, (
+        f"expected exactly one _tenant_session block; found {len(with_lines)}"
+    )
+    with_idx = with_lines[0]
+    with_indent = len(lines[with_idx]) - len(lines[with_idx].lstrip())
+    end_idx = _tenant_block_end(lines, with_idx, with_indent)
+    hits = [i for i, ln in enumerate(lines) if call in ln]
+    assert hits, f"{call} is not called at all"
+    return all(i >= end_idx for i in hits)
+
+
+class TestTheOrphanClosure:
+    """The ratchet for the orphan-closure slice — no database required."""
+
+    def test_provision_member_does_not_mirror_inside_its_transaction(self):
+        """The SOURCE of the APPROVE-ROLLBACK + create-only over-count orphans:
+        the mirror used to commit on its OWN session INSIDE the caller's
+        still-open txn, so a concurrent-approve 409 (`access_requests._decide`)
+        rolled back `app_user` while the shadow stayed. `provision_member` must
+        now name NEITHER mirror — its callers own the mirror, post-commit."""
+        from gateway.routes.admin._common import provision_member
+
+        src = inspect.getsource(provision_member)
+        assert "mirror_identity_membership(" not in src, (
+            "provision_member still mirrors inside the caller's transaction"
+        )
+        assert "mirror_membership_status(" not in src, (
+            "provision_member still mirrors inside the caller's transaction"
+        )
+
+    def test_invite_mirrors_only_after_its_tenant_session_commits(self):
+        """`members.invite_member` calls both mirrors, and every call is AFTER
+        its `_tenant_session` block — so a rolled-back invite commits no
+        shadow."""
+        from gateway.routes.admin.members import invite_member
+
+        src = inspect.getsource(invite_member)
+        assert _all_calls_are_post_commit(src, "mirror_identity_membership(")
+        assert _all_calls_are_post_commit(src, "mirror_membership_status(")
+
+    def test_approve_mirrors_only_after_its_tenant_session_commits(self):
+        """`access_requests.approve_access_request` mirrors only post-commit —
+        the concurrent-approve 409 in `_decide` (and the `status != active`
+        guard) rolls the whole block back BEFORE this point, so no active shadow
+        orphan is ever committed. This IS the fence for acceptance's
+        'the mirror is NOT called until after the authoritative commit'."""
+        from gateway.routes.admin.access_requests import approve_access_request
+
+        src = inspect.getsource(approve_access_request)
+        assert _all_calls_are_post_commit(src, "mirror_identity_membership(")
+        assert _all_calls_are_post_commit(src, "mirror_membership_status(")
+
+    def test_purge_deletes_the_shadow_after_its_transaction_commits(self):
+        """`members.purge_member` closes the PURGE orphan, and does so AFTER the
+        irreversible purge committed — a failed shadow delete cannot roll it
+        back (best-effort, own session)."""
+        from gateway.routes.admin.members import purge_member
+
+        src = inspect.getsource(purge_member)
+        assert _all_calls_are_post_commit(src, "purge_identity_shadow(")
+
+    def test_the_purge_membership_delete_is_scoped_to_one_org(self):
+        """It deletes at most THIS org's membership for the identity — never
+        another org's row for the same human — resolving the identity by
+        `lower(email)` (162's functional index; R10)."""
+        sql = _PURGE_MEMBERSHIP_SQL
+        assert sql.strip().upper().startswith("DELETE FROM ORG_MEMBERSHIP"), (
+            "the membership purge is not a DELETE on org_membership"
+        )
+        assert re.search(
+            r"organization_id\s*=\s*CAST\(:org", sql, re.IGNORECASE
+        ), (
+            "the membership purge is not scoped to one organization — it would "
+            "delete the identity's membership in EVERY org"
+        )
+        assert re.search(
+            r"lower\(ui\.email\)\s*=\s*lower\(:email\)", sql, re.IGNORECASE
+        ), "the identity is not resolved by lower(email)"
+        assert "app_user" not in sql, (
+            "the shadow purge names app_user — it must touch only the shadow"
+        )
+
+    def test_the_identity_purge_is_conditional_on_the_last_membership(self):
+        """The mirror image of the create-only insert: `user_identity` is GLOBAL
+        and cross-org, so it is deleted ONLY when no membership remains — a human
+        still in ANOTHER org keeps it. The `NOT EXISTS` guard is that rule."""
+        sql = _PURGE_IDENTITY_IF_ORPHAN_SQL
+        assert sql.strip().upper().startswith("DELETE FROM USER_IDENTITY"), (
+            "the identity purge is not a DELETE on user_identity"
+        )
+        assert re.search(
+            r"NOT\s+EXISTS\s*\([\s\S]*org_membership", sql, re.IGNORECASE
+        ), (
+            "the identity purge has no `NOT EXISTS org_membership` guard — it "
+            "would erase a human still a member of another org"
+        )
+        assert "app_user" not in sql, "the shadow purge names app_user"
+
+    def test_the_purge_shadow_is_best_effort(self):
+        """Mirrors `mirror_identity_membership`: catches and never re-raises, so
+        a failed shadow delete can never roll back the irreversible purge."""
+        src = inspect.getsource(purge_identity_shadow)
+        assert "except Exception" in src, "the purge shadow does not swallow errors"
+        assert not re.search(r"\braise\b", src), (
+            "the purge shadow re-raises — it must be best-effort/log-and-continue"
+        )
+
+    def test_the_identity_write_sql_is_pinned_equal_to_the_console_upserts(self):
+        """§H6 cutover-checklist item 4: the two identity/org SQL constants are
+        byte-identical to `console_resolve`'s and MUST stay so — a silent drift
+        would split the tenant-plane identity write from the Console projection's
+        upsert. A module-level import is blocked by
+        `test_console_dependency_boundary`'s PRODUCTION importer cap, but that
+        sweep never reads `tests/`, so pinning the equality from HERE is the
+        alternative that spec §H6 names to lifting them to a shared module."""
+        from acb_auth.console_resolve import (
+            _ORG_BY_SLUG_SQL,
+            _UPSERT_IDENTITY_SQL,
+        )
+
+        assert _MIRROR_IDENTITY_SQL == _UPSERT_IDENTITY_SQL, (
+            "the identity mirror upsert drifted from console_resolve's"
+        )
+        assert _MIRROR_ORG_BY_SLUG_SQL == _ORG_BY_SLUG_SQL, (
+            "the org-by-slug read drifted from console_resolve's"
+        )
+
+
 # ── The R8 half: the dual-write + backfill against the replayed ladder ───────
 
 @pytest.fixture(scope="module")
@@ -441,6 +607,20 @@ def _run_reconcile(conn) -> int:
     with conn.connection.dbapi_connection.cursor() as cur:
         cur.execute(sql)
         return cur.rowcount
+
+
+def _purge_membership(conn, org: str, email: str) -> int:
+    """Drive ``_PURGE_MEMBERSHIP_SQL`` and return the rows it removed."""
+    return conn.execute(
+        text(_PURGE_MEMBERSHIP_SQL), {"org": org, "email": email}
+    ).rowcount
+
+
+def _purge_identity_if_orphan(conn, email: str) -> int:
+    """Drive ``_PURGE_IDENTITY_IF_ORPHAN_SQL`` and return the rows it removed."""
+    return conn.execute(
+        text(_PURGE_IDENTITY_IF_ORPHAN_SQL), {"email": email}
+    ).rowcount
 
 
 @_DB_GATE
@@ -761,6 +941,98 @@ class TestTheStatusReconcile:
         assert _membership_orgs(conn, uid) == sorted([org_a, org_b])
 
 
+@_DB_GATE
+class TestThePurgeClosure:
+    """WS-29 H6 orphan-closure (D48) — a member PURGE removes the identity shadow
+    at the SOURCE, against real Postgres (the ``purge-removes-shadow`` fence).
+
+    The mirror image of the create-only insert: the org's ``org_membership`` row
+    goes UNCONDITIONALLY (so no ACTIVE shadow orphan survives a purge, which
+    reconcile 183 could never fix — it joins the now-deleted ``app_user``), while
+    the GLOBAL ``user_identity`` goes ONLY when it was the human's LAST membership.
+    """
+
+    def test_purging_an_active_member_removes_the_org_membership_shadow(self, conn):
+        org = _new_org(conn, "h6-purge-active")
+        email = "purge.me@h6.example"
+        uid = _mirror_identity(conn, email)
+        _mirror_membership(conn, org, uid, status="active")
+        assert _membership_for_org(conn, org) == 1
+
+        assert _purge_membership(conn, org, email) == 1, (
+            "the purge did not remove the org's org_membership row"
+        )
+        assert _membership_for_org(conn, org) == 0, (
+            "an ACTIVE shadow orphan survived the purge — the read cutover would "
+            "wrong-ADMIT it"
+        )
+
+    def test_the_identity_is_removed_when_it_was_the_last_membership(self, conn):
+        org = _new_org(conn, "h6-purge-last")
+        email = "last.member@h6.example"
+        uid = _mirror_identity(conn, email)
+        _mirror_membership(conn, org, uid, status="active")
+
+        _purge_membership(conn, org, email)
+        assert _purge_identity_if_orphan(conn, email) == 1, (
+            "the GLOBAL identity was not removed after its last membership went"
+        )
+        assert _identity_count(conn, email) == 0
+
+    def test_the_identity_is_kept_when_another_org_still_has_the_member(self, conn):
+        """`user_identity` is GLOBAL/cross-org — a purge in one tenant must NEVER
+        erase a human another tenant still employs (the inverse of the invite
+        path's account-takeover primitive)."""
+        org_a = _new_org(conn, "h6-purge-keep-a")
+        org_b = _new_org(conn, "h6-purge-keep-b")
+        email = "two.orgs@h6.example"
+        uid = _mirror_identity(conn, email)
+        _mirror_membership(conn, org_a, uid, status="active")
+        _mirror_membership(conn, org_b, uid, status="active")
+
+        # Purge from org A only.
+        assert _purge_membership(conn, org_a, email) == 1
+        # The identity is NOT an orphan — org B still holds it — so it is kept.
+        assert _purge_identity_if_orphan(conn, email) == 0, (
+            "the identity was deleted while another org still had the member"
+        )
+        assert _identity_count(conn, email) == 1
+        # Org A's membership is gone; org B's is untouched and the human still
+        # belongs to org B alone.
+        assert _membership_for_org(conn, org_a) == 0
+        assert _membership_for_org(conn, org_b) == 1
+        assert _membership_orgs(conn, uid) == [org_b]
+
+    def test_the_purge_never_touches_another_orgs_membership(self, conn):
+        """Scoped to `(org, identity)`: a purge in org A leaves the SAME human's
+        org-B membership byte-unchanged, status and all."""
+        org_a = _new_org(conn, "h6-purge-scope-a")
+        org_b = _new_org(conn, "h6-purge-scope-b")
+        email = "scoped@h6.example"
+        uid = _mirror_identity(conn, email)
+        _mirror_membership(conn, org_a, uid, status="active")
+        _mirror_membership(conn, org_b, uid, status="suspended")
+
+        _purge_membership(conn, org_a, email)
+        assert _membership_status(conn, org_b, uid) == "suspended", (
+            "the purge changed the identity's membership in another org"
+        )
+
+    def test_the_purge_is_idempotent(self, conn):
+        """A second purge of an already-purged member removes nothing and does
+        not raise (R6) — the closure never leaves a half-state to trip over."""
+        org = _new_org(conn, "h6-purge-idem")
+        email = "idem.purge@h6.example"
+        uid = _mirror_identity(conn, email)
+        _mirror_membership(conn, org, uid, status="active")
+
+        assert _purge_membership(conn, org, email) == 1
+        assert _purge_identity_if_orphan(conn, email) == 1
+        # Re-run: nothing left, no error, zero rows.
+        assert _purge_membership(conn, org, email) == 0
+        assert _purge_identity_if_orphan(conn, email) == 0
+
+
 # ── The R8 half, through the mirror's OWN call path (tenant_engine_scope) ─────
 #
 # The class above proves the SQL; this proves ``mirror_identity_membership``
@@ -848,4 +1120,66 @@ class TestTheMirrorThroughItsOwnCallPath:
             # No org named at all — nothing to write, no raise.
             assert await mirror_identity_membership(
                 email=f"ghost2-{uuid.uuid4().hex[:8]}@h6.example",
+            ) is None
+
+    async def test_purge_identity_shadow_removes_both_tables_through_its_path(self):
+        """`purge_identity_shadow` wires the two purge statements correctly:
+        it removes the org's membership and, this being the last one, the
+        identity too — then commits, on its own session."""
+        from acb_common.db import get_session_factory
+
+        slug = f"h6-purgepath-{uuid.uuid4().hex[:8]}"
+        email = f"purgepath-{uuid.uuid4().hex[:8]}@h6.example"
+
+        async with tenant_engine_scope(_URL):
+            factory = get_session_factory()
+            async with factory() as session:
+                org_id = str(
+                    (
+                        await session.execute(
+                            text(
+                                "INSERT INTO organization (slug, display_name) "
+                                "VALUES (:s, :s) RETURNING id"
+                            ),
+                            {"s": slug},
+                        )
+                    ).scalar_one()
+                )
+                await session.commit()
+            try:
+                await mirror_identity_membership(
+                    email=email, display_name="Purge Path",
+                    org_id=org_id, status="active",
+                )
+                ident, memberships = await self._read_back(factory, email)
+                assert ident is not None and memberships == 1
+
+                await purge_identity_shadow(email=email, org_id=org_id)
+                ident2, memberships2 = await self._read_back(factory, email)
+                assert memberships2 == 0, "the membership shadow survived the purge"
+                assert ident2 is None, (
+                    "the last-membership identity survived the purge"
+                )
+            finally:
+                async with factory() as session:
+                    await session.execute(
+                        text("DELETE FROM organization WHERE slug = :s"),
+                        {"s": slug},
+                    )
+                    await session.execute(
+                        text("DELETE FROM user_identity WHERE lower(email) = lower(:e)"),
+                        {"e": email},
+                    )
+                    await session.commit()
+
+    async def test_purge_identity_shadow_never_raises(self):
+        """Best-effort: a blank email is a quiet no-op, and a purge against a
+        shadow that does not exist returns None without raising."""
+        async with tenant_engine_scope(_URL):
+            assert await purge_identity_shadow(
+                email="", org_id=str(uuid.uuid4()),
+            ) is None
+            assert await purge_identity_shadow(
+                email=f"ghost-{uuid.uuid4().hex[:8]}@h6.example",
+                org_id=str(uuid.uuid4()),
             ) is None

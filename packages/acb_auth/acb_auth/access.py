@@ -463,6 +463,91 @@ async def mirror_membership_status(
         )
 
 
+# ── Identity shadow: PURGE closure (WS-29 H6 orphan-closure, D48) — DARK ──────
+#
+# The mirror image of `mirror_identity_membership`. A member PURGE
+# (`gateway/routes/admin/members.purge_member`) deletes the authoritative
+# `app_user` row and every credential/grant, but the create-only slice-1 mirror
+# never removed the RLS-EXEMPT shadow — so a purged ACTIVE member left an active
+# `org_membership` ORPHAN (identity present, no `app_user`). While dark that is
+# harmless (nothing reads `org_membership.status`), but the moment the H6 read
+# cutover stops gating on `app_user` that orphan is a wrong-ADMIT, and reconcile
+# 183 CANNOT fix it (it joins `app_user`, which is gone). This closes it at the
+# SOURCE: purge deletes the org's membership row, and the GLOBAL `user_identity`
+# row too — but ONLY when it was the human's LAST membership. `user_identity` is
+# a cross-org record, so it must survive while any OTHER org still has the human
+# as a member; deleting it unconditionally would be the account-takeover
+# primitive's inverse (erasing a human from tenants that never purged them).
+
+#: Delete THIS org's membership for the identity resolved by `lower(email)`
+#: (162's functional index; R10). Scoped to `(org, identity)` — it removes at
+#: most the one row and never another org's membership for the same human.
+_PURGE_MEMBERSHIP_SQL = """
+    DELETE FROM org_membership m
+     USING user_identity ui
+     WHERE m.user_id = ui.id
+       AND lower(ui.email) = lower(:email)
+       AND m.organization_id = CAST(:org AS UUID)
+"""
+
+#: Delete the GLOBAL identity ONLY when no membership remains — the mirror image
+#: of the create-only insert. A human still a member of ANOTHER org keeps their
+#: `user_identity` row (and, via ON DELETE CASCADE, all its memberships), so a
+#: purge in one tenant never erases them from another. The `NOT EXISTS` is
+#: evaluated AFTER the membership delete above, in the same session.
+_PURGE_IDENTITY_IF_ORPHAN_SQL = """
+    DELETE FROM user_identity ui
+     WHERE lower(ui.email) = lower(:email)
+       AND NOT EXISTS (
+           SELECT 1 FROM org_membership m WHERE m.user_id = ui.id
+       )
+"""
+
+
+async def purge_identity_shadow(*, email: str, org_id: str) -> None:
+    """Remove the identity shadow for a member being PURGED from ``org_id``.
+
+    WS-29 H6 orphan-closure (D48), DARK. The mirror image of
+    :func:`mirror_identity_membership`: where provisioning create-only-INSERTs
+    the shadow, a purge deletes it — the org's ``org_membership`` row
+    unconditionally, and the GLOBAL ``user_identity`` row ONLY when it was the
+    human's LAST membership. ``user_identity`` is a cross-org record, so it is
+    kept while any other org still has the human as a member (§H6); erasing it
+    unconditionally would delete a human from tenants that never purged them.
+
+    Best-effort, and **never raises, never changes the caller's answer** — the
+    exact posture of :func:`mirror_identity_membership` /
+    :func:`mirror_membership_status`, and for the same reason: ``app_user`` is
+    authoritative and the purge transaction must be untouched by a shadow write.
+    It opens its OWN short session AFTER the authoritative purge has committed,
+    so a failed shadow delete cannot poison (or roll back) the irreversible
+    purge; the shadow tables are RLS-EXEMPT, so no tenant bind is needed. A
+    failure leaves the row for migration 182/183's idempotent reconcile — but
+    the P0 it closes is the ACTIVE orphan the read cutover would wrong-ADMIT, so
+    a failed delete is logged loudly.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email or not org_id:
+        return
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            await session.execute(
+                text(_PURGE_MEMBERSHIP_SQL),
+                {"email": email, "org": str(org_id)},
+            )
+            await session.execute(
+                text(_PURGE_IDENTITY_IF_ORPHAN_SQL), {"email": email},
+            )
+            await session.commit()
+    except Exception as exc:
+        _log.warning(
+            "identity_shadow_purge_failed", email=email, error=str(exc)[:200],
+        )
+
+
 async def resolve_access(
     email: str | None,
     *,

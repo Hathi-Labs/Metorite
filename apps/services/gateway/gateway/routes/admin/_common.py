@@ -44,10 +44,10 @@ from acb_auth import (
     permission_matches,
 )
 
-# WS-29 H6 slice 1: the identity-shadow dual-write. Imported from `acb_auth.access`
-# (NOT `console_resolve`, whose importer set is capped by a farmable-seat fence);
-# `provision_member` calls it after the authoritative `app_user` write.
-from acb_auth.access import mirror_identity_membership, mirror_membership_status
+# WS-29 H6 (DARK): the identity-shadow mirror lives in `acb_auth.access` (NOT
+# `console_resolve`, whose importer set is capped by a farmable-seat fence). It is
+# imported and called by `provision_member`'s CALLERS post-commit, never here — see
+# the note in `provision_member` for why the mirror moved out of this transaction.
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -769,28 +769,18 @@ async def provision_member(
     member = await get_member(db, org_id, email)
     await set_roles(db, member["id"], role_ids, admin.email)
 
-    # H6 slice 1 (WS-29, DARK): keep the RLS-EXEMPT identity shadow current.
-    # `get_member` above proves the authoritative `app_user` row exists in THIS
-    # tenant, so the mirror is a create-only INSERT into `org_membership` that
-    # never moves an identity between orgs (§H6:672-674). Best-effort and on its
-    # OWN session — it moves no read and cannot change the `app_user` write,
-    # which stays byte-identical. See `acb_auth.access.mirror_identity_membership`.
-    await mirror_identity_membership(
-        email=member["email"],
-        display_name=member.get("display_name") or "",
-        org_id=org_id,
-        status=member["status"],
-    )
-    # H6 slice 3a (WS-29, DARK, D48): the create-only mirror above only ensures
-    # the row EXISTS. Approving an already-`invited` member transitions
-    # invited→active on `app_user` (`_PROVISION_MEMBER_SQL`), which
-    # `ON CONFLICT DO NOTHING` would NOT propagate — so mirror the final status
-    # FORWARD too. A scoped UPDATE that never moves an identity; a no-op for a
-    # brand-new invite whose row was just created at the same status. Best-effort,
-    # own session. See `acb_auth.access.mirror_membership_status`.
-    await mirror_membership_status(
-        email=member["email"], org_id=org_id, status=member["status"],
-    )
+    # ⚠️ The RLS-EXEMPT identity-shadow mirror is deliberately NOT called here.
+    # It is the CALLER's responsibility, AFTER its `_tenant_session` has
+    # committed — the same post-commit posture `members.update_member` /
+    # `remove_member` already use, and the fix for the WS-29 H6 orphan-closure
+    # slice: mirroring inside this still-open transaction committed the shadow on
+    # its own session while the authoritative `app_user` write could still roll
+    # back (a concurrent-approve 409 in `access_requests._decide`), leaving an
+    # active shadow ORPHAN. Both callers (`members.invite_member`,
+    # `access_requests.approve_access_request`) now call
+    # `mirror_identity_membership` + `mirror_membership_status` once their commit
+    # is durable — so the shadow only ever mirrors an `app_user` write that
+    # actually landed. See `acb_auth.access` and §H6.
     return member, [slug for _rid, slug in role_ids]
 
 

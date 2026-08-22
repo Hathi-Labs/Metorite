@@ -50,6 +50,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, is_company_email, require_permission
+from acb_auth.access import mirror_identity_membership, mirror_membership_status
 from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
     _iso,
@@ -421,6 +422,7 @@ async def approve_access_request(
         disposition = _disposition_for(existing)   # 409s on suspended/removed
 
         detail = ""
+        provisioned = False
         if existing is not None and disposition == "already-a-member":
             # Nothing to provision and — the point — nothing to re-grant:
             # `set_roles` REPLACES assignments, and roles are governed by
@@ -442,6 +444,7 @@ async def approve_access_request(
                 admin=admin,
                 status="active",
             )
+            provisioned = True
 
         # Verify; do not predict. `_disposition_for` read `app_user` BEFORE
         # the upsert, and `_PROVISION_MEMBER_SQL`'s CASE arms are re-evaluated
@@ -474,6 +477,27 @@ async def approve_access_request(
                       allowed_statuses=("pending",))
         roles = await roles_for_user(db, member["id"])
         status = member["status"]
+
+    # H6 (WS-29, DARK, D48): mirror the identity shadow AFTER the authoritative
+    # `app_user` write is durably committed — moved OUT of `provision_member`
+    # (WS-29 H6 orphan-closure) so the shadow only ever mirrors a write that
+    # actually landed. This is the case the move exists for: a concurrent-approve
+    # 409 in `_decide` (or the `member["status"] != "active"` guard above) rolls
+    # back the whole `_tenant_session` BEFORE this point, so the mirror never runs
+    # and no active shadow orphan is committed. Only when provisioning actually
+    # happened — the `already-a-member` path wrote no `app_user` row, so it mirrors
+    # nothing (byte-identical to the pre-move behaviour). Best-effort, own session,
+    # moves no read, `app_user` byte-identical. See `acb_auth.access`.
+    if provisioned:
+        await mirror_identity_membership(
+            email=member["email"],
+            display_name=member.get("display_name") or "",
+            org_id=org_id,
+            status=member["status"],
+        )
+        await mirror_membership_status(
+            email=member["email"], org_id=org_id, status=member["status"],
+        )
 
     # Their refusal is cached for up to 60s; without this they would be
     # approved and still bounced, which reads as the approval not working.
