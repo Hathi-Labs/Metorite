@@ -67,6 +67,17 @@ restart services. So:
 3. Verify: services `active`; `api.metorite.com/health` = 200; the four migrations show in the
    ledger.
 
+## ⛔ Phase 1 BLOCKER discovered 2026-08-23 — background writers not tenant-bound
+A staged live attempt (backup → `acb_app` grants → `01→03` → switch `DATABASE_URL`+`IDENTITY_CUTOVER`)
+was **rolled back at Checkpoint A** (before `04`, no data loss). `01` gives every scoped table
+`organization_id UUID DEFAULT current_setting('app.tenant_id', true)::uuid` + `03` NOT NULL, so any
+DB write running **without** an `app.tenant_id` binding fails. The **email-sync** and **CRM-Zoho-sync**
+background jobs (assumed "deferred/dormant" but actually **live**) broke immediately. H4 was scoped
+to tasks/calendar/Projects only — that scope was too narrow. **Before the cliff: audit EVERY
+background/startup writer and bind it to `tenant_session(org)` per-org, or disable it for launch.**
+Also: the gateway connects as the **superuser `acb`** — the cliff also requires repointing
+`DATABASE_URL` at the non-priv `acb_app` role (done+reverted in the attempt).
+
 ## Phase 1 — H3 RLS promotion  ·  gate: OWNER (maintenance window; see handover §H3.1)
 1. Create the non-privileged `acb_app` role (NOSUPERUSER … NOBYPASSRLS); point gateway +
    background services at it. Migrations keep running as the owner.
