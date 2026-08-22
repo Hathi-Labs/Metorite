@@ -8,6 +8,7 @@ import {
   readConsoleEnv,
   listOrganizations,
   billingSummary,
+  provisionOrg,
   ConsoleUnconfigured,
   type FetchLike,
 } from "./console";
@@ -86,6 +87,47 @@ describe("the operator token is server-side and fails closed", () => {
       body: { org_slug: "s" },
     }, { env: readConsoleEnv(ENV), fetchImpl });
     expect(r.status).toBe(409);
+  });
+});
+
+// ── provisionOrg: create-a-customer relays the Console's answer verbatim ─────
+
+describe("provisionOrg forwards to /orgs/provision and relays verbatim", () => {
+  const body = {
+    slug: "acme",
+    name: "Acme Inc",
+    owner_email: "owner@acme.test",
+    deployment_label: "gateway",
+    core_seats: 1,
+  };
+
+  it("POSTs the body to /orgs/provision with the token ONLY in the header", async () => {
+    const { calls, fetchImpl } = captureFetch({
+      status: 200,
+      body: '{"slug":"acme"}',
+    });
+    const r = await provisionOrg(body, { env: readConsoleEnv(ENV), fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://console.internal/orgs/provision");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.body).toBe(JSON.stringify(body));
+    expect(calls[0].init.headers.Authorization).toBe("Bearer op-secret-token");
+    // The token is on the OUTGOING request only, never in the relayed body.
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"slug":"acme"}');
+    expect(r.body).not.toContain("op-secret-token");
+  });
+
+  it.each([
+    [400, "deployment_label is required under the operator scheme"],
+    [404, "no deployment 'nope'"],
+    [409, "'acme' is already placed on another deployment"],
+  ])("relays the Console's %i refusal unchanged", async (status, detail) => {
+    const consoleBody = JSON.stringify({ detail });
+    const { fetchImpl } = captureFetch({ status, body: consoleBody });
+    const r = await provisionOrg(body, { env: readConsoleEnv(ENV), fetchImpl });
+    expect(r.status).toBe(status);
+    expect(r.body).toBe(consoleBody);
   });
 });
 

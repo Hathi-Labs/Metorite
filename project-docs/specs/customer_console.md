@@ -16,7 +16,11 @@ self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
 owner-gated) · CP-6
-mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
+mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
+Operator Console — slice 1 the live customer-management surface, slice 2
+provision-a-new-customer create-only; a SEPARATE Next.js app
+`workbench/operator_console/`, DARK; deploy + operator-token env + staff Entra
+owner-gated) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
 (the seam, the order state machine, integer paise, the one `fulfil`),
@@ -1303,6 +1307,37 @@ workbench can reach a cross-org read.
 > slice, with the reconciliation queue and invoice rendering. The management MVP
 > (list every customer; activate a subscription, allocate seats, grant AI
 > credits, suspend/resume) is the whole of slice 1.
+
+> **Slice 2 — provision a new customer (create-only) — BUILT 2026-08-22
+> (`cp-8-provision-customer`, DARK).** A "New customer" CTA + form on the
+> operator console's customers list (`workbench/operator_console/`) creates an
+> organization through the Console's **operator** provision arm. A NEW BFF route
+> `POST /api/operator/provision` MIRRORS `/api/operator/activate` exactly: it
+> gates on staff (`gateStaff` via `proxyToConsole`) and relays the Console `POST
+> /orgs/provision` status + JSON **verbatim**, through the same server-side
+> Console client (`provisionOrg` in `src/lib/console.ts`) that holds the operator
+> token. Body: `{slug, name, owner_email, deployment_label, gstin?,
+> billing_state?, core_seats}`. `deployment_label` is **operator-named, never
+> inferred and never hardcoded** (D46.6 items 1 & 3): the field is editable
+> free-text, prefilled from a new server env
+> `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` (the box's value is `gateway`) and
+> required client-side; a wrong label is the Console's relayed **404**.
+> Create-only by design — activate / seats / lifecycle already live on the
+> customer-detail Actions, and a two-call provision+activate wizard has a
+> half-provisioned failure mode. **Done when:** ✅ the BFF relays the Console's
+> **200 / 400** (missing `deployment_label` under the operator scheme) **/ 404**
+> (unknown label) **/ 409** (already placed on another deployment) unchanged to
+> the operator; ✅ the operator token appears ONLY on the outgoing Console
+> request, never in a browser response (the source-scan fence in
+> `src/lib/console.test.ts`); ✅ the route is behind `gateStaff()` (unconfigured
+> → 503, non-staff → 401) like every `/api/operator/*` route; ✅ after a 200 the
+> new org appears in `GET /orgs`. `npm run typecheck` · `typecheck:lib` · `test`
+> green — the verbatim-relay + token-not-bundled vitest fences. The Console
+> provision contract itself is already R8-proven
+> (`tests/unit/test_org_provisioning.py` et al.), so no new Python. 🔴
+> **OWNER-GATE go-live:** deploy the app · set the operator-token env · set
+> `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` on the box · provision a REAL
+> customer through the finished UI.
 
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
