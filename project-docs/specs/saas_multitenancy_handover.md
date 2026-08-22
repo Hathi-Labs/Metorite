@@ -661,7 +661,7 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING SHIPPED (dark)
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING+PROVISION-RLS-BIND SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
@@ -986,7 +986,7 @@ cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4
   function bootstraps under FORCE RLS as `acb_app`, unbound at entry; bound GREEN / unbound RED at
   the SQL level).
 
-### H6 PRE-FLIP RLS-BINDING CHECKLIST · ◐ 3 fixes SHIPPED (dark) 2026-08-22 · 3 OWNER-DECISION items + the H4 dependency OPEN
+### H6 PRE-FLIP RLS-BINDING CHECKLIST · ◐ 4 fixes SHIPPED (dark) 2026-08-22 · 2 OWNER-DECISION items + the H4 dependency OPEN
 
 The systematic RLS-binding audit that this checklist records asked one question of
 every site that touches an RLS-FORCED table: *does it run on a session with
@@ -1020,26 +1020,39 @@ no-ops until phase-4 is live).**
    pins every direct factory open in `apps/`+`packages/` to a reviewed per-file
    count (`_FACTORY_OPEN_ALLOW`), so a new unreviewed one goes RED. This is what
    stops the whole class recurring silently.
+4. **New-org provisioning writes** (was OWNER-DECISION (b)1; FIXED 2026-08-22, WS-29
+   `ws-29-provision-rls-bind`) — `provision_organization` creates the `organization`
+   row + `tenant_placement` (both RLS-EXEMPT — they land unbound), so the org
+   **exists** before the create act's FORCE-RLS'd writes (`org_role_permission` via
+   `provision_org_roles`; `app_user` + `user_role` via `provision_org_owner`). The
+   earlier "no tenant to bind yet / the GUC would be the org that does not exist"
+   framing was wrong: the org id is known the moment the exempt row lands.
+   **Migration 185** (`185_provision_org_rls_bind.sql`; highest was 184, re-check at
+   merge per R1) CREATE OR REPLACEs `provision_organization` forward-only (R6;
+   179/180 byte-untouched) to `PERFORM set_config('app.tenant_id', v_org_id::text,
+   true)` right after the org id is known and BEFORE the forced writes — the ONE GUC
+   seam (`SET LOCAL`, transaction-scoped, propagates into the PERFORMed
+   sub-functions), so the create act's own writes satisfy the policy. **SECURITY
+   INVOKER preserved** (no privilege escalation, no DEFINER outliving its reason —
+   `SET LOCAL` was preferred over SECURITY DEFINER exactly as 179's "REVISIT AT H3"
+   note anticipated). The `provisioning.py` factory opens stay allow-listed in
+   `_FACTORY_OPEN_ALLOW` (the Python still opens an unbound session; the SQL binds
+   inside the act). Fence: `test_h3_rls_promotion_rehearsal.py::
+   TestProvisionOrgBindUnderForceRls` (R7 `provision-under-force-rls`; R8, non-priv
+   `acb_app` on the phase-4 catalog — GREEN the real 185 provisions unbound; RED the
+   no-set_config mutation is refused with a row-level-security violation; the owner
+   app_user/user_role write bound-GREEN/unbound-RED; 180's create-only guard still
+   holds under the bind). 🔴 EXECUTING a real customer provision stays OWNER-GATE.
 
 **(b) OWNER-DECISION — NOT fixed here (each needs an owner act; all stay 🔴):**
-1. **New-org provisioning writes** — `acb_common/provisioning.py`
-   (`provision_local_organization` → the tenant-plane `provision_org_owner` /
-   `provision_org_roles` SQL, `179`/`180`) INSERT the owner + roles into
-   FORCE-RLS'd `app_user`/`user_role`/`org_role` **while the org is being
-   created**, so there is no tenant to bind yet (the GUC would be the org that
-   does not exist). Un-bricking these needs a **migration or a SECURITY DEFINER
-   callable** that stamps/bypasses inside the create act — the SECURITY-INVOKER
-   posture migration 179's header flagged as "REVISIT AT H3". Allow-listed by name
-   in `_FACTORY_OPEN_ALLOW` so the ratchet does not go red on them, but they are
-   an owner call, not agent-safe.
-2. **`access_request`** — FORCE-RLS'd (`generated/04_policies.sql`), but its
+1. **`access_request`** — FORCE-RLS'd (`generated/04_policies.sql`), but its
    writers are **tenant-less by construction**: a sign-in request
    (`_record_signin_request`) is filed for an UNPROVISIONED email, before any
    tenant is known, so nothing can bind. Decision owed: **add `access_request` to
    `gen_tenant_migration.EXEMPT`** (it is control-plane-ish — a queue of people
    who are not yet members) **or** give it a deliberate tenant column + a bound
    writer. Until decided, its writes refuse under phase-4.
-3. **`reconcile_orphaned_runs`** (`routes/workflows/service.py:628`, `_get_db()`
+2. **`reconcile_orphaned_runs`** (`routes/workflows/service.py:628`, `_get_db()`
    at `:640`) — a CROSS-TENANT startup sweep: `UPDATE workflow_runs SET
    status='failed' WHERE status='running'` over EVERY org's rows. `workflow_runs`
    is FORCE-RLS'd, so unbound under phase-4 it updates 0 rows and dead runs never
