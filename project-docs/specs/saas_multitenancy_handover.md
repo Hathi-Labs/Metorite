@@ -431,7 +431,8 @@ and claims (b) + the two-org fixture pass on scratch.
 > **What passed (evidence, real DB, never skipped):**
 > - **Two-org isolation + WITH-CHECK + fail-closed** (MT-1i's owed fixture) —
 >   `TENANT_LADDER_DATABASE_URL=… uv run pytest
->   tests/unit/test_h3_rls_promotion_rehearsal.py -v -rs` → **10 passed**.
+>   tests/unit/test_h3_rls_promotion_rehearsal.py -v -rs` → **12 passed**
+>   (10 DB-backed on real Postgres + 2 always-on structural arm-checks; 0 skipped).
 >   Bound to org A: sees its 2 `apps` rows, 0 of org B's; org B sees its 3;
 >   **unbound → 0 rows** (fail-closed); an A-bound INSERT stamped org B is
 >   refused (`new row violates row-level security policy`); the phase-1 DEFAULT
@@ -477,13 +478,23 @@ restore) — so every step below is rehearsed on a scratch restore of the
    `apps/services/gateway/gateway/main.py` `TenantScopeMiddleware`, filled from
    the authenticated session by `acb_auth`). No bind ⇒ the GUC is NULL ⇒ zero
    rows (fail-closed). This is what H2 makes true for all 561 sites.
-3. **Apply the phases, by hand, in order**, from `infra/postgres/generated/`:
+3. **Apply the SAFE phases, by hand, in order**, from `infra/postgres/generated/`:
    `01_add_columns.sql` (nullable ADD COLUMN — safe live) → `02_backfill.sql`
    (batched, re-runnable — the slow one) → `03_constraints.sql` (**ACCESS
    EXCLUSIVE**, scans each table — window; table-by-table if needed; never behind
-   a long transaction) → `04_policies.sql` (**the cliff** — instant; the moment
-   any unbound connection reads zero rows).
-4. **Verification queries** (as `acb_app`, against the promoted catalog):
+   a long transaction). **STOP after phase 3. Do NOT apply `04_policies.sql` yet.**
+4. **🚨 PHASE-4 GATE — the whole point of this rehearsal. Do NOT proceed to
+   step 5 until BOTH are true:** (a) H2 is complete and verified in production
+   (step 2), and (b) the app_user brick fix in **§H3.2 is ratified and enacted**
+   — either the app_user carve-out is in the generator, OR H6's identity cutover
+   has landed. **As generated today, phase 4 bricks sign-in for every user** (an
+   unbound `app_user` read returns zero rows → identity resolution fails; see the
+   REHEARSAL RESULT above). If either condition is unmet, you are not ready —
+   stop here.
+5. **Apply the cliff — ONLY after step 4 is cleared:** `04_policies.sql`
+   (**the cliff** — instant; the moment it applies, any unbound connection reads
+   zero rows). This is irreversible except by the phase-4 rollback in step 7.
+6. **Verification queries** (as `acb_app`, against the promoted catalog):
    ```bash
    DATABASE_URL=postgresql+asyncpg://acb_app:<pw>@<host>:<port>/<db> \
      uv run pytest tests/unit/test_tenant_coverage.py \
@@ -493,11 +504,7 @@ restore) — so every step below is rehearsed on a scratch restore of the
    plus a spot check: `SELECT count(*) FROM app_data;` returns 0 unbound, and the
    real row count inside `BEGIN; SELECT set_config('app.tenant_id', '<org>',
    true); SELECT count(*) FROM app_data; COMMIT;`.
-5. **The app_user brick is pending — do NOT promote phase 4 to production until
-   §H3.2 is ratified and enacted** (either the app_user carve-out is in the
-   generator, or H6's identity cutover has landed). Under phase 4 as generated
-   today, sign-in bricks (see the REHEARSAL RESULT above).
-6. **Rollback for phase 4 only** (the one you will want): `ALTER TABLE <t>
+7. **Rollback for phase 4 only** (the one you will want): `ALTER TABLE <t>
    DISABLE ROW LEVEL SECURITY;` per table. Phases 1–3 are additive.
 
 ### H3.2 The app_user sign-in brick — OWNER DECISION (written up, NOT enacted)
