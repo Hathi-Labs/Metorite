@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **first call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3)**; **~557 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4)**; **~555 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -741,6 +741,42 @@ than defaulting; a test proves the refusal.
 > a newer run's org — RED if the pop is made unconditional); and the flag-OFF
 > regression (opener IS `get_session`). Both RED-on-removal properties were
 > demonstrated by mutation on 2026-08-23.
+
+> ✅ **acb_graph slice 4 — pending_commit write/read bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's agent-self-commit registration now goes through the slice-1 sync
+> seam when the flag is ON: the dedup read in `_detect_agent_commits` (the
+> `SELECT commit_sha FROM pending_commit` the reviewer flagged as an unbound
+> `get_session()`) and the INSERT in `mutation._register_pending_commit`.
+> **`_detect_agent_commits` resolves the opener ONCE via
+> `_graph_session_opener(thread_id)` on its own (event-loop) frame** — it runs
+> before `run_agent_stream`'s finally pops `_RUN_ORG`, so the run's tenant is
+> valid there and no worker-thread / ContextVar hop has intervened — and reuses
+> that single opener for BOTH the read and every write, passing it down as
+> `_register_pending_commit(..., opener=…)`. flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a tenant →
+> `tenant_session(org)` (the phase-1 DEFAULT stamps the bound org — the INSERT
+> names no `organization_id`); flag ON + NO tenant → the opener is `None` and the
+> path **fails closed**: the read falls back to an empty dedup set and the write
+> is SKIPPED + logged (`mutation.pending_commit_skipped_no_org`), never run
+> unbound on the FORCE-RLS'd `pending_commit`, never raised. `_register_pending_
+> commit` takes the opener as a keyword defaulting to a private `_OPENER_UNSET`
+> sentinel → the still-un-converted self-mutation-sandbox caller
+> (`attempt_self_mutation`, whose org threading is a later slice) keeps opening
+> the unbound `get_session`, byte-identical. Both `_detect_agent_commits`
+> callers now thread `thread_id`: the STREAM path (`_RUN_ORG` set → binds) and the
+> BATCH path (`_RUN_ORG` unset until slice 6 → fail-closed when ON, byte-identical
+> when OFF).
+> R7 fences (`tests/unit/test_acb_graph_pending_commit_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `pending-commit-write-bound-under-rls` (flag ON + orgA: the INSERT lands and is
+> visible ONLY to orgA, stamped orgA; flag ON + no org: SKIPPED + logged, no raise;
+> RED-on-removal: reverting the writer to the unbound `get_session()` is
+> RLS-refused — `new row violates row-level security policy for table
+> "pending_commit"` — so the write returns None and the row never lands) and the
+> flag-OFF regression (opener IS `get_session`; the default-opener caller still
+> opens `get_session`). The RED-on-removal property was demonstrated by mutation
+> on 2026-08-23.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

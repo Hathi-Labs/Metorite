@@ -1403,6 +1403,7 @@ async def _detect_agent_commits(
     run_id: str,
     *,
     since_sha: str | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """After an agent run, register any new commits for inbox approval.
 
@@ -1435,21 +1436,38 @@ async def _detect_agent_commits(
     if not agent_dir:
         return
 
+    # Resolve the pending_commit session opener ONCE, HERE — on the event-loop
+    # frame where _RUN_ORG[thread_id] is still THIS run's org (this runs before
+    # run_agent_stream's finally pops it) and no worker-thread / ContextVar hop
+    # has intervened (WS-29 acb_graph slice 4, the slice-3 discipline). Reused for
+    # BOTH the dedup read and every _register_pending_commit write below, so the
+    # tenant decision is made exactly once per detection pass:
+    #   * flag OFF               → the unbound get_session — byte-identical.
+    #   * flag ON + a tenant     → lambda: tenant_session(org).
+    #   * flag ON + NO tenant    → None → fail closed: the read falls back to an
+    #                              empty dedup set, the writes SKIP + log.
+    _pc_open = _graph_session_opener(thread_id)
+
     try:
         # ── Load existing commit SHAs for dedup ─────────────────────────
         _existing_shas: set[str] = set()
         try:
-            from acb_graph import get_session as _gs
             from sqlalchemy import text as _txt
-            with _gs() as _s:
-                _rows = _s.execute(
-                    _txt(
-                        "SELECT commit_sha FROM pending_commit "
-                        "WHERE agent_name = :a"
-                    ),
-                    {"a": agent_name},
-                ).fetchall()
-                _existing_shas = {r[0] for r in _rows}
+            # flag ON + no resolvable tenant (_pc_open is None) → skip the
+            # FORCE-RLS'd read and fall back to an empty dedup set. That never
+            # duplicates rows: the writes below also fail-closed-skip when the
+            # opener is None, so nothing is registered on this pass anyway. flag
+            # OFF → _pc_open is the unbound get_session, byte-identical to before.
+            if _pc_open is not None:
+                with _pc_open() as _s:
+                    _rows = _s.execute(
+                        _txt(
+                            "SELECT commit_sha FROM pending_commit "
+                            "WHERE agent_name = :a"
+                        ),
+                        {"a": agent_name},
+                    ).fetchall()
+                    _existing_shas = {r[0] for r in _rows}
         except Exception:
             pass
 
@@ -1638,6 +1656,10 @@ async def _detect_agent_commits(
                 test_summary="(agent self-improvement — no test run)",
                 status="approved" if pushed else "pending",
                 reviewed_by="chat:autopush" if pushed else None,
+                # WS-29 slice 4: the tenant opener resolved on the event-loop
+                # frame above (flag OFF → get_session; ON+org → tenant_session;
+                # ON+no-org → None → the write fails closed + logs).
+                opener=_pc_open,
             )
 
         record(
@@ -2117,6 +2139,10 @@ async def _run_agent_inner(
         await _detect_agent_commits(
             agent_name, _effective_agent_dir, run_id,
             since_sha=_head_before if _head_before else None,
+            # Batch path: _RUN_ORG is not set here (org threading for batch is
+            # WS-29 slice 6), so with the flag ON this resolves to None and the
+            # pending_commit write fails closed. flag OFF → byte-identical.
+            thread_id=thread_id,
         )
         return final_state
 
@@ -3749,6 +3775,10 @@ async def run_agent_stream(
                 await _detect_agent_commits(
                     agent_name, _effective_agent_dir, run_id,
                     since_sha=_stream_head_before if _stream_head_before else None,
+                    # Stream path: run_agent_stream set _RUN_ORG[thread_id] at run
+                    # start and its finally has not fired yet, so with the flag ON
+                    # this resolves the run's tenant. flag OFF → byte-identical.
+                    thread_id=thread_id,
                 )
                 return
 
