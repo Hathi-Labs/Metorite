@@ -8,8 +8,9 @@ sign-in brick is now written up as an OWNER DECISION in §H3.2; **the H6 dark sl
 identity-shadow dual-write + catch-up backfill (migration 182), the forward status mirror +
 reconcile (migration 183, D48), the orphan-closure — purge now deletes the shadow and the
 invite/approve mirror moved post-commit — and the RBAC re-key EXPAND (migration 184: nullable
-`user_identity_id` on the three RBAC tables, backfilled via the lower(email) bridge + dual-written
-on every RBAC INSERT), fenced by `tests/unit/test_h6_identity_shadow.py` +
+`user_identity_id` on the three RBAC tables, backfilled via the lower(email) bridge, dual-written
+on the five Python RBAC INSERTs + bridged at mirror-time for the sixth, `provision_org_owner`),
+fenced by `tests/unit/test_h6_identity_shadow.py` +
 `tests/unit/test_h6_rbac_rekey.py` — **no read moved**, see §H6. Building the read cutover
 (slice 3b) + the per-module RBAC read cutovers DARK is AGENT-SAFE per D48; only the
 `IDENTITY_CUTOVER` flip, the CONTRACT drop of the old `user_id`, H3 phase-4 promotion, and running
@@ -784,7 +785,7 @@ pre-cutover brick (the `app_user` UNBOUND read returning zero rows) reproduces R
 OFF — the same red/green characterization the H3 rehearsal already lands, now driven through the
 identity leg.
 
-### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · the shared first PR
+### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · repaired 2026-08-22 (provision-owner + RBAC-first bridge) · the shared first PR
 
 D48 re-keys the three RBAC tables — `user_role`, `user_permission_override`, `org_group_member` —
 from `app_user.id` → `user_identity.id` in an expand/contract. **This EXPAND is the shared first
@@ -801,23 +802,46 @@ cutovers below can each move onto a populated column in their own later PR. It m
   NULL the shadow, never cascade-delete a still-authoritative grant (the CONTRACT slice re-keys
   to `CASCADE` when the shadow takes over). It creates no table and does **not** touch the three
   tables' RLS (ENABLE/FORCE/policies stay in `generated/04_policies.sql`).
-- **Dual-write** `user_identity_id` on every RBAC INSERT, resolving the identity through the same
-  bridge at insert time. The write sites (re-verified by grep, one bridge each):
+- **Dual-write** `user_identity_id` on the FIVE Python RBAC INSERTs (the identity-FIRST order),
+  resolving the identity through the same bridge at insert time. The write sites (re-verified by
+  grep, one bridge each):
   - `user_role` — `acb_auth/access.py` `_BOOTSTRAP_OWNER_SQL` (resolves by `lower(:email)` — its
     `app_user` is in the same `WITH` and unreadable, and at bootstrap the identity is minted
-    AFTER the commit, so a fresh box writes NULL, reconciled by the mirror + a later backfill) and
-    `gateway/routes/admin/_common.py` `set_roles`;
+    AFTER the commit, so a fresh box writes NULL, reconciled by the mirror-time backfill below +
+    a later migration re-run) and `gateway/routes/admin/_common.py` `set_roles`;
   - `user_permission_override` — `admin/groups.py` (the center-access grant) and `admin/members.py`
     `set_member_overrides`;
   - `org_group_member` — `admin/groups.py` `add_group_member`.
   The `DELETE`s keyed on `user_id` stay correct during the dark expand and are unchanged
   (`_common.set_roles`, `members.set_member_overrides`'s delete-then-insert, `members.remove_member`).
-- **Testable EXPAND done-when (R8, real PG):** after migration 184 on a ladder-replayed DB, every
-  RBAC row's `user_identity_id` == the `user_identity.id` whose `lower(email)` matches its
-  `user_id`'s `app_user.email`; NULL only where no identity exists; the re-run is a 0-change no-op
-  (idempotent); and a fresh RBAC INSERT (via `set_roles` / bootstrap / group add) populates both
-  columns to the same identity. Fence: **`tests/unit/test_h6_rbac_rekey.py`** (structural half +
-  R8 half on `TENANT_LADDER_DATABASE_URL`, in `pr-check.yml`'s skip guard).
+- **The SIXTH RBAC INSERT — `provision_org_owner`, bridged at mirror-time (repair 2026-08-22).**
+  `provision_org_owner` (the tenant-plane SQL function, `infra/postgres/180_...:153-155`) INSERTs
+  the owner's `user_role` DURING provisioning — before any `user_identity` exists (provisioning
+  mints the owner's identity only AFTER it commits), so the five in-INSERT dual-writes cannot reach
+  it. It is instead bridged when the identity is ensured: the provision caller
+  (`acb_common.provisioning.provision_local_organization`) reuses the ONE identity-creation seam
+  (`acb_auth.access.mirror_identity_membership`, best-effort, own session, after the authoritative
+  commit — no second `user_identity` writer, no SQL fork of `provision_org_owner`), and that mirror
+  now ALSO backfills the human's existing RBAC rows (`_bridge_rbac_to_identity`: a scoped UPDATE per
+  RBAC table via the same `lower(email)` bridge, setting ONLY the still-NULL `user_identity_id`,
+  idempotent, moves no grant). Because the mirror is called by invite / approve / bootstrap AND now
+  provision, this closes the RBAC-FIRST order (a provisioned owner, a bootstrap owner, any future
+  one) in one place — so the earlier "exactly five, no sixth missed" claim was wrong. **Why it
+  matters:** without it a freshly-provisioned owner's `user_role.user_identity_id` stays NULL and,
+  once `IDENTITY_CUTOVER` flips the role leg onto that column, they resolve to NO roles → locked
+  out of their own org (fail-closed, but a real break, on a path run continuously).
+- **Testable EXPAND done-when (R8, real PG):** after migration 184 on a ladder-replayed DB,
+  `user_identity_id` becomes correct for EVERY RBAC row once the human's identity exists — it equals
+  the `user_identity.id` whose `lower(email)` matches its `user_id`'s `app_user.email` (dual-write
+  when identity-FIRST; mirror-time backfill when RBAC-FIRST), NULL only where no identity exists yet;
+  the migration re-run and the mirror re-run are both 0-change no-ops (idempotent); a fresh Python
+  RBAC INSERT (via `set_roles` / bootstrap / group add) populates both columns to the same identity;
+  and driving `provision_local_organization` end-to-end leaves the owner with a `user_identity` AND
+  their owner `user_role.user_identity_id` == that identity. The migration-184 backfill still
+  reconciles pre-existing rows. Fence: **`tests/unit/test_h6_rbac_rekey.py`** (structural half incl.
+  `TestTheProvisionOwnerBridgeMechanism`; R8 half — `TestTheBackfill`, `TestTheDualWriteAtRuntime`,
+  `TestTheProvisionOwnerIsBridged`, `TestRbacCreatedBeforeIdentityIsBridged` — on
+  `TENANT_LADDER_DATABASE_URL`, in `pr-check.yml`'s skip guard).
 
 ### Slice 4 — per-module READ cutover · 🟡 later parallel PRs, one per module
 

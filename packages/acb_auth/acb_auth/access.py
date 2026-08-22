@@ -338,6 +338,7 @@ async def mirror_identity_membership(
     email = (email or "").strip()
     if not email or "@" not in email:
         return
+    identity_id: str | None = None
     try:
         from sqlalchemy import text
 
@@ -369,9 +370,106 @@ async def mirror_identity_membership(
                 {"org": str(resolved_org), "uid": identity["id"], "status": status},
             )
             await session.commit()
+            identity_id = identity["id"]
     except Exception as exc:
         _log.warning(
             "identity_mirror_failed", email=email, error=str(exc)[:200],
+        )
+        return
+
+    # H6 slice 4 (D48) — the identity is now DURABLE, so bridge this human's RBAC
+    # rows that were written BEFORE it existed. The canonical case is a
+    # PROVISIONED owner: `provision_org_owner` (the tenant-plane SQL, migration
+    # 180) INSERTs the owner's `user_role` with no identity yet to resolve, and
+    # this mirror mints that identity only AFTER provisioning commits — so the
+    # dual-write's identity-FIRST bridge (migration 184) never fired for it. A
+    # bootstrap owner and any future RBAC-first order are the same shape. Running
+    # the backfill HERE — inside the ONE identity-creation seam, called by
+    # invite / approve / bootstrap AND now provision — closes every such case in
+    # one place, robust to creation order. Separate best-effort step on its OWN
+    # session, so a failure never touches the identity/membership write just
+    # committed (see `_bridge_rbac_to_identity`).
+    await _bridge_rbac_to_identity(email=email, identity_id=identity_id)
+
+
+# ── Identity shadow: RBAC re-key bridge (WS-29 H6 slice 4, D48) — DARK ──
+#
+# Migration 184 added a nullable `user_identity_id` to the three RBAC tables and
+# DUAL-WRITES it on the five Python RBAC INSERTs (`set_roles`, `add_group_member`
+# x2, `set_member_overrides`, `_BOOTSTRAP_OWNER_SQL`), each resolving the identity
+# through the `lower(email)` bridge at INSERT time — the identity-FIRST order.
+#
+# There is a SIXTH RBAC INSERT the dual-write cannot reach: `provision_org_owner`
+# (the tenant-plane SQL function, `infra/postgres/180_...:153-155`), which INSERTs
+# the owner's `user_role` DURING provisioning — before any `user_identity` exists,
+# because provisioning mints the owner's identity only AFTER it commits (via this
+# module's mirror, called from the provision caller). That is the RBAC-FIRST order,
+# and migration 184's one-shot backfill only catches rows that predate IT. So
+# whenever the mirror ensures a human's identity, it ALSO backfills that human's
+# existing RBAC rows here — closing the provisioned owner (who would otherwise get
+# a NULL `user_role.user_identity_id` and, once IDENTITY_CUTOVER flips the role leg
+# onto it, NO roles → locked out of their own org) and every future RBAC-first
+# case in ONE place. `app_user.id` stays authoritative; this writes only the shadow
+# column, which nothing reads yet (dark).
+
+#: The three RBAC tables D48 re-keys.
+_BRIDGE_RBAC_TABLES = ("user_role", "user_permission_override", "org_group_member")
+
+#: One scoped UPDATE per RBAC table, via the SAME `lower(email)` bridge migration
+#: 184 uses (RBAC.user_id → app_user.id → lower(email) → identity), narrowed to
+#: ONE human and setting ONLY the still-NULL shadow column — never a grant key, so
+#: it can never move a role/permission/group membership, and `IS NULL` makes a
+#: re-run touch zero rows (idempotent). `table` is a fixed literal from the tuple
+#: above, never request input.
+_BRIDGE_RBAC_SQL: tuple[str, ...] = tuple(
+    f"""
+    UPDATE {table} rbac
+       SET user_identity_id = CAST(:identity AS uuid)
+      FROM app_user au
+     WHERE rbac.user_id = au.id
+       AND lower(au.email) = lower(:email)
+       AND rbac.user_identity_id IS NULL
+    """
+    for table in _BRIDGE_RBAC_TABLES
+)
+
+
+async def _bridge_rbac_to_identity(*, email: str, identity_id: str) -> None:
+    """Backfill a human's existing RBAC rows' ``user_identity_id`` (H6 slice 4).
+
+    Called by :func:`mirror_identity_membership` AFTER the identity is durable, so
+    the "RBAC row created before the identity existed" order — a PROVISIONED owner
+    (`provision_org_owner`'s ``user_role`` INSERT), a bootstrap owner, any future
+    one — ends with the shadow column populated, matching migration 184's
+    dual-write of the identity-FIRST order. One scoped UPDATE per RBAC table via
+    the same ``lower(email)`` bridge, setting ONLY ``user_identity_id`` and only
+    where it is still NULL: idempotent, moves no grant, and never overwrites a
+    value 184 or a dual-write already set correctly.
+
+    Best-effort, and **never raises, never changes the caller's answer** — the
+    exact posture of :func:`mirror_identity_membership`. It opens its OWN short
+    session (the shared ``get_session_factory`` seam — no new connection site, R5)
+    AFTER the identity commit, so a failure here (e.g. a deployment where migration
+    184 has not yet added the column) is logged and swallowed and can never roll
+    back the identity/membership write. DARK: it writes only the shadow column,
+    which nothing reads yet.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email or not identity_id:
+        return
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            for sql in _BRIDGE_RBAC_SQL:
+                await session.execute(
+                    text(sql), {"identity": str(identity_id), "email": email},
+                )
+            await session.commit()
+    except Exception as exc:
+        _log.warning(
+            "identity_rbac_bridge_failed", email=email, error=str(exc)[:200],
         )
 
 
