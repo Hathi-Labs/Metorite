@@ -325,6 +325,15 @@ async def mirror_identity_membership(
     ``org_slug`` when it knows the org by name (the bootstrap path). One row per
     ``lower(email)`` in ``user_identity``; a create-only INSERT into
     ``org_membership`` that never moves an identity between orgs.
+
+    ⚠️ **Create-only: this mirrors membership EXISTENCE, not later STATUS.** The
+    ``ON CONFLICT DO NOTHING`` means a subsequent suspend / remove / reactivate
+    (``members.py``, which mutates ``app_user.status`` and does NOT call this
+    helper) is NOT propagated — ``org_membership.status`` drifts stale. Harmless
+    while dark (no tenant-plane reader consumes it), but the H6 read-cutover MUST
+    add status mirroring to those paths, or reconcile status against ``app_user``,
+    before it reads ``org_membership.status`` — else a suspended member is
+    admitted from a stale row. See migration 182's header and §H6.
     """
     email = (email or "").strip()
     if not email or "@" not in email:

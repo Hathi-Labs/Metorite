@@ -668,6 +668,26 @@ COMPLETE only for members present at 159 and STALE for every invite/bootstrap si
   the backfill reconciles + is idempotent (done-when 2 + 3). `app_user` reads and both upserts
   are byte-identical — the dual-write is purely additive on separate statements/session.
 
+🚨 **SLICE 1 MIRRORS EXISTENCE, NOT STATUS — a HARD INPUT the read cutover MUST handle
+(reviewer P2, could become a P0 in the cutover).** The dual-write is create-only and fires
+only on invite/approve/bootstrap; the suspend / remove / reactivate paths (`members.py`
+`update_member`/`remove_member`) mutate `app_user.status` and do NOT call the mirror, and
+`ON CONFLICT DO NOTHING` suppresses any status update on the existing row. So
+`org_membership.status` (and `joined_at`/`last_active_at`) drift STALE from `app_user`.
+Harmless while dark — no tenant-plane reader consumes `org_membership.status`
+(`console_resolve` filters `resolved_at IS NOT NULL` only). **Before the read cutover reads
+status from the shadow, it MUST either (a) add status mirroring to the suspend/remove/
+reactivate paths, or (b) reconcile status against `app_user` — otherwise a suspended/removed
+member is admitted from a stale shadow row.** Two related, deferred inputs for the cutover:
+the create-only invite path can leave an over-count ORPHAN row (`resolved_at` NULL, no
+`app_user`) if the caller's txn rolls back after `provision_member` returns — migration 182
+(`DO NOTHING`, no `DELETE`) cannot prune it, so the cutover must filter `resolved_at IS NOT
+NULL` or intersect with `app_user`; and the two identity/org SQL constants are byte-identical
+to `console_resolve`'s (`_UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL`) but not pinned equal by a
+test (silent-drift risk — a later slice should add the equality assertion or lift them to a
+shared module; a module-level import is blocked by `test_console_dependency_boundary`'s
+importer cap).
+
 **Still OWNER-GATE / not done in slice 1:** the read cutover (done-when 1 + 4), any
 `IDENTITY_CUTOVER` flip, H3 promotion, the `app_user` carve-out, and executing the backfill
 against prod.

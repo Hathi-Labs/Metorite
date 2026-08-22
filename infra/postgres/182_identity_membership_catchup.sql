@@ -15,9 +15,22 @@
 -- membership row.
 --
 -- The DUAL-WRITE on the two `app_user` write paths (WS-29 H6 slice 1,
--- `acb_auth.access.mirror_identity_membership`) keeps them current going
--- forward; this migration is the one-time catch-up for the gap 159→now. Together
--- they make the shadow tables trustworthy WITHOUT moving any read.
+-- `acb_auth.access.mirror_identity_membership`) keeps membership EXISTENCE
+-- current going forward; this migration is the one-time catch-up for the gap
+-- 159→now. Together they make the shadow tables trustworthy for WHO belongs to
+-- WHICH org, WITHOUT moving any read.
+--
+-- ⚠️ **STATUS IS A SNAPSHOT, NOT KEPT CURRENT — a hard input for the H6 read
+-- cutover.** This backfill copies `app_user.status` at backfill time, and the
+-- dual-write is create-only (`ON CONFLICT DO NOTHING`). Neither the dual-write
+-- nor this migration propagates a LATER status change: `members.py`'s
+-- suspend / remove / reactivate mutate `app_user.status` and never touch the
+-- shadow, so `org_membership.status` drifts stale. This is harmless while dark
+-- (no tenant-plane reader consumes `org_membership.status` — `console_resolve`
+-- filters on `resolved_at IS NOT NULL` only), but the read-cutover slice MUST
+-- either (a) add status mirroring to the suspend/remove/reactivate paths first,
+-- or (b) reconcile status against `app_user` — otherwise a suspended/removed
+-- member would be admitted from a stale shadow row (a latent P0 for the cutover).
 --
 -- R6 EXPAND: additive, forward-only, idempotent. Every INSERT is guarded by an
 -- `ON CONFLICT … DO NOTHING`, so a re-run is a zero-net-change no-op and NO
