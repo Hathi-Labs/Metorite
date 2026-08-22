@@ -258,6 +258,7 @@ jobs:
             tests/unit/test_org_provisioning.py \
             tests/unit/test_owner_bootstrap.py \
             tests/unit/test_credential_tenant_threading.py \
+            tests/unit/test_h3_rls_promotion_rehearsal.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -289,6 +290,14 @@ jobs:
           # resolve to A and B's to B against the schema the ladder produces,
           # which no fake can answer for — a `count(*)` sub-select and a
           # composite ON CONFLICT arbiter are exactly slice 6's class of bug.
+          #
+          # WS-29 H3 adds the seventh, same string again:
+          # `test_h3_rls_promotion_rehearsal.py`. It builds a DEDICATED database
+          # (never the shared ladder DB), applies the four `generated/` phases by
+          # hand and connects as a non-privileged role to prove two-org RLS
+          # isolation + WITH-CHECK write refusal + the sign-in brick — none of
+          # which a fake can answer for. A skip here would mean the H3 gate is
+          # disarmed, which is exactly the state this whole step exists to catch.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1

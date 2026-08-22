@@ -1,7 +1,11 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
-**Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09** (see H1's result
-block; prod apply rides **PR #404**, the owner's merge) · **Created:** 2026-08-08 ·
+**Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
+scratch 2026-08-22** (see H1's result block and the H3 REHEARSAL RESULT block; the
+two-org isolation fixture + brick characterization landed as
+`tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user sign-in brick is
+now written up as an OWNER DECISION in §H3.2 — **live promotion + the app_user fix
+remain OWNER-GATE, not enacted**) · **Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
 `saas_multitenancy.md` §11 **MT-1j · Tenant-side organization provisioning**.** It is not
@@ -384,13 +388,204 @@ running as the owner.**
 > ```
 > Phases 1–3 are additive and do not need rolling back.
 
-**Done when:** all four phases applied, **and**
-```bash
-DATABASE_URL=... uv run pytest tests/unit/test_tenant_coverage.py -v -rs
-```
-shows the two previously-skipped tests as **PASSED**, not skipped.
+**Done when:**
+1. **(claim a — RLS applies)** all four phases applied, **and**
+   ```bash
+   DATABASE_URL=... uv run pytest tests/unit/test_tenant_coverage.py -v -rs
+   ```
+   shows the two previously-skipped tests as **PASSED**, not skipped. ⚠️ See
+   §H3.3 — as rehearsed, `test_live_catalog_has_column_force_and_policy` needs a
+   one-line correctness fix first (it does not yet subtract `HOMONYM_BLOCKED`),
+   and applying that fix is guarded because it edits the security fence.
+2. **(claim b — bootstrap + sign-in resolve, CHARACTERIZATION done-when, added
+   2026-08-22)** the rehearsal demonstrates **whether** bootstrap + sign-in
+   identity resolution succeed under phase-4 policies; **if not, it records the
+   exact fix as an owner decision.** Rehearsed: they do **not** resolve — the
+   unbound `app_user` reads return zero rows and the bootstrap write is refused
+   by WITH CHECK (§H3.2). The characterization lives in
+   `tests/unit/test_h3_rls_promotion_rehearsal.py::TestSignInBrickCharacterization`
+   and the owner decision in §H3.2.
+3. **(two-org isolation, MT-1i's owed fixture)** a real-Postgres two-org fixture
+   binds a session to org A and proves it reads ONLY org A rows and cannot WRITE
+   a row stamped org B — `passed`, never `skipped`
+   (`tests/unit/test_h3_rls_promotion_rehearsal.py::TestTwoOrgIsolation`).
 
-**GATE:** those two tests pass against the live catalog.
+**GATE:** claim (a)'s two tests pass against the live catalog (after §H3.3's fix),
+and claims (b) + the two-org fixture pass on scratch.
+
+---
+
+## H3 REHEARSAL RESULT (2026-08-22) — scratch only; live promotion is OWNER-GATE
+
+> Executed on a local Docker scratch (`pgvector/pgvector:pg16`, 127.0.0.1:5443)
+> — plan-guard makes every VPS/deploy path OWNER-GATE, so this is a **rehearsal
+> of the promotion**, not the promotion. Stood up a **dedicated** database, ran
+> `tests/unit/_tenant_ladder.py::apply_ladder` (full ladder 01→ladder tip on
+> `pgvector/pgvector:pg16` — stock `postgres:16` cannot build `01_schema.sql`,
+> which needs `uuid-ossp` + `vector`), created the non-privileged `acb_app` role
+> per §H3's pre-phase-1 SQL (NOT superuser / owner / BYPASSRLS), seeded two
+> organizations, then applied `generated/{01,02,03,04}.sql` **by hand in phase
+> order** (the ladder deliberately never replays `generated/`). All four phases
+> applied clean; RLS came up on **137 of 140** scoped tables.
+>
+> **What passed (evidence, real DB, never skipped):**
+> - **Two-org isolation + WITH-CHECK + fail-closed** (MT-1i's owed fixture) —
+>   `TENANT_LADDER_DATABASE_URL=… uv run pytest
+>   tests/unit/test_h3_rls_promotion_rehearsal.py -v -rs` → **12 passed**
+>   (10 DB-backed on real Postgres + 2 always-on structural arm-checks; 0 skipped).
+>   Bound to org A: sees its 2 `apps` rows, 0 of org B's; org B sees its 3;
+>   **unbound → 0 rows** (fail-closed); an A-bound INSERT stamped org B is
+>   refused (`new row violates row-level security policy`); the phase-1 DEFAULT
+>   stamps the bound tenant.
+> - **The app role cannot bypass RLS** —
+>   `test_tenant_coverage.py::test_app_role_cannot_bypass_rls` → **PASSED** as
+>   `acb_app` (not super, not BYPASSRLS).
+>
+> **What the brick characterization SHOWED — sign-in does NOT survive phase 4.**
+> Running the code's **own** SQL (`_ACCESS_SQL`, `_BOOTSTRAP_OWNER_SQL`) and the
+> real `acb_auth.access` functions as `acb_app` with no `app.tenant_id` bound:
+> `resolve_access(owner).is_active = False` (logs `access_unprovisioned_signin`
+> even though the row EXISTS — RLS hides it); `resolve_identity(owner) =
+> (None, None)` (no tenant to bind — the chicken-and-egg); `ensure_owner_bootstrap()
+> = None` with the underlying `new row violates row-level security policy for
+> table "app_user"`. This is the 2026-07-30 lockout shape, now by construction
+> for every user. **The fix is §H3.2, an OWNER DECISION — not enacted here.**
+>
+> **What did NOT pass, and why it is not a promotion defect:**
+> `test_tenant_coverage.py::test_live_catalog_has_column_force_and_policy`
+> **FAILED** on exactly `['crm_activities', 'crm_contacts', 'crm_deals']` — the
+> three CRM homonym tables. RLS applied cleanly to every table the generator
+> scopes; these three are `HOMONYM_BLOCKED` (excluded from the generated set on
+> purpose) and the gate test does not yet subtract them. See §H3.3 — this is a
+> one-line correctness fix to the gate, guarded because it edits the fence.
+
+### H3.1 Promotion runbook — exact order (what an owner runs, in a window)
+
+**We cannot roll back** (R6, forward-only ladder; recovery is roll-forward or
+restore) — so every step below is rehearsed on a scratch restore of the
+**production** dump first, in this exact order:
+
+1. **Prereq — the app role**, once, as the DB owner (§H3 pre-phase-1 SQL):
+   `CREATE ROLE acb_app LOGIN PASSWORD … NOSUPERUSER NOCREATEDB NOCREATEROLE
+   NOBYPASSRLS`; `GRANT CONNECT`/`USAGE`/`SELECT,INSERT,UPDATE,DELETE ON ALL
+   TABLES`/`USAGE,SELECT ON ALL SEQUENCES`; `ALTER DEFAULT PRIVILEGES … GRANT …`.
+   Point the gateway, orchestrator and ingestion processes at `acb_app`.
+   **Migrations keep running as the owner.**
+2. **H2 complete and verified in production first** (the non-negotiable ordering).
+   The bind the policies read is `SELECT set_config('app.tenant_id', :org, true)`
+   inside a transaction — `packages/acb_common/acb_common/db.py:292` in
+   `tenant_session()` (opened by the request middleware
+   `apps/services/gateway/gateway/main.py` `TenantScopeMiddleware`, filled from
+   the authenticated session by `acb_auth`). No bind ⇒ the GUC is NULL ⇒ zero
+   rows (fail-closed). This is what H2 makes true for all 561 sites.
+3. **Apply the SAFE phases, by hand, in order**, from `infra/postgres/generated/`:
+   `01_add_columns.sql` (nullable ADD COLUMN — safe live) → `02_backfill.sql`
+   (batched, re-runnable — the slow one) → `03_constraints.sql` (**ACCESS
+   EXCLUSIVE**, scans each table — window; table-by-table if needed; never behind
+   a long transaction). **STOP after phase 3. Do NOT apply `04_policies.sql` yet.**
+4. **🚨 PHASE-4 GATE — the whole point of this rehearsal. Do NOT proceed to
+   step 5 until BOTH are true:** (a) H2 is complete and verified in production
+   (step 2), and (b) the app_user brick fix in **§H3.2 is ratified and enacted**
+   — either the app_user carve-out is in the generator, OR H6's identity cutover
+   has landed. **As generated today, phase 4 bricks sign-in for every user** (an
+   unbound `app_user` read returns zero rows → identity resolution fails; see the
+   REHEARSAL RESULT above). If either condition is unmet, you are not ready —
+   stop here.
+5. **Apply the cliff — ONLY after step 4 is cleared:** `04_policies.sql`
+   (**the cliff** — instant; the moment it applies, any unbound connection reads
+   zero rows). This is irreversible except by the phase-4 rollback in step 7.
+6. **Verification queries** (as `acb_app`, against the promoted catalog):
+   ```bash
+   DATABASE_URL=postgresql+asyncpg://acb_app:<pw>@<host>:<port>/<db> \
+     uv run pytest tests/unit/test_tenant_coverage.py \
+       ::test_app_role_cannot_bypass_rls \
+       ::test_live_catalog_has_column_force_and_policy -v -rs
+   ```
+   plus a spot check: `SELECT count(*) FROM app_data;` returns 0 unbound, and the
+   real row count inside `BEGIN; SELECT set_config('app.tenant_id', '<org>',
+   true); SELECT count(*) FROM app_data; COMMIT;`.
+7. **Rollback for phase 4 only** (the one you will want): `ALTER TABLE <t>
+   DISABLE ROW LEVEL SECURITY;` per table. Phases 1–3 are additive.
+
+### H3.2 The app_user sign-in brick — OWNER DECISION (written up, NOT enacted)
+
+**Confirmed on scratch:** `app_user` gets a phase-4 policy
+(`04_policies.sql:128-133`), but identity resolution reads `app_user.organization_id`
+on an **unbound** session to discover the tenant (`acb_auth/access.py` —
+`_ACCESS_SQL`/`resolve_access`, `resolve_identity`, `_BOOTSTRAP_OWNER_SQL`/
+`ensure_owner_bootstrap`; all via the plain `get_session_factory()`). Under
+fail-closed RLS: unset GUC → NULL → zero rows → bind never happens → **sign-in
+bricks**, and the owner bootstrap's INSERT is refused by WITH CHECK.
+`user_identity`/`org_membership` are already EXEMPT (control plane), which is why
+H6's identity cutover exists.
+
+Two ways forward. **Both are owner calls; neither is enacted in this change** —
+the EXEMPT map IS the security review and H3-before-H6 is an owner-set ordering.
+
+- **Option A — an app_user bootstrap carve-out designed INTO
+  `scripts/gen_tenant_migration.py`.** Concretely: add `app_user` to the
+  generator's `EXEMPT` map with a reason (e.g. *"identity table read unbound to
+  discover the tenant; the tenant-scoped identity is H6's `org_membership`, which
+  is exempt for the same reason"*), regenerate the four phase files, so `app_user`
+  carries **no** RLS. **Prototyped on scratch (throwaway `ALTER TABLE app_user
+  DISABLE ROW LEVEL SECURITY`, never committed):**
+  - **Benefit, measured:** the unbound identity read returns the row → **sign-in
+    survives** (0 rows before the carve-out, 1 after).
+  - **Real tenant data stays isolated, measured:** with `app_user` exempt, an
+    org-A-bound session still sees only org A's `apps` (1), org B only its own —
+    the carve-out touches nothing but `app_user`.
+  - **Cost, measured:** `app_user` becomes **cross-tenant readable** — an
+    org-A-bound session sees org B's `app_user` rows (2 of 2). That leaks the
+    user directory *and* each user's `organization_id`/`role`/`status` across
+    tenants. It is the same posture `user_identity` already accepts, but
+    `app_user` carries more (org + role + status), so it is a real widening.
+    Mitigation the owner may prefer over a bare EXEMPT: a **carve-out POLICY**
+    that keeps `WITH CHECK` (writes stay tenant-stamped) and narrows `USING` to
+    what identity resolution needs — but that is a bespoke policy the generator
+    does not emit today, i.e. more generator surface than option A's one line.
+  - ⚠️ **This branch does NOT make the EXEMPT change** — the prototype lived in a
+    throwaway SQL toggle, reverted; the committed generator and its EXEMPT map
+    are untouched.
+- **Option B — sequence H6 (identity cutover) BEFORE a clean phase-4 sign-in.**
+  H6 moves sign-in onto `user_identity` + `org_membership` (already EXEMPT), so
+  the unbound read hits an exempt table and no carve-out is needed; `app_user`
+  can then be dropped to a compatibility view or fully scoped. This retires the
+  "one person = one organization" encoding (migration 161's D-MT-1) as a bonus.
+  Cost: H6 is a larger, live-sign-in-path change (21 `app_user`-derived org reads
+  across 6 modules per H6) and it reorders H3/H6, which is an owner call.
+
+**Recommendation: Option B, with Option A as a bridge only if phase 4 must ship
+before H6.** Evidence: Option A un-bricks sign-in but *widens* cross-tenant
+exposure of exactly the table (`app_user`) whose per-tenant `organization_id`,
+`role` and `status` are the isolation we are promoting phase 4 to enforce — so it
+trades a directory leak for a promotion, and the mitigation that removes the leak
+(a bespoke carve-out policy) is more generator surface than option A claims to be.
+Option B removes the unbound read from a scoped table entirely, which is the root
+cause, and folds in the multi-org identity work H6 owns anyway. If the schedule
+forces phase 4 first, ship Option A's carve-out **and** open the app_user
+directory-leak as a tracked item that H6 closes. **Owner ratifies; not enacted
+here.**
+
+### H3.3 Gate finding — the live-catalog test vs `HOMONYM_BLOCKED`
+
+`test_tenant_coverage.py::test_live_catalog_has_column_force_and_policy` subtracts
+only `EXEMPT`, not `HOMONYM_BLOCKED`, from the set it demands be scoped. But
+`gen_tenant_migration` scopes `discover_tables() - EXEMPT - HOMONYM_BLOCKED`
+(`main()`; the sibling drift test at `:104` uses that exact set), so a **faithful**
+phase-4 promotion always leaves `crm_contacts`/`crm_deals`/`crm_activities` with
+an `organization_id` column and no policy — and the gate then flags them and can
+**never go green**. Rehearsed 2026-08-22: it failed on exactly those three.
+
+**Proposed one-line fix** (an OWNER-ratified change to the fence, deliberately not
+applied here because the classifier guards edits that weaken a security gate):
+add `and r["table_name"] not in gen.HOMONYM_BLOCKED` to the `bad` comprehension,
+with a comment that the CRM homonym hole is tracked separately (still 🔴 owner
+call — rename the column) in `HOMONYM_BLOCKED`, the leak audit and
+`test_tenancy_boundary.py`, and is NOT a promotion failure. This aligns the gate
+with the generator's contract without masking the real CRM hole (entry into
+`HOMONYM_BLOCKED` is itself gated by the generator's homonym refusal). Until it
+lands, claim (a)'s live-catalog test cannot pass; `test_app_role_cannot_bypass_rls`
+already passes.
 
 ---
 
