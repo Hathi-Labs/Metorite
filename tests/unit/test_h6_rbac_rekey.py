@@ -77,13 +77,25 @@ pytest.importorskip("sqlalchemy")
 
 #: Subjects are IMPORTED, never transcribed — a copy here would keep passing
 #: after somebody edited the real statement.
-from acb_auth.access import _BOOTSTRAP_OWNER_SQL
+from acb_auth.access import _BOOTSTRAP_OWNER_SQL, _BRIDGE_RBAC_SQL
 from gateway.routes.admin import groups as groups_mod
 from gateway.routes.admin import members as members_mod
 from gateway.routes.admin._common import set_roles
 from sqlalchemy import create_engine, text
 
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
+
+# Reuse the H3 rehearsal's phase-4-promoted catalog + NON-PRIV acb_app role
+# fixtures VERBATIM for the bridge-under-FORCE-RLS fence at the bottom of this
+# file. Importing them makes them fixtures in this module too (pytest resolves by
+# name in the module namespace); both R8 suites then promote ONE dedicated catalog
+# and never the shared ladder DB. They are resolved BY NAME, not called, so ruff
+# sees them as unused (F401) and the test-method params as re-defining them (F811);
+# both are suppressed on the sites they are reported.
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
+    app_engine,
+    promoted,
+)
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
 _URL = (
@@ -878,3 +890,223 @@ class TestRbacCreatedBeforeIdentityIsBridged:
                         {"e": email},
                     )
                     await session.commit()
+
+
+# ── The bridge under REAL FORCE RLS, as the NON-PRIV acb_app role (R8) ─────────
+#
+# THE decisive fence for this repair (round 2), closing the harness BLIND-SPOT.
+# The R8 suites above run the ladder WITHOUT `generated/` (no RLS applied) and as
+# the `acb` role (`rolbypassrls=True` on scratch), so the bridge's UPDATE matched
+# rows whether or not it bound `app.tenant_id` — which is exactly why an UNBOUND
+# bridge passed re-verification while it would silently no-op under real phase-4
+# RLS. This suite promotes the FULLY phase-4-promoted catalog and connects as the
+# NON-privileged `acb_app` role subject to FORCE RLS, reusing
+# `test_h3_rls_promotion_rehearsal.promoted` verbatim (full ladder +
+# generated/{01,02,03,04} + the NOSUPERUSER NOBYPASSRLS role + two seeded orgs).
+# It proves it TWO ways, both as the non-priv role:
+#   * `TestTheBridgeSqlNeedsTheGucBindUnderForceRls` drives the bridge's OWN SQL
+#     (`_BRIDGE_RBAC_SQL`, imported — a copy would keep passing after the real
+#     statement changed): GUC-bound → GREEN (3 rows), unbound → RED (0 rows, NULL);
+#   * `TestTheRealBridgeFunctionUnderForceRls` drives the REAL async
+#     `_bridge_rbac_to_identity` through the process engine repointed at the
+#     acb_app DSN — the one that goes RED if the function's `tenant_session` bind is
+#     ever removed (the bypass-role R8 tests above cannot see that regression).
+
+
+def _seed_rbac_human(promo, org: str, email: str, tag: str):
+    """Seed, as the admin (superuser bypasses RLS), a human in ``org`` with one row
+    in EACH RBAC table (organization_id = ``org``, shadow NULL) and a
+    ``user_identity`` to bridge TO. ``organization_id`` is EXPLICIT — the phase-1
+    DEFAULT reads ``app.tenant_id``, unset on the admin connection. Returns
+    ``(uid, role_id, grp_id, identity_id)``."""
+    with promo.admin_engine.begin() as c:
+        uid = str(c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, "
+            "organization_id) VALUES (:e, :e, 'employee', 'active', :o) "
+            "RETURNING id"), {"e": email, "o": org}).scalar_one())
+        role_id = str(c.execute(text(
+            "INSERT INTO org_role (organization_id, slug, display_name) "
+            "VALUES (:o, :s, :s) RETURNING id"),
+            {"o": org, "s": f"role-{tag}"}).scalar_one())
+        grp_id = str(c.execute(text(
+            "INSERT INTO org_group (organization_id, slug, display_name) "
+            "VALUES (:o, :s, :s) RETURNING id"),
+            {"o": org, "s": f"grp-{tag}"}).scalar_one())
+        c.execute(text(
+            "INSERT INTO user_role (user_id, role_id, organization_id) "
+            "VALUES (CAST(:u AS uuid), CAST(:r AS uuid), :o)"),
+            {"u": uid, "r": role_id, "o": org})
+        c.execute(text(
+            "INSERT INTO user_permission_override (user_id, permission, "
+            "effect, organization_id) VALUES (CAST(:u AS uuid), 'feature:x', "
+            "'allow', :o)"), {"u": uid, "o": org})
+        c.execute(text(
+            "INSERT INTO org_group_member (group_id, user_id, organization_id) "
+            "VALUES (CAST(:g AS uuid), CAST(:u AS uuid), :o)"),
+            {"g": grp_id, "u": uid, "o": org})
+        wanted = str(c.execute(text(
+            "INSERT INTO user_identity (email, display_name) "
+            "VALUES (:e, :e) RETURNING id"), {"e": email}).scalar_one())
+    return uid, role_id, grp_id, wanted
+
+
+def _purge_rbac_human(promo, uid: str, role_id: str, grp_id: str, wanted: str):
+    """Remove a seeded human via the admin engine. Deleting ``app_user`` cascades
+    its three RBAC rows (all ``user_id`` FKs ON DELETE CASCADE); the rest go
+    explicitly."""
+    with promo.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM app_user WHERE id = CAST(:u AS uuid)"),
+                  {"u": uid})
+        c.execute(text("DELETE FROM org_role WHERE id = CAST(:r AS uuid)"),
+                  {"r": role_id})
+        c.execute(text("DELETE FROM org_group WHERE id = CAST(:g AS uuid)"),
+                  {"g": grp_id})
+        c.execute(text("DELETE FROM user_identity WHERE id = CAST(:i AS uuid)"),
+                  {"i": wanted})
+
+
+def _shadow(promo, table: str, user_id: str) -> str | None:
+    """Read ``table.user_identity_id`` for ``user_id`` via the ADMIN engine.
+
+    ``promo`` is the ``promoted`` fixture namespace (named ``promo`` here only so it
+    does not shadow the module-level fixture import). The admin (superuser) bypasses
+    RLS, so a read-back is never itself hidden by the policy under test — the RED
+    assertion needs to SEE the (still-NULL) row the non-priv role could not touch.
+    ``table`` is a fixed literal from ``_RBAC_TABLES``, never user input.
+    """
+    assert table in _RBAC_TABLES
+    with promo.admin_engine.connect() as c:
+        row = c.execute(
+            text(f"SELECT user_identity_id::text FROM {table} "
+                 " WHERE user_id = CAST(:u AS uuid) LIMIT 1"),
+            {"u": user_id},
+        ).first()
+    return None if row is None or row[0] is None else row[0]
+
+
+def _assert_non_priv(app_eng) -> None:
+    """The role really IS subject to RLS, else every assertion below is vacuous.
+
+    ``app_eng`` is the ``app_engine`` fixture (named ``app_eng`` here only so it does
+    not shadow the module-level fixture import).
+    """
+    with app_eng.connect() as c:
+        role = c.execute(text(
+            "SELECT rolsuper, rolbypassrls FROM pg_roles "
+            "WHERE rolname = current_user")).first()
+    assert role is not None and not role[0] and not role[1], (
+        "the bridge fence connects as a SUPERUSER/BYPASSRLS role — RLS bypassed"
+    )
+
+
+@_DB_GATE
+class TestTheBridgeSqlNeedsTheGucBindUnderForceRls:
+    """R7 fence ``bridge-under-FORCE-RLS`` (mechanism): GUC-bound → GREEN,
+    unbound → RED, as the non-priv ``acb_app`` role.
+
+    Drives ``_BRIDGE_RBAC_SQL`` directly. **GREEN** — bound to the human's org, the
+    UPDATEs see and write the RLS-FORCED RBAC rows. **RED** (the mutation the repair
+    fixes) — run UNBOUND, FORCE RLS hides the rows so every UPDATE touches 0 rows and
+    the shadow stays NULL: the silent no-op that left a provisioned owner with a NULL
+    ``user_role.user_identity_id`` and, once ``IDENTITY_CUTOVER`` flips the role leg,
+    locked out of their own org.
+    """
+
+    def test_bound_bridge_populates_and_unbound_bridge_noops(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        org = promoted.org_a
+        tag = uuid.uuid4().hex[:8]
+        email = f"bridge-sql-{tag}@h6rk.example"
+        uid, role_id, grp_id, wanted = _seed_rbac_human(promoted, org, email, tag)
+
+        try:
+            # ── RED — the MUTATION: run the bridge UNBOUND (no set_config). FORCE
+            #    RLS hides every RBAC row from the non-priv role, so each UPDATE
+            #    touches 0 rows and the shadow stays NULL. It passed re-verification
+            #    before only because the harness used a bypass role.
+            with app_engine.connect() as c, c.begin():
+                red_rows = sum(
+                    (c.execute(text(sql),
+                               {"identity": wanted, "email": email}).rowcount or 0)
+                    for sql in _BRIDGE_RBAC_SQL
+                )
+            assert red_rows == 0, (
+                f"the UNBOUND bridge updated {red_rows} rows under FORCE RLS — it "
+                "must no-op (0 rows); a non-zero count means RLS is not enforced"
+            )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) is None, (
+                    f"{tbl}.user_identity_id was populated by the UNBOUND bridge — "
+                    "the RED mutation did not reproduce the silent no-op"
+                )
+
+            # ── GREEN: bind app.tenant_id to the human's org, then the SAME bridge
+            #    SQL sees + writes the RLS-forced rows.
+            with app_engine.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": org})
+                green_rows = sum(
+                    (c.execute(text(sql),
+                               {"identity": wanted, "email": email}).rowcount or 0)
+                    for sql in _BRIDGE_RBAC_SQL
+                )
+            assert green_rows == 3, (
+                f"the GUC-bound bridge updated {green_rows} rows, expected 3 (one "
+                "per RBAC table) — the bind must make the RLS-forced rows visible"
+            )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) == wanted, (
+                    f"{tbl}.user_identity_id was not bridged to the identity under "
+                    "FORCE RLS as the non-priv role even when GUC-bound"
+                )
+        finally:
+            _purge_rbac_human(promoted, uid, role_id, grp_id, wanted)
+
+
+@_DB_GATE
+class TestTheRealBridgeFunctionUnderForceRls:
+    """R7 fence ``bridge-under-FORCE-RLS`` (the function): the REAL async
+    ``_bridge_rbac_to_identity`` populates the shadow under FORCE RLS as the
+    non-priv role — and goes RED if its ``tenant_session`` bind is removed.
+
+    This is the half the bypass-role R8 tests (``TestTheProvisionOwnerIsBridged`` /
+    ``TestRbacCreatedBeforeIdentityIsBridged``) cannot provide: they drive the real
+    function but connect as the ``acb`` superuser (``rolbypassrls=True``), so an
+    UNBOUND bridge passes there too. Here the process engine is repointed at the
+    acb_app DSN (non-priv, on the phase-4-promoted DB), so removing the bind makes
+    every UPDATE match 0 rows and the swallowed best-effort leaves the shadow NULL —
+    RED. Confirmed red-first during this repair by reverting the bind.
+    """
+
+    async def test_the_real_bridge_populates_the_shadow_as_the_non_priv_role(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        from acb_auth.access import _bridge_rbac_to_identity
+
+        _assert_non_priv(app_engine)
+        org = promoted.org_a
+        tag = uuid.uuid4().hex[:8]
+        email = f"bridge-fn-{tag}@h6rk.example"
+        uid, role_id, grp_id, wanted = _seed_rbac_human(promoted, org, email, tag)
+
+        # The acb_app DSN, password included — `str(URL)` masks it, which would make
+        # asyncpg auth fail; `render_as_string(hide_password=False)` keeps it.
+        app_dsn = promoted.app_url.render_as_string(hide_password=False)
+        try:
+            # Repoint the ONE process engine at the non-priv DSN so the real
+            # function (via `tenant_session` → `get_session_factory`) connects as
+            # acb_app, subject to FORCE RLS — not as the bypass ladder role.
+            async with tenant_engine_scope(app_dsn):
+                await _bridge_rbac_to_identity(
+                    email=email, identity_id=wanted, org_id=org,
+                )
+            for tbl in _RBAC_TABLES:
+                assert _shadow(promoted, tbl, uid) == wanted, (
+                    f"{tbl}.user_identity_id was not populated by the REAL bridge "
+                    "under FORCE RLS as the non-priv role — the tenant_session bind "
+                    "is missing or ineffective (the round-1 P0)"
+                )
+        finally:
+            _purge_rbac_human(promoted, uid, role_id, grp_id, wanted)

@@ -785,7 +785,7 @@ pre-cutover brick (the `app_user` UNBOUND read returning zero rows) reproduces R
 OFF — the same red/green characterization the H3 rehearsal already lands, now driven through the
 identity leg.
 
-### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · repaired 2026-08-22 (provision-owner + RBAC-first bridge) · the shared first PR
+### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · repaired 2026-08-22 (provision-owner + RBAC-first bridge; round 2 — the bridge is now GUC-BOUND under FORCE RLS) · the shared first PR
 
 D48 re-keys the three RBAC tables — `user_role`, `user_permission_override`, `org_group_member` —
 from `app_user.id` → `user_identity.id` in an expand/contract. **This EXPAND is the shared first
@@ -830,6 +830,25 @@ cutovers below can each move onto a populated column in their own later PR. It m
   matters:** without it a freshly-provisioned owner's `user_role.user_identity_id` stays NULL and,
   once `IDENTITY_CUTOVER` flips the role leg onto that column, they resolve to NO roles → locked
   out of their own org (fail-closed, but a real break, on a path run continuously).
+- **The bridge is GUC-BOUND, because the three RBAC tables are RLS-FORCED (repair 2026-08-22, round
+  2).** `user_role` / `user_permission_override` / `org_group_member` all carry `FORCE ROW LEVEL
+  SECURITY` keyed on `organization_id = current_setting('app.tenant_id', true)::uuid`
+  (`generated/04_policies.sql`), so `_bridge_rbac_to_identity`'s UPDATEs run on an UNBOUND session
+  see the GUC as NULL → 0 visible rows → they silently no-op (the best-effort catch swallows it) and
+  the owner's `user_identity_id` stays NULL under real phase-4 RLS — the SAME class as slice 3b's
+  unbound `resolve_access`. The fix runs the bridge inside the ONE GUC seam `tenant_session()`
+  (`SET LOCAL app.tenant_id`, no second GUC path) bound to the human's org — threaded in from the
+  mirror's already-resolved org (== the human's `app_user.organization_id`; a human is in ONE org,
+  migration 162). The org is NOT re-derived by reading `app_user` in the bridge: that read is itself
+  unbound → 0 rows, the chicken-and-egg the H3 rehearsal pins. This **corrects the earlier R5
+  justification that over-generalized** "the shadow tables are RLS-EXEMPT so no bind is needed" from
+  the mirror's OWN writes (`user_identity` / `org_membership`, genuinely exempt) to the bridge's
+  writes (RLS-FORCED). The same GUC-bind requirement binds **any** H6 write path touching an
+  RLS-forced table — the SECURITY-INVOKER-under-FORCE-RLS tension migration 179's header flagged as
+  "REVISIT AT H3". Fence: `test_h6_rbac_rekey.py::TestTheRealBridgeFunctionUnderForceRls` (drives
+  the real bridge as the non-priv `acb_app` role — RED if the bind is removed; the bypass-role R8
+  tests are blind to it) + `::TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound
+  RED at the SQL level).
 - **Testable EXPAND done-when (R8, real PG):** after migration 184 on a ladder-replayed DB,
   `user_identity_id` becomes correct for EVERY RBAC row once the human's identity exists — it equals
   the `user_identity.id` whose `lower(email)` matches its `user_id`'s `app_user.email` (dual-write
@@ -840,7 +859,10 @@ cutovers below can each move onto a populated column in their own later PR. It m
   their owner `user_role.user_identity_id` == that identity. The migration-184 backfill still
   reconciles pre-existing rows. Fence: **`tests/unit/test_h6_rbac_rekey.py`** (structural half incl.
   `TestTheProvisionOwnerBridgeMechanism`; R8 half — `TestTheBackfill`, `TestTheDualWriteAtRuntime`,
-  `TestTheProvisionOwnerIsBridged`, `TestRbacCreatedBeforeIdentityIsBridged` — on
+  `TestTheProvisionOwnerIsBridged`, `TestRbacCreatedBeforeIdentityIsBridged`, and — the round-2
+  FORCE-RLS fences — `TestTheRealBridgeFunctionUnderForceRls` (real bridge as the non-priv `acb_app`
+  role) + `TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound RED); the last two
+  reuse `test_h3_rls_promotion_rehearsal.promoted` for the phase-4-promoted catalog — on
   `TENANT_LADDER_DATABASE_URL`, in `pr-check.yml`'s skip guard).
 
 ### Slice 4 — per-module READ cutover · 🟡 later parallel PRs, one per module

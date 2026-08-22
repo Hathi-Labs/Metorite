@@ -46,6 +46,22 @@
 -- `generated/04_policies.sql` (:611-616 / :842-847 / :849-854) and stay unchanged
 -- (R6 expand does not re-key RLS; the FK targets the RLS-EXEMPT `user_identity`).
 --
+-- ⚠️ **The mirror-time bridge writes these RLS-FORCED tables, so it runs GUC-BOUND
+-- (repair 2026-08-22, round 2).** These three tables carry `FORCE ROW LEVEL
+-- SECURITY` keyed on `organization_id = current_setting('app.tenant_id', true)`.
+-- The SIXTH-INSERT bridge below (`acb_auth.access._bridge_rbac_to_identity`, run
+-- by `mirror_identity_membership`) UPDATEs them, so under real phase-4 RLS it MUST
+-- `SET LOCAL app.tenant_id` to the human's org first — an UNBOUND UPDATE sees the
+-- GUC as NULL → 0 visible rows → it silently no-ops (best-effort swallows it),
+-- leaving a provisioned owner's `user_identity_id` NULL and, once
+-- `IDENTITY_CUTOVER` flips the role leg, locked out. The bridge reuses the ONE GUC
+-- seam `acb_common.db.tenant_session` (no second GUC path). This is the same
+-- SECURITY-INVOKER-under-FORCE-RLS tension migration 179's header flagged as
+-- "REVISIT AT H3", and it binds ANY H6 write path that touches an RLS-forced
+-- table — not just this migration's exempt-table dual-writes. Fence:
+-- `test_h6_rbac_rekey.py::TestTheRealBridgeFunctionUnderForceRls` (drives the real
+-- bridge as the non-priv acb_app role; RED if the bind is removed).
+--
 -- Fence: `tests/unit/test_h6_rbac_rekey.py` (R8, `TENANT_LADDER_DATABASE_URL`, in
 -- `pr-check.yml`'s skip guard) — proves backfill-correctness (every row's
 -- `user_identity_id` == the `lower(email)`-bridged identity, NULL only where none),
