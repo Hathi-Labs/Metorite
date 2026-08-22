@@ -122,3 +122,15 @@ export const setLifecycle = (
   body: unknown,
   d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
 ) => callConsole("/orgs/lifecycle", { method: "POST", body }, d ?? {});
+
+// Provision a new organization (create-only): the Console POST /orgs/provision
+// under the `Operator` scheme creates the org + its owner + Core seats, PLACES
+// it on the named deployment and starts a trial subscription in one idempotent
+// call. `deployment_label` is REQUIRED under the operator scheme (a cross-org
+// staff credential carries no deployment identity); the Console answers 400 when
+// it is missing, 404 for an unknown label and 409 when the org is already placed
+// on a different deployment — this client relays each status verbatim.
+export const provisionOrg = (
+  body: unknown,
+  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
+) => callConsole("/orgs/provision", { method: "POST", body }, d ?? {});
