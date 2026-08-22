@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built; **561 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **561 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -640,6 +640,28 @@ than defaulting; a test proves the refusal.
 > WITH-CHECK refused), and a no-org unit RAISES `TenantUnbound`.
 > ⚠️ **The tasks broker handler (`routes/tasks/broker_handlers.py`) is NOT in
 > this change** — a separate later PR, dormant unless `ACTION_BROKER_ENFORCE`.
+
+> ✅ **acb_graph sync tenant seam SHIPPED 2026-08-23 (WS-29, DARK — seam ONLY,
+> no call site converted, byte-identical at runtime).** The core write paths
+> (the best-effort `acb_audit` write, orchestrator agent runs) go through
+> `acb_graph.get_session()` — a SEPARATE **sync** engine (§0.1 path 4) that had
+> no tenant binding, so it would read 0 rows / refuse writes on FORCE-RLS'd
+> tables post phase-4. `acb_graph.db` now carries `tenant_session(organization_id)`,
+> the sync twin of `acb_common.db.tenant_session`: same GUC name, the IDENTICAL
+> `SELECT set_config('app.tenant_id', :tenant, true)` (bound param), an explicit
+> `session.begin()` transaction, and the SHARED `TenantUnbound` (imported, not
+> re-declared). It is **explicit-tenant-only — no ambient ContextVar fallback**,
+> because the sync engine serves background/service paths that must not inherit
+> an upstream tenant (the H4 rule). `get_session()` is untouched and stays for
+> RLS-exempt/discovery reads until later slices convert specific callers behind
+> `ACB_GRAPH_TENANT_BIND`. This is the foundation those slices build on.
+> R7 fences (R8, real non-priv `acb_app` role on the phase-4 catalog, in
+> `tests/unit/test_acb_graph_tenant_seam.py`): `acb-graph-sync-bind-sets-guc`
+> (a bound write lands + is org-isolated GREEN; the unbound `get_session()` read
+> is 0-rows / write WITH-CHECK-refused; no-org RAISES `TenantUnbound`) and
+> `acb-graph-cross-engine-bind-drift` (both engines grep-match the identical bind
+> statement and share one `TenantUnbound` type). `test_db_engine_seam.py`'s
+> `_ALLOWED_SYNC` reason for `acb_graph/db.py` is updated to record the seam.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

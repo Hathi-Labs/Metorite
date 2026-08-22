@@ -76,7 +76,13 @@ _ALLOWED_SYNC: dict[str, str] = {
     "packages/acb_graph/acb_graph/db.py":
         "the entity-graph sync engine — connection path 4 in "
         "saas_multitenancy.md §0.1; carries tenant data and MUST bind a tenant "
-        "under MT-1c",
+        "under MT-1c. It now HAS that seam: `tenant_session(organization_id)`, "
+        "the sync twin of `acb_common.db.tenant_session`, runs the identical "
+        "`set_config('app.tenant_id', :tenant, true)` and raises the shared "
+        "`TenantUnbound` (WS-29, seam added dark — no call site converted yet; "
+        "`get_session()` stays for RLS-exempt/discovery reads until later "
+        "slices convert specific callers). Fence: "
+        "tests/unit/test_acb_graph_tenant_seam.py",
     "apps/services/customer_console/customer_console/db.py":
         "WS-31 CP-1 — the CONTROL PLANE's own database, a DIFFERENT database on "
         "a different plane (saas_multitenancy.md §0.9.2), not the tenant one. "
