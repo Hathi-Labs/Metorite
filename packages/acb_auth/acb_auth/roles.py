@@ -52,7 +52,11 @@ class UserContext:
 
     email: str | None
     role: UserRole
-    #: `app_user.id`. None until the member is provisioned in the org.
+    #: `app_user.id`, or the RLS-EXEMPT `user_identity.id` under IDENTITY_CUTOVER
+    #: (H6 slice 3b) — a DIFFERENT UUID space. Treat as an opaque per-human
+    #: identity token for display/correlation only, NEVER an `app_user` FK: the
+    #: backend keys on email (`access.resolve_identity` P2b). None until the
+    #: member is provisioned in the org.
     user_id: str | None = None
     organization_id: str | None = None
     access: EffectiveAccess = field(default=NO_ACCESS)
