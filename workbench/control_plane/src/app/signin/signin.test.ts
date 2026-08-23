@@ -451,18 +451,26 @@ describe("the email OTP provider ships dark and rides the one session (CP-2d)", 
     // (`lib/utils/assert.js:129-145`), so there is no config error at boot; the
     // failure is `createSession is not a function` on the next sign-in.
     //
-    // This reds BOTH ways by construction — the pin missing while `adapter:` is
-    // present, and the pin removed at all.
+    // ⚠️ This block used to carry `if (authSrc.includes("adapter:")) { …the
+    // same unconditional assertion again… }` — a conditional that could never
+    // add a failure (repair of review finding F2, 2026-08-23). What the pin is
+    // actually about is CO-OCCURRENCE: an `adapter:` option and a strategy pin
+    // in the SAME config. So that is what is asserted, positionally.
     expect(authSrc).toContain('session: { strategy: "jwt" }');
-    if (authSrc.includes("adapter:")) {
-      expect(authSrc).toContain('session: { strategy: "jwt" }');
-    }
-    // And the pin is inside the ONE NextAuth config, not a second one.
+
     const nextAuth = authSrc.indexOf("NextAuth({");
+    const pin = authSrc.indexOf('session: { strategy: "jwt" }');
+    // Exactly one `adapter:` OPTION in the file (matched at the start of a
+    // line, so prose about "the adapter" cannot satisfy it), and it is inside
+    // the ONE NextAuth config — beside the pin, never in a second config that
+    // would derive `database` for itself.
+    const adapterOptions = authSrc.match(/^\s*adapter:/gm) ?? [];
+    expect(adapterOptions.length).toBe(1);
+    const adapterOption = authSrc.search(/^\s*adapter:/m);
+
     expect(nextAuth).toBeGreaterThan(-1);
-    expect(authSrc.indexOf('session: { strategy: "jwt" }')).toBeGreaterThan(
-      nextAuth,
-    );
+    expect(pin).toBeGreaterThan(nextAuth);
+    expect(adapterOption).toBeGreaterThan(nextAuth);
     // The database strategy stays forbidden (the pre-existing pin, restated
     // here because this is now the file's subject).
     expect(authSrc).not.toContain('strategy: "database"');

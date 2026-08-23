@@ -200,6 +200,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // exactly as absent (`assert.js:157` guards on truthiness) — so an
   // OAuth-only box is unchanged, no adapter method is ever reachable, and the
   // dark-ship promise holds.
+  //
+  // 🛑 **When it IS armed, this adapter is on Google's and Microsoft's path
+  // too, not only OTP's** (repair of review finding P0, 2026-08-23).
+  // `lib/actions/callback/index.js:56-62` destructures and calls
+  // `getUserByAccount` for every OAuth callback the moment an adapter is
+  // present, and `handle-login.js:175-250` calls it again and then consults
+  // `getUserByEmail`. So the adapter is written to be behaviourally
+  // TRANSPARENT — stateless user methods that reproduce the adapter-less path
+  // — rather than minimal. See `lib/emailOtp.ts::emailOtpAdapterOver`; the
+  // reachable set is derived from the pinned source by
+  // `emailOtpAdapter.test.ts` and replayed against the real object by
+  // `emailOtp.test.ts`, so a version bump that adds a call site reds instead of
+  // taking every sign-in down on the day the flag is flipped.
   adapter: emailOtpArmed ? emailOtpAdapter() : undefined,
   callbacks: {
     /**

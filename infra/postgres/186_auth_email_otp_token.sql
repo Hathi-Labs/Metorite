@@ -70,6 +70,13 @@
 --     identify by `(identifier, expires)`), so the two concurrent legs
 --     @auth/core starts in one `Promise.all` reach the SAME answer regardless of
 --     which lands first. Without that exclusion the count is racy by one.
+--     ⚠️ **That exclusion is NOT what bounds emails, and believing it did was a
+--     real hole** (repair of review finding P1b, 2026-08-23): two *different*
+--     sends computed in the same millisecond carry the same `expires`, so they
+--     excluded each other and BOTH passed a budget of three, upserting one row
+--     and mailing two codes. The bound is `reserved_at` below — the send leg
+--     CLAIMS the slot atomically and is refused when the claim finds it taken,
+--     so N concurrent sends produce exactly one email.
 --
 -- WHY `token` IS NULLABLE
 -- ---------------------------------------------------------------------------
@@ -135,20 +142,43 @@ CREATE TABLE IF NOT EXISTS auth_email_otp_token (
     last_attempt_at TIMESTAMPTZ,
     consumed_at     TIMESTAMPTZ,
     invalidated_at  TIMESTAMPTZ,
+    -- The SEND SLOT, claimed by the send leg alone (`acb_auth.email_otp.
+    -- reserve_send`). NULL means "a row exists but no mail has been authorised
+    -- against it" — which is what the token leg writes when it lands first.
+    -- The claim is `ON CONFLICT … DO UPDATE … WHERE reserved_at IS NULL`, so it
+    -- succeeds exactly once per (identifier, expires) and every later claimant
+    -- is refused as a duplicate and sends nothing.
+    reserved_at     TIMESTAMPTZ,
     -- One row per SEND. Both legs of one send carry the same `expires` instant
     -- (@auth/core computes it once and hands the same value to each), so this
     -- is what makes the upsert converge instead of racing.
     CONSTRAINT auth_email_otp_token_send_key UNIQUE (identifier, expires)
 );
 
+-- EXPAND (R6), and idempotent: a box that already applied the first cut of this
+-- migration has the table without `reserved_at`, and `CREATE TABLE IF NOT
+-- EXISTS` is a no-op there. Nullable with no default, so old rows read as
+-- "never claimed" — which for a table whose rows expire in ten minutes is both
+-- true and inconsequential.
+ALTER TABLE auth_email_otp_token
+    ADD COLUMN IF NOT EXISTS reserved_at TIMESTAMPTZ;
+
 -- The consume path's lookup: (identifier, token). Not UNIQUE — two sends in the
 -- same second could in principle mint the same hash for the same address, and a
 -- unique violation there would present as "the code is broken" rather than as
--- the astronomically unlikely collision it is.
+-- the astronomically unlikely collision it is. ⚠️ The consume statement
+-- therefore does NOT assume the lookup is singular: it selects `ORDER BY
+-- created_at DESC, id DESC LIMIT 1` into an `UPDATE … WHERE id = (…)`, so a
+-- duplicate hash consumes the newest matching token instead of raising
+-- `MultipleResultsFound` and 500ing the sign-in (repair of review finding P2,
+-- 2026-08-23).
 CREATE INDEX IF NOT EXISTS auth_email_otp_token_lookup_idx
     ON auth_email_otp_token (identifier, token);
 
 -- The two rate-limit reads, both keyed on the identifier and a time window.
+-- The send read also filters on `reserved_at IS NOT NULL`; at three rows per
+-- address per hour the identifier prefix is the whole selectivity, so no
+-- separate partial index earns its keep.
 CREATE INDEX IF NOT EXISTS auth_email_otp_token_sends_idx
     ON auth_email_otp_token (identifier, created_at DESC);
 CREATE INDEX IF NOT EXISTS auth_email_otp_token_attempts_idx

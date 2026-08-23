@@ -13,17 +13,25 @@ import { configuredProviders } from "@/authPosture";
 import {
   DEFAULT_OTP_MAX_AGE_S,
   EMAIL_OTP_ADAPTER_READY,
+  EMAIL_OTP_CONSUME_PATH,
   EMAIL_OTP_LABEL,
   EMAIL_OTP_PROVIDER_ID,
+  EMAIL_OTP_SEND_PATH,
+  EMAIL_OTP_TOKEN_PATH,
   OTP_CODE_LENGTH,
   RESEND_ENDPOINT,
+  canonicalOtpIdentifier,
+  emailOtpAdapterOver,
   emailOtpFrom,
   generateOtp,
   isEmailOtpConfigured,
   isEmailOtpProviderReady,
   otpEmail,
   resendSender,
+  reserveOtpSendVia,
   sendOtpEmail,
+  type OtpGatewayCall,
+  type OtpGatewayResponse,
   type ResendSendArgs,
 } from "@/lib/emailOtp";
 
@@ -225,3 +233,435 @@ describe("the transport is Resend and is never invoked over the network in tests
     ).rejects.toThrow(/Resend send failed \(422\)/);
   });
 });
+
+// ── The ADAPTER, executed (repair of review finding P0, 2026-08-23) ──────────
+//
+// ⚠️ This block exists because the previous fence for the adapter's method set
+// was a source-regex over a docstring, and the docstring was WRONG: it claimed
+// `@auth/core`'s oauth arms were "unreachable in this configuration". They are
+// reached on every Google callback the moment an adapter is present
+// (`lib/actions/callback/index.js:56-62`), so the armed adapter would have
+// thrown a `TypeError` — a site-wide sign-in outage — on the day the owner
+// flipped the flag. A regex cannot catch a false premise; a replay can.
+//
+// So the two arms are transcribed below from the PINNED `@auth/core@0.41.2`
+// source, line by line with citations, and driven against the real object. The
+// helper deliberately raises a `TypeError` for a missing method, exactly as the
+// destructure-then-call in `handle-login.js:29` does — the failure mode here is
+// the production one, not a nicer stand-in.
+//
+// The *set* of call sites is fenced separately and from the source itself, in
+// `emailOtpAdapter.test.ts`: this file proves the methods behave, that one
+// proves none is missing.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** A canned gateway answer. */
+function answer(status: number, payload?: unknown): OtpGatewayResponse {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+    text: async () => (payload === undefined ? "" : JSON.stringify(payload)),
+  };
+}
+
+interface Recorded {
+  path: string;
+  identifier: string;
+  body: Record<string, unknown>;
+}
+
+/** A transport that records every call and answers from a per-path table. */
+function gateway(per: Record<string, OtpGatewayResponse>): {
+  call: OtpGatewayCall;
+  calls: Recorded[];
+} {
+  const calls: Recorded[] = [];
+  const call: OtpGatewayCall = async (path, identifier, body) => {
+    calls.push({ path, identifier, body });
+    const res = per[path];
+    if (!res) throw new Error(`the adapter called an unexpected path: ${path}`);
+    return res;
+  };
+  return { call, calls };
+}
+
+/**
+ * Fetch an adapter method the way `@auth/core` does — and fail the way it fails.
+ *
+ * `handle-login.js:29` destructures the whole method set and calls the members
+ * bare, so an absent method is a `TypeError` at the call, not at the
+ * destructure. Reproducing that is the point: P0 was exactly this `TypeError`,
+ * and a helper that quietly skipped a missing method would have reported the
+ * broken adapter as green.
+ */
+function must(adapter: any, name: string): (...args: any[]) => Promise<any> {
+  const method = adapter[name];
+  if (typeof method !== "function") {
+    throw new TypeError(`adapter.${name} is not a function`);
+  }
+  return method.bind(adapter);
+}
+
+/**
+ * The EMAIL arm, transcribed from `callback/index.js:141-171` and
+ * `handle-login.js:34-88` under `session.strategy: "jwt"`.
+ */
+async function replayEmailArm(
+  adapter: any,
+  paramIdentifier: string,
+  hashedToken: string,
+): Promise<{ user: any; isNewUser: boolean }> {
+  // index.js:141-145 — the identifier is the QUERY parameter, unnormalised.
+  const invite = await must(adapter, "useVerificationToken")({
+    identifier: paramIdentifier,
+    token: hashedToken,
+  });
+  // index.js:146-154 — three ways to reject, all rendered as `Verification`.
+  if (!invite) throw new Error("Verification: no invite");
+  if (invite.expires.valueOf() < Date.now()) {
+    throw new Error("Verification: expired");
+  }
+  if (paramIdentifier && invite.identifier !== paramIdentifier) {
+    throw new Error("Verification: identifier mismatch");
+  }
+  // index.js:155-160 — note the `??`: a null adapter answer is not an error, it
+  // is where @auth/core derives the user itself.
+  const identifier: string = invite.identifier;
+  const user = (await must(adapter, "getUserByEmail")(identifier)) ?? {
+    id: "auth-core-randomUUID",
+    email: identifier,
+    emailVerified: null,
+  };
+  // handle-login.js:34-46 — no session cookie in this replay, so no getUser.
+  // handle-login.js:55-79 — the email branch.
+  const userByEmail = await must(adapter, "getUserByEmail")(user.email);
+  if (userByEmail) {
+    return {
+      user: await must(adapter, "updateUser")({
+        id: userByEmail.id,
+        emailVerified: new Date(),
+      }),
+      isNewUser: false,
+    };
+  }
+  return {
+    user: await must(adapter, "createUser")({
+      ...user,
+      emailVerified: new Date(),
+    }),
+    isNewUser: true,
+  };
+}
+
+/**
+ * The OAUTH arm, transcribed from `callback/index.js:55-70` and
+ * `handle-login.js:29-46, 174-273` under `session.strategy: "jwt"`.
+ *
+ * `authorizedUser` is what the `signIn` callback is handed (index.js:63-67) —
+ * pinned separately because that is where CP-2b reads the display name.
+ */
+async function replayOAuthArm(
+  adapter: any,
+  userFromProvider: any,
+  account: any,
+  opts: { sessionCookie?: boolean } = {},
+): Promise<{ user: any; authorizedUser: any; isNewUser: boolean }> {
+  // index.js:55-62 — UNCONDITIONAL once an adapter is present. This is the line
+  // the old five-method adapter died on.
+  const userByAccount = await must(adapter, "getUserByAccount")({
+    providerAccountId: account.providerAccountId,
+    provider: account.provider,
+  });
+  // index.js:63-67
+  const authorizedUser = userByAccount ?? userFromProvider;
+
+  // handle-login.js:34-46 — jwt branch: getUser, only with a session cookie.
+  const sessionUser = opts.sessionCookie
+    ? await must(adapter, "getUser")("sub-from-the-decoded-jwt")
+    : null;
+
+  // handle-login.js:174-178
+  const byAccount = await must(adapter, "getUserByAccount")({
+    providerAccountId: account.providerAccountId,
+    provider: account.provider,
+  });
+  if (byAccount) {
+    // :179-199 — with no session user, this signs in as the account's user.
+    return { user: byAccount, authorizedUser, isNewUser: false };
+  }
+  // :206-213
+  if (sessionUser) {
+    await must(adapter, "linkAccount")({ ...account, userId: sessionUser.id });
+    return { user: sessionUser, authorizedUser, isNewUser: false };
+  }
+  // :231-252 — the OAuthAccountNotLinked trap.
+  // `allowDangerousEmailAccountLinking` is NOT set on either provider in
+  // `auth.ts`, and must not be.
+  const byEmail = userFromProvider.email
+    ? await must(adapter, "getUserByEmail")(userFromProvider.email)
+    : null;
+  if (byEmail) throw new Error("OAuthAccountNotLinked");
+  // :253-265
+  const created = await must(adapter, "createUser")({
+    ...userFromProvider,
+    emailVerified: null,
+  });
+  await must(adapter, "linkAccount")({ ...account, userId: created.id });
+  return { user: created, authorizedUser, isNewUser: true };
+}
+
+const GOOGLE_USER = {
+  id: "1099876",
+  name: "Ada Lovelace",
+  email: "ada@customer.example",
+  image: "https://lh3.example/ada.png",
+};
+const GOOGLE_ACCOUNT = {
+  providerAccountId: "1099876",
+  provider: "google",
+  type: "oauth",
+};
+const LIVE_RECORD = {
+  identifier: "ada@customer.example",
+  token: "sha256-of-the-code",
+  expires: new Date(Date.now() + 600_000).toISOString(),
+};
+
+function wiredGateway() {
+  return gateway({
+    [EMAIL_OTP_SEND_PATH]: answer(200, { ...LIVE_RECORD, token: null }),
+    [EMAIL_OTP_TOKEN_PATH]: answer(200, LIVE_RECORD),
+    [EMAIL_OTP_CONSUME_PATH]: answer(200, LIVE_RECORD),
+  });
+}
+
+describe("the armed adapter leaves OAuth sign-in exactly as it was (P0)", () => {
+  it("a Google callback completes, and reaches no OTP route at all", async () => {
+    const { call, calls } = wiredGateway();
+    const out = await replayOAuthArm(
+      emailOtpAdapterOver(call),
+      GOOGLE_USER,
+      GOOGLE_ACCOUNT,
+    );
+    // The whole finding, in one assertion: this used to throw
+    // `TypeError: getUserByAccount is not a function`.
+    expect(out.user).toEqual({ ...GOOGLE_USER, emailVerified: null });
+    // Name and image survive, so `session.user.name` and CP-2b's
+    // `display_name` are unchanged — a derived user would have dropped both.
+    expect(out.user.name).toBe("Ada Lovelace");
+    expect(out.authorizedUser).toBe(GOOGLE_USER);
+    // And no OAuth sign-in ever touches the OTP routes.
+    expect(calls).toEqual([]);
+  });
+
+  it("does NOT answer getUserByEmail on the OAuth arm — the OAuthAccountNotLinked trap", async () => {
+    // The second half of P0, and the one a `getUserByAccount` stub alone would
+    // have left broken. `handle-login.js:231-250`: a truthy `getUserByEmail`
+    // with no `allowDangerousEmailAccountLinking` is a hard refusal, so the old
+    // TOTAL derived user would have refused every Google sign-in even after the
+    // missing method was added.
+    const adapter = emailOtpAdapterOver(wiredGateway().call);
+    expect(await adapter.getUserByEmail!("ada@customer.example")).toBeNull();
+    await expect(
+      replayOAuthArm(adapter, GOOGLE_USER, GOOGLE_ACCOUNT),
+    ).resolves.toBeTruthy();
+  });
+
+  it("an already-signed-in person re-authing keeps the provider's user", async () => {
+    // With a session cookie present, `handle-login.js:40` calls `getUser`. A
+    // truthy answer takes the `:206` link-and-return branch and returns THAT
+    // object as the signed-in user — silently dropping the provider's name and
+    // picture. Null keeps the adapter-less behaviour.
+    const adapter = emailOtpAdapterOver(wiredGateway().call);
+    const out = await replayOAuthArm(adapter, GOOGLE_USER, GOOGLE_ACCOUNT, {
+      sessionCookie: true,
+    });
+    expect(out.user.email).toBe("ada@customer.example");
+    expect(out.user.name).toBe("Ada Lovelace");
+  });
+
+  it("implements every method both arms reach — none throws a TypeError", () => {
+    // Belt to the source-derived brace in `emailOtpAdapter.test.ts`: there the
+    // set is read out of node_modules, here it is exercised.
+    const adapter = emailOtpAdapterOver(
+      wiredGateway().call,
+    ) as unknown as Record<string, unknown>;
+    for (const name of [
+      "createVerificationToken",
+      "useVerificationToken",
+      "getUserByEmail",
+      "getUserByAccount",
+      "getUser",
+      "createUser",
+      "updateUser",
+      "linkAccount",
+    ]) {
+      expect(typeof adapter[name]).toBe("function");
+    }
+  });
+
+  it("writes no user, account or session row — every call is an OTP route", async () => {
+    const { call, calls } = wiredGateway();
+    const adapter = emailOtpAdapterOver(call);
+    await replayOAuthArm(adapter, GOOGLE_USER, GOOGLE_ACCOUNT);
+    await replayEmailArm(adapter, "ada@customer.example", "sha256-of-the-code");
+    // Identity stays the tenant plane's (`app_user`/`user_identity`). A second
+    // identity store would arrive as an innocuous `POST /users` from right here.
+    expect(new Set(calls.map((c) => c.path))).toEqual(
+      new Set([EMAIL_OTP_CONSUME_PATH]),
+    );
+  });
+});
+
+describe("the email arm still yields the derived user end-to-end", () => {
+  const record = (identifier: string) => ({
+    identifier,
+    token: "sha256-of-the-code",
+    expires: new Date(Date.now() + 600_000).toISOString(),
+  });
+
+  it("createUser carries the verified address into the session", async () => {
+    // `getUserByEmail` answers null, so `index.js:156-160` derives the user and
+    // `handle-login.js:76` creates it. This adapter echoes — so the address the
+    // person proved they own is what the jwt callback receives.
+    const { call } = gateway({
+      [EMAIL_OTP_CONSUME_PATH]: answer(200, record("ada@customer.example")),
+    });
+    const out = await replayEmailArm(
+      emailOtpAdapterOver(call),
+      "ada@customer.example",
+      "sha256-of-the-code",
+    );
+    expect(out.user.email).toBe("ada@customer.example");
+    expect(out.user.emailVerified).toBeInstanceOf(Date);
+    // The create path is the reachable one now that getUserByEmail is null.
+    expect(out.isNewUser).toBe(true);
+  });
+
+  it("keeps updateUser unreachable by keeping getUserByEmail a constant null", async () => {
+    // That coupling is asserted rather than assumed. `updateUser` is
+    // implemented (an absent method a future arm reaches is P0 again) but
+    // `handle-login.js:68` calls it ONLY when `getUserByEmail` answers, and it
+    // is called with `{ id, emailVerified }` alone — so if it ever becomes
+    // reachable it must be rewritten in the same change, or the session comes
+    // out with no address.
+    const adapter = emailOtpAdapterOver(gateway({}).call);
+    for (const address of ["", "ada@customer.example", "ADA@CUSTOMER.EXAMPLE"]) {
+      expect(await adapter.getUserByEmail!(address)).toBeNull();
+    }
+  });
+
+  it("a MIXED-CASE address does not brick the code after spending it (P1a)", async () => {
+    // ⚠️ The finding, driven at the wire shape that produced it. The send leg
+    // normalised (`send-token.js:12`), so the row — and the gateway's echo — is
+    // `ada@customer.example`; the hand-built GET form submitted what was typed.
+    // `callback/index.js:151-152` compares the two VERBATIM and throws AFTER
+    // this consume has already spent the token and charged an attempt.
+    const { call, calls } = gateway({
+      // The gateway answers with its own canonical form, as it must.
+      [EMAIL_OTP_CONSUME_PATH]: answer(200, record("ada@customer.example")),
+    });
+    const out = await replayEmailArm(
+      emailOtpAdapterOver(call),
+      "Ada@Customer.Example",
+      "sha256-of-the-code",
+    );
+    // No throw: the adapter echoes the REQUESTED identifier, so the comparison
+    // cannot strand a person on a code they have already spent.
+    expect(out.user.email).toBe("Ada@Customer.Example");
+    // Ownership is still enforced server-side — the consume was scoped to the
+    // address asked about, which the gateway canonicalises and matches on.
+    expect(calls.map((c) => c.identifier)).toEqual(["Ada@Customer.Example"]);
+  });
+
+  it("canonicalises the identifier the way @auth/core's send leg does", () => {
+    // The browser-side half of the same repair: both write sites pass through
+    // here, so in practice the submitted address IS the one the token was minted
+    // for. Mirrors `send-token.js:74-98` — lowercase, trim, domain truncated at
+    // the first comma.
+    expect(canonicalOtpIdentifier("Ada@Customer.Example")).toBe(
+      "ada@customer.example",
+    );
+    expect(canonicalOtpIdentifier("  ADA@customer.example  ")).toBe(
+      "ada@customer.example",
+    );
+    expect(canonicalOtpIdentifier("ada@customer.example,x")).toBe(
+      "ada@customer.example",
+    );
+    // Never throws, unlike `defaultNormalizer` — a browser-side mirror that
+    // threw would replace a readable refusal with a blank page.
+    for (const bad of ["", null, undefined, "no-at-sign", "a@b@c", 'q"@x.io']) {
+      expect(() => canonicalOtpIdentifier(bad as string)).not.toThrow();
+    }
+    expect(canonicalOtpIdentifier(null)).toBe("");
+  });
+});
+
+describe("the adapter's refusals reach @auth/core as refusals", () => {
+  const consumeOnly = (res: OtpGatewayResponse) =>
+    emailOtpAdapterOver(gateway({ [EMAIL_OTP_CONSUME_PATH]: res }).call);
+
+  it("404 is the ONE non-throwing refusal — wrong, used or expired", async () => {
+    const adapter = consumeOnly(answer(404, { code: "InvalidToken" }));
+    expect(
+      await adapter.useVerificationToken!({
+        identifier: "ada@customer.example",
+        token: "nope",
+      }),
+    ).toBeNull();
+  });
+
+  it("a 429 THROWS rather than answering null", async () => {
+    // Swallowing a rate limit into `return null` renders as "your code is
+    // wrong" to the person and "OTP is flaky" to an operator.
+    const adapter = consumeOnly(answer(429, { code: "VerifyRateLimited" }));
+    await expect(
+      adapter.useVerificationToken!({
+        identifier: "ada@customer.example",
+        token: "424242",
+      }),
+    ).rejects.toThrow(/refused \(429\)/);
+  });
+
+  it("a 200 with no expiry throws instead of rendering as a bad code", async () => {
+    // The row is already consumed by the time we are here, so a zero date —
+    // which `@auth/core` reads as expired — would be P1a in a second dress.
+    const adapter = consumeOnly(answer(200, { identifier: "a@b.io" }));
+    await expect(
+      adapter.useVerificationToken!({ identifier: "a@b.io", token: "x" }),
+    ).rejects.toThrow(/without an expiry/);
+  });
+
+  it("a DUPLICATE send refusal throws, so no second mail goes out (P1b)", async () => {
+    // The gateway now claims the send slot atomically and answers 429
+    // `SendDuplicate` to every loser of a same-millisecond burst. That refusal
+    // has to throw HERE, because `auth.ts` awaits this before handing anything
+    // to Resend — the throw is what makes N simultaneous sends one email.
+    const { call } = gateway({
+      [EMAIL_OTP_SEND_PATH]: answer(429, { code: "SendDuplicate" }),
+    });
+    await expect(
+      reserveOtpSendVia(call, "ada@customer.example", new Date()),
+    ).rejects.toThrow(/refused \(429\)/);
+  });
+
+  it("reserveOtpSendVia names the send route and the address, and nothing else", async () => {
+    const { call, calls } = gateway({
+      [EMAIL_OTP_SEND_PATH]: answer(200, {}),
+    });
+    const expires = new Date(Date.UTC(2026, 7, 23, 21, 0, 0));
+    await reserveOtpSendVia(call, "ada@customer.example", expires);
+    expect(calls).toEqual([
+      {
+        path: EMAIL_OTP_SEND_PATH,
+        identifier: "ada@customer.example",
+        // R11: no `email` / `identifier` in the body — the gateway 400s on
+        // shape if one appears, and the address rides the seam's header.
+        body: { expires: "2026-08-23T21:00:00.000Z" },
+      },
+    ]);
+  });
+});
+/* eslint-enable @typescript-eslint/no-explicit-any */

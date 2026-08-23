@@ -24,7 +24,13 @@
  * send and never touch the network — with the flag off or the key absent the
  * provider is not registered at all, so nothing here is ever reached in that
  * state.
+ *
+ * ⚠️ The `import type` below is erased at compile time (it is the reason this
+ * module still loads in a node-env test while `emailOtpAdapter.ts` does not).
+ * Turning it into a value import would drag `next-auth` in and silence every
+ * executed fence in `emailOtp.test.ts`.
  */
+import type { Adapter, AdapterAccount, AdapterUser } from "next-auth/adapters";
 
 /** Auth.js's built-in id for the Resend email provider — the id `auth.ts` registers and `signIn(id)` calls. */
 export const EMAIL_OTP_PROVIDER_ID = "resend" as const;
@@ -220,12 +226,20 @@ export async function sendOtpEmail(
   await send({ to: opts.to, from: opts.from, subject, text, html });
 }
 
-// ── Slice 2 · the adapter's pure half ───────────────────────────────────────
+// ── Slice 2 · the adapter itself, over an injected transport ────────────────
 //
-// The WIRED adapter lives in `emailOtpAdapter.ts`, which imports
-// `lib/gateway.ts` and therefore drags `next/server` — unrunnable in this
-// tree's node-env vitest, so it is source-fenced. Everything about it that CAN
-// be executed lives here instead, where the existing matrix already runs.
+// The WIRED adapter is `emailOtpAdapter.ts`, which imports `lib/gateway.ts` and
+// therefore drags `next/server` — unrunnable in this tree's node-env vitest. So
+// the adapter's BEHAVIOUR lives here, parameterised by the one call it makes,
+// and that file is reduced to supplying the call through the `headersActingAs`
+// seam.
+//
+// ⚠️ That split was not cosmetic and it is the repair of review finding P0
+// (2026-08-23): the adapter's method set had been argued to be minimal in a
+// DOCSTRING, and the docstring was wrong in a way no source-regex fence could
+// see. Behaviour that decides whether Google sign-in works has to be executable,
+// so it is — `emailOtp.test.ts` replays both `@auth/core` arms against the real
+// object. This is the same seam, moved so it can be tested; never a second one.
 
 /** The route the gateway mounts the OTP adapter's server half on. */
 export const EMAIL_OTP_ROUTE_PREFIX = "/signin/otp";
@@ -239,34 +253,305 @@ export const EMAIL_OTP_TOKEN_PATH = `${EMAIL_OTP_ROUTE_PREFIX}/token`;
 /** Spend one verification attempt and consume the token if it matches. */
 export const EMAIL_OTP_CONSUME_PATH = `${EMAIL_OTP_ROUTE_PREFIX}/consume`;
 
-/** The subset of Auth.js's `AdapterUser` this adapter ever produces. */
-export interface DerivedOtpUser {
-  id: string;
-  email: string;
-  emailVerified: Date | null;
+/**
+ * Canonicalise an address the way `@auth/core` itself does on the send leg.
+ *
+ * ⚠️ **This exists because the two legs of an OTP sign-in did not agree, and a
+ * disagreement here is worse than a refusal — it bricks the code AFTER spending
+ * it** (repair of review finding P1a, 2026-08-23). The send leg runs the typed
+ * address through `lib/actions/signin/send-token.js`'s `defaultNormalizer`
+ * (`:74-98` in the pinned 0.41.2), so the token is minted for
+ * `ada@customer.example`. The completion leg is a hand-built `GET` form, and it
+ * used to submit whatever was typed — `Ada@Customer.Example`. `callback/
+ * index.js:152` then compares `invite.identifier !== paramIdentifier`
+ * **verbatim**, AFTER `useVerificationToken` has already consumed the row
+ * server-side: the code is spent, the person is told it is wrong, and each retry
+ * costs one of their five attempts. So both browser-side write sites — the
+ * `sessionStorage` hand-off and the code form's submitted field — pass through
+ * here first.
+ *
+ * It mirrors `defaultNormalizer`'s semantics deliberately: lowercase, trim,
+ * exactly one `@`, and the domain truncated at the first comma (that last one is
+ * not decoration — the normalizer really does `domain.split(",")[0]`, so
+ * `a@b.com,x` is minted as `a@b.com` and a form that submitted the comma form
+ * would mismatch exactly like the case form did).
+ *
+ * ⚠️ Unlike `defaultNormalizer` it **never throws**. The normalizer's refusals
+ * (a quote, no `@`, two `@`s) are server-side input validation and are already
+ * enforced where they belong; a browser-side mirror that threw would replace a
+ * refusal the person can read with a blank page. An address it cannot normalise
+ * comes back trimmed and lowercased, which is submitted, misses server-side, and
+ * renders the ordinary "that code is not valid" — the correct outcome for an
+ * address that could never have been sent a code.
+ *
+ * Fence: `emailOtp.test.ts` — *"canonicalises the identifier the way
+ * @auth/core's send leg does"* (the `Ada@Customer.Example` case by name).
+ */
+export function canonicalOtpIdentifier(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").toLowerCase().trim();
+  if (trimmed.includes('"')) return trimmed;
+  const parts = trimmed.split("@");
+  if (parts.length !== 2) return trimmed;
+  const [local, rest] = parts;
+  const domain = rest.split(",")[0];
+  if (!local || !domain) return trimmed;
+  return `${local}@${domain}`;
 }
 
 /**
- * The user object the adapter answers with — **derived, never stored**.
+ * The answer shape the adapter reads off one gateway call.
  *
- * ⚠️ **This adapter persists no user, account or session rows, and that is the
- * design.** Identity in this product is the tenant plane's (`app_user` /
- * `user_identity`, reached through CP-2b's resolve); an Auth.js identity table
- * set beside it would be the second identity store root `CLAUDE.md` §5 forbids.
- * It is also exactly what the OAuth path already does: with no adapter,
- * `@auth/core`'s `handleLoginOrRegister` returns the profile unpersisted, so the
- * email path is its twin rather than a new kind of thing.
- *
- * The id is the address itself, which makes the JWT's `sub` stable across
- * sign-ins the way an IdP's subject is. Nothing in this product reads `sub` — it
- * reads `session.user.email` — but an id that changed every sign-in would be a
- * lie about what it identifies.
- *
- * ⚠️ It is **total**: it never returns null. That is load-bearing, because it is
- * what makes `@auth/core`'s `createUser` branch unreachable and lets the adapter
- * carry the minimal method set (see `emailOtpAdapter.ts`).
+ * Structural rather than the DOM `Response`, so a test can hand the adapter a
+ * literal and so this module stays free of any platform global. A real
+ * `Response` satisfies it.
  */
-export function derivedOtpUser(identifier: string): DerivedOtpUser {
-  const email = (identifier ?? "").trim().toLowerCase();
-  return { id: email, email, emailVerified: null };
+export interface OtpGatewayResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
+}
+
+/**
+ * One call to the OTP routes, as the address being verified.
+ *
+ * Injected so the adapter's behaviour is testable without `next/server`; the
+ * ONE real implementation is `emailOtpAdapter.ts`, which builds it out of
+ * `lib/gateway.ts::headersActingAs`. A second implementation that mints its own
+ * bearer is forbidden and fenced from both sides (`gateway.test.ts`'s widened
+ * sweep and `emailOtpAdapter.test.ts`).
+ */
+export type OtpGatewayCall = (
+  path: string,
+  identifier: string,
+  body: Record<string, unknown>,
+) => Promise<OtpGatewayResponse>;
+
+/** What the gateway answers with for a token record. */
+interface OtpTokenWire {
+  identifier?: string;
+  token?: string | null;
+  expires?: string | null;
+}
+
+/**
+ * Throw with the gateway's own code, so the reason survives to the log.
+ *
+ * Refusals are NOT swallowed. A 429 (rate limited or a duplicate send), a 400
+ * (shape) or a 5xx has to reach `@auth/core` as a throw, because the alternative
+ * is an adapter that quietly answers "nothing here" — which reads to a person as
+ * "your code is wrong" and to an operator as "OTP is flaky". The 404 that means
+ * *this code does not match* is the one non-throwing refusal, and it is handled
+ * at its own call site rather than here.
+ */
+async function refuse(path: string, res: OtpGatewayResponse): Promise<never> {
+  const detail = await res.text().catch(() => "");
+  throw new Error(
+    `email OTP: ${path} refused (${res.status})${detail ? `: ${detail}` : ""}`,
+  );
+}
+
+/**
+ * Ask permission to send a code, and record the send.
+ *
+ * ⚠️ Not an adapter method — it is called from the provider's
+ * `sendVerificationRequest` in `auth.ts`, **before** the mail is handed to
+ * Resend. `@auth/core`'s `lib/actions/signin/send-token.js` starts the send and
+ * `createVerificationToken` concurrently and only hands the hash to the second,
+ * so a send budget enforced in the adapter alone would refuse the token while
+ * the email went out anyway.
+ *
+ * ⚠️ **A refusal here is what stops a second email, and it now covers the
+ * concurrent case** (repair of review finding P1b). Both legs of one send name
+ * it by the same `expires` instant, but so do two sends computed in the SAME
+ * millisecond — which is why the gateway now *claims* the send slot atomically
+ * and answers 429 `SendDuplicate` to every loser. That refusal throws here, and
+ * the throw is what keeps the mail unsent.
+ */
+export async function reserveOtpSendVia(
+  call: OtpGatewayCall,
+  identifier: string,
+  expires: Date,
+): Promise<void> {
+  const res = await call(EMAIL_OTP_SEND_PATH, identifier, {
+    expires: expires.toISOString(),
+  });
+  if (!res.ok) await refuse(EMAIL_OTP_SEND_PATH, res);
+}
+
+/**
+ * The Auth.js database adapter for CP-2d's email OTP — **stateless, and
+ * complete for every arm `@auth/core` can enter under the pinned config**.
+ *
+ * ## The rule this object obeys
+ *
+ * With the adapter present, behaviour must be **the same as with no adapter at
+ * all**, except that the email arm gains a verification-token store. That is the
+ * only shape that is safe, because the adapter is passed to the ONE `NextAuth`
+ * config that also serves Google and Microsoft: the moment the owner flips
+ * `EMAIL_OTP_ENABLED`, every OAuth sign-in starts running through
+ * `lib/actions/callback/index.js`'s `if (adapter)` arms too.
+ *
+ * ⚠️ **This is the repair of review finding P0 (2026-08-23), and the previous
+ * shape was a site-wide outage waiting on a flag flip.** The adapter used to
+ * carry five methods, justified by "the oauth arms are unreachable in this
+ * configuration". They are not:
+ *
+ * - `callback/index.js:56-62` destructures and calls `getUserByAccount` for
+ *   **every** OAuth callback whenever an adapter is present — a missing method
+ *   is a `TypeError`, wrapped as `CallbackRouteError`, on every Google sign-in.
+ * - `handle-login.js:175-178` calls it again, and then — this is the subtle half
+ *   — `:231-250` calls `getUserByEmail(profile.email)` and throws
+ *   **`OAuthAccountNotLinked`** when it answers. The old `getUserByEmail` was
+ *   deliberately TOTAL, so it always answered, so Google would have stayed
+ *   broken even after `getUserByAccount` was added.
+ *
+ * So the user-side methods are **stateless and honest**: there is no user store,
+ * `getUser*` therefore answer `null`, and `createUser`/`updateUser`/`linkAccount`
+ * echo what they were handed and persist nothing. Walked against the pinned
+ * `@auth/core@0.41.2` under `session.strategy: "jwt"`, that reproduces the
+ * adapter-less path exactly:
+ *
+ * | arm | adapter-less | with this adapter |
+ * |---|---|---|
+ * | OAuth | `handleLoginOrRegister` returns `userFromProvider` unpersisted | `getUserByAccount`→null, `getUserByEmail`→null, `createUser` echoes `userFromProvider` |
+ * | email | (impossible — `assertConfig` demands an adapter) | `getUserByEmail`→null, so `index.js:156` derives `{id: randomUUID(), email: identifier}` and `createUser` echoes it |
+ *
+ * The one measurable difference is `isNewUser`, which becomes `true` where the
+ * adapter-less path left it `undefined`. Nothing in this product reads it: no
+ * `events` are configured, `pages.newUser` is unset, and the `jwt` callback
+ * ignores `trigger`. It is named here rather than left for somebody to discover.
+ *
+ * ⚠️ **No user, account or session row is written anywhere.** Identity in this
+ * product is the tenant plane's (`app_user` / `user_identity`, reached through
+ * CP-2b's resolve); an Auth.js identity table set beside it would be the second
+ * identity store root `CLAUDE.md` §5 forbids by name.
+ *
+ * ⚠️ **Session methods are absent because they are unreachable under `jwt`, and
+ * that pin is load-bearing** — `handle-login.js` reaches `createSession`,
+ * `getSessionAndUser` and `deleteSession` only from `!useJwtSession` branches,
+ * and `session.js` only under the database strategy. `auth.ts` pins the strategy
+ * in the same config that takes this adapter; `signin.test.ts` fences the pin and
+ * `emailOtpAdapter.test.ts` derives the reachable set from the pinned source, so
+ * a version bump that adds a call site turns RED rather than 500ing sign-in.
+ */
+export function emailOtpAdapterOver(call: OtpGatewayCall): Adapter {
+  return {
+    // ── The two persisting methods: HTTP to `gateway/routes/email_otp.py` ────
+    async createVerificationToken(token) {
+      const res = await call(EMAIL_OTP_TOKEN_PATH, token.identifier, {
+        token: token.token,
+        expires: token.expires.toISOString(),
+      });
+      if (!res.ok) await refuse(EMAIL_OTP_TOKEN_PATH, res);
+      const wire = (await res.json()) as OtpTokenWire;
+      return {
+        // The REQUESTED identifier, never the wire's echo — see
+        // `useVerificationToken` for why that distinction is load-bearing.
+        identifier: token.identifier,
+        token: wire.token ?? token.token,
+        expires: wire.expires ? new Date(wire.expires) : token.expires,
+      };
+    },
+
+    async useVerificationToken({ identifier, token }) {
+      const res = await call(EMAIL_OTP_CONSUME_PATH, identifier, { token });
+      // 404 is the ONE refusal that is an answer rather than an error: the code
+      // is wrong, already used, or expired. `@auth/core` turns a null into its
+      // `Verification` error page, which is the correct outcome for all three —
+      // and telling them apart would tell a guesser whether a live code exists.
+      if (res.status === 404) return null;
+      if (!res.ok) await refuse(EMAIL_OTP_CONSUME_PATH, res);
+      const wire = (await res.json()) as OtpTokenWire;
+      if (!wire.expires) {
+        // A 200 with no expiry is our own route being wrong, and the row is
+        // already consumed by the time we are here. Say so: the alternative
+        // (a zero date) renders as `Verification` — "your code is wrong" for a
+        // code that was right, which is the P1a failure mode in a second dress.
+        throw new Error(
+          `email OTP: ${EMAIL_OTP_CONSUME_PATH} answered 200 without an expiry`,
+        );
+      }
+      return {
+        // ⚠️ **The REQUESTED identifier, not the wire's canonical echo**
+        // (repair of review finding P1a). `callback/index.js:151-152` compares
+        // `invite.identifier !== paramIdentifier` verbatim and throws
+        // `Verification` when they differ — AFTER this call has spent the token
+        // and charged an attempt. Ownership is not what that comparison is
+        // protecting here: the gateway scopes the consume to the caller's
+        // `X-User-Email`, which IS this identifier, so a token minted for
+        // another address cannot match in the first place. Echoing the request
+        // makes the comparison structurally incapable of stranding a person on
+        // a code they have already spent.
+        identifier,
+        token: wire.token ?? token,
+        expires: new Date(wire.expires),
+      };
+    },
+
+    // ── The user side: stateless. No store, so nothing is found and nothing
+    //    is written. Each one names the arm that reaches it. ─────────────────
+    async getUserByEmail() {
+      // `index.js:156` (email arm), `handle-login.js:57` (email arm),
+      // `:231-233` (OAuth arm) and `send-token.js:14` (send leg).
+      //
+      // ⚠️ It MUST answer null, and a total version is the P0 above: on the
+      // OAuth arm a truthy answer means "an account already exists with this
+      // address", and `handle-login.js:242-250` answers that with
+      // `OAuthAccountNotLinked` unless `allowDangerousEmailAccountLinking` is
+      // set — which it is not, and must not be. Null puts both arms on the
+      // create path, which is where the adapter-less product already is.
+      return null;
+    },
+
+    async getUserByAccount() {
+      // `index.js:57-58` and `handle-login.js:175-178`, both OAuth-only, both
+      // unconditional once an adapter is present. Null yields
+      // `userByAccount ?? userFromProvider` — byte-identical to the
+      // adapter-less path, where the whole `if (adapter)` block is skipped.
+      return null;
+    },
+
+    async getUser() {
+      // `handle-login.js:40`, and ONLY when a session cookie is already present
+      // and decodes. Adapter-less, `user` is null there too, so null is both
+      // honest (there is no user store to look in) and behaviour-preserving:
+      // a truthy answer would take the OAuth arm's `if (user)` link-and-return
+      // branch at `:206`, which returns THIS object as the signed-in user and
+      // would silently drop the provider's name and picture from the session.
+      return null;
+    },
+
+    async createUser(user) {
+      // `handle-login.js:76` (email arm) and `:260` (OAuth arm). Derive and
+      // echo: whatever `@auth/core` assembled IS the user, exactly as the
+      // adapter-less `handleLoginOrRegister` returns `_profile` untouched. On
+      // the email arm that is `index.js:156`'s `{ id: randomUUID(), email:
+      // identifier }` — so the verified address reaches the jwt callback — and
+      // on the OAuth arm it is the provider profile, name and image included.
+      return user as AdapterUser;
+    },
+
+    async updateUser(user) {
+      // `handle-login.js:68`, the email arm's `getUserByEmail` answered branch.
+      // Unreachable while `getUserByEmail` above is a constant null, and that
+      // coupling is fenced (`emailOtp.test.ts`), not assumed.
+      //
+      // ⚠️ If `getUserByEmail` is ever given a store, THIS method must be
+      // revisited in the same change: `@auth/core` calls it with `{ id,
+      // emailVerified }` alone, so an echo would return a user with no address
+      // and the session would come out anonymous. It is implemented rather than
+      // omitted because an absent method that a future arm reaches is a
+      // `TypeError` in production — which is exactly what P0 was.
+      return user as AdapterUser;
+    },
+
+    async linkAccount(account) {
+      // `handle-login.js:209` and `:264`, OAuth arm. There is no account store,
+      // so this records nothing; the return value is discarded by both call
+      // sites (only `events.linkAccount` would see it, and no events are
+      // configured). Echoing keeps it a no-op that types.
+      return account as AdapterAccount;
+    },
+  };
 }

@@ -58,6 +58,7 @@ pytest.importorskip("fastapi")
 from acb_auth import get_current_user
 from acb_auth.deps import require_authenticated
 from acb_auth.email_otp import (
+    SEND_DUPLICATE,
     SEND_MAX_PER_WINDOW,
     SEND_RATE_LIMITED,
     VERIFY_MAX_ATTEMPTS,
@@ -388,14 +389,21 @@ def replayed():
 
 
 def _rows(eng, identifier: str) -> list[dict]:
+    """Every row for *identifier*, OLDEST first.
+
+    Ordered by ``(created_at, id)`` rather than ``created_at`` alone: two rows
+    written in the same microsecond would otherwise come back in an arbitrary
+    order, and the P2 assertions below are about WHICH of two rows was consumed.
+    """
     with eng.connect() as c:
         return [
             dict(r)
             for r in c.execute(
                 text(
-                    "SELECT token, attempts, consumed_at, invalidated_at, expires "
+                    "SELECT token, attempts, consumed_at, invalidated_at, "
+                    "       expires, reserved_at "
                     "  FROM auth_email_otp_token WHERE identifier = :i "
-                    " ORDER BY created_at"
+                    " ORDER BY created_at, id"
                 ),
                 {"i": identifier},
             )
@@ -453,7 +461,14 @@ class TestTheTokenRoundTrip:
     async def test_the_reserve_leg_may_land_second_without_losing_the_hash(
         self, replayed
     ) -> None:
-        """Order-independent, because the two legs genuinely race."""
+        """Order-independent, because the two legs genuinely race.
+
+        ⚠️ This is also the half of the P1b repair that could have broken the
+        ordinary flow. The send leg now CLAIMS its slot and is refused when the
+        claim finds it taken — so a token leg that landed first must leave the
+        row *unclaimed*, or every send whose token leg won the race would be
+        refused as a duplicate and no mail would ever go out.
+        """
         who = _who("reorder")
         expires = _soon()
         hashed = f"hash-{uuid.uuid4().hex}"
@@ -465,6 +480,21 @@ class TestTheTokenRoundTrip:
         rows = _rows(replayed, who)
         assert len(rows) == 1
         assert rows[0]["token"] == hashed
+        # The token leg wrote the row but claimed nothing; the send leg claimed.
+        assert rows[0]["reserved_at"] is not None
+
+    async def test_the_token_leg_alone_claims_no_send_slot(self, replayed) -> None:
+        """A row is not a mail.
+
+        The budget counts CLAIMED rows, so a caller driving ``/signin/otp/token``
+        alone (the internal-bearer residual clause 12 names) cannot spend a
+        victim's send budget — it can only fill rows, which its own gate bounds.
+        """
+        who = _who("noclaim")
+        async with tenant_engine_scope(_URL):
+            await record_token(who, f"hash-{uuid.uuid4().hex}", _soon())
+
+        assert _rows(replayed, who)[0]["reserved_at"] is None
 
     async def test_an_expired_code_does_not_verify(self) -> None:
         """Short expiry is one of the three bounds on the accepted residual
@@ -483,6 +513,42 @@ class TestTheTokenRoundTrip:
         async with tenant_engine_scope(_URL):
             await record_token(who, f"hash-{uuid.uuid4().hex}", expires)
             assert await consume_token(who, "not-the-hash") is None
+
+    async def test_two_live_codes_with_the_SAME_hash_consume_ONE_row(
+        self, replayed
+    ) -> None:
+        """⚠️ A 6-digit code collision must not 500 sign-in (review finding P2).
+
+        ``(identifier, token)`` is deliberately not unique — two live codes for
+        one address can land on the same six digits (≈1e-6 per pair), and a
+        unique violation would present to the person as "the code is broken".
+        But the consume statement then matched TWO rows, and the result was read
+        with ``.one_or_none()``, which raises ``MultipleResultsFound``: a **500
+        on sign-in for somebody whose code was correct**.
+
+        The statement now selects one id (``ORDER BY created_at DESC, id DESC
+        LIMIT 1``) and updates that, so the newest matching token is consumed and
+        the other is left alone.
+
+        Measured RED by restoring the bare ``UPDATE … WHERE identifier AND
+        token`` form: this raises ``MultipleResultsFound`` instead of returning.
+        """
+        who = _who("collide")
+        # The SAME hash on two live sends — what a digit collision looks like
+        # by the time it reaches this table.
+        hashed = f"hash-{uuid.uuid4().hex}"
+
+        async with tenant_engine_scope(_URL):
+            await record_token(who, hashed, _soon(600))
+            await record_token(who, hashed, _soon(601))
+            found = await consume_token(who, hashed)
+
+        assert found is not None, "a correct code did not verify"
+        rows = _rows(replayed, who)
+        assert len(rows) == 2
+        # Exactly one consumed, and it is the NEWEST — the code the person was
+        # most recently sent; the other is about to expire anyway.
+        assert [r["consumed_at"] is not None for r in rows] == [False, True]
 
     async def test_the_identifier_is_canonicalised_on_both_sides(self) -> None:
         """A case variant must not be a second address with a second budget."""
@@ -637,6 +703,65 @@ class TestTheSendLimit:
                 await reserve_send(who, expires)
                 await record_token(who, f"hash-{i}-{uuid.uuid4().hex}", expires)
 
+        assert len(_rows(replayed, who)) == SEND_MAX_PER_WINDOW
+
+    async def test_two_sends_sharing_an_EXPIRES_MILLISECOND_mail_once(
+        self, replayed
+    ) -> None:
+        """⚠️ The bypass the exclusion above opened, closed (review finding P1b).
+
+        ``expires`` is ``Date.now() + maxAge``, computed per send. Two sends
+        started in the same millisecond therefore carry the SAME instant — and
+        the in-flight exclusion made each of them invisible to the other's
+        count, so both passed a budget of three, both upserted the one row, and
+        **two emails went out for one slot**. Repeat per millisecond and the
+        limit is decorative.
+
+        This drives exactly that shape: one ``expires``, two sends. The second
+        must be refused — ``SendDuplicate``, distinct from the budget refusal
+        because the budget was not the thing that stopped it — and the refusal is
+        what keeps ``sendVerificationRequest`` from reaching Resend.
+
+        Measured RED by removing the ``WHERE auth_email_otp_token.reserved_at IS
+        NULL`` from ``_CLAIM_SEND_SQL``: the second send is then permitted and a
+        second code is mailed.
+        """
+        who = _who("burst")
+        expires = _soon()  # ONE instant, shared by both sends
+
+        async with tenant_engine_scope(_URL):
+            await reserve_send(who, expires)
+            with pytest.raises(OtpRateLimited) as caught:
+                await reserve_send(who, expires)
+
+        assert caught.value.code == SEND_DUPLICATE
+        # …and it coalesced onto ONE row rather than silently making two.
+        assert len(_rows(replayed, who)) == 1
+
+    async def test_the_burst_spends_exactly_one_of_the_three(
+        self, replayed
+    ) -> None:
+        """The other half of P1b: the budget must COUNT the burst once.
+
+        A refusal that also failed to charge the slot would be the same hole
+        wearing a 429 — the attacker would burst, be refused, and still have
+        three sends left. So: burst, then prove only two remain.
+        """
+        who = _who("burstbudget")
+        shared = _soon()
+
+        async with tenant_engine_scope(_URL):
+            await reserve_send(who, shared)
+            for _ in range(2):
+                with pytest.raises(OtpRateLimited):
+                    await reserve_send(who, shared)
+            # Two left, and only two.
+            await reserve_send(who, _soon(601))
+            await reserve_send(who, _soon(602))
+            with pytest.raises(OtpRateLimited) as fourth:
+                await reserve_send(who, _soon(603))
+
+        assert fourth.value.code == SEND_RATE_LIMITED
         assert len(_rows(replayed, who)) == SEND_MAX_PER_WINDOW
 
 

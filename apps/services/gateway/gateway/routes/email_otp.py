@@ -14,8 +14,9 @@ expiry — is in :mod:`acb_auth.email_otp`, one transaction per act.
 Three routes, one per act, because they are three different authorisations of
 the same row and collapsing them would hide that:
 
-* ``POST /signin/otp/send``    — may a code be sent? (the hourly budget), and
-                                 records the send. Called BEFORE the mail goes.
+* ``POST /signin/otp/send``    — may a code be sent? (the hourly budget **and**
+                                 the per-send slot claim), and records the send.
+                                 Called BEFORE the mail goes.
 * ``POST /signin/otp/token``   — persist the token hash for that send.
 * ``POST /signin/otp/consume`` — spend one verification attempt and, if the hash
                                  matches a live token, consume it.
@@ -57,6 +58,34 @@ the same row and collapsing them would hide that:
   §4.3's ``GATEWAY_INTERNAL_TOKEN`` / ``LITELLM_MASTER_KEY`` split**
   (``work_plan.md`` §6, §8 gate 1); today one secret opens both doors. Accepted,
   named, and not addressed here.
+
+  ⚠️ **The DENIAL half of that residual does not need the internal token at
+  all**, and saying otherwise understated it (repair of review finding F5,
+  2026-08-23). ``proxy.ts`` passes ``/api/auth/**`` through **unauthenticated**
+  — it must, or nobody could sign in — so anyone on the internet can drive
+  ``GET /api/auth/callback/resend?token=…&email=<victim>`` with junk tokens. Each
+  one reaches :func:`otp_consume` through the BFF's own bearer, spends one of the
+  victim's five attempts, and the fifth **invalidates their outstanding code**.
+  Five requests therefore deny email-OTP sign-in to a chosen address for ten
+  minutes, anonymously. That is accepted (the alternative — not charging
+  attempts for unauthenticated callers — is a limiter with a documented bypass,
+  and OAuth sign-in is unaffected), and per-IP throttling belongs at the reverse
+  proxy, which is where the deferred item sits. What is NOT accepted is the mail
+  half: that is bounded here, and by the per-send slot claim in
+  :mod:`acb_auth.email_otp`.
+
+  ⚠️ **A Resend failure spends the slot.** The send budget is reserved before
+  the mail is handed to the transport, so a Resend outage burns one of the three
+  hourly slots per attempt and three failures lock the address out for an hour.
+  That is the fail-CLOSED direction and it is deliberate: releasing the slot on a
+  transport error would make "make the transport fail" the bypass.
+
+  ⚠️ **Every call here drives ``deps._with_resolved_access`` with a
+  caller-chosen address**, because that is what ``require_authenticated`` does
+  with an ``X-User-Email``. For an address that belongs to no member the resolver
+  degrades to no-access and logs a swallowed warning — so a novel address per
+  request writes a warning line per request on a phase-4-promoted catalog. Log
+  volume, not an access decision; named here so it is not rediscovered as a leak.
 
 ## Always mounted, and dark by consequence rather than by a flag of its own
 
@@ -116,12 +145,19 @@ def _bad_request(code: str, detail: str) -> JSONResponse:
 
 
 def _too_many(exc: OtpRateLimited) -> JSONResponse:
-    """The rate-limit refusal, as a 429 the adapter turns into an Auth.js error.
+    """The send/verify refusal, as a 429 the adapter turns into an Auth.js error.
 
     A 429 rather than a 200-with-a-code (the shape ``signin.py`` uses): this is
     not an outcome the sign-in page renders with friendly copy, it is a refusal
     of the request itself, and ``@auth/core`` has no vocabulary for a partial
     adapter answer. The ``detail`` never names the address.
+
+    Carries three codes, and the third is not a budget refusal:
+    ``SendRateLimited`` (three mails this hour), ``VerifyRateLimited`` (five
+    guesses in ten minutes) and ``SendDuplicate`` — a second send claiming a slot
+    that is already taken, which is how N simultaneous sends yield ONE email.
+    All three must reach the adapter as a non-2xx, because the adapter's throw is
+    what stops :func:`otp_send`'s caller from mailing anyway.
     """
     return JSONResponse(status_code=429, content={"code": exc.code, "detail": exc.detail})
 

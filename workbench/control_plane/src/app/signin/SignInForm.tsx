@@ -7,7 +7,7 @@ import { Suspense, useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { OTP_EMAIL_STORAGE_KEY } from "@/lib/emailOtp";
+import { OTP_EMAIL_STORAGE_KEY, canonicalOtpIdentifier } from "@/lib/emailOtp";
 
 import { signInErrorMessage } from "./errorCopy";
 
@@ -56,16 +56,26 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
                     // convenience for the prefill and nothing more — the code
                     // round-trip is what proves ownership, so a tampered or
                     // absent value costs a retype, never a wrong sign-in.
+                    //
+                    // ⚠️ **Canonical, not as typed** (repair of review finding
+                    // P1a). `@auth/core`'s send leg normalises the address
+                    // before minting the token, and the completion leg compares
+                    // the two VERBATIM — after consuming the code. Stashing
+                    // `Ada@Customer.Example` therefore burned the person's code
+                    // and then told them it was wrong. `canonicalOtpIdentifier`
+                    // mirrors that normaliser, so the value handed on is already
+                    // the one the token was minted for.
+                    const canonical = canonicalOtpIdentifier(email);
                     try {
                       window.sessionStorage.setItem(
                         OTP_EMAIL_STORAGE_KEY,
-                        email,
+                        canonical,
                       );
                     } catch {
                       // Private mode / a strict storage policy. The code page
                       // shows the field instead.
                     }
-                    signIn(p.id, { email, callbackUrl });
+                    signIn(p.id, { email: canonical, callbackUrl });
                   }}
                 >
                   <Input

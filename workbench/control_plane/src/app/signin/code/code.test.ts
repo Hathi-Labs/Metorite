@@ -50,6 +50,24 @@ describe("the code page submits to Auth.js's own callback", () => {
     expect(form).toContain('name="email"');
   });
 
+  it("submits the CANONICAL address, and only that (P1a)", () => {
+    // ⚠️ The repair of review finding P1a, on the side that produced it. The
+    // send leg normalises through `@auth/core`'s `defaultNormalizer`, so the
+    // token is minted for `ada@customer.example`; this form used to submit
+    // `Ada@Customer.Example`. `callback/index.js:151-152` compares the two
+    // VERBATIM — but only AFTER `useVerificationToken` has consumed the row and
+    // charged an attempt. The person's code was spent and they were told it was
+    // wrong, and each retry cost another of their five attempts.
+    expect(form).toContain("canonicalOtpIdentifier(email)");
+    expect(form).toContain('<input type="hidden" name="email" value={canonical} />');
+    // Exactly ONE control named `email`. A second (the visible box, when the
+    // address is unknown) would submit the raw string beside the canonical one
+    // and `@auth/core` reads the first — which is how this comes back.
+    expect(form.match(/name="email"/g)?.length).toBe(1);
+    // And the raw state is never what is submitted.
+    expect(form).not.toContain("name=\"email\" value={email}");
+  });
+
   it("reads no secret and asserts no identity of its own", () => {
     // The address is user input here and that is fine — ownership is proven by
     // the code round-trip and the session email is Auth.js's verified value
@@ -93,5 +111,19 @@ describe("the code page is reachable, and only while OTP is armed", () => {
     // value must cost a retype rather than a dead end.
     expect(form).toContain("window.sessionStorage.getItem(");
     expect(form).toMatch(/} catch \{/);
+  });
+
+  it("the hand-off is canonical at the WRITE site too (P1a)", () => {
+    // Both write sites, or neither. Canonicalising only at submit would still
+    // leave the prefill showing a form of the address the token was not minted
+    // for, and canonicalising only at the stash would leave a person who typed
+    // into the code page's own field submitting a raw one.
+    expect(signInForm).toContain("canonicalOtpIdentifier(email)");
+    expect(signInForm).toMatch(
+      /setItem\(\s*OTP_EMAIL_STORAGE_KEY,\s*canonical,?\s*\)/,
+    );
+    // The provider is also called with the canonical value, so the address the
+    // send leg normalises is already normal.
+    expect(signInForm).toMatch(/signIn\(p\.id,\s*\{\s*email:\s*canonical/);
   });
 });

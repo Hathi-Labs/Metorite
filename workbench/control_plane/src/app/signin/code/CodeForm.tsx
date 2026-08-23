@@ -9,6 +9,7 @@ import {
   EMAIL_OTP_PROVIDER_ID,
   OTP_CODE_LENGTH,
   OTP_EMAIL_STORAGE_KEY,
+  canonicalOtpIdentifier,
 } from "@/lib/emailOtp";
 
 import { signInErrorMessage } from "../errorCopy";
@@ -66,7 +67,18 @@ function Form() {
     }
   }, [fromQuery]);
 
-  const known = email.trim() !== "";
+  // ⚠️ **What the form SUBMITS is always this, never the raw field** (repair of
+  // review finding P1a). `@auth/core`'s send leg minted the token against its
+  // own normalised form of the address, and `callback/index.js:151-152` then
+  // compares `invite.identifier !== paramIdentifier` VERBATIM — but only after
+  // `useVerificationToken` has already consumed the row and charged an attempt.
+  // Submitting `Ada@Customer.Example` therefore spent the code and rendered
+  // "that code is wrong", and each retry cost another of the five attempts until
+  // the address was locked out for ten minutes. So the submitted field is a
+  // hidden input carrying the canonical value, and the visible box below is an
+  // unnamed control that only feeds it.
+  const canonical = canonicalOtpIdentifier(email);
+  const known = canonical !== "";
 
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
@@ -74,7 +86,7 @@ function Form() {
         <h1 className="text-xl font-semibold">Check your email</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {known
-            ? `We sent a ${OTP_CODE_LENGTH}-digit code to ${email}.`
+            ? `We sent a ${OTP_CODE_LENGTH}-digit code to ${canonical}.`
             : `Enter your address and the ${OTP_CODE_LENGTH}-digit code we sent you.`}
         </p>
 
@@ -89,12 +101,16 @@ function Form() {
           action={`/api/auth/callback/${EMAIL_OTP_PROVIDER_ID}`}
           className="mt-6 flex flex-col gap-2"
         >
-          {known ? (
-            <input type="hidden" name="email" value={email} />
-          ) : (
+          {/* The ONE field named `email`, and it always carries the canonical
+              form. Rendered unconditionally so there is no arrangement of this
+              page that submits a raw address. */}
+          <input type="hidden" name="email" value={canonical} />
+          {!known && (
             <Input
               type="email"
-              name="email"
+              // Deliberately UNNAMED: a second `email` control would submit the
+              // raw string beside the canonical one and `@auth/core` reads the
+              // first, which is how this bug would come back.
               required
               autoComplete="email"
               inputSize="lg"

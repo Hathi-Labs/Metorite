@@ -38,16 +38,27 @@ chain; a verification token is an identity artifact. It sits beside
    "4 attempts so far" and both proceed, and the fifth-attempt lockout is a
    suggestion. It is per identifier, so two people signing in do not serialise.
 
-3. ⚠️ **The send gate EXCLUDES the send currently in flight.**
-   ``@auth/core``'s ``lib/actions/signin/send-token.js`` starts
-   ``sendVerificationRequest`` and ``createVerificationToken`` **concurrently**
-   in one ``Promise.all``, and only the second is handed the token hash. The
-   mail must be gated *before* it is sent (a limiter that refuses the token but
-   not the email limits nothing), so both legs call in and both must reach the
-   SAME answer whichever lands first. They identify their shared send by
-   ``(identifier, expires)`` — ``@auth/core`` computes ``expires`` once and hands
-   the same instant to each — and the count excludes it. Count the row and the
-   limit is racily 2-or-3 instead of 3.
+3. ⚠️ **The send gate EXCLUDES the send currently in flight, and that exclusion
+   is NOT what bounds emails.** ``@auth/core``'s
+   ``lib/actions/signin/send-token.js`` starts ``sendVerificationRequest`` and
+   ``createVerificationToken`` **concurrently** in one ``Promise.all``, and only
+   the second is handed the token hash. The mail must be gated *before* it is
+   sent (a limiter that refuses the token but not the email limits nothing), so
+   both legs call in and both must reach the SAME answer whichever lands first.
+   They identify their shared send by ``(identifier, expires)`` — ``@auth/core``
+   computes ``expires`` once and hands the same instant to each — and the count
+   excludes it. Count the row and the limit is racily 2-or-3 instead of 3.
+
+   ⚠️ **What bounds emails is** :data:`_CLAIM_SEND_SQL` (repair of review
+   finding P1b, 2026-08-23). ``expires`` is ``Date.now() + maxAge``, so two
+   *different* sends started in the same millisecond carry the *same* instant:
+   they excluded one another from the count, both passed a budget of three, both
+   upserted the one row — and two emails went out for one slot. Repeat per
+   millisecond and the budget is decorative. So the send leg now **claims** the
+   slot in one statement (``ON CONFLICT … DO UPDATE … WHERE reserved_at IS
+   NULL``) and is refused with :data:`SEND_DUPLICATE` when the claim finds it
+   already taken. Both legs still agree about which send they are; what changed
+   is that exactly one of N simultaneous claimants may mail.
 
 ## What is NOT here
 
@@ -65,7 +76,9 @@ here and not on a page.
 
 Fences: ``tests/unit/test_email_otp_token.py`` (R8, real Postgres — round trip,
 single use, expiry, the 6th attempt refused even with the correct code, the 429
-window, the 4th send refused, the migration's collision guard) and
+window, the 4th send refused, the **same-millisecond send collision** refused
+without a second mail, a **duplicate 6-digit hash** consumed as one row rather
+than raising, and the migration's collision guard) and
 ``tests/unit/test_h3_rls_promotion_rehearsal.py::
 TestTheEmailOtpTokenIsReachableUnbound``. R7 name: ``email-otp-token-limits``.
 """
@@ -127,6 +140,15 @@ SEND_RATE_LIMITED = "SendRateLimited"
 #: revive a code somebody has been guessing at.
 VERIFY_RATE_LIMITED = "VerifyRateLimited"
 
+#: This send's slot was already claimed — a second ``sendVerificationRequest``
+#: for the same ``(identifier, expires)``. Distinct from
+#: :data:`SEND_RATE_LIMITED` because it is not a budget refusal: the budget was
+#: fine, the send was a duplicate, and the whole point of answering is that the
+#: adapter throws and **no second email goes out** (review finding P1b). Same
+#: exception class, because both mean "this send is refused and nothing is
+#: mailed" — one refusal vocabulary, two reasons.
+SEND_DUPLICATE = "SendDuplicate"
+
 
 def canonical_identifier(identifier: str | None) -> str:
     """The one canonical form of an OTP identifier: ``lower(btrim(...))``.
@@ -152,10 +174,26 @@ _LOCK_SQL = """
 SELECT pg_advisory_xact_lock(hashtext('acb_auth.email_otp:' || CAST(:identifier AS TEXT)))
 """
 
-#: Sends for this identifier inside the window, EXCLUDING the one in flight.
-#: See rule 3 in the module docstring — without the exclusion the two legs of a
-#: single send disagree by one, nondeterministically.
-_SEND_COUNT_SQL = """
+#: **Mails** charged to this identifier inside the window, EXCLUDING the send in
+#: flight. ``reserved_at IS NOT NULL`` is the whole point: one claimed row is one
+#: email, so this counts exactly what the budget is about. A row the token leg
+#: created on its own has authorised no mail and does not spend the budget.
+_CLAIMED_SEND_COUNT_SQL = """
+SELECT count(*) AS n
+  FROM auth_email_otp_token
+ WHERE identifier = CAST(:identifier AS TEXT)
+   AND created_at > now() - make_interval(secs => CAST(:window_s AS DOUBLE PRECISION))
+   AND expires <> CAST(:expires AS TIMESTAMPTZ)
+   AND reserved_at IS NOT NULL
+"""
+
+#: ROWS for this identifier inside the window, excluding the one in flight — the
+#: token leg's gate. It counts unclaimed rows too, so a caller driving
+#: ``/signin/otp/token`` alone (the internal-bearer residual clause 12 names)
+#: cannot mint unbounded rows: clause 12 promises the limit applies to EVERY
+#: caller, and a gate that only counted mails would exempt exactly the caller who
+#: skips the mail.
+_ROW_COUNT_SQL = """
 SELECT count(*) AS n
   FROM auth_email_otp_token
  WHERE identifier = CAST(:identifier AS TEXT)
@@ -163,8 +201,35 @@ SELECT count(*) AS n
    AND expires <> CAST(:expires AS TIMESTAMPTZ)
 """
 
-#: One row per SEND, upserted by whichever leg arrives first. ``COALESCE`` keeps
-#: an already-written hash: the send leg passes NULL and must not wipe it.
+#: **Claim this send's slot, or answer nothing.** The statement that makes the
+#: hourly budget real rather than advisory (review finding P1b).
+#:
+#: ⚠️ The ``WHERE reserved_at IS NULL`` on the ``DO UPDATE`` is load-bearing and
+#: is not an optimisation: when the row is already claimed the conflict arm
+#: matches nothing, the statement affects zero rows, ``RETURNING`` yields
+#: nothing, and :func:`reserve_send` turns that into :data:`SEND_DUPLICATE`. That
+#: is what makes N simultaneous sends — which share an ``expires`` millisecond
+#: and therefore share this row — produce exactly ONE email.
+#:
+#: It still converges with the token leg: a row that leg created carries
+#: ``reserved_at IS NULL``, so the send leg claims it rather than being refused,
+#: and ``token`` is left alone.
+_CLAIM_SEND_SQL = """
+INSERT INTO auth_email_otp_token (identifier, token, expires, reserved_at)
+VALUES (CAST(:identifier AS TEXT),
+        NULL,
+        CAST(:expires AS TIMESTAMPTZ),
+        now())
+ON CONFLICT ON CONSTRAINT auth_email_otp_token_send_key DO UPDATE
+   SET reserved_at = now()
+ WHERE auth_email_otp_token.reserved_at IS NULL
+RETURNING identifier, token, expires
+"""
+
+#: The TOKEN leg's write: attach the hash to this send's row, creating it when
+#: the send leg has not landed yet (the two are concurrent and genuinely race).
+#: ``COALESCE`` keeps an already-written hash, and ``reserved_at`` is never
+#: touched here — claiming a send slot is the send leg's act alone.
 _UPSERT_SQL = """
 INSERT INTO auth_email_otp_token (identifier, token, expires)
 VALUES (CAST(:identifier AS TEXT),
@@ -206,14 +271,28 @@ RETURNING attempts
 
 #: Consume: single-use and expiry are in the WHERE, so both are enforced by the
 #: statement rather than by a branch that can be reordered away.
+#:
+#: ⚠️ **Exactly ONE row, chosen deterministically** (repair of review finding P2,
+#: 2026-08-23). ``(identifier, token)`` is not unique and deliberately so — two
+#: live codes for one address can collide on the same 6-digit value (≈1e-6 per
+#: pair) and a unique violation would present as "the code is broken". But the
+#: bare ``UPDATE … RETURNING`` then returned two rows, read with
+#: ``.one_or_none()``, which raises ``MultipleResultsFound`` — a 500 on sign-in
+#: for a person whose code was correct. The ``id = (SELECT … LIMIT 1)`` form
+#: consumes the NEWEST match instead: newest, because that is the code the person
+#: was most recently sent and the other is about to expire anyway.
 _CONSUME_SQL = """
 UPDATE auth_email_otp_token
    SET consumed_at = now()
- WHERE identifier = CAST(:identifier AS TEXT)
-   AND token      = CAST(:token      AS TEXT)
-   AND consumed_at IS NULL
-   AND invalidated_at IS NULL
-   AND expires > now()
+ WHERE id = (
+        SELECT id FROM auth_email_otp_token
+         WHERE identifier = CAST(:identifier AS TEXT)
+           AND token      = CAST(:token      AS TEXT)
+           AND consumed_at IS NULL
+           AND invalidated_at IS NULL
+           AND expires > now()
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1)
 RETURNING identifier, token, expires
 """
 
@@ -249,17 +328,22 @@ async def _session():
     return get_session_factory()()
 
 
-async def _gate_send(session: Any, identifier: str, expires: datetime) -> None:
-    """Refuse when this identifier has already used its hourly send budget.
+async def _gate_send(
+    session: Any, identifier: str, expires: datetime, *, sql: str
+) -> None:
+    """Refuse when this identifier has already used its hourly budget.
 
     Called by BOTH legs of one send with the same ``expires``, which is what
-    makes them agree. Assumes the caller already took the advisory lock.
+    makes them agree about which send is in flight. They pass DIFFERENT ``sql``
+    on purpose — see :data:`_CLAIMED_SEND_COUNT_SQL` (mails, the send leg) and
+    :data:`_ROW_COUNT_SQL` (rows, the token leg). Assumes the caller already took
+    the advisory lock.
     """
     from sqlalchemy import text
 
     used = (
         await session.execute(
-            text(_SEND_COUNT_SQL),
+            text(sql),
             {
                 "identifier": identifier,
                 "window_s": float(SEND_WINDOW_S),
@@ -282,8 +366,66 @@ async def reserve_send(identifier: str, expires: datetime) -> dict[str, Any]:
     ``sendVerificationRequest`` **before** the mail goes out — which is the only
     place a send limit can actually stop an email. It writes the row with no
     token; :func:`record_token` fills the hash in.
+
+    Two refusals, and they are different failures:
+
+    * :data:`SEND_RATE_LIMITED` — three mails already went to this address this
+      hour.
+    * :data:`SEND_DUPLICATE` — this send's slot was already claimed. That is the
+      concurrent case (review finding P1b): ``expires`` is a millisecond, so N
+      sends started together share one, and without the claim they excluded each
+      other from the count and all passed. Exactly one claimant may mail.
+
+    Both raise, and the adapter turns a raise into a throw, and the throw is what
+    keeps ``sendVerificationRequest`` from reaching Resend.
     """
-    return await _upsert(identifier, expires, token=None, act="reserve_send")
+    from sqlalchemy import text
+
+    who = canonical_identifier(identifier)
+    if not who:
+        raise ValueError("an OTP identifier is required")
+
+    # The duplicate refusal is decided INSIDE the transaction and raised
+    # OUTSIDE it, :func:`consume_token`'s idiom and for its reason: the
+    # transaction must still COMMIT (so the advisory lock is released rather
+    # than held across the raise, which would serialise the very burst this
+    # refusal exists to shed), and raising while the session was open would drive
+    # an already-committed transaction through the rollback arm.
+    duplicate: OtpRateLimited | None = None
+    result: dict[str, Any] | None = None
+
+    session = await _session()
+    try:
+        await session.begin()
+        await session.execute(text(_LOCK_SQL), {"identifier": who})
+        await _gate_send(session, who, expires, sql=_CLAIMED_SEND_COUNT_SQL)
+        row = (
+            await session.execute(
+                text(_CLAIM_SEND_SQL), {"identifier": who, "expires": expires}
+            )
+        ).one_or_none()
+        await session.commit()
+        if row is None:
+            _log.warning(
+                "email_otp.send_duplicate", identifier_domain=_domain(who)
+            )
+            duplicate = OtpRateLimited(
+                SEND_DUPLICATE,
+                "a code send for this address is already in flight",
+            )
+        else:
+            _log.info("email_otp.reserve_send", identifier_domain=_domain(who))
+            result = _record(row)
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+    if duplicate is not None:
+        raise duplicate
+    assert result is not None  # exactly one of the two arms above ran
+    return result
 
 
 async def record_token(
@@ -291,21 +433,20 @@ async def record_token(
 ) -> dict[str, Any]:
     """Persist the verification-token hash, or raise :class:`OtpRateLimited`.
 
-    The SECOND leg — Auth.js's ``createVerificationToken``. It re-applies the
-    same send gate rather than trusting that :func:`reserve_send` ran: the two
+    The SECOND leg — Auth.js's ``createVerificationToken``. It applies a send
+    gate of its own rather than trusting that :func:`reserve_send` ran: the two
     are concurrent, and a caller holding the internal bearer could invoke this
-    one alone.
+    one alone. Its gate counts ROWS rather than mails, because a caller who never
+    calls the send leg would otherwise face no limit at all (clause 12: the limit
+    applies to every caller).
+
+    It does **not** claim a send slot. Landing first is legitimate and must not
+    consume the mail budget or make the send leg look like a duplicate.
     """
+    from sqlalchemy import text
+
     if not (token or "").strip():
         raise ValueError("record_token requires the token hash")
-    return await _upsert(identifier, expires, token=token, act="record_token")
-
-
-async def _upsert(
-    identifier: str, expires: datetime, *, token: str | None, act: str
-) -> dict[str, Any]:
-    """One transaction: lock, gate on the hourly send budget, upsert the row."""
-    from sqlalchemy import text
 
     who = canonical_identifier(identifier)
     if not who:
@@ -315,7 +456,7 @@ async def _upsert(
     try:
         await session.begin()
         await session.execute(text(_LOCK_SQL), {"identifier": who})
-        await _gate_send(session, who, expires)
+        await _gate_send(session, who, expires, sql=_ROW_COUNT_SQL)
         row = (
             await session.execute(
                 text(_UPSERT_SQL),
@@ -323,7 +464,7 @@ async def _upsert(
             )
         ).one()
         await session.commit()
-        _log.info(f"email_otp.{act}", identifier_domain=_domain(who))
+        _log.info("email_otp.record_token", identifier_domain=_domain(who))
         return _record(row)
     except Exception:
         await session.rollback()

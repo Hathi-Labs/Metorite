@@ -1,26 +1,46 @@
 /**
- * Fences for CP-2d slice 2's Auth.js adapter — **R5's missing fence**
- * (`customer_console.md` §CP-2d clauses 6 and 10, ruling H-A).
+ * Fences for CP-2d slice 2's Auth.js adapter — **R5's missing fence, and the
+ * completeness fence P0 proved was missing too**
+ * (`customer_console.md` §CP-2d clauses 6 and 10, rulings H-A/H-E).
  *
- * R5 says "no new DB-connection sites outside the seam". Until this file, the
- * only thing stopping the control plane from growing one was that nobody had
- * tried: the rule bound Python (`tests/unit/test_db_engine_seam.py`,
- * `test_psycopg_seam.py`) and had **no expression at all in the Next tier**.
- * Wiring an Auth.js database adapter is precisely the moment somebody reaches
- * for `@auth/pg-adapter` and a connection string, so the rule gets a fence here
- * in the change that creates the temptation — R7, and the reason this file
- * exists rather than a paragraph in a docstring.
+ * Two subjects, and they fail for different reasons:
  *
- * Two of the three checks are EXECUTED (they read `package.json` and walk
- * `src/`); the third is source-level over `emailOtpAdapter.ts` for the measured
- * reason `signin.test.ts:38-45` records — that module imports `lib/gateway.ts`,
- * which drags `next/server`, which cannot load in this tree's node-env vitest.
+ * 1. **R5 — no database in the Next tier.** "No new DB-connection sites outside
+ *    the seam" bound Python (`tests/unit/test_db_engine_seam.py`,
+ *    `test_psycopg_seam.py`) and had **no expression at all in the Next tier**
+ *    until this file. Wiring an Auth.js database adapter is precisely the moment
+ *    somebody reaches for `@auth/pg-adapter` and a connection string, so the rule
+ *    gets its fence in the change that creates the temptation (R7). Two of these
+ *    checks are EXECUTED — they read `package.json` and walk `src/`.
+ *
+ * 2. **Completeness — the adapter implements every method the pinned
+ *    `@auth/core` can invoke under this configuration.** ⚠️ This half is the
+ *    repair of review finding P0 (2026-08-23) and it replaces a fence that made
+ *    the bug *harder* to fix: the file used to assert
+ *    `expect(declared).not.toContain("getUserByAccount")`, pinning in place a
+ *    claim (`"the oauth arms are unreachable in this configuration"`) that was
+ *    simply false. `callback/index.js:56-62` calls `getUserByAccount` on **every**
+ *    OAuth callback once an adapter is present, so the armed adapter would have
+ *    taken Google and Microsoft sign-in down the day the owner flipped the flag.
+ *
+ *    So the reachable set is no longer asserted from a docstring — it is
+ *    **derived from the pinned `@auth/core@0.41.2` in `node_modules`**, by
+ *    reading the call sites out of the source and subtracting only those the
+ *    source itself shows are guarded (behind `useJwtSession`, or inside the
+ *    webauthn arm). A version bump that adds a call site, moves one out of its
+ *    guard, or introduces one in a new file turns this RED.
+ *
+ * The adapter's *behaviour* is fenced where it can be EXECUTED, in
+ * `emailOtp.test.ts` — both `@auth/core` arms replayed against the real object.
+ * This file proves no method is missing; that one proves the methods are right.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { extname, join } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join, posix, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+
+import { emailOtpAdapterOver } from "@/lib/emailOtp";
 
 const PKG_PATH = fileURLToPath(new URL("../../package.json", import.meta.url));
 const SRC_DIR = fileURLToPath(new URL("..", import.meta.url));
@@ -28,6 +48,7 @@ const ADAPTER = readFileSync(
   new URL("./emailOtpAdapter.ts", import.meta.url),
   "utf-8",
 );
+const PURE = readFileSync(new URL("./emailOtp.ts", import.meta.url), "utf-8");
 
 const pkg = JSON.parse(readFileSync(PKG_PATH, "utf-8")) as {
   dependencies?: Record<string, string>;
@@ -40,7 +61,7 @@ const pkg = JSON.parse(readFileSync(PKG_PATH, "utf-8")) as {
  * `@auth/*-adapter` is listed because every off-the-shelf Auth.js adapter takes
  * a connection (a `pg` Pool, a Drizzle/Prisma client, a DSN) — adopting one is
  * the same defect wearing a friendlier name, and it is the exact package a
- * future agent will reach for when this adapter needs a sixth method.
+ * future agent will reach for when this adapter needs a ninth method.
  */
 function offendingDependency(name: string): boolean {
   return (
@@ -99,82 +120,239 @@ describe("the control plane still has no database of its own (R5)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("the adapter reaches the database only through the gateway", () => {
-    // Every persisting method is an HTTP call to `gateway/routes/email_otp.py`.
-    expect(ADAPTER).toContain("EMAIL_OTP_TOKEN_PATH");
-    expect(ADAPTER).toContain("EMAIL_OTP_CONSUME_PATH");
-    expect(ADAPTER).toContain("EMAIL_OTP_SEND_PATH");
-    // …through the ONE bearer seam. Minting a token here is the forbidden way
-    // around the `auth.ts` ⇄ `lib/gateway.ts` cycle, and it is fenced from the
-    // other side too (`gateway.test.ts`'s sweep).
+  it("the adapter reaches the database only through the gateway seam", () => {
+    // The three routes are named ONCE, in the pure module, and reached only
+    // through the object built there.
+    expect(PURE).toContain("EMAIL_OTP_TOKEN_PATH");
+    expect(PURE).toContain("EMAIL_OTP_CONSUME_PATH");
+    expect(PURE).toContain("EMAIL_OTP_SEND_PATH");
+    // …and the ONE transport is built here, out of the ONE bearer seam. Minting
+    // a token here is the forbidden way around the `auth.ts` ⇄ `lib/gateway.ts`
+    // cycle, and it is fenced from the other side too — `gateway.test.ts`'s
+    // bearer sweep names this file in `NON_ROUTE_GATEWAY_CALLERS`. ⚠️ It did
+    // NOT until the F1 repair of 2026-08-23: this comment claimed the
+    // double-fence for a widening that had never happened, and a fence nobody
+    // checked is how the second bearer would have arrived.
     expect(ADAPTER).toContain("headersActingAs(identifier");
-    expect(ADAPTER).not.toContain("GATEWAY_INTERNAL_TOKEN");
-    expect(ADAPTER).not.toContain("LITELLM_MASTER_KEY");
-    expect(ADAPTER).not.toContain("CUSTOMER_CONSOLE_DEPLOYMENT_KEY");
+    expect(ADAPTER).toContain("GATEWAY_URL");
+    for (const secret of [
+      "GATEWAY_INTERNAL_TOKEN",
+      "LITELLM_MASTER_KEY",
+      "CUSTOMER_CONSOLE_DEPLOYMENT_KEY",
+    ]) {
+      expect(ADAPTER).not.toContain(secret);
+      expect(PURE).not.toContain(secret);
+    }
     // `gatewayHeaders()` calls `auth()` and would find nothing: every one of
     // these calls happens before a session exists.
     expect(ADAPTER).not.toContain("gatewayHeaders(");
+    // The pure module must stay framework-free, or every executed fence in
+    // `emailOtp.test.ts` silently stops running (`next/server` will not load in
+    // this tree's node-env vitest). A VALUE import of the gateway there is the
+    // way that happens.
+    expect(PURE).not.toContain('from "@/lib/gateway"');
+  });
+
+  it("persists no user, account or session row — identity stays the tenant plane's", () => {
+    // A second identity store beside `app_user`/`user_identity` is the defect
+    // root CLAUDE.md §5 names, and it would arrive as an innocuous-looking
+    // `POST /users` from right here. (The behavioural half — that a full replay
+    // of both arms touches only the consume route — is in `emailOtp.test.ts`.)
+    for (const src of [ADAPTER, PURE]) {
+      expect(src).not.toMatch(/EMAIL_OTP_(USER|SESSION|ACCOUNT)_PATH/);
+    }
   });
 });
 
-describe("the adapter's method set is the minimal one (ruling H-E)", () => {
-  /** Method names declared on the returned object literal. */
-  const declared = [...ADAPTER.matchAll(/^\s{4}async (\w+)\(/gm)].map(
-    (m) => m[1],
-  );
+// ══════════════════════════════════════════════════════════════════════════
+// The completeness fence, derived from the PINNED @auth/core (finding P0)
+// ══════════════════════════════════════════════════════════════════════════
 
-  it("implements exactly the five the email flow reaches under jwt", () => {
-    // Measured against the PINNED `@auth/core@0.41.2` in node_modules:
-    //   assert.js:18-22          -> createVerificationToken, useVerificationToken,
-    //                               getUserByEmail are REQUIRED for type:"email"
-    //   handle-login.js:34-42    -> getUser, when a session cookie is present
-    //   handle-login.js:56-77    -> updateUser (getUserByEmail answered) XOR
-    //                               createUser (it did not). `derivedOtpUser` is
-    //                               total, so updateUser is the reachable one.
-    expect([...declared].sort()).toEqual(
+const CORE_DIR = fileURLToPath(
+  new URL("../../node_modules/@auth/core/lib/", import.meta.url),
+);
+
+function coreFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) coreFiles(full, out);
+    else if (extname(entry) === ".js") out.push(full);
+  }
+  return out;
+}
+
+/** `lib/`-relative, posix-separated, so the pins below read the same on Windows. */
+function rel(path: string): string {
+  return relative(CORE_DIR, path).split(sep).join(posix.sep);
+}
+
+const core = new Map(
+  coreFiles(CORE_DIR).map((p) => [rel(p), readFileSync(p, "utf-8")]),
+);
+
+/** Adapter method names a file names, whether by call or by destructuring. */
+function adapterMethodsIn(src: string): string[] {
+  const found = new Set<string>();
+  // `adapter.foo(`, `adapter?.foo(`, `options.adapter.foo(`, and the optional
+  // CALL form `adapter.foo?.(` — which `send-token.js:61` uses for
+  // `createVerificationToken`, so a regex without it silently drops the one
+  // method the whole feature depends on.
+  for (const m of src.matchAll(/adapter\??\.(\w+)\s*(?:\?\.)?\(/g)) {
+    found.add(m[1]);
+  }
+  // `const { a, b, c } = adapter;` — how `handle-login.js:29` reaches nine of
+  // them, which is why a call-only regex would have missed the whole set.
+  for (const m of src.matchAll(/\{([^{}]*?)\}\s*=\s*adapter\s*;/g)) {
+    for (const name of m[1].split(",")) {
+      const clean = name.trim();
+      if (clean) found.add(clean);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Files whose adapter use is reachable in THIS configuration: an email provider
+ * and two OAuth providers, `session.strategy: "jwt"`, no webauthn, no
+ * credentials.
+ */
+const REACHABLE_FILES = [
+  "actions/callback/index.js",
+  "actions/callback/handle-login.js",
+  "actions/signin/send-token.js",
+];
+
+/**
+ * Names the source itself shows are guarded, each with its guard asserted below.
+ * This list is where a future reader argues with the fence — never the adapter.
+ */
+const GUARDED = ["createSession", "getSessionAndUser", "deleteSession", "createAuthenticator"];
+
+describe("the adapter implements every method the pinned @auth/core can reach", () => {
+  const implemented = Object.keys(
+    emailOtpAdapterOver(async () => {
+      throw new Error("the transport must not be called by a shape assertion");
+    }) as unknown as Record<string, unknown>,
+  ).sort();
+
+  it("no NEW file in @auth/core touches the adapter unnoticed", () => {
+    // The outermost guard, and the one that makes the three-file list below
+    // safe: if a version bump introduces an adapter call site in a file nobody
+    // has read, this reds before any of the per-file reasoning is trusted.
+    const mentions = [...core.entries()]
+      .filter(([, src]) => /\badapter\b/.test(src))
+      .map(([name]) => name)
+      .sort();
+    expect(mentions).toEqual(
       [
-        "createVerificationToken",
-        "getUser",
-        "getUserByEmail",
-        "updateUser",
-        "useVerificationToken",
+        // Reachable here — the three arms.
+        "actions/callback/handle-login.js",
+        "actions/callback/index.js",
+        "actions/signin/send-token.js",
+        // Database-session only; their guards are asserted below.
+        "actions/session.js",
+        "actions/signout.js",
+        "utils/session.js",
+        // WebAuthn only — no webauthn provider is registered (asserted below).
+        "actions/webauthn-options.js",
+        "utils/webauthn-utils.js",
+        // Not call sites: the error wrapper and the required-method check.
+        "init.js",
+        "utils/assert.js",
       ].sort(),
     );
   });
 
-  it("omits every method only a database session could reach", () => {
-    // Not stubbed — omitted. A stub is a method a future reader believes is
-    // exercised, and each of these is reachable ONLY from the `!useJwtSession`
-    // branches of handle-login.js or from the webauthn/oauth arms. If the
-    // session strategy ever changes, this fence reds instead of sign-in dying
-    // on a `TypeError` in production. (`signin.test.ts` pins the strategy.)
-    for (const unreachable of [
-      "createUser",
-      "linkAccount",
-      "createSession",
-      "getSessionAndUser",
-      "updateSession",
-      "deleteSession",
-      "getUserByAccount",
-      "createAuthenticator",
-    ]) {
-      expect(declared).not.toContain(unreachable);
+  it("implements exactly the reachable set — no method missing, none spare", () => {
+    const referenced = new Set<string>();
+    for (const file of REACHABLE_FILES) {
+      const src = core.get(file);
+      expect(src, `${file} is missing from the pinned @auth/core`).toBeTruthy();
+      for (const name of adapterMethodsIn(src as string)) referenced.add(name);
     }
+    // Sanity: the extraction found the set it is supposed to find. A regex that
+    // silently matched nothing would make this whole block vacuous — the exact
+    // rot the R5 sweep's `ROUTES.length` guard exists to prevent.
+    expect(referenced.size).toBeGreaterThanOrEqual(12);
+    expect(referenced.has("getUserByAccount")).toBe(true);
+
+    const reachable = [...referenced].filter((n) => !GUARDED.includes(n)).sort();
+    expect(implemented).toEqual(reachable);
   });
 
-  it("persists no user, account or session row — identity stays the tenant plane's", () => {
-    // The three user methods are pure. A second identity store beside
-    // `app_user`/`user_identity` is the defect root CLAUDE.md §5 names, and it
-    // would arrive as an innocuous-looking `POST /users` from right here.
-    expect(ADAPTER).toContain("derivedOtpUser");
-    expect(ADAPTER).not.toMatch(/EMAIL_OTP_(USER|SESSION|ACCOUNT)_PATH/);
+  it("names the guard that makes each omitted method unreachable", () => {
+    const handleLogin = core.get("actions/callback/handle-login.js") as string;
+    const callbackIndex = core.get("actions/callback/index.js") as string;
+
+    // createSession — every call site is the false arm of a `useJwtSession`
+    // ternary. Counted, not merely matched: one unguarded call site added
+    // beside five guarded ones would otherwise pass.
+    const createSessionCalls = handleLogin.match(/await createSession\(/g) ?? [];
+    const createSessionGuarded =
+      handleLogin.match(/useJwtSession\s*\?\s*\{\}\s*:\s*await createSession\(/g) ??
+      [];
+    expect(createSessionCalls.length).toBeGreaterThan(0);
+    expect(createSessionGuarded.length).toBe(createSessionCalls.length);
+
+    // getSessionAndUser — the `else` of `if (useJwtSession)`, once.
+    expect(handleLogin.match(/await getSessionAndUser\(/g)?.length).toBe(1);
+    expect(handleLogin).toMatch(
+      /else \{\s*const userAndSession = await getSessionAndUser\(/,
+    );
+
+    // deleteSession — behind an explicit `!useJwtSession`, once.
+    expect(handleLogin.match(/await deleteSession\(/g)?.length).toBe(1);
+    expect(handleLogin).toMatch(
+      /!useJwtSession && sessionToken\)[\s\S]{0,400}?await deleteSession\(/,
+    );
+
+    // createAuthenticator — inside the webauthn arm of the callback route, and
+    // there is no webauthn provider (the `auth.ts` half is asserted below).
+    expect(callbackIndex.match(/createAuthenticator\(/g)?.length).toBe(1);
+    expect(callbackIndex.indexOf('provider.type === "webauthn"')).toBeLessThan(
+      callbackIndex.indexOf("createAuthenticator("),
+    );
+    expect(callbackIndex.indexOf('provider.type === "webauthn"')).toBeGreaterThan(
+      -1,
+    );
   });
 
-  it("treats only the 404 as an answer — every other refusal throws", () => {
-    // A rate-limit 429 swallowed into `return null` reads to the person as "your
-    // code is wrong" and to an operator as "OTP is flaky". The 404 IS the wrong
-    // code, and is the one non-throwing refusal.
-    expect(ADAPTER).toContain("if (res.status === 404) return null;");
-    expect(ADAPTER).toMatch(/if \(!res\.ok\) await refuse\(/);
+  it("the database-session files really are database-session only", () => {
+    // Each returns (or branches away) on `jwt` BEFORE it touches the adapter.
+    const sessionAction = core.get("actions/session.js") as string;
+    const jwtBranch = sessionAction.indexOf('sessionStrategy === "jwt"');
+    const destructure = sessionAction.indexOf("} = adapter;");
+    const earlyReturn = sessionAction.indexOf("return response;", jwtBranch);
+    expect(jwtBranch).toBeGreaterThan(-1);
+    expect(earlyReturn).toBeGreaterThan(jwtBranch);
+    expect(destructure).toBeGreaterThan(earlyReturn);
+
+    // signout.js and utils/session.js both reach the adapter from the `else` of
+    // a strategy check.
+    expect(core.get("actions/signout.js")).toMatch(
+      /else \{\s*const session = await options\.adapter\?\.deleteSession\(/,
+    );
+    expect(core.get("utils/session.js")).toMatch(
+      /else \{\s*const userAndSession = await adapter\?\.getSessionAndUser\(/,
+    );
+  });
+
+  it("the premises hold in auth.ts: jwt is pinned and no webauthn provider exists", () => {
+    // The reasoning above is conditional on the configuration, so the
+    // configuration is asserted rather than remembered. `signin.test.ts` owns
+    // the strategy pin; it is restated here because THIS file's subtraction is
+    // what it licenses.
+    const authSrc = readFileSync(
+      new URL("../auth.ts", import.meta.url),
+      "utf-8",
+    );
+    expect(authSrc).toContain('session: { strategy: "jwt" }');
+    expect(authSrc).not.toContain('strategy: "database"');
+    expect(authSrc).not.toMatch(/webauthn/i);
+    expect(authSrc).not.toMatch(/\bPasskey\b/);
+    // And `allowDangerousEmailAccountLinking` stays absent: with a stateless
+    // `getUserByEmail` it would change nothing today, but it is the option that
+    // makes an unverified OAuth address adopt an existing account.
+    expect(authSrc).not.toContain("allowDangerousEmailAccountLinking");
   });
 });

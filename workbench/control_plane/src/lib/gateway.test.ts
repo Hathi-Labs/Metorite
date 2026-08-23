@@ -169,10 +169,27 @@ const ROUTES = routeFiles(API_DIR).map((path) => ({
  * sweep. The remaining checks stay on ROUTES on purpose: `force-dynamic` and
  * "every handler establishes who is asking" are statements about route
  * handlers, and demanding them of `auth.ts` would be nonsense.
+ *
+ * ⚠️ **`lib/emailOtpAdapter.ts` joined on 2026-08-23, and it should have joined
+ * with CP-2d slice 2** (repair of review finding F1). That module makes three
+ * pre-session calls to the gateway through `headersActingAs`, from a tier with
+ * no session — the single most tempting place in the tree to inline the bearer,
+ * and the exact temptation its own docstring warns about. Slice 2 shipped that
+ * docstring, and `emailOtpAdapter.test.ts`'s, both claiming the rule was
+ * "fenced from both sides"; this sweep had never been widened, so the second
+ * side did not exist. A double-fence nobody checked is worse than a single one.
  */
-const NON_ROUTE_GATEWAY_CALLERS = ["../auth.ts", "../proxy.ts"].map((rel) => {
+const NON_ROUTE_GATEWAY_CALLERS = [
+  "../auth.ts",
+  "../proxy.ts",
+  "./emailOtpAdapter.ts",
+].map((rel) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
-  return { path, rel: rel.replace("../", "src/"), src: readFileSync(path, "utf8") };
+  return {
+    path,
+    rel: rel.replace("../", "src/").replace("./", "src/lib/"),
+    src: readFileSync(path, "utf8"),
+  };
 });
 
 const BEARER_SWEEP = [...ROUTES, ...NON_ROUTE_GATEWAY_CALLERS];
@@ -184,15 +201,17 @@ describe("the route surface", () => {
     expect(ROUTES.length).toBeGreaterThan(80);
   });
 
-  it("sweeps auth.ts and proxy.ts too, not just the route tree", () => {
-    // Guards the WIDENING itself. A renamed or moved auth.ts would make the
-    // two bearer checks below silently narrow again — back to exactly the
-    // blind spot CP-2b widened them to cover.
+  it("sweeps auth.ts, proxy.ts and the OTP adapter too, not just the route tree", () => {
+    // Guards the WIDENING itself. A renamed or moved file would make the two
+    // bearer checks below silently narrow again — back to exactly the blind
+    // spot CP-2b widened them to cover, and the one CP-2d slice 2 claimed to
+    // have covered without ever touching this list (finding F1).
     expect(NON_ROUTE_GATEWAY_CALLERS.map((f) => f.rel)).toEqual([
       "src/auth.ts",
       "src/proxy.ts",
+      "src/lib/emailOtpAdapter.ts",
     ]);
-    expect(BEARER_SWEEP.length).toBe(ROUTES.length + 2);
+    expect(BEARER_SWEEP.length).toBe(ROUTES.length + 3);
   });
 
   it("no module outside lib/gateway.ts mints a gateway bearer", () => {
