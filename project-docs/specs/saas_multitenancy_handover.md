@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark) · 🚦 launch-defang kill-switches (`EMAIL_SYNC_ENABLED` / `WORKFLOW_SCHEDULER_ENABLED`, default ON) for the OUT-of-scope loops SHIPPED (dark) 2026-08-23
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -942,6 +942,45 @@ than defaulting; a test proves the refusal.
 Also here: **`scripts/import_hr_people.py:177`** (§0.1 path 9) — it opens its own engine and
 **upserts people rows**, which are tenant data. It must take a tenant from argv. Under
 phase-4 policies it currently writes unowned rows or fails.
+
+> ### 🚦 Launch defang — kill-switches for the OUT-of-scope always-on loops (WS-29, 2026-08-23, DARK)
+>
+> **Launch scope is Tasks, Calendar, Projects, User-management + agent chat only.** Two
+> always-on background loops are OUT of that scope and NOT yet tenant-bound (their H4 binds
+> are slices 6b/6c above, deferred post-launch), so under FORCE RLS after the phase-4 cutover
+> they would query/write UNBOUND and error. Rather than bind them now, each loop's STARTUP is
+> gated behind a **default-ON** env flag so the cutover runbook sets it false and the loop
+> simply never starts. **Default ON = byte-identical to today (dark); the cutover runbook
+> flips them OFF.** The gate is at the call site in
+> `apps/services/gateway/gateway/main.py` (`_maybe_start_email_sync` /
+> `_maybe_start_workflow_scheduler`), not inside the start functions, so it is testable by
+> monkeypatching the start functions.
+>
+> | Flag | Default | Gates (start site) | Loop |
+> |---|---|---|---|
+> | `EMAIL_SYNC_ENABLED` | ON | `email_ingestion.scheduler.start_background_sync` (the `_account_sync_loop` launch) | email ingestion / sync |
+> | `WORKFLOW_SCHEDULER_ENABLED` | ON | `routes/workflows.start_workflow_scheduler` **and** `reconcile_orphaned_runs` (one scheduling subsystem, one flag) | workflow cron scanner + orphan-run reconcile sweep |
+>
+> The email post-sync hook registration (`register_email_post_sync_hooks`) stays
+> UNCONDITIONAL — manual sync and the Graph webhook share that pipeline; only the background
+> loop is gated. The shutdown stops stay unconditional (a flag-gated loop that never started
+> is still stopped — the same contract the ingestion-consumer / whatsapp-enrichment stops
+> follow). R7 fence: `tests/unit/test_launch_defang_kill_switches.py`
+> (`email-sync-loop-gated`, `workflow-scheduler-gated`) — flag off ⇒ the start function is
+> NOT awaited (RED if the guard is removed), default/true ⇒ awaited as today. The
+> already-gated loops (`CRM_ZOHO_SYNC`, `INGESTION_CONSUMER`, `WHATSAPP_ENRICHMENT`) keep
+> their own off-switches and were not touched.
+>
+> **Projects background-writer check (Projects is IN launch scope, so it must be BOUND, not
+> defanged): ✅ already BOUND, no change.** The only Projects background writer is
+> `routes/projects/automation.py::run_lifecycle_sweep` (WS-27aa). It is NOT a startup loop —
+> it runs as a scheduled `/workflows` node — and it is tenant-bound two ways: it **refuses**
+> without an explicit `organization_id` (`TenantUnbound`, `automation.py:362-368`) and its
+> roots query is org-scoped (`automation.py:376-383`); its one caller
+> `routes/workflows/service.py::_pm_lifecycle_sweeper` (`:244`, `:284-288`) resolves the org
+> from the workflow owner's `app_user` row (a stored fact, R11) and opens
+> `_tenant_session(org)` for the sweep. `routes/projects` holds ZERO unbound sites (H2 note
+> above). No fence added for Part B (no code change).
 
 ---
 
