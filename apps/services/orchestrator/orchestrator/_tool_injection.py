@@ -1109,24 +1109,50 @@ async def _inject_mcp_servers(agent: Any, agent_name: str) -> None:
     Best-effort: failures are silently swallowed so MCP issues never
     block agent execution.
 
-    WS-29 acb_graph slice 7 deliberately does NOT convert this read to
-    ``tenant_session``: ``mcp_servers`` is RLS-EXEMPT (``gen_tenant_migration``'s
-    ``EXEMPT`` set — "keyed (organization_id, name) by MT-0d / 158"), so unlike
-    the ``apps``/``agent_skill_setting`` reads it is NOT FORCE-RLS'd and an
-    unbound read does not collapse to zero rows under phase-4. Its cross-tenant
-    exposure (the query has no ``organization_id`` filter, so every org's servers
-    are visible) is an MT-0d query-scope concern, not the RLS-bind concern this
-    slice addresses — binding a ``tenant_session`` here would be a no-op against a
-    table with no policy. Left as a finding for the board.
+    ``mcp_servers`` is RLS-EXEMPT BY DESIGN (``gen_tenant_migration``'s ``EXEMPT``
+    set — "keyed (organization_id, name) by MT-0d / 158"): it has no FORCE-RLS
+    policy, so the phase-4 RLS cutover does NOT isolate it, and binding a
+    ``tenant_session`` here (as slice 7 did for the FORCE-RLS'd reads) would be a
+    no-op against a policy-less table. The cross-tenant read is therefore closed
+    at the APP level — behind the SAME ``ACB_GRAPH_TENANT_BIND`` flag as slices
+    3-7 — by adding an explicit ``organization_id`` filter, so an agent only ever
+    receives its OWN org's MCP servers (otherwise, once a second tenant exists, an
+    agent in org A would be injected org B's server endpoints/config). The run's
+    tenant is resolved SERVER-SIDE on THIS (event-loop) frame via
+    ``executor._current_run_org`` (``_RUN_ORG`` keyed by
+    ``_stream_relay_thread_id``, else the async ``current_tenant()``) — NEVER from
+    tool args / the message (R11). ``mcp_servers.organization_id`` is NOT NULL
+    (migration 158), so there are NO org-less "global" servers: the filter is
+    strictly ``organization_id = :org`` and the fail-closed subset is EMPTY.
+
+    * flag OFF → no filter, byte-identical to the pre-slice runtime (single-org).
+    * flag ON + the run's tenant → only that org's enabled servers.
+    * flag ON + NO resolvable tenant → fail closed to nothing (never every org's
+      servers).
     """
+    sql = (
+        "SELECT name, transport, command, url, env_vars, headers, "
+        "agent_scope FROM mcp_servers WHERE enabled = true"
+    )
+    params: dict[str, Any] = {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import get_session, tenant_bind_enabled  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
+        if tenant_bind_enabled():
+            # Resolve the run's org on THIS event-loop frame, server-side. This
+            # runs before any worker-thread hop, so _current_run_org's _RUN_ORG /
+            # current_tenant() lookup resolves on the correct frame.
+            from orchestrator.executor import _current_run_org  # noqa: PLC0415
+            org = _current_run_org()
+            if not org:
+                # No tenant → the safe subset is EMPTY (organization_id is NOT
+                # NULL, so there are no global rows to keep). NEVER read every
+                # org's servers.
+                return
+            sql += " AND organization_id = :org"
+            params = {"org": org}
         with get_session() as s:
-            rows = s.execute(
-                text("SELECT name, transport, command, url, env_vars, headers, "
-                "agent_scope FROM mcp_servers WHERE enabled = true")
-            ).fetchall()
+            rows = s.execute(text(sql), params).fetchall()
     except Exception:  # noqa: BLE001
         return  # Table may not exist yet — skip gracefully
 

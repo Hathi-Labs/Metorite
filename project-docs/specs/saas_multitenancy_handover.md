@@ -908,13 +908,15 @@ than defaulting; a test proves the refusal.
 >   Phase-0 pull/sales pipelines (no live caller today; converted for when wired).
 > `sales_views.py` reads through the caller-supplied session, so binding the two
 > retrieval openers binds it transitively — no change there.
-> **Explicitly LEFT (found, deliberately not converted):** `_inject_mcp_servers`
-> reads `mcp_servers`, which is RLS-EXEMPT (`gen_tenant_migration.EXEMPT` —
-> "keyed (organization_id, name) by MT-0d / 158"), so it is NOT FORCE-RLS'd and an
-> unbound read does not collapse to 0 rows; binding a `tenant_session` there would
-> be a no-op against a table with no policy. Its missing `organization_id` query
-> filter (every org's servers are visible) is an MT-0d query-scope finding for the
-> board, not this slice's RLS-bind concern. R7/R8 fence
+> **Explicitly LEFT by slice 7 (found, deliberately not converted here — now
+> CLOSED, see the next block):** `_inject_mcp_servers` reads `mcp_servers`, which
+> is RLS-EXEMPT (`gen_tenant_migration.EXEMPT` — "keyed (organization_id, name) by
+> MT-0d / 158"), so it is NOT FORCE-RLS'd and an unbound read does not collapse to
+> 0 rows; binding a `tenant_session` there would be a no-op against a table with no
+> policy. Its missing `organization_id` query filter (every org's servers are
+> visible) was an MT-0d query-scope finding, not this slice's RLS-bind concern —
+> **since closed at the app level by the mcp_servers org-filter follow-up below.**
+> R7/R8 fence
 > (`tests/unit/test_acb_graph_agenttool_reads_bind.py`, 7 tests): the opener
 > matrix (flag OFF → the unbound `get_session`; flag ON + org → `tenant_session`;
 > flag ON + no org → `None`), and R8 on the two-org phase-4 catalog —
@@ -926,6 +928,34 @@ than defaulting; a test proves the refusal.
 > (the loader consults the flag before choosing its opener; flag OFF stays
 > byte-identical). **Explicitly OUT (later sub-slices, unchanged):** slice 6b
 > (email-automation + inbound webhooks), slice 6c (workflow cron / schedule sweep).
+
+> ✅ **mcp_servers cross-tenant read gap CLOSED 2026-08-23 (WS-29, DARK,
+> `ACB_GRAPH_TENANT_BIND`).** Slice 7 (above) explicitly left `_inject_mcp_servers`
+> unfiltered and recorded the cross-tenant read as an MT-0d finding for the board;
+> agent chat is in launch scope, so this follow-up closes it. `mcp_servers` **stays
+> RLS-EXEMPT by design** (`gen_tenant_migration.EXEMPT` — "keyed (organization_id,
+> name) by MT-0d/158"): it has no FORCE-RLS policy, so the RLS cutover does not
+> isolate it and a `tenant_session` bind would be a no-op. The read
+> (`apps/services/orchestrator/orchestrator/_tool_injection.py::_inject_mcp_servers`)
+> is instead scoped at the **APP level**: behind the same flag as slices 3-7, the
+> query gains `AND organization_id = :org`, so an agent is only ever injected its
+> OWN org's MCP servers (otherwise, once a second tenant exists, an agent in org A
+> would receive org B's MCP endpoints/config — a cross-tenant read of tool
+> config). The run's org is resolved SERVER-SIDE on the event-loop frame by
+> `executor._current_run_org` (the slice-7 resolver: `_RUN_ORG` keyed by
+> `_stream_relay_thread_id`, else the async `current_tenant()`), NEVER from tool
+> args / the message (R11). **No global/shared-server case exists:**
+> `mcp_servers.organization_id` is **NOT NULL** (migration 158), so there are no
+> org-less rows — the filter is strictly `= :org` and the flag-ON-no-org fail-closed
+> subset is EMPTY (never every org's servers). Flag OFF → no filter, byte-identical
+> (single-org today). **No migration, no RLS policy** (mcp_servers stays exempt);
+> scope was this one query. R7/R8 fence `tests/unit/test_mcp_servers_org_scope.py`
+> (3 tests, real PG, reuses the two-org phase-4 `promoted` catalog):
+> `mcp-servers-scoped-to-run-org` — flag ON + orgA bound, the REAL
+> `_inject_mcp_servers` injects orgA's server and NOT orgB's, and the SAME rows read
+> without the filter show BOTH (RED-on-removal, mutation-proven 2026-08-23: dropping
+> `AND organization_id = :org` → orgB's server appears → RED); flag-OFF regression
+> (no filter, both inject); flag-ON-no-org fails closed to empty.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,
