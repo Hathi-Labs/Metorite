@@ -7,6 +7,9 @@
  * The one thing it must never do is hit the network, and the transport is
  * injectable precisely so it does not: every send here goes through a fake.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { configuredProviders } from "@/authPosture";
@@ -18,15 +21,18 @@ import {
   EMAIL_OTP_PROVIDER_ID,
   EMAIL_OTP_SEND_PATH,
   EMAIL_OTP_TOKEN_PATH,
+  NO_STORED_USER,
   OTP_CODE_LENGTH,
   RESEND_ENDPOINT,
   canonicalOtpIdentifier,
+  codeEntryState,
   emailOtpAdapterOver,
   emailOtpFrom,
   generateOtp,
   isEmailOtpConfigured,
   isEmailOtpProviderReady,
   otpEmail,
+  otpWireHash,
   resendSender,
   reserveOtpSendVia,
   sendOtpEmail,
@@ -540,17 +546,35 @@ describe("the email arm still yields the derived user end-to-end", () => {
     expect(out.isNewUser).toBe(true);
   });
 
-  it("keeps updateUser unreachable by keeping getUserByEmail a constant null", async () => {
-    // That coupling is asserted rather than assumed. `updateUser` is
-    // implemented (an absent method a future arm reaches is P0 again) but
-    // `handle-login.js:68` calls it ONLY when `getUserByEmail` answers, and it
-    // is called with `{ id, emailVerified }` alone — so if it ever becomes
-    // reachable it must be rewritten in the same change, or the session comes
-    // out with no address.
+  it("keeps updateUser unreachable STRUCTURALLY — getUserByEmail IS the constant", async () => {
+    // ⚠️ **This assertion is an identity comparison on purpose** (repair of
+    // review finding P2, round 2, 2026-08-23). It used to check that
+    // `getUserByEmail` answered null for three literal addresses — which a
+    // store-backed lookup that merely MISSED on those three would satisfy,
+    // leaving the fence green while `handle-login.js:68` became reachable and
+    // `updateUser`'s echo returned a user with no address (an anonymous
+    // session). Comparing against the exported implementation makes ANY change
+    // away from constant-null red: a store, a cache, a conditional, a wrapper.
+    //
+    // `updateUser` is implemented rather than omitted (an absent method a
+    // future arm reaches is P0 again), and `@auth/core` calls it with
+    // `{ id, emailVerified }` alone — so giving `getUserByEmail` a store is
+    // never a one-line change; the two must be rewritten together.
     const adapter = emailOtpAdapterOver(gateway({}).call);
+    expect(adapter.getUserByEmail).toBe(NO_STORED_USER);
+    // …and the constant really is constant-null, for anything at all.
     for (const address of ["", "ada@customer.example", "ADA@CUSTOMER.EXAMPLE"]) {
+      expect(await NO_STORED_USER(address)).toBeNull();
       expect(await adapter.getUserByEmail!(address)).toBeNull();
     }
+    // The trap it guards: `updateUser` echoes, so a reachable one answers with
+    // no `email` at all. Asserted so the coupling's CONSEQUENCE is on record
+    // here rather than only in a comment.
+    const echoed = (await adapter.updateUser!({
+      id: "u1",
+      emailVerified: new Date(),
+    } as never)) as { email?: string };
+    expect(echoed.email).toBeUndefined();
   });
 
   it("a MIXED-CASE address does not brick the code after spending it (P1a)", async () => {
@@ -599,6 +623,159 @@ describe("the email arm still yields the derived user end-to-end", () => {
   });
 });
 
+describe("the code page's state is decided once, from the stash (P1 round 2)", () => {
+  // ⚠️ The finding, as a property. `/signin/code`'s no-stashed-address arm was
+  // UNUSABLE: the component computed `known = canonicalOtpIdentifier(email) !==
+  // ""` over the live input, and `"a"` canonicalises to `"a"`, so the FIRST
+  // keystroke flipped `known` true and unmounted the field being typed into.
+  // Nobody without a stash could ever finish entering their address.
+  //
+  // There is no DOM renderer in this package (node-env vitest, deliberately),
+  // so the decision was extracted here where it can be executed. What the
+  // component may not do — recompute `known` itself — is pinned by source regex
+  // in `src/app/signin/code/code.test.ts`.
+
+  // Every prefix of a real address, plus the shapes a person actually types.
+  const TYPING = [
+    "",
+    "a",
+    "ad",
+    "ada",
+    "ada@",
+    "ada@c",
+    "ada@customer",
+    "ada@customer.example",
+    "  Ada@Customer.Example  ",
+    "ADA@CUSTOMER.EXAMPLE",
+  ];
+
+  it("with NO stash, `known` stays false through the WHOLE typing sequence", () => {
+    // The defect, driven directly: every one of these used to flip `known` true
+    // from index 1 onward.
+    for (const stash of [null, undefined, "", "   "]) {
+      for (const typed of TYPING) {
+        expect(codeEntryState(stash, typed).known).toBe(false);
+      }
+    }
+  });
+
+  it("with no stash, the SUBMITTED address is the canonical form of what was typed", () => {
+    // The field is shown, so the person's own input is what gets submitted —
+    // and it must still be canonical, or it bricks the code exactly the way
+    // P1a's prefilled arm did (`callback/index.js:151-152` compares verbatim
+    // AFTER `useVerificationToken` has spent the row).
+    expect(codeEntryState(null, "  Ada@Customer.Example  ").submitEmail).toBe(
+      "ada@customer.example",
+    );
+    expect(codeEntryState(null, "ADA@CUSTOMER.EXAMPLE").submitEmail).toBe(
+      "ada@customer.example",
+    );
+    expect(codeEntryState(null, "ada@customer.example,x").submitEmail).toBe(
+      "ada@customer.example",
+    );
+    // A half-typed address submits a half-typed address — which misses
+    // server-side and renders "that code is not valid". The form's `required`
+    // + `type="email"` is what stops it being sent at all; nothing here throws.
+    expect(codeEntryState(null, "ad").submitEmail).toBe("ad");
+    expect(codeEntryState(null, "").submitEmail).toBe("");
+  });
+
+  it("with a stash, `known` is true and the typed value is IGNORED", () => {
+    // The prefilled arm: the visible field is not rendered, so whatever is in
+    // `typed` (nothing, in practice) must not reach the wire.
+    for (const typed of TYPING) {
+      const state = codeEntryState("Ada@Customer.Example", typed);
+      expect(state.known).toBe(true);
+      expect(state.submitEmail).toBe("ada@customer.example");
+    }
+  });
+
+  it("a whitespace-only stash is NOT an address — the field is shown", () => {
+    // `sessionStorage` can hold junk, and a known-but-blank page is a dead end:
+    // no field to type into and a hidden `email` of "".
+    expect(codeEntryState("   ", "").known).toBe(false);
+    expect(codeEntryState("\n\t", "ada@customer.example")).toEqual({
+      known: false,
+      submitEmail: "ada@customer.example",
+    });
+  });
+
+  it("`known` is a function of the stash ALONE — never of what is typed", () => {
+    // The property in one assertion: hold the stash, vary the input across the
+    // whole sequence, and the decision must not move. Deriving `known` from the
+    // typed value in any form fails this.
+    for (const stash of [null, "", "   ", "ada@customer.example", "A@B.IO"]) {
+      const decisions = new Set(
+        TYPING.map((typed) => codeEntryState(stash, typed).known),
+      );
+      expect(decisions.size).toBe(1);
+    }
+  });
+});
+
+describe("the recomputed wire hash EQUALS @auth/core's own (P2 round 2)", () => {
+  // ⚠️ This is the fence that makes it safe for `auth.ts` to hand the send-slot
+  // claim a hash it computed itself. `send-token.js:61` stores
+  // `createHash(`${token}${secret}`)` and hands `sendVerificationRequest` only
+  // the RAW code — so the two legs of one send knew different halves, and in a
+  // same-`expires` burst the loser's `createVerificationToken` overwrote the
+  // winner's hash on the shared row: the ONE email delivered carried a code that
+  // could never verify. Recomputing the hash on the send leg fixes that, and it
+  // is only safe while the recomputation AGREES. If it ever drifted, the claim
+  // would write a hash the mailed code cannot produce and the server-side
+  // "first writer wins" would preserve it — sign-in broken with no error
+  // anywhere. So the agreement is EXECUTED against the pinned package rather
+  // than argued.
+  const CORE_WEB = fileURLToPath(
+    new URL("../../node_modules/@auth/core/lib/utils/web.js", import.meta.url),
+  );
+  const SEND_TOKEN = fileURLToPath(
+    new URL(
+      "../../node_modules/@auth/core/lib/actions/signin/send-token.js",
+      import.meta.url,
+    ),
+  );
+
+  it("agrees with the pinned @auth/core's createHash, byte for byte", async () => {
+    const core = (await import(pathToFileURL(CORE_WEB).href)) as {
+      createHash: (message: string) => Promise<string>;
+    };
+    // Sanity: the import found the real function. A silently-missing one would
+    // make every comparison below `undefined === undefined`.
+    expect(typeof core.createHash).toBe("function");
+
+    for (const [token, secret] of [
+      ["012345", "dev-local-insecure-change-me"],
+      ["000000", "s3cr3t"],
+      ["999999", ""],
+      // A leading-zero code and a secret with the characters that would break a
+      // naive concatenation.
+      ["000001", "a$b`c${d}"],
+      // Non-ASCII, because the encoder is where a hand-rolled version differs.
+      ["424242", "sécret-ключ"],
+    ]) {
+      expect(await otpWireHash(token, secret)).toBe(
+        await core.createHash(`${token}${secret}`),
+      );
+    }
+    // …and it is a lower-case hex SHA-256, not some other digest shape.
+    expect(await otpWireHash("012345", "x")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("pins the expression @auth/core hashes, and where the secret comes from", () => {
+    // The agreement above is only meaningful while `send-token.js` still hashes
+    // THAT expression with THAT secret. A version bump that salts differently
+    // (or hashes the identifier in too) turns this red rather than shipping a
+    // claim written with a hash nobody's code can produce.
+    const src = readFileSync(SEND_TOKEN, "utf-8");
+    expect(src).toContain("await createHash(`${token}${secret}`)");
+    expect(src).toContain("const secret = provider.secret ?? options.secret;");
+    // And the send leg really is handed the RAW code — which is what makes the
+    // recomputation possible at all.
+    expect(src).toMatch(/provider\.sendVerificationRequest\(\{[\s\S]{0,120}token,/);
+  });
+});
+
 describe("the adapter's refusals reach @auth/core as refusals", () => {
   const consumeOnly = (res: OtpGatewayResponse) =>
     emailOtpAdapterOver(gateway({ [EMAIL_OTP_CONSUME_PATH]: res }).call);
@@ -643,23 +820,37 @@ describe("the adapter's refusals reach @auth/core as refusals", () => {
       [EMAIL_OTP_SEND_PATH]: answer(429, { code: "SendDuplicate" }),
     });
     await expect(
-      reserveOtpSendVia(call, "ada@customer.example", new Date()),
+      reserveOtpSendVia(call, "ada@customer.example", new Date(), "wire-hash"),
     ).rejects.toThrow(/refused \(429\)/);
   });
 
-  it("reserveOtpSendVia names the send route and the address, and nothing else", async () => {
+  it("reserveOtpSendVia carries the winning code's HASH, and nothing else (P2 round 2)", async () => {
     const { call, calls } = gateway({
       [EMAIL_OTP_SEND_PATH]: answer(200, {}),
     });
     const expires = new Date(Date.UTC(2026, 7, 23, 21, 0, 0));
-    await reserveOtpSendVia(call, "ada@customer.example", expires);
+    await reserveOtpSendVia(
+      call,
+      "ada@customer.example",
+      expires,
+      "sha256-of-the-mailed-code",
+    );
     expect(calls).toEqual([
       {
         path: EMAIL_OTP_SEND_PATH,
         identifier: "ada@customer.example",
         // R11: no `email` / `identifier` in the body — the gateway 400s on
         // shape if one appears, and the address rides the seam's header.
-        body: { expires: "2026-08-23T21:00:00.000Z" },
+        //
+        // ⚠️ `token` IS in the body, and it is load-bearing: the claim writes
+        // it, so the burst's surviving row holds the hash of the code that was
+        // actually mailed rather than whichever loser's token leg landed last.
+        // Dropping it here 400s the send (`gateway/routes/email_otp.py`) rather
+        // than silently restoring the clobber.
+        body: {
+          expires: "2026-08-23T21:00:00.000Z",
+          token: "sha256-of-the-mailed-code",
+        },
       },
     ]);
   });

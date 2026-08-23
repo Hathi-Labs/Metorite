@@ -10,6 +10,7 @@ import {
   emailOtpFrom,
   generateOtp,
   isEmailOtpProviderReady,
+  otpWireHash,
   resendSender,
   sendOtpEmail,
 } from "@/lib/emailOtp";
@@ -111,6 +112,22 @@ if (process.env.AUTH_GOOGLE_ID) {
     }),
   );
 }
+/**
+ * The NextAuth signing secret, named ONCE.
+ *
+ * ⚠️ It is a const rather than an inline `process.env` read at the `secret:`
+ * option because `sendVerificationRequest` below must recompute the exact hash
+ * `@auth/core` will store for the same send (`send-token.js:46,61` —
+ * `createHash(\`${token}${provider.secret ?? options.secret}\`)`). Two copies of
+ * "what the secret is" that drifted would make the send leg claim a slot with a
+ * hash the person's mailed code can never produce, which is a code that never
+ * verifies — the failure this recomputation exists to remove, reintroduced from
+ * the other end. Fence: `emailOtp.test.ts` compares `otpWireHash` against the
+ * pinned `@auth/core`'s own `createHash`; `signin.test.ts` pins that both the
+ * `secret:` option and the hash call read this one name.
+ */
+const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";
+
 // ── CP-2d · passwordless email OTP via Resend — ships DARK ──────────────────
 //
 // Registered ONLY when `isEmailOtpProviderReady` — env configured
@@ -166,8 +183,27 @@ if (emailOtpArmed) {
       // already mailed a code. Both legs name the same send by its `expires`
       // instant, which is how the gateway counts one send once. A refusal
       // throws, so nothing is sent and the sign-in fails closed.
+      //
+      // ⚠️ **The claim carries the hash of the code THIS leg is about to mail**
+      // (repair of review finding P2, round 2, 2026-08-23). Stopping the
+      // duplicate's *mail* was only half of it: `send-token.js` starts both legs
+      // in one `Promise.all`, so a rejected `sendVerificationRequest` cancels
+      // nothing and the loser's `createVerificationToken` still landed on the
+      // shared `(identifier, expires)` row — overwriting the winner's hash, so
+      // the one email that DID go out carried a code that could never verify.
+      // `@auth/core` hands this leg the raw code and the other leg the hash, so
+      // this is the only place the two can be reconciled: recompute the same
+      // `createHash(`${token}${secret}`)` (`send-token.js:46,61`) and hand it to
+      // the claim, which writes it atomically. `record_token` server-side then
+      // refuses to overwrite. `provider.secret` first, exactly as `send-token.js`
+      // resolves it — this deployment sets none, but a copy that ignored it would
+      // be wrong the day one is set.
       sendVerificationRequest: async ({ identifier, token, expires, provider }) => {
-        await reserveOtpSend(identifier, expires);
+        const tokenHash = await otpWireHash(
+          token,
+          (provider as { secret?: string }).secret ?? AUTH_SECRET,
+        );
+        await reserveOtpSend(identifier, expires, tokenHash);
         await sendOtpEmail(send, {
           to: identifier,
           from: provider.from ?? from,
@@ -181,7 +217,7 @@ if (emailOtpArmed) {
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  secret: process.env.AUTH_SECRET ?? "dev-local-insecure-change-me",
+  secret: AUTH_SECRET,
   providers,
   // ⚠️ **CP-2d slice 2 (ruling H-D): the adapter and the strategy pin are ONE
   // change and must never be separated.** `@auth/core@0.41.2`'s `lib/init.js:74`

@@ -78,14 +78,17 @@ const call: OtpGatewayCall = (path, identifier, body) =>
 
 /**
  * Ask permission to send a code, and record the send. See
- * `emailOtp.ts::reserveOtpSendVia` for why this is not an adapter method and why
- * a refusal has to throw.
+ * `emailOtp.ts::reserveOtpSendVia` for why this is not an adapter method, why a
+ * refusal has to throw, and why the claim carries `tokenHash` — the wire hash of
+ * the code this leg is about to mail, so a same-`expires` burst's row ends up
+ * holding the SLOT WINNER's code rather than a loser's.
  */
 export async function reserveOtpSend(
   identifier: string,
   expires: Date,
+  tokenHash: string,
 ): Promise<void> {
-  await reserveOtpSendVia(call, identifier, expires);
+  await reserveOtpSendVia(call, identifier, expires, tokenHash);
 }
 
 /** The adapter Auth.js is handed. Its behaviour, and its shape, are in `emailOtp.ts`. */

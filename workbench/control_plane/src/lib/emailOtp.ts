@@ -298,6 +298,95 @@ export function canonicalOtpIdentifier(raw: string | null | undefined): string {
   return `${local}@${domain}`;
 }
 
+/** What `/signin/code` renders and what it submits, decided in one pure place. */
+export interface CodeEntryState {
+  /**
+   * Does the page already KNOW the address? Derived from *stash* alone —
+   * never from what is being typed.
+   */
+  known: boolean;
+  /** The canonical address the hidden `email` field carries. */
+  submitEmail: string;
+}
+
+/**
+ * Decide the code page's two variables: whether to ask for the address, and
+ * which address to submit.
+ *
+ * ⚠️ **`known` derives from *stash* and from nothing else, and that is the whole
+ * point of this function existing** (repair of review finding P1, round 2,
+ * 2026-08-23). The page used to compute `known = canonicalOtpIdentifier(email)
+ * !== ""` over the LIVE input value, so the no-stashed-address fallback flipped
+ * to "known" on the first keystroke — `"a"` canonicalises to `"a"`, which is not
+ * the empty string — and the visible field unmounted mid-typing. Nobody could
+ * ever finish entering an address on that arm; the person was stuck on a page
+ * whose only escape was *Start again*. The decision must therefore be taken ONCE
+ * from the mount-time read (`?email=`, else the `sessionStorage` hand-off), and
+ * the typed value may only ever influence what is SUBMITTED.
+ *
+ * *stash* is the address the page was handed: `null`/`""`/whitespace all mean
+ * "nothing was handed over". It is canonicalised before the emptiness test so a
+ * stash of `"   "` is unknown rather than a known blank.
+ *
+ * `submitEmail` is canonical on BOTH arms — `@auth/core`'s send leg minted the
+ * token against `defaultNormalizer`'s form and `callback/index.js:151-152`
+ * compares verbatim AFTER the consume has spent the token (finding P1a), so a
+ * raw address submitted from the fallback arm would brick the code exactly as
+ * the prefilled arm's used to.
+ *
+ * Fences: `emailOtp.test.ts` — *"the code page's state is decided once, from the
+ * stash"* (the full typing sequence, both stash positions) — and
+ * `src/app/signin/code/code.test.ts`, which pins that the component reads
+ * `known` out of this helper rather than computing one of its own.
+ */
+export function codeEntryState(
+  stash: string | null | undefined,
+  typed: string,
+): CodeEntryState {
+  const stashed = canonicalOtpIdentifier(stash);
+  if (stashed !== "") return { known: true, submitEmail: stashed };
+  return { known: false, submitEmail: canonicalOtpIdentifier(typed) };
+}
+
+/**
+ * The wire hash `@auth/core` stores for a code — recomputed on the SEND leg.
+ *
+ * ⚠️ **This exists so the send-slot CLAIM can carry the winning code's hash**
+ * (repair of review finding P2, round 2, 2026-08-23). `send-token.js:61` hands
+ * `createVerificationToken` `await createHash(\`${token}${secret}\`)` and hands
+ * `sendVerificationRequest` the RAW code, so before this the two legs of one send
+ * knew different halves: the leg that decided whether a mail goes out could not
+ * name the hash that mail's code would need. In a same-`expires` burst the
+ * *loser's* `createVerificationToken` then landed on the shared
+ * `(identifier, expires)` row and overwrote the winner's hash — so the ONE email
+ * that went out carried a code that could never verify. Recomputing the hash here
+ * lets `reserve_send` write it inside the claim, and the row's hash is the slot
+ * winner's under every interleaving.
+ *
+ * It mirrors `@auth/core/lib/utils/web.js::createHash` exactly: SHA-256 over
+ * `` `${token}${secret}` `` through Web Crypto, lower-case hex. Web Crypto rather
+ * than `node:crypto` because this module is imported by client components
+ * (`CodeForm.tsx`) and a `node:*` import would break the browser bundle — the
+ * same isomorphic reason `generateOtp` uses `crypto.getRandomValues`.
+ *
+ * *secret* is the caller's job to resolve, because `send-token.js:46` resolves it
+ * as `provider.secret ?? options.secret` and only `auth.ts` can see both.
+ *
+ * Fence: `emailOtp.test.ts` — *"the recomputed wire hash EQUALS @auth/core's
+ * own"*, which imports `createHash` out of the pinned `node_modules` and compares
+ * outputs, plus a source pin that `send-token.js` still hashes that expression.
+ */
+export async function otpWireHash(
+  rawToken: string,
+  secret: string,
+): Promise<string> {
+  const data = new TextEncoder().encode(`${rawToken}${secret}`);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /**
  * The answer shape the adapter reads off one gateway call.
  *
@@ -367,17 +456,61 @@ async function refuse(path: string, res: OtpGatewayResponse): Promise<never> {
  * millisecond — which is why the gateway now *claims* the send slot atomically
  * and answers 429 `SendDuplicate` to every loser. That refusal throws here, and
  * the throw is what keeps the mail unsent.
+ *
+ * ⚠️ **`tokenHash` is REQUIRED and is what the claim writes** (repair of review
+ * finding P2, round 2). Stopping the loser's *mail* was only half of P1b: its
+ * `createVerificationToken` still ran — `send-token.js` starts both legs in one
+ * `Promise.all` and a rejection in one cancels nothing — and landed on the
+ * shared `(identifier, expires)` row, where the old `COALESCE(EXCLUDED.token,
+ * …)` overwrote the winner's hash with the loser's. The one delivered email then
+ * carried a code that could never verify. The winner's hash therefore travels
+ * WITH the claim, and `record_token` may no longer overwrite an existing one.
+ * It is {@link otpWireHash} of the raw code — the same value the token leg
+ * sends, so nothing new crosses the wire.
  */
 export async function reserveOtpSendVia(
   call: OtpGatewayCall,
   identifier: string,
   expires: Date,
+  tokenHash: string,
 ): Promise<void> {
   const res = await call(EMAIL_OTP_SEND_PATH, identifier, {
     expires: expires.toISOString(),
+    token: tokenHash,
   });
   if (!res.ok) await refuse(EMAIL_OTP_SEND_PATH, res);
 }
+
+/**
+ * `getUserByEmail`, as a **named constant-null implementation** rather than an
+ * inline method body.
+ *
+ * ⚠️ **It is exported so its fence can be STRUCTURAL** (repair of review finding
+ * P2, round 2, 2026-08-23). `updateUser` below is a deliberate echo, and it is
+ * only safe because `handle-login.js:68` reaches it *exclusively* when this
+ * lookup answers — `@auth/core` calls it with `{ id, emailVerified }` alone, so
+ * an echo from a reachable `updateUser` returns a user with **no address** and
+ * the session comes out anonymous. The fence for that coupling used to assert
+ * this function returns `null` for three literal addresses, which a
+ * store-backed lookup that simply misses on those three would satisfy: the trap
+ * would be armed and the fence green. `emailOtp.test.ts` now identity-compares
+ * the assembled adapter's method against this constant, so **any** change away
+ * from constant-null — a store, a cache, a conditional — reds instead.
+ *
+ * It MUST answer null on both arms, and a total version was finding P0: on the
+ * OAuth arm a truthy answer means "an account already exists with this address",
+ * and `handle-login.js:242-250` answers that with `OAuthAccountNotLinked` unless
+ * `allowDangerousEmailAccountLinking` is set — which it is not, and must not be.
+ * Null puts both arms on the create path, which is where the adapter-less
+ * product already is. Reached from `index.js:156` (email arm),
+ * `handle-login.js:57` (email arm), `:231-233` (OAuth arm) and
+ * `send-token.js:14` (send leg).
+ *
+ * Giving this a store is therefore never a one-line change: it makes
+ * `updateUser` reachable, and the two must be rewritten together.
+ */
+export const NO_STORED_USER: NonNullable<Adapter["getUserByEmail"]> =
+  async () => null;
 
 /**
  * The Auth.js database adapter for CP-2d's email OTP — **stateless, and
@@ -491,18 +624,12 @@ export function emailOtpAdapterOver(call: OtpGatewayCall): Adapter {
 
     // ── The user side: stateless. No store, so nothing is found and nothing
     //    is written. Each one names the arm that reaches it. ─────────────────
-    async getUserByEmail() {
-      // `index.js:156` (email arm), `handle-login.js:57` (email arm),
-      // `:231-233` (OAuth arm) and `send-token.js:14` (send leg).
-      //
-      // ⚠️ It MUST answer null, and a total version is the P0 above: on the
-      // OAuth arm a truthy answer means "an account already exists with this
-      // address", and `handle-login.js:242-250` answers that with
-      // `OAuthAccountNotLinked` unless `allowDangerousEmailAccountLinking` is
-      // set — which it is not, and must not be. Null puts both arms on the
-      // create path, which is where the adapter-less product already is.
-      return null;
-    },
+    //
+    // ⚠️ Assigned BY REFERENCE, not written inline: `NO_STORED_USER` is exported
+    // so `emailOtp.test.ts` can identity-compare it here, which is what makes
+    // `updateUser`'s unreachability a structural fact rather than a value
+    // coincidence. See that constant's own docstring.
+    getUserByEmail: NO_STORED_USER,
 
     async getUserByAccount() {
       // `index.js:57-58` and `handle-login.js:175-178`, both OAuth-only, both
@@ -534,11 +661,14 @@ export function emailOtpAdapterOver(call: OtpGatewayCall): Adapter {
 
     async updateUser(user) {
       // `handle-login.js:68`, the email arm's `getUserByEmail` answered branch.
-      // Unreachable while `getUserByEmail` above is a constant null, and that
-      // coupling is fenced (`emailOtp.test.ts`), not assumed.
+      // Unreachable while `getUserByEmail` above IS `NO_STORED_USER`, and that
+      // coupling is fenced STRUCTURALLY — `emailOtp.test.ts` identity-compares
+      // the assembled method against the exported constant, so any replacement
+      // reds here rather than only when it happens to answer for the addresses
+      // a value assertion picked (repair of review finding P2, round 2).
       //
       // ⚠️ If `getUserByEmail` is ever given a store, THIS method must be
-      // revisited in the same change: `@auth/core` calls it with `{ id,
+      // rewritten in the same change: `@auth/core` calls it with `{ id,
       // emailVerified }` alone, so an echo would return a user with no address
       // and the session would come out anonymous. It is implemented rather than
       // omitted because an absent method that a future arm reaches is a

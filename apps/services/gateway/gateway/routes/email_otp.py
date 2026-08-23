@@ -15,9 +15,11 @@ Three routes, one per act, because they are three different authorisations of
 the same row and collapsing them would hide that:
 
 * ``POST /signin/otp/send``    — may a code be sent? (the hourly budget **and**
-                                 the per-send slot claim), and records the send.
-                                 Called BEFORE the mail goes.
-* ``POST /signin/otp/token``   — persist the token hash for that send.
+                                 the per-send slot claim), and records the send
+                                 **with the hash of the code it is about to
+                                 mail**. Called BEFORE the mail goes.
+* ``POST /signin/otp/token``   — persist the token hash for that send (and never
+                                 overwrite one the claim already wrote).
 * ``POST /signin/otp/consume`` — spend one verification attempt and, if the hash
                                  matches a live token, consume it.
 
@@ -233,6 +235,15 @@ async def otp_send(
     handed to Resend. That ordering is the whole point: a limiter that refuses
     the token but lets the email out has not limited anything a person receiving
     the mail would notice.
+
+    ⚠️ **``token`` is REQUIRED here too, and it is the hash of the code this send
+    is about to mail** (repair of review finding P2, round 2, 2026-08-23). The
+    claim writes it, so a same-``expires`` burst's surviving row holds the SLOT
+    WINNER's code rather than whichever loser's token leg landed last. It is the
+    same ``createHash(`${token}${secret}`)`` value ``/signin/otp/token`` carries —
+    never the six digits — recomputed browser-side by ``emailOtp.ts::otpWireHash``
+    because ``@auth/core`` hands the send leg the raw code and the hash to the
+    other leg.
     """
     raw = await _body(request)
     identifier = _identity(user)
@@ -241,12 +252,14 @@ async def otp_send(
         return refusal
     assert raw is not None  # narrowed by _shape_refusal
     expires = _expires(raw)
-    if expires is None:
+    token = str(raw.get("token") or "").strip()
+    if expires is None or not token:
         return _bad_request(
-            INVALID_BODY, "an ISO-8601 `expires` instant is required"
+            INVALID_BODY,
+            "`token` and an ISO-8601 `expires` instant are required",
         )
     try:
-        return await reserve_send(identifier, expires)
+        return await reserve_send(identifier, token, expires)
     except OtpRateLimited as exc:
         return _too_many(exc)
 

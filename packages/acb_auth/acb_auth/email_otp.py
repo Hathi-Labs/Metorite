@@ -18,7 +18,7 @@ chain; a verification token is an identity artifact. It sits beside
 ``console_resolve`` (the other pre-session act) and follows
 ``acb_common.provisioning``'s acquisition idiom for exactly the same reason.
 
-## The three rules that are easy to get wrong
+## The four rules that are easy to get wrong
 
 1. ⚠️ **Acquire through ``get_session_factory()`` — UNBOUND, deliberately.**
    Not ``tenant_session()``: this row is minted before any session exists, for
@@ -60,6 +60,25 @@ chain; a verification token is an identity artifact. It sits beside
    already taken. Both legs still agree about which send they are; what changed
    is that exactly one of N simultaneous claimants may mail.
 
+4. ⚠️ **The CLAIM writes the hash, and the token leg may not overwrite one.**
+   Refusing the loser's *mail* was only half of P1b (repair of review finding P2,
+   round 2, 2026-08-23). ``send-token.js`` starts ``sendVerificationRequest`` and
+   ``createVerificationToken`` in ONE ``Promise.all``, so a rejected send leg
+   cancels nothing: the slot loser's token leg still landed on the shared
+   ``(identifier, expires)`` row, and :data:`_UPSERT_SQL`'s
+   ``COALESCE(EXCLUDED.token, …)`` — whose docstring claimed the opposite —
+   overwrote the winner's hash with it. The ONE email that went out then carried
+   a code that could never verify, with nothing anywhere reporting an error.
+
+   The property now holds by construction: :func:`reserve_send` takes the
+   winner's hash and :data:`_CLAIM_SEND_SQL` writes it **inside the statement
+   that decides who won**, while :data:`_UPSERT_SQL` is first-writer-wins. Walk
+   the four legs in any order — including a loser's token leg landing before the
+   claim — and the row's hash at mail time is the slot winner's. The browser tier
+   can supply that hash because ``@auth/core`` hands the send leg the RAW code;
+   ``emailOtp.ts::otpWireHash`` recomputes ``createHash(`${token}${secret}`)``
+   and is fenced against ``@auth/core``'s own function.
+
 ## What is NOT here
 
 No user, account or session rows. The session strategy is pinned to ``jwt`` and
@@ -77,8 +96,10 @@ here and not on a page.
 Fences: ``tests/unit/test_email_otp_token.py`` (R8, real Postgres — round trip,
 single use, expiry, the 6th attempt refused even with the correct code, the 429
 window, the 4th send refused, the **same-millisecond send collision** refused
-without a second mail, a **duplicate 6-digit hash** consumed as one row rather
-than raising, and the migration's collision guard) and
+without a second mail, **the burst's one mailed code still verifying under three
+interleavings** (``TestTheBurstsOneMailCarriesAWorkingCode``), a **duplicate
+6-digit hash** consumed as one row rather than raising, and the migration's
+collision guard) and
 ``tests/unit/test_h3_rls_promotion_rehearsal.py::
 TestTheEmailOtpTokenIsReachableUnbound``. R7 name: ``email-otp-token-limits``.
 """
@@ -201,8 +222,10 @@ SELECT count(*) AS n
    AND expires <> CAST(:expires AS TIMESTAMPTZ)
 """
 
-#: **Claim this send's slot, or answer nothing.** The statement that makes the
-#: hourly budget real rather than advisory (review finding P1b).
+#: **Claim this send's slot AND write the hash of the code it is about to mail,
+#: or answer nothing.** The statement that makes the hourly budget real rather
+#: than advisory (review finding P1b) *and* that makes the surviving row's hash
+#: the SLOT WINNER's (review finding P2, round 2).
 #:
 #: ⚠️ The ``WHERE reserved_at IS NULL`` on the ``DO UPDATE`` is load-bearing and
 #: is not an optimisation: when the row is already claimed the conflict arm
@@ -211,32 +234,62 @@ SELECT count(*) AS n
 #: is what makes N simultaneous sends — which share an ``expires`` millisecond
 #: and therefore share this row — produce exactly ONE email.
 #:
+#: ⚠️ **The ``token`` write in the conflict arm is the other half, and without it
+#: the one delivered email carried a code that could never verify.** Refusing the
+#: loser's *mail* does not stop its token leg: ``send-token.js`` starts both legs
+#: in one ``Promise.all``, so a rejected ``sendVerificationRequest`` cancels
+#: nothing, and the loser's ``createVerificationToken`` still lands on this same
+#: row. Writing the winner's hash HERE — inside the same statement that decides
+#: who won — plus :data:`_UPSERT_SQL`'s refusal to overwrite means the row's hash
+#: is the winner's under every interleaving of the four legs, including the ones
+#: where a *loser's* token leg lands before the claim.
+#:
+#: ``COALESCE(EXCLUDED.token, …)`` in this arm, the opposite way round from the
+#: token leg's: the claim is authoritative because it is the act that decides
+#: which code gets mailed. ``EXCLUDED.token`` is never NULL in practice
+#: (:func:`reserve_send` refuses an empty hash), so the ``COALESCE`` is a
+#: belt-and-braces against a future caller, not the mechanism.
+#:
 #: It still converges with the token leg: a row that leg created carries
-#: ``reserved_at IS NULL``, so the send leg claims it rather than being refused,
-#: and ``token`` is left alone.
+#: ``reserved_at IS NULL``, so the send leg claims it rather than being refused.
 _CLAIM_SEND_SQL = """
 INSERT INTO auth_email_otp_token (identifier, token, expires, reserved_at)
 VALUES (CAST(:identifier AS TEXT),
-        NULL,
-        CAST(:expires AS TIMESTAMPTZ),
+        CAST(:token      AS TEXT),
+        CAST(:expires    AS TIMESTAMPTZ),
         now())
 ON CONFLICT ON CONSTRAINT auth_email_otp_token_send_key DO UPDATE
-   SET reserved_at = now()
+   SET reserved_at = now(),
+       token = COALESCE(EXCLUDED.token, auth_email_otp_token.token)
  WHERE auth_email_otp_token.reserved_at IS NULL
 RETURNING identifier, token, expires
 """
 
 #: The TOKEN leg's write: attach the hash to this send's row, creating it when
-#: the send leg has not landed yet (the two are concurrent and genuinely race).
-#: ``COALESCE`` keeps an already-written hash, and ``reserved_at`` is never
-#: touched here — claiming a send slot is the send leg's act alone.
+#: nothing has landed yet (the two legs are concurrent and genuinely race).
+#:
+#: ⚠️ **FIRST WRITER WINS — this statement may not overwrite an existing hash**
+#: (repair of review finding P2, round 2, 2026-08-23). It used to read
+#: ``COALESCE(EXCLUDED.token, auth_email_otp_token.token)`` under a docstring
+#: claiming ``COALESCE`` "keeps an already-written hash". It did the opposite:
+#: ``EXCLUDED.token`` is never NULL (:func:`record_token` rejects an empty one),
+#: so the incoming hash always won. In a same-``expires`` burst the send loser's
+#: token leg therefore clobbered the winner's hash on the shared row, and the ONE
+#: email that went out carried a code that could never verify — a person locked
+#: out of a sign-in that reported no error anywhere. The argument order is now the
+#: one the sentence describes, and :data:`_CLAIM_SEND_SQL` is what puts the
+#: winner's hash there first.
+#:
+#: ``reserved_at`` is never touched here — claiming a send slot is the send leg's
+#: act alone, and a claim here would refuse every send whose token leg won the
+#: race.
 _UPSERT_SQL = """
 INSERT INTO auth_email_otp_token (identifier, token, expires)
 VALUES (CAST(:identifier AS TEXT),
         CAST(:token      AS TEXT),
         CAST(:expires    AS TIMESTAMPTZ))
 ON CONFLICT ON CONSTRAINT auth_email_otp_token_send_key DO UPDATE
-   SET token = COALESCE(EXCLUDED.token, auth_email_otp_token.token)
+   SET token = COALESCE(auth_email_otp_token.token, EXCLUDED.token)
 RETURNING identifier, token, expires
 """
 
@@ -359,13 +412,27 @@ async def _gate_send(
         )
 
 
-async def reserve_send(identifier: str, expires: datetime) -> dict[str, Any]:
+async def reserve_send(
+    identifier: str, token: str, expires: datetime
+) -> dict[str, Any]:
     """Permit (and record) one code send, or raise :class:`OtpRateLimited`.
 
     The FIRST leg of a send, called from the Auth.js provider's
     ``sendVerificationRequest`` **before** the mail goes out — which is the only
-    place a send limit can actually stop an email. It writes the row with no
-    token; :func:`record_token` fills the hash in.
+    place a send limit can actually stop an email.
+
+    ⚠️ **``token`` is the hash of the code THIS send is about to mail, and it is
+    required** (repair of review finding P2, round 2, 2026-08-23). This leg used
+    to write the row with no token and leave the hash to :func:`record_token`,
+    which is wrong the moment two sends share an ``expires`` millisecond: the
+    slot loser's token leg still runs (``send-token.js`` starts both legs in one
+    ``Promise.all``; refusing the mail cancels nothing) and it landed on the same
+    row. So the ONE email that went out carried a code the row no longer matched.
+    ``@auth/core`` hands this leg the RAW code and the other leg the hash, so the
+    browser tier recomputes the same ``createHash(`${token}${secret}`)``
+    (``emailOtp.ts::otpWireHash``) and passes it here, where the claim writes it
+    atomically. :data:`_UPSERT_SQL` then refuses to overwrite. Between them the
+    row's hash is the slot winner's under every interleaving of the four legs.
 
     Two refusals, and they are different failures:
 
@@ -380,6 +447,12 @@ async def reserve_send(identifier: str, expires: datetime) -> dict[str, Any]:
     keeps ``sendVerificationRequest`` from reaching Resend.
     """
     from sqlalchemy import text
+
+    if not (token or "").strip():
+        # Fail closed, :func:`record_token`'s rule and for a sharper reason: a
+        # hash-less claim would leave the winner's row matchable by whichever
+        # token leg landed on it, which is the defect this argument removes.
+        raise ValueError("reserve_send requires the token hash")
 
     who = canonical_identifier(identifier)
     if not who:
@@ -401,7 +474,8 @@ async def reserve_send(identifier: str, expires: datetime) -> dict[str, Any]:
         await _gate_send(session, who, expires, sql=_CLAIMED_SEND_COUNT_SQL)
         row = (
             await session.execute(
-                text(_CLAIM_SEND_SQL), {"identifier": who, "expires": expires}
+                text(_CLAIM_SEND_SQL),
+                {"identifier": who, "token": token, "expires": expires},
             )
         ).one_or_none()
         await session.commit()
@@ -442,6 +516,12 @@ async def record_token(
 
     It does **not** claim a send slot. Landing first is legitimate and must not
     consume the mail budget or make the send leg look like a duplicate.
+
+    ⚠️ **It also does not OVERWRITE a hash already on the row** (review finding
+    P2, round 2): :data:`_UPSERT_SQL` is first-writer-wins, and the send leg's
+    claim is what puts the winner's hash there. Without that, the loser of a
+    same-``expires`` burst — whose mail was refused but whose token leg still ran
+    — replaced the mailed code's hash with one nobody received.
     """
     from sqlalchemy import text
 

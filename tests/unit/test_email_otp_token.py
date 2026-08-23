@@ -158,7 +158,8 @@ class TestTheRouteShape:
 
         client = _client()
         for path, body in (
-            ("/signin/otp/send", {"expires": _soon().isoformat(), "email": "x@y.z"}),
+            ("/signin/otp/send", {"expires": _soon().isoformat(), "token": "h",
+                                  "email": "x@y.z"}),
             ("/signin/otp/token", {"token": "h", "expires": _soon().isoformat(),
                                    "identifier": "x@y.z"}),
             ("/signin/otp/consume", {"token": "h", "org": "acme"}),
@@ -188,7 +189,7 @@ class TestTheRouteShape:
 
         monkeypatch.setattr(route, "reserve_send", _boom)
         res = _client(ANON).post(
-            "/signin/otp/send", json={"expires": _soon().isoformat()}
+            "/signin/otp/send", json={"expires": _soon().isoformat(), "token": "h"}
         )
         assert res.status_code == 401
 
@@ -209,7 +210,32 @@ class TestTheRouteShape:
         client = _client()
         assert client.post("/signin/otp/send", json={}).status_code == 400
         assert (
-            client.post("/signin/otp/send", json={"expires": "not-a-date"}).status_code
+            client.post(
+                "/signin/otp/send", json={"expires": "not-a-date", "token": "h"}
+            ).status_code
+            == 400
+        )
+
+    def test_the_send_requires_the_hash_of_the_code_it_will_mail(self) -> None:
+        """⚠️ ``token`` is required on the SEND leg too (finding P2, round 2).
+
+        The claim writes it, and that write is what makes the surviving row's
+        hash the slot WINNER's rather than whichever loser's token leg landed
+        last. A send permitted without one would claim a slot the winner's code
+        cannot match — so it is refused on shape, before the store is reached,
+        exactly like a missing ``expires``.
+        """
+        client = _client()
+        res = client.post("/signin/otp/send", json={"expires": _soon().isoformat()})
+        assert res.status_code == 400
+        assert res.json()["code"] == route.INVALID_BODY
+        # A blank one is not a token either — the store would raise on it, and a
+        # 500 is not how a shape violation should read.
+        assert (
+            client.post(
+                "/signin/otp/send",
+                json={"expires": _soon().isoformat(), "token": "   "},
+            ).status_code
             == 400
         )
 
@@ -226,18 +252,25 @@ class TestTheRouteShape:
         it is half of the ``(identifier, expires)`` key both legs match on.
         """
         seen: list[datetime] = []
+        hashes: list[str] = []
 
-        async def _capture(identifier, expires):
+        async def _capture(identifier, token, expires):
             seen.append(expires)
-            return {"identifier": identifier, "token": None,
+            hashes.append(token)
+            return {"identifier": identifier, "token": token,
                     "expires": expires.isoformat()}
 
         monkeypatch.setattr(route, "reserve_send", _capture)
         res = _client().post(
-            "/signin/otp/send", json={"expires": "2026-08-23T21:00:00.000Z"}
+            "/signin/otp/send",
+            json={"expires": "2026-08-23T21:00:00.000Z", "token": "wire-hash"},
         )
         assert res.status_code == 200
         assert len(seen) == 1
+        # …and the hash the browser recomputed reaches the store leg unaltered:
+        # the claim writes it, so a route that dropped it would silently restore
+        # the P2 clobber.
+        assert hashes == ["wire-hash"]
         assert seen[0].tzinfo is not None, (
             "a naive instant compares wrongly against a TIMESTAMPTZ column"
         )
@@ -250,7 +283,9 @@ class TestTheRouteShape:
             raise OtpRateLimited(SEND_RATE_LIMITED, "too many")
 
         monkeypatch.setattr(route, "reserve_send", _limited)
-        res = _client().post("/signin/otp/send", json={"expires": _soon().isoformat()})
+        res = _client().post(
+            "/signin/otp/send", json={"expires": _soon().isoformat(), "token": "h"}
+        )
         assert res.status_code == 429
         assert res.json()["code"] == SEND_RATE_LIMITED
 
@@ -422,7 +457,7 @@ class TestTheTokenRoundTrip:
         hashed = f"hash-{uuid.uuid4().hex}"
 
         async with tenant_engine_scope(_URL):
-            await reserve_send(who, expires)
+            await reserve_send(who, hashed, expires)
             await record_token(who, hashed, expires)
             first = await consume_token(who, hashed)
             second = await consume_token(who, hashed)
@@ -450,12 +485,13 @@ class TestTheTokenRoundTrip:
         hashed = f"hash-{uuid.uuid4().hex}"
 
         async with tenant_engine_scope(_URL):
-            await reserve_send(who, expires)
+            await reserve_send(who, hashed, expires)
             await record_token(who, hashed, expires)
 
         rows = _rows(replayed, who)
         assert len(rows) == 1
-        # …and the reserve leg's NULL must not wipe a hash already written.
+        # …carrying the hash of the code that was mailed. Both legs name the
+        # same one for one send, so the claim's write and the token leg's agree.
         assert rows[0]["token"] == hashed
 
     async def test_the_reserve_leg_may_land_second_without_losing_the_hash(
@@ -475,7 +511,7 @@ class TestTheTokenRoundTrip:
 
         async with tenant_engine_scope(_URL):
             await record_token(who, hashed, expires)
-            await reserve_send(who, expires)
+            await reserve_send(who, hashed, expires)
 
         rows = _rows(replayed, who)
         assert len(rows) == 1
@@ -663,9 +699,9 @@ class TestTheSendLimit:
         who = _who("sends")
         async with tenant_engine_scope(_URL):
             for _ in range(SEND_MAX_PER_WINDOW):
-                await reserve_send(who, _soon(600 + _))
+                await reserve_send(who, f"hash-{_}-{uuid.uuid4().hex}", _soon(600 + _))
             with pytest.raises(OtpRateLimited) as caught:
-                await reserve_send(who, _soon(999))
+                await reserve_send(who, f"hash-x-{uuid.uuid4().hex}", _soon(999))
 
         assert caught.value.code == SEND_RATE_LIMITED
         assert len(_rows(replayed, who)) == SEND_MAX_PER_WINDOW
@@ -700,8 +736,9 @@ class TestTheSendLimit:
         async with tenant_engine_scope(_URL):
             for i in range(SEND_MAX_PER_WINDOW):
                 expires = _soon(600 + i)
-                await reserve_send(who, expires)
-                await record_token(who, f"hash-{i}-{uuid.uuid4().hex}", expires)
+                hashed = f"hash-{i}-{uuid.uuid4().hex}"
+                await reserve_send(who, hashed, expires)
+                await record_token(who, hashed, expires)
 
         assert len(_rows(replayed, who)) == SEND_MAX_PER_WINDOW
 
@@ -730,9 +767,9 @@ class TestTheSendLimit:
         expires = _soon()  # ONE instant, shared by both sends
 
         async with tenant_engine_scope(_URL):
-            await reserve_send(who, expires)
+            await reserve_send(who, f"hash-a-{uuid.uuid4().hex}", expires)
             with pytest.raises(OtpRateLimited) as caught:
-                await reserve_send(who, expires)
+                await reserve_send(who, f"hash-b-{uuid.uuid4().hex}", expires)
 
         assert caught.value.code == SEND_DUPLICATE
         # …and it coalesced onto ONE row rather than silently making two.
@@ -751,18 +788,180 @@ class TestTheSendLimit:
         shared = _soon()
 
         async with tenant_engine_scope(_URL):
-            await reserve_send(who, shared)
+            await reserve_send(who, f"hash-{uuid.uuid4().hex}", shared)
             for _ in range(2):
                 with pytest.raises(OtpRateLimited):
-                    await reserve_send(who, shared)
+                    await reserve_send(who, f"hash-{uuid.uuid4().hex}", shared)
             # Two left, and only two.
-            await reserve_send(who, _soon(601))
-            await reserve_send(who, _soon(602))
+            await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(601))
+            await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(602))
             with pytest.raises(OtpRateLimited) as fourth:
-                await reserve_send(who, _soon(603))
+                await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(603))
 
         assert fourth.value.code == SEND_RATE_LIMITED
         assert len(_rows(replayed, who)) == SEND_MAX_PER_WINDOW
+
+
+@_DB_GATE
+class TestTheBurstsOneMailCarriesAWorkingCode:
+    """⚠️ **The burst's single email must carry a code that verifies** (review
+    finding P2, round 2, 2026-08-23).
+
+    P1b stopped the duplicate send's *mail*. It did not stop the duplicate's
+    TOKEN leg: ``@auth/core``'s ``send-token.js`` starts
+    ``sendVerificationRequest`` and ``createVerificationToken`` in one
+    ``Promise.all``, so refusing the first cancels nothing — the loser's
+    ``createVerificationToken`` still landed on the shared ``(identifier,
+    expires)`` row, and ``_UPSERT_SQL``'s ``COALESCE(EXCLUDED.token, …)``
+    overwrote the winner's hash with it (``EXCLUDED.token`` is never NULL:
+    :func:`record_token` rejects an empty one, so the docstring's claim that
+    ``COALESCE`` "keeps an already-written hash" described the opposite
+    behaviour). The ONE email that went out then carried a code that could never
+    verify, and nothing anywhere reported an error.
+
+    The property asserted here is **whole-system, not per-statement**: under
+    EVERY interleaving of two same-``expires`` sends, the row's hash at mail time
+    is the SLOT WINNER's — the code that was actually delivered — and the burst
+    still mails once and spends one of the three slots.
+
+    Two statements make it true and each is mutated below:
+    :data:`~acb_auth.email_otp._CLAIM_SEND_SQL` writes the winner's hash inside
+    the statement that decides who won, and
+    :data:`~acb_auth.email_otp._UPSERT_SQL` is first-writer-wins so no token leg
+    can replace it.
+
+    Measured RED 2026-08-23:
+
+    * restoring ``SET token = COALESCE(EXCLUDED.token, auth_email_otp_token.
+      token)`` on the token leg ⇒ :meth:`test_reserve_record_reserve_record`
+      fails (the loser's hash is on the row and the winner's code misses);
+    * dropping the ``token`` write from the claim's conflict arm ⇒
+      :meth:`test_record_reserve_record_the_losers_token_leg_landing_first` and
+      :meth:`test_record_record_reserve_reserve` fail for the same reason.
+    """
+
+    @staticmethod
+    def _one_send_row(replayed, who: str, winner: str) -> None:
+        """The burst coalesced onto ONE row and that row holds the WINNER's hash."""
+        rows = _rows(replayed, who)
+        assert len(rows) == 1, "a burst must not create a second row"
+        assert rows[0]["reserved_at"] is not None, "the slot was never claimed"
+        assert rows[0]["token"] == winner, (
+            "the row's hash is not the code that was mailed — the one delivered "
+            "email carries a code that can never verify"
+        )
+
+    async def test_reserve_record_reserve_record(self, replayed) -> None:
+        """The straightforward order: winner claims, both token legs then land."""
+        who = _who("p2-rr")
+        expires = _soon()  # ONE instant — the burst's whole premise
+        winner = f"win-{uuid.uuid4().hex}"
+        loser = f"lose-{uuid.uuid4().hex}"
+
+        async with tenant_engine_scope(_URL):
+            await reserve_send(who, winner, expires)  # mails `winner`
+            await record_token(who, winner, expires)
+            with pytest.raises(OtpRateLimited) as dup:
+                await reserve_send(who, loser, expires)  # mails NOTHING
+            # …but its token leg still runs. This is the line that broke it.
+            await record_token(who, loser, expires)
+
+            missed = await consume_token(who, loser)
+            hit = await consume_token(who, winner)
+
+        assert dup.value.code == SEND_DUPLICATE
+        self._one_send_row(replayed, who, winner)
+        assert missed is None, "a code nobody was sent must not verify"
+        assert hit is not None, "the code that WAS mailed did not verify"
+
+    async def test_record_reserve_record_the_losers_token_leg_landing_first(
+        self, replayed
+    ) -> None:
+        """The loser's token leg lands BEFORE the winner's claim.
+
+        Legitimate and unremarkable — the two legs of a send genuinely race — and
+        it is the case a "``record_token`` must not overwrite a CLAIMED row" fix
+        cannot reach: at the moment that write lands there is no claim yet. Only
+        a claim that carries the winner's hash repairs it.
+        """
+        who = _who("p2-rrr")
+        expires = _soon()
+        winner = f"win-{uuid.uuid4().hex}"
+        loser = f"lose-{uuid.uuid4().hex}"
+
+        async with tenant_engine_scope(_URL):
+            await record_token(who, loser, expires)  # creates the row, unclaimed
+            await reserve_send(who, winner, expires)  # claims it, mails `winner`
+            with pytest.raises(OtpRateLimited) as dup:
+                await reserve_send(who, loser, expires)
+            await record_token(who, winner, expires)
+
+            missed = await consume_token(who, loser)
+            hit = await consume_token(who, winner)
+
+        assert dup.value.code == SEND_DUPLICATE
+        self._one_send_row(replayed, who, winner)
+        assert missed is None
+        assert hit is not None
+
+    async def test_record_record_reserve_reserve(self, replayed) -> None:
+        """Both token legs land before either claim.
+
+        The loser's lands first, so first-writer-wins alone would leave the
+        loser's hash on the row; the claim's own write is what corrects it. The
+        burst is still one mail and still one of the three slots — asserted here
+        rather than assumed, because a refusal that failed to charge the slot
+        would be P1b's hole wearing a 429.
+        """
+        who = _who("p2-rrrr")
+        expires = _soon()
+        winner = f"win-{uuid.uuid4().hex}"
+        loser = f"lose-{uuid.uuid4().hex}"
+
+        async with tenant_engine_scope(_URL):
+            await record_token(who, loser, expires)
+            await record_token(who, winner, expires)
+            await reserve_send(who, winner, expires)  # claims + mails `winner`
+            with pytest.raises(OtpRateLimited) as dup:
+                await reserve_send(who, loser, expires)
+
+            missed = await consume_token(who, loser)
+            hit = await consume_token(who, winner)
+
+            # …and the burst spent exactly ONE of the three slots: two more
+            # sends are permitted and the fourth is the budget refusal.
+            await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(601))
+            await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(602))
+            with pytest.raises(OtpRateLimited) as fourth:
+                await reserve_send(who, f"hash-{uuid.uuid4().hex}", _soon(603))
+
+        assert dup.value.code == SEND_DUPLICATE
+        assert fourth.value.code == SEND_RATE_LIMITED
+        assert missed is None
+        assert hit is not None
+        rows = _rows(replayed, who)
+        assert len(rows) == SEND_MAX_PER_WINDOW
+        assert rows[0]["token"] == winner, (
+            "the burst's row does not hold the code that was mailed"
+        )
+
+    async def test_a_send_without_the_hash_is_refused_by_the_store(
+        self, replayed
+    ) -> None:
+        """Fail closed rather than claim a slot no mailed code can match.
+
+        The route refuses a token-less send on shape; this is the store's own
+        guard, so a second caller cannot reintroduce the hash-less claim the
+        interleavings above depend on being impossible.
+        """
+        who = _who("p2-nohash")
+        async with tenant_engine_scope(_URL):
+            with pytest.raises(ValueError):
+                await reserve_send(who, "", _soon())
+            with pytest.raises(ValueError):
+                await reserve_send(who, "   ", _soon())
+        # …and nothing was written, so no slot was spent either.
+        assert _rows(replayed, who) == []
 
 
 class TestThisSuiteIsArmed:

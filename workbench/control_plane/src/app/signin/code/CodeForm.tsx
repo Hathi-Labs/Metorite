@@ -9,7 +9,7 @@ import {
   EMAIL_OTP_PROVIDER_ID,
   OTP_CODE_LENGTH,
   OTP_EMAIL_STORAGE_KEY,
-  canonicalOtpIdentifier,
+  codeEntryState,
 } from "@/lib/emailOtp";
 
 import { signInErrorMessage } from "../errorCopy";
@@ -44,12 +44,29 @@ import { signInErrorMessage } from "../errorCopy";
  * ⚠️ The address is USER INPUT here and that is not an R11 breach: it is not
  * trusted as identity. Ownership is proven by the code round-trip, and the
  * SESSION email is Auth.js's own verified value (`auth.ts`'s jwt callback).
+ *
+ * ## Why the decision is a pure helper and not two lines of this component
+ *
+ * ⚠️ **The fallback arm was unusable and the cause was a decision taken over the
+ * LIVE input value** (repair of review finding P1, round 2, 2026-08-23). This
+ * component computed `known = canonicalOtpIdentifier(email) !== ""` — and `"a"`
+ * canonicalises to `"a"`, so the first keystroke flipped `known` true and
+ * unmounted the field being typed into. Nobody without a stash could ever finish
+ * entering their address. `codeEntryState` in `lib/emailOtp.ts` now owns both
+ * variables: `known` derives from the mount-time STASH alone, `submitEmail` is
+ * the canonical form of whichever address applies. It lives in the lib layer
+ * because vitest here is node-env — there is no DOM renderer in this package and
+ * a decision written inside a component has no fence at all.
  */
 function Form() {
   const searchParams = useSearchParams();
   const errorMessage = signInErrorMessage(searchParams.get("error"));
   const fromQuery = searchParams.get("email") ?? "";
-  const [email, setEmail] = useState(fromQuery);
+  // The address the page was HANDED, and the only input to `known`. `?email=`
+  // wins; the sessionStorage hand-off fills it in at mount. Written in exactly
+  // one other place (the effect below) and never from typing.
+  const [stash, setStash] = useState<string | null>(fromQuery || null);
+  const [typed, setTyped] = useState("");
   const [code, setCode] = useState("");
 
   // Read in an effect: this component is prerendered on the server, where there
@@ -59,7 +76,7 @@ function Form() {
     if (fromQuery) return;
     try {
       const stashed = window.sessionStorage.getItem(OTP_EMAIL_STORAGE_KEY);
-      if (stashed) setEmail(stashed);
+      if (stashed) setStash(stashed);
     } catch {
       // Storage can be unavailable (private mode, a strict policy). The field
       // below is then simply shown, which is the same graceful path as a
@@ -67,18 +84,14 @@ function Form() {
     }
   }, [fromQuery]);
 
-  // ⚠️ **What the form SUBMITS is always this, never the raw field** (repair of
-  // review finding P1a). `@auth/core`'s send leg minted the token against its
-  // own normalised form of the address, and `callback/index.js:151-152` then
-  // compares `invite.identifier !== paramIdentifier` VERBATIM — but only after
-  // `useVerificationToken` has already consumed the row and charged an attempt.
-  // Submitting `Ada@Customer.Example` therefore spent the code and rendered
-  // "that code is wrong", and each retry cost another of the five attempts until
-  // the address was locked out for ten minutes. So the submitted field is a
-  // hidden input carrying the canonical value, and the visible box below is an
-  // unnamed control that only feeds it.
-  const canonical = canonicalOtpIdentifier(email);
-  const known = canonical !== "";
+  // ⚠️ **Both variables come from the helper and neither is recomputed here.**
+  // `known` answers "was an address handed to this page" (mount-time stash
+  // only — deriving it from `typed` is the P1 defect); `submitEmail` is always
+  // CANONICAL (finding P1a: `@auth/core`'s send leg minted the token against its
+  // own normalised form and `callback/index.js:151-152` compares verbatim AFTER
+  // `useVerificationToken` has spent the row, so a raw address burns the code and
+  // then reports it wrong). The visible box only ever feeds `typed`.
+  const { known, submitEmail } = codeEntryState(stash, typed);
 
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
@@ -86,7 +99,7 @@ function Form() {
         <h1 className="text-xl font-semibold">Check your email</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {known
-            ? `We sent a ${OTP_CODE_LENGTH}-digit code to ${canonical}.`
+            ? `We sent a ${OTP_CODE_LENGTH}-digit code to ${submitEmail}.`
             : `Enter your address and the ${OTP_CODE_LENGTH}-digit code we sent you.`}
         </p>
 
@@ -104,19 +117,24 @@ function Form() {
           {/* The ONE field named `email`, and it always carries the canonical
               form. Rendered unconditionally so there is no arrangement of this
               page that submits a raw address. */}
-          <input type="hidden" name="email" value={canonical} />
+          <input type="hidden" name="email" value={submitEmail} />
           {!known && (
             <Input
               type="email"
               // Deliberately UNNAMED: a second `email` control would submit the
               // raw string beside the canonical one and `@auth/core` reads the
               // first, which is how this bug would come back.
+              //
+              // ⚠️ It feeds `typed`, never `stash` — writing the keystroke back
+              // into the stash would make `known` true on the first character
+              // and unmount this field mid-typing, which is exactly the P1
+              // defect this arm was rewritten to remove.
               required
               autoComplete="email"
               inputSize="lg"
               placeholder="you@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
             />
           )}
           <Input

@@ -25,6 +25,20 @@ const signInForm = readFileSync(
   "utf-8",
 );
 
+/**
+ * The file with its comments removed.
+ *
+ * ⚠️ Needed, not tidiness: the negative pins below ("nothing else binds
+ * `known`", "this component never canonicalises") are about CODE, and
+ * `CodeForm.tsx`'s docstring quotes the defective expression verbatim so the
+ * next reader knows what the bug looked like. Matching the raw text would fail
+ * on the explanation of the bug rather than on the bug — a fence that forbids
+ * describing what it forbids.
+ */
+function code(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
 describe("the code page submits to Auth.js's own callback", () => {
   it("posts the typed code to /api/auth/callback/<provider> as a GET", () => {
     // `@auth/core` verifies at
@@ -58,14 +72,51 @@ describe("the code page submits to Auth.js's own callback", () => {
     // VERBATIM — but only AFTER `useVerificationToken` has consumed the row and
     // charged an attempt. The person's code was spent and they were told it was
     // wrong, and each retry cost another of their five attempts.
-    expect(form).toContain("canonicalOtpIdentifier(email)");
-    expect(form).toContain('<input type="hidden" name="email" value={canonical} />');
+    //
+    // The canonicalisation itself now lives in `codeEntryState` (P1, round 2 —
+    // see the next block) and is EXECUTED in `emailOtp.test.ts` over both arms;
+    // what is pinned here is that the submitted field is that helper's answer.
+    expect(form).toContain('<input type="hidden" name="email" value={submitEmail} />');
     // Exactly ONE control named `email`. A second (the visible box, when the
     // address is unknown) would submit the raw string beside the canonical one
     // and `@auth/core` reads the first — which is how this comes back.
     expect(form.match(/name="email"/g)?.length).toBe(1);
-    // And the raw state is never what is submitted.
-    expect(form).not.toContain("name=\"email\" value={email}");
+    // And no raw state is ever what is submitted — neither the old `email` nor
+    // the current `typed`.
+    expect(form).not.toContain('name="email" value={email}');
+    expect(form).not.toContain('name="email" value={typed}');
+  });
+
+  it("takes `known` from the helper and NEVER from the input value (P1 round 2)", () => {
+    // ⚠️ The finding this block exists for. The component computed
+    // `known = canonicalOtpIdentifier(email) !== ""` over the LIVE input, and
+    // `"a"` canonicalises to `"a"` — so the first keystroke flipped `known`
+    // true and unmounted the very field being typed into. The fallback arm was
+    // unusable: a person with no stashed address could never finish entering
+    // one. There is no DOM renderer in this package (node-env vitest), so the
+    // decision was moved to a pure helper that CAN be executed
+    // (`emailOtp.test.ts` drives the whole typing sequence) and what is left
+    // here is the structural half: this component must only CONSUME it.
+    expect(form).toMatch(
+      /const \{ known, submitEmail \} = codeEntryState\(stash, typed\);/,
+    );
+    // …imported from the ONE seam, never transcribed here.
+    expect(form).toMatch(/import \{[\s\S]*?codeEntryState,[\s\S]*?\} from "@\/lib\/emailOtp";/);
+    // Nothing else in the file may bind `known` — a locally recomputed one is
+    // the defect returning under a different name. (Comments stripped: the
+    // docstring quotes the defective expression on purpose.)
+    expect(code(form).match(/\bknown\s*=/g)).toBeNull();
+    // The component does not canonicalise on its own either: one canonicaliser,
+    // inside the helper, or the two answers can disagree.
+    expect(code(form)).not.toContain("canonicalOtpIdentifier");
+    // `known` derives from the STASH, and the stash has exactly ONE writer —
+    // the mount-time storage read below. A `setStash` on the input's `onChange`
+    // would reintroduce the unmount-mid-typing bug through the back door.
+    expect(form.match(/setStash\(/g)?.length).toBe(1);
+    expect(form).toContain("if (stashed) setStash(stashed);");
+    // …and the visible box feeds `typed`, which only reaches `submitEmail`.
+    expect(form).toContain("onChange={(e) => setTyped(e.target.value)}");
+    expect(form).toContain("value={typed}");
   });
 
   it("reads no secret and asserts no identity of its own", () => {

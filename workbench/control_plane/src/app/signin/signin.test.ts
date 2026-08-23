@@ -502,10 +502,42 @@ describe("the email OTP provider ships dark and rides the one session (CP-2d)", 
     // token while the email goes out anyway. The reserve therefore has to be
     // the first thing the send does, and it has to be awaited.
     const send = authSrc.slice(authSrc.indexOf("sendVerificationRequest:"));
-    const reserve = send.indexOf("await reserveOtpSend(identifier, expires)");
+    const reserve = send.indexOf(
+      "await reserveOtpSend(identifier, expires, tokenHash)",
+    );
     const mail = send.indexOf("await sendOtpEmail(");
     expect(reserve).toBeGreaterThan(-1);
     expect(mail).toBeGreaterThan(reserve);
+  });
+
+  it("claims the send slot WITH the hash of the code it is about to mail (P2 round 2)", () => {
+    // ⚠️ Refusing the duplicate send's mail was only half of P1b.
+    // `send-token.js` starts `sendVerificationRequest` and
+    // `createVerificationToken` in ONE `Promise.all`, so a rejected send leg
+    // cancels nothing: the loser's `createVerificationToken` still landed on the
+    // shared `(identifier, expires)` row and overwrote the winner's hash — the
+    // ONE email delivered carried a code that could never verify. `@auth/core`
+    // hands THIS leg the raw code and the other leg the hash, so this is the
+    // only place the two can be reconciled: recompute the hash and give it to
+    // the claim, which writes it atomically.
+    const send = authSrc.slice(authSrc.indexOf("sendVerificationRequest:"));
+    const hash = send.indexOf("const tokenHash = await otpWireHash(");
+    const reserve = send.indexOf("await reserveOtpSend(identifier, expires, tokenHash)");
+    expect(hash).toBeGreaterThan(-1);
+    // Computed BEFORE the claim, or there is nothing to claim with.
+    expect(reserve).toBeGreaterThan(hash);
+    // The salt resolution mirrors `send-token.js:46` — `provider.secret` first,
+    // then the config's. A copy that only read one of them would be wrong the
+    // day a provider-level secret is set, and the failure mode is a code that
+    // never verifies rather than an error anybody sees.
+    expect(send).toContain('(provider as { secret?: string }).secret ?? AUTH_SECRET');
+    // …and the config's secret is the SAME name, read once. Two `process.env`
+    // reads that drifted would be the same failure from the other end.
+    expect(authSrc).toContain(
+      'const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";',
+    );
+    expect(authSrc).toContain("secret: AUTH_SECRET,");
+    expect(authSrc.match(/process\.env\.AUTH_SECRET/g)?.length).toBe(1);
   });
 
   it("sends the person somewhere they can type the code", () => {

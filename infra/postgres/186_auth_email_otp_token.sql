@@ -84,10 +84,21 @@
 -- `createVerificationToken` CONCURRENTLY, and only the second is handed the
 -- token hash. The send leg must be gated BEFORE the mail goes out (a limiter
 -- that refuses the token but not the email does not limit anything), so it
--- upserts the row first, on `(identifier, expires)`, with `token` still NULL;
--- the token leg then fills the hash in. A row whose `token` is still NULL is a
--- send that was permitted and whose hash has not landed yet — it can never be
--- consumed, because the consume path matches on the hash.
+-- upserts the row first, on `(identifier, expires)` — and it used to do so with
+-- `token` NULL, leaving the hash to the token leg. Hence the nullable column.
+--
+-- ⚠️ **Both legs now write a hash, and the CLAIM's is authoritative** (repair of
+-- review finding P2, round 2, 2026-08-23). Refusing the duplicate send's mail
+-- did not stop its token leg — `Promise.all` cancels nothing — so the loser's
+-- `createVerificationToken` landed on the shared row and overwrote the winner's
+-- hash, and the one email that went out carried a code that could never verify.
+-- The browser tier recomputes the same `createHash(`${token}${secret}`)` from
+-- the raw code @auth/core hands the send leg and passes it to
+-- `acb_auth.email_otp.reserve_send`, whose claim writes it inside the statement
+-- that decides who won; the token leg's upsert is now FIRST-WRITER-WINS and can
+-- no longer replace it. The column stays nullable for rows written by the first
+-- cut of this migration (they expire in ten minutes) and because a NULL-token
+-- row can never be consumed anyway — the consume path matches on the hash.
 --
 -- ⚠️ The stored `token` is NEVER the 6-digit code. @auth/core stores
 -- `createHash(`${token}${secret}`)` — SHA-256 of the code salted with
