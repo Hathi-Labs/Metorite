@@ -212,6 +212,36 @@ class TestTheRouteShape:
             == 400
         )
 
+    def test_it_parses_the_timestamp_JAVASCRIPT_actually_sends(
+        self, monkeypatch
+    ) -> None:
+        """⚠️ The wire crosses a language boundary, so the FORMAT is the risk.
+
+        The adapter sends ``Date.prototype.toISOString()``, which ends in a
+        literal ``Z`` — and a Python parser that rejects it 400s every send with
+        a message about a field the caller demonstrably supplied. Asserting the
+        two refusals above without ever asserting the ACCEPTED shape is how that
+        ships green. The instant must arrive parsed and timezone-aware, because
+        it is half of the ``(identifier, expires)`` key both legs match on.
+        """
+        seen: list[datetime] = []
+
+        async def _capture(identifier, expires):
+            seen.append(expires)
+            return {"identifier": identifier, "token": None,
+                    "expires": expires.isoformat()}
+
+        monkeypatch.setattr(route, "reserve_send", _capture)
+        res = _client().post(
+            "/signin/otp/send", json={"expires": "2026-08-23T21:00:00.000Z"}
+        )
+        assert res.status_code == 200
+        assert len(seen) == 1
+        assert seen[0].tzinfo is not None, (
+            "a naive instant compares wrongly against a TIMESTAMPTZ column"
+        )
+        assert seen[0] == datetime(2026, 8, 23, 21, 0, tzinfo=UTC)
+
     def test_a_rate_limit_is_a_429_carrying_its_code(self, monkeypatch) -> None:
         """The adapter turns a 429 into a throw; a 200 would look like success."""
 
