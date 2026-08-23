@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4) + `acb_audit._persist`'s `audit_event` write (slice 5, org on the event, operator-org fallback)**; **~554 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4) + `acb_audit._persist`'s `audit_event` write (slice 5, org on the event, operator-org fallback)**; **run-based org SOURCES threaded (slice 6a): `/copilot/chat` → `run_detached`, sub-agent inheritance, batch `_run_agent_inner` honours its org param — so the slice 3-5 writes get the right tenant for those runs**; **~554 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -825,6 +825,61 @@ than defaulting; a test proves the refusal.
 > mechanism proof (an unbound `get_session()` INSERT into the phase-4 `audit_event`
 > is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
 > 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
+
+> ✅ **acb_graph slice 6a — run-based org SOURCES threaded SHIPPED 2026-08-23
+> (WS-29, DARK — only populates `_RUN_ORG` / binds the tenant for more runs; the
+> slice 3-5 writes consume it only when `ACB_GRAPH_TENANT_BIND` is ON).** Slices
+> 2-5 bound the executor's writes but only the `/agent/run/stream` CHAT source
+> stamped an org; the other run-based sources that resolve their tenant from
+> in-hand SERVER-SIDE identity (no scoped DB read) did not, so those writes fell
+> to the operator-org fallback / fail-closed skip and the slice-3 broadened
+> missing-org warning fired. This slice threads the org for the three such
+> sources (closing the slice-2 P1 copilot-lockout risk and narrowing the audit
+> operator-org fallback):
+> - **`/copilot/chat`** (`apps/services/gateway/gateway/main.py`): stamps
+>   `user.organization_id` (SERVER-SIDE, from `get_current_user` /
+>   `_with_resolved_access` — the SAME provenance `routes/agent.py` uses; NEVER
+>   from `input_data`/`request_body`/the message list, R11) and passes it to
+>   `run_detached`, which binds the tenant for the whole detached drain task. This
+>   chat runs the MAF orchestrator DIRECTLY (not `run_agent_stream`), so that bind
+>   is what its async reads, the `on_complete` persist hook, and delegated
+>   sub-agents resolve. Stops `stream_relay.detached_run_missing_org` for it.
+> - **Sub-agent inheritance** (`_run_sub_agent_streaming` → `run_agent`): a
+>   delegated sub-run acts in its PARENT's tenant. `_resolve_sub_agent_org()`
+>   resolves it SERVER-SIDE on the caller's frame — `_RUN_ORG` keyed by the
+>   parent thread id (`_stream_relay_thread_id` / the bound run context), falling
+>   back to the async bound tenant (`current_tenant`, for the `/copilot/chat`
+>   parent that binds but sets no `_RUN_ORG`) — NEVER from the delegated message
+>   (the resolver takes no argument). It is passed into the batch path.
+> - **Batch path** (`run_agent` / `_run_agent_inner`): now HONOURS the
+>   `organization_id` its callers pass — sets `_RUN_ORG[thread_id]` +
+>   `bind_tenant` (guarded pop + release in the `finally`, mirroring slice 3),
+>   exactly as `run_agent_stream` does. So an org-carrying batch run (a sub-agent
+>   today) stamps its real tenant on its audit events and binds its
+>   chat_session / pending_commit writes. When the caller passes `None`
+>   (the workflow cron scheduler / schedule sweep until slice 6c, or the
+>   self-mutation sandbox) the run stays byte-identical to pre-slice behaviour
+>   (operator-org audit fallback / flag-ON write skip) and LOGS
+>   `executor.run_missing_org` so the gap stays visible.
+> After this slice the broadened missing-org warning no longer fires for
+> `/copilot/chat`, sub-agent runs, or org-supplied batch runs (they carry org);
+> it still fires for the org-less batch runs slices 6b/6c own.
+> **Explicitly OUT (later sub-slices):** email-automation chat + inbound webhooks
+> (WhatsApp/ClickUp) need a mailbox/account→org resolver over an RLS-scoped table
+> (`TODO(WS-29 slice 6b)`); the workflow cron scheduler / orphan reconciler /
+> schedule sweep use the `acb_common` async engine, not this batch path
+> (`TODO(WS-29 slice 6c)`).
+> R7 fences (`tests/unit/test_org_sources_run.py`, 10 tests, no DB —
+> AST/behavioral like slice 2): `copilot-run-carries-org` (the route passes
+> `user.organization_id` to `run_detached`, never request input — AST);
+> `sub-agent-inherits-parent-org` (`_resolve_sub_agent_org` returns the parent's
+> `_RUN_ORG`, takes no payload arg, and a sub-run driven with it carries the
+> parent org in `_RUN_ORG[thread_id]`); `batch-run-honours-org-param`
+> (`_run_agent_inner` with an org sets `_RUN_ORG[thread_id]` during / clears
+> after; `None` and even a spoofed payload org set nothing + log the gap). Each
+> RED-on-removal was demonstrated by mutation on 2026-08-23 (batch ignores the
+> param / sub-agent resolver returns `None` / copilot sources from `input_data`
+> → the matching fence RED). The slice 3-5 R8 fences stay green (28 tests).
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

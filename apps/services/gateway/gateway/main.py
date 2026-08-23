@@ -660,6 +660,22 @@ if _HAS_MAF:
             user_id: str = getattr(user, "email", "") or "anonymous"
             input_data = request_body.model_dump(exclude_none=True)
 
+            # ── Tenant for this run's writes (WS-29 acb_graph slice 6a — DARK) ──
+            # Stamp the org SERVER-SIDE from the authenticated identity
+            # (``user.organization_id``, filled by ``get_current_user`` /
+            # ``_with_resolved_access`` — the SAME provenance ``routes/agent.py``
+            # uses for the ``/agent/run/stream`` chat path in slice 2) and hand it
+            # to ``run_detached`` below. This chat runs the MAF orchestrator
+            # DIRECTLY (``protocol_runner.run``, not ``run_agent_stream``), so
+            # ``run_detached``'s tenant bind is what its async ``acb_graph`` reads,
+            # the ``on_complete`` persist hook, and any delegated sub-agent (which
+            # inherits the bound tenant) resolve when the flag is ON. It MUST NEVER
+            # come from ``input_data`` / ``request_body`` / the message list —
+            # those are client/agent-visible, so sourcing the tenant from them is a
+            # tenant-spoofing hole (R11, user_management_contract.md §0.9.3). DARK:
+            # consumed only when ``ACB_GRAPH_TENANT_BIND`` is ON.
+            _organization_id = getattr(user, "organization_id", None)
+
             # ── Set user context for memory tools (remember / save_memory / etc.) ──
             try:
                 from acb_skills.memory_tools import _set_memory_user_id
@@ -877,6 +893,11 @@ if _HAS_MAF:
                         on_complete=_obs_on_complete,
                         actor=(user_id if user_id != "anonymous" else None),
                         source="chat",
+                        # Server-side tenant only (see ``_organization_id`` above)
+                        # — never input_data/request_body. Binds the detached
+                        # drain task so the whole run + on_complete see the right
+                        # tenant (R11). WS-29 acb_graph slice 6a — DARK.
+                        organization_id=_organization_id,
                     ):
                         yield f"data: {_json.dumps(evt)}\n\n"
                 except SupersedeRefused:

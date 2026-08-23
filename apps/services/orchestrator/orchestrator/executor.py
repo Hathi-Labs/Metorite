@@ -243,6 +243,45 @@ def _guarded_pop_run_org(
         _RUN_ORG.pop(thread_id, None)
 
 
+def _resolve_sub_agent_org() -> str | None:
+    """The tenant a delegated sub-run must act in: its PARENT run's org.
+
+    WS-29 acb_graph slice 6a. A sub-agent acts in the SAME tenant as the run that
+    delegated to it, resolved SERVER-SIDE from the run boundary — NEVER from the
+    delegated message / event payload (R11, which is why this takes no argument).
+    Read on the CALLER's (event-loop) frame, before the sub-run's own worker
+    threads, in this order:
+
+    1. ``_RUN_ORG`` keyed by the PARENT's thread id — the parent thread id is the
+       ``_stream_relay_thread_id`` ContextVar (set by ``run_agent_stream``), or,
+       failing that, the bound run context's ``thread_id``. This is the primary
+       path and what ``sub-agent-inherits-parent-org`` pins.
+    2. the async bound tenant (:func:`acb_common.db.current_tenant`) — a
+       fallback for a sub-agent delegated from ``/copilot/chat``, which binds the
+       tenant on its detached drain task (slice 6a) but runs the MAF orchestrator
+       directly and so sets no ``_RUN_ORG`` entry.
+
+    Returns ``None`` when no parent tenant is resolvable (a truly untenanted
+    background run); the sub-run then behaves like any org-less batch run
+    (operator-org audit fallback / flag-ON write skip).
+    """
+    _parent_tid = _stream_relay_thread_id.get(None)
+    if not _parent_tid:
+        try:
+            from acb_common import get_run_context
+            _parent_tid = (get_run_context() or {}).get("thread_id")
+        except Exception:
+            _parent_tid = None
+    org = _RUN_ORG.get(_parent_tid) if _parent_tid else None
+    if org:
+        return org
+    try:
+        from acb_common.db import current_tenant
+        return current_tenant()
+    except Exception:
+        return None
+
+
 def _register_run_queue(
     key: str | None, queue: "asyncio.Queue[dict[str, Any] | None]",
 ) -> None:
@@ -840,11 +879,16 @@ async def _run_sub_agent_streaming(
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
                 # inherit it (run_agent applies it via default_options["model"]).
+                # WS-29 acb_graph slice 6a: a sub-agent acts in its PARENT's
+                # tenant — resolve the parent run's org SERVER-SIDE (from
+                # _RUN_ORG / the bound tenant, never message_str) and pass it so
+                # the batch path binds it for this sub-run's acb_graph writes.
                 result = await run_agent(
                     agent_name,
                     {"message": message_str, "mode": "sub_task"},
                     run_id=run_id,
                     model=model,
+                    organization_id=_resolve_sub_agent_org(),
                 )
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
@@ -1845,10 +1889,13 @@ async def run_agent(
         run_id:        Unique execution ID (auto-generated if ``None``).
         thread_id:     Conversation thread ID (defaults to ``"{agent_name}:{run_id}"``).
         organization_id: The caller's tenant, threaded through for the
-                       worker-thread ``acb_graph`` writes later slices bind
-                       (WS-29 MT-1d / H4). Plumbing only in slice 2 — the batch
-                       path's callers (workflow / schedule / sub-agent) do NOT
-                       resolve it yet, so this is ``None`` in practice today.
+                       worker-thread ``acb_graph`` writes (WS-29 MT-1d / H4).
+                       HONOURED as of slice 6a: ``_run_agent_inner`` sets
+                       ``_RUN_ORG[thread_id]`` + ``bind_tenant`` from it. A
+                       sub-agent inherits its parent's tenant (see
+                       ``_run_sub_agent_streaming``); the workflow / schedule
+                       callers resolve their own org in slice 6c and pass
+                       ``None`` until then (operator-org fallback / skip).
 
         The final MAF agent result dict.
 
@@ -1873,22 +1920,65 @@ async def _run_agent_inner(
     run_id: str | None = None,
     thread_id: str | None = None,
     model: str | None = None,
-    # Threaded but not yet honoured — see TODO(WS-29 slice 6) in the docstring.
+    # HONOURED as of slice 6a — see the tenant-binding block below.
     organization_id: str | None = None,
 ) -> dict[str, Any]:
     """The batch run itself. Call :func:`run_agent`, not this — this one assumes
     the acting-user scope is already open.
 
-    TODO(WS-29 slice 6): wire ``_RUN_ORG[thread_id]`` + ``bind_tenant`` here,
-    exactly as ``run_agent_stream`` does, once the batch-path callers (workflow /
-    schedule / sub-agent dispatch) resolve and pass ``organization_id``. Slice 2
-    scopes the CHAT source only, so this parameter is threaded but not yet
-    honoured — leaving it unwired keeps the batch path byte-identical (DARK).
+    WS-29 acb_graph slice 6a: the tenant-binding block below sets
+    ``_RUN_ORG[thread_id]`` + ``bind_tenant`` from ``organization_id`` (cleared
+    in the ``finally``), exactly as ``run_agent_stream`` does for chat, so the
+    slice 3-5 ``acb_graph`` writes carry the tenant for org-carrying batch runs
+    (sub-agent dispatch today; workflow / schedule callers pass their own org in
+    slice 6c). When ``organization_id`` is ``None`` the run stays byte-identical
+    to pre-slice behaviour (operator-org audit fallback / flag-ON write skip).
     """
     _disable_agent_telemetry_once()
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
     thread_id = thread_id or f"{agent_name}:{run_id}"
+
+    # ── Tenant binding for this batch run's writes (WS-29 acb_graph slice 6a) ──
+    # The batch path now HONOURS the ``organization_id`` its callers pass, exactly
+    # as ``run_agent_stream`` does for the chat path (slice 2): set the run-keyed
+    # ``_RUN_ORG`` — what the SYNC ``acb_graph`` worker-thread writes read AFTER
+    # the ``loop.run_in_executor`` hop, where contextvars do not propagate — and
+    # ``bind_tenant`` this run's own event loop, so async reads and the
+    # ``acb_audit`` fallback resolve the tenant. The org is resolved SERVER-SIDE by
+    # the caller (a sub-agent inherits its PARENT run's tenant — see
+    # ``_run_sub_agent_streaming`` / ``_resolve_sub_agent_org``) and passed in;
+    # it is NEVER read from ``event_payload``, which is agent/client-visible and
+    # would be a tenant-spoofing hole (R11, user_management_contract.md).
+    #
+    # When the caller passes ``None`` (the workflow cron scheduler / schedule
+    # sweep until slice 6c, or the self-mutation sandbox) this stays on the
+    # pre-slice behaviour: no bind, so with the flag ON the ``chat_session`` /
+    # ``pending_commit`` writes fail closed (skip) and the ``audit_event`` write
+    # falls back to the operator org (slice 5). LOG the gap for every source so it
+    # is VISIBLE (WS-29 slice 3, P1) — same signal the stream path emits.
+    _batch_source = ""
+    if isinstance(event_payload, dict):
+        _batch_source = str(event_payload.get("source") or "").strip()
+    _tenant_token = None
+    if organization_id:
+        _RUN_ORG[thread_id] = organization_id
+        try:
+            from acb_common.db import bind_tenant
+            _tenant_token = bind_tenant(organization_id)
+        except Exception:
+            _tenant_token = None
+    else:
+        _log.warning(
+            "executor.run_missing_org",
+            agent=agent_name, thread_id=thread_id,
+            source=_batch_source or "batch",
+        )
+    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp/ClickUp) + email-automation
+    # chat need a mailbox/account→org resolver over an RLS-scoped table before they
+    # can pass organization_id here (exempt-resolver design). TODO(WS-29 slice 6c):
+    # the workflow cron scheduler / orphan reconciler / schedule sweep resolve the
+    # owning record's org and pass it in.
 
     record(
         AuditEvent(
@@ -1896,8 +1986,10 @@ async def _run_agent_inner(
             action="agent_run_start",
             target=f"agent:{agent_name}",
             payload={"run_id": run_id, "event_keys": list(event_payload.keys())},
-            # WS-29 acb_graph slice 5: the run's tenant, captured on this frame
-            # (stream path → set; batch path → None → operator-org fallback).
+            # WS-29 acb_graph slice 5: the run's tenant, captured on this frame.
+            # Slice 6a: the batch path now sets _RUN_ORG above when its caller
+            # supplies an org (sub-agent inheritance), so an org-carrying batch
+            # run stamps its real tenant here instead of the operator fallback.
             organization_id=_RUN_ORG.get(thread_id),
         )
     )
@@ -2149,9 +2241,11 @@ async def _run_agent_inner(
         await _detect_agent_commits(
             agent_name, _effective_agent_dir, run_id,
             since_sha=_head_before if _head_before else None,
-            # Batch path: _RUN_ORG is not set here (org threading for batch is
-            # WS-29 slice 6), so with the flag ON this resolves to None and the
-            # pending_commit write fails closed. flag OFF → byte-identical.
+            # WS-29 slice 6a: the batch path now sets _RUN_ORG[thread_id] when its
+            # caller supplied an org, so with the flag ON an org-carrying batch run
+            # (sub-agent) binds the tenant for its pending_commit write. An org-less
+            # batch run (workflow/schedule until 6c) resolves None → fail-closed
+            # skip. flag OFF → byte-identical either way.
             thread_id=thread_id,
         )
         return final_state
@@ -2251,6 +2345,20 @@ async def _run_agent_inner(
             original=exc,
             mutation_pr=pr_url,
         ) from exc
+
+    finally:
+        # Drop this batch run's tenant record and release the async binding, so a
+        # tenant left bound is never inherited by whatever runs next on this task
+        # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
+        # GUARDED pop (slice 3, P2): only drop the record if it is STILL this
+        # run's org — a superseded same-thread run must not clobber a newer one.
+        _guarded_pop_run_org(thread_id, organization_id)
+        if _tenant_token is not None:
+            try:
+                from acb_common.db import release_tenant
+                release_tenant(_tenant_token)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -2426,9 +2534,13 @@ async def run_agent_stream(
             "executor.run_missing_org",
             agent=agent_name, thread_id=thread_id, source=_corr_source,
         )
-    # TODO(WS-29 slice 6): workflow / schedule / sub-agent runs resolve their own
-    # organization_id (from the workflow/schedule record, or the parent run for a
-    # sub-agent) and pass it in — NOT wired here; slice 2 covers CHAT only.
+    # WS-29 slice 6a: sub-agent runs now inherit the parent's org (via the batch
+    # path's organization_id, resolved by _resolve_sub_agent_org), and /copilot/
+    # chat threads its org through run_detached. TODO(WS-29 slice 6b): email-
+    # automation chat + inbound webhooks (WhatsApp/ClickUp) need an RLS-scoped
+    # mailbox/account→org resolver. TODO(WS-29 slice 6c): the workflow cron
+    # scheduler / orphan reconciler / schedule sweep resolve the owning record's
+    # org and pass it into the batch path.
 
     # ── Live activity feed (E2): agent activation START ───────────────────────
     # Publish to the global bus so /observability shows this run the instant it
