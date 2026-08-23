@@ -10,6 +10,7 @@ import {
   trialHint,
   statusHelp,
   suggestSlug,
+  plansNotice,
   type SeatRow,
 } from "./format";
 
@@ -131,5 +132,42 @@ describe("suggestSlug", () => {
     expect(suggestSlug("Fracktal Works Pvt. Ltd.")).toBe("fracktal-works-pvt-ltd");
     expect(suggestSlug("  Café  Nine!  ")).toBe("cafe-nine");
     expect(suggestSlug("---")).toBe("");
+  });
+});
+
+describe("plansNotice", () => {
+  // The regression this whole change exists for: the catalog read failed, the
+  // page folded it into `plans: []`, and the operator saw an empty dropdown
+  // over a disabled Activate button with no reason given.
+  it("names a refused operator token rather than staying silent", () => {
+    for (const status of [401, 403]) {
+      const notice = plansNotice(status, 0);
+      expect(notice).not.toBeNull();
+      expect(notice).toContain(String(status));
+      expect(notice!.toLowerCase()).toContain("refused");
+    }
+  });
+
+  it("tells an unconfigured Console apart from a refused one", () => {
+    expect(plansNotice(503, 0)).toContain("not configured");
+    expect(plansNotice(503, 0)).not.toBe(plansNotice(401, 0));
+  });
+
+  it("still reports a status it has no special sentence for", () => {
+    expect(plansNotice(500, 0)).toContain("500");
+    expect(plansNotice(418, 0)).toContain("418");
+  });
+
+  // The OTHER way the picker ends up empty, and a different fix — so it must
+  // not borrow the wiring-fault sentence.
+  it("distinguishes an empty catalog from a failed read", () => {
+    const empty = plansNotice(200, 0);
+    expect(empty).toContain("empty price list");
+    expect(empty).not.toBe(plansNotice(401, 0));
+  });
+
+  it("is silent when the ladder actually arrived", () => {
+    expect(plansNotice(200, 12)).toBeNull();
+    expect(plansNotice(200, 1)).toBeNull();
   });
 });

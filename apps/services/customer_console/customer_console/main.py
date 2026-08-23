@@ -60,6 +60,7 @@ from sqlalchemy import text
 from customer_console import payments, store
 from customer_console.auth import (
     Caller,
+    CatalogCaller,
     DeploymentCaller,
     Internal,
     KeyCaller,
@@ -2444,20 +2445,28 @@ def _no_such_code() -> HTTPException:
 
 
 @app.get("/billing/catalog")
-def billing_catalog(_: PayingCaller) -> CatalogView:
+def billing_catalog(_: CatalogCaller) -> CatalogView:
     """The priced ladder a customer may buy from (§6 item (f)).
 
-    **Why ``can_pay`` and not ``can_use_ai``**: this is the read a customer
-    makes on the way to paying us, so gating it on the AI door would shut it on
-    exactly the ``suspended`` organization who most needs it — §9.3(5)'s
-    measured defect, one route along. A ``deleted`` organization is refused,
-    like everywhere else.
+    **Two schemes, one route** (:func:`auth.customer_or_operator`). A CUSTOMER
+    key reads it on the way to paying us; the OPERATOR token reads it because
+    the Operator Console's manual-activation form is a plan picker and a picker
+    needs the ladder. Before the operator arm existed that form presented the
+    only credential it holds, got the customer door's 401, and rendered an
+    empty dropdown over a permanently disabled Activate button.
+
+    **Why ``can_pay`` and not ``can_use_ai``** on the customer arm: this is the
+    read a customer makes on the way to paying us, so gating it on the AI door
+    would shut it on exactly the ``suspended`` organization who most needs it —
+    §9.3(5)'s measured defect, one route along. A ``deleted`` organization is
+    refused, like everywhere else.
 
     **The caller is authenticated and then deliberately unused.** The catalog
     is the same for every customer, so binding it to ``_`` is the structural
     statement that no per-org answer is computable here: there is no
-    organization id in scope to compute one from. Per-org pricing is MT-2 /
-    SC-1a's and neither is built.
+    organization id in scope to compute one from — which is also why the second
+    scheme can share this body and could not share ``/me/seats``'. Per-org
+    pricing is MT-2 / SC-1a's and neither is built.
 
     Rupees become paise through ``payments.paise`` — the ONE conversion (§9.2),
     the same call ``_priced_basket`` makes, so what the ladder quotes and what

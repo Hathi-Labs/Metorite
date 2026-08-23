@@ -7,6 +7,7 @@ import {
   seatsTotals,
   trialHint,
   statusHelp,
+  plansNotice,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -17,26 +18,47 @@ import Header from "../../Header";
 
 export const dynamic = "force-dynamic";
 
-async function loadOrg(
-  slug: string,
-): Promise<{ org: OrgRow | null; plans: CatalogPlan[]; error: string | null }> {
+type Loaded = {
+  org: OrgRow | null;
+  plans: CatalogPlan[];
+  // Why the Plan pickers are empty, or null when the ladder arrived. Kept
+  // SEPARATE from `error`: a failed catalog read must not blank the page — the
+  // org's numbers are fine and the credit/suspend actions still work — but it
+  // must never be silent either, which is what folding it into `plans: []`
+  // did (see `plansNotice`).
+  plansError: string | null;
+  error: string | null;
+};
+
+async function loadOrg(slug: string): Promise<Loaded> {
   try {
     const [listRes, catRes] = await Promise.all([
       listOrganizations(),
       catalog(),
     ]);
     if (listRes.status !== 200) {
-      return { org: null, plans: [], error: `Console returned ${listRes.status}` };
+      return {
+        org: null,
+        plans: [],
+        plansError: null,
+        error: `Console returned ${listRes.status}`,
+      };
     }
     const orgs = (JSON.parse(listRes.body) as OrgList).organizations;
     const org = orgs.find((o) => o.slug === slug) ?? null;
     const plans =
       catRes.status === 200 ? (JSON.parse(catRes.body) as Catalog).plans : [];
-    return { org, plans, error: null };
+    return {
+      org,
+      plans,
+      plansError: plansNotice(catRes.status, plans.length),
+      error: null,
+    };
   } catch (e) {
     return {
       org: null,
       plans: [],
+      plansError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -55,7 +77,7 @@ export default async function CustomerDetailPage({
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
-  const { org, plans, error } = await loadOrg(slug);
+  const { org, plans, plansError, error } = await loadOrg(slug);
 
   if (error) {
     return (
@@ -187,6 +209,13 @@ export default async function CustomerDetailPage({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {plansError && (
+        <div className="banner danger">
+          <strong>Plans unavailable.</strong> {plansError} Seats, AI credits and
+          access still work below.
         </div>
       )}
 

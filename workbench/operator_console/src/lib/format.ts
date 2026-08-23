@@ -161,3 +161,41 @@ export function suggestSlug(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 }
+
+// Why the Plan pickers can be empty, in the operator's language — or `null`
+// when the ladder arrived fine.
+//
+// ⚠️ This exists because the page used to fold ANY non-200 catalog read into
+// `plans: []`. That rendered an empty dropdown over a permanently disabled
+// Activate button and said nothing, so the operator could not tell "this
+// customer cannot be activated" from "this console cannot reach the price
+// list" — measured 2026-08-23 against `hathilabs`, where the real cause was
+// the Console's catalog door refusing the operator token.
+//
+// The two ways the picker ends up empty are DIFFERENT problems with different
+// fixes, so they get different sentences: a failed read is a wiring fault, an
+// empty-but-successful read is a catalog with no active row.
+export function plansNotice(
+  status: number,
+  planCount: number,
+): string | null {
+  if (status === 401 || status === 403) {
+    return (
+      `The Customer Console refused this console's operator token for the ` +
+      `price list (${status}). Nothing can be activated until it accepts it.`
+    );
+  }
+  if (status === 503) {
+    return "The Customer Console is not configured to serve the price list (503).";
+  }
+  if (status !== 200) {
+    return `The Customer Console returned ${status} for the price list.`;
+  }
+  if (planCount === 0) {
+    return (
+      "The Customer Console returned an empty price list — no plan is active " +
+      "in the catalog, so there is nothing to activate on."
+    );
+  }
+  return null;
+}

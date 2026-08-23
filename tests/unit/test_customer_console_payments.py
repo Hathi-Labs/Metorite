@@ -1770,6 +1770,124 @@ class TestTheCatalogRead:
         assert dead.json()["detail"] == "organization is deleted"
 
 
+class TestTheCatalogsOperatorArm:
+    """The catalog is read by TWO schemes — ``auth.customer_or_operator``.
+
+    Why this arm exists, measured 2026-08-23: the Operator Console's manual
+    activation form is a plan picker, it holds only the operator token, and the
+    customer-key door answered *"Invalid API key"*. ``page.tsx`` folded that
+    401 into ``plans: []`` and ``Actions.tsx`` disabled Activate on
+    ``!plan`` — so the staff surface could never activate ANY customer, and
+    said nothing about why.
+
+    Red-first evidence (run and reverted): reverting the route to
+    ``PayingCaller`` fails ``test_the_operator_token_reads_the_catalog`` with
+    *`assert 401 == 200`*; dropping the ``split_key`` shape check so the
+    operator arm is tried as a FALLBACK after the key arm fails passes that
+    test and fails ``test_a_key_shaped_operator_token_is_still_refused``.
+    """
+
+    def test_the_operator_token_reads_the_catalog(self, client):
+        """The bug, stated as the fence: staff get the ladder, not a 401."""
+        r = client.get("/billing/catalog", headers=OP)
+        assert r.status_code == 200, r.text
+        plans = r.json()["plans"]
+        # Non-vacuous: an empty list would satisfy a bare 200 assertion, and an
+        # empty list is EXACTLY the failure this ticket is about.
+        assert plans, "the seeded catalog is never empty"
+        assert "core" in {p["slug"] for p in plans}
+
+    def test_both_schemes_get_a_byte_identical_answer(self, client):
+        """The widening added an arm, not a second view of the catalog.
+
+        The catalog is per-org-invariant by construction (``active_plans``
+        takes no organization), which is the whole reason two schemes may
+        share this body. If the two answers ever diverge, that argument has
+        stopped being true and the widening has stopped being safe.
+        """
+        key = _org_key(client, _new_org(client, "cat-arm"))
+        customer = client.get("/billing/catalog", headers=_headers(key))
+        operator = client.get("/billing/catalog", headers=OP)
+        assert customer.status_code == operator.status_code == 200
+        assert customer.json() == operator.json()
+
+    def test_the_customer_arm_is_untouched(self, client):
+        """``can_pay`` still decides the customer arm — suspended in, deleted out.
+
+        The §9.3(5) property one route along: widening a door must not quietly
+        re-gate the arm that already worked.
+        """
+        slug = _new_org(client, "cat-keep")
+        key = _org_key(client, slug)
+
+        _lifecycle(client, slug, "suspended")
+        assert client.get(
+            "/billing/catalog", headers=_headers(key)
+        ).status_code == 200
+
+        _lifecycle(client, slug, "cancelled")
+        _lifecycle(client, slug, "deleted")
+        dead = client.get("/billing/catalog", headers=_headers(key))
+        assert dead.status_code == 403, dead.text
+        assert dead.json()["detail"] == "organization is deleted"
+
+    def test_no_bearer_and_a_garbage_bearer_are_both_refused(self, client):
+        """Widening is not opening. Neither arm admits an unknown caller."""
+        assert client.get("/billing/catalog").status_code == 401
+        assert client.get(
+            "/billing/catalog", headers=_headers("not-the-operator")
+        ).status_code == 401
+
+    def test_a_key_shaped_operator_token_is_still_refused(
+        self, client, monkeypatch
+    ):
+        """**The shape dispatches; it is NOT a fallback ladder.**
+
+        The same rule ``deployment_or_operator`` states and
+        ``test_a_key_shaped_operator_token_is_still_not_a_key`` already pins
+        for the organization key: a credential's scheme is decided by what it
+        IS, never by trying each comparison until one passes. A token that
+        parses as ``cc_<env>_<prefix>_<secret>`` goes to the customer arm and
+        is refused there or nowhere.
+
+        Without this, an attacker holding any well-formed-but-invalid key gets
+        a second guess against the operator token on every request.
+        """
+        shaped = "cc_live_deadbeefdeadbeef_totally-not-a-real-secret"
+        monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", shaped)
+        r = client.get("/billing/catalog", headers=_headers(shaped))
+        assert r.status_code == 401, r.text
+        # The CUSTOMER door's refusal, proving which arm it reached.
+        assert r.json()["detail"] == "Invalid API key"
+
+    def test_it_fails_closed_when_the_operator_token_is_unconfigured(
+        self, client, monkeypatch
+    ):
+        """503, not 200 — the property ``require_operator`` carries.
+
+        Widening a door must not make it the one surface that opens on a box
+        where the rest of the service fails closed.
+        """
+        monkeypatch.delenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", raising=False)
+        r = client.get("/billing/catalog", headers=OP)
+        assert r.status_code == 503, r.text
+
+    def test_the_new_door_is_registered_in_both_derived_registries(self):
+        """Neither fence may lose sight of this route because it grew an arm.
+
+        ``AUTHENTICATING_DEPENDENCIES`` — or the clause-1 fence reports
+        ``/billing/catalog`` as having joined ``/health`` in the open set.
+        ``ORGANIZATION_KEY_DEPENDENCIES`` — because a customer key STILL opens
+        it, so the transitive no-writer walk must keep covering it; the
+        operator arm is additional, not a replacement.
+        """
+        assert auth.customer_or_operator in auth.AUTHENTICATING_DEPENDENCIES
+        assert (
+            auth.customer_or_operator in auth.ORGANIZATION_KEY_DEPENDENCIES
+        )
+        assert "billing_catalog" in _org_key_routes()
+
+
 # ── §6 item (g) — the customer-key seats read ──────────────────────────────
 #
 # The seat grid the post-signup MVP (`subscription_console.md` SC-1a) needs.
