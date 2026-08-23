@@ -66,6 +66,42 @@ export default function Actions({
   );
 }
 
+// The Plan picker, or — when the catalog did not arrive — a line saying so
+// instead of an empty dropdown. The BANNER above carries the reason; this says
+// only that the control is unusable, so the two cannot contradict each other.
+function PlanPicker({
+  plans,
+  value,
+  onChange,
+  showPrice = false,
+}: {
+  plans: CatalogPlan[];
+  value: string;
+  onChange: (v: string) => void;
+  // Only the ACTIVATE form prices the ladder. Assigning a seat spends capacity
+  // that is already bought, so quoting a monthly price there would read as a
+  // charge this action does not make.
+  showPrice?: boolean;
+}) {
+  if (plans.length === 0) {
+    return (
+      <div className="field-hint">
+        No plans loaded — see “Plans unavailable” above.
+      </div>
+    );
+  }
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {plans.map((p) => (
+        <option key={p.slug} value={p.slug}>
+          {p.name}
+          {showPrice ? ` (${formatPaise(p.price_paise)}/seat/month)` : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function reload() {
   // Re-read the server-rendered numbers after a successful write.
   window.location.reload();
@@ -103,13 +139,7 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         them from trial to their paid plan.
       </p>
       <label>Plan</label>
-      <select value={plan} onChange={(e) => setPlan(e.target.value)}>
-        {plans.map((p) => (
-          <option key={p.slug} value={p.slug}>
-            {p.name} ({formatPaise(p.price_paise)}/seat/month)
-          </option>
-        ))}
-      </select>
+      <PlanPicker plans={plans} value={plan} onChange={setPlan} showPrice />
       <label>Seats</label>
       <input
         type="number"
@@ -161,13 +191,7 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
         inside the app.
       </p>
       <label>Plan</label>
-      <select value={plan} onChange={(e) => setPlan(e.target.value)}>
-        {plans.map((p) => (
-          <option key={p.slug} value={p.slug}>
-            {p.name}
-          </option>
-        ))}
-      </select>
+      <PlanPicker plans={plans} value={plan} onChange={setPlan} />
       <label>Person&apos;s email</label>
       <input
         type="email"

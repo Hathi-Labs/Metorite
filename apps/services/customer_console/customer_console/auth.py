@@ -84,6 +84,7 @@ __all__ = [
     "RESOLVE_CAPABILITY",
     "SEAT_ADMIN_CAPABILITY",
     "Caller",
+    "CatalogCaller",
     "DeploymentCaller",
     "Internal",
     "KeyCaller",
@@ -93,6 +94,7 @@ __all__ = [
     "ResolveCaller",
     "SeatAdminCaller",
     "SignedWebhook",
+    "customer_or_operator",
     "deployment_or_operator",
     "organization_for_payment",
     "organization_from_key",
@@ -332,6 +334,61 @@ def organization_for_payment(
     return _caller_from_key(authorization, permits=lambda caps: caps.can_pay)
 
 
+def customer_or_operator(
+    authorization: Annotated[str | None, Header()] = None,
+) -> Caller | None:
+    """The catalog's door: a CUSTOMER key on ``can_pay``, **or** the operator.
+
+    ``GET /billing/catalog`` is read by two different people asking the same
+    question. A customer reads it on the way to paying us. **Platform staff
+    read it on the way to activating that customer manually** — the Operator
+    Console's activate form is a plan picker, and a picker needs the ladder.
+    Until this arm existed the staff surface presented the one credential it
+    holds, got the customer door's *"Invalid API key"*, and rendered an empty
+    dropdown over a disabled button (measured 2026-08-23 against `hathilabs`).
+
+    **Widened rather than duplicated.** A second Operator-gated catalog route
+    would be a second answer to "what may be sold", which root ``CLAUDE.md``
+    §5 forbids by name and which :func:`deployment_or_operator` already
+    declined to do for the same reason. One route, two schemes.
+
+    **Why the operator arm leaks nothing.** This is the one door where the two
+    schemes can share a body without an argument, because the body is not
+    per-organization *by construction*: ``store.active_plans`` takes no
+    organization, the route binds no caller, and
+    ``test_the_catalog_read_carries_no_per_org_state_and_paise_only`` pins both
+    halves. There is no cross-tenant fact here for staff to over-read — which
+    is exactly why the widening is safe HERE and would not be on
+    ``/me/seats``, its ``PayingCaller`` sibling one route along, whose whole
+    body is one organization's numbers.
+
+    **The token's shape dispatches, and it is not a fallback ladder** — the
+    property :func:`deployment_or_operator` states and the reason is identical.
+    A token that parses as ``cc_<env>_<prefix>_<secret>`` goes to the customer
+    arm and is refused there or nowhere; it is never retried as an operator
+    token. So an operator token shaped like a key stays refused, the rule
+    ``test_a_key_shaped_operator_token_is_still_not_a_key`` already pins.
+
+    Anything else — including **no token at all** — goes to
+    :func:`require_operator` unchanged, and that carries its **503 when the
+    operator token is unconfigured**: widening a door must not make it the one
+    surface that opens on a box where the rest of the service fails closed.
+
+    Returns the :class:`Caller` on the customer arm and ``None`` on the
+    operator arm, the same two-arm shape :data:`ResolveCaller` uses. The route
+    binds it to ``_``: neither arm has an organization the catalog could use.
+    """
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+
+    if split_key(token) is None:
+        require_operator(authorization)
+        return None
+
+    return _caller_from_key(authorization, permits=lambda caps: caps.can_pay)
+
+
 @dataclass(frozen=True)
 class DeploymentCaller:
     """A verified deployment key holder — CP-2b's fourth scheme.
@@ -492,6 +549,9 @@ KeyCaller = Annotated[Caller, Depends(organization_from_key)]
 #: CP-9's checkout door. Same credential as :data:`KeyCaller`, different
 #: lifecycle gate — see :func:`organization_for_payment`.
 PayingCaller = Annotated[Caller, Depends(organization_for_payment)]
+#: The catalog's door — see :func:`customer_or_operator`. ``None`` means the
+#: OPERATOR arm; a :class:`Caller` means a customer key passed ``can_pay``.
+CatalogCaller = Annotated[Caller | None, Depends(customer_or_operator)]
 SignedWebhook = Annotated[
     payments.WebhookEvent, Depends(razorpay_webhook_event)
 ]
@@ -556,13 +616,14 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     require_internal,
     organization_from_key,
     organization_for_payment,
+    customer_or_operator,
     razorpay_webhook_event,
     _resolve_dependency,
     _provision_dependency,
     _seat_admin_dependency,
 })
 
-#: The dependencies a CUSTOMER's own ``cc_live_`` key opens — both of them.
+#: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.
 #:
 #: Derived from here by CP-9's transitive fence
 #: (``test_no_org_key_route_writes_an_entitlement_or_ledger_row``) rather than
@@ -574,4 +635,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
 ORGANIZATION_KEY_DEPENDENCIES: frozenset = frozenset({
     organization_from_key,
     organization_for_payment,
+    # A customer key still opens the catalog — the operator arm is ADDITIONAL,
+    # not a replacement — so the transitive fence must keep covering it.
+    customer_or_operator,
 })
