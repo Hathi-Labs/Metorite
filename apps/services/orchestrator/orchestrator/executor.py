@@ -1675,6 +1675,11 @@ async def _detect_agent_commits(
                         for ln in all_lines
                     ],
                 },
+                # WS-29 acb_graph slice 5: stamp the run's tenant ONTO the event
+                # on THIS frame (never a ContextVar inside _persist's worker
+                # thread). None ⇒ tenant-less run → _persist binds the operator
+                # org so the audit row is retained. _RUN_ORG.get(None) is None.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
 
@@ -1891,6 +1896,9 @@ async def _run_agent_inner(
             action="agent_run_start",
             target=f"agent:{agent_name}",
             payload={"run_id": run_id, "event_keys": list(event_payload.keys())},
+            # WS-29 acb_graph slice 5: the run's tenant, captured on this frame
+            # (stream path → set; batch path → None → operator-org fallback).
+            organization_id=_RUN_ORG.get(thread_id),
         )
     )
 
@@ -2121,6 +2129,8 @@ async def _run_agent_inner(
                     "run_id": run_id,
                     "result_keys": list(final_state.keys()),
                 },
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         # Post-run: detect commits the agent made during this run (ALL agents)
@@ -2154,6 +2164,8 @@ async def _run_agent_inner(
                 action="agent_load_error",
                 target=f"agent:{agent_name}",
                 payload={"run_id": run_id, "error": str(exc)},
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         # Structural incompatibility (missing agents.py, no tools, LangGraph remnant, etc.)
@@ -2228,6 +2240,8 @@ async def _run_agent_inner(
                     "traceback": _run_tb,
                     "mutation_pr": pr_url,
                 },
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         raise AgentRunError(

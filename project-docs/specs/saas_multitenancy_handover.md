@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4)**; **~555 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4) + `acb_audit._persist`'s `audit_event` write (slice 5, org on the event, operator-org fallback)**; **~554 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -777,6 +777,54 @@ than defaulting; a test proves the refusal.
 > flag-OFF regression (opener IS `get_session`; the default-opener caller still
 > opens `get_session`). The RED-on-removal property was demonstrated by mutation
 > on 2026-08-23.
+
+> ✅ **acb_graph slice 5 — `audit_event` write bound SHIPPED 2026-08-23 (WS-29,
+> DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).** The
+> highest-risk slice: `acb_audit._persist` swallows every error, so a broken bind
+> would fail SILENTLY — the R7 fence is the only guard, and it asserts the ROW
+> LANDED (queries the table), never merely that nothing raised. **OWNER DECISION
+> (ratified, Option-A): `audit_event` is tenant-SCOPED, AND a tenant-less
+> system/cron event is BOUND to the operator/DEFAULT org so it is RETAINED, never
+> dropped.** So — unlike slices 3/4 which SKIP on no-org — audit FALLS BACK to the
+> operator org; it skips + logs (`audit.persist_skipped_no_org`) only if BOTH the
+> event org and the default-org lookup are unavailable (near-impossible — the
+> `default` org is seeded by migration 130).
+> **How the org reaches `_persist`:** it rides ON THE `AuditEvent` object
+> (`organization_id: str | None`, new field), stamped by the caller ON ITS OWN
+> FRAME — the executor's five core-path `record` sites (`agent_run_start` /
+> `_complete` / `_load_error` / `_run_error` in `_run_agent_inner`, and
+> `agent_self_commit_detected` in `_detect_agent_commits`) set
+> `organization_id=_RUN_ORG.get(thread_id)`. This is deliberate: `record()` hands
+> the write to `asyncio.to_thread`, and the design **never relies on contextvar
+> copying across that hop** (the same rule slices 2–4 follow for `_RUN_ORG`), so
+> the value must live on the event, never be read from a ContextVar inside
+> `_persist`. Stream/chat runs (`_RUN_ORG` set) stamp their real tenant; batch
+> runs (`_RUN_ORG` unset until slice 6) stamp None → operator-org fallback.
+> `_persist`: flag OFF → the unbound `acb_graph.get_session` (byte-identical);
+> flag ON → `tenant_session(event.organization_id OR operator_org)`. The GUC
+> DEFAULT stamps the column — the ORM INSERT names no `organization_id`, and the
+> ORM `AuditEvent` model is UNCHANGED (adding the column there would make
+> SQLAlchemy send an explicit NULL and defeat the DEFAULT). `_resolve_operator_
+> org_id()` reads the RLS-EXEMPT `organization` table for `slug = 'default'` (or
+> the `OPERATOR_ORG_ID` env), cached module-level, failure NOT cached; a
+> `slug = 'default'` fallback is CORRECT here (audit RETENTION, not key service —
+> the opposite of acb_llm's fail-closed rule, and it never serves one tenant's
+> secrets to another).
+> **pull_agent (`orchestrator/agents/pull_agent.py`) NOT stamped:** its `answer()`
+> has no `thread_id`/`_RUN_ORG` in scope, so its two `record` events carry
+> `organization_id=None` → operator-org fallback — the conditional "where a run's
+> thread_id is in scope" plus §H4's non-chat-source rule (slice 6 owns threading
+> org for non-chat sources); acceptable while dark.
+> R7 fences (`tests/unit/test_acb_graph_audit_bind.py`): R8 against the reused
+> two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `audit-event-write-bound-under-rls` (flag ON + orgA: the row LANDS visible ONLY
+> to orgA, stamped orgA), `audit-system-event-falls-back-to-operator-org` (flag ON
+> + no org: the row LANDS under the DEFAULT org, retained), the swallow guard (no
+> org anywhere → skip + NO row lands), the flag-OFF regression (a real row lands
+> via `get_session` on the pre-phase-4 shared ladder), and the RED-on-removal
+> mechanism proof (an unbound `get_session()` INSERT into the phase-4 `audit_event`
+> is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
+> 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,
