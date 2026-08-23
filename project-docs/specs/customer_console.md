@@ -38,7 +38,11 @@ self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 `signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
 form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
-owner-gated) · CP-6
+owner-gated) · 🔴 **CP-2f MINTED 2026-08-24, UNBUILT — the seat cap is
+UNENFORCED for anyone invited inside the app**, measured on production against
+`hathilabs`; CP-2b's "a person cannot become a user without the Console
+allocating them a seat" is false today for the ordinary invite path (CP-2f
+ticket below) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -5549,7 +5553,106 @@ name. Neither slice flips a flag or deploys. *(Slice 1's anti-scope — "does NO
 add a database adapter, does NOT build the code-entry page" — is retired: those
 are exactly what slice 2 built, clauses 6–16.)*
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
+**CP-2f · The membership mirror — the seat cap is UNENFORCED for anyone
+invited inside the app.** 🔴 **MINTED 2026-08-24, UNBUILT.** 🟢 AGENT-SAFE to
+build and R8-test; running it against a live tenant is OWNER-GATE (§8 gate 4).
+
+**The defect, measured on production 2026-08-23 against `hathilabs`.** A person
+added as a member *inside the workbench* gets a tenant-plane `org_membership`
+row and **nothing on the Console**. At their next sign-in the gateway calls
+`POST /registry/resolve`; `_resolve_for_deployment` asks
+`store.deployment_visible_orgs`, whose query is
+
+```sql
+FROM user_identity ui
+JOIN org_membership m ON m.user_identity_id = ui.id
+JOIN organization   o ON o.id = m.organization_id
+JOIN org_placement  p ON p.organization_id = o.id
+WHERE ui.email = :email AND p.deployment_id = :dep
+```
+
+— i.e. it matches on the **Console's** membership table. There is no row, so
+`admissible` is empty and the arm returns `{"organizations": []}` with **200 and
+no seat allocated**. That 200 is correct and must not change: a distinguishable
+negative is the cross-org existence oracle clause 5 forbids. The gateway then
+admits the person anyway, because the *tenant* plane already knows them. Sign-in
+works, and the seat silently never happens.
+
+**Why this is a billing-correctness bug and not a display bug.** The seat cap
+binds only people the Console knows, and today the Console knows exactly one
+person per org: the signup owner, seated by provisioning. Every subsequent
+member is invisible to it. An organization that bought 6 Core seats can seat 50
+people and `GET /orgs` will still report `assigned: 1`. §6 CP-2b's own claim —
+*"a person cannot become a user of an organization without the Customer Console
+allocating them a seat, because the deployment asks before admitting them"* —
+is **false today for the invited-member path**, which is the ordinary path.
+Evidence: `hathilabs` at 2 tenant members / 1 Console seat, and **zero**
+`POST /seats/assign` calls in 24h of gateway logs.
+
+**Mechanism — a mirror on the membership write, plus a sweep for the backlog.**
+Deliberately the same two-part shape CP-2e chose for organizations, for the same
+reasons, and it is the sibling of that ticket rather than a new idea:
+
+* **The write path.** The tenant-side membership writer is already exactly one
+  function — `acb_auth.access.mirror_identity_membership`, the ONE
+  identity-shadow writer (WS-29 H6, D48), which invite/approve/bootstrap and
+  provision all call. Extend that seam to also drive the Console membership
+  through `acb_auth.console_resolve`, the ONE Console httpx client. **Do not
+  add a second Console client and do not add a second membership writer** —
+  both are root `CLAUDE.md` §5 defects by name.
+* **The Console door.** The Console needs a create-only membership upsert
+  reachable by the deployment key. **Prefer widening the existing
+  `seat_admin` door** (§6 item (h), `POST /registry/seats`) over minting a
+  route: that door already derives the org from placement, already refuses a
+  named org (R11), and already calls `store.ensure_identity`. What it does
+  **not** do today is write `org_membership` — which is why even an operator
+  seat assignment leaves the registry incomplete. Decide widen-vs-mint in the
+  audit, and record the reason.
+* **The backlog sweep.** Existing organizations already carry unmirrored
+  members. Reuse CP-2e's shape: a `scripts/` CLI, off the request path,
+  reading the tenant plane and re-driving the same guarded arm. It is **not**
+  a second reconciler — extend `console_resolve.reconcile` or sit beside it in
+  the same module.
+
+**Ordering note that will bite.** `mirror_identity_membership` is best-effort
+and dark by design; a Console mirror that raises must not break an in-app
+invite. Mirror failures therefore need the CP-2e treatment — a marker the sweep
+selects on — not an exception that propagates into the tenant write.
+
+**Done when.**
+1. A member added in-app has a Console `org_membership` row, so
+   `deployment_visible_orgs` returns their org at the next sign-in.
+   *Fence:* an R8 two-plane test — invite, then resolve, and assert a seat is
+   allocated. Shown red by removing the mirror call.
+2. **The seat cap actually binds an invited member.** Fill an org to its
+   purchased count via the invite path, invite one more, and assert the
+   Console refuses — the 409 with the `buy_more` payload, not a silent admit.
+   *Fence:* R8, and this is the acceptance criterion the whole ticket exists
+   for; a green suite without it proves nothing.
+3. A Console mirror failure leaves the in-app invite **successful** and the
+   row marked for the sweep. *Fence:* fault-injected mirror, assert the tenant
+   membership persists and the marker is set.
+4. The sweep back-fills a pre-existing unmirrored member and is idempotent on
+   a second pass. *Fence:* R8, replayed twice.
+5. `GET /orgs` reports `assigned` equal to the number of seated members for a
+   two-member org. *Fence:* the regression this was found by.
+6. No second Console client, no second membership writer, no second grant
+   vocabulary. *Fence:* extend
+   `tests/unit/test_console_dependency_boundary.py`'s importer allow-list
+   assertion rather than adding a new scan.
+
+**Verification.** `uv run pytest tests/unit/test_customer_console_resolve.py
+tests/unit/test_console_dependency_boundary.py tests/unit/test_h6_identity_shadow.py`
+plus the new suite, all against a real Postgres (R8) — this ticket is a
+two-plane join and a UNIQUE partial index, exactly the class a hermetic fake
+agrees with and a real server rejects.
+
+**Anti-scope.** Does NOT change resolve's 200-on-empty answer (clause 5). Does
+NOT introduce a chooser for multi-org members — allocating nothing when more
+than one org is visible stays correct (clause 9). Does NOT touch pricing, and
+does NOT auto-buy seats when the cap is hit.
+
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → **CP-2f** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6
 shipped before it, and it must land before the first Router caller, because
 every agent runtime streams. CP-4 is

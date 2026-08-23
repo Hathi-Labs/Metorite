@@ -1207,6 +1207,17 @@ def resolve(req: ResolveRequest, caller: ResolveCaller) -> dict[str, Any]:
     an organization without the Customer Console allocating them a seat, because
     the deployment asks before admitting them (D32.4/D32.5).
 
+    ⚠️ **That paragraph is FALSE TODAY for the ordinary invite path, and saying
+    so here is the point** — measured on production 2026-08-23. A member added
+    inside the workbench gets a TENANT ``org_membership`` row and nothing on the
+    Console, so ``store.deployment_visible_orgs`` (which joins the CONSOLE's
+    membership table) finds nothing, this route returns ``{"organizations": []}``
+    with 200 and no seat, and the gateway admits them anyway because the tenant
+    plane already knows them. The cap therefore binds only people the Console
+    knows — today, the signup owner. **The 200 is correct and must not change**
+    (clause 5's existence oracle); the missing piece is a membership mirror.
+    Ticket: ``customer_console.md`` **CP-2f**, unbuilt.
+
     **One endpoint, two schemes, two response shapes chosen by the credential**
     (CP-2b clauses 3 and 12). A second endpoint was refused for root
     ``CLAUDE.md`` §5's reason: it would be a second way to do an existing thing.
