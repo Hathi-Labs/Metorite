@@ -5,6 +5,11 @@ import {
   formatDate,
   lifecycleActions,
   canActivate,
+  seatsTotals,
+  daysUntil,
+  trialHint,
+  statusHelp,
+  suggestSlug,
   type SeatRow,
 } from "./format";
 
@@ -75,5 +80,56 @@ describe("canActivate", () => {
     expect(canActivate("trial")).toBe(true);
     expect(canActivate(null)).toBe(true);
     expect(canActivate("active")).toBe(false);
+  });
+});
+
+describe("seatsTotals", () => {
+  it("sums seats (not money) across plans and ORs oversubscription", () => {
+    expect(
+      seatsTotals([
+        seat({ plan_slug: "core", assigned: 1, purchased: 2 }),
+        seat({ plan_slug: "sales", assigned: 4, purchased: 3, oversubscribed: true }),
+      ]),
+    ).toEqual({ assigned: 5, purchased: 5, oversubscribed: true });
+  });
+
+  it("is null for an org with no seats", () => {
+    expect(seatsTotals([])).toBeNull();
+  });
+});
+
+describe("daysUntil / trialHint", () => {
+  const now = new Date("2026-08-23T12:00:00Z");
+  it("counts whole days, negative for the past, null for null/garbage", () => {
+    expect(daysUntil("2026-09-04T12:00:00Z", now)).toBe(12);
+    expect(daysUntil("2026-08-23T11:00:00Z", now)).toBe(0);
+    expect(daysUntil("2026-08-20T12:00:00Z", now)).toBe(-3);
+    expect(daysUntil(null, now)).toBeNull();
+    expect(daysUntil("not-a-date", now)).toBeNull();
+  });
+
+  it("renders the human hint for future, today and past", () => {
+    expect(trialHint("2026-09-04T12:00:00Z", now)).toBe("ends in 12 days");
+    expect(trialHint("2026-08-24T12:00:00Z", now)).toBe("ends tomorrow");
+    expect(trialHint("2026-08-23T11:00:00Z", now)).toBe("ends today");
+    expect(trialHint("2026-08-20T12:00:00Z", now)).toBe("ended 3 days ago");
+    expect(trialHint(null, now)).toBeNull();
+  });
+});
+
+describe("statusHelp", () => {
+  it("explains every known status and stays silent on unknown ones", () => {
+    for (const s of ["active", "trial", "suspended", "past_due", "cancelled", "deleted"]) {
+      expect(statusHelp(s).length).toBeGreaterThan(0);
+    }
+    expect(statusHelp("something-new")).toBe("");
+  });
+});
+
+describe("suggestSlug", () => {
+  it("lowercases, hyphenates and strips accents/symbols", () => {
+    expect(suggestSlug("Fracktal Works Pvt. Ltd.")).toBe("fracktal-works-pvt-ltd");
+    expect(suggestSlug("  Café  Nine!  ")).toBe("cafe-nine");
+    expect(suggestSlug("---")).toBe("");
   });
 });

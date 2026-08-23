@@ -38,11 +38,11 @@ a:hover {
 .wrap {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 16px 24px 48px;
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 22px;
   margin: 0 0 4px;
 }
 h2 {
@@ -53,7 +53,126 @@ h2 {
 .muted {
   color: var(--muted);
 }
+.small {
+  font-size: 12px;
+}
+.ok-t { color: var(--ok); }
+.warn-t { color: var(--warn); }
+.accent-t { color: var(--accent); }
 
+/* ── Top bar ─────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+.brand {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 15px;
+}
+.brand span {
+  color: var(--muted);
+  font-weight: 400;
+}
+.brand:hover {
+  text-decoration: none;
+}
+.linklike {
+  margin: 0;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.linklike:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* ── Page head (title + primary action side by side) ─────────────────── */
+.pagehead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.pagehead .form-panel,
+.pagehead .success-panel {
+  flex-basis: 100%;
+  max-width: 560px;
+}
+
+.primary-cta {
+  margin-top: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Stat cards ──────────────────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.stat .num {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.stat .small-num {
+  font-size: 18px;
+}
+.stat .lbl {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Seat usage bar ──────────────────────────────────────────────────── */
+.bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+  max-width: 160px;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.seatcell {
+  min-width: 110px;
+}
+.warnbadge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 11px;
+  cursor: help;
+}
+
+/* ── Banners ─────────────────────────────────────────────────────────── */
 .banner {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -63,7 +182,35 @@ h2 {
   margin: 12px 0;
   color: var(--muted);
 }
+.banner.info {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+.banner.danger {
+  border-left-color: var(--danger);
+  color: var(--text);
+}
 
+/* ── Empty state ─────────────────────────────────────────────────────── */
+.empty {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 24px 28px;
+  margin: 16px 0;
+  max-width: 640px;
+}
+.empty h2 {
+  margin-top: 0;
+}
+.empty ol {
+  padding-left: 20px;
+}
+.empty li {
+  margin: 6px 0;
+}
+
+/* ── Table ───────────────────────────────────────────────────────────── */
 table {
   width: 100%;
   border-collapse: collapse;
@@ -72,7 +219,7 @@ table {
 th,
 td {
   text-align: left;
-  padding: 8px 10px;
+  padding: 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -83,6 +230,9 @@ th {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
 
 .pill {
   display: inline-block;
@@ -90,6 +240,10 @@ th {
   border-radius: 999px;
   border: 1px solid var(--border);
   font-size: 12px;
+  cursor: default;
+}
+.pill[title]:not([title=""]) {
+  cursor: help;
 }
 .pill.active { border-color: var(--ok); color: var(--ok); }
 .pill.trial { border-color: var(--accent); color: var(--accent); }
@@ -98,6 +252,7 @@ th {
 .pill.cancelled,
 .pill.deleted { border-color: var(--danger); color: var(--danger); }
 
+/* ── Panels & forms ──────────────────────────────────────────────────── */
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -105,12 +260,22 @@ th {
   padding: 16px;
   margin: 12px 0;
 }
+.success-panel {
+  border-color: var(--ok);
+}
 
 label {
   display: block;
   font-size: 12px;
   color: var(--muted);
-  margin: 8px 0 2px;
+  margin: 10px 0 2px;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 3px 0 0;
+  opacity: 0.85;
 }
 
 input,
@@ -123,6 +288,26 @@ select {
   color: var(--text);
   font-size: 14px;
 }
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+details.advanced {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+details.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+details.advanced summary:hover {
+  color: var(--text);
+}
 
 button {
   margin-top: 12px;
@@ -133,6 +318,9 @@ button {
   border-radius: 6px;
   font-size: 14px;
   cursor: pointer;
+}
+button:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 button.secondary {
   background: transparent;
@@ -154,14 +342,27 @@ button:disabled {
 }
 .row > .panel {
   flex: 1;
-  min-width: 280px;
+  min-width: 300px;
 }
 
 .result {
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .result.err { color: var(--danger); }
 .result.ok { color: var(--ok); }
+
+/* ── Login ───────────────────────────────────────────────────────────── */
+.login-center {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%;
+  max-width: 400px;
+}

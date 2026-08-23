@@ -30,18 +30,27 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="wrap">
-      <h1>Operator Console</h1>
-      <p className="muted">Staff sign-in (interim). Platform staff only.</p>
-      <form className="panel" onSubmit={submit} style={{ maxWidth: 380 }}>
-        <label htmlFor="secret">Staff secret</label>
+    <main className="login-center">
+      <form className="panel login-card" onSubmit={submit}>
+        <h1 style={{ marginBottom: 4 }}>
+          Metorite <span className="muted">Operator Console</span>
+        </h1>
+        <p className="muted">
+          Customer management for platform staff. Not for customers — they sign
+          in at app.metorite.com.
+        </p>
+        <label htmlFor="secret">Staff passphrase</label>
         <input
           id="secret"
           type="password"
           value={secret}
+          autoFocus
           onChange={(e) => setSecret(e.target.value)}
           autoComplete="off"
         />
+        <div className="field-hint">
+          Don&apos;t have it? Ask the platform owner.
+        </div>
         <button type="submit" disabled={busy || secret.length === 0}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
