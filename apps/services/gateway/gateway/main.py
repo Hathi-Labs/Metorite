@@ -35,83 +35,14 @@ except ImportError:
 # cutover. Rather than bind them now (deferred: H4 slices 6b/6c), each loop's
 # STARTUP is gated behind a default-ON env flag so the cutover runbook can set
 # it false and the loop simply never starts. Default ON = byte-identical to
-# today (dark). Binding the gate at the call site — not inside the start
-# function — keeps the guard testable by monkeypatching the start functions.
-def _flag_default_on(name: str) -> bool:
-    """Read a default-ON kill-switch env flag.
-
-    OFF only when the value is an explicit recognised falsey token; unset, empty
-    or unrecognised = ON, so today's behaviour is preserved until the RLS-cutover
-    runbook sets it false (WS-29 launch defang). Inverse of the default-OFF idiom
-    in ``acb_graph.db.tenant_bind_enabled`` / ``ingestion.consumer.consumer_enabled``
-    (same token vocabulary).
-    """
-    return os.getenv(name, "").strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _email_sync_enabled() -> bool:
-    """``EMAIL_SYNC_ENABLED`` (default ON) — gates the background email-sync loop."""
-    return _flag_default_on("EMAIL_SYNC_ENABLED")
-
-
-def _workflow_scheduler_enabled() -> bool:
-    """``WORKFLOW_SCHEDULER_ENABLED`` (default ON) — gates the workflow schedule
-    scanner AND its sibling orphan-run reconciler (one scheduling subsystem)."""
-    return _flag_default_on("WORKFLOW_SCHEDULER_ENABLED")
-
-
-async def _maybe_start_email_sync() -> None:
-    """Start the background email-sync loop unless ``EMAIL_SYNC_ENABLED`` is off.
-
-    Default ON = byte-identical to before. The RLS-cutover runbook sets it false
-    so the always-on ``_account_sync_loop`` — out of launch scope and not yet
-    tenant-bound (H4 slice 6b) — does not start and write unbound under FORCE ROW
-    LEVEL SECURITY (WS-29 launch defang). Registering the post-sync hooks is the
-    caller's job and stays UNCONDITIONAL: manual sync and the Graph webhook share
-    them (``routes/email/scheduler_hooks.py::process_new_mail``).
-    """
-    if not _email_sync_enabled():
-        _log.info("gateway.email_sync_disabled", flag="EMAIL_SYNC_ENABLED")
-        return
-    from email_ingestion.scheduler import start_background_sync
-    await start_background_sync()
-    _log.info("gateway.email_sync_started")
-
-
-async def _maybe_start_workflow_scheduler() -> None:
-    """Start the workflow orphan-run reconcile sweep AND the cron schedule
-    scanner, unless ``WORKFLOW_SCHEDULER_ENABLED`` is off.
-
-    Both belong to the workflow scheduling subsystem, so one flag gates both.
-    Default ON = byte-identical. The RLS-cutover runbook sets it false so neither
-    the reconcile sweep nor the cron scanner — out of launch scope and not yet
-    tenant-bound (H4 slice 6c) — writes unbound under FORCE ROW LEVEL SECURITY
-    (WS-29 launch defang). Each half keeps its own error isolation, exactly as
-    the two lifespan blocks it replaces did.
-    """
-    if not _workflow_scheduler_enabled():
-        _log.info(
-            "gateway.workflow_scheduler_disabled",
-            flag="WORKFLOW_SCHEDULER_ENABLED",
-        )
-        return
-    # Workflow runs are in-process asyncio tasks (BO-20 pending): rows still
-    # 'running' from a previous process can never finish — mark them failed
-    # BEFORE the scheduler can start new runs. Paused runs survive restarts
-    # (resume rebuilds from the pause snapshot) and are left alone.
-    try:
-        from gateway.routes.workflows import reconcile_orphaned_runs
-        await reconcile_orphaned_runs()
-    except Exception as exc:
-        _log.warning("gateway.workflow_reconcile_skipped", error=str(exc))
-    # Start the workflow schedule scanner — cron triggers for published
-    # workflows (routes/workflows/scheduler.py; spec workflows_app.md F8).
-    try:
-        from gateway.routes.workflows import start_workflow_scheduler
-        await start_workflow_scheduler()
-        _log.info("gateway.workflow_scheduler_started")
-    except Exception as exc:
-        _log.warning("gateway.workflow_scheduler_skipped", error=str(exc))
+# today (dark). The gate lives INSIDE each start function — never as an `if`
+# here — so the flag has exactly one reader (two places that both have to agree
+# about what the flag means is how a loop ends up running with the flag off).
+# `EMAIL_SYNC_ENABLED` gates `email_ingestion.scheduler.start_background_sync`;
+# `WORKFLOW_SCHEDULER_ENABLED` gates BOTH `start_workflow_scheduler` and its
+# sibling `reconcile_orphaned_runs` (one scheduling subsystem). The lifespan
+# below calls all three UNCONDITIONALLY, keeping each call's own error
+# isolation. R7: tests/unit/test_launch_defang_kill_switches.py.
 
 
 @asynccontextmanager
@@ -315,14 +246,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # scheduler's hook registry, so the scheduler runs them without importing up
     # into the gateway (C2 layering inversion). The hooks register
     # UNCONDITIONALLY — manual sync and the Graph webhook share the same pipeline
-    # — while the always-on loop itself is gated behind EMAIL_SYNC_ENABLED (WS-29
-    # launch defang; see _maybe_start_email_sync).
+    # — while the always-on loop itself carries a default-ON launch-defang
+    # kill-switch (EMAIL_SYNC_ENABLED) INSIDE start_background_sync (WS-29).
     try:
         from gateway.routes.email.scheduler_hooks import (
             register_email_post_sync_hooks,
         )
         register_email_post_sync_hooks()
-        await _maybe_start_email_sync()
+        from email_ingestion.scheduler import start_background_sync
+        await start_background_sync()
     except Exception as exc:
         _log.warning("gateway.email_sync_skipped", error=str(exc))
 
@@ -372,9 +304,27 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log.warning("gateway.tasks_rollover_skipped", error=str(exc))
 
     # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
-    # cron schedule scanner, both gated behind WORKFLOW_SCHEDULER_ENABLED (WS-29
-    # launch defang; see _maybe_start_workflow_scheduler).
-    await _maybe_start_workflow_scheduler()
+    # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
+    # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
+    # gates the whole subsystem. Each half keeps its own error isolation.
+    #
+    # Workflow runs are in-process asyncio tasks (BO-20 pending): rows still
+    # 'running' from a previous process can never finish — mark them failed
+    # BEFORE the scheduler can start new runs. Paused runs survive restarts
+    # (resume rebuilds from the pause snapshot) and are left alone.
+    try:
+        from gateway.routes.workflows import reconcile_orphaned_runs
+        await reconcile_orphaned_runs()
+    except Exception as exc:
+        _log.warning("gateway.workflow_reconcile_skipped", error=str(exc))
+    # Start the workflow schedule scanner — cron triggers for published
+    # workflows (routes/workflows/scheduler.py; spec workflows_app.md F8).
+    try:
+        from gateway.routes.workflows import start_workflow_scheduler
+        await start_workflow_scheduler()
+        _log.info("gateway.workflow_scheduler_started")
+    except Exception as exc:
+        _log.warning("gateway.workflow_scheduler_skipped", error=str(exc))
 
     # Start the ingestion event-bus consumer — drains ingestion:{clickup,zoho,
     # gmail} through the same event-sink registry the receivers emit to
