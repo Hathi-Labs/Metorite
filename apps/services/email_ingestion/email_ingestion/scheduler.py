@@ -566,8 +566,24 @@ async def start_background_sync() -> dict[str, int]:
 
     Called from the gateway lifespan on startup.  Returns {account_id: interval_secs}
     for all launched sync loops.
+
+    WS-29 launch-defang kill-switch. The per-account sync loop is out of launch
+    scope and not yet tenant-bound (H4 slice 6b), so after the RLS cutover it
+    would write UNBOUND under FORCE ROW LEVEL SECURITY. The gate lives HERE,
+    inside the start function — never as an ``if`` at the gateway call site, so
+    the flag has exactly one reader (two places that both have to agree about
+    what the flag means is how a loop ends up running with the flag off).
+    Default ON = byte-identical to before; the RLS-cutover runbook sets
+    ``EMAIL_SYNC_ENABLED`` false to stop the loop cleanly. Returns an empty dict
+    (no loops launched) when disabled.
     """
     global _scheduler_running
+
+    if os.getenv("EMAIL_SYNC_ENABLED", "").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        logger.info("sync.email_sync_disabled")
+        return {}
 
     async with _scheduler_lock:
         if _scheduler_running:

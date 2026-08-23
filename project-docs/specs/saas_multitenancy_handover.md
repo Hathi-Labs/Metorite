@@ -83,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built; **561 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4) + `acb_audit._persist`'s `audit_event` write (slice 5, org on the event, operator-org fallback)**; **run-based org SOURCES threaded (slice 6a): `/copilot/chat` → `run_detached`, sub-agent inheritance, batch `_run_agent_inner` honours its org param — so the slice 3-5 writes get the right tenant for those runs**; **~554 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark) · 🚦 launch-defang kill-switches (`EMAIL_SYNC_ENABLED` / `WORKFLOW_SCHEDULER_ENABLED`, default ON) for the OUT-of-scope loops SHIPPED (dark) 2026-08-23
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -641,6 +641,322 @@ than defaulting; a test proves the refusal.
 > ⚠️ **The tasks broker handler (`routes/tasks/broker_handlers.py`) is NOT in
 > this change** — a separate later PR, dormant unless `ACTION_BROKER_ENFORCE`.
 
+> ✅ **acb_graph sync tenant seam SHIPPED 2026-08-23 (WS-29, DARK — seam ONLY,
+> no call site converted, byte-identical at runtime).** The core write paths
+> (the best-effort `acb_audit` write, orchestrator agent runs) go through
+> `acb_graph.get_session()` — a SEPARATE **sync** engine (§0.1 path 4) that had
+> no tenant binding, so it would read 0 rows / refuse writes on FORCE-RLS'd
+> tables post phase-4. `acb_graph.db` now carries `tenant_session(organization_id)`,
+> the sync twin of `acb_common.db.tenant_session`: same GUC name, the IDENTICAL
+> `SELECT set_config('app.tenant_id', :tenant, true)` (bound param), an explicit
+> `session.begin()` transaction, and the SHARED `TenantUnbound` (imported, not
+> re-declared). It is **explicit-tenant-only — no ambient ContextVar fallback**,
+> because the sync engine serves background/service paths that must not inherit
+> an upstream tenant (the H4 rule). `get_session()` is untouched and stays for
+> RLS-exempt/discovery reads until later slices convert specific callers behind
+> `ACB_GRAPH_TENANT_BIND`. This is the foundation those slices build on.
+> R7 fences (R8, real non-priv `acb_app` role on the phase-4 catalog, in
+> `tests/unit/test_acb_graph_tenant_seam.py`): `acb-graph-sync-bind-sets-guc`
+> (a bound write lands + is org-isolated GREEN; the unbound `get_session()` read
+> is 0-rows / write WITH-CHECK-refused; no-org RAISES `TenantUnbound`) and
+> `acb-graph-cross-engine-bind-drift` (both engines grep-match the identical bind
+> statement and share one `TenantUnbound` type). `test_db_engine_seam.py`'s
+> `_ALLOWED_SYNC` reason for `acb_graph/db.py` is updated to record the seam.
+
+> ✅ **acb_graph slice 2 — executor org threading SHIPPED 2026-08-23 (WS-29,
+> DARK — plumbing + run state ONLY, no DB write converted, runtime unchanged).**
+> The core agent run (`run_agent_stream` → the drained detached task) writes
+> tenant tables through the sync `acb_graph` engine inside
+> `loop.run_in_executor(...)` worker threads — where Python contextvars are NOT
+> copied, and where the detached run has already outlived the request scope, so
+> the request's ambient tenant binding is gone. This slice threads the tenant
+> explicitly so later slices' worker-thread writes can bind it:
+> - `run_agent_stream` / `run_agent` (executor.py) and `run_detached`
+>   (stream_relay.py) gain an `organization_id: str | None = None` parameter.
+> - `executor._RUN_ORG: dict[str, str]` — a run-keyed plain dict (the tenant twin
+>   of `_RUN_QUEUES`) set at the top of `run_agent_stream` and deleted in its
+>   `finally`; this is what a worker-thread write reads (captured into the
+>   closure before the executor hop) in slice 3+.
+> - `run_agent_stream` also calls `acb_common.db.bind_tenant(org)` at run start
+>   (released in the `finally`), and `run_detached` binds it for the detached
+>   drain task's whole life (so the `on_complete` persist hook, which runs after
+>   the generator's own binding is released, still sees the tenant). No
+>   fail-closed refusal yet — a chat run with no org LOGS a warning; the
+>   refuse-on-missing behaviour lands with the write conversions behind
+>   `ACB_GRAPH_TENANT_BIND` (later slices).
+> - **The org is stamped SERVER-SIDE** at the gateway chat route
+>   (`routes/agent.py`) from the authenticated `UserContext.organization_id`,
+>   **never from `event_payload`** — sourcing the tenant from the client/agent-
+>   visible payload is R11's tenant-spoofing hole; the route carries a comment
+>   saying so.
+> - **Scope = the CHAT source only.** Workflow / schedule / sub-agent runs
+>   (the batch `run_agent` path) get the parameter but are NOT yet wired — a
+>   `TODO(WS-29 slice 6)` marks where their own org resolution lands.
+> R7 fence `executor-run-carries-org` (`tests/unit/test_executor_org_threading.py`):
+> driving a chat `run_agent_stream` with a known org asserts `_RUN_ORG[thread_id]`
+> equals it DURING the run and is absent AFTER (cleared in `finally`); a value in
+> `event_payload` never becomes the run's org (spoofing guard); and an AST fence
+> proves the route sources `organization_id` from the authenticated user, never
+> `req.payload`.
+
+> ✅ **acb_graph slice 3 — chat_session writes/reads bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's four `chat_session` touch points now go through the slice-1
+> sync seam when the flag is ON: the two writes `_store_session_id` /
+> `_clear_stored_session_id` (fired inside `loop.run_in_executor(...)` worker
+> threads) and the two reads `_get_stored_session_id` /
+> `_session_workspace_override`. One helper, `_graph_session_opener(thread_id)`,
+> makes the choice on the CALLER's frame — flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a resolvable tenant → a
+> `lambda: acb_graph.tenant_session(org)`; flag ON + NO tenant → `None`. **The
+> org is captured on the EVENT LOOP before the `run_in_executor` hop and closed
+> over** (a worker thread never reads `_RUN_ORG` or a ContextVar — neither
+> survives the hop). **Fail-closed:** flag ON + no tenant → the write is SKIPPED
+> and logged (`executor.session_store_skipped_no_org` /
+> `…session_clear_skipped_no_org`), never written unbound, and the run never
+> crashes (best-effort session bookkeeping); the reads fall back (a fresh
+> session / the agent clone). The single flag reader is
+> `acb_graph.tenant_bind_enabled()` — later slices convert more `acb_graph` paths
+> behind it; do not add a second reader.
+> **Two slice-2 review findings folded in (load-bearing NOW that this slice reads
+> `_RUN_ORG` fail-closed):**
+> - **P2 — guarded pop.** `run_agent_stream`'s `finally` now calls
+>   `_guarded_pop_run_org(thread_id, organization_id)`, which drops the record
+>   ONLY if it is STILL this run's org (mirrors `_DETACHED_TASKS.pop` in
+>   stream_relay). A superseded run's late `finally` can no longer delete a newer
+>   same-thread run's org.
+> - **P1 — missing-org signal broadened.** The executor's missing-org warning
+>   now fires for EVERY source (`executor.run_missing_org`, was chat-only), and
+>   `run_detached` logs `stream_relay.detached_run_missing_org` when no org is
+>   threaded — so the plumbing gap on `/copilot/chat` (runs the MAF agent
+>   directly, not `run_agent_stream`) and email-automation chat (`source !=
+>   "chat"`) is VISIBLE in logs. Org threading for those two surfaces is still
+>   slice 6; this is signal only.
+> R7 fences (`tests/unit/test_acb_graph_chatsession_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `chat-session-write-bound-under-rls` (flag ON + orgA: the UPSERT lands and is
+> visible ONLY to orgA; flag ON + no org: SKIPPED + logged, no raise; RED-on-
+> removal: reverting to the unbound `get_session()` is RLS-refused so the row
+> never lands); `run-org-guarded-pop` (a superseded run's late finally preserves
+> a newer run's org — RED if the pop is made unconditional); and the flag-OFF
+> regression (opener IS `get_session`). Both RED-on-removal properties were
+> demonstrated by mutation on 2026-08-23.
+
+> ✅ **acb_graph slice 4 — pending_commit write/read bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's agent-self-commit registration now goes through the slice-1 sync
+> seam when the flag is ON: the dedup read in `_detect_agent_commits` (the
+> `SELECT commit_sha FROM pending_commit` the reviewer flagged as an unbound
+> `get_session()`) and the INSERT in `mutation._register_pending_commit`.
+> **`_detect_agent_commits` resolves the opener ONCE via
+> `_graph_session_opener(thread_id)` on its own (event-loop) frame** — it runs
+> before `run_agent_stream`'s finally pops `_RUN_ORG`, so the run's tenant is
+> valid there and no worker-thread / ContextVar hop has intervened — and reuses
+> that single opener for BOTH the read and every write, passing it down as
+> `_register_pending_commit(..., opener=…)`. flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a tenant →
+> `tenant_session(org)` (the phase-1 DEFAULT stamps the bound org — the INSERT
+> names no `organization_id`); flag ON + NO tenant → the opener is `None` and the
+> path **fails closed**: the read falls back to an empty dedup set and the write
+> is SKIPPED + logged (`mutation.pending_commit_skipped_no_org`), never run
+> unbound on the FORCE-RLS'd `pending_commit`, never raised. `_register_pending_
+> commit` takes the opener as a keyword defaulting to a private `_OPENER_UNSET`
+> sentinel → the still-un-converted self-mutation-sandbox caller
+> (`attempt_self_mutation`, whose org threading is a later slice) keeps opening
+> the unbound `get_session`, byte-identical. Both `_detect_agent_commits`
+> callers now thread `thread_id`: the STREAM path (`_RUN_ORG` set → binds) and the
+> BATCH path (`_RUN_ORG` unset until slice 6 → fail-closed when ON, byte-identical
+> when OFF).
+> R7 fences (`tests/unit/test_acb_graph_pending_commit_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `pending-commit-write-bound-under-rls` (flag ON + orgA: the INSERT lands and is
+> visible ONLY to orgA, stamped orgA; flag ON + no org: SKIPPED + logged, no raise;
+> RED-on-removal: reverting the writer to the unbound `get_session()` is
+> RLS-refused — `new row violates row-level security policy for table
+> "pending_commit"` — so the write returns None and the row never lands) and the
+> flag-OFF regression (opener IS `get_session`; the default-opener caller still
+> opens `get_session`). The RED-on-removal property was demonstrated by mutation
+> on 2026-08-23.
+
+> ✅ **acb_graph slice 5 — `audit_event` write bound SHIPPED 2026-08-23 (WS-29,
+> DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).** The
+> highest-risk slice: `acb_audit._persist` swallows every error, so a broken bind
+> would fail SILENTLY — the R7 fence is the only guard, and it asserts the ROW
+> LANDED (queries the table), never merely that nothing raised. **OWNER DECISION
+> (ratified, Option-A): `audit_event` is tenant-SCOPED, AND a tenant-less
+> system/cron event is BOUND to the operator/DEFAULT org so it is RETAINED, never
+> dropped.** So — unlike slices 3/4 which SKIP on no-org — audit FALLS BACK to the
+> operator org; it skips + logs (`audit.persist_skipped_no_org`) only if BOTH the
+> event org and the default-org lookup are unavailable (near-impossible — the
+> `default` org is seeded by migration 130).
+> **How the org reaches `_persist`:** it rides ON THE `AuditEvent` object
+> (`organization_id: str | None`, new field), stamped by the caller ON ITS OWN
+> FRAME — the executor's five core-path `record` sites (`agent_run_start` /
+> `_complete` / `_load_error` / `_run_error` in `_run_agent_inner`, and
+> `agent_self_commit_detected` in `_detect_agent_commits`) set
+> `organization_id=_RUN_ORG.get(thread_id)`. This is deliberate: `record()` hands
+> the write to `asyncio.to_thread`, and the design **never relies on contextvar
+> copying across that hop** (the same rule slices 2–4 follow for `_RUN_ORG`), so
+> the value must live on the event, never be read from a ContextVar inside
+> `_persist`. Stream/chat runs (`_RUN_ORG` set) stamp their real tenant; batch
+> runs (`_RUN_ORG` unset until slice 6) stamp None → operator-org fallback.
+> `_persist`: flag OFF → the unbound `acb_graph.get_session` (byte-identical);
+> flag ON → `tenant_session(event.organization_id OR operator_org)`. The GUC
+> DEFAULT stamps the column — the ORM INSERT names no `organization_id`, and the
+> ORM `AuditEvent` model is UNCHANGED (adding the column there would make
+> SQLAlchemy send an explicit NULL and defeat the DEFAULT). `_resolve_operator_
+> org_id()` reads the RLS-EXEMPT `organization` table for `slug = 'default'` (or
+> the `OPERATOR_ORG_ID` env), cached module-level, failure NOT cached; a
+> `slug = 'default'` fallback is CORRECT here (audit RETENTION, not key service —
+> the opposite of acb_llm's fail-closed rule, and it never serves one tenant's
+> secrets to another).
+> **pull_agent (`orchestrator/agents/pull_agent.py`) NOT stamped:** its `answer()`
+> has no `thread_id`/`_RUN_ORG` in scope, so its two `record` events carry
+> `organization_id=None` → operator-org fallback — the conditional "where a run's
+> thread_id is in scope" plus §H4's non-chat-source rule (slice 6 owns threading
+> org for non-chat sources); acceptable while dark.
+> R7 fences (`tests/unit/test_acb_graph_audit_bind.py`): R8 against the reused
+> two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `audit-event-write-bound-under-rls` (flag ON + orgA: the row LANDS visible ONLY
+> to orgA, stamped orgA), `audit-system-event-falls-back-to-operator-org` (flag ON
+> + no org: the row LANDS under the DEFAULT org, retained), the swallow guard (no
+> org anywhere → skip + NO row lands), the flag-OFF regression (a real row lands
+> via `get_session` on the pre-phase-4 shared ladder), and the RED-on-removal
+> mechanism proof (an unbound `get_session()` INSERT into the phase-4 `audit_event`
+> is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
+> 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
+
+> ✅ **acb_graph slice 6a — run-based org SOURCES threaded SHIPPED 2026-08-23
+> (WS-29, DARK — only populates `_RUN_ORG` / binds the tenant for more runs; the
+> slice 3-5 writes consume it only when `ACB_GRAPH_TENANT_BIND` is ON).** Slices
+> 2-5 bound the executor's writes but only the `/agent/run/stream` CHAT source
+> stamped an org; the other run-based sources that resolve their tenant from
+> in-hand SERVER-SIDE identity (no scoped DB read) did not, so those writes fell
+> to the operator-org fallback / fail-closed skip and the slice-3 broadened
+> missing-org warning fired. This slice threads the org for the three such
+> sources (closing the slice-2 P1 copilot-lockout risk and narrowing the audit
+> operator-org fallback):
+> - **`/copilot/chat`** (`apps/services/gateway/gateway/main.py`): stamps
+>   `user.organization_id` (SERVER-SIDE, from `get_current_user` /
+>   `_with_resolved_access` — the SAME provenance `routes/agent.py` uses; NEVER
+>   from `input_data`/`request_body`/the message list, R11) and passes it to
+>   `run_detached`, which binds the tenant for the whole detached drain task. This
+>   chat runs the MAF orchestrator DIRECTLY (not `run_agent_stream`), so that bind
+>   is what its async reads, the `on_complete` persist hook, and delegated
+>   sub-agents resolve. Stops `stream_relay.detached_run_missing_org` for it.
+> - **Sub-agent inheritance** (`_run_sub_agent_streaming` → `run_agent`): a
+>   delegated sub-run acts in its PARENT's tenant. `_resolve_sub_agent_org()`
+>   resolves it SERVER-SIDE on the caller's frame — `_RUN_ORG` keyed by the
+>   parent thread id (`_stream_relay_thread_id` / the bound run context), falling
+>   back to the async bound tenant (`current_tenant`, for the `/copilot/chat`
+>   parent that binds but sets no `_RUN_ORG`) — NEVER from the delegated message
+>   (the resolver takes no argument). It is passed into the batch path.
+> - **Batch path** (`run_agent` / `_run_agent_inner`): now HONOURS the
+>   `organization_id` its callers pass — sets `_RUN_ORG[thread_id]` +
+>   `bind_tenant` (guarded pop + release in the `finally`, mirroring slice 3),
+>   exactly as `run_agent_stream` does. So an org-carrying batch run (a sub-agent
+>   today) stamps its real tenant on its audit events and binds its
+>   chat_session / pending_commit writes. When the caller passes `None`
+>   (the workflow cron scheduler / schedule sweep until slice 6c, or the
+>   self-mutation sandbox) the run stays byte-identical to pre-slice behaviour
+>   (operator-org audit fallback / flag-ON write skip) and LOGS
+>   `executor.run_missing_org` so the gap stays visible.
+> After this slice the broadened missing-org warning no longer fires for
+> `/copilot/chat`, sub-agent runs, or org-supplied batch runs (they carry org);
+> it still fires for the org-less batch runs slices 6b/6c own.
+> **Explicitly OUT (later sub-slices):** email-automation chat + inbound webhooks
+> (WhatsApp/ClickUp) need a mailbox/account→org resolver over an RLS-scoped table
+> (`TODO(WS-29 slice 6b)`); the workflow cron scheduler / orphan reconciler /
+> schedule sweep use the `acb_common` async engine, not this batch path
+> (`TODO(WS-29 slice 6c)`).
+> R7 fences (`tests/unit/test_org_sources_run.py`, 10 tests, no DB —
+> AST/behavioral like slice 2): `copilot-run-carries-org` (the route passes
+> `user.organization_id` to `run_detached`, never request input — AST);
+> `sub-agent-inherits-parent-org` (`_resolve_sub_agent_org` returns the parent's
+> `_RUN_ORG`, takes no payload arg, and a sub-run driven with it carries the
+> parent org in `_RUN_ORG[thread_id]`); `batch-run-honours-org-param`
+> (`_run_agent_inner` with an org sets `_RUN_ORG[thread_id]` during / clears
+> after; `None` and even a spoofed payload org set nothing + log the gap). Each
+> RED-on-removal was demonstrated by mutation on 2026-08-23 (batch ignores the
+> param / sub-agent resolver returns `None` / copilot sources from `input_data`
+> → the matching fence RED). The slice 3-5 R8 fences stay green (28 tests).
+
+> ✅ **acb_graph slice 7 — agent-tool READS bound SHIPPED 2026-08-23 (WS-29,
+> DARK, `ACB_GRAPH_TENANT_BIND`).** Slices 2-6a bound the executor's WRITES and
+> threaded the org for run-based sources; this slice binds the READS an agent run
+> makes through the `acb_graph` sync engine, so post-cutover they RETURN ROWS
+> under FORCE RLS instead of silently reading 0 (which would strip the agent's
+> entity context, its granted apps, and its skill toggles). New seam:
+> `executor._graph_session_opener_current()` → `_current_run_org()` — the
+> ambient-frame twin of `_graph_session_opener`, for a converted read that has no
+> `thread_id` in hand. It resolves the run's tenant SERVER-SIDE on the event-loop
+> frame (`_RUN_ORG` keyed by `_stream_relay_thread_id`, else the async
+> `current_tenant()`; NEVER from tool args / the payload, R11) and hands it to the
+> shared `_opener_for_org` (extracted so the thread-keyed and ambient openers keep
+> ONE flag/opener doctrine). `_resolve_sub_agent_org` (slice 6a) now delegates to
+> `_current_run_org` — one resolver, not two. Sites converted (each verified
+> FORCE-RLS'd, opener captured BEFORE any `asyncio.to_thread` hop, fail-closed to
+> empty when the flag is ON and no org resolves):
+> - **`agents.py`** `retrieve_entity_context` / `retrieve_sales_context` — the
+>   orchestrator's entity/sales retrieval tools (project/task/person/deal/customer
+>   via `retrieval.retrieve` / `sales_views.sales_context`).
+> - **`app_tools.py`** `_granted_live_apps` — the `apps ⋈ app_grants ⋈
+>   app_versions` grant lookup that decides which Custom Apps the agent may call.
+> - **`_tool_injection.py`** `_load_disabled_skill_families` — the
+>   `agent_skill_setting` admin toggle read.
+> - **`agents/pull_agent.py`** / **`agents/sales_pull_agent.py`** `answer()` — the
+>   Phase-0 pull/sales pipelines (no live caller today; converted for when wired).
+> `sales_views.py` reads through the caller-supplied session, so binding the two
+> retrieval openers binds it transitively — no change there.
+> **Explicitly LEFT by slice 7 (found, deliberately not converted here — now
+> CLOSED, see the next block):** `_inject_mcp_servers` reads `mcp_servers`, which
+> is RLS-EXEMPT (`gen_tenant_migration.EXEMPT` — "keyed (organization_id, name) by
+> MT-0d / 158"), so it is NOT FORCE-RLS'd and an unbound read does not collapse to
+> 0 rows; binding a `tenant_session` there would be a no-op against a table with no
+> policy. Its missing `organization_id` query filter (every org's servers are
+> visible) was an MT-0d query-scope finding, not this slice's RLS-bind concern —
+> **since closed at the app level by the mcp_servers org-filter follow-up below.**
+> R7/R8 fence
+> (`tests/unit/test_acb_graph_agenttool_reads_bind.py`, 7 tests): the opener
+> matrix (flag OFF → the unbound `get_session`; flag ON + org → `tenant_session`;
+> flag ON + no org → `None`), and R8 on the two-org phase-4 catalog —
+> `agent-retrieval-reads-bound-return-rows`: flag ON + orgA bound, the REAL
+> `retrieve_entity_context` and `_granted_live_apps` RETURN orgA's rows, orgB sees
+> nothing, and the SAME read via the unbound `get_session()` returns 0 rows
+> (RED-on-removal). One skill-toggle fence (`test_skill_toggle_enforcement.py`)
+> updated: its faked `acb_graph` module now also exposes `tenant_bind_enabled`
+> (the loader consults the flag before choosing its opener; flag OFF stays
+> byte-identical). **Explicitly OUT (later sub-slices, unchanged):** slice 6b
+> (email-automation + inbound webhooks), slice 6c (workflow cron / schedule sweep).
+
+> ✅ **mcp_servers cross-tenant read gap CLOSED 2026-08-23 (WS-29, DARK,
+> `ACB_GRAPH_TENANT_BIND`).** Slice 7 (above) explicitly left `_inject_mcp_servers`
+> unfiltered and recorded the cross-tenant read as an MT-0d finding for the board;
+> agent chat is in launch scope, so this follow-up closes it. `mcp_servers` **stays
+> RLS-EXEMPT by design** (`gen_tenant_migration.EXEMPT` — "keyed (organization_id,
+> name) by MT-0d/158"): it has no FORCE-RLS policy, so the RLS cutover does not
+> isolate it and a `tenant_session` bind would be a no-op. The read
+> (`apps/services/orchestrator/orchestrator/_tool_injection.py::_inject_mcp_servers`)
+> is instead scoped at the **APP level**: behind the same flag as slices 3-7, the
+> query gains `AND organization_id = :org`, so an agent is only ever injected its
+> OWN org's MCP servers (otherwise, once a second tenant exists, an agent in org A
+> would receive org B's MCP endpoints/config — a cross-tenant read of tool
+> config). The run's org is resolved SERVER-SIDE on the event-loop frame by
+> `executor._current_run_org` (the slice-7 resolver: `_RUN_ORG` keyed by
+> `_stream_relay_thread_id`, else the async `current_tenant()`), NEVER from tool
+> args / the message (R11). **No global/shared-server case exists:**
+> `mcp_servers.organization_id` is **NOT NULL** (migration 158), so there are no
+> org-less rows — the filter is strictly `= :org` and the flag-ON-no-org fail-closed
+> subset is EMPTY (never every org's servers). Flag OFF → no filter, byte-identical
+> (single-org today). **No migration, no RLS policy** (mcp_servers stays exempt);
+> scope was this one query. R7/R8 fence `tests/unit/test_mcp_servers_org_scope.py`
+> (3 tests, real PG, reuses the two-org phase-4 `promoted` catalog):
+> `mcp-servers-scoped-to-run-org` — flag ON + orgA bound, the REAL
+> `_inject_mcp_servers` injects orgA's server and NOT orgB's, and the SAME rows read
+> without the filter show BOTH (RED-on-removal, mutation-proven 2026-08-23: dropping
+> `AND organization_id = :org` → orgB's server appears → RED); flag-OFF regression
+> (no filter, both inject); flag-ON-no-org fails closed to empty.
+
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,
 > `routes/projects` — `run_lifecycle_sweep` (the workflow owner's org) and
@@ -656,6 +972,45 @@ than defaulting; a test proves the refusal.
 Also here: **`scripts/import_hr_people.py:177`** (§0.1 path 9) — it opens its own engine and
 **upserts people rows**, which are tenant data. It must take a tenant from argv. Under
 phase-4 policies it currently writes unowned rows or fails.
+
+> ### 🚦 Launch defang — kill-switches for the OUT-of-scope always-on loops (WS-29, 2026-08-23, DARK)
+>
+> **Launch scope is Tasks, Calendar, Projects, User-management + agent chat only.** Two
+> always-on background loops are OUT of that scope and NOT yet tenant-bound (their H4 binds
+> are slices 6b/6c above, deferred post-launch), so under FORCE RLS after the phase-4 cutover
+> they would query/write UNBOUND and error. Rather than bind them now, each loop's STARTUP is
+> gated behind a **default-ON** env flag so the cutover runbook sets it false and the loop
+> simply never starts. **Default ON = byte-identical to today (dark); the cutover runbook
+> flips them OFF.** The gate is at the call site in
+> `apps/services/gateway/gateway/main.py` (`_maybe_start_email_sync` /
+> `_maybe_start_workflow_scheduler`), not inside the start functions, so it is testable by
+> monkeypatching the start functions.
+>
+> | Flag | Default | Gates (start site) | Loop |
+> |---|---|---|---|
+> | `EMAIL_SYNC_ENABLED` | ON | `email_ingestion.scheduler.start_background_sync` (the `_account_sync_loop` launch) | email ingestion / sync |
+> | `WORKFLOW_SCHEDULER_ENABLED` | ON | `routes/workflows.start_workflow_scheduler` **and** `reconcile_orphaned_runs` (one scheduling subsystem, one flag) | workflow cron scanner + orphan-run reconcile sweep |
+>
+> The email post-sync hook registration (`register_email_post_sync_hooks`) stays
+> UNCONDITIONAL — manual sync and the Graph webhook share that pipeline; only the background
+> loop is gated. The shutdown stops stay unconditional (a flag-gated loop that never started
+> is still stopped — the same contract the ingestion-consumer / whatsapp-enrichment stops
+> follow). R7 fence: `tests/unit/test_launch_defang_kill_switches.py`
+> (`email-sync-loop-gated`, `workflow-scheduler-gated`) — flag off ⇒ the start function is
+> NOT awaited (RED if the guard is removed), default/true ⇒ awaited as today. The
+> already-gated loops (`CRM_ZOHO_SYNC`, `INGESTION_CONSUMER`, `WHATSAPP_ENRICHMENT`) keep
+> their own off-switches and were not touched.
+>
+> **Projects background-writer check (Projects is IN launch scope, so it must be BOUND, not
+> defanged): ✅ already BOUND, no change.** The only Projects background writer is
+> `routes/projects/automation.py::run_lifecycle_sweep` (WS-27aa). It is NOT a startup loop —
+> it runs as a scheduled `/workflows` node — and it is tenant-bound two ways: it **refuses**
+> without an explicit `organization_id` (`TenantUnbound`, `automation.py:362-368`) and its
+> roots query is org-scoped (`automation.py:376-383`); its one caller
+> `routes/workflows/service.py::_pm_lifecycle_sweeper` (`:244`, `:284-288`) resolves the org
+> from the workflow owner's `app_user` row (a stored fact, R11) and opens
+> `_tenant_session(org)` for the sweep. `routes/projects` holds ZERO unbound sites (H2 note
+> above). No fence added for Part B (no code change).
 
 ---
 

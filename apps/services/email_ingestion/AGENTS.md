@@ -64,7 +64,13 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 ## Background Sync Scheduler
 
 `scheduler.py` manages per-account asyncio tasks that call `_sync_account()` in a loop.
-- Launched at gateway startup (if `EMAIL_BACKGROUND_SYNC_ENABLED != "false"`)
+- Launched UNCONDITIONALLY from the gateway lifespan; `start_background_sync()`
+  carries its own default-ON launch-defang kill-switch `EMAIL_SYNC_ENABLED`
+  INSIDE the function (WS-29) — OFF only on an explicit falsey token
+  (`0`/`false`/`no`/`off`), returning `{}` and opening no engine, so the
+  RLS-cutover runbook can stop this out-of-launch-scope, not-yet-tenant-bound
+  loop (H4 slice 6b). The gate lives in the start function, never at the call
+  site. R7: `tests/unit/test_launch_defang_kill_switches.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync()` / `remove_account_sync()` called from CRUD routes
 - `get_scheduler_status()` returns state for health checks

@@ -2065,6 +2065,17 @@ async def run_agent_stream_endpoint(
 
     _think_mode = _resolve_think_mode(req)
 
+    # ── Tenant for this run's writes (WS-29 MT-1d / H4, slice 2 — DARK) ────────
+    # The organization_id is taken from the SERVER-SIDE resolved identity
+    # (``user.organization_id``, filled by ``_with_resolved_access`` from the
+    # authenticated session) and passed explicitly into the executor, because the
+    # detached run outlives this request scope and worker-thread writes cannot
+    # read the request's ambient tenant binding. It MUST NEVER come from
+    # ``req.payload`` / the event payload — that is agent/client-visible, so
+    # sourcing the tenant from it is a tenant-spoofing hole (R11,
+    # user_management_contract.md; §0.9.3). No DB write is converted this slice.
+    _organization_id = getattr(user, "organization_id", None)
+
     agent_gen = run_agent_stream(
         agent_name,
         req.payload,
@@ -2072,6 +2083,7 @@ async def run_agent_stream_endpoint(
         thread_id=thread_id,
         model=req.model,
         think_mode=_think_mode,
+        organization_id=_organization_id,
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -2088,6 +2100,10 @@ async def run_agent_stream_endpoint(
                 actor=_actor or None,
                 source=str(req.payload.get("source") or "chat"),
                 floor=_floor,
+                # Server-side tenant only (see the run_agent_stream call above) —
+                # never req.payload. Binds the detached drain task's own scope so
+                # the on_complete persist hook sees the right tenant (R11).
+                organization_id=_organization_id,
             ):
                 yield f"data: {json.dumps(evt)}\n\n"
         except SupersedeRefused:

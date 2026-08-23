@@ -177,6 +177,168 @@ _active_run_queue: contextvars.ContextVar["asyncio.Queue[dict[str, Any] | None] 
 # runs. Set/cleared alongside _active_run_queue by every run path.
 _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 
+# Plain (non-ContextVar) registry of the active run's tenant (organization_id),
+# keyed by session/thread id — the tenant twin of ``_RUN_QUEUES`` above, and it
+# exists for the SAME reason. The core agent run writes tenant tables through the
+# SYNC ``acb_graph`` engine inside ``loop.run_in_executor(...)`` worker threads,
+# and Python contextvars are NOT copied across ``run_in_executor`` — so the
+# request's ambient tenant binding (a ContextVar) is already gone by the time
+# those worker-thread writes run, and the detached run outlives the request
+# scope anyway. Later slices' worker-thread writes read the org from HERE
+# (captured into the closure BEFORE the ``run_in_executor`` hop) to open
+# ``acb_graph.tenant_session(org)``. Set at the top of ``run_agent_stream`` and
+# deleted in its ``finally``. WS-29 MT-1d (H4), slice 2 — DARK: nothing reads it
+# yet (no write is converted this slice).
+_RUN_ORG: dict[str, str] = {}
+
+
+def _opener_for_org(org: str | None):
+    """Map an already-resolved tenant to the ``acb_graph`` session opener.
+
+    The ONE opener-construction shared by :func:`_graph_session_opener` (which
+    resolves the org from ``_RUN_ORG`` keyed by an explicit thread id, for the
+    worker-thread writes) and :func:`_graph_session_opener_current` (which
+    resolves it from the ambient run frame, for reads with no thread id in hand).
+    Extracting it keeps a single flag/opener doctrine — not a second one — as the
+    read conversions land (WS-29 acb_graph slice 7). Behind
+    ``ACB_GRAPH_TENANT_BIND``:
+
+    * flag OFF → :func:`acb_graph.get_session` (unbound) — byte-identical runtime.
+    * flag ON + a resolvable tenant → ``lambda: acb_graph.tenant_session(org)``.
+    * flag ON + NO resolvable tenant → ``None``: the caller MUST fail closed
+      (skip a best-effort write / fall back / return empty on a read) rather than
+      touch a FORCE-RLS'd table with an unbound tenant.
+    """
+    from acb_graph import tenant_bind_enabled
+    if not tenant_bind_enabled():
+        from acb_graph import get_session
+        return get_session
+    if not org:
+        return None
+    from acb_graph import tenant_session
+    return lambda: tenant_session(org)
+
+
+def _graph_session_opener(thread_id: str | None):
+    """Pick the ``acb_graph`` session context-manager factory for a converted
+    read/write, resolving the run's tenant on the CURRENT (event-loop) frame.
+
+    Returns a **zero-arg callable** that opens the session — so a worker-thread
+    write can close over it and open the session AFTER the ``run_in_executor``
+    hop WITHOUT reading ``_RUN_ORG`` (a plain dict) or any ContextVar from the
+    worker thread (contextvars are not copied across the hop). Behind
+    ``ACB_GRAPH_TENANT_BIND`` (WS-29 acb_graph slice 3):
+
+    * flag OFF → :func:`acb_graph.get_session` (unbound) — byte-identical runtime.
+    * flag ON + a resolvable tenant → ``lambda: acb_graph.tenant_session(org)``.
+    * flag ON + NO resolvable tenant → ``None``: the caller MUST fail closed
+      (skip a best-effort write / fall back on a read) rather than touch a
+      FORCE-RLS'd table with an unbound tenant.
+
+    ``_RUN_ORG`` is read HERE, on the caller's frame — for the worker-thread
+    writes that is the event loop BEFORE the hop, which is the whole reason this
+    resolution is separated from the write closure.
+    """
+    return _opener_for_org(_RUN_ORG.get(thread_id) if thread_id else None)
+
+
+def _graph_session_opener_current():
+    """:func:`_graph_session_opener` for a converted READ that has NO thread id
+    in hand — an agent tool (``retrieve_entity_context``) or the per-run tool
+    injection (``_granted_live_apps`` / ``_load_disabled_skill_families``).
+
+    Resolves the CURRENT run's tenant on the caller's (event-loop) frame via
+    :func:`_current_run_org`, then hands it to :func:`_opener_for_org` — the SAME
+    flag/opener doctrine as the thread-keyed opener. WS-29 acb_graph slice 7. The
+    read site MUST call this BEFORE any ``asyncio.to_thread`` / ``run_in_executor``
+    hop and close the returned opener over the worker-thread body, exactly like
+    the slice 3-5 writes: ``_RUN_ORG`` is a plain dict and contextvars do not
+    cross the hop, so the tenant must be captured on this frame.
+
+    * flag OFF → the unbound ``get_session`` — byte-identical.
+    * flag ON + the run's tenant → ``lambda: tenant_session(org)`` (returns rows).
+    * flag ON + no resolvable tenant → ``None``: the caller fails closed (returns
+      empty / no tools) rather than read a FORCE-RLS'd table unbound (0 rows).
+    """
+    return _opener_for_org(_current_run_org())
+
+
+def _guarded_pop_run_org(
+    thread_id: str | None, organization_id: str | None,
+) -> None:
+    """Drop this run's ``_RUN_ORG`` record ONLY if it is STILL this run's org.
+
+    Mirrors the ``_DETACHED_TASKS.pop`` identity guard in ``stream_relay`` (WS-29
+    slice 3, P2): a superseded run's late ``finally`` — it lost the thread to a
+    newer run that already overwrote ``_RUN_ORG[thread_id]`` — must NOT delete the
+    NEWER run's org, or that run's worker-thread writes would fail-closed-skip. A
+    run that carried no org never set the key, so it never pops. Reverting this to
+    an unconditional ``_RUN_ORG.pop(thread_id, None)`` reintroduces the bug (and
+    turns ``run-org-guarded-pop`` RED).
+    """
+    if (
+        organization_id is not None
+        and _RUN_ORG.get(thread_id) == organization_id
+    ):
+        _RUN_ORG.pop(thread_id, None)
+
+
+def _current_run_org() -> str | None:
+    """The tenant of the run executing on THIS event-loop frame, resolved
+    SERVER-SIDE from the run boundary — NEVER from tool arguments / the event
+    payload (R11, which is why this takes no argument).
+
+    WS-29 acb_graph slice 7. This is the ambient-frame twin of
+    :func:`_graph_session_opener`'s ``_RUN_ORG[thread_id]`` lookup, for a
+    converted READ that has no thread id in hand (an agent tool, per-run tool
+    injection). Read on the CALLER's (event-loop) frame, BEFORE any worker-thread
+    hop, in this order:
+
+    1. ``_RUN_ORG`` keyed by this run's thread id — the ``_stream_relay_thread_id``
+       ContextVar (set by ``run_agent_stream``), or, failing that, the bound run
+       context's ``thread_id``. This is the primary path for a stream/batch run.
+    2. the async bound tenant (:func:`acb_common.db.current_tenant`) — the
+       fallback for the ``/copilot/chat`` path, which binds the tenant on its
+       detached drain task (slice 6a) but runs the MAF orchestrator directly and
+       so sets no ``_RUN_ORG`` entry.
+
+    Returns ``None`` when no tenant is resolvable (a truly untenanted background
+    run); the caller fails closed.
+    """
+    tid = _stream_relay_thread_id.get(None)
+    if not tid:
+        try:
+            from acb_common import get_run_context
+            tid = (get_run_context() or {}).get("thread_id")
+        except Exception:
+            tid = None
+    org = _RUN_ORG.get(tid) if tid else None
+    if org:
+        return org
+    try:
+        from acb_common.db import current_tenant
+        return current_tenant()
+    except Exception:
+        return None
+
+
+def _resolve_sub_agent_org() -> str | None:
+    """The tenant a delegated sub-run must act in: its PARENT run's org.
+
+    WS-29 acb_graph slice 6a. A sub-agent acts in the SAME tenant as the run that
+    delegated to it — and that run is precisely the one executing on THIS frame
+    when the delegation call is made, so this is exactly :func:`_current_run_org`
+    (slice 7 unified the two resolvers into one, rather than keeping a second
+    copy of the ``_RUN_ORG`` → bound-tenant walk). Resolved SERVER-SIDE from the
+    run boundary — NEVER from the delegated message / event payload (R11, which is
+    why this, like ``_current_run_org``, takes no argument).
+
+    Returns ``None`` when no parent tenant is resolvable (a truly untenanted
+    background run); the sub-run then behaves like any org-less batch run
+    (operator-org audit fallback / flag-ON write skip).
+    """
+    return _current_run_org()
+
 
 def _register_run_queue(
     key: str | None, queue: "asyncio.Queue[dict[str, Any] | None]",
@@ -775,11 +937,16 @@ async def _run_sub_agent_streaming(
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
                 # inherit it (run_agent applies it via default_options["model"]).
+                # WS-29 acb_graph slice 6a: a sub-agent acts in its PARENT's
+                # tenant — resolve the parent run's org SERVER-SIDE (from
+                # _RUN_ORG / the bound tenant, never message_str) and pass it so
+                # the batch path binds it for this sub-run's acb_graph writes.
                 result = await run_agent(
                     agent_name,
                     {"message": message_str, "mode": "sub_task"},
                     run_id=run_id,
                     model=model,
+                    organization_id=_resolve_sub_agent_org(),
                 )
                 text = result.get("result") or result.get("answer") or ""
                 if isinstance(text, dict):
@@ -886,9 +1053,13 @@ def _session_workspace_override(
         return None
     workspace_path = ""
     try:
-        from acb_graph import get_session as _db_session
         from sqlalchemy import text
-        with _db_session() as s:
+        _open = _graph_session_opener(thread_id)
+        # flag ON + no resolvable tenant → fall back to the agent clone. flag OFF
+        # → _open is the unbound get_session, byte-identical to before.
+        if _open is None:
+            return None
+        with _open() as s:
             row = s.execute(
                 text("SELECT workspace_path FROM chat_session WHERE id = :id"),
                 {"id": thread_id},
@@ -1334,6 +1505,7 @@ async def _detect_agent_commits(
     run_id: str,
     *,
     since_sha: str | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """After an agent run, register any new commits for inbox approval.
 
@@ -1366,21 +1538,38 @@ async def _detect_agent_commits(
     if not agent_dir:
         return
 
+    # Resolve the pending_commit session opener ONCE, HERE — on the event-loop
+    # frame where _RUN_ORG[thread_id] is still THIS run's org (this runs before
+    # run_agent_stream's finally pops it) and no worker-thread / ContextVar hop
+    # has intervened (WS-29 acb_graph slice 4, the slice-3 discipline). Reused for
+    # BOTH the dedup read and every _register_pending_commit write below, so the
+    # tenant decision is made exactly once per detection pass:
+    #   * flag OFF               → the unbound get_session — byte-identical.
+    #   * flag ON + a tenant     → lambda: tenant_session(org).
+    #   * flag ON + NO tenant    → None → fail closed: the read falls back to an
+    #                              empty dedup set, the writes SKIP + log.
+    _pc_open = _graph_session_opener(thread_id)
+
     try:
         # ── Load existing commit SHAs for dedup ─────────────────────────
         _existing_shas: set[str] = set()
         try:
-            from acb_graph import get_session as _gs
             from sqlalchemy import text as _txt
-            with _gs() as _s:
-                _rows = _s.execute(
-                    _txt(
-                        "SELECT commit_sha FROM pending_commit "
-                        "WHERE agent_name = :a"
-                    ),
-                    {"a": agent_name},
-                ).fetchall()
-                _existing_shas = {r[0] for r in _rows}
+            # flag ON + no resolvable tenant (_pc_open is None) → skip the
+            # FORCE-RLS'd read and fall back to an empty dedup set. That never
+            # duplicates rows: the writes below also fail-closed-skip when the
+            # opener is None, so nothing is registered on this pass anyway. flag
+            # OFF → _pc_open is the unbound get_session, byte-identical to before.
+            if _pc_open is not None:
+                with _pc_open() as _s:
+                    _rows = _s.execute(
+                        _txt(
+                            "SELECT commit_sha FROM pending_commit "
+                            "WHERE agent_name = :a"
+                        ),
+                        {"a": agent_name},
+                    ).fetchall()
+                    _existing_shas = {r[0] for r in _rows}
         except Exception:
             pass
 
@@ -1569,6 +1758,10 @@ async def _detect_agent_commits(
                 test_summary="(agent self-improvement — no test run)",
                 status="approved" if pushed else "pending",
                 reviewed_by="chat:autopush" if pushed else None,
+                # WS-29 slice 4: the tenant opener resolved on the event-loop
+                # frame above (flag OFF → get_session; ON+org → tenant_session;
+                # ON+no-org → None → the write fails closed + logs).
+                opener=_pc_open,
             )
 
         record(
@@ -1584,6 +1777,11 @@ async def _detect_agent_commits(
                         for ln in all_lines
                     ],
                 },
+                # WS-29 acb_graph slice 5: stamp the run's tenant ONTO the event
+                # on THIS frame (never a ContextVar inside _persist's worker
+                # thread). None ⇒ tenant-less run → _persist binds the operator
+                # org so the audit row is retained. _RUN_ORG.get(None) is None.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
 
@@ -1733,6 +1931,7 @@ async def run_agent(
     run_id: str | None = None,
     thread_id: str | None = None,
     model: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """Dynamically load and execute a named agent.
 
@@ -1747,6 +1946,14 @@ async def run_agent(
         event_payload: Arbitrary event data injected as the initial state.
         run_id:        Unique execution ID (auto-generated if ``None``).
         thread_id:     Conversation thread ID (defaults to ``"{agent_name}:{run_id}"``).
+        organization_id: The caller's tenant, threaded through for the
+                       worker-thread ``acb_graph`` writes (WS-29 MT-1d / H4).
+                       HONOURED as of slice 6a: ``_run_agent_inner`` sets
+                       ``_RUN_ORG[thread_id]`` + ``bind_tenant`` from it. A
+                       sub-agent inherits its parent's tenant (see
+                       ``_run_sub_agent_streaming``); the workflow / schedule
+                       callers resolve their own org in slice 6c and pass
+                       ``None`` until then (operator-org fallback / skip).
 
         The final MAF agent result dict.
 
@@ -1758,6 +1965,7 @@ async def run_agent(
         return await _run_agent_inner(
             agent_name, event_payload,
             run_id=run_id, thread_id=thread_id, model=model,
+            organization_id=organization_id,
         )
     finally:
         _unbind_run_identity(_identity)
@@ -1770,13 +1978,65 @@ async def _run_agent_inner(
     run_id: str | None = None,
     thread_id: str | None = None,
     model: str | None = None,
+    # HONOURED as of slice 6a — see the tenant-binding block below.
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """The batch run itself. Call :func:`run_agent`, not this — this one assumes
-    the acting-user scope is already open."""
+    the acting-user scope is already open.
+
+    WS-29 acb_graph slice 6a: the tenant-binding block below sets
+    ``_RUN_ORG[thread_id]`` + ``bind_tenant`` from ``organization_id`` (cleared
+    in the ``finally``), exactly as ``run_agent_stream`` does for chat, so the
+    slice 3-5 ``acb_graph`` writes carry the tenant for org-carrying batch runs
+    (sub-agent dispatch today; workflow / schedule callers pass their own org in
+    slice 6c). When ``organization_id`` is ``None`` the run stays byte-identical
+    to pre-slice behaviour (operator-org audit fallback / flag-ON write skip).
+    """
     _disable_agent_telemetry_once()
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
     thread_id = thread_id or f"{agent_name}:{run_id}"
+
+    # ── Tenant binding for this batch run's writes (WS-29 acb_graph slice 6a) ──
+    # The batch path now HONOURS the ``organization_id`` its callers pass, exactly
+    # as ``run_agent_stream`` does for the chat path (slice 2): set the run-keyed
+    # ``_RUN_ORG`` — what the SYNC ``acb_graph`` worker-thread writes read AFTER
+    # the ``loop.run_in_executor`` hop, where contextvars do not propagate — and
+    # ``bind_tenant`` this run's own event loop, so async reads and the
+    # ``acb_audit`` fallback resolve the tenant. The org is resolved SERVER-SIDE by
+    # the caller (a sub-agent inherits its PARENT run's tenant — see
+    # ``_run_sub_agent_streaming`` / ``_resolve_sub_agent_org``) and passed in;
+    # it is NEVER read from ``event_payload``, which is agent/client-visible and
+    # would be a tenant-spoofing hole (R11, user_management_contract.md).
+    #
+    # When the caller passes ``None`` (the workflow cron scheduler / schedule
+    # sweep until slice 6c, or the self-mutation sandbox) this stays on the
+    # pre-slice behaviour: no bind, so with the flag ON the ``chat_session`` /
+    # ``pending_commit`` writes fail closed (skip) and the ``audit_event`` write
+    # falls back to the operator org (slice 5). LOG the gap for every source so it
+    # is VISIBLE (WS-29 slice 3, P1) — same signal the stream path emits.
+    _batch_source = ""
+    if isinstance(event_payload, dict):
+        _batch_source = str(event_payload.get("source") or "").strip()
+    _tenant_token = None
+    if organization_id:
+        _RUN_ORG[thread_id] = organization_id
+        try:
+            from acb_common.db import bind_tenant
+            _tenant_token = bind_tenant(organization_id)
+        except Exception:
+            _tenant_token = None
+    else:
+        _log.warning(
+            "executor.run_missing_org",
+            agent=agent_name, thread_id=thread_id,
+            source=_batch_source or "batch",
+        )
+    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp/ClickUp) + email-automation
+    # chat need a mailbox/account→org resolver over an RLS-scoped table before they
+    # can pass organization_id here (exempt-resolver design). TODO(WS-29 slice 6c):
+    # the workflow cron scheduler / orphan reconciler / schedule sweep resolve the
+    # owning record's org and pass it in.
 
     record(
         AuditEvent(
@@ -1784,6 +2044,11 @@ async def _run_agent_inner(
             action="agent_run_start",
             target=f"agent:{agent_name}",
             payload={"run_id": run_id, "event_keys": list(event_payload.keys())},
+            # WS-29 acb_graph slice 5: the run's tenant, captured on this frame.
+            # Slice 6a: the batch path now sets _RUN_ORG above when its caller
+            # supplies an org (sub-agent inheritance), so an org-carrying batch
+            # run stamps its real tenant here instead of the operator fallback.
+            organization_id=_RUN_ORG.get(thread_id),
         )
     )
 
@@ -2014,6 +2279,8 @@ async def _run_agent_inner(
                     "run_id": run_id,
                     "result_keys": list(final_state.keys()),
                 },
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         # Post-run: detect commits the agent made during this run (ALL agents)
@@ -2032,6 +2299,12 @@ async def _run_agent_inner(
         await _detect_agent_commits(
             agent_name, _effective_agent_dir, run_id,
             since_sha=_head_before if _head_before else None,
+            # WS-29 slice 6a: the batch path now sets _RUN_ORG[thread_id] when its
+            # caller supplied an org, so with the flag ON an org-carrying batch run
+            # (sub-agent) binds the tenant for its pending_commit write. An org-less
+            # batch run (workflow/schedule until 6c) resolves None → fail-closed
+            # skip. flag OFF → byte-identical either way.
+            thread_id=thread_id,
         )
         return final_state
 
@@ -2043,6 +2316,8 @@ async def _run_agent_inner(
                 action="agent_load_error",
                 target=f"agent:{agent_name}",
                 payload={"run_id": run_id, "error": str(exc)},
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         # Structural incompatibility (missing agents.py, no tools, LangGraph remnant, etc.)
@@ -2117,6 +2392,8 @@ async def _run_agent_inner(
                     "traceback": _run_tb,
                     "mutation_pr": pr_url,
                 },
+                # WS-29 acb_graph slice 5: the run's tenant, captured here.
+                organization_id=_RUN_ORG.get(thread_id),
             )
         )
         raise AgentRunError(
@@ -2126,6 +2403,20 @@ async def _run_agent_inner(
             original=exc,
             mutation_pr=pr_url,
         ) from exc
+
+    finally:
+        # Drop this batch run's tenant record and release the async binding, so a
+        # tenant left bound is never inherited by whatever runs next on this task
+        # (WS-29 acb_graph slice 6a — mirrors run_agent_stream's finally).
+        # GUARDED pop (slice 3, P2): only drop the record if it is STILL this
+        # run's org — a superseded same-thread run must not clobber a newer one.
+        _guarded_pop_run_org(thread_id, organization_id)
+        if _tenant_token is not None:
+            try:
+                from acb_common.db import release_tenant
+                release_tenant(_tenant_token)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -2202,6 +2493,7 @@ async def run_agent_stream(
     thread_id: str | None = None,
     model: str | None = None,
     think_mode: str = "auto",
+    organization_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -2264,6 +2556,49 @@ async def run_agent_stream(
         )
     except Exception:
         pass
+
+    # ── Tenant binding for this run's writes (WS-29 MT-1d / H4, slice 2 — DARK) ─
+    # ``organization_id`` is stamped SERVER-SIDE by the gateway chat route from
+    # the authenticated ``UserContext.organization_id`` — NEVER from
+    # ``event_payload``, which is agent/client-visible and would be a tenant-
+    # spoofing hole (R11, user_management_contract.md). Do NOT source the org
+    # from ``event_payload`` here: ``_corr_user`` / ``_corr_source`` above read
+    # the payload for correlation only, and the tenant deliberately does not.
+    #
+    # Two mechanisms, both dark this slice (no DB write is converted yet — the
+    # refuse-on-missing behaviour lands with the write conversions behind
+    # ``ACB_GRAPH_TENANT_BIND`` in later slices):
+    #   1. ``_RUN_ORG[thread_id]`` — a plain dict the worker-thread writes read
+    #      AFTER the ``loop.run_in_executor`` hop, where contextvars do not
+    #      propagate (that hop is the whole reason this dict exists).
+    #   2. ``bind_tenant(org)`` — so any async ``acb_common.tenant_session`` read
+    #      on THIS run's own event loop resolves the tenant.
+    _tenant_token = None
+    if organization_id:
+        _RUN_ORG[thread_id] = organization_id
+        try:
+            from acb_common.db import bind_tenant
+            _tenant_token = bind_tenant(organization_id)
+        except Exception:
+            _tenant_token = None
+    else:
+        # No tenant resolved for this run. A chat run always has an authenticated
+        # caller behind it, so this is a real plumbing gap; and the NON-chat
+        # surfaces (email-automation, any source != "chat") are NOT wired to
+        # thread org yet (slice 6). LOG the gap for EVERY source so both are
+        # VISIBLE in logs (WS-29 slice 3, P1) — not refused (fail-closed refusal
+        # is per-write, behind ACB_GRAPH_TENANT_BIND).
+        _log.warning(
+            "executor.run_missing_org",
+            agent=agent_name, thread_id=thread_id, source=_corr_source,
+        )
+    # WS-29 slice 6a: sub-agent runs now inherit the parent's org (via the batch
+    # path's organization_id, resolved by _resolve_sub_agent_org), and /copilot/
+    # chat threads its org through run_detached. TODO(WS-29 slice 6b): email-
+    # automation chat + inbound webhooks (WhatsApp/ClickUp) need an RLS-scoped
+    # mailbox/account→org resolver. TODO(WS-29 slice 6c): the workflow cron
+    # scheduler / orphan reconciler / schedule sweep resolve the owning record's
+    # org and pass it into the batch path.
 
     # ── Live activity feed (E2): agent activation START ───────────────────────
     # Publish to the global bus so /observability shows this run the instant it
@@ -3624,6 +3959,10 @@ async def run_agent_stream(
                 await _detect_agent_commits(
                     agent_name, _effective_agent_dir, run_id,
                     since_sha=_stream_head_before if _stream_head_before else None,
+                    # Stream path: run_agent_stream set _RUN_ORG[thread_id] at run
+                    # start and its finally has not fired yet, so with the flag ON
+                    # this resolves the run's tenant. flag OFF → byte-identical.
+                    thread_id=thread_id,
                 )
                 return
 
@@ -4097,6 +4436,18 @@ async def run_agent_stream(
         # Same reason, for the thing that says WHO this run was: an acting user
         # left bound is inherited by whatever runs next on this task (S1-4).
         _unbind_run_identity(_identity_binding)
+        # Same rule for the tenant (WS-29 MT-1d / H4): drop this run's
+        # worker-thread org record and release the async tenant binding, so a
+        # tenant left bound is never inherited by whatever runs next on this task.
+        # GUARDED pop (WS-29 slice 3, P2): only drop the record if it is STILL
+        # this run's org — see :func:`_guarded_pop_run_org`.
+        _guarded_pop_run_org(thread_id, organization_id)
+        if _tenant_token is not None:
+            try:
+                from acb_common.db import release_tenant
+                release_tenant(_tenant_token)
+            except Exception:
+                pass
         # B6 Phase-5 Tier 0: tear down this run's scoped integration creds so
         # they don't linger in the shared process env for the next agent.
         _release_run_credentials(_integration_env_token)
@@ -4920,9 +5271,14 @@ def _get_stored_session_id(thread_id: str) -> str | None:
     # Also try Postgres for cross-restart durability
     if not sid:
         try:
-            from acb_graph import get_session as _db_session
             from sqlalchemy import text
-            with _db_session() as s:
+            _open = _graph_session_opener(thread_id)
+            # flag ON + no resolvable tenant → skip the RLS'd read and fail
+            # closed (a fresh session gets created — the safe default). flag OFF
+            # → _open is the unbound get_session, byte-identical to before.
+            if _open is None:
+                return sid
+            with _open() as s:
                 row = s.execute(
                     text("SELECT service_session_id FROM chat_session WHERE id = :id"),
                     {"id": thread_id},
@@ -4942,7 +5298,6 @@ def _store_session_id(thread_id: str, service_session_id: str) -> None:
     # doesn't exist yet (the chat_session may be created by the frontend
     # AFTER the agent finishes, or never at all for named-agent chats).
     try:
-        from acb_graph import get_session as _db_session
         from sqlalchemy import text
 
         # Attribute the row to the ACTING user (the memory ContextVar is set
@@ -4957,8 +5312,24 @@ def _store_session_id(thread_id: str, service_session_id: str) -> None:
         except Exception:
             _uid = "system"
 
+        # Resolve the session opener HERE, on the EVENT LOOP, BEFORE the
+        # run_in_executor hop — _RUN_ORG is a plain dict and must never be read
+        # from the worker thread, and a ContextVar would already be gone across
+        # the hop (WS-29 slice 3). The chosen opener is closed over by _write.
+        _open = _graph_session_opener(thread_id)
+        # Fail closed: flag ON + no resolvable tenant → do NOT write with an
+        # unbound/empty tenant (it would land RLS-refused or unowned). This is
+        # best-effort session bookkeeping, so a logged skip is safe and correct
+        # — never crash the run.
+        if _open is None:
+            _log.warning(
+                "executor.session_store_skipped_no_org",
+                thread_id=thread_id[:12],
+            )
+            return
+
         def _write():
-            with _db_session() as s:
+            with _open() as s:
                 s.execute(
                     text(
                         "INSERT INTO chat_session "
@@ -5004,11 +5375,23 @@ def _clear_stored_session_id(thread_id: str | None) -> None:
         return
     _copilot_session_store.pop(thread_id, None)
     try:
-        from acb_graph import get_session as _db_session
         from sqlalchemy import text
 
+        # Same before-the-hop tenant capture as _store_session_id (WS-29 slice
+        # 3): resolve the opener on the event loop, never read _RUN_ORG from the
+        # worker thread. flag OFF → the unbound get_session, byte-identical.
+        _open = _graph_session_opener(thread_id)
+        # Fail closed: flag ON + no resolvable tenant → skip the NULL-out rather
+        # than run it unbound on a FORCE-RLS'd table. Best-effort bookkeeping.
+        if _open is None:
+            _log.warning(
+                "executor.session_clear_skipped_no_org",
+                thread_id=thread_id[:12],
+            )
+            return
+
         def _write() -> None:
-            with _db_session() as s:
+            with _open() as s:
                 s.execute(
                     text(
                         "UPDATE chat_session "

@@ -829,6 +829,7 @@ async def run_detached(
     actor: str | None = None,
     source: str | None = None,
     floor: list[str] | None = None,
+    organization_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run *gen* (an SSE-line async generator) in a DETACHED background task
     and yield its events from the Redis stream.
@@ -860,6 +861,13 @@ async def run_detached(
                    tell a conversation from an automation turn.
         floor:     Participant roster whose access intersection this run acts
                    at.  Recorded so a mid-run steer can be checked against it.
+        organization_id: The caller's tenant, stamped SERVER-SIDE by the gateway
+                   chat route from the authenticated ``UserContext`` — NEVER from
+                   the client/agent-visible event payload (R11). Bound for the
+                   life of the DETACHED drain task so writes on the run's own
+                   event loop (including the ``on_complete`` persist hook, which
+                   runs AFTER the generator's own binding has been released) see
+                   the right tenant. WS-29 MT-1d (H4), slice 2 — DARK.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
@@ -920,6 +928,28 @@ async def run_detached(
         pass
 
     async def _drain() -> None:
+        # Bind the caller's tenant for the whole life of THIS detached task
+        # (WS-29 MT-1d / H4, slice 2 — DARK). The generator sets its own binding
+        # too, but that is released in the generator's finally BEFORE this task's
+        # finally runs on_complete — so the persist hook, and any other work this
+        # task does around the generator, needs its own binding here. Sourced
+        # ONLY from the server-side ``organization_id`` argument, never the event
+        # payload (R11). No DB write is converted this slice, so this is inert.
+        _tenant_token = None
+        if organization_id:
+            with contextlib.suppress(Exception):
+                from acb_common.db import bind_tenant
+                _tenant_token = bind_tenant(organization_id)
+        else:
+            # No tenant threaded to this detached run. The /copilot/chat surface
+            # runs the MAF agent directly (NOT run_agent_stream, so the
+            # executor's own missing-org warning never fires for it) and does not
+            # resolve org yet (slice 6) — LOG so that plumbing gap is VISIBLE in
+            # logs (WS-29 slice 3, P1). Signal only; org threading is slice 6.
+            _log.warning(
+                "stream_relay.detached_run_missing_org",
+                thread_id=thread_id[:12], source=source,
+            )
         try:
             async for line in gen:
                 if tee:
@@ -969,6 +999,12 @@ async def run_detached(
                 # CancelledError before persistence gets to run.
                 with contextlib.suppress(BaseException):
                     await asyncio.shield(on_complete())
+            # Release this task's tenant binding LAST — after on_complete, which
+            # is the write that most needs it (WS-29 MT-1d / H4).
+            if _tenant_token is not None:
+                with contextlib.suppress(Exception):
+                    from acb_common.db import release_tenant
+                    release_tenant(_tenant_token)
             if _DETACHED_TASKS.get(thread_id) is task:
                 _DETACHED_TASKS.pop(thread_id, None)
 
