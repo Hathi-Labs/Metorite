@@ -404,17 +404,20 @@ class TestFlagOffWriteLandsUnbound:
     @pytest.fixture
     def graph_on_ladder(self, monkeypatch):
         from acb_graph import db as graph_db
-        from acb_graph.models import AuditEvent as AuditRow
+        from tests.unit._tenant_ladder import apply_ladder
 
         eng = create_engine(_URL, future=True, poolclass=NullPool)
-        # ``audit_event`` is created by infra/postgres/01_schema.sql (init-only),
-        # NOT by a numbered migration — so a DB built from the numbered ladder
-        # alone (CI's unit-test DB) does not carry it, while a full-schema scratch
-        # or the ``promoted`` fixture does. Create the base (pre-phase-4, no
-        # ``organization_id``) table from the ORM model if absent so this flag-OFF
-        # fence is hermetic across environments; ``checkfirst`` makes it a no-op
-        # where the table already exists.
-        AuditRow.__table__.create(bind=eng, checkfirst=True)
+        # Build the base (pre-phase-4) tenant schema on _URL the CANONICAL way.
+        # ``apply_ladder`` applies 01_schema.sql (uuid-ossp + vector + the core
+        # tables incl. ``audit_event``) on an EMPTY database and the idempotent
+        # numbered ladder otherwise, so this flag-OFF fence is hermetic across
+        # environments (CI's unit-test DB does not pre-build the schema).
+        # ⚠️ Do NOT partially create just ``audit_event`` here: a non-empty DB
+        # makes ``apply_ladder`` SKIP 01_schema (it is init-only, not re-runnable),
+        # so uuid-ossp is never created and LATER suites sharing this DB (e.g.
+        # ``test_app_user_upserts``) fail on ``uuid_generate_v4()``.
+        with eng.begin() as conn:
+            apply_ladder(conn)
         factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
         monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
         try:
