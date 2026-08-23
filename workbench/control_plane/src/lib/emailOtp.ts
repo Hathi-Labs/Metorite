@@ -41,6 +41,17 @@ export const OTP_CODE_LENGTH = 6;
 /** The `from` used when the deployment does not set its own verified sender. */
 export const EMAIL_OTP_FROM_DEFAULT = "Metorite <no-reply@metorite.com>";
 
+/**
+ * Where the sign-in form leaves the address for the code-entry page.
+ *
+ * Auth.js's verify-request redirect carries `provider` and `type` and **not**
+ * the address (`@auth/core/lib/actions/signin/send-token.js` builds it), so
+ * without this hand-off `/signin/code` has nothing to prefill and has to ask
+ * again. Session-scoped, same-origin, and read defensively — it is a
+ * convenience, never an input to any decision.
+ */
+export const OTP_EMAIL_STORAGE_KEY = "cc-otp-email";
+
 /** Resend's transactional-email endpoint. */
 export const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
@@ -73,20 +84,28 @@ export function isEmailOtpConfigured(env: EmailOtpEnv): boolean {
 
 /**
  * Whether the Auth.js **database adapter** an email provider requires is wired
- * into NextAuth. The single source of truth for CP-2d's real safety gate — and
- * it is `false` until slice-2 wires the adapter.
+ * into NextAuth. The single source of truth for CP-2d's real safety gate.
  *
- * ⚠️ **Why the env flag alone is NOT a safe gate.** `@auth/core`'s
- * `assertConfig` returns **`MissingAdapter`** for ANY email provider registered
- * without an adapter, and it returns it on **every** `/api/auth/*` request — so
- * an email provider without an adapter **500s ALL sign-in, Google and Microsoft
- * included**, not merely OTP. Gating registration on `EMAIL_OTP_ENABLED` alone
- * would therefore turn one documented owner flag into a **site-wide auth
- * outage**. The provider (and its button) register only when this is ALSO true.
- * CP-2d slice-2 sets it `true` in the same change that wires the adapter in as
- * NextAuth's `adapter` option.
+ * ✅ **`true` since slice 2 (2026-08-23)** — `auth.ts` passes
+ * `emailOtpAdapter()` as NextAuth's `adapter` in the same change that flipped
+ * this, which is what the constant is for. Flipping it is therefore what
+ * converted `EMAIL_OTP_ENABLED` from an inert documented flag into a real owner
+ * switch; the flag and the key are still unset everywhere, so the feature is
+ * still dark.
+ *
+ * ⚠️ **Why the env flag alone is NOT a safe gate**, kept because the constant
+ * only makes sense with it. `@auth/core`'s `assertConfig` returns
+ * **`MissingAdapter`** for ANY email provider registered without an adapter, and
+ * it returns it on **every** `/api/auth/*` request — so an email provider
+ * without an adapter **500s ALL sign-in, Google and Microsoft included**, not
+ * merely OTP. Gating registration on `EMAIL_OTP_ENABLED` alone would therefore
+ * turn one documented owner flag into a site-wide auth outage. The provider (and
+ * its button) register only when this is ALSO true, so the two can never
+ * disagree — and setting this back to `false` without also removing the
+ * `adapter` option would leave a live adapter with no provider, which is
+ * harmless, while the reverse is the outage.
  */
-export const EMAIL_OTP_ADAPTER_READY = false;
+export const EMAIL_OTP_ADAPTER_READY = true;
 
 /**
  * The REAL gate the provider and the sign-in button both use: configured in the
@@ -199,4 +218,55 @@ export async function sendOtpEmail(
     opts.maxAgeS ?? DEFAULT_OTP_MAX_AGE_S,
   );
   await send({ to: opts.to, from: opts.from, subject, text, html });
+}
+
+// ── Slice 2 · the adapter's pure half ───────────────────────────────────────
+//
+// The WIRED adapter lives in `emailOtpAdapter.ts`, which imports
+// `lib/gateway.ts` and therefore drags `next/server` — unrunnable in this
+// tree's node-env vitest, so it is source-fenced. Everything about it that CAN
+// be executed lives here instead, where the existing matrix already runs.
+
+/** The route the gateway mounts the OTP adapter's server half on. */
+export const EMAIL_OTP_ROUTE_PREFIX = "/signin/otp";
+
+/** Ask permission to send a code (the hourly budget). Called BEFORE the mail. */
+export const EMAIL_OTP_SEND_PATH = `${EMAIL_OTP_ROUTE_PREFIX}/send`;
+
+/** Persist the verification-token hash for a permitted send. */
+export const EMAIL_OTP_TOKEN_PATH = `${EMAIL_OTP_ROUTE_PREFIX}/token`;
+
+/** Spend one verification attempt and consume the token if it matches. */
+export const EMAIL_OTP_CONSUME_PATH = `${EMAIL_OTP_ROUTE_PREFIX}/consume`;
+
+/** The subset of Auth.js's `AdapterUser` this adapter ever produces. */
+export interface DerivedOtpUser {
+  id: string;
+  email: string;
+  emailVerified: Date | null;
+}
+
+/**
+ * The user object the adapter answers with — **derived, never stored**.
+ *
+ * ⚠️ **This adapter persists no user, account or session rows, and that is the
+ * design.** Identity in this product is the tenant plane's (`app_user` /
+ * `user_identity`, reached through CP-2b's resolve); an Auth.js identity table
+ * set beside it would be the second identity store root `CLAUDE.md` §5 forbids.
+ * It is also exactly what the OAuth path already does: with no adapter,
+ * `@auth/core`'s `handleLoginOrRegister` returns the profile unpersisted, so the
+ * email path is its twin rather than a new kind of thing.
+ *
+ * The id is the address itself, which makes the JWT's `sub` stable across
+ * sign-ins the way an IdP's subject is. Nothing in this product reads `sub` — it
+ * reads `session.user.email` — but an id that changed every sign-in would be a
+ * lie about what it identifies.
+ *
+ * ⚠️ It is **total**: it never returns null. That is load-bearing, because it is
+ * what makes `@auth/core`'s `createUser` branch unreachable and lets the adapter
+ * carry the minimal method set (see `emailOtpAdapter.ts`).
+ */
+export function derivedOtpUser(identifier: string): DerivedOtpUser {
+  const email = (identifier ?? "").trim().toLowerCase();
+  return { id: email, email, emailVerified: null };
 }

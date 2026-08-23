@@ -73,6 +73,17 @@ EXEMPT: dict[str, str] = {
     "tenant_placement":        "control plane — which data plane serves whom",
     "user_identity":           "control plane — one row per human, global by design",
     "org_membership":          "control plane — the tenant-scoped half; org_id is its PK",
+    # WS-31 CP-2d slice 2 (customer_console.md §CP-2d clause 7). Sits beside the
+    # two identity rows above because it is the same kind of thing: it belongs to
+    # an EMAIL, not to a tenant. The row is minted BEFORE any session exists, for
+    # an address that may belong to no organization at all — the zero-org
+    # (`console-empty`) case is the self-serve-signup funnel, not a corner — so
+    # there is no organization_id to stamp on INSERT and none to match on SELECT.
+    # Scoping it would not weaken isolation, it would BRICK email OTP outright
+    # under the phase-4 policies (live in production since 2026-08-23). R5(a)'s
+    # exempt-identity-table permission. It holds no tenant data: an address, a
+    # SHA-256 of the code salted with AUTH_SECRET, an expiry and two counters.
+    "auth_email_otp_token":    "belongs to an email, minted pre-session; no organization_id exists to stamp",
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",

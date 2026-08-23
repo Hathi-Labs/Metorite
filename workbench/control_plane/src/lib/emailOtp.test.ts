@@ -92,25 +92,33 @@ describe("the adapter guard makes the flag un-footgun-able (CP-2d hardening)", (
   // adapter makes `@auth/core` return `MissingAdapter` on EVERY `/api/auth/*`
   // request — 500ing ALL sign-in (Google/Microsoft included), not just OTP. So
   // registration requires the adapter, not merely the env flag.
-  it("today the adapter is NOT wired — the source of truth is false", () => {
-    // Slice-2 flips this true in the same change that wires the adapter into
-    // NextAuth. Until then the provider must be inert regardless of the flag.
-    expect(EMAIL_OTP_ADAPTER_READY).toBe(false);
+  it("the adapter IS wired since slice 2 — the source of truth is true", () => {
+    // ⚠️ This is the ONE assertion slice 2 inverted, and inverting it was the
+    // point: the constant is what `auth.ts` reads to decide whether to register
+    // the provider, and slice 2 passes `emailOtpAdapter()` as NextAuth's
+    // `adapter` in the same change. Setting it back to `false` while `auth.ts`
+    // still passes an adapter would leave a live adapter with no provider
+    // (harmless); the reverse is the site-wide outage, which is why the two
+    // must move together. `signin.test.ts` fences the `auth.ts` half.
+    expect(EMAIL_OTP_ADAPTER_READY).toBe(true);
   });
 
-  it("env fully configured but adapter unready ⇒ provider NOT ready, no button", () => {
+  it("adapter NOT ready ⇒ provider NOT ready and no button, however configured", () => {
     const configured = { EMAIL_OTP_ENABLED: "true", RESEND_API_KEY: "re_x" };
     // The env half is satisfied…
     expect(isEmailOtpConfigured(configured)).toBe(true);
-    // …but the REAL gate stays closed while the adapter is unwired (today's
-    // constant). Removing the `&& adapterReady` term from `isEmailOtpProviderReady`
-    // turns this RED.
-    expect(isEmailOtpProviderReady(configured)).toBe(false);
+    // …and the REAL gate still refuses when the adapter half is absent. Driven
+    // through the PARAMETER now that the constant is true, so the guard stays
+    // executed rather than becoming a tautology the day it was armed. Removing
+    // the `&& adapterReady` term from `isEmailOtpProviderReady` turns this RED.
+    expect(isEmailOtpProviderReady(configured, false)).toBe(false);
     // And the sign-in seam therefore offers no email entry — the button never
     // advertises a door that would 500 sign-in. Dropping the adapter term from
     // `configuredProviders` turns this RED.
     expect(
-      configuredProviders(configured).some((p) => p.id === EMAIL_OTP_PROVIDER_ID),
+      configuredProviders(configured, false).some(
+        (p) => p.id === EMAIL_OTP_PROVIDER_ID,
+      ),
     ).toBe(false);
   });
 

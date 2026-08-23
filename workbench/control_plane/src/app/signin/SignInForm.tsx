@@ -7,6 +7,7 @@ import { Suspense, useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { OTP_EMAIL_STORAGE_KEY } from "@/lib/emailOtp";
 
 import { signInErrorMessage } from "./errorCopy";
 
@@ -49,6 +50,21 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
                   onSubmit={(e) => {
                     e.preventDefault();
                     setPending(p.id);
+                    // CP-2d slice 2: hand the address to `/signin/code`, which
+                    // Auth.js redirects to WITHOUT it (its verify-request
+                    // redirect carries only `provider` and `type`). A
+                    // convenience for the prefill and nothing more — the code
+                    // round-trip is what proves ownership, so a tampered or
+                    // absent value costs a retype, never a wrong sign-in.
+                    try {
+                      window.sessionStorage.setItem(
+                        OTP_EMAIL_STORAGE_KEY,
+                        email,
+                      );
+                    } catch {
+                      // Private mode / a strict storage policy. The code page
+                      // shows the field instead.
+                    }
                     signIn(p.id, { email, callbackUrl });
                   }}
                 >

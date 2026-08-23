@@ -5224,9 +5224,12 @@ one change, because any subset of them is either inert or unsafe.
 15. ✅ **MET 2026-08-23 — `EMAIL_OTP_ADAPTER_READY` is `true`, in this same
    change.** That constant is what clause 1a's guard reads, so flipping it here
    is what converts `EMAIL_OTP_ENABLED` from an inert documented flag into a real
-   owner switch. Fence: `emailOtp.test.ts`'s existing matrix, whose adapter-guard
-   case now drives the constant through its parameter rather than relying on its
-   value, so both positions stay executed.
+   owner switch. Fence: `emailOtp.test.ts`'s existing matrix, with **exactly two
+   assertions inverted and one strengthened** — the constant is now asserted
+   `true`, and the "adapter not ready ⇒ no provider, no button" case now drives
+   the adapter half through the **parameter** rather than through the constant,
+   so that guard stays EXECUTED instead of becoming a tautology on the day it was
+   armed. Everything else in the file is untouched.
 16. ✅ **MET 2026-08-23 — both flag positions stay fenced; a dark box is
    unchanged.** With `EMAIL_OTP_ENABLED` unset or `RESEND_API_KEY` absent — the
    state of every environment — no provider is registered, `adapter` is passed as
@@ -5234,9 +5237,11 @@ one change, because any subset of them is either inert or unsafe.
    sign-in surface offers no email option, and `/signin/code` is an orphan route
    nothing links to. The one unconditional change is the `session: { strategy:
    "jwt" }` pin, which is the value `@auth/core` already derives for an
-   adapter-less config. Fence: the whole pre-existing `emailOtp.test.ts` matrix
-   stays green **unmodified in its assertions**, plus `signin.test.ts`'s dark-ship
-   pins.
+   adapter-less config. Fence: the pre-existing `emailOtp.test.ts` matrix stays
+   green with only clause 15's two adapter-state assertions changed, plus
+   `signin.test.ts`'s dark-ship pins (the provider push is still inside the
+   `isEmailOtpProviderReady` gate, and the `adapter:` option is ternaried off the
+   same predicate).
 
 **Gates unchanged, and the flag now bites.** 🔴 Providing `RESEND_API_KEY` on a
 real deployment and flipping `EMAIL_OTP_ENABLED=true` on a live box remain the
