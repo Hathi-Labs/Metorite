@@ -606,7 +606,7 @@ already passes.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark)
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -880,6 +880,52 @@ than defaulting; a test proves the refusal.
 > RED-on-removal was demonstrated by mutation on 2026-08-23 (batch ignores the
 > param / sub-agent resolver returns `None` / copilot sources from `input_data`
 > → the matching fence RED). The slice 3-5 R8 fences stay green (28 tests).
+
+> ✅ **acb_graph slice 7 — agent-tool READS bound SHIPPED 2026-08-23 (WS-29,
+> DARK, `ACB_GRAPH_TENANT_BIND`).** Slices 2-6a bound the executor's WRITES and
+> threaded the org for run-based sources; this slice binds the READS an agent run
+> makes through the `acb_graph` sync engine, so post-cutover they RETURN ROWS
+> under FORCE RLS instead of silently reading 0 (which would strip the agent's
+> entity context, its granted apps, and its skill toggles). New seam:
+> `executor._graph_session_opener_current()` → `_current_run_org()` — the
+> ambient-frame twin of `_graph_session_opener`, for a converted read that has no
+> `thread_id` in hand. It resolves the run's tenant SERVER-SIDE on the event-loop
+> frame (`_RUN_ORG` keyed by `_stream_relay_thread_id`, else the async
+> `current_tenant()`; NEVER from tool args / the payload, R11) and hands it to the
+> shared `_opener_for_org` (extracted so the thread-keyed and ambient openers keep
+> ONE flag/opener doctrine). `_resolve_sub_agent_org` (slice 6a) now delegates to
+> `_current_run_org` — one resolver, not two. Sites converted (each verified
+> FORCE-RLS'd, opener captured BEFORE any `asyncio.to_thread` hop, fail-closed to
+> empty when the flag is ON and no org resolves):
+> - **`agents.py`** `retrieve_entity_context` / `retrieve_sales_context` — the
+>   orchestrator's entity/sales retrieval tools (project/task/person/deal/customer
+>   via `retrieval.retrieve` / `sales_views.sales_context`).
+> - **`app_tools.py`** `_granted_live_apps` — the `apps ⋈ app_grants ⋈
+>   app_versions` grant lookup that decides which Custom Apps the agent may call.
+> - **`_tool_injection.py`** `_load_disabled_skill_families` — the
+>   `agent_skill_setting` admin toggle read.
+> - **`agents/pull_agent.py`** / **`agents/sales_pull_agent.py`** `answer()` — the
+>   Phase-0 pull/sales pipelines (no live caller today; converted for when wired).
+> `sales_views.py` reads through the caller-supplied session, so binding the two
+> retrieval openers binds it transitively — no change there.
+> **Explicitly LEFT (found, deliberately not converted):** `_inject_mcp_servers`
+> reads `mcp_servers`, which is RLS-EXEMPT (`gen_tenant_migration.EXEMPT` —
+> "keyed (organization_id, name) by MT-0d / 158"), so it is NOT FORCE-RLS'd and an
+> unbound read does not collapse to 0 rows; binding a `tenant_session` there would
+> be a no-op against a table with no policy. Its missing `organization_id` query
+> filter (every org's servers are visible) is an MT-0d query-scope finding for the
+> board, not this slice's RLS-bind concern. R7/R8 fence
+> (`tests/unit/test_acb_graph_agenttool_reads_bind.py`, 7 tests): the opener
+> matrix (flag OFF → the unbound `get_session`; flag ON + org → `tenant_session`;
+> flag ON + no org → `None`), and R8 on the two-org phase-4 catalog —
+> `agent-retrieval-reads-bound-return-rows`: flag ON + orgA bound, the REAL
+> `retrieve_entity_context` and `_granted_live_apps` RETURN orgA's rows, orgB sees
+> nothing, and the SAME read via the unbound `get_session()` returns 0 rows
+> (RED-on-removal). One skill-toggle fence (`test_skill_toggle_enforcement.py`)
+> updated: its faked `acb_graph` module now also exposes `tenant_bind_enabled`
+> (the loader consults the flag before choosing its opener; flag OFF stays
+> byte-identical). **Explicitly OUT (later sub-slices, unchanged):** slice 6b
+> (email-automation + inbound webhooks), slice 6c (workflow cron / schedule sweep).
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,

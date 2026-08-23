@@ -192,6 +192,33 @@ _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 _RUN_ORG: dict[str, str] = {}
 
 
+def _opener_for_org(org: str | None):
+    """Map an already-resolved tenant to the ``acb_graph`` session opener.
+
+    The ONE opener-construction shared by :func:`_graph_session_opener` (which
+    resolves the org from ``_RUN_ORG`` keyed by an explicit thread id, for the
+    worker-thread writes) and :func:`_graph_session_opener_current` (which
+    resolves it from the ambient run frame, for reads with no thread id in hand).
+    Extracting it keeps a single flag/opener doctrine — not a second one — as the
+    read conversions land (WS-29 acb_graph slice 7). Behind
+    ``ACB_GRAPH_TENANT_BIND``:
+
+    * flag OFF → :func:`acb_graph.get_session` (unbound) — byte-identical runtime.
+    * flag ON + a resolvable tenant → ``lambda: acb_graph.tenant_session(org)``.
+    * flag ON + NO resolvable tenant → ``None``: the caller MUST fail closed
+      (skip a best-effort write / fall back / return empty on a read) rather than
+      touch a FORCE-RLS'd table with an unbound tenant.
+    """
+    from acb_graph import tenant_bind_enabled
+    if not tenant_bind_enabled():
+        from acb_graph import get_session
+        return get_session
+    if not org:
+        return None
+    from acb_graph import tenant_session
+    return lambda: tenant_session(org)
+
+
 def _graph_session_opener(thread_id: str | None):
     """Pick the ``acb_graph`` session context-manager factory for a converted
     read/write, resolving the run's tenant on the CURRENT (event-loop) frame.
@@ -212,15 +239,28 @@ def _graph_session_opener(thread_id: str | None):
     writes that is the event loop BEFORE the hop, which is the whole reason this
     resolution is separated from the write closure.
     """
-    from acb_graph import tenant_bind_enabled
-    if not tenant_bind_enabled():
-        from acb_graph import get_session
-        return get_session
-    org = _RUN_ORG.get(thread_id) if thread_id else None
-    if not org:
-        return None
-    from acb_graph import tenant_session
-    return lambda: tenant_session(org)
+    return _opener_for_org(_RUN_ORG.get(thread_id) if thread_id else None)
+
+
+def _graph_session_opener_current():
+    """:func:`_graph_session_opener` for a converted READ that has NO thread id
+    in hand — an agent tool (``retrieve_entity_context``) or the per-run tool
+    injection (``_granted_live_apps`` / ``_load_disabled_skill_families``).
+
+    Resolves the CURRENT run's tenant on the caller's (event-loop) frame via
+    :func:`_current_run_org`, then hands it to :func:`_opener_for_org` — the SAME
+    flag/opener doctrine as the thread-keyed opener. WS-29 acb_graph slice 7. The
+    read site MUST call this BEFORE any ``asyncio.to_thread`` / ``run_in_executor``
+    hop and close the returned opener over the worker-thread body, exactly like
+    the slice 3-5 writes: ``_RUN_ORG`` is a plain dict and contextvars do not
+    cross the hop, so the tenant must be captured on this frame.
+
+    * flag OFF → the unbound ``get_session`` — byte-identical.
+    * flag ON + the run's tenant → ``lambda: tenant_session(org)`` (returns rows).
+    * flag ON + no resolvable tenant → ``None``: the caller fails closed (returns
+      empty / no tools) rather than read a FORCE-RLS'd table unbound (0 rows).
+    """
+    return _opener_for_org(_current_run_org())
 
 
 def _guarded_pop_run_org(
@@ -243,36 +283,36 @@ def _guarded_pop_run_org(
         _RUN_ORG.pop(thread_id, None)
 
 
-def _resolve_sub_agent_org() -> str | None:
-    """The tenant a delegated sub-run must act in: its PARENT run's org.
+def _current_run_org() -> str | None:
+    """The tenant of the run executing on THIS event-loop frame, resolved
+    SERVER-SIDE from the run boundary — NEVER from tool arguments / the event
+    payload (R11, which is why this takes no argument).
 
-    WS-29 acb_graph slice 6a. A sub-agent acts in the SAME tenant as the run that
-    delegated to it, resolved SERVER-SIDE from the run boundary — NEVER from the
-    delegated message / event payload (R11, which is why this takes no argument).
-    Read on the CALLER's (event-loop) frame, before the sub-run's own worker
-    threads, in this order:
+    WS-29 acb_graph slice 7. This is the ambient-frame twin of
+    :func:`_graph_session_opener`'s ``_RUN_ORG[thread_id]`` lookup, for a
+    converted READ that has no thread id in hand (an agent tool, per-run tool
+    injection). Read on the CALLER's (event-loop) frame, BEFORE any worker-thread
+    hop, in this order:
 
-    1. ``_RUN_ORG`` keyed by the PARENT's thread id — the parent thread id is the
-       ``_stream_relay_thread_id`` ContextVar (set by ``run_agent_stream``), or,
-       failing that, the bound run context's ``thread_id``. This is the primary
-       path and what ``sub-agent-inherits-parent-org`` pins.
-    2. the async bound tenant (:func:`acb_common.db.current_tenant`) — a
-       fallback for a sub-agent delegated from ``/copilot/chat``, which binds the
-       tenant on its detached drain task (slice 6a) but runs the MAF orchestrator
-       directly and so sets no ``_RUN_ORG`` entry.
+    1. ``_RUN_ORG`` keyed by this run's thread id — the ``_stream_relay_thread_id``
+       ContextVar (set by ``run_agent_stream``), or, failing that, the bound run
+       context's ``thread_id``. This is the primary path for a stream/batch run.
+    2. the async bound tenant (:func:`acb_common.db.current_tenant`) — the
+       fallback for the ``/copilot/chat`` path, which binds the tenant on its
+       detached drain task (slice 6a) but runs the MAF orchestrator directly and
+       so sets no ``_RUN_ORG`` entry.
 
-    Returns ``None`` when no parent tenant is resolvable (a truly untenanted
-    background run); the sub-run then behaves like any org-less batch run
-    (operator-org audit fallback / flag-ON write skip).
+    Returns ``None`` when no tenant is resolvable (a truly untenanted background
+    run); the caller fails closed.
     """
-    _parent_tid = _stream_relay_thread_id.get(None)
-    if not _parent_tid:
+    tid = _stream_relay_thread_id.get(None)
+    if not tid:
         try:
             from acb_common import get_run_context
-            _parent_tid = (get_run_context() or {}).get("thread_id")
+            tid = (get_run_context() or {}).get("thread_id")
         except Exception:
-            _parent_tid = None
-    org = _RUN_ORG.get(_parent_tid) if _parent_tid else None
+            tid = None
+    org = _RUN_ORG.get(tid) if tid else None
     if org:
         return org
     try:
@@ -280,6 +320,24 @@ def _resolve_sub_agent_org() -> str | None:
         return current_tenant()
     except Exception:
         return None
+
+
+def _resolve_sub_agent_org() -> str | None:
+    """The tenant a delegated sub-run must act in: its PARENT run's org.
+
+    WS-29 acb_graph slice 6a. A sub-agent acts in the SAME tenant as the run that
+    delegated to it — and that run is precisely the one executing on THIS frame
+    when the delegation call is made, so this is exactly :func:`_current_run_org`
+    (slice 7 unified the two resolvers into one, rather than keeping a second
+    copy of the ``_RUN_ORG`` → bound-tenant walk). Resolved SERVER-SIDE from the
+    run boundary — NEVER from the delegated message / event payload (R11, which is
+    why this, like ``_current_run_org``, takes no argument).
+
+    Returns ``None`` when no parent tenant is resolvable (a truly untenanted
+    background run); the sub-run then behaves like any org-less batch run
+    (operator-org audit fallback / flag-ON write skip).
+    """
+    return _current_run_org()
 
 
 def _register_run_queue(

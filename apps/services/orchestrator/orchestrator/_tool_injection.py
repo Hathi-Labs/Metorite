@@ -71,20 +71,32 @@ def _load_disabled_skill_families(agent_name: str | None) -> frozenset[str]:
     Reads the ``agent_skill_setting`` table written by
     ``PUT /agent/{name}/skills`` — a best-effort SYNC Postgres lookup,
     mirroring how this injection path already resolves per-run settings
-    (``app_tools._granted_live_apps`` for app grants, ``_inject_mcp_servers``
-    for the MCP registry): a plain blocking ``acb_graph.get_session()`` call,
-    resolved once at run start from ``_inject_agent_tools``.
+    (``app_tools._granted_live_apps`` for app grants): a plain blocking
+    ``acb_graph`` call, resolved once at run start from ``_inject_agent_tools``.
 
     ANY failure — package missing, table not migrated yet, DB down — returns
     the empty set, i.e. today's behavior (skills_registry.md rule 3: no rows
     change nothing; settings must never be able to brick injection).
+
+    WS-29 acb_graph slice 7: ``agent_skill_setting`` is FORCE-RLS'd after
+    phase-4 promotion, so an UNBOUND read returns ZERO rows — no disabled family
+    would ever be honoured. Behind ``ACB_GRAPH_TENANT_BIND`` this binds the run's
+    tenant so the admin's disable toggles are actually read. The opener is
+    resolved on the event-loop frame (this runs on the loop, no worker-thread
+    hop). flag OFF → the unbound ``get_session`` (byte-identical); flag ON + no
+    resolvable org → fail closed (empty set = today's no-rows behaviour), never an
+    unbound read on a FORCE-RLS'd catalog.
     """
     if not agent_name:
         return frozenset()
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
-        with get_session() as s:
+
+        from orchestrator.executor import _graph_session_opener_current
+        _open = _graph_session_opener_current()
+        if _open is None:
+            return frozenset()
+        with _open() as s:
             rows = s.execute(
                 text(
                     "SELECT family FROM agent_skill_setting "
@@ -1096,6 +1108,16 @@ async def _inject_mcp_servers(agent: Any, agent_name: str) -> None:
 
     Best-effort: failures are silently swallowed so MCP issues never
     block agent execution.
+
+    WS-29 acb_graph slice 7 deliberately does NOT convert this read to
+    ``tenant_session``: ``mcp_servers`` is RLS-EXEMPT (``gen_tenant_migration``'s
+    ``EXEMPT`` set — "keyed (organization_id, name) by MT-0d / 158"), so unlike
+    the ``apps``/``agent_skill_setting`` reads it is NOT FORCE-RLS'd and an
+    unbound read does not collapse to zero rows under phase-4. Its cross-tenant
+    exposure (the query has no ``organization_id`` filter, so every org's servers
+    are visible) is an MT-0d query-scope concern, not the RLS-bind concern this
+    slice addresses — binding a ``tenant_session`` here would be a no-op against a
+    table with no policy. Left as a finding for the board.
     """
     try:
         from acb_graph import get_session  # noqa: PLC0415

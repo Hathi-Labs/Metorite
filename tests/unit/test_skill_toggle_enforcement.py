@@ -140,6 +140,12 @@ def test_loader_reads_disabled_rows(monkeypatch) -> None:
 
     fake = types.ModuleType("acb_graph")
     fake.get_session = lambda: _Session()  # type: ignore[attr-defined]
+    # WS-29 acb_graph slice 7: the loader now picks its opener through
+    # executor._graph_session_opener_current, which consults the tenant-bind flag
+    # first. Flag OFF (default here) ⇒ the opener IS this fake's get_session, so
+    # the read is byte-identical to pre-slice — the fake just needs to expose the
+    # flag reader the real acb_graph module carries.
+    fake.tenant_bind_enabled = lambda: False  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "acb_graph", fake)
     assert ti._load_disabled_skill_families("email-assistant") == frozenset(
         {"memory", "workflows"}
