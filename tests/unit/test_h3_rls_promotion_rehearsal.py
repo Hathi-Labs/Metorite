@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1627,6 +1627,91 @@ class TestSchedulerBindUnderForceRls:
             await _read_interval("some-account", "")
         with pytest.raises(TenantUnbound):
             await _run_one_cycle("some-account", "", refresh_schema=False)
+
+
+# ==========================================================================
+# WS-31 CP-2d slice 2 — the email-OTP token is RLS-EXEMPT, and must be
+# READABLE AND WRITABLE UNBOUND on this very catalog.
+# ==========================================================================
+@_DB_GATE
+class TestTheEmailOtpTokenIsReachableUnbound:
+    """``auth_email_otp_token`` (migration 186) must work with NO tenant bound.
+
+    Spec: ``customer_console.md`` §CP-2d clause 7 · owner answer B1 · the
+    ``gen_tenant_migration.EXEMPT`` entry.
+
+    ⚠️ **This is the assertion that the exemption is a DESIGN and not a hole.**
+    The row is minted before any session exists, for an address that may belong
+    to no organization at all — the zero-org ``console-empty`` case IS the
+    self-serve-signup funnel — so there is no ``organization_id`` to stamp and
+    nothing to bind. The spec said "tenant-scoped by R5" for a day; had that
+    shipped, email OTP would have read zero rows from the moment it was armed,
+    on the very catalog this class runs against.
+
+    It lives HERE rather than in ``test_email_otp_token.py`` because this is the
+    only fixture in the tree that builds a fully phase-4-promoted catalog and
+    connects as a NON-privileged role. A superuser bypasses RLS and the owner
+    escapes it without ``FORCE``, so proving "unbound still works" anywhere else
+    would prove nothing at all. The behavioural half — the limits, single use,
+    expiry — is that other file's, against the ordinary ladder.
+    """
+
+    def test_the_table_carries_no_policy_on_the_promoted_catalog(self, promoted):
+        """The exemption is real in the CATALOG, not merely in a Python dict.
+
+        ``gen_tenant_migration`` scopes ``discover_tables() - EXEMPT -
+        HOMONYM_BLOCKED``, so an entry in that map is what keeps the table out
+        of ``generated/04_policies.sql``. This reads the promoted catalog and
+        asserts the consequence, which is the half a source test cannot see.
+        """
+        with promoted.admin_engine.connect() as c:
+            forced, enabled = c.execute(text(
+                "SELECT relforcerowsecurity, relrowsecurity FROM pg_class "
+                " WHERE relname = 'auth_email_otp_token'")).one()
+            policies = c.execute(text(
+                "SELECT count(*) FROM pg_policies "
+                " WHERE tablename = 'auth_email_otp_token'")).scalar_one()
+            # …while its neighbours on the same catalog ARE forced, so this is a
+            # statement about THIS table and not about an unpromoted database.
+            apps_forced = c.execute(text(
+                "SELECT relforcerowsecurity FROM pg_class "
+                " WHERE relname = 'apps'")).scalar_one()
+        assert policies == 0
+        assert not forced and not enabled
+        assert apps_forced, (
+            "the catalog is not phase-4 promoted, so this class proves nothing")
+
+    def test_an_unbound_non_priv_session_can_write_and_read_it_back(
+        self, app_engine
+    ):
+        """The property the whole feature rests on.
+
+        As ``acb_app`` (non-super, non-owner, NOBYPASSRLS), with **no**
+        ``app.tenant_id`` bound — exactly the session
+        ``acb_auth.email_otp`` opens through ``get_session_factory()``. On a
+        tenant-scoped table this INSERT would be refused by ``WITH CHECK`` and
+        this SELECT would return zero rows; that is what the neighbouring
+        ``TestTwoOrgIsolation`` class asserts about ``apps``.
+        """
+        identifier = f"otp-{uuid.uuid4().hex[:8]}@unbound.test"
+        expires = datetime.now(UTC) + timedelta(minutes=10)
+        with app_engine.connect() as c, c.begin():
+            c.execute(text(
+                "INSERT INTO auth_email_otp_token (identifier, token, expires) "
+                "VALUES (:i, :t, :e)"),
+                {"i": identifier, "t": "hash-unbound", "e": expires})
+            found = c.execute(text(
+                "SELECT count(*) FROM auth_email_otp_token "
+                " WHERE identifier = :i"), {"i": identifier}).scalar_one()
+            # The rate-limit counter is on the row, so the UPDATE the limiter
+            # runs has to work unbound too — a read-only proof would miss it.
+            charged = c.execute(text(
+                "UPDATE auth_email_otp_token SET attempts = attempts + 1, "
+                "       last_attempt_at = now() "
+                " WHERE identifier = :i RETURNING attempts"),
+                {"i": identifier}).scalar_one()
+        assert found == 1, "an UNBOUND session could not read the row it wrote"
+        assert charged == 1, "the limiter's UPDATE was refused unbound"
 
 
 # ==========================================================================

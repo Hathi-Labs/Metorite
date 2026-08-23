@@ -1291,6 +1291,25 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-31 CP-2d slice 2 — the email-OTP adapter's server half
+    # (customer_console.md §CP-2d clauses 6/11/12). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # address being verified is the authenticated context's `X-User-Email`, never
+    # a body field (R11), exactly as `signin.py` takes the signing-in address.
+    #
+    # ⚠️ Mounted always, and with no flag of its own. The feature's switch is in
+    # the browser tier (`EMAIL_OTP_ENABLED` + `RESEND_API_KEY`, through
+    # `isEmailOtpProviderReady`): with it off no provider is registered, no
+    # adapter is passed, and nothing ever calls these routes. A second flag here
+    # would be a second thing to get out of step — CP-2b's finding F1 in
+    # miniature.
+    from gateway.routes.email_otp import router as _email_otp_router
+
+    app.include_router(_email_otp_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-30 SC-2a — the customer seat-admin WRITE proxy (subscription_console.md
     # SC-2a / customer_console.md §6 item (h)). Authenticated by the app-wide
     # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; it

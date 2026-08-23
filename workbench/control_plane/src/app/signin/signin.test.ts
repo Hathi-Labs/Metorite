@@ -375,9 +375,14 @@ describe("the email OTP provider ships dark and rides the one session (CP-2d)", 
     // and that no other `Resend(` call exists to register it unconditionally —
     // an unadapter-ed email provider 500s ALL /api/auth/* (not just OTP), so the
     // gate must not be the env flag alone.
+    // Slice 2 named the predicate (`emailOtpArmed`) because the SAME gate now
+    // decides two things — whether the provider is pushed and whether the
+    // adapter is passed — and two copies of one condition is how a half-armed
+    // config gets built. The property is unchanged: one gate, read once.
     expect(authSrc).toContain(
-      "if (isEmailOtpProviderReady(process.env as EmailOtpEnv)) {",
+      "const emailOtpArmed = isEmailOtpProviderReady(process.env as EmailOtpEnv);",
     );
+    expect(authSrc).toContain("if (emailOtpArmed) {");
     const gate = authSrc.indexOf("isEmailOtpProviderReady(process.env");
     const register = authSrc.indexOf("Resend({");
     const nextAuth = authSrc.indexOf("NextAuth({");
@@ -431,6 +436,139 @@ describe("the email OTP provider ships dark and rides the one session (CP-2d)", 
     expect(form).not.toContain("RESEND_API_KEY");
     expect(form).not.toContain("EMAIL_OTP_ENABLED");
     expect(form).not.toContain("process.env");
+  });
+
+  it("pins the jwt session strategy in the same config that takes an adapter (H-D)", () => {
+    // ⚠️ The highest-consequence line in slice 2, and it is invisible in
+    // behaviour until it is wrong. `@auth/core@0.41.2`'s `lib/init.js:74` reads
+    //
+    //     strategy: config.adapter ? "database" : "jwt"
+    //
+    // so merely PASSING an adapter converts the whole product — Google and
+    // Microsoft included — to database sessions. `assertConfig` does not catch
+    // it: with an email provider present it demands only the three
+    // `emailMethods` and never the ten `sessionMethods`
+    // (`lib/utils/assert.js:129-145`), so there is no config error at boot; the
+    // failure is `createSession is not a function` on the next sign-in.
+    //
+    // ⚠️ This block used to carry `if (authSrc.includes("adapter:")) { …the
+    // same unconditional assertion again… }` — a conditional that could never
+    // add a failure (repair of review finding F2, 2026-08-23). What the pin is
+    // actually about is CO-OCCURRENCE: an `adapter:` option and a strategy pin
+    // in the SAME config. So that is what is asserted, positionally.
+    expect(authSrc).toContain('session: { strategy: "jwt" }');
+
+    const nextAuth = authSrc.indexOf("NextAuth({");
+    const pin = authSrc.indexOf('session: { strategy: "jwt" }');
+    // Exactly one `adapter:` OPTION in the file (matched at the start of a
+    // line, so prose about "the adapter" cannot satisfy it), and it is inside
+    // the ONE NextAuth config — beside the pin, never in a second config that
+    // would derive `database` for itself.
+    const adapterOptions = authSrc.match(/^\s*adapter:/gm) ?? [];
+    expect(adapterOptions.length).toBe(1);
+    const adapterOption = authSrc.search(/^\s*adapter:/m);
+
+    expect(nextAuth).toBeGreaterThan(-1);
+    expect(pin).toBeGreaterThan(nextAuth);
+    expect(adapterOption).toBeGreaterThan(nextAuth);
+    // The database strategy stays forbidden (the pre-existing pin, restated
+    // here because this is now the file's subject).
+    expect(authSrc).not.toContain('strategy: "database"');
+  });
+
+  it("passes the adapter off the SAME gate the provider is registered from", () => {
+    // A box with no OTP configured passes `adapter: undefined`, which
+    // `@auth/core` treats exactly as absent (`assert.js:157` guards on
+    // truthiness) — so the dark-ship promise holds and no adapter method is
+    // reachable. An unconditional adapter would also flip the derived session
+    // strategy on every deployment, which is what the pin above exists for.
+    expect(authSrc).toContain(
+      "adapter: emailOtpArmed ? emailOtpAdapter() : undefined,",
+    );
+    expect(authSrc).toContain(
+      "const emailOtpArmed = isEmailOtpProviderReady(process.env as EmailOtpEnv);",
+    );
+    // And it is the adapter this ticket wrote — never an off-the-shelf one that
+    // would open a database connection from this tier (R5; the executed half of
+    // that fence is `src/lib/emailOtpAdapter.test.ts`).
+    expect(authSrc).toContain('from "@/lib/emailOtpAdapter"');
+    expect(authSrc).not.toMatch(/@auth\/[a-z-]*-adapter/);
+  });
+
+  it("reserves the send budget BEFORE the code is mailed", () => {
+    // `@auth/core`'s `send-token.js` starts `sendVerificationRequest` and
+    // `adapter.createVerificationToken` concurrently and hands the hash only to
+    // the second, so a send budget enforced in the adapter alone refuses the
+    // token while the email goes out anyway. The reserve therefore has to be
+    // the first thing the send does, and it has to be awaited.
+    const send = authSrc.slice(authSrc.indexOf("sendVerificationRequest:"));
+    const reserve = send.indexOf(
+      "await reserveOtpSend(identifier, expires, tokenHash)",
+    );
+    const mail = send.indexOf("await sendOtpEmail(");
+    expect(reserve).toBeGreaterThan(-1);
+    expect(mail).toBeGreaterThan(reserve);
+  });
+
+  it("claims the send slot WITH the hash of the code it is about to mail (P2 round 2)", () => {
+    // ⚠️ Refusing the duplicate send's mail was only half of P1b.
+    // `send-token.js` starts `sendVerificationRequest` and
+    // `createVerificationToken` in ONE `Promise.all`, so a rejected send leg
+    // cancels nothing: the loser's `createVerificationToken` still landed on the
+    // shared `(identifier, expires)` row and overwrote the winner's hash — the
+    // ONE email delivered carried a code that could never verify. `@auth/core`
+    // hands THIS leg the raw code and the other leg the hash, so this is the
+    // only place the two can be reconciled: recompute the hash and give it to
+    // the claim, which writes it atomically.
+    const send = authSrc.slice(authSrc.indexOf("sendVerificationRequest:"));
+    const hash = send.indexOf("const tokenHash = await otpWireHash(");
+    const reserve = send.indexOf("await reserveOtpSend(identifier, expires, tokenHash)");
+    expect(hash).toBeGreaterThan(-1);
+    // Computed BEFORE the claim, or there is nothing to claim with.
+    expect(reserve).toBeGreaterThan(hash);
+    // The salt resolution mirrors `send-token.js:46` — `provider.secret` first,
+    // then the config's. A copy that only read one of them would be wrong the
+    // day a provider-level secret is set, and the failure mode is a code that
+    // never verifies rather than an error anybody sees.
+    expect(send).toContain('(provider as { secret?: string }).secret ?? AUTH_SECRET');
+    // …and the config's secret is the SAME name, read once. Two `process.env`
+    // reads that drifted would be the same failure from the other end.
+    expect(authSrc).toContain(
+      'const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";',
+    );
+    expect(authSrc).toContain("secret: AUTH_SECRET,");
+    expect(authSrc.match(/process\.env\.AUTH_SECRET/g)?.length).toBe(1);
+  });
+
+  it("sends the person somewhere they can type the code", () => {
+    // Without `verifyRequest` a person who asked for a code lands on
+    // `@auth/core`'s built-in "check your email" page — right for a magic link,
+    // a dead end for an OTP.
+    expect(authSrc).toContain('verifyRequest: "/signin/code"');
+  });
+
+  it("the SEND leg never resolves — only the completion does (clause 13)", () => {
+    // ⚠️ The email provider calls `signIn` TWICE: once from `send-token.js`
+    // with `email.verificationRequest` set (before the person has proved
+    // anything) and once from the callback leg. A resolve on the first would
+    // allocate a SEAT for an address typed by an anonymous visitor — the
+    // farmable cap `gateway/routes/signin.py`'s docstring exists to prevent.
+    const body = callbackBody(authSrc, "signIn");
+    const guard = body.indexOf(
+      "if (emailFlow?.verificationRequest) return true;",
+    );
+    const gate = body.indexOf("process.env.CUSTOMER_CONSOLE_RESOLVE_ENABLED");
+    const call = body.indexOf("/signin/resolve");
+    expect(guard).toBeGreaterThan(-1);
+    // It precedes BOTH the flag gate and the resolve, so no ordering of the
+    // two flags can let a send leg through to the seat-allocating call.
+    expect(guard).toBeLessThan(gate);
+    expect(guard).toBeLessThan(call);
+    // And it is the ONLY email-specific branch: everything below it is the
+    // Google path verbatim (clause 13's "identical to Google"). `emailFlow` is
+    // Auth.js's `email` parameter, renamed on binding so the resolved address
+    // and the flow marker cannot be confused for one another.
+    expect(body.match(/emailFlow/g)?.length).toBe(2);
   });
 
   it("renders the email field only for the email-kind provider, through the shared Input", () => {

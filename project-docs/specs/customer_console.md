@@ -5,9 +5,32 @@ Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2d
-FIRST SLICE BUILT 2026-08-22 (passwordless email OTP via Resend — the Auth.js
-provider + `EMAIL_OTP_ENABLED` flag, DARK; DB-adapter + code-entry-page deferred;
-the RESEND_API_KEY secret + the live flag flip are OWNER-GATE) · CP-2c
+SLICES 1+2 of 2 BUILT (slice 1 2026-08-22 — passwordless email OTP via Resend,
+the Auth.js provider + `EMAIL_OTP_ENABLED` flag, DARK; **slice 2 2026-08-23 — the
+Auth.js DB adapter (tenant-plane migration 186 `auth_email_otp_token`,
+RLS-EXEMPT), the gateway-side token routes with the server-side rate limit, the
+`session: { strategy: "jwt" }` pin, the `/signin/code` entry page, and
+`EMAIL_OTP_ADAPTER_READY = true` — OTP is now ARMED BY THE FLAG, still DARK
+because the flag and the key are unset everywhere**; the RESEND_API_KEY secret +
+the live flag flip are OWNER-GATE; **slice 2 REVIEWED and REPAIRED 2026-08-23
+(round 1) on one P0, two P1s, one P2 and four accuracy findings — the adapter is
+now STATELESS-TRANSPARENT rather than "minimal" (the five-method shape would
+have taken Google and Microsoft sign-in down on the flag flip,
+`callback/index.js:56-62`), the OTP identifier is canonical at both browser write
+sites and echoed as requested, the send budget is enforced by an atomic slot
+claim rather than an in-flight exclusion, and the consume statement takes exactly
+one row**; **slice 2 RE-REVIEWED and REPAIRED 2026-08-23 (round 2) on three
+findings — (P1) the `/signin/code` fallback arm was UNUSABLE, because `known`
+derived from the live input and `"a"` canonicalises to `"a"`, so the first
+keystroke unmounted the field being typed into; the decision is now the pure
+`codeEntryState` helper keyed on the mount-time stash ALONE. (P2) the burst's one
+mailed code could be CLOBBERED by the send loser's token leg — `Promise.all`
+cancels nothing, so refusing the mail did not refuse the write — and the claim
+now carries the winner's hash while `record_token` is first-writer-wins, so the
+row's hash at mail time is the slot winner's under every interleaving. (P2) the
+`updateUser` trap's fence is now STRUCTURAL (an identity comparison against the
+exported constant-null implementation) rather than a three-address value
+check**) · CP-2c
 SLICES 1+2+3+4 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
 slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
@@ -4963,9 +4986,11 @@ tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
 never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
 function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
 
-**CP-2d · Passwordless email OTP via Resend — MINTED + FIRST SLICE BUILT
-2026-08-22 (owner directive, D46.3).** ◐ **The provider + flag ship DARK; the
-two go-live prerequisites are named and deferred (below).** *(Owner's words
+**CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
+SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23
+(owner directive, D46.3).** ◐ **Both slices ship DARK —
+the flag and the key are unset everywhere — but the flag now ARMS the feature
+rather than being inert.** *(Owner's words
 2026-08-19: "Eventually, we should also have a two-factor authentication and
 email OTP system set up. Not made it by MVP, but documented for eventual build
 up." Dispatched 2026-08-22 as the email-OTP half; TOTP/passkey step-up stays
@@ -4989,8 +5014,12 @@ conditional block in `auth.ts` mirroring the Google `if (process.env.
 AUTH_GOOGLE_ID)` idiom. The surface reuses the ONE provider-rendering seam:
 `authPosture.ts::configuredProviders` gains a `resend` entry (`kind:"email"`)
 when configured, and `signin/SignInForm.tsx` renders an email field for the
-email-kind provider through the shared `Input` primitive. **Zero migrations**
-(the adapter is deferred — see below), **no new engine/DB/Redis site** (R5).
+email-kind provider through the shared `Input` primitive. Slice 1 took **zero
+migrations**; **slice 2 takes exactly one** (tenant-plane **186**,
+`auth_email_otp_token`, RLS-EXEMPT — clauses 7 and 8) and still adds **no new
+engine, no DB driver in the Next tier and no Redis site** (R5, clause 6): the
+Next-side adapter is a thin object over new gateway routes, and the gateway
+reaches the row through the existing unbound `get_session_factory()` idiom.
 
 **Flag: `EMAIL_OTP_ENABLED`** — minted here (existed nowhere, verified);
 default unset = OFF; the exact-string-`"true"` idiom of `auth.ts:163`, never
@@ -5055,34 +5084,470 @@ note, the `signin.test.ts:38-45` reason)*:
    `SignInForm.tsx` reads `RESEND_API_KEY`/`EMAIL_OTP_ENABLED`. Fence:
    `signin.test.ts` — *"keeps the Resend key out of the browser tier"*.
 
-**What actually ARMS OTP is slice-2 — a flag flip alone does not, and cannot.**
-*(named so the dark-ship is honest, and because the review found the earlier
-"meaningless until…" wording understated the risk)*. Two pieces, both slice-2:
-(i) wiring an Auth.js **database adapter** into `NextAuth({ adapter })` — every
-Auth.js email provider needs one to persist the verification token, and its
-absence is not a soft failure but the `MissingAdapter` **site-wide auth 500**
-above; it is a table + migration (next free number at build time, **R1**),
-tenant-scoped by **R5**, landing in the SAME change that sets
-`EMAIL_OTP_ADAPTER_READY` true. (ii) the numeric-code **entry page** that submits
-the typed code to the callback — which **MUST rate-limit verification attempts
-per identifier**: a 6-digit code over a ~10-minute window is brute-forceable and
-`@auth/core` does **not** rate-limit verification, so an unthrottled entry page
-is an online guessing oracle. Both are their own decisions and are not built
-here; the combined `isEmailOtpProviderReady` gate is exactly what makes their
-absence safe today (the flag+key are inert without the adapter).
+---
+
+**SLICE 2 — arming OTP.** *(Clauses 6–16, authored 2026-08-23 from the owner's
+three answers B1/B2/B3 and the dispatch audit's rulings H-A…H-F; the slice was
+NO-GO before them purely because it had no testable acceptance.)* Slice 2 is
+what makes `EMAIL_OTP_ENABLED` mean something: the Auth.js **database adapter**,
+the **rate limiter** that is the only defence a 6-digit code has, the
+**code-entry page**, and the flip of `EMAIL_OTP_ADAPTER_READY` to `true` — all in
+one change, because any subset of them is either inert or unsafe.
+
+6. ✅ **MET 2026-08-23 — no database in the Next tier (R5, ruling H-A).** The
+   adapter is a **thin custom object** whose persisting methods call new gateway
+   BFF-internal routes; the control plane gains **no** `pg` / `postgres` /
+   `@auth/*-adapter` dependency and opens no connection. It reaches the gateway
+   through the ONE existing seam (`lib/gateway.ts::headersActingAs`,
+   `gateway.ts:137`) and mints no second copy of the internal bearer.
+   ⚠️ **The object lives in TWO files, and the split is load-bearing** *(repair
+   round 1, finding P0)*: its **behaviour** — the method set and what each method
+   answers — is `src/lib/emailOtp.ts::emailOtpAdapterOver(call)`, parameterised
+   by the one outbound call, because that module is framework-free and therefore
+   **executable** in this tree's node-env vitest; `src/lib/emailOtpAdapter.ts` is
+   reduced to building that call out of `headersActingAs` and is the file the
+   bearer sweeps scan. The reason is finding P0 itself: the adapter's shape had
+   been argued in a docstring, the docstring was wrong, and no source-regex could
+   have seen it. This is the same seam, moved so it can be tested — never a
+   second one. Fences (**R7, the fence this rule did not have**):
+   `src/lib/emailOtpAdapter.test.ts` — an EXECUTED scan of `package.json` for a
+   pg/postgres/adapter dependency in either dependency block, an EXECUTED scan of
+   every file under `src/` for a `pg`/`postgres` import, a pin that the pure half
+   stays framework-free (a value import of `lib/gateway.ts` there would silently
+   stop every executed fence from running), and a source pin that the adapter's
+   only outbound call goes through `headersActingAs` and names no token env var
+   of its own. ⚠️ **The second half of that double-fence did not exist until the
+   repair** *(finding F1)*: both docstrings claimed `gateway.test.ts`'s bearer
+   sweep covered this module, and it did not — `NON_ROUTE_GATEWAY_CALLERS` was
+   pinned to `auth.ts` and `proxy.ts` with an exact-length assertion. The sweep
+   now names `src/lib/emailOtpAdapter.ts` and pins the length at
+   `ROUTES.length + 3`.
+7. ✅ **MET 2026-08-23 — the token lives on the TENANT plane and is RLS-EXEMPT
+   (owner answer B1, ruling H-B).** ⚠️ **This corrects a recorded defect in this
+   ticket**: the slice-1 text said the table would be *"tenant-scoped by R5"*,
+   and that is **wrong and would have bricked OTP on the day it shipped**. The
+   row is minted **before any session exists**, for an address that may belong to
+   no organization at all (the `console-empty` signup funnel is the whole reason
+   the address is being verified), so there is no `organization_id` to stamp and
+   an org-scoped policy would make every verification read return zero rows under
+   H3's now-LIVE phase-4 RLS. R5(a)'s exempt-identity-table permission is the
+   applicable clause — the same one `user_identity` and `org_membership` sit
+   under. Migration **186** (`infra/postgres/186_auth_email_otp_token.sql`, the
+   next free number taken at build time and re-checked at merge, **R1**) creates
+   `auth_email_otp_token`, and the table joins `gen_tenant_migration.EXEMPT` with
+   the reason *"belongs to an email, minted pre-session; no organization_id exists
+   to stamp"*. *(Repair round 1 added a nullable `reserved_at` to the same
+   migration — the send-slot claim of clause 11 — with an
+   `ALTER TABLE … ADD COLUMN IF NOT EXISTS` beside the idempotent create, so a
+   box that already applied the first cut of 186 gets the column on the next
+   ladder replay. 186 was and remains the next free number; **max is still 185**
+   elsewhere, re-checked 2026-08-23.)* Fences:
+   `tests/unit/test_tenant_coverage.py` (source gate + the
+   exemption-reason and exemption-count tripwires) and
+   `tests/unit/test_tenancy_boundary.py` (the partition assertions, which read the
+   same map).
+8. ✅ **MET 2026-08-23 — the name is PREFIXED and the migration fails LOUDLY on a
+   clash (ruling H-C).** The table is `auth_email_otp_token`, **never** a bare
+   Auth.js-conventional `verification_token`: the staging box's database also
+   carries Langfuse's schema, the collision is real, and
+   `CREATE TABLE IF NOT EXISTS` on a colliding name is a **silent no-op** that
+   leaves the adapter writing into somebody else's table. 186 therefore opens with
+   a `DO` block that raises when a relation of that name exists without this
+   migration's own column set, and only then runs the idempotent create. Fence:
+   `tests/unit/test_email_otp_token.py::TestTheMigrationRefusesAForeignTable`
+   (R8 — it plants a foreign `auth_email_otp_token` on a scratch database and
+   asserts the migration RAISES, shown red by removing the guard).
+9. ✅ **MET 2026-08-23 — the session strategy is PINNED in the same change that
+   passes an adapter (ruling H-D).** `NextAuth({ … })` now carries an explicit
+   `session: { strategy: "jwt" }`. Without it `@auth/core@0.41.2` (`lib/init.js:74`)
+   derives `strategy: config.adapter ? "database" : "jwt"`, so merely *passing* an
+   adapter silently converts the whole product — Google and Microsoft included —
+   to **database sessions**, and `assertConfig` does **not** catch it (with an
+   email provider present it demands only the three `emailMethods`, never the ten
+   `sessionMethods`). The failure would therefore be a runtime `createSession is
+   not a function` on every sign-in, not a config error. Fence: `signin.test.ts` —
+   *"pins the jwt session strategy in the same config that takes an adapter"*,
+   which reds **both** ways (adapter present without the pin, and the pin
+   removed).
+10. ✅ **MET 2026-08-23 (REWRITTEN in repair round 1) — the adapter is
+   STATELESS-TRANSPARENT and implements every method the pinned
+   `@auth/core@0.41.2` can invoke under this configuration (ruling H-E).**
+
+   🛑 **What this clause said before, and why it was a site-wide outage waiting
+   on a flag flip (finding P0).** It claimed a MINIMAL five-method set —
+   `createVerificationToken`, `useVerificationToken`, `getUserByEmail`,
+   `getUser`, `updateUser` — on the premise that *"`createUser`, `linkAccount`
+   and `getUserByAccount` are reachable only from the `!useJwtSession` branches
+   or from the webauthn/oauth arms, none of which this configuration can enter."*
+   **That premise is false**, and it was fenced INTO place by an assertion that
+   the adapter must *not* declare `getUserByAccount`:
+
+   - `lib/actions/callback/index.js:56-62` destructures and calls
+     `getUserByAccount` on **every** OAuth callback the moment an adapter is
+     present. Missing method ⇒ `TypeError` ⇒ `CallbackRouteError` on every Google
+     and Microsoft sign-in — not merely OTP — from the instant the owner sets
+     `EMAIL_OTP_ENABLED=true`. `handle-login.js:175-178` calls it a second time.
+   - Worse, adding that one method would not have fixed it. With
+     `getUserByAccount` answering null, `handle-login.js:231-250` consults
+     `getUserByEmail(profile.email)` — and the old adapter's `getUserByEmail` was
+     deliberately **total** (it never returned null). A truthy answer there with
+     no `allowDangerousEmailAccountLinking` is **`OAuthAccountNotLinked`**, so
+     Google would still have been refused, and the "totality" the clause called
+     load-bearing was the thing doing the refusing.
+
+   **What it is now.** With the adapter present, behaviour must equal behaviour
+   with **no adapter at all**, plus a verification-token store for the email arm
+   — because the adapter is passed to the ONE `NextAuth` config that also serves
+   Google and Microsoft. So the user-side methods are stateless and honest:
+   `getUserByEmail` · `getUserByAccount` · `getUser` answer **null** (there is no
+   user store to look in), and `createUser` · `updateUser` · `linkAccount`
+   **echo** what they are handed and persist nothing. Walked against the pinned
+   source under `jwt` that reproduces the adapter-less path exactly: on the OAuth
+   arm `createUser` echoes `userFromProvider` (name and image intact, so
+   `session.user.name` and CP-2b's `display_name` are unchanged); on the email
+   arm `getUserByEmail`'s null is what makes `index.js:156-160` derive
+   `{ id: randomUUID(), email: identifier }`, which `createUser` then echoes, so
+   the verified address still reaches the `jwt` callback. The one measurable
+   difference is `isNewUser`, `true` where the adapter-less path left it
+   `undefined` — read by nothing here (no `events`, no `pages.newUser`, and the
+   `jwt` callback ignores `trigger`).
+
+   Session methods (`createSession`, `getSessionAndUser`, `deleteSession`) and
+   `createAuthenticator` stay absent, but on a checked basis rather than an
+   asserted one: the pinned source shows every call site of the first three
+   behind a `useJwtSession` guard and the fourth inside the webauthn arm, and no
+   webauthn provider is registered.
+
+   ⚠️ **The adapter persists NO user rows and that is the design**: identity in
+   this product is the tenant plane's (`app_user`/`user_identity`, reached
+   through CP-2b's resolve), and an Auth.js `users`/`accounts`/`sessions` table
+   set would be the second identity store root `CLAUDE.md` §5 forbids by name.
+   ⚠️ **The database never holds the raw code**:
+   `lib/actions/signin/send-token.js` stores `createHash(`${token}${secret}`)` —
+   a SHA-256 of the code salted with `AUTH_SECRET` — so a database reader cannot
+   sign in, and **the rate limiter of clause 11 is the whole defence against
+   guessing**.
+
+   Fences, and the shape of them is the lesson: **(a)** `emailOtpAdapter.test.ts`
+   derives the reachable set FROM `node_modules/@auth/core` — it enumerates every
+   adapter method the three reachable arm files name (by call or by
+   destructuring), subtracts only those whose guard it also asserts by regex,
+   and requires the object's own `Object.keys` to equal the remainder; it
+   additionally pins the FILE LIST in `@auth/core` that mentions the adapter at
+   all, so a version bump that adds a call site in a new file reds before any of
+   the reasoning is trusted, and it re-asserts the premises (`jwt` pinned, no
+   webauthn provider, no `allowDangerousEmailAccountLinking`).
+   **(b)** `emailOtp.test.ts` **replays both arms** — transcribed line-by-line
+   from `callback/index.js` and `handle-login.js` with citations, raising a
+   `TypeError` for a missing method exactly as the destructure-then-call does —
+   against the real object, and asserts a Google callback completes with the
+   provider's user, that `getUserByEmail` never answers on the OAuth arm, that
+   the email arm still yields the derived user through `createUser`, and that a
+   full replay of both arms touches only the consume route. The old
+   `not.toContain("getUserByAccount")` assertion is **deleted**: it forbade the
+   fix.
+
+   ⚠️ **The `updateUser` trap is fenced STRUCTURALLY since repair round 2**
+   *(2026-08-23)*. `updateUser` is a deliberate echo and is only safe because
+   `handle-login.js:68` reaches it *exclusively* when `getUserByEmail` answers —
+   `@auth/core` calls it with `{ id, emailVerified }` alone, so a reachable one
+   returns a user with **no address** and the session comes out **anonymous**.
+   The fence for that coupling was a value check: `getUserByEmail` returns null
+   for three literal addresses. A store-backed lookup that simply *missed* on
+   those three would have stayed green while the trap was armed. The
+   implementation is now the exported constant `NO_STORED_USER` and the adapter
+   assembles it **by reference**, so `emailOtp.test.ts` identity-compares the two
+   (`expect(adapter.getUserByEmail).toBe(NO_STORED_USER)`) and **any** change
+   away from constant-null reds — including a behaviourally identical inline
+   rewrite (measured red 2026-08-23), which is the point: the property is the
+   shape, not the answer. The value assertions and the echo's address-less
+   consequence are asserted beside it.
+11. ✅ **MET 2026-08-23 — the rate limit is SERVER-SIDE in the gateway, with the
+   owner's numbers (owner answer B3, ruling H-F).** Enforcement is in the gateway
+   routes, **never** page-level: the Auth.js callback URL
+   (`/api/auth/callback/resend?token=…&email=…`) is directly reachable by anyone,
+   so a limiter on the entry page limits nothing. The numbers, all per
+   **identifier**: **5 verification attempts per 10-minute window**; on exhaustion
+   the outstanding token is **invalidated** *and* further attempts answer **429**
+   for the remainder of the window; **3 code-sends per hour**. The counter lives
+   **on the token row** (`attempts`, `last_attempt_at`) and is read and written
+   inside one transaction under `pg_advisory_xact_lock` keyed on the identifier —
+   **no new Redis surface**, because the tenant Redis seam deliberately has no
+   unbound fallback and this row exists before any tenant does.
+
+   ⚠️ **The send budget is enforced by an atomic SLOT CLAIM, not by the
+   in-flight exclusion — and believing otherwise was a real bypass** *(repair
+   round 1, finding P1b)*. Both legs of one send name it by the same `expires`
+   instant, and the count excludes it so the two legs agree. But `expires` is
+   `Date.now() + maxAge`: **two different sends started in the same millisecond
+   carry the same instant**, so they excluded each other, both passed a budget of
+   three, both upserted the one row, and **two emails went out for one slot** —
+   repeatable per millisecond, i.e. unbounded mail to a chosen address. The send
+   leg now claims the row in one statement (`INSERT … ON CONFLICT … DO UPDATE SET
+   reserved_at = now() WHERE reserved_at IS NULL`, migration 186's new nullable
+   `reserved_at`) and is refused with a new code `SendDuplicate` when the claim
+   finds the slot taken; the adapter turns that 429 into a throw, and the throw
+   is what keeps `sendVerificationRequest` from reaching Resend. The two legs
+   still converge on one row: the token leg creates the row **unclaimed** when it
+   wins the race, so the send leg claims rather than being refused. The two gates
+   now count different things on purpose — the send leg counts CLAIMED rows
+   (mails), the token leg counts ROWS (so a caller driving `/signin/otp/token`
+   alone, the clause-12 residual, is still bounded).
+
+   ⚠️ **The burst's ONE email must carry a code that verifies, and it did not**
+   *(repair round 2, finding P2)*. Refusing the duplicate send's **mail** was
+   only half of P1b. `send-token.js` starts `sendVerificationRequest` and
+   `createVerificationToken` in ONE `Promise.all`, so a rejected send leg cancels
+   nothing: the slot **loser's** `createVerificationToken` still landed on the
+   shared `(identifier, expires)` row, and `_UPSERT_SQL`'s
+   `COALESCE(EXCLUDED.token, …)` overwrote the winner's hash with it —
+   `EXCLUDED.token` is never NULL (`record_token` rejects an empty one), so the
+   docstring's claim that "`COALESCE` keeps an already-written hash" described
+   the **opposite** of the delivered SQL. The one email that went out therefore
+   carried a code that could never verify, with nothing anywhere reporting an
+   error.
+
+   The property is now whole-system: **under every interleaving of two
+   same-`expires` sends the row's hash at mail time is the SLOT WINNER's.** Two
+   statements make it true. `reserve_send(identifier, token, expires)` takes the
+   winner's hash and `_CLAIM_SEND_SQL` writes it **inside the statement that
+   decides who won**; `_UPSERT_SQL` is **first-writer-wins**
+   (`COALESCE(auth_email_otp_token.token, EXCLUDED.token)`) so no token leg can
+   replace it. The browser tier can supply that hash because `@auth/core` hands
+   the send leg the **raw** code: `emailOtp.ts::otpWireHash` recomputes
+   `createHash(`${token}${secret}`)` (`send-token.js:46,61`) and `auth.ts`
+   resolves the salt the same way (`provider.secret ?? AUTH_SECRET`, now a single
+   named const so the two reads cannot drift). A "`record_token` must not
+   overwrite a CLAIMED row" fix alone would **not** have sufficed — in the
+   record→reserve interleaving the loser's write lands while there is no claim
+   yet. Nothing new crosses the wire (it is the same value `/signin/otp/token`
+   already carries), no migration changed, and a token-less send is refused on
+   shape by the route and by `ValueError` in the store.
+
+   ⚠️ **A duplicate 6-digit code no longer 500s sign-in** *(finding P2)*.
+   `(identifier, token)` is deliberately not unique — two live codes for one
+   address can collide (≈1e-6 per pair) — but the consume `UPDATE … RETURNING`
+   then matched two rows and was read with `.one_or_none()`, which raises
+   `MultipleResultsFound`. It now updates `WHERE id = (SELECT … ORDER BY
+   created_at DESC, id DESC LIMIT 1)`, consuming the newest match.
+
+   Fence: `tests/unit/test_email_otp_token.py` (**R8, real Postgres** —
+   create/consume round-trip, single-use, expiry, the **6th attempt refused even
+   with the correct code**, the 429 window, the 4th send refused, **two sends
+   sharing an `expires` millisecond mailing once** and the burst spending exactly
+   one of the three, the token leg claiming no slot, and **two live codes with
+   the same hash consuming one row**), plus — since repair round 2 —
+   `TestTheBurstsOneMailCarriesAWorkingCode`, which drives **three orderings**
+   (reserve→record→reserve→record, record→reserve→reserve→record and
+   record→record→reserve→reserve) and asserts in each that the winner's code
+   **consumes successfully**, the loser's does not, the burst is still ONE row
+   and ONE of the three slots, and that a hash-less send raises. Measured red
+   2026-08-23 by restoring `COALESCE(EXCLUDED.token, …)` on the token leg (one
+   case) and by dropping the `token` write from the claim's conflict arm (the
+   other two). The browser half — that the recomputed hash equals `@auth/core`'s
+   own — is `emailOtp.test.ts`, which **imports `createHash` out of the pinned
+   `node_modules`** and compares outputs, and pins the expression `send-token.js`
+   hashes and where it resolves the secret.
+12. ✅ **MET 2026-08-23 — the pre-auth route residual is ACCEPTED and NAMED
+   (owner answer B2).** The three new gateway routes sit behind the app-wide
+   `require_authenticated` and are deliberately **not** in `PUBLIC_ROUTES`, the
+   posture `routes/signin.py:23-40` and `routes/signup.py:31-36` already state.
+   They inherit those routes' accepted risk in as many words: **a holder of the
+   internal token ALONE can drive them for arbitrary addresses**, because
+   `deps.py` trusts an `X-User-Email` presented with that bearer by design. What
+   that buys an attacker is narrower than either predecessor — no seat is
+   allocated and no organization is created — and it is bounded on purpose:
+   **tokens are single-use**; the **expiry is short** (Auth.js `maxAge`, which
+   this deployment sets to the module default of **10 minutes**,
+   `DEFAULT_OTP_MAX_AGE_S`); and **the rate limit applies to every caller,
+   internal bearer included** — there is no bypass path, which is why the limiter
+   is in the route rather than in the browser tier. The residual is therefore
+   *up to three emails an hour to a chosen address, and a ten-minute denial of
+   email-OTP sign-in for an address whose attempts are burned*. **The structural
+   narrowing remains §4.3's `GATEWAY_INTERNAL_TOKEN` / `LITELLM_MASTER_KEY` split**
+   (`work_plan.md` §6, §8 gate 1) — referenced, not built here.
+
+   ⚠️ **The DENIAL half needs no token at all, and attributing it to the
+   internal bearer understated it** *(repair round 1, finding F5)*. `proxy.ts`
+   passes `/api/auth/**` through **unauthenticated** — it must, or nobody could
+   sign in — so **anyone on the internet** can drive
+   `GET /api/auth/callback/resend?token=<junk>&email=<victim>`. Each request
+   reaches `POST /signin/otp/consume` through the BFF's own bearer, spends one of
+   the victim's five attempts, and the fifth **invalidates their outstanding
+   code**. Five anonymous requests therefore deny email-OTP sign-in to a chosen
+   address for ten minutes. That is **accepted and unchanged**: not charging
+   attempts for unauthenticated callers would be a limiter with a documented
+   bypass, and OAuth sign-in for the same person is unaffected. Per-IP throttling
+   is the answer and belongs at the reverse proxy (already in this ticket's
+   deferred list). P1b's slot claim narrows the *mail* half of the residual; the
+   attempt-burn denial is untouched by it and stays accepted.
+
+   ⚠️ Two smaller residuals, recorded so they are not rediscovered as findings.
+   **(i)** The send slot is reserved BEFORE the mail is handed to Resend, so a
+   **Resend transport failure spends the slot** — three failed sends lock an
+   address out for an hour. That is the fail-CLOSED direction and is deliberate:
+   releasing the slot on a transport error would make "make the transport fail"
+   the bypass. **(ii)** Every call here drives `deps._with_resolved_access` with
+   a **caller-chosen address** (that is what `require_authenticated` does with an
+   `X-User-Email`); for an address belonging to no member the resolver degrades
+   to no-access and logs a swallowed warning, so a novel address per request
+   writes a warning line per request on a phase-4-promoted catalog. Log volume,
+   not an access decision.
+13. ✅ **MET 2026-08-23 — the resolve interaction is IDENTICAL to Google, and the
+   one place it cannot be is stated.** An OTP sign-in for an org-less address
+   flows into the same `signIn` callback → `console-empty` → `signup_eligible` →
+   signup-limbo funnel as Google, with no branch of its own; a suspended or
+   seat-capped org is refused with the same codes. Two facts make that true rather
+   than merely intended. **(a)** On the email path there is no OAuth `profile`;
+   the callback already falls back to `user?.email` (`auth.ts:233-236`), which is
+   Auth.js's own resolved identifier, so the resolve gets the same verified
+   address it gets from Google. **(b)** ⚠️ **The email provider calls the `signIn`
+   callback TWICE** — once from `send-token.js` with `email.verificationRequest`
+   set, before the person has proved anything, and once from the callback leg
+   after the code round-trip. **Only the second leg resolves.** A resolve on the
+   first would allocate a seat for an address supplied by an anonymous visitor to
+   the sign-in form, which is precisely the farmable seat cap
+   `routes/signin.py`'s docstring exists to prevent — reduced there from *every
+   authenticated request* to *the completion of a sign-in*, and the send leg is
+   not a completion. The verification email is still sent (the refusal is the
+   answer, delivered after the code is entered), and the volume is bounded by
+   clause 11's three-per-hour. Fence: `signin.test.ts` — *"the send leg never
+   resolves"* (the guard is present and precedes the flag gate) plus the existing
+   CP-2b/CP-2c shape pins, which stay green unchanged.
+14. ✅ **MET 2026-08-23 — the code-entry page reuses slice 1, and never forks it.**
+   `pages: { verifyRequest: "/signin/code" }` (previously absent, so a person was
+   left on Auth.js's built-in "check your email" page with nowhere to type a
+   code). The route carries the identifier and submits the typed code to the
+   Auth.js callback as a plain `GET` form, which is byte-for-byte the URL shape
+   `send-token.js` builds for a magic link. The 6-digit code and the email body
+   remain `src/lib/emailOtp.ts`'s `generateOtp`/`otpEmail` — reused, never
+   reimplemented — and the page adds `/signin/code` to `proxy.ts`'s
+   `PUBLIC_PAGES`, without which the entry page redirects a not-yet-signed-in
+   person back to `/signin` and the flow cannot complete.
+
+   ⚠️ **The submitted address is CANONICAL, and it was not** *(repair round 1,
+   finding P1a)*. `@auth/core`'s send leg normalises through
+   `send-token.js`'s `defaultNormalizer`, so the token is minted for
+   `ada@customer.example`; the hand-built `GET` form submitted what was typed.
+   `callback/index.js:151-152` compares `invite.identifier !== paramIdentifier`
+   **verbatim** and throws `Verification` — but only **after**
+   `useVerificationToken` has consumed the row and charged an attempt. So
+   `Ada@Customer.Example` spent the person's code, told them it was wrong, and
+   burned one of their five attempts per retry until the address was locked out
+   for ten minutes. Two fixes, both required: **(a)** a
+   `canonicalOtpIdentifier` mirroring `defaultNormalizer` (lowercase, trim,
+   domain truncated at the first comma; never throws, unlike the original) is
+   applied at **both** browser write sites — the `sessionStorage` hand-off in
+   `SignInForm.tsx` and the code form's submitted field, which is now a single
+   hidden input carrying the canonical value with the visible box deliberately
+   unnamed; **(b)** `useVerificationToken` echoes the **requested** identifier
+   rather than the wire's canonical one, so the comparison is structurally
+   incapable of stranding a person on a code they have already spent. That is
+   safe because the comparison is not what enforces ownership here: the gateway
+   scopes the consume to the caller's `X-User-Email`, which *is* that identifier.
+
+   ⚠️ **The no-stashed-address arm was UNUSABLE, and the cause was a decision
+   taken over the LIVE input value** *(repair round 2, finding P1)*. The
+   component computed `known = canonicalOtpIdentifier(email) !== ""`, and `"a"`
+   canonicalises to `"a"` — so the **first keystroke** flipped `known` true and
+   unmounted the very field being typed into. A person arriving without a stash
+   (a different tab, a cleared store, private mode — the case the arm exists for)
+   could never finish entering their address; the only escape was *Start again*.
+   The property is now explicit: **`known` derives ONCE from the mount-time read
+   succeeding — `?email=`, else the `sessionStorage` hand-off — and never from
+   what is being typed**, while the typed value may only influence what is
+   SUBMITTED, still canonically. Both variables come from one pure helper,
+   `emailOtp.ts::codeEntryState(stash, typed) → { known, submitEmail }`, placed in
+   the lib layer for a measured reason: **this package has no DOM renderer** (no
+   jsdom, no testing-library, and adding one is out of scope), so a decision
+   written inside the component has no fence at all. The component holds `stash`
+   with exactly ONE writer (the storage effect) and feeds the visible box into a
+   separate `typed`.
+
+   Fence: `src/app/signin/code/code.test.ts` (source-regex: the callback path is
+   `/api/auth/callback/${EMAIL_OTP_PROVIDER_ID}`, the form is a `GET`, the page
+   reads no secret, it is in `PUBLIC_PAGES`, there is exactly ONE control named
+   `email` and it carries the helper's `submitEmail`, the `sessionStorage` write
+   is canonical too, and — since round 2 — that the component **destructures**
+   `known` out of `codeEntryState(stash, typed)`, binds it nowhere else, never
+   calls the canonicaliser itself, and has exactly one `setStash(` call site;
+   comments are stripped before the negative pins so the docstring may quote the
+   defect it forbids) — vitest here is node-env and cannot render the page, the
+   `signin.test.ts:38-45` reason. The executed half is in `emailOtp.test.ts`,
+   which drives the wire shape with `Ada@Customer.Example`, proves the identifier
+   the adapter returns is the one the callback will compare, carries the
+   canonicaliser's own matrix, and — since round 2 — drives `codeEntryState`
+   across the **whole typing sequence** (`""`, `"a"`, `"ad"`, `"ada@"`, the full
+   address, mixed case, whitespace) for both stash-present and stash-absent,
+   including the one-assertion form of the property: hold the stash, vary the
+   input, and `known` must not move. Measured red 2026-08-23 by deriving `known`
+   from the live value in the helper (3 cases) and by recomputing it in the
+   component (1 case).
+15. ✅ **MET 2026-08-23 — `EMAIL_OTP_ADAPTER_READY` is `true`, in this same
+   change.** That constant is what clause 1a's guard reads, so flipping it here
+   is what converts `EMAIL_OTP_ENABLED` from an inert documented flag into a real
+   owner switch. Fence: `emailOtp.test.ts`'s existing matrix, with **exactly one
+   assertion inverted and two re-parameterized** *(corrected in repair round 1,
+   finding F3 — the sentence here had said "two inverted and one strengthened",
+   which does not describe the diff)* — the **inverted** one is
+   `EMAIL_OTP_ADAPTER_READY` itself, now asserted `true`; the **re-parameterized**
+   two are `isEmailOtpProviderReady(configured, false)` and
+   `configuredProviders(configured, false)`, which drive the adapter half through
+   the **parameter** rather than through the constant, so the "adapter not ready
+   ⇒ no provider, no button" guard stays EXECUTED instead of becoming a tautology
+   on the day it was armed. Everything else in the file's pre-existing matrix is
+   untouched; repair round 1 then APPENDED the executed adapter fences clause 10
+   names, which are new tests rather than changes to old ones.
+16. ✅ **MET 2026-08-23 — both flag positions stay fenced; a dark box is
+   unchanged.** With `EMAIL_OTP_ENABLED` unset or `RESEND_API_KEY` absent — the
+   state of every environment — no provider is registered, `adapter` is passed as
+   `undefined` (which `@auth/core` treats exactly as absent, `assert.js:157`), the
+   sign-in surface offers no email option, and `/signin/code` is an orphan route
+   nothing links to. The one unconditional change is the `session: { strategy:
+   "jwt" }` pin, which is the value `@auth/core` already derives for an
+   adapter-less config. Fence: the pre-existing `emailOtp.test.ts` matrix stays
+   green with only clause 15's three adapter-state assertions changed, plus
+   `signin.test.ts`'s dark-ship pins (the provider push is still inside the
+   `isEmailOtpProviderReady` gate, and the `adapter:` option is ternaried off the
+   same predicate). *(Repair round 1, finding F2: that last pin used to carry a
+   dead `if (authSrc.includes("adapter:")) { …the same unconditional assertion
+   again… }`, which could never add a failure. It now asserts what the pin is
+   actually about — exactly ONE `adapter:` option in the file, matched at the
+   start of a line so prose cannot satisfy it, and both it and the strategy pin
+   inside the ONE `NextAuth({…})` config.)*
+
+**Gates unchanged, and the flag now bites.** 🔴 Providing `RESEND_API_KEY` on a
+real deployment and flipping `EMAIL_OTP_ENABLED=true` on a live box remain the
+owner's acts (§8). ⚠️ **What CHANGED with slice 2 is the consequence of those
+flips**: before it, either was a documented no-op; now the pair genuinely turns
+on a non-OAuth sign-in path. That is the point of the ticket, and it is why the
+rate limiter, not the code length, is what the review should be aimed at.
+
+**Deferred out of slice 2, deliberately** *(recorded so the next agent does not
+read them as omissions)*: a **reaper** for consumed/expired `auth_email_otp_token`
+rows (the table grows at three rows per address per hour at most, and a `DELETE`
+job is its own ticket with its own tenant-plane cadence question) · **resend-code
+UX** on `/signin/code` (the person returns to `/signin`; a "send another code"
+button would need its own view of the 3/hour budget) · **per-IP** limiting (the
+gateway sees the BFF's address, not the caller's, so an IP limiter here would
+throttle the deployment, not the attacker — it belongs at the reverse proxy) ·
+**TOTP/passkey step-up** and **SMS OTP**, unchanged anti-scope.
 
 **Gates** (🔴 OWNER-GATE): providing `RESEND_API_KEY` on a real deployment (a
 **secret**, §6(f)'s class) and flipping `EMAIL_OTP_ENABLED=true` on a live box
 (an **enforcement flip**) are the owner's acts; building the provider dark is
-agent-safe. Because of the adapter guard, either flip **before slice-2 is a
-no-op**, not an outage — but neither does anything useful until slice-2 lands.
+agent-safe. ⚠️ *(Corrected 2026-08-23 — the sentence that stood here said either
+flip "before slice-2 is a no-op". **Slice 2 has landed**, so both flips now arm a
+live non-OAuth sign-in path. The adapter guard has done its job and is no longer
+what makes a flip safe; clause 11's rate limiter is.)*
 
 **Anti-scope.** **TOTP/passkey step-up** stays DEFERRED (its shape is unchanged:
 it rides the Auth.js session and is enforced at the gateway identity seam
 `deps.py`, never per-app, behind its own default-OFF flag with both positions
 fenced). **SMS OTP** is out (cost + SIM-swap surface) unless the owner asks by
-name. This slice does NOT add a database adapter, does NOT build the code-entry
-page, and does NOT flip any flag or deploy.
+name. Neither slice flips a flag or deploys. *(Slice 1's anti-scope — "does NOT
+add a database adapter, does NOT build the code-entry page" — is retired: those
+are exactly what slice 2 built, clauses 6–16.)*
 
 **Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6

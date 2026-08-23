@@ -712,6 +712,20 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "plane is cross-tenant by design (see `_ALLOWED_SYNC`'s customer_console "
         "entry above for the same reasoning).",
     ),
+    "packages/acb_auth/acb_auth/email_otp.py": (
+        1,
+        "WS-31 CP-2d slice 2 — the email-OTP verification token store. ONE "
+        "helper (`_session`) that all three acts open through, and it MUST be "
+        "unbound: `auth_email_otp_token` is RLS-EXEMPT "
+        "(`gen_tenant_migration.EXEMPT`, customer_console.md §CP-2d clause 7) "
+        "because the row is minted PRE-SESSION for an address that may belong "
+        "to no organization at all — the zero-org `console-empty` signup funnel "
+        "— so `tenant_session()` could only ever raise `TenantUnbound`. Unlike "
+        "the provisioning entry below this is NOT a known-open brick: proved "
+        "readable AND writable unbound, as the non-privileged role on a "
+        "phase-4-promoted catalog, by `test_h3_rls_promotion_rehearsal.py::"
+        "TestTheEmailOtpTokenIsReachableUnbound`.",
+    ),
     "packages/acb_common/acb_common/provisioning.py": (
         3,
         "⚠️ OWNER-DECISION, deliberately NOT bound by the H6 RLS-bind hardening: "
