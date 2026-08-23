@@ -11,6 +11,7 @@ import {
   statusHelp,
   suggestSlug,
   plansNotice,
+  lifecycleHint,
   type SeatRow,
 } from "./format";
 
@@ -57,22 +58,78 @@ describe("formatDate", () => {
 describe("lifecycleActions (advisory UX only)", () => {
   it("offers Suspend for a live org", () => {
     expect(lifecycleActions("active")).toEqual([
-      { label: "Suspend", target: "suspended" },
+      { label: "Suspend access", target: "suspended" },
     ]);
-    expect(lifecycleActions("trial")).toEqual([
-      { label: "Suspend", target: "suspended" },
-    ]);
+  });
+
+  // The regression this exists for: a `trial` org offered ONLY Suspend, so an
+  // operator who had just activated the subscription had no control that could
+  // move the organization off trial. `hathilabs`, 2026-08-23.
+  it("offers Activate on a trial org, not just Suspend", () => {
+    const targets = lifecycleActions("trial").map((a) => a.target);
+    expect(targets).toContain("active");
+    expect(targets).toContain("suspended");
+  });
+
+  it("offers Activate on past_due too — the Console permits it", () => {
+    expect(lifecycleActions("past_due").map((a) => a.target)).toContain(
+      "active",
+    );
   });
 
   it("offers Resume for a suspended org", () => {
     expect(lifecycleActions("suspended")).toEqual([
-      { label: "Resume", target: "active" },
+      { label: "Resume access", target: "active" },
     ]);
   });
 
   it("offers nothing on a terminal lifecycle", () => {
     expect(lifecycleActions("cancelled")).toEqual([]);
     expect(lifecycleActions("deleted")).toEqual([]);
+  });
+
+  // The button renders `a.label` verbatim, so a target arriving without a
+  // distinct label ships a mislabelled control — which is how "Resume access"
+  // would have appeared on a trial org's Activate button.
+  it("gives every offered target a distinct, non-empty label", () => {
+    for (const status of ["active", "trial", "past_due", "suspended"]) {
+      const actions = lifecycleActions(status);
+      expect(actions.length).toBeGreaterThan(0);
+      expect(actions.every((a) => a.label.trim().length > 0)).toBe(true);
+      expect(new Set(actions.map((a) => a.label)).size).toBe(actions.length);
+    }
+  });
+
+  // Never offer a move the Console's `_TRANSITIONS` graph would 409.
+  it("never offers a target off the Console's transition graph", () => {
+    const permitted: Record<string, string[]> = {
+      trial: ["active", "cancelled", "suspended"],
+      active: ["past_due", "suspended", "cancelled"],
+      past_due: ["active", "suspended", "cancelled"],
+      suspended: ["active", "cancelled"],
+      cancelled: ["active", "deleted"],
+      deleted: [],
+    };
+    for (const [status, allowed] of Object.entries(permitted)) {
+      for (const a of lifecycleActions(status)) {
+        expect(allowed).toContain(a.target);
+      }
+    }
+  });
+});
+
+describe("lifecycleHint", () => {
+  it("nudges when a paid subscription sits under a trial lifecycle", () => {
+    const hint = lifecycleHint("trial", "active");
+    expect(hint).not.toBeNull();
+    expect(hint).toContain("Activate account");
+  });
+
+  it("stays silent when the two statuses agree, or when unpaid", () => {
+    expect(lifecycleHint("trial", "trial")).toBeNull();
+    expect(lifecycleHint("trial", null)).toBeNull();
+    expect(lifecycleHint("active", "active")).toBeNull();
+    expect(lifecycleHint("suspended", "active")).toBeNull();
   });
 });
 

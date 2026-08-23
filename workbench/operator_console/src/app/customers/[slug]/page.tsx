@@ -8,6 +8,7 @@ import {
   trialHint,
   statusHelp,
   plansNotice,
+  lifecycleHint,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -109,6 +110,9 @@ export default async function CustomerDetailPage({
       ? Math.min(100, Math.round((totals.assigned / totals.purchased) * 100))
       : 0;
   const hint = trialHint(org.trial_ends_at, now);
+  // The trial banner's advice is WRONG once the subscription is already active
+  // — "use Activate subscription" is the step they just did. See lifecycleHint.
+  const lifeHint = lifecycleHint(org.status, org.subscription_status);
 
   return (
     <main className="wrap">
@@ -135,9 +139,14 @@ export default async function CustomerDetailPage({
       {org.status === "trial" && (
         <div className="banner info">
           <strong>On free trial</strong>
-          {hint ? ` — ${hint}` : ""}. When the customer has paid, use{" "}
-          <strong>Activate subscription</strong> below to put them on their paid
-          plan.
+          {hint ? ` — ${hint}` : ""}.{" "}
+          {lifeHint ?? (
+            <>
+              When the customer has paid, use{" "}
+              <strong>Activate subscription</strong> below to put them on their
+              paid plan.
+            </>
+          )}
         </div>
       )}
       {statusHelp(org.status) &&

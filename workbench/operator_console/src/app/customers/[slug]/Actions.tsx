@@ -306,8 +306,13 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
       <h2 style={{ marginTop: 0 }}>Access</h2>
       <p className="muted">
-        Suspending blocks every sign-in for this customer (e.g. non-payment).
-        Their data is kept, and resuming restores access instantly.
+        Whether this customer&apos;s account is live. Activating takes them off
+        trial; suspending blocks every sign-in (e.g. non-payment). Their data is
+        kept either way, and resuming restores access instantly.
+      </p>
+      <p className="muted">
+        Separate from their subscription — activating a plan records the money
+        and leaves the account where it is.
       </p>
       <label>Reason (optional, kept in the log)</label>
       <input
@@ -327,7 +332,7 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
             disabled={busy}
             onClick={() => move(a.target)}
           >
-            {a.target === "suspended" ? "Suspend access" : "Resume access"}
+            {a.label}
           </button>
         ))}
       </div>

@@ -69,14 +69,52 @@ export function formatDate(iso: string | null): string {
   return iso.slice(0, 10);
 }
 
-// The lifecycle targets the suspend/resume control offers — ADVISORY UX only.
+// The lifecycle targets the Access control offers — ADVISORY UX only.
 // The Console's `assert_transition` graph is the authority and re-checks every
 // move (a refused transition is a 409); this list only decides which button to
 // draw, so it is deliberately coarse and never the fence.
+//
+// ⚠️ `trial` and `past_due` MUST offer `active`. Activating a subscription
+// deliberately does NOT touch `organization.status` — a customer who pays while
+// suspended holds a paid term and stays suspended until an operator posts the
+// transition — so the lifecycle move is a separate operator act. Until
+// 2026-08-23 this returned only Suspend for those two states, so the console
+// could sell a subscription and then had no control that could take the
+// organization off trial: `hathilabs` sat at `subscription=active` +
+// `organization=trial` with no button able to change it.
+//
+// The display label lives HERE rather than in the button, so a new target
+// cannot arrive with the button silently calling it "Resume access".
 export function lifecycleActions(status: string): { label: string; target: string }[] {
-  if (status === "suspended") return [{ label: "Resume", target: "active" }];
+  if (status === "suspended") return [{ label: "Resume access", target: "active" }];
   if (status === "cancelled" || status === "deleted") return [];
-  return [{ label: "Suspend", target: "suspended" }];
+  if (status === "trial" || status === "past_due") {
+    return [
+      { label: "Activate account", target: "active" },
+      { label: "Suspend access", target: "suspended" },
+    ];
+  }
+  return [{ label: "Suspend access", target: "suspended" }];
+}
+
+// The nudge that closes the gap between the two statuses, or `null`.
+//
+// `organization.status` (the lifecycle) and `org_subscription.status` (the
+// billing truth) move independently and legitimately diverge — that is why both
+// are on the wire. The one pairing that is almost always an unfinished job is a
+// PAID subscription under a `trial` lifecycle: the operator activated the plan
+// and had no way to know a second act existed. Measured 2026-08-23.
+export function lifecycleHint(
+  orgStatus: string,
+  subscriptionStatus: string | null,
+): string | null {
+  if (orgStatus === "trial" && subscriptionStatus === "active") {
+    return (
+      "Their subscription is already active — the account itself is still " +
+      "marked trial. Use “Activate account” under Access below to finish it."
+    );
+  }
+  return null;
 }
 
 // Whether a customer can be sold a subscription right now — a fresh/trial org
