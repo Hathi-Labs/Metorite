@@ -4,11 +4,14 @@ import { staffSession } from "@/lib/session";
 import {
   formatPaise,
   formatDate,
-  seatsDigest,
+  seatsTotals,
+  trialHint,
+  statusHelp,
   type OrgList,
   type OrgRow,
 } from "@/lib/format";
 import NewCustomer from "./NewCustomer";
+import Header from "./Header";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +25,37 @@ function defaultDeploymentLabel(): string {
 }
 
 function StatusPill({ status }: { status: string }) {
-  return <span className={`pill ${status}`}>{status}</span>;
+  // title= carries the plain-language meaning so hovering a pill answers
+  // "what does this mean?" without a docs page.
+  return (
+    <span className={`pill ${status}`} title={statusHelp(status)}>
+      {status.replace("_", " ")}
+    </span>
+  );
+}
+
+function SeatsCell({ org }: { org: OrgRow }) {
+  const totals = seatsTotals(org.seats);
+  if (!totals) return <span className="muted">—</span>;
+  const pct =
+    totals.purchased > 0
+      ? Math.min(100, Math.round((totals.assigned / totals.purchased) * 100))
+      : 0;
+  return (
+    <div className="seatcell">
+      <div>
+        {totals.assigned} of {totals.purchased} used
+        {totals.oversubscribed && (
+          <span className="warnbadge" title="More seats assigned than purchased">
+            over
+          </span>
+        )}
+      </div>
+      <div className="bar" aria-hidden="true">
+        <i style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }
 
 export default async function CustomersPage() {
@@ -57,55 +90,106 @@ export default async function CustomersPage() {
         : `Could not reach the Customer Console: ${String(e)}`;
   }
 
+  const now = new Date();
+  const count = (s: string) => rows.filter((o) => o.status === s).length;
+
   return (
     <main className="wrap">
-      <h1>Customers</h1>
-      <p className="muted">
-        Every organization on the platform — the §4.1a cross-org view. DARK: not
-        deployed.
-      </p>
-
-      <NewCustomer defaultDeploymentLabel={defaultDeploymentLabel()} />
+      <Header />
+      <div className="pagehead">
+        <div>
+          <h1>Customers</h1>
+          <p className="muted">
+            Every customer organization on Metorite. Click one to manage its
+            plan, seats and AI credits.
+          </p>
+        </div>
+        <NewCustomer defaultDeploymentLabel={defaultDeploymentLabel()} />
+      </div>
 
       {error && <div className="banner">{error}</div>}
 
-      {!error && (
+      {!error && rows.length > 0 && (
+        <div className="stats">
+          <div className="stat">
+            <div className="num">{rows.length}</div>
+            <div className="lbl">customers</div>
+          </div>
+          <div className="stat">
+            <div className="num ok-t">{count("active")}</div>
+            <div className="lbl">active</div>
+          </div>
+          <div className="stat">
+            <div className="num accent-t">{count("trial")}</div>
+            <div className="lbl">on trial</div>
+          </div>
+          <div className="stat">
+            <div className="num warn-t">{count("suspended")}</div>
+            <div className="lbl">suspended</div>
+          </div>
+        </div>
+      )}
+
+      {!error && rows.length === 0 && (
+        <div className="empty">
+          <h2>No customers yet</h2>
+          <p className="muted">Create your first customer. What happens next:</p>
+          <ol className="muted">
+            <li>
+              You enter their company name, the owner&apos;s email, and how many
+              seats they get — a free trial starts immediately.
+            </li>
+            <li>
+              The owner signs in at <strong>app.metorite.com</strong> with
+              Google using that email — no invite link needed.
+            </li>
+            <li>
+              When they&apos;ve paid, open the customer here and{" "}
+              <strong>activate their plan</strong>.
+            </li>
+          </ol>
+        </div>
+      )}
+
+      {!error && rows.length > 0 && (
         <table>
           <thead>
             <tr>
-              <th>Company</th>
+              <th>Customer</th>
               <th>Status</th>
               <th>Subscription</th>
               <th>MRR</th>
-              <th>Seats (assigned/purchased)</th>
-              <th>Credits</th>
-              <th>Trial ends</th>
+              <th>Seats</th>
+              <th>AI credits</th>
+              <th>Trial</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={7} className="muted">
-                  No organizations.
-                </td>
-              </tr>
-            )}
             {rows.map((o) => (
               <tr key={o.slug}>
                 <td>
                   <a href={`/customers/${encodeURIComponent(o.slug)}`}>
                     {o.name}
                   </a>
-                  <div className="muted">{o.slug}</div>
+                  <div className="muted small">{o.slug}</div>
                 </td>
                 <td>
                   <StatusPill status={o.status} />
                 </td>
-                <td>{o.subscription_status ?? "—"}</td>
+                <td>{o.subscription_status ?? <span className="muted">none</span>}</td>
                 <td>{formatPaise(o.mrr_paise)}</td>
-                <td>{seatsDigest(o.seats)}</td>
+                <td>
+                  <SeatsCell org={o} />
+                </td>
                 <td>{o.credit_balance}</td>
-                <td>{formatDate(o.trial_ends_at)}</td>
+                <td>
+                  {formatDate(o.trial_ends_at)}
+                  {o.status === "trial" && trialHint(o.trial_ends_at, now) && (
+                    <div className="muted small">
+                      {trialHint(o.trial_ends_at, now)}
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -26,10 +26,17 @@ async function post(path: string, body: unknown): Promise<Result> {
   return { ok: res.ok, text };
 }
 
+// A refusal is relayed VERBATIM (the Console is the authority); the framing
+// line just tells the operator whose voice the raw text is in.
 function ResultLine({ result }: { result: Result }) {
   if (!result) return null;
+  if (result.ok) return <div className="result ok">✓ Done</div>;
   return (
-    <div className={`result ${result.ok ? "ok" : "err"}`}>{result.text}</div>
+    <div className="result err">
+      The Console refused:
+      {"\n"}
+      {result.text}
+    </div>
   );
 }
 
@@ -46,7 +53,7 @@ export default function Actions({
 }) {
   return (
     <>
-      <h2>Manage</h2>
+      <h2>Manage this customer</h2>
       <div className="row">
         {canActivate(subscriptionStatus) && (
           <ActivatePanel slug={slug} plans={plans} />
@@ -66,7 +73,7 @@ function reload() {
 
 function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
   const [plan, setPlan] = useState(plans[0]?.slug ?? "");
-  const [seats, setSeats] = useState("1");
+  const [seats, setSeats] = useState("5");
   const [credits, setCredits] = useState("");
   const [reference, setReference] = useState("");
   const [result, setResult] = useState<Result>(null);
@@ -91,12 +98,15 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
   return (
     <form className="panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>Activate subscription</h2>
-      <p className="muted">Manual / bank-transfer activation of a paid plan.</p>
+      <p className="muted">
+        The customer has paid you (e.g. bank transfer) — record it and switch
+        them from trial to their paid plan.
+      </p>
       <label>Plan</label>
       <select value={plan} onChange={(e) => setPlan(e.target.value)}>
         {plans.map((p) => (
           <option key={p.slug} value={p.slug}>
-            {p.name} ({formatPaise(p.price_paise)})
+            {p.name} ({formatPaise(p.price_paise)}/seat/month)
           </option>
         ))}
       </select>
@@ -107,15 +117,21 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         value={seats}
         onChange={(e) => setSeats(e.target.value)}
       />
-      <label>AI credits (optional)</label>
-      <input value={credits} onChange={(e) => setCredits(e.target.value)} />
-      <label>Bank reference (optional)</label>
+      <div className="field-hint">How many people they are paying for.</div>
+      <label>AI credits to include (optional)</label>
+      <input
+        value={credits}
+        placeholder="e.g. 250"
+        onChange={(e) => setCredits(e.target.value)}
+      />
+      <label>Payment reference (optional)</label>
       <input
         value={reference}
+        placeholder="bank ref / invoice no."
         onChange={(e) => setReference(e.target.value)}
       />
       <button type="submit" disabled={busy || !plan}>
-        Activate
+        {busy ? "Activating…" : "Activate"}
       </button>
       <ResultLine result={result} />
     </form>
@@ -139,6 +155,11 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
       <h2 style={{ marginTop: 0 }}>Seats</h2>
+      <p className="muted">
+        Assign a seat so a specific person can sign in; release it to free the
+        seat for someone else. The customer&apos;s own admin can also do this
+        inside the app.
+      </p>
       <label>Plan</label>
       <select value={plan} onChange={(e) => setPlan(e.target.value)}>
         {plans.map((p) => (
@@ -147,15 +168,20 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
           </option>
         ))}
       </select>
-      <label>Member email</label>
-      <input value={email} onChange={(e) => setEmail(e.target.value)} />
+      <label>Person&apos;s email</label>
+      <input
+        type="email"
+        value={email}
+        placeholder="person@customer.com"
+        onChange={(e) => setEmail(e.target.value)}
+      />
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
           disabled={busy || !email}
           onClick={() => act("/api/operator/seats")}
         >
-          Assign
+          Assign seat
         </button>
         <button
           type="button"
@@ -163,7 +189,7 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
           disabled={busy || !email}
           onClick={() => act("/api/operator/seats/release")}
         >
-          Release
+          Release seat
         </button>
       </div>
       <ResultLine result={result} />
@@ -196,19 +222,30 @@ function CreditsPanel({ slug }: { slug: string }) {
   return (
     <form className="panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>Add AI credits</h2>
-      <p className="muted">Append-only; a correction is another row.</p>
-      <label>Credits</label>
-      <input value={credits} onChange={(e) => setCredits(e.target.value)} />
+      <p className="muted">
+        Top up the balance the customer&apos;s AI usage draws from. Additions
+        are logged; a correction is another entry, never an edit.
+      </p>
+      <label>Credits to add</label>
+      <input
+        value={credits}
+        placeholder="e.g. 100"
+        onChange={(e) => setCredits(e.target.value)}
+      />
       <label>Reason</label>
       <select value={reason} onChange={(e) => setReason(e.target.value)}>
-        <option value="grant">grant</option>
-        <option value="manual">manual</option>
-        <option value="adjustment">adjustment</option>
+        <option value="grant">grant — included with their plan</option>
+        <option value="manual">manual — they bought a top-up</option>
+        <option value="adjustment">adjustment — correcting a mistake</option>
       </select>
       <label>Reference (optional)</label>
-      <input value={ref} onChange={(e) => setRef(e.target.value)} />
+      <input
+        value={ref}
+        placeholder="invoice / note"
+        onChange={(e) => setRef(e.target.value)}
+      />
       <button type="submit" disabled={busy || !credits.trim()}>
-        Grant
+        {busy ? "Adding…" : "Add credits"}
       </button>
       <ResultLine result={result} />
     </form>
@@ -222,6 +259,14 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
   const actions = lifecycleActions(status);
 
   async function move(target: string) {
+    if (
+      target === "suspended" &&
+      !window.confirm(
+        `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused until you resume them. Their data is untouched.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     const r = await post("/api/operator/lifecycle", {
       org_slug: slug,
@@ -235,14 +280,19 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
 
   return (
     <form className="panel" onSubmit={(e) => e.preventDefault()}>
-      <h2 style={{ marginTop: 0 }}>Lifecycle</h2>
+      <h2 style={{ marginTop: 0 }}>Access</h2>
       <p className="muted">
-        Current: <span className={`pill ${status}`}>{status}</span>
+        Suspending blocks every sign-in for this customer (e.g. non-payment).
+        Their data is kept, and resuming restores access instantly.
       </p>
-      <label>Reason (optional)</label>
-      <input value={reason} onChange={(e) => setReason(e.target.value)} />
+      <label>Reason (optional, kept in the log)</label>
+      <input
+        value={reason}
+        placeholder="e.g. invoice 42 unpaid"
+        onChange={(e) => setReason(e.target.value)}
+      />
       {actions.length === 0 && (
-        <p className="muted">No transition available.</p>
+        <p className="muted">No change available from this state.</p>
       )}
       <div style={{ display: "flex", gap: 8 }}>
         {actions.map((a) => (
@@ -253,7 +303,7 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
             disabled={busy}
             onClick={() => move(a.target)}
           >
-            {a.label}
+            {a.target === "suspended" ? "Suspend access" : "Resume access"}
           </button>
         ))}
       </div>

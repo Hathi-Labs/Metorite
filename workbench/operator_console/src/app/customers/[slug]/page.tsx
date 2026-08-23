@@ -4,12 +4,16 @@ import { staffSession } from "@/lib/session";
 import {
   formatPaise,
   formatDate,
+  seatsTotals,
+  trialHint,
+  statusHelp,
   type OrgList,
   type OrgRow,
   type Catalog,
   type CatalogPlan,
 } from "@/lib/format";
 import Actions from "./Actions";
+import Header from "../../Header";
 
 export const dynamic = "force-dynamic";
 
@@ -56,8 +60,9 @@ export default async function CustomerDetailPage({
   if (error) {
     return (
       <main className="wrap">
+        <Header />
         <p>
-          <a href="/">← Customers</a>
+          <a href="/">← All customers</a>
         </p>
         <div className="banner">{error}</div>
       </main>
@@ -66,36 +71,99 @@ export default async function CustomerDetailPage({
   if (!org) {
     return (
       <main className="wrap">
+        <Header />
         <p>
-          <a href="/">← Customers</a>
+          <a href="/">← All customers</a>
         </p>
-        <div className="banner">No organization {slug}.</div>
+        <div className="banner">No organization “{slug}”.</div>
       </main>
     );
   }
 
+  const now = new Date();
+  const totals = seatsTotals(org.seats);
+  const seatPct =
+    totals && totals.purchased > 0
+      ? Math.min(100, Math.round((totals.assigned / totals.purchased) * 100))
+      : 0;
+  const hint = trialHint(org.trial_ends_at, now);
+
   return (
     <main className="wrap">
+      <Header />
       <p>
-        <a href="/">← Customers</a>
+        <a href="/">← All customers</a>
       </p>
-      <h1>{org.name}</h1>
-      <p className="muted">{org.slug}</p>
-
-      <div className="row">
-        <div className="panel">
-          <div>
-            Lifecycle: <span className={`pill ${org.status}`}>{org.status}</span>
-          </div>
-          <div>Subscription: {org.subscription_status ?? "—"}</div>
-          <div>Provider: {org.provider ?? "—"}</div>
-          <div>MRR: {formatPaise(org.mrr_paise)}</div>
-          <div>Credit balance: {org.credit_balance}</div>
-          <div>Trial ends: {formatDate(org.trial_ends_at)}</div>
-          <div>Period ends: {formatDate(org.current_period_end)}</div>
+      <div className="pagehead">
+        <div>
+          <h1>{org.name}</h1>
+          <p className="muted">
+            {org.slug} ·{" "}
+            <span className={`pill ${org.status}`}>{org.status.replace("_", " ")}</span>
+          </p>
         </div>
+      </div>
+
+      {org.status === "suspended" && (
+        <div className="banner danger">
+          <strong>Suspended.</strong> Every sign-in for this customer is refused.
+          Use “Resume access” below to restore it.
+        </div>
+      )}
+      {org.status === "trial" && (
+        <div className="banner info">
+          <strong>On free trial</strong>
+          {hint ? ` — ${hint}` : ""}. When the customer has paid, use{" "}
+          <strong>Activate subscription</strong> below to put them on their paid
+          plan.
+        </div>
+      )}
+      {statusHelp(org.status) &&
+        org.status !== "suspended" &&
+        org.status !== "trial" && (
+          <p className="muted">{statusHelp(org.status)}</p>
+        )}
+
+      <div className="stats">
+        <div className="stat">
+          <div className="lbl">Subscription</div>
+          <div className="num small-num">
+            {org.subscription_status ?? "none"}
+          </div>
+          <div className="muted small">
+            {org.provider ? `via ${org.provider} · ` : ""}
+            {formatPaise(org.mrr_paise)}/month
+          </div>
+        </div>
+        <div className="stat">
+          <div className="lbl">Seats</div>
+          <div className="num small-num">
+            {totals ? `${totals.assigned} of ${totals.purchased}` : "—"}
+          </div>
+          <div className="bar" aria-hidden="true">
+            <i style={{ width: `${seatPct}%` }} />
+          </div>
+          {totals?.oversubscribed && (
+            <div className="warn-t small">More assigned than purchased</div>
+          )}
+        </div>
+        <div className="stat">
+          <div className="lbl">AI credits</div>
+          <div className="num small-num">{org.credit_balance}</div>
+        </div>
+        <div className="stat">
+          <div className="lbl">Dates</div>
+          <div className="muted small">
+            Trial ends: {formatDate(org.trial_ends_at)}
+            <br />
+            Period ends: {formatDate(org.current_period_end)}
+          </div>
+        </div>
+      </div>
+
+      {org.seats.length > 1 && (
         <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Seats</h2>
+          <h2 style={{ marginTop: 0 }}>Seats by plan</h2>
           <table>
             <thead>
               <tr>
@@ -106,13 +174,6 @@ export default async function CustomerDetailPage({
               </tr>
             </thead>
             <tbody>
-              {org.seats.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="muted">
-                    No seats.
-                  </td>
-                </tr>
-              )}
               {org.seats.map((s) => (
                 <tr key={s.plan_slug}>
                   <td>{s.plan_slug}</td>
@@ -127,7 +188,7 @@ export default async function CustomerDetailPage({
             </tbody>
           </table>
         </div>
-      </div>
+      )}
 
       <Actions
         slug={org.slug}
