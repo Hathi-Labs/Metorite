@@ -1180,9 +1180,11 @@ def test_the_requests_list_route_is_not_shadowed_by_the_member_routes() -> None:
 # ── dw11: the Members list stops rendering `invited` as though it were live ──
 
 def _members_page() -> str:
+    # ⚠️ Path moved by D49 (2026-08-24): the roster is a TAB of Organisation
+    # (`launch_surface.md` §6.2). Same JSX, same claims — new file.
     return (
         REPO_ROOT
-        / "workbench/control_plane/src/app/settings/members/page.tsx"
+        / "workbench/control_plane/src/app/settings/organization/OrganizationAdmin.tsx"
     ).read_text(encoding="utf-8")
 
 

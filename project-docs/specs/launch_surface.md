@@ -4,6 +4,18 @@
 code on 2026-08-24** (anchors below were read from the tree that day; re-verify
 every path at dispatch, R4/§1.4).
 
+**BUILT 2026-08-24 on `claude/app-visibility-seat-management-jlvnhl`:**
+LS-1 · LS-2 · LS-3 · LS-4 · LS-5 · LS-6 · LS-7 · LS-8 · LS-9 · LS-10.
+**Open:** LS-11 (OWNER-GATE), and the theme-switch check §10 cannot automate —
+CLAUDE.md §4 / `workbench/control_plane/AGENTS.md`: switch the org to Fluent,
+then Material, then Graphite, and look at Organisation → Seat assignments **and**
+at the neighbouring app, because cross-app continuity is what nothing in this
+repo tests. Evidence for the built items: `npx tsc --noEmit` clean and
+118 files / 2497 tests green in `workbench/control_plane`; 50 in
+`workbench/operator_console`; `next build` compiles both; 7325 in `tests/unit`;
+and 494 Console tests against a real PostgreSQL 16, 289 of them re-run on a
+freshly created database (R8).
+
 **Owner directive, 2026-08-24.** Verbatim, because everything here derives from
 it and a paraphrase is how a directive drifts:
 
@@ -362,7 +374,7 @@ Fence: `nav.test.ts` + `accessProvider.test.ts` (§9 LS-4/LS-5).
 
 Every ticket is **AGENT-SAFE** unless marked otherwise.
 
-### LS-1 · The launch registry — **AGENT-SAFE**
+### LS-1 · The launch registry — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 Add `launch: "live" | "preview"` to `NavPane`. Restructure `NAV_SECTIONS` into
 Personal Center / Apps / AI Studio / Admin per §2. Delete the `centers` section;
@@ -374,7 +386,7 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 section is named "Centers"; (d) `visibleSections` drops `preview` panes when the
 preview flag is off and restores them when it is on.
 
-### LS-2 · One filter, three surfaces — **AGENT-SAFE**
+### LS-2 · One filter, three surfaces — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 `Sidebar`, `AppShell`'s mobile drawer and `app/page.tsx` all render
 `visibleSections(...)`; the home page stops mapping `NAV_SECTIONS` directly.
@@ -383,7 +395,7 @@ preview flag is off and restores them when it is on.
 tests returns nothing, and a test asserts the home page and the sidebar produce
 the same pane set for one access payload.
 
-### LS-3 · Launch status in the access report — **AGENT-SAFE**
+### LS-3 · Launch status in the access report — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 `paneReport()` gains a `not-launched` status so `/access` distinguishes it from
 `denied`.
@@ -391,7 +403,7 @@ the same pane set for one access payload.
 **Done when:** `accessReport.test.ts` covers a preview pane held by a member who
 *does* hold its feature, and the reason sentence says it is not available yet.
 
-### LS-4 · No full-then-shrink flash — **AGENT-SAFE**
+### LS-4 · No full-then-shrink flash — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 `visibleSections(null, …)` returns `[]`. The sidebar and drawer render skeleton
 rows while unresolved.
@@ -400,7 +412,7 @@ rows while unresolved.
 component test asserts the sidebar renders no real nav links before access
 resolves.
 
-### LS-5 · Transient failure keeps the last good access — **AGENT-SAFE**
+### LS-5 · Transient failure keeps the last good access — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 `fetchAccess` returns a discriminated result (`ok` / `unauthorized` /
 `unavailable`). `AccessProvider` clears on `unauthorized` and keeps the previous
@@ -409,7 +421,7 @@ value on `unavailable`.
 **Done when:** `accessProvider.test.ts` asserts a 503 after a successful resolve
 leaves `access.features` unchanged, and a 401 empties it.
 
-### LS-6 · Organisation tabs — **AGENT-SAFE**
+### LS-6 · Organisation tabs — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 §6.2. Extract the members admin into a component, add the tab strip, move
 branding to its own tab, redirect `/settings/members`.
@@ -417,7 +429,7 @@ branding to its own tab, redirect `/settings/members`.
 **Done when:** `/settings/organization` renders three tabs; `/settings/members`
 redirects; `/settings/members/[email]` still resolves.
 
-### LS-7 · Per-member seat state — **AGENT-SAFE**
+### LS-7 · Per-member seat state — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 §6.4: `MemberView.seats: list[str]`, one extra store read, no N+1. The BFF and
 the seat tab render Seated / Unassigned from it.
@@ -426,7 +438,7 @@ the seat tab render Seated / Unassigned from it.
 []` and a seated one with `["core"]`, both from one roster call; `R8` — run
 against a real Postgres.
 
-### LS-8 · Invite assigns a seat — **AGENT-SAFE**
+### LS-8 · Invite assigns a seat — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 §6.3, including the three failure paths (cap, unwired, invite-succeeded-
 assign-failed).
@@ -434,14 +446,14 @@ assign-failed).
 **Done when:** each of the three paths has a test asserting the member still
 exists and the dialog's message names the right cause.
 
-### LS-9 · Operator roster — **AGENT-SAFE**
+### LS-9 · Operator roster — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 
 §7.
 
 **Done when:** the operator customer page lists members with seat state and both
 controls act on the Console's operator door.
 
-### LS-10 · Flat plan in the catalog — **AGENT-SAFE** (the data half)
+### LS-10 · Flat plan in the catalog — **AGENT-SAFE** (the data half) · ✅ BUILT 2026-08-24
 
 §4.4's expand-only half: reprice `core` to ₹500, retitle it for display,
 deactivate every `center` / `addon` / `bundle` row.

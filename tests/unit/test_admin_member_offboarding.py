@@ -534,11 +534,18 @@ async def test_a_caller_with_no_address_of_their_own_matches_nobody(
 # ════════════════════════════════════════════════════════════════════════════
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MEMBERS_DIR = REPO_ROOT / "workbench/control_plane/src/app/settings/members"
+# ⚠️ Path moved by D49 (2026-08-24): the roster is now a TAB of Organisation
+# (`launch_surface.md` §6.2), so the page these assertions read is
+# `settings/organization/OrganizationAdmin.tsx` and the rule module is
+# `settings/organization/lib/selfGuard.ts`. `settings/members/page.tsx` is a
+# redirect with no markup; `settings/members/[email]` — the per-person editor —
+# did NOT move. Only the paths changed here: every claim below is about the same
+# JSX and is asserted the same way.
+ORG_DIR = REPO_ROOT / "workbench/control_plane/src/app/settings/organization"
 
 
 def _page() -> str:
-    return (MEMBERS_DIR / "page.tsx").read_text(encoding="utf-8")
+    return (ORG_DIR / "OrganizationAdmin.tsx").read_text(encoding="utf-8")
 
 
 def _member_row() -> str:
@@ -779,7 +786,7 @@ def test_the_browsers_copy_of_the_rule_is_a_courtesy_not_a_second_boundary(
     Pinned because the failure mode of a client-side mirror is that somebody
     later "simplifies" the server by trusting it.
     """
-    guard = (MEMBERS_DIR / "selfGuard.ts").read_text(encoding="utf-8")
+    guard = (ORG_DIR / "lib" / "selfGuard.ts").read_text(encoding="utf-8")
 
     assert re.search(r"toLowerCase\(\)", guard), (
         "the browser's comparison is case-sensitive while the server's is not"

@@ -1021,11 +1021,18 @@ def test_purge_is_a_separate_route_and_remove_is_unchanged() -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MEMBERS_DIR = REPO_ROOT / "workbench/control_plane/src/app/settings/members"
+# ⚠️ Path moved by D49 (2026-08-24): the roster is now a TAB of Organisation
+# (`launch_surface.md` §6.2), so the page these assertions read is
+# `settings/organization/OrganizationAdmin.tsx` and the rule module is
+# `settings/organization/lib/selfGuard.ts`. `settings/members/page.tsx` is a
+# redirect with no markup; `settings/members/[email]` — the per-person editor —
+# did NOT move. Only the paths changed here: every claim below is about the same
+# JSX and is asserted the same way.
+ORG_DIR = REPO_ROOT / "workbench/control_plane/src/app/settings/organization"
 
 
 def _page() -> str:
-    return (MEMBERS_DIR / "page.tsx").read_text(encoding="utf-8")
+    return (ORG_DIR / "OrganizationAdmin.tsx").read_text(encoding="utf-8")
 
 
 def _member_row() -> str:
@@ -1096,7 +1103,10 @@ def test_the_typed_confirmation_is_a_rule_and_not_a_paragraph() -> None:
     page = _page()
     dialog = page.split("function PurgeDialog(", 1)[1].split("\nfunction ", 1)[0]
 
-    assert 'from "./confirmPurge"' in page, (
+    # `./lib/confirmPurge` since D49 moved the roster into Organisation —
+    # asserted as the import PATH the page actually carries, not a substring
+    # that would also match a comment mentioning the module.
+    assert 'from "./lib/confirmPurge"' in page, (
         "the dialog does not import the rule; a comparison written inline here "
         "is fenced by nothing but a grep for the copy around it"
     )
@@ -1142,7 +1152,7 @@ def test_the_browsers_copy_of_the_purge_rule_is_still_only_a_courtesy() -> None:
     """`canPurge` is presentation. The boundary is
     `_common.assert_not_self_lockout`, and the failure mode of a client-side
     mirror is that somebody later "simplifies" the server by trusting it."""
-    guard = (MEMBERS_DIR / "selfGuard.ts").read_text(encoding="utf-8")
+    guard = (ORG_DIR / "lib" / "selfGuard.ts").read_text(encoding="utf-8")
 
     assert "canPurge" in guard
     assert "not a boundary" in guard or "courtesy" in guard
