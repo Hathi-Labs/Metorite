@@ -1,5 +1,17 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
+> ## ⚠️ D50 (2026-08-24) — one flat plan, so the Centers grid collapses to one column
+>
+> SC-1/SC-2 were specced against D23/D24's package ladder: a "Centers & add-ons"
+> panel and a **users × Centers** seat grid. D50 retires that ladder for a flat
+> **₹500/user/month + AI credits**, so there is exactly one sellable seat and the
+> grid is one column wide. The seat surface a customer admin actually uses now
+> lives in **Organisation → Seat assignments**, owned by
+> `specs/launch_surface.md` §6.2. Everything else in this spec — the transports
+> (SC-2a), the roster read (SC-2b), the cap's 409 + `buy_more`, the credit
+> monitor — is **unchanged and still binding**.
+
+
 **Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout's
 SERVER SIDE is BUILT and its SURFACE is now BUILT TOO — SC-4a's narrowed LAUNCH
 SLICE (the ₹0 / discount path) shipped 2026-08-19 on `ws-30-sc4a-surface`, dark
@@ -74,14 +86,14 @@ live: the members read 503s (Console deployed nowhere) and the roster renders
 absent, exactly as the SC-1a panel handles its own 503.
 
 **SC-2c invite surface + notification email ◐ MINTED + BUILT 2026-08-24 — R4**
-*(WS-30 `ws-30-invites`; decision **D49**)*: member invites, end to end. The
+*(WS-30 `ws-30-invites`; decision **D50**)*: member invites, end to end. The
 spec-audit that tried to dispatch "invite emails" returned **NO-GO** and found
 the load-bearing half was not an email: **the Customer Console had no member-add
 door at all**, so an invited colleague never reached the registry — invisible to
 `GET /me/members`, a 404 at `_seat_admin_target`, and, with resolve ARMED,
 resolving `console-empty` straight into the self-serve funnel that makes them
 create **their own** org. That half is `customer_console.md` **CP-2f**
-(`POST /registry/members` on a fourth `member_admin` capability, plus D49.3's
+(`POST /registry/members` on a fourth `member_admin` capability, plus D50.3's
 `invited → active` promotion at first resolve; **no migration** — the `001` CHECK
 already carries `invited`). This ticket is the customer-facing half:
 `src/lib/inviteEmail.ts` (importing `resendSender`/`emailOtpFrom` from
@@ -90,7 +102,7 @@ already carries `invited`). This ticket is the customer-facing half:
 and the `/settings/members` dialog. **Dark behind `MEMBER_INVITE_EMAIL_ENABLED`**
 (default OFF, exact-string `"true"`, ANDed with `RESEND_API_KEY` — the
 `isEmailOtpConfigured` idiom); the flag gates **the mail only**, the Console
-member write is dark-by-reach. **No accept-token, by decision (D49.1)** — the
+member write is dark-by-reach. **No accept-token, by decision (D50.1)** — the
 mail is a notification and identity is proven at sign-in. 🔓 **Named accepted
 risk: no invite rate limit in slice 1** (admin-authenticated,
 `admin:members:invite`-gated). 🔴 **OWNER-GATE:** the flag flip · a real invite on
@@ -706,7 +718,7 @@ transport is live (owner-gated, above).
 
 #### SC-2c — the invite surface + the notification email *(◐ MINTED + BUILT 2026-08-24 · 🟢 AGENT-SAFE, dark · no migration)*
 
-**Spec:** decision **D49** (`work_plan.md` §3) · the Console half is
+**Spec:** decision **D50** (`work_plan.md` §3) · the Console half is
 `customer_console.md` **CP-2f** · `colleague_onboarding.md` §2 Step 1 ·
 `user_management_contract.md` R11.
 
@@ -714,7 +726,7 @@ transport is live (owner-gated, above).
 `/settings/members` invite dialog, and a **notification** email telling the
 person they have been added. It is deliberately *not* an acceptance flow.
 
-**D49.1 — no accept-token, ever.** The mail says *"you've been added to
+**D50.1 — no accept-token, ever.** The mail says *"you've been added to
 &lt;org&gt; on Metorite — sign in with this address at
 `https://app.metorite.com/signin`"* and carries **no token, no query parameter
 and no secret**. Identity is proven at sign-in by the IdP (Google, or CP-2d's
@@ -818,7 +830,7 @@ deployment · inviting a REAL member into a live organization (it writes that
 org's membership on two planes — `customer_console.md` §8 gate 4) · granting a
 real deployment key `member_admin` (§8 gate 8's class).
 
-**Non-goals.** No accept-token and no acceptance page (D49.1) · no re-send button
+**Non-goals.** No accept-token and no acceptance page (D50.1) · no re-send button
 · no invite expiry (there is nothing to expire) · no rate limit in slice 1 (named
 above) · no bulk/CSV invite · does NOT change the tenant plane's
 `app_user.status` — activation is still §2 Step 1b · does NOT touch the catch-all

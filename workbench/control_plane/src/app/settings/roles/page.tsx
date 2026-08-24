@@ -89,9 +89,9 @@ export default function RolesPage() {
       <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
         <div className="flex items-center gap-3">
           <Link
-            href="/settings/members"
+            href="/settings/organization"
             className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            aria-label="Back to members"
+            aria-label="Back to Organisation"
           >
             <Icon name="ArrowLeft" size={15} />
           </Link>

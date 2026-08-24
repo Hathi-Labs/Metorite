@@ -655,9 +655,9 @@ async def mirror_membership_status(
         )
 
 
-# ── Invited-member promotion, TENANT plane (WS-30/31 CP-2f, D49.3) ───────────
+# ── Invited-member promotion, TENANT plane (WS-30/31 CP-2f, D50.3) ───────────
 #
-# The other half of D49.3. The Console promotes its registry membership at first
+# The other half of D50.3. The Console promotes its registry membership at first
 # resolve (`store.activate_invited_member`); WITHOUT this twin the colleague then
 # hits the tenant plane still `invited` and dead-ends at the AccessGate: flag-OFF
 # reads `app_user.status == "active"` (:~873) and flag-ON's identity leg filters
@@ -699,7 +699,7 @@ _PROMOTE_APP_USER_SQL = """
 async def promote_invited_member(*, email: str) -> None:
     """Activate an ``invited`` member on the TENANT plane at sign-in completion.
 
-    D49.3's tenant half (the registry half is the Console's
+    D50.3's tenant half (the registry half is the Console's
     ``activate_invited_member``, fired inside the same resolve that admitted this
     sign-in). Best-effort, and **never raises, never changes the resolve
     answer** — the posture of every mirror in this module: a failed promotion

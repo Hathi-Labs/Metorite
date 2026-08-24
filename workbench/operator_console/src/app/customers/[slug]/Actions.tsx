@@ -3,9 +3,12 @@
 import { useState } from "react";
 import {
   canActivate,
+  isSeated,
   lifecycleActions,
   formatPaise,
+  memberTally,
   type CatalogPlan,
+  type MemberRow,
 } from "@/lib/format";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
@@ -45,15 +48,30 @@ export default function Actions({
   status,
   subscriptionStatus,
   plans,
+  members,
+  membersError,
 }: {
   slug: string;
   status: string;
   subscriptionStatus: string | null;
   plans: CatalogPlan[];
+  /** The customer's roster with seat state (LS-9). Empty = none arrived. */
+  members: MemberRow[];
+  /** Why the roster is empty, or null when it arrived. */
+  membersError: string | null;
 }) {
   return (
     <>
       <h2>Manage this customer</h2>
+      {/* The roster comes FIRST, above the by-email form. An operator should be
+          able to see who is unseated and click, rather than being asked for an
+          address they have to be told (launch_surface.md §7). */}
+      <MembersPanel
+        slug={slug}
+        plans={plans}
+        members={members}
+        membersError={membersError}
+      />
       <div className="row">
         {canActivate(subscriptionStatus) && (
           <ActivatePanel slug={slug} plans={plans} />
@@ -63,6 +81,114 @@ export default function Actions({
         <LifecyclePanel slug={slug} status={status} />
       </div>
     </>
+  );
+}
+
+/**
+ * The customer's members, with seat state and both controls (LS-9 · §7).
+ *
+ * The gap this closes: the console could already assign and release a seat, but
+ * only for an address an operator had typed — so "who in this org has no seat"
+ * was a question we could not answer for a customer who asked it. The roster
+ * and its seat state come from `GET /billing/summary`, i.e. from the SAME pair
+ * of store reads the customer's own Organisation surface uses, so the two
+ * cannot disagree.
+ *
+ * ⚠️ **Inviting a member stays customer-side, deliberately.** Seating somebody
+ * who is not already a member is refused Console-side (no identity, no
+ * membership), and we are not adding a door that creates people inside a
+ * customer's directory with no customer in the loop.
+ */
+function MembersPanel({
+  slug,
+  plans,
+  members,
+  membersError,
+}: {
+  slug: string;
+  plans: CatalogPlan[];
+  members: MemberRow[];
+  membersError: string | null;
+}) {
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState("");
+  // The one sellable plan under D49; read from the catalog rather than
+  // hardcoded, so this follows the catalog if a second plan ever returns.
+  const plan = plans[0]?.slug ?? "core";
+  const counts = memberTally(members);
+
+  async function act(email: string, path: string) {
+    setBusy(email);
+    const r = await post(path, { org_slug: slug, plan_slug: plan, email });
+    setResult(r);
+    setBusy("");
+    if (r?.ok) reload();
+  }
+
+  return (
+    <form className="panel" onSubmit={(e) => e.preventDefault()}>
+      <h2 style={{ marginTop: 0 }}>Members &amp; seats</h2>
+      {membersError ? (
+        <p className="muted">
+          <strong>Roster unavailable.</strong> {membersError} Seat assignment by
+          email still works below.
+        </p>
+      ) : members.length === 0 ? (
+        <p className="muted">This organization has no members yet.</p>
+      ) : (
+        <>
+          <p className="muted">
+            {counts.seated} of {counts.total} people seated ·{" "}
+            {counts.unassigned} unassigned. Releasing a seat leaves the person on
+            the roster so they can be reassigned.
+          </p>
+          <table>
+            <tbody>
+              {members.map((m) => {
+                const seated = isSeated(m);
+                return (
+                  <tr key={m.email}>
+                    <td>
+                      {m.email}
+                      {m.status !== "active" ? ` (${m.status})` : ""}
+                    </td>
+                    <td>{m.role}</td>
+                    <td>
+                      <strong>{seated ? "Seated" : "Unassigned"}</strong>
+                      {seated && m.seats.length > 1
+                        ? ` · ${m.seats.join(", ")}`
+                        : ""}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={seated ? "secondary" : undefined}
+                        disabled={busy === m.email}
+                        onClick={() =>
+                          act(
+                            m.email,
+                            seated
+                              ? "/api/operator/seats/release"
+                              : "/api/operator/seats",
+                          )
+                        }
+                      >
+                        {busy === m.email
+                          ? "…"
+                          : seated
+                            ? "Release"
+                            : "Assign seat"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+      <ResultLine result={result} />
+    </form>
   );
 }
 

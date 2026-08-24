@@ -72,8 +72,8 @@ export default function AccessPage() {
             Settings → Roles
           </Link>
           , or per person at{" "}
-          <Link href="/settings/members" className="underline">
-            Settings → Members
+          <Link href="/settings/organization" className="underline">
+            Organisation → Members &amp; roles
           </Link>
           .
         </p>
@@ -104,10 +104,16 @@ export default function AccessPage() {
 
 function Row({ row }: { row: PaneReport }) {
   const ok = row.status === "granted";
+  // Three outcomes, three icons, three labels. `not-launched` gets its own
+  // (D49 / LS-3) precisely because a padlock beside it would be a lie: no
+  // grant unlocks an app we are not offering yet, and a reader who cannot tell
+  // the two apart goes and asks an admin for a permission that will not help.
+  const notLaunched = row.status === "not-launched";
+  const icon = ok ? "Check" : notLaunched ? "Clock" : "Lock";
   return (
     <li className="flex items-start gap-2 py-2">
       <Icon
-        name={ok ? "Check" : "Lock"}
+        name={icon}
         size={13}
         className={`mt-0.5 shrink-0 ${ok ? "text-foreground" : "text-muted-foreground"}`}
       />
@@ -126,7 +132,7 @@ function Row({ row }: { row: PaneReport }) {
       </div>
       {!ok ? (
         <span className="shrink-0 rounded border border-border px-1 py-0.5 text-[10px] text-muted-foreground">
-          needs a grant
+          {notLaunched ? "not available yet" : "needs a grant"}
         </span>
       ) : null}
     </li>

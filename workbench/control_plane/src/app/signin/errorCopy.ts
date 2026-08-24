@@ -66,6 +66,12 @@ export function signInErrorMessage(code: string | null): string | null {
       // Names only that the chosen name is unavailable — never who holds it,
       // nor whether it exists on another deployment (no cross-tenant oracle).
       return "That organization name is already taken. Please choose a different one.";
+    case "ReservedSlug":
+      // WS-29 MT-1f, owner ruling B7. DISTINCT from SlugTaken on purpose, and
+      // the distinction is safe: the reserved set is static, public and the
+      // same for every caller, so it reveals nothing about any organization —
+      // which is exactly what "taken" would, if the two shared one code.
+      return "That workspace address is reserved for the platform. Please choose a different one.";
     default:
       return `Authentication error: ${code}`;
   }

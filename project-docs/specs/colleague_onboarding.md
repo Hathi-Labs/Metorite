@@ -32,7 +32,7 @@ this time a race, not a sequence — and with it the reason it kept recurring:
 **approve verified by prediction, never by reading back what it wrote.** It now
 requires the member to be `active` before the decision is stamped (§6 *Repair
 round 3*).
-**N6b's open owner question is ANSWERED 2026-08-24 (R4, decision D49.3):
+**N6b's open owner question is ANSWERED 2026-08-24 (R4, decision D50.3):
 (b) auto-promote on first sign-in — but on the REGISTRY plane only.** A Customer
 Console `org_membership` whose status is exactly `invited` is promoted to
 `active` at first resolve, guarded by the `AND status = 'invited'` in the
@@ -42,7 +42,7 @@ fence is shown red with). **The tenant plane's `app_user.status` is untouched, s
 than a question. Two more corrections in the same pass: **§2's "Sign-in is Entra
 ID SSO — there is no invitation email" was false on both halves** (sign-in is
 Google / email OTP; an invitation email exists as `subscription_console.md`
-SC-2c, a NOTIFICATION with no accept-token, D49.1), and **invite now provisions
+SC-2c, a NOTIFICATION with no accept-token, D50.1), and **invite now provisions
 on TWO planes** (`app_user` plus the Console's `org_membership`,
 `customer_console.md` CP-2f) — without the second, an invited colleague with
 registry resolve armed is funnelled into creating their own organization. **Merging N6a is
@@ -210,16 +210,16 @@ the owner loses work that has no backup.
 Prerequisite: §1 is green (run `scripts/onboarding_preflight.py` on the box).
 Every step below is a real, shipped endpoint.
 
-> ⚠️ **CORRECTED 2026-08-24 (R4, decision D49).** This paragraph used to read
+> ⚠️ **CORRECTED 2026-08-24 (R4, decision D50).** This paragraph used to read
 > *"Sign-in is Entra ID SSO — there is no invitation email."* **Both halves are
 > now false.** Sign-in is Google / email OTP through Auth.js
 > (`customer_console.md` CP-0, CP-2d) — Entra is gone — and an invitation email
 > exists: `subscription_console.md` **SC-2c**, dark behind
 > `MEMBER_INVITE_EMAIL_ENABLED`. It is a **notification, not an acceptance flow**
-> (D49.1): no token, no link that grants anything, no query-string secret.
+> (D50.1): no token, no link that grants anything, no query-string secret.
 > Identity is still proven at sign-in by the IdP, so "inviting" still means
 > **provisioning the row that turns a verified identity into a member** — and
-> since **D49.2** it provisions that row on **two** planes: the tenant's
+> since **D50.2** it provisions that row on **two** planes: the tenant's
 > `app_user` and the Customer Console's `org_membership` (`status='invited'`,
 > `customer_console.md` **CP-2f**). The second is not optional bookkeeping —
 > without it the colleague is invisible to the seats grid, cannot be assigned a
@@ -264,17 +264,17 @@ Every step below is a real, shipped endpoint.
 > and therefore no acceptance event that could promote them.~~ **Steps 1 and 1b
 > are one operation performed in two clicks.**
 >
-> ⚠️ **The struck sentence was rewritten 2026-08-24 (R4, D49), and the
+> ⚠️ **The struck sentence was rewritten 2026-08-24 (R4, D50), and the
 > correction is narrower than it first looks.** There *is* now an invitation
 > email (SC-2c) — but it is a **notification**, so it is still not an acceptance
-> event, and it still cannot promote anybody: D49.1 refuses an accept-token by
-> name. What D49.3 adds is a promotion on the **registry** plane — a Console
+> event, and it still cannot promote anybody: D50.1 refuses an accept-token by
+> name. What D50.3 adds is a promotion on the **registry** plane — a Console
 > `org_membership` whose status is exactly `invited` becomes `active` at first
 > resolve. **The tenant plane's `app_user.status` is UNCHANGED**, so the sentence
 > above stays true where it matters: **Step 1b is still required**, and Steps 1
 > and 1b are still one operation in two clicks. Folding the tenant-plane
 > activation in would put a second write on the live auth path and is
-> deliberately *not* part of D49 — it is N6b's remaining half, recorded in §6.
+> deliberately *not* part of D50 — it is N6b's remaining half, recorded in §6.
 
 ### Step 2 — Assign the role (if it is not the default)
 
@@ -1490,7 +1490,7 @@ If (b) is ever chosen, one non-obvious guard must come with it: `suspended` and
 `removed` must **not** be promoted. The natural implementation
 (`status != 'active'` → activate) silently un-suspends people.
 
-> ### ✅ ANSWERED 2026-08-24 — **(b), on the REGISTRY plane only** *(decision D49.3, owner-ratified; built on `ws-30-invites`)*
+> ### ✅ ANSWERED 2026-08-24 — **(b), on the REGISTRY plane only** *(decision D50.3, owner-ratified; built on `ws-30-invites`)*
 >
 > The owner chose **(b) auto-promote on first sign-in**, and the guard this
 > section warned about is the one that was built: the promotion is
@@ -1518,7 +1518,7 @@ If (b) is ever chosen, one non-obvious guard must come with it: `suspended` and
 > **N6b's remaining half, stated as a ticket rather than a question:** promote
 > the tenant `app_user` row `invited → active` on a successful resolve, with the
 > same `WHERE status = 'invited'` guard. It is a change to the live auth path
-> with a real lockout blast radius, it was **deliberately excluded from D49**,
+> with a real lockout blast radius, it was **deliberately excluded from D50**,
 > and it needs its own slice. Until then this section stands: (a) in practice,
 > (b) on the registry.
 
@@ -1648,9 +1648,9 @@ everyone who knocked, not a list of colleagues.
 **Done when — N6b:** ~~nothing to build. §2 Step 1b shipped the fix; the
 remaining question is the owner's (a)/(b)/(c) above.~~ **UPDATED 2026-08-24
 (R4):** the owner answered **(b), on the registry plane only** — see the ANSWERED
-box above and **D49.3**. The Console-plane `invited → active` promotion is BUILT
+box above and **D50.3**. The Console-plane `invited → active` promotion is BUILT
 (`customer_console.md` CP-2f); the tenant-plane `app_user` half is explicitly
-**out of D49** and is now a named ticket rather than an open question. §2 Step 1b
+**out of D50** and is now a named ticket rather than an open question. §2 Step 1b
 is unchanged and still required.
 
 #### As built (2026-08-04) — where each done-when landed, and what the ticket got wrong

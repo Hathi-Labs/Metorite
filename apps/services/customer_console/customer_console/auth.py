@@ -154,7 +154,7 @@ PROVISION_CAPABILITY = "provision"
 #: it by hand.
 SEAT_ADMIN_CAPABILITY = "seat_admin"
 
-#: The FOURTH capability — WS-31 CP-2f (D49.2). It gates the customer-authenticated
+#: The FOURTH capability — WS-31 CP-2f (D50.2). It gates the customer-authenticated
 #: MEMBER write (``POST /registry/members``), the door through which a colleague
 #: who was INVITED — rather than a founder who signed up — reaches the registry at
 #: all.

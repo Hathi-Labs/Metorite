@@ -1111,7 +1111,11 @@ class TestSeatSemantics:
             "additional_seats_required", "price_inr",
         }
         assert detail["buy_more"]["additional_seats_required"] == 1
-        assert detail["buy_more"]["price_inr"] == "600.00"
+        # The Core seat's catalog price, so the upsell quotes what the next seat
+        # actually costs. ₹500 since D49 / migration 008 — it was ₹600 under
+        # D23's package ladder, and this literal is the anchor that made the
+        # repricing visible rather than silent.
+        assert detail["buy_more"]["price_inr"] == "500.00"
 
         # Refused means refused: nothing was written on the way out.
         with db.begin() as c:

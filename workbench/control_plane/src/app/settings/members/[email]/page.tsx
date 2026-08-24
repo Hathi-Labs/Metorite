@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Settings → Members → one person's access.
+ * Organisation → Members & roles → one person's access.
  *
  * Spec: project-docs/specs/org_access_control.md §6.
  *
@@ -187,8 +187,8 @@ export default function MemberAccessPage() {
     return (
       <div className="p-6">
         <p className="text-sm text-destructive">{error || "Member not found."}</p>
-        <Link href="/settings/members" className="mt-3 inline-block text-xs text-primary">
-          ← Back to members
+        <Link href="/settings/organization" className="mt-3 inline-block text-xs text-primary">
+          ← Back to Organisation
         </Link>
       </div>
     );
@@ -202,9 +202,9 @@ export default function MemberAccessPage() {
       <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-3">
           <Link
-            href="/settings/members"
+            href="/settings/organization"
             className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            aria-label="Back to members"
+            aria-label="Back to Organisation"
           >
             <Icon name="ArrowLeft" size={15} />
           </Link>

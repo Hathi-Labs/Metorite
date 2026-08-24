@@ -157,12 +157,12 @@ async def invite_member(
     """Create (or re-activate) a member row in the `invited` state.
 
     ⚠️ This docstring used to say *"No email is sent — sign-in is Entra ID SSO"*.
-    **Both halves are false** (corrected 2026-08-24, D49): sign-in is Google /
+    **Both halves are false** (corrected 2026-08-24, D50): sign-in is Google /
     email OTP through Auth.js, and an invite notification email now exists —
     ``subscription_console.md`` SC-2c, sent by the BFF hop
     ``api/admin/members/invite`` AFTER this route answers 2xx, dark behind
     ``MEMBER_INVITE_EMAIL_ENABLED``. **This route still sends nothing itself**,
-    and the mail carries **no token** (D49.1): identity is proven at sign-in, so
+    and the mail carries **no token** (D50.1): identity is proven at sign-in, so
     the mail is a notification and not an acceptance event.
 
     "Inviting" means provisioning the row that turns a verified identity into a
@@ -209,7 +209,7 @@ async def invite_member(
         email=member["email"], org_id=org_id, status=member["status"],
     )
 
-    # CP-2f (WS-31, D49.2): mirror the member onto the CUSTOMER CONSOLE — a
+    # CP-2f (WS-31, D50.2): mirror the member onto the CUSTOMER CONSOLE — a
     # different plane and a different database from the H6 shadow two calls
     # above, and the one that decides whether this person can ever join.
     #

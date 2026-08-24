@@ -77,18 +77,22 @@ describe("paneReport", () => {
 });
 
 describe("summarise", () => {
-  it("counts what is reachable against the whole set", () => {
+  it("counts what is reachable against what is OFFERED, not the whole registry", () => {
     const text = summarise(paneReport(signedIn()));
-    expect(text).toMatch(/panes available/);
+    expect(text).toMatch(/apps available/);
     expect(text).toMatch(/need a grant/);
+    // Unlaunched panes are reported separately and kept out of the
+    // denominator — "3 of 24" would read as broken when sixteen of the 24 are
+    // simply not being offered to anybody yet (LS-3).
+    expect(text).toMatch(/not available yet/);
   });
 
-  it("says so plainly when everything is available", () => {
+  it("says so plainly when everything offered is available", () => {
     const all = allPanes()
       .map((p) => p.feature)
       .filter((f): f is string => Boolean(f));
     const text = summarise(paneReport(signedIn({ features: all, features_denied: [] })));
-    expect(text).toMatch(/All \d+ panes/);
+    expect(text).toMatch(/All \d+ available apps are open to you/);
   });
 
   it("leads with signed-out, because nothing else is meaningful then", () => {
@@ -107,5 +111,34 @@ describe("unmappedFeatures", () => {
 
   it("is empty when every grant has a home", () => {
     expect(unmappedFeatures(signedIn({ features: ["chat", "tasks"] }))).toEqual([]);
+  });
+});
+
+describe("launch status is reported apart from access (LS-3 · D49)", () => {
+  it("says NOT AVAILABLE YET for a preview pane the member actually holds", () => {
+    // The case that makes this status worth having: the member has
+    // `feature:email`, so the old report said "granted" for a pane that is not
+    // in the menu — or, if we had hidden it by revoking the grant, "you need
+    // feature:email", which is advice that would not have worked either.
+    const rows = paneReport(signedIn({ features: ["email", "chat"], features_denied: [] }));
+    const email = rows.find((r) => r.href === "/email");
+    expect(email?.status).toBe("not-launched");
+    expect(email?.reason).toMatch(/not available yet/i);
+    expect(email?.reason).toMatch(/grant will not reveal it/i);
+
+    // ...while a live pane with the same grant is plainly granted.
+    expect(rows.find((r) => r.href === "/chat")?.status).toBe("granted");
+  });
+
+  it("still reports every pane, so 'hidden' stays distinguishable from 'absent'", () => {
+    const rows = paneReport(signedIn());
+    expect(rows.some((r) => r.status === "not-launched")).toBe(true);
+    expect(rows.length).toBe(allPanes().length);
+  });
+
+  it("does not call a preview pane's slug unmapped", () => {
+    // It has a nav entry; it is just not offered. Reporting it as unmapped
+    // would send somebody to write a nav entry that already exists.
+    expect(unmappedFeatures(signedIn({ features: ["email"] }))).not.toContain("email");
   });
 });

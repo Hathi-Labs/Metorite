@@ -700,7 +700,7 @@ async def release_seat_on_console(
     )
 
 
-# ── The MEMBER-write client (CP-2f · customer_console.md, D49.2) ─────────────
+# ── The MEMBER-write client (CP-2f · customer_console.md, D50.2) ─────────────
 #
 # ⚠️ **Still the ONE Console httpx client** (the note above the seat writes):
 # this function is the gateway's path to the Console's deployment-key
@@ -746,7 +746,7 @@ async def invite_member_on_console(
     member_email: str,
     display_name: str = "",
 ) -> tuple[int, dict[str, Any]]:
-    """Mirror an invited member onto the Customer Console (CP-2f, D49.2).
+    """Mirror an invited member onto the Customer Console (CP-2f, D50.2).
 
     Writes an ``org_membership`` row with ``status='invited'`` for the
     organization the acting admin belongs to on THIS deployment, so the invited

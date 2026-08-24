@@ -12,6 +12,9 @@ import {
   suggestSlug,
   plansNotice,
   lifecycleHint,
+  isSeated,
+  memberTally,
+  readMembers,
   type SeatRow,
 } from "./format";
 
@@ -226,5 +229,67 @@ describe("plansNotice", () => {
   it("is silent when the ladder actually arrived", () => {
     expect(plansNotice(200, 12)).toBeNull();
     expect(plansNotice(200, 1)).toBeNull();
+  });
+});
+
+describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
+  it("reads the roster off a summary body, defaulting seats to empty", () => {
+    const rows = readMembers({
+      members: [
+        { email: "a@x.test", role: "owner", status: "active", seats: ["core"] },
+        { email: "b@x.test", role: "member", status: "invited", seats: [] },
+        // A Console predating LS-7 sends no `seats` key for a member.
+        { email: "c@x.test", role: "member", status: "active" },
+      ],
+    });
+    expect(rows.map((m) => m.email)).toEqual(["a@x.test", "b@x.test", "c@x.test"]);
+    expect(rows.map(isSeated)).toEqual([true, false, false]);
+  });
+
+  it("returns nothing when the body carries no members key", () => {
+    // A Console predating LS-9. The CALLER must render this as "no roster
+    // arrived", not "this customer has no members" — the page decides that, and
+    // this only has to not invent rows.
+    expect(readMembers({})).toEqual([]);
+    expect(readMembers(null)).toEqual([]);
+    expect(readMembers({ members: "core" })).toEqual([]);
+  });
+
+  it("drops a malformed row rather than crashing the page", () => {
+    // An operator surface that white-screens on one bad row is worse than one
+    // showing the other nine.
+    const rows = readMembers({
+      members: [
+        { role: "member" },
+        null,
+        { email: "ok@x.test", role: "member", status: "active", seats: ["core"] },
+      ],
+    });
+    expect(rows.map((m) => m.email)).toEqual(["ok@x.test"]);
+  });
+
+  it("coerces a malformed seats field to empty rather than trusting it", () => {
+    const rows = readMembers({
+      members: [{ email: "a@x.test", role: "", status: "", seats: "core" }],
+    });
+    expect(rows[0].seats).toEqual([]);
+    expect(isSeated(rows[0])).toBe(false);
+  });
+
+  it("tallies PEOPLE, counting a multi-plan holder once", () => {
+    // The trap: presenting this as the seat count. One person on two plans is
+    // one seated row and two assigned seats — the seat counts are seatsTotals'.
+    const rows = readMembers({
+      members: [
+        { email: "a@x.test", role: "", status: "", seats: ["core", "qa-second-seat"] },
+        { email: "b@x.test", role: "", status: "", seats: [] },
+        { email: "c@x.test", role: "", status: "", seats: [] },
+      ],
+    });
+    expect(memberTally(rows)).toEqual({ total: 3, seated: 1, unassigned: 2 });
+  });
+
+  it("tallies an empty roster without dividing by anything", () => {
+    expect(memberTally([])).toEqual({ total: 0, seated: 0, unassigned: 0 });
   });
 });

@@ -762,7 +762,7 @@ def add_invited_member(
 ) -> tuple[bool, str]:
     """Create an ``invited`` membership if the org has none for this identity.
 
-    CP-2f / D49.2 — the ONLY member-add writer besides ``provision``'s founder
+    CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
     INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
     and given a seat before they have ever signed in.
 
@@ -819,7 +819,7 @@ def activate_invited_member(
 ) -> bool:
     """Promote an ``invited`` membership to ``active``. Returns whether it moved.
 
-    D49.3 — *"first sign-in auto-activates an invited member"*, driven from the
+    D50.3 — *"first sign-in auto-activates an invited member"*, driven from the
     DEPLOYMENT arm of ``POST /registry/resolve`` and from nowhere else.
 
     ⚠️ **The guard is the ``AND status = 'invited'`` in this statement's own
@@ -889,6 +889,54 @@ def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
             {"org": org_id},
         )
     ]
+
+
+def live_seats_by_email(conn: Connection, *, org_id: str) -> dict[str, list[str]]:
+    """Every LIVE seat in one organization, keyed by the holder's email.
+
+    The read `org_members`'s docstring records as DEFERRED (§6 item (i)),
+    undeferred by **D49** — `launch_surface.md` LS-7 needs *Unassigned* to be a
+    first-class state on the seat surface, and a member with no row in
+    `seat_assignment` is exactly what that means. Without this, "who has no
+    seat" is unanswerable from the customer's own credential.
+
+    **One query for the whole org, folded in memory — never one per member.**
+    A roster of forty members would otherwise be forty round trips behind one
+    HTTP read, and the N+1 would arrive as a slow page long after the change
+    that caused it.
+
+    `released_at IS NULL` is the live predicate the whole seat vocabulary uses
+    (`has_live_seat`, `seat_rows`, `try_assign_seat`'s partial unique index).
+    Stated once here rather than left to the caller for the reason
+    :func:`active_plans` gives about `active`: a filter a caller may forget is a
+    filter that eventually reports released seats as held.
+
+    The key is the **email**, not the identity id: the caller is the customer's
+    own surface, an internal `user_identity` id is not theirs to hold
+    (`MemberView`'s stated absences), and email is what the roster is already
+    keyed by. `CITEXT` makes the join case-insensitive on the database side;
+    the returned key is whatever case the identity row stores, which is the same
+    string :func:`org_members` returns — so the two reads zip without
+    normalization.
+
+    Plans are ordered so the answer is stable for a caller comparing two
+    responses, the reason :func:`deployment_visible_orgs` orders by slug.
+    """
+    out: dict[str, list[str]] = {}
+    for email, plan_slug in conn.execute(
+        text(
+            """
+            SELECT ui.email, sa.plan_slug
+            FROM seat_assignment sa
+            JOIN user_identity ui ON ui.id = sa.user_identity_id
+            WHERE sa.organization_id = :org AND sa.released_at IS NULL
+            ORDER BY ui.email, sa.plan_slug
+            """
+        ),
+        {"org": org_id},
+    ):
+        out.setdefault(email, []).append(plan_slug)
+    return out
 
 
 # ── Operator Console: the cross-org read (§4.1a / CP-8) ─────────────────────

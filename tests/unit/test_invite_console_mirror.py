@@ -1,7 +1,7 @@
 """CP-2f — the gateway half: ``invite_member`` mirrors onto the Customer Console.
 
 Spec: ``project-docs/specs/customer_console.md`` CP-2f done-when 8 ·
-``work_plan.md`` §3 **D49.2** · ``user_management_contract.md`` R11.
+``work_plan.md`` §3 **D50.2** · ``user_management_contract.md`` R11.
 
 Two halves, and they fence different failures:
 

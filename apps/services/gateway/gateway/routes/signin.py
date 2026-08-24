@@ -130,7 +130,7 @@ async def resolve_sign_in(
         display_name=(req.display_name if req else ""),
     )
     if decision.admit:
-        # ── D49.3, the TENANT half ─────────────────────────────────────────
+        # ── D50.3, the TENANT half ─────────────────────────────────────────
         # The Console just admitted this sign-in and (if they were `invited`)
         # promoted its REGISTRY membership; this is the twin that activates the
         # TENANT plane (`app_user` + the identity shadow) so the person lands
@@ -141,7 +141,7 @@ async def resolve_sign_in(
         # `promote_invited_member` never raises and never changes the answer
         # below; a failed promotion fails CLOSED (they stay invited).
         # Guarded to `invited` ONLY, in the UPDATE's own WHERE — suspended and
-        # removed members are never touched (D49.3; the guard is fenced).
+        # removed members are never touched (D50.3; the guard is fenced).
         await promote_invited_member(email=(user.email or "") if user else "")
     if not decision.admit:
         # One line per refusal, because the person on the other side is about

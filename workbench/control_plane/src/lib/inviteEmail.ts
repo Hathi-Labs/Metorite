@@ -2,12 +2,12 @@
  * WS-30 SC-2c — the member-invite NOTIFICATION email.
  *
  * Spec: `project-docs/specs/subscription_console.md` SC-2c ·
- * `work_plan.md` §3 **D49.1** · `customer_console.md` CP-2f (the Console
+ * `work_plan.md` §3 **D50.1** · `customer_console.md` CP-2f (the Console
  * membership this mail merely announces).
  *
  * ## It is a notification, not an acceptance flow — and that is a decision
  *
- * **There is no token in this email, and adding one is a design change.** D49.1,
+ * **There is no token in this email, and adding one is a design change.** D50.1,
  * owner-ratified 2026-08-24: identity is proven at sign-in by the IdP (Google,
  * or CP-2d's email OTP), so a mail-borne bearer would be a **second identity
  * system** beside the one `user_management_contract.md` binds — living in a
@@ -45,7 +45,7 @@ import {
 /** Where the sign-in page lives when the deployment declares no public URL. */
 export const INVITE_SIGNIN_FALLBACK_ORIGIN = "https://app.metorite.com";
 
-/** The path the invitee is sent to. Bare, and it stays bare — see D49.1. */
+/** The path the invitee is sent to. Bare, and it stays bare — see D50.1. */
 export const INVITE_SIGNIN_PATH = "/signin";
 
 /**
@@ -84,7 +84,7 @@ export function isInviteEmailConfigured(env: InviteEmailEnv): boolean {
   );
 }
 
-/** The sign-in URL an invitee is pointed at. No query string, ever (D49.1). */
+/** The sign-in URL an invitee is pointed at. No query string, ever (D50.1). */
 export function inviteSignInUrl(env: InviteEmailEnv): string {
   const origin = (env.WORKBENCH_PUBLIC_URL || "").trim().replace(/\/+$/, "");
   return `${origin || INVITE_SIGNIN_FALLBACK_ORIGIN}${INVITE_SIGNIN_PATH}`;

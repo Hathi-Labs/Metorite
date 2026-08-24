@@ -45,7 +45,7 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
         <p className="mt-2 text-sm text-muted-foreground">
           {suspended
             ? "Your membership is suspended or pending. An organization admin can reactivate it."
-            : "This part of Metorite isn't enabled for your account. An organization admin can grant access from Settings → Members."}
+            : "This part of Metorite isn't enabled for your account. An organization admin can grant access from Organisation → Members & roles."}
         </p>
         <Link
           href="/chat"

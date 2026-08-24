@@ -235,7 +235,7 @@ jobs:
       #
       # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
       # `test_customer_console_member_write.py` — the member-add door and
-      # D49.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
+      # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
       # and carrying the same self-defending pair of tests (it reads this file
       # AND `customer_console.md` §7). `test_invite_console_mirror.py` joins
       # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:

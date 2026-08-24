@@ -1,4 +1,4 @@
-"""CP-2f — the Console member-write door, and D49.3's first-resolve promotion.
+"""CP-2f — the Console member-write door, and D50.3's first-resolve promotion.
 
 Spec: ``project-docs/specs/customer_console.md`` CP-2f (done-whens 1-7, 9) ·
 ``subscription_console.md`` SC-2c · ``work_plan.md`` §3 **D49** ·
@@ -562,7 +562,7 @@ class TestTheActorMustBeAnActiveMember:
         assert "membership is locked" in r.json()["detail"]
 
 
-# ── Done-when 7 — D49.3, the guarded promotion ───────────────────────────────
+# ── Done-when 7 — D50.3, the guarded promotion ───────────────────────────────
 
 class TestFirstResolveActivatesTheInvited:
     def test_an_invited_member_becomes_active_and_joined_at_is_stamped(

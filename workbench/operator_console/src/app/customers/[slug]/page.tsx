@@ -1,5 +1,10 @@
 import { redirect } from "next/navigation";
-import { listOrganizations, catalog, ConsoleUnconfigured } from "@/lib/console";
+import {
+  listOrganizations,
+  catalog,
+  billingSummary,
+  ConsoleUnconfigured,
+} from "@/lib/console";
 import { staffSession } from "@/lib/session";
 import {
   formatPaise,
@@ -9,6 +14,8 @@ import {
   statusHelp,
   plansNotice,
   lifecycleHint,
+  readMembers,
+  type MemberRow,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -28,20 +35,37 @@ type Loaded = {
   // must never be silent either, which is what folding it into `plans: []`
   // did (see `plansNotice`).
   plansError: string | null;
+  /** The org's roster with seat state (LS-9). Empty when none arrived. */
+  members: MemberRow[];
+  /**
+   * Why the roster is empty, or null when it arrived.
+   *
+   * Kept SEPARATE from `error` for `plansError`'s reason: a failed summary read
+   * must not blank the page — the org's numbers come from `/orgs` and the
+   * by-email seat form still works — but it must not be silent either, or an
+   * operator reads "no members" off a failed request.
+   */
+  membersError: string | null;
   error: string | null;
 };
 
 async function loadOrg(slug: string): Promise<Loaded> {
   try {
-    const [listRes, catRes] = await Promise.all([
+    // Three reads in parallel, all operator-door: the cross-org list (this
+    // org's numbers), the catalog (the plan pickers), and the per-org summary
+    // (the roster with seat state, LS-9).
+    const [listRes, catRes, sumRes] = await Promise.all([
       listOrganizations(),
       catalog(),
+      billingSummary(slug),
     ]);
     if (listRes.status !== 200) {
       return {
         org: null,
         plans: [],
         plansError: null,
+        members: [],
+        membersError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -49,10 +73,29 @@ async function loadOrg(slug: string): Promise<Loaded> {
     const org = orgs.find((o) => o.slug === slug) ?? null;
     const plans =
       catRes.status === 200 ? (JSON.parse(catRes.body) as Catalog).plans : [];
+    let members: MemberRow[] = [];
+    let membersError: string | null = null;
+    if (sumRes.status !== 200) {
+      membersError = `The summary read returned ${sumRes.status}.`;
+    } else {
+      try {
+        members = readMembers(JSON.parse(sumRes.body));
+      } catch {
+        membersError = "The summary read could not be parsed.";
+      }
+      // A Console predating LS-9 answers 200 with no `members` key. That is not
+      // "this customer has no members" — say which it is.
+      if (!membersError && members.length === 0) {
+        membersError =
+          "This Console build does not report members (it predates the seat roster).";
+      }
+    }
     return {
       org,
       plans,
       plansError: plansNotice(catRes.status, plans.length),
+      members,
+      membersError,
       error: null,
     };
   } catch (e) {
@@ -60,6 +103,8 @@ async function loadOrg(slug: string): Promise<Loaded> {
       org: null,
       plans: [],
       plansError: null,
+      members: [],
+      membersError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -78,7 +123,8 @@ export default async function CustomerDetailPage({
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
-  const { org, plans, plansError, error } = await loadOrg(slug);
+  const { org, plans, plansError, members, membersError, error } =
+    await loadOrg(slug);
 
   if (error) {
     return (
@@ -233,6 +279,8 @@ export default async function CustomerDetailPage({
         status={org.status}
         subscriptionStatus={org.subscription_status}
         plans={plans}
+        members={members}
+        membersError={membersError}
       />
     </main>
   );

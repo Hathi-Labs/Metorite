@@ -36,10 +36,15 @@ slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
 self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 `signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
-form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
+form UI + its `/api/signup` Next hop, BUILD+TEST only; **AMENDED 2026-08-24 by
+WS-29 MT-1f slice 1 — done-when 4a, the `ReservedSlug` refusal (owner ruling B7,
+a live-defect fix: `api`/`app`/`www` were registrable through the public form),
+and done-when 8a, `/signup` with no session redirects to `/signin`; **repair round
+1 the same day** — the reserved set extended additively to 21 labels, 8a re-worded
+to name `currentIdentity()` and its defence-in-depth motivation**) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
 owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write door
-— `POST /registry/members` on the `member_admin` capability, plus D49.3's
+— `POST /registry/members` on the `member_admin` capability, plus D50.3's
 `invited→active` promotion in the deployment resolve arm; **no migration**, the
 `001` CHECK already carries `invited`. Dark by construction: no live key holds
 the capability. Grant/deploy/live-write owner-gated) · CP-6
@@ -4173,8 +4178,17 @@ person visible in two orgs on one deployment · retiring the operator-auth shape
 · any Router or metering change.
 
 **CP-2c · The self-serve signup flow — the form over CP-2a's API.** ◐ **MINTED
-2026-08-19 (D46, owner directive); SLICE 1 BUILT 2026-08-19 — slices 2, 3 and 4
-open.** Slice 1 is the Console deployment-key provision arm (done-when 6 and
+2026-08-19 (D46, owner directive); SLICES 1–4 BUILT (2026-08-19/20).**
+⚠️ **Updated 2026-08-24 by WS-29 MT-1f slice 1's branch — two additions to the
+shipped surface, both recorded here because this ticket owns the signup door:**
+(i) **done-when 4a**, the **`ReservedSlug`** refusal (owner ruling B7 — a
+LIVE-DEFECT fix: `api`, `app` and `www` were registrable through the public form),
+with the reserved vocabulary shared cross-language and a NAMED gap left open at
+the Console's own provision door; and (ii) **done-when 8a**, `/signup` with no
+session **redirects to `/signin`** — defence in depth behind `proxy.ts`, which
+already refuses the page to a signed-out visitor (both clauses were re-worded in
+repair round 1, 2026-08-24: the reserved set grew to **21** labels and 8a's check
+is `currentIdentity()`, never `await auth()`). Slice 1 is the Console deployment-key provision arm (done-when 6 and
 done-when 8's Console half) and it carries the D46.6-item-1 amendment; the
 record is in the slice list at the end of this ticket. Nothing of the *form*
 exists yet: no `/signup` route, no `SELF_SERVE_SIGNUP_ENABLED` flag, no gateway
@@ -4236,8 +4250,48 @@ overrule any numbered item)*:
    shape error (slice-2 P2, repaired at landing), and a spaced slug (`"a b"`)
    reached the cross-plane join key unvalidated. Refusals: **400**
    `InvalidGstin` / **400** `MissingState` / **400** `MissingSlug` / **400**
-   `InvalidSlug`, fenced red-first in `test_signup_provision_route.py`; the form
-   mirrors all four client-side (advisory — the route is the fence).
+   `InvalidSlug` / **400** `ReservedSlug`, fenced red-first in
+   `test_signup_provision_route.py`; the form mirrors all five client-side
+   (advisory — the route is the fence).
+
+   ⚠️ **RESERVED LABELS — added 2026-08-24, owner ruling B7 (`saas_multitenancy.md`
+   §11 MT-1f). This is a LIVE-DEFECT FIX, not a forward-looking nicety, and it
+   applies regardless of any flag.** `_SLUG_RE` is a *shape* rule and shape was
+   never the whole rule: measured 2026-08-24, the gate admits **`api`**, **`app`**
+   and **`www`**, so a self-serve customer can today register the slug that names
+   the gateway's own hostname — and the moment MT-1f's wildcard exists, that slug
+   is a hostname collision with a live service, minted by a stranger through a
+   public form. The reserved set is B7's thirteen —
+   `{app, api, www, admin, console, signin, signup, mail, static, cdn, status,
+   help, docs}` — **plus eight added additively in repair round 1, 2026-08-24**:
+   `{assets, auth, billing, dev, login, operator, staging, ws}`, all names the
+   platform already uses or has ticketed (`operator` = the Operator Console D35,
+   `billing` = the subscription surface, `auth`/`login` = sign-in hostnames,
+   the rest infrastructure). **21 in total**, and safe to widen only because
+   self-serve signup is dark and nobody can already hold one — refused at the
+   **route**, in the same shape-violation class as
+   `InvalidSlug`, with the new code **`ReservedSlug`** (400) so the copy can say
+   *"reserved"* rather than *"malformed"*. Comparison is on the already-lowercased
+   slug, after the `_SLUG_RE` check, so a reserved label and a malformed one are
+   never confused. **It is not an existence oracle**: the set is static, public and
+   identical for every caller, which is exactly what distinguishes it from
+   `SlugTaken`.
+   **ONE vocabulary, two languages.** The canonical list is
+   `workbench/control_plane/src/lib/subdomain.ts`'s `RESERVED_LABELS` (it exists
+   because of DNS, so the host parser owns it); the gateway holds the runtime
+   literal it enforces, and `tests/unit/test_subdomain_host_vocabulary.py`
+   **parses the TypeScript** and pins the two sets equal — the
+   `test_seed_status_colours_match_the_shared_vocabulary` idiom, chosen for the
+   same reason (*a mirror goes stale and then lies*).
+   ⚠️ **NAMED GAP, not closed here: the Console-side provision door.**
+   `POST /orgs/provision` (`apps/services/customer_console/`) accepts a slug on
+   both arms and applies **no** reserved-label check of its own; migration 179's
+   `provision_organization` accepts any slug too. Every *self-serve* path reaches
+   the Console **through** this gateway route, so the public door is closed — but
+   an operator-arm provision, or any future caller that does not transit
+   `routes/signup.py`, is not. Closing the Console door belongs to the branch that
+   owns `apps/services/customer_console/` and is recorded here so it has a
+   referent rather than a disclaimer chain (the CP-2c/MT-1j failure mode).
 4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
    `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
    only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
@@ -4471,6 +4525,15 @@ mutation testing on auth/tenancy clauses)*:
    — no `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
    ConsoleOrgRow` (R8 against the Console ladder, the deployment-key arm) for
    the landing.
+   ✅ **4a MET — 2026-08-24 (MT-1f slice 1's branch).** A **reserved** slug is
+   **400 `ReservedSlug`**, refused at the route after the `_SLUG_RE` shape check
+   and before step 0/1/2 (item 3's reserved-label block; owner ruling B7). Fences:
+   `::TestTheReservedLabels` in `test_signup_provision_route.py` (hermetic,
+   red-first — `api` provisioned an organization before the gate, and the Console
+   is asserted never reached), plus the cross-language parity fence
+   `tests/unit/test_subdomain_host_vocabulary.py`, which reads
+   `RESERVED_LABELS` out of `src/lib/subdomain.ts` and pins the gateway's set
+   equal to it.
 5. ✅ **5b MET · 5a MET at plane level; the missing route-level convergence is
    deferred to CP-2e (an out-of-band sweep, not a route retry) —
    slice 2, 2026-08-20. The two-plane orchestration converges or
@@ -4562,6 +4625,30 @@ mutation testing on auth/tenancy clauses)*:
    that `console-empty` is the only `signup_eligible=True` outcome while
    `console-refused`, `cache-dead` and `console-error` are all False; plus the
    three route-dict updates in `test_signin_resolve_route.py`.)*
+8a. ✅ **MET — 2026-08-24 (MT-1f slice 1's branch; wording corrected the same day in
+   repair round 1).** `/signup` reached with **no session redirects to `/signin`**,
+   from the page itself. The check is a server-component **`await currentIdentity()`**
+   — the same `lib/gateway.ts` seam the `/api/signup` hop's `requireIdentity()` sits
+   on, so "may this render" and "will the submit work" cannot drift, and it carries
+   the laptop bypass — placed beside the flag gate and ordered **flag first, session
+   second** (an un-opted-in box must not disclose that the surface exists behind a
+   sign-in). ⚠️ **Not `await auth()`**: this clause said so until 2026-08-24 and the
+   shipped code never did; `signup.test.ts` asserts the page contains **no**
+   `await auth()` and no `from "next-auth"` import, so the old wording described a
+   shape its own fence forbids.
+   ⚠️ **It is DEFENCE IN DEPTH, not the repair of a reachable dead end** — the
+   second correction. The earlier motivation ("a signed-out visitor used to be shown
+   a four-field form and told nothing until submit") is **false**: `/signup` is
+   absent from `proxy.ts`'s `PUBLIC_PAGES`, so the proxy already 307'd a signed-out
+   page navigation to `/signin` and the form was never reachable without a session.
+   What the check buys is that the guarantee no longer depends on a set in another
+   file — adding `/signup` to `PUBLIC_PAGES` is a one-line edit somebody will make
+   the day the marketing CTA lands. The form's `needsSignIn` arm stays for the case
+   neither gate can see: a session that expires *between render and submit*.
+   Fence: `signup.test.ts` — a source pin on both gates, their order, and the
+   negative `await auth()` pin; `signin.test.ts:209`'s idiom, because
+   `next-auth`/`next/navigation` cannot load in this tree's node-env vitest; the
+   behaviour is the reviewer's manual gate.
 8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,
@@ -4593,7 +4680,7 @@ member-add door**, so an invited colleague never reaches the registry and — wi
 resolve ARMED, as it now is — resolves `console-empty` and is funnelled into
 creating **their own** organization instead of joining their employer's. The door
 is **CP-2f** (below); the mail is `subscription_console.md` **SC-2c**; the
-decision is **D49**. · per-tenant
+decision is **D50**. · per-tenant
 subdomains (MT-1f).
 
 **Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
@@ -4999,7 +5086,7 @@ function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
 
 **CP-2f · The Console member-write door — the ONLY way a colleague who was
 INVITED (rather than a founder who signed up) reaches the registry.** ◐
-**MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D49**; the
+**MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D50**; the
 customer-facing surface + the notification mail are `subscription_console.md`
 **SC-2c**)*. **Number:** the auditor proposed "CP-2e" and CP-2e was already
 taken by the signup Console-mirror reconciler; **CP-2f is the next free number**,
@@ -5084,9 +5171,9 @@ second dispatcher, not a new auth scheme.
 - **No seat is burned here.** The membership row is not a seat: **Core-seat burn
   stays at first resolve** (D19.3 / D32.5, `_allocate_core_seat`), unchanged. What
   the row buys is that the seats grid can SEE the person and a *paid* seat can be
-  assigned to them before they have ever signed in (D49.2).
+  assigned to them before they have ever signed in (D50.2).
 
-**What lands (the promotion, D49.3).** In `_resolve_for_deployment`'s
+**What lands (the promotion, D50.3).** In `_resolve_for_deployment`'s
 **single-admissible-org** branch, beside `_allocate_core_seat`, a Console
 membership whose status is exactly `invited` is promoted to `active` with
 `joined_at = COALESCE(joined_at, now())`. **The guard is structural**: it is the
@@ -5101,7 +5188,9 @@ there would activate a membership for a sign-in that never completed.
 **NO MIGRATION.** `001_customer_console.sql:121-131` already declares
 `org_membership.status TEXT NOT NULL DEFAULT 'active' CHECK (status IN
 ('invited','active','suspended','removed'))` and `role … DEFAULT 'member'`. R1 is
-satisfied by not taking a number at all; the Console ladder stays at 007.
+satisfied by not taking a number at all. (The Console ladder did advance to
+008 the same day — D49's flat-plan repricing, a value change owned by
+`launch_surface.md` — but that number belongs to that decision, not this door.)
 
 **The gateway side.** `gateway/routes/admin/members.py::invite_member` calls the
 ONE Console client (`acb_auth.console_resolve.invite_member_on_console`)
@@ -5149,7 +5238,7 @@ plus the two structural fences named inline).**
 6. **The actor gate.** An actor whose membership is `suspended` / `removed` /
    `invited` is refused 403; an `active` `member` (not just an admin) succeeds,
    and the reason is written down. Fence: `::TestTheActorMustBeAnActiveMember`.
-7. **D49.3 — first resolve promotes `invited` and NOTHING else.** A resolve for
+7. **D50.3 — first resolve promotes `invited` and NOTHING else.** A resolve for
    an `invited` member returns their org (never `{"organizations": []}`) and
    leaves them `active` with `joined_at` stamped; a `suspended` member's status is
    untouched by a resolve and every shipped suspended-refusal test stays green; a
@@ -5180,7 +5269,7 @@ organization** — it writes that org's membership on two planes, §8 gate 4's c
 (registered in `work_plan.md` §6). **No new gate number is minted.**
 
 **Non-goals.** Does NOT send mail (that is `subscription_console.md` SC-2c, and
-it is a *notification*, D49.1 — no token, ever) · does NOT change the tenant
+it is a *notification*, D50.1 — no token, ever) · does NOT change the tenant
 plane's `app_user` write, which stays byte-identical · does NOT activate the
 tenant plane's `app_user.status` — `colleague_onboarding.md` §2 Step 1b is
 unchanged and remains N6b's open half, named rather than quietly claimed · does
@@ -6444,7 +6533,7 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_operator_list.py \
               tests/unit/test_customer_console_member_write.py
 # ⚠️ The `_member_write.py` line is CP-2f's suite (the Console member-add door
-# `POST /registry/members` and D49.3's `invited -> active` promotion), added
+# `POST /registry/members` and D50.3's `invited -> active` promotion), added
 # 2026-08-24 IN THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry
 # (the hand-list went 8 -> 9). It proves the `member_admin` capability gate, the
 # R11 derivation (no `org_slug`, one byte-identical 403 across the three
