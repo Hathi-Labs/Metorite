@@ -738,6 +738,15 @@ class TestTheGatewayClientSpeaksThisDoorsWire:
 
         monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "http://console.test")
         monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", member_key)
+        # `is_wired()` reads `get_settings()`, an `@lru_cache(maxsize=1)` built
+        # by whichever test touched settings FIRST — under some orderings that
+        # snapshot predates the two setenvs above and the client answers
+        # "unwired". Bust it now, and again in the finally so the wired
+        # snapshot cannot leak into a later test either (monkeypatch undoes
+        # the env, not the cache).
+        from acb_common import get_settings
+
+        get_settings.cache_clear()
 
         from customer_console.main import app as console_app
 
@@ -750,11 +759,14 @@ class TestTheGatewayClientSpeaksThisDoorsWire:
 
         monkeypatch.setattr(cr, "_new_http_client", asgi_client)
 
-        status, body = asyncio.run(
-            cr.invite_member_on_console(
-                actor_email=org["owner"], member_email=who,
+        try:
+            status, body = asyncio.run(
+                cr.invite_member_on_console(
+                    actor_email=org["owner"], member_email=who,
+                )
             )
-        )
+        finally:
+            get_settings.cache_clear()
         assert status == 200, body
         # The wire matched: the row is really there, with the door's semantics.
         assert _status(db, org_id=org["id"], email=who) == "invited"
