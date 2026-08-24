@@ -1,5 +1,25 @@
 # Department Centers — one platform, many projections
 
+> ## ⚠️ D49 (2026-08-24) — the Centers **surface** is withdrawn; this spec is now a design record
+>
+> The owner directed that the concept of Centers be removed from the application
+> "for the time being". What that changed, exactly:
+>
+> - **Deleted:** the "Centers" section in the sidebar and the home grid. Nothing
+>   navigates to a Center any more.
+> - **Kept, untouched:** `workbench/control_plane/src/lib/centers.ts`, the
+>   `/centers/<slug>` routes, the `center.*` feature rows (migration 140), and
+>   the `group:<slug>` slice grants D12 is built on. The Center is no longer a
+>   **destination**; it is still the **scoping primitive**, and the live Projects
+>   grant model depends on it.
+> - **Parked, not cancelled:** WS-13 · WS-14 · WS-15 · WS-16. Nothing dispatches
+>   from this spec today.
+> - **§5's Center roster (D22) is not repealed.**
+> - **Center packages are retired as a pricing object** — see
+>   `specs/launch_surface.md` §4 and §5, which is the authority for all of the
+>   above. Where this spec and that one disagree, that one wins.
+
+
 **Status:** Phase A shipped (UI scaffold + feature gating) — Centers reachable via the `center.*` feature vocabulary since 2026-08-03 (merged; nav gating decided by the catalog per #389). *(Header corrected 2026-08-09.)*. §2 records the defect and the registration checklist that prevents its recurrence. Phase B groups admin UI + seed shipped pending review (2026-08-01 — directory read view still open) · **Date:** 2026-08-03 · **Owner:** vjvarada
 
 **Verified against code:** 2026-08-03 (WS-14 doc remediation, on `ws-14-doc-remediation`
