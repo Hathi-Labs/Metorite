@@ -402,7 +402,7 @@ def test_no_personal_route_can_be_pointed_at_another_member() -> None:
     import inspect
 
     for name in (
-        "my_inbox", "my_contexts", "set_personal", "capture",
+        "my_inbox", "my_contexts", "my_calendar", "set_personal", "capture",
         "get_my_project", "create_my_project", "defer_task", "complete_task",
     ):
         params = set(inspect.signature(getattr(pm_personal, name)).parameters)
@@ -525,3 +525,189 @@ def test_the_disposition_vocabulary_matches_migration_48(bare: str) -> None:
     )
     for value in legacy_values:
         assert f"'{value}'" in bare, f"disposition {value} is missing"
+
+
+# ── The scheduled block (WS-39 S3a · migration 187 · D53/D54) ────────────────
+#
+# The claim under test is the one the migration encodes: **a block belongs to
+# the member, not to the task.** The R8 half — that the constraint, the trigger
+# and the planner all agree — is `tests/live/live_ws39_s3a.sql`; these are the
+# API-shaped consequences that a fake CAN answer.
+
+
+async def test_two_assignees_hold_different_blocks_on_one_task(
+    db: FakeProjectsDB,
+) -> None:
+    """The reason the block is on the overlay and not on `pm_tasks`.
+
+    Exactly the `test_two_assignees_hold_different_dispositions` argument, one
+    axis over: Alice is doing it Tuesday morning, Bob is reviewing it Thursday
+    afternoon. A `scheduled_start` column on the task would let whoever wrote
+    last delete the other's afternoon, and neither would be told.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in", "bob@fracktal.in")
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            scheduled_start="2026-09-01T09:00:00+00:00",
+            scheduled_end="2026-09-01T11:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            scheduled_start="2026-09-03T15:00:00+00:00",
+            scheduled_end="2026-09-03T15:30:00+00:00",
+        ),
+        user=BOB,
+    )
+
+    alice = await pm_personal.my_inbox(user=ALICE, page=page())
+    bob = await pm_personal.my_inbox(user=BOB, page=page())
+
+    assert alice.rows[0]["scheduled_start"].startswith("2026-09-01")
+    assert bob.rows[0]["scheduled_start"].startswith("2026-09-03")
+    # One task. Two calendars. Two rows in the overlay, and no third anywhere.
+    assert len(db.rows("pm_task_personal")) == 2
+    assert len(db.rows("pm_tasks")) == 1
+
+
+async def test_scheduling_never_writes_to_the_shared_task(
+    db: FakeProjectsDB,
+) -> None:
+    """Blocking my own time is not an edit to the work.
+
+    The counterpart of `test_my_triage_cannot_move_the_teams_board`: if
+    scheduling reached `pm_tasks`, one assignee's calendar would be a write to
+    everybody's task — and `due_at`, which IS shared, would be the column it
+    collided with.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(scheduled_start="2026-09-01T09:00:00+00:00"),
+        user=ALICE,
+    )
+
+    written = [
+        stmt for stmt in db.statements_touching("pm_tasks")
+        if stmt.startswith("UPDATE") or stmt.startswith("INSERT")
+    ]
+    assert written == [], f"scheduling wrote to the shared task: {written}"
+
+
+async def test_a_block_that_ends_before_it_starts_is_422_not_500(
+    db: FakeProjectsDB,
+) -> None:
+    """The API says whose fault it is.
+
+    Migration 187's CHECK refuses this at the database, which is correct and is
+    also a 500 by the time it reaches a caller. Dragging a block's edge past its
+    own start is an ordinary mis-gesture, not a server fault.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    with pytest.raises(HTTPException) as exc:
+        await pm_personal.set_personal(
+            str(task.id),
+            pm_personal.PersonalIn(
+                scheduled_start="2026-09-01T11:00:00+00:00",
+                scheduled_end="2026-09-01T09:00:00+00:00",
+            ),
+            user=ALICE,
+        )
+    assert exc.value.status_code == 422
+    assert "scheduled_end" in str(exc.value.detail)
+
+
+async def test_a_zero_length_block_is_refused(db: FakeProjectsDB) -> None:
+    """`>` and not `>=`, on both sides of the wire.
+
+    A block of no duration is what a double-click produces, and the calendar's
+    layout maths divides by the duration.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    with pytest.raises(HTTPException) as exc:
+        await pm_personal.set_personal(
+            str(task.id),
+            pm_personal.PersonalIn(
+                scheduled_start="2026-09-01T09:00:00+00:00",
+                scheduled_end="2026-09-01T09:00:00+00:00",
+            ),
+            user=ALICE,
+        )
+    assert exc.value.status_code == 422
+
+
+async def test_an_open_ended_block_is_allowed(db: FakeProjectsDB) -> None:
+    """A start with no end is "started, still going" — not an error."""
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    out = await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(scheduled_start="2026-09-01T09:00:00+00:00"),
+        user=ALICE,
+    )
+    assert out["scheduled_start"].startswith("2026-09-01")
+    assert out["scheduled_end"] is None
+
+
+async def test_flexible_keeps_three_states(db: FakeProjectsDB) -> None:
+    """NULL is "never stated", and it is not False.
+
+    Migration 187 keeps the column nullable for this, and the serializer passes
+    it through rather than `bool()`-ing it. Collapsing the two would tell the
+    Ideal Week packer that every task has been deliberately pinned.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    never = await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(context="@desk"), user=ALICE,
+    )
+    assert never["flexible"] is None
+
+    pinned = await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(flexible=False), user=ALICE,
+    )
+    assert pinned["flexible"] is False
+
+
+async def test_the_calendar_window_is_half_open(db: FakeProjectsDB) -> None:
+    """`[start, end)`, so consecutive weeks tile instead of overlapping.
+
+    Structural rather than behavioural — the fake does not evaluate the range
+    predicate — so the assertion is on the SQL the route composes, which is the
+    part a later edit would break silently.
+    """
+    import inspect
+
+    src = inspect.getsource(pm_personal.my_calendar)
+    assert "p.scheduled_start >= :start" in src
+    assert "p.scheduled_start < :end" in src, (
+        "the window must be half-open: `<= :end` double-counts a block that "
+        "starts exactly on the boundary between two weeks"
+    )
+
+
+async def test_the_calendar_read_is_scoped_to_the_caller(
+    db: FakeProjectsDB,
+) -> None:
+    """It reuses `_MY_TASKS_SQL`, so it inherits the tenant and identity clauses
+    rather than restating them — restating is how one of them gets dropped."""
+    import inspect
+
+    src = inspect.getsource(pm_personal.my_calendar)
+    assert "_MY_TASKS_SQL" in src
+    assert "actor(user)" in src
+    assert "resolve_organization_id" in src

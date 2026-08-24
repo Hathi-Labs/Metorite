@@ -29,6 +29,7 @@ so no request can be made to read or write somebody else's practice.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -72,7 +73,15 @@ PERSONAL_PROJECT_NAME = "My tasks"
 
 
 class PersonalIn(BaseModel):
-    """The overlay a member may set on a task. All optional; `null` clears."""
+    """The overlay a member may set on a task. All optional; `null` clears.
+
+    The second group is the **scheduled block** (migration 187, WS-39 S3a). It
+    is on the overlay for the same reason ``disposition`` is: two people
+    assigned one task each block their own time for it, and a column on
+    ``pm_tasks`` would let one silently overwrite the other. The task's
+    ``due_at`` is the opposite case — one deadline, shared by everyone — and
+    stays on the task, reachable only through the ordinary task routes.
+    """
 
     disposition: str | None = None
     next_action: str | None = None
@@ -81,6 +90,16 @@ class PersonalIn(BaseModel):
     time_estimate_mins: int | None = None
     is_two_minute: bool | None = None
     defer_until: str | None = None
+
+    # ── the block ───────────────────────────────────────────────────────────
+    scheduled_start: str | None = None
+    scheduled_end: str | None = None
+    #: NULL means "never stated", which the reader resolves as flexible. It is
+    #: deliberately not the same as an explicit ``false`` — see migration 187.
+    flexible: bool | None = None
+    is_hard_date: bool | None = None
+    actual_start: str | None = None
+    actual_end: str | None = None
 
 
 class CaptureIn(BaseModel):
@@ -298,6 +317,44 @@ async def _upsert_personal(
     )).fetchone()
 
 
+async def _reject_impossible_block(
+    db: Any, task_id: str, email: str, values: dict[str, Any],
+) -> None:
+    """422 when the overlay's block would end at or before it starts.
+
+    Mirrors migration 187's `pm_task_personal_block_order_check` over the MERGED
+    row (stored ∪ payload), because a partial PATCH cannot be judged on its own.
+    A field explicitly sent as `null` clears the stored value, so `clean_payload`
+    keeping it in `values` is load-bearing here: `"scheduled_end": None` must be
+    read as "unset it", not as "leave it alone".
+    """
+    keys = ("scheduled_start", "scheduled_end")
+    if not any(k in values for k in keys):
+        return
+    stored = (await db.execute(
+        text(
+            "SELECT scheduled_start, scheduled_end FROM pm_task_personal "
+            "WHERE task_id = CAST(:task_id AS uuid) AND lower(member_email) = :who"
+        ),
+        {"task_id": task_id, "who": email},
+    )).fetchone()
+
+    merged = coerce_write_values({k: values[k] for k in keys if k in values})
+    start = merged.get("scheduled_start", getattr(stored, "scheduled_start", None))
+    end = merged.get("scheduled_end", getattr(stored, "scheduled_end", None))
+
+    # Half-open is legal on purpose: a block with a start and no end is an
+    # open-ended one, which the calendar renders as "started, still going".
+    if start is not None and end is not None and end <= start:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "scheduled_end must be after scheduled_start "
+                f"(got start={start.isoformat()}, end={end.isoformat()})."
+            ),
+        )
+
+
 @router.patch("/tasks/{task_id}/personal")
 async def set_personal(
     task_id: str, payload: PersonalIn,
@@ -330,12 +387,33 @@ async def set_personal(
         # otherwise be unusable.
         await load_visible_task(db, vis, task_id)
 
+        # ── The block must still be a block AFTER the merge ─────────────────
+        #
+        # Migration 187's CHECK refuses `scheduled_end <= scheduled_start`, and
+        # the database is right to. But a PATCH is partial: a caller may send
+        # only `scheduled_end`, and whether that is legal depends on the start
+        # ALREADY STORED. Validating just the payload would let that request
+        # through to the constraint and surface a 500 for what is a 422 — a
+        # client error reported as a server fault, on the calendar's most
+        # ordinary interaction (drag the bottom edge of a block).
+        #
+        # So the merged pair is what is checked. One extra read on a write path,
+        # in exchange for the API telling the truth about whose fault it is.
+        await _reject_impossible_block(db, task_id, email, values)
+
         # Triage is recorded even when nothing changed: "when did I last look at
         # this" is the Weekly Review's question, and a no-op PATCH is still a
         # member looking at it.
         values["clarified_at"] = now()
         row = await _upsert_personal(db, task_id, email, values)
         return _personal_to_dict(row)
+
+
+def _iso(row: Any, field: str) -> str | None:
+    """An instant column as ISO-8601, or None. Written once because the block
+    added six of them and six inline conditionals is how one gets it wrong."""
+    value = getattr(row, field, None)
+    return value.isoformat() if value is not None else None
 
 
 def _personal_to_dict(row: Any) -> dict[str, Any]:
@@ -347,11 +425,17 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         "energy": getattr(row, "energy", None),
         "time_estimate_mins": getattr(row, "time_estimate_mins", None),
         "is_two_minute": bool(getattr(row, "is_two_minute", False)),
-        "defer_until": (
-            getattr(row, "defer_until", None).isoformat()
-            if getattr(row, "defer_until", None) is not None
-            else None
-        ),
+        "defer_until": _iso(row, "defer_until"),
+        # The block. ⚠️ `flexible` and `is_hard_date` are passed through as
+        # tri-state (None / True / False) rather than coerced with `bool()`:
+        # None means "never stated" and collapsing it to False here would erase
+        # the distinction migration 187 keeps a nullable column to preserve.
+        "scheduled_start": _iso(row, "scheduled_start"),
+        "scheduled_end": _iso(row, "scheduled_end"),
+        "flexible": getattr(row, "flexible", None),
+        "is_hard_date": getattr(row, "is_hard_date", None),
+        "actual_start": _iso(row, "actual_start"),
+        "actual_end": _iso(row, "actual_end"),
     }
 
 
@@ -378,6 +462,12 @@ SELECT t.*,
        p.time_estimate_mins AS p_time_estimate_mins,
        p.is_two_minute      AS p_is_two_minute,
        p.defer_until        AS p_defer_until,
+       p.scheduled_start    AS p_scheduled_start,
+       p.scheduled_end      AS p_scheduled_end,
+       p.flexible           AS p_flexible,
+       p.is_hard_date       AS p_is_hard_date,
+       p.actual_start       AS p_actual_start,
+       p.actual_end         AS p_actual_end,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -461,11 +551,108 @@ async def my_inbox(
         task["context"] = getattr(row, "p_context", None)
         task["energy"] = getattr(row, "p_energy", None)
         task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+        # The block, so one read serves both the list and the calendar rather
+        # than the calendar needing a second round trip per task.
+        for field in (
+            "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+        ):
+            value = getattr(row, f"p_{field}", None)
+            task[field] = value.isoformat() if value is not None else None
+        task["flexible"] = getattr(row, "p_flexible", None)
+        task["is_hard_date"] = getattr(row, "p_is_hard_date", None)
         items.append(task)
 
     total = len(items)
     window = items[page.offset : page.offset + page.limit]
     return ListResponse(rows=window, total=total)
+
+
+@router.get("/my/calendar")
+async def my_calendar(
+    start: str,
+    end: str,
+    user: UserContext = Depends(get_current_user),
+) -> ListResponse:
+    """My scheduled blocks in a window — the Calendar app's one read.
+
+    Spec: ``calendar_focus_os.md`` §10 · **D54** · ticket WS-39 S3a.
+
+    **Why this exists rather than filtering ``/my/inbox`` client-side.** The
+    inbox answers "what is on my plate", which is unbounded; a calendar week
+    asks for a handful of rows out of it. Pushing the window into SQL is what
+    lets migration 187's partial index do the work — verified as an
+    ``Index Scan``, not merely present (``tests/live/live_ws39_s3a.sql`` CHECK
+    7). The old calendar read the whole item list into the browser and filtered
+    there, which is affordable at a hundred tasks and not at ten thousand.
+
+    **The window is half-open, ``[start, end)``**, so consecutive weeks tile
+    without overlapping and a block starting exactly at midnight belongs to one
+    day rather than two.
+
+    **Scoped to the caller, and only ever to the caller.** The identity comes
+    from the session; there is deliberately no ``?member=``. Somebody else's
+    calendar is a different question with a different answer (whose blocks are
+    legible to whom is out of scope by D54.4), and the way that question gets
+    answered accidentally is a parameter like this one.
+
+    ⚠️ Returns tasks with **my block attached**, not bare blocks: the calendar
+    draws a task, and a payload of blocks would send it back for every title.
+    """
+    # ⚠️ Parsed explicitly, NOT through `coerce_write_values`. That helper keys
+    # off an allow-list of COLUMN names, and these two are bind parameters — so
+    # it would pass them through as strings and bind text to a timestamptz
+    # comparison. The same trap as the columns themselves; different reason, so
+    # naming it here rather than widening the column list with two non-columns.
+    try:
+        window = {
+            "start": datetime.fromisoformat(start),
+            "end": datetime.fromisoformat(end),
+        }
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="start and end must be ISO-8601 instants.",
+        ) from exc
+    if window["end"] <= window["start"]:
+        raise HTTPException(status_code=422, detail="end must be after start.")
+
+    email = actor(user).lower()
+    sql = _MY_TASKS_SQL + (
+        " AND p.scheduled_start >= :start AND p.scheduled_start < :end"
+    )
+    async with _tenant_session() as db:
+        params: dict[str, Any] = {
+            "who": email,
+            "vis_org": await resolve_organization_id(db, email),
+            **window,
+        }
+        rows = (await db.execute(text(sql), params)).fetchall()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        task = row_to_dict(row, TaskModel)
+        task["disposition"] = getattr(row, "p_disposition", None) or derive_disposition(
+            status_category=str(getattr(row, "status_category", "") or ""),
+            is_mine=bool(getattr(row, "is_mine", False)),
+            has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
+        )
+        task["next_action"] = getattr(row, "p_next_action", None)
+        task["context"] = getattr(row, "p_context", None)
+        task["energy"] = getattr(row, "p_energy", None)
+        task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+        for field in (
+            "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+        ):
+            value = getattr(row, f"p_{field}", None)
+            task[field] = value.isoformat() if value is not None else None
+        task["flexible"] = getattr(row, "p_flexible", None)
+        task["is_hard_date"] = getattr(row, "p_is_hard_date", None)
+        items.append(task)
+
+    items.sort(key=lambda t: t["scheduled_start"] or "")
+    # Deliberately unpaged: a window is already the bound, and a paged calendar
+    # week would be a page of Tuesday.
+    return ListResponse(rows=items, total=len(items))
 
 
 @router.get("/my/contexts")
