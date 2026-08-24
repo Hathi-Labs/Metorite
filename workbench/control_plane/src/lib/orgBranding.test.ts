@@ -102,6 +102,24 @@ describe("the lockup", () => {
     if (l.kind === "org") expect(l.logo.dataUri).toContain("base64");
   });
 
+  it("D51 — a logo-less org shows its OWN NAME, not the generic caption", () => {
+    // With subdomains withdrawn, the chrome is the ONE place a person learns
+    // whose workspace they are in. The org name wins over the fallback…
+    const named = lockup(null, "Control Plane", "Fracktal Works");
+    expect(named).toMatchObject({ kind: "default", caption: "Fracktal Works" });
+    // …whitespace does not count as a name…
+    const blank = lockup(null, "Control Plane", "   ");
+    expect(blank).toMatchObject({ caption: "Control Plane" });
+    // …and an uploaded logo still IS the org: the name never displaces it.
+    const branded = lockup(
+      { logo: logo(), updatedBy: "", updatedAt: "" },
+      "Home",
+      "Fracktal Works",
+    );
+    expect(branded.kind).toBe("org");
+    expect(branded.caption).toBe(POWERED_BY);
+  });
+
   it("keeps the attribution wording in exactly one place", () => {
     expect(POWERED_BY).toBe("powered by Metorite");
   });

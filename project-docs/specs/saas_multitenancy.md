@@ -3,26 +3,18 @@
 **Status:** Architecture of record (owner-requested 2026-08-08) · **Board row: `work_plan.md` §2 → WS-29 · Decision: D15** · **§11 is the dispatchable ticket list — start there; [`saas_multitenancy_implementation.md`](saas_multitenancy_implementation.md) is its child and holds the build shapes** · **Owner:** vjvarada ·
 **Supersedes:** `tenancy_and_visibility.md` §1 and §6 · **Verified against code:** 2026-08-08,
 working tree at `b09093a`; **§11's MT-1 anchors re-verified 2026-08-19** ·
-⚠️ **Updated 2026-08-24: `MT-1f · Subdomain tenant resolution` is SPEC'D AND ITS
-SLICE 1 IS BUILT** — the owner ratified rulings **B1–B7** the same day (wildcard TLS
-is DNS-01, on-demand REJECTED; the session cookie stays host-only; `AUTH_URL` is a
-HARD flip prerequisite; unknown-slug and not-your-org are byte-identical; slice 1 is
-verify-and-302; multi-org selection is deferred to the identity cutover; and the
-reserved-label set is enforced at the signup slug gate **as a live-defect fix**).
-The ticket's gate is now **split**: the code half is 🟢 AGENT-SAFE and ships dark
-behind `SUBDOMAIN_WORKSPACE_ENABLED`, while the wildcard DNS record, the DNS-01
-certificate + Caddy block, the `AUTH_URL` pin, `WORKSPACE_BASE_DOMAIN` on a
-non-`metorite.com` apex, and the flag flip are 🔴 **OWNER-GATE**
-(`work_plan.md` §6). **Slice 1 REPAIR ROUND 1 landed 2026-08-24** (branch
-`ws-29-mt1f-slice1`): **done-when 6 is AMENDED** — a signed-out visitor on a
-workspace host now gets the same 302 to the apex, because the old `/signin`
-fallthrough was a page that *could not sign anybody in* under B2's host-only
-cookies plus B3's `AUTH_URL` pin (the reasoning is written out at the clause); the
-reserved set is extended additively to 21 labels; and five stale/overstated
-statements are corrected (`auth.ts:163`→**`:389`**, "only host reader"→only
-**request**-host reader with `nextUrl.hostname` added to the fence, CP-2c 8a's
-`await auth()`→`currentIdentity()` and its motivation, and the
-`test_the_invisible_cases_are_indistinguishable` citation). ·
+⚠️ **Updated 2026-08-24 (twice): `MT-1f · Subdomain tenant resolution` was spec'd,
+built (slice 1, dark) and repaired — and then WITHDRAWN the same day by owner
+directive (D51): subdomain workspaces are dropped entirely.** The slice-1 code
+(host parser, proxy branch, `SUBDOMAIN_WORKSPACE_ENABLED`) is REMOVED; the
+reserved-slug vocabulary and the signup gate it shipped with STAY as CP-2c 4a's
+live rule; the five runtime owner-acts are struck in `work_plan.md` §6. The
+organization is now made explicit IN THE UI (D51.2 — the sidebar carries the org
+name, the org-less state is an explicit join-vs-create chooser), and the
+multi-org workspace CHOICE becomes a session claim: **§11 MT-1k** (slice A built;
+B/C are the later development the owner noted — one email in several
+organizations, selectable at sign-in and switchable in-session). The §11 MT-1f
+section below is retained as the design record of the withdrawn approach. ·
 ⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
 slices 6 + 1 + 2 + 3 + 4 (OPERATOR ARM) are BUILT, and slice 5 is on its RATCHET
 (rounds 1 + 2 landed — the ratchet now stands at `4 + 1`, exactly the owner-gated
@@ -2164,7 +2156,18 @@ construct an unprefixed key**; consumer groups are per-tenant; a grep-assertion 
 the build on a direct `redis.asyncio` client outside the wrapper. *A convention is a thing
 people forget; a client that cannot express the wrong thing is not.*
 
-#### MT-1f · Subdomain tenant resolution · ◐ **SLICE 1 SPEC'D + BUILT 2026-08-24 · REPAIR ROUND 1 LANDED 2026-08-24** (owner rulings B1–B7 ratified the same day; **done-when 6 amended in the repair — see the clause**)
+#### MT-1f · Subdomain tenant resolution · ⛔ **WITHDRAWN (D51, 2026-08-24)** — built, repaired, then dropped the same day by owner directive; retained as the design record
+
+> ⚠️ **Nothing below is dispatchable.** The owner withdrew subdomain workspaces
+> entirely ("they can cause future complications"); the slice-1 code was REMOVED
+> with the decision (D51.1 — dark code nobody will flip is future complications by
+> another name). What survives in the tree: `RESERVED_LABELS`/`SLUG_RE` in
+> `lib/subdomain.ts` (the slug vocabulary, CP-2c 4a) and the INVERTED host fence
+> (`subdomain.test.ts` — the browser tier reads NO request hostname at all). The
+> multi-org workspace choice this ticket's B6 deferred now lives at **MT-1k**.
+> B1–B7 below remain worth reading before any future revival: the CT-log
+> disclosure argument (B1) and the cookie/callback dead-end (done-when 6's
+> amendment) were both measured, not theorized.
 **Gate — the ticket is split, and the split is the whole point.**
 🟢 **AGENT-SAFE:** the host parser, the proxy branch, the flag, the reserved-label
 vocabulary, the signup slug gate, and every fence below. All of it ships **dark**
@@ -2352,6 +2355,45 @@ fence**, not a silent inheritance.
 Keeping the slug in the address bar (rewrite instead of redirect) · establishing a
 session on a workspace host · per-tenant branding on any surface · the multi-org
 chooser (B6) · anything under `deploy/`.
+
+#### MT-1k · The workspace choice — one email, several organizations, chosen in UI · ◐ **MINTED 2026-08-24 (D51.3) — slice A BUILT (WS-35); B/C are the owner-noted later development**
+
+**The ask, verbatim (owner, 2026-08-24):** *"Since a user's email may belong to
+multiple organizations, provide a way to select and switch organizations during
+login."* The selector D48 originally assigned to the hostname (host = workspace
+choice) moved here as a SESSION CLAIM when D51 withdrew subdomains.
+
+**The invariant that survives every mechanism (R11):** the choice may only ever
+SELECT among organizations the verified identity already belongs to (the
+RLS-EXEMPT `user_identity ⋈ org_membership` set) — it can refuse, narrow, or
+pick; it can never admit. Tenant binding stays keyed on the identity, with the
+claim as a filter.
+
+- **Slice A — the explicit fork and the org indicator (BUILT 2026-08-24, WS-35,
+  with D51).** The sidebar shows the organization's NAME for a logo-less org
+  (`lockup` third argument); the org-less signed-in state is an explicit
+  join-vs-create chooser (AccessGate); `/signup` declares it creates a NEW
+  organization; `/signin` states the fork. No selection UI yet — every member is
+  single-org today, so the "list" auto-selects trivially.
+- **Slice B — the session claim (UNBUILT).** At sign-in completion, when the
+  registry resolve returns MORE than one admissible organization (today that arm
+  REFUSES with `WorkspaceChooserRequired`), render the chooser and carry the
+  choice as a session claim; the gateway binds the request to the CLAIMED org
+  after intersecting it with the identity's memberships — never trusting the
+  claim alone. An in-session switcher re-issues the claim. Done-when and fences
+  to be authored at dispatch (the resolve arm, the claim's transport, and the
+  intersect each name one).
+- **Slice C — the tenant-plane enabler (UNBUILT, the heavy half).** One email in
+  several orgs requires per-org `app_user` rows — today `app_user.email` is
+  globally UNIQUE (migration 162's functional index; the one-person-one-org
+  assumption is load-bearing across access resolution) — plus completion of the
+  H6 re-key so RBAC hangs off `user_identity` rather than the per-org row.
+  Sequenced AFTER launch; nothing about first customers needs it (their
+  employees are single-org), and building it early would put churn on the live
+  auth path for a case that does not yet exist.
+
+**Anti-scope:** hostnames never participate (D51); no second grant vocabulary —
+the chooser lists organizations, never roles (D12).
 
 #### MT-1g · Blobs out of Postgres · 🟢 AGENT-SAFE
 **Owner:** §1.6 · **Anchor:** `71_agent_blob_store.sql:30` (`content BYTEA`)

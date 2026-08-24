@@ -16,6 +16,7 @@
  */
 
 import Link from "next/link";
+import { useAccess } from "@/components/AccessProvider";
 import { useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -131,10 +132,24 @@ export default function OrgBrandLockup({
   maxWidth = 152,
 }: Props) {
   const branding = useOrgBranding();
+  // D51: the organization's NAME is the workspace indicator now that hostnames
+  // never carry it. Resolved server-side by /auth/me (never request input) and
+  // already in the access context every shell renders from.
+  const { access } = useAccess();
+  const orgName =
+    access.organization.display_name?.trim() ||
+    access.organization.slug?.trim() ||
+    "";
 
   return (
     <Link href={href} onClick={onNavigate} className="block min-w-0">
-      <BrandMark branding={branding} fallbackCaption={fallbackCaption} height={height} maxWidth={maxWidth} />
+      <BrandMark
+        branding={branding}
+        fallbackCaption={fallbackCaption}
+        orgName={orgName}
+        height={height}
+        maxWidth={maxWidth}
+      />
     </Link>
   );
 }
@@ -149,15 +164,18 @@ export default function OrgBrandLockup({
 export function BrandMark({
   branding,
   fallbackCaption,
+  orgName = "",
   height = 28,
   maxWidth = 152,
 }: {
   branding: OrgBranding | null | undefined;
   fallbackCaption: string;
+  /** The organization's display name — the D51 workspace indicator. */
+  orgName?: string;
   height?: number;
   maxWidth?: number;
 }) {
-  const mark = lockup(branding, fallbackCaption);
+  const mark = lockup(branding, fallbackCaption, orgName);
 
   // ── Two arrangements, and the difference is not cosmetic ─────────────────
   //

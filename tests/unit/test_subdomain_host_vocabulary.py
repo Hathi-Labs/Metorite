@@ -1,12 +1,12 @@
-"""WS-29 MT-1f — the workspace-hostname vocabulary, pinned across two languages.
+"""The organization-slug vocabulary, pinned across two languages (CP-2c 4a; D51).
 
 Spec: ``project-docs/specs/saas_multitenancy.md`` §11 MT-1f (owner ruling **B7**,
 slice-1 done-when 8) · ``customer_console.md`` §CP-2c item 3's reserved-label
 block and done-when 4a.
 
 ⚠️ **Why this file exists at all.** The reserved-label set has TWO runtime
-consumers in two languages — ``workbench/control_plane/src/lib/subdomain.ts``'s
-host parser (which decides whether a hostname names a workspace) and
+consumers in two languages — ``workbench/control_plane/src/lib/subdomain.ts``
+(the canonical vocabulary module, imported by the signup form) and
 ``gateway/routes/signup.py``'s slug gate (which decides whether a customer may
 register one). They must be the same set: a label reserved on one side and
 registrable on the other is exactly the collision the ruling closes, only harder
@@ -16,9 +16,10 @@ TypeScript** and pins the Python to it — the
 reason ``workbench/control_plane/AGENTS.md`` rule 5 gives: *a mirror goes stale
 and then lies.*
 
-Direction is deliberate: the TypeScript is canonical because the list exists for
-DNS reasons and the host parser is what DNS reaches first. Either side drifting
-is red, so one direction suffices.
+Direction is deliberate: the TypeScript is canonical because a slug is a public
+identifier the workbench renders first (and the set was born of DNS-safety —
+kept under D51, which withdrew subdomain hosting but not the vocabulary).
+Either side drifting is red, so one direction suffices.
 
 A **third** consumer joined on 2026-08-24 (repair round 1) and is pinned
 differently on purpose: ``app/signup/SignUpForm.tsx`` *imports* both the reserved

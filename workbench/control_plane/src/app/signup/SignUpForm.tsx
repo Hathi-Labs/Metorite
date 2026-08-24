@@ -160,11 +160,19 @@ export default function SignUpForm({
     <div className="flex min-h-screen items-center justify-center p-10">
       <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8">
         <h1 className="text-center text-xl font-semibold">
-          Create your organization
+          Create a new organization
         </h1>
         <p className="mt-2 text-center text-sm text-muted-foreground">
-          Set up a new workspace on Metorite.
+          A brand-new workspace on Metorite, with you as its owner.
         </p>
+        {/* D51 / WS-35 — the fork made explicit at the door. This page CREATES
+            an organization; a person whose company already uses Metorite must
+            not end up here thinking it is how you join one. */}
+        <div className="mt-4 rounded-md border border-border bg-secondary px-4 py-3 text-sm text-muted-foreground">
+          Does your company already use Metorite? Don&apos;t create a
+          duplicate — ask your organization&apos;s admin to invite your email
+          address, then simply sign in.
+        </div>
 
         {error && (
           <div className="mt-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -292,7 +300,7 @@ export default function SignUpForm({
               loading={pending}
               disabled={!canSubmit}
             >
-              Create organization
+              Create new organization
             </Button>
           </form>
         )}

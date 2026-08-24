@@ -105,10 +105,16 @@ export const POWERED_BY = "powered by Metorite";
 export function lockup(
   branding: OrgBranding | null | undefined,
   fallbackCaption: string,
+  orgName = "",
 ): Lockup {
   const logo = branding?.logo;
   if (!logo?.dataUri) {
-    return { kind: "default", title: "Metorite", caption: fallbackCaption };
+    // D51 (2026-08-24): with subdomains withdrawn, the UI is the ONE place a
+    // person learns whose workspace they are in — so a logo-less org shows its
+    // OWN NAME under our mark, not a generic product caption. The generic
+    // caption survives only where no org exists yet (signed-out, org-less).
+    const caption = orgName.trim() || fallbackCaption;
+    return { kind: "default", title: "Metorite", caption };
   }
   return {
     kind: "org",
