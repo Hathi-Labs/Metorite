@@ -176,7 +176,8 @@ function MobileBottomNavInner({
   const activeRunIds = useActiveSessions();
   const activeCount = activeRunIds.size;
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
-  // pane hidden on desktop reappears in the phone drawer.
+  // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
+  // too: `null` yields nothing and the skeleton below holds the space.
   const { access, loading: accessLoading } = useAccess();
   const navSections = visibleSections(
     accessLoading ? null : access.features,
@@ -199,6 +200,19 @@ function MobileBottomNavInner({
         </button>
       </div>
       <nav className="flex flex-col overflow-y-auto">
+        {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
+            placeholders, never the full list. The drawer opens on tap, so a
+            list that rearranges under the thumb is worse here than on desktop. */}
+        {accessLoading ? (
+          <div className="px-2 py-3" aria-hidden data-testid="nav-skeleton">
+            {[0, 1, 2, 3, 4, 5].map((row) => (
+              <div key={row} className="mb-1 flex items-center gap-2.5 px-3 py-2.5">
+                <div className="h-7 w-7 shrink-0 animate-pulse rounded-lg bg-secondary" />
+                <div className="h-3 flex-1 animate-pulse rounded bg-secondary" />
+              </div>
+            ))}
+          </div>
+        ) : null}
         {navSections.map((section) => (
           <div key={section.id} className="px-2 pt-1 pb-1.5">
             <div

@@ -28,7 +28,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from tests.unit._customer_console_ladder import apply_ladder  # noqa: E402
+from tests.unit._customer_console_ladder import SECOND_PLAN, apply_ladder  # noqa: E402
 
 from customer_console import store  # noqa: E402
 from customer_console.credits import (  # noqa: E402
@@ -89,29 +89,75 @@ class TestSchema:
         with engine.begin() as c:
             apply_ladder(c)
 
-    def test_the_catalog_matches_the_pricing_ladder_of_record(self, conn):
-        # D23/D24: 600 · 1,200 · 1,800 · 2,400 · 3,000. Spot-check the anchors
-        # that customers actually see, so a stray edit to the seed is loud.
-        prices = dict(
-            conn.execute(text("SELECT slug, price_inr FROM plan_catalog")).all()
-        )
-        assert prices["core"] == Decimal("600.00")
-        assert prices["sales"] == Decimal("600.00")       # app-bearing Center
-        assert prices["operations"] == Decimal("300.00")  # slices-only Center
-        assert prices["all_centers"] == Decimal("1800.00")
-        assert prices["complete"] == Decimal("3000.00")
-        assert prices["company"] == Decimal("0.00")       # leadership rollup
+    def test_the_catalog_sells_exactly_one_thing_at_500(self, conn):
+        """D49: one flat seat, ₹500/user/month, and nothing else purchasable.
 
-    def test_centers_not_yet_registered_are_seeded_INACTIVE(self, conn):
-        # D22 put R&D and Support on the roster; lib/centers.ts still lists six.
-        # The catalog may run ahead of the product, but nothing may SELL a
-        # package whose Center does not exist.
-        inactive = {
+        The pricing ladder of record moved. D23/D24's 600 · 1,200 · 1,800 ·
+        2,400 · 3,000 is retired (`launch_surface.md` §4), and this is its
+        replacement fence — deliberately an EXACT-set assertion rather than a
+        spot-check, because the failure mode changed shape. Under a ladder, the
+        risk was a wrong number on one rung; under a flat plan, it is a **second
+        purchasable row**, which no per-slug spot-check would notice.
+
+        The prices of retired rows are not asserted. They are frozen history now
+        (008 deactivates, never deletes — those rows are the audit trail behind
+        invoices already issued), and pinning a price nobody can be charged
+        would be a fence guarding nothing.
+        """
+        # `SECOND_PLAN` is excluded by name, not swept under a filter: it is a
+        # row the TEST HARNESS seeds (`_customer_console_ladder.ensure_second_plan`)
+        # so suites that need two plans do not have to borrow a product, and it
+        # is committed to the same database this fence reads. Naming it here is
+        # the honest form — the claim is "the LADDER seeds exactly one sellable
+        # plan", and a reader can see the one thing that is not the ladder's.
+        active = dict(
+            conn.execute(
+                text("SELECT slug, price_inr FROM plan_catalog "
+                     "WHERE active AND slug <> :qa"),
+                {"qa": SECOND_PLAN},
+            ).all()
+        )
+        assert active == {"core": Decimal("500.00")}, active
+
+        # `core` is REPRICED, not replaced — membership IS the Core seat (D19.3)
+        # and `seats.CORE_PLAN_SLUG` is the one slug the sign-in path allocates.
+        # A `flat`/`standard` row appearing beside it would strand every
+        # `seat_assignment` already written and raise "which seat does this
+        # member really hold" (D49's rejected alternative (d)).
+        assert conn.execute(
+            text("SELECT kind FROM plan_catalog WHERE slug = 'core'")
+        ).scalar_one() == "core"
+
+    def test_the_retired_package_ladder_cannot_be_sold(self, conn):
+        """Every Center package, add-on and bundle is inactive (D49).
+
+        `store.priced_plan` filters on `active`, so this is what actually stops
+        the checkout selling a retired object — not the absence of a UI for it.
+        Asserted over the `kind` discriminator rather than a slug list for
+        008's reason: a slug list silently misses a package seeded by a ladder
+        file added later.
+
+        This subsumes the old `test_centers_not_yet_registered_are_seeded_INACTIVE`
+        (R&D and Support, seeded inactive because their Centers did not exist).
+        That claim is now the weaker half of this one — EVERY Center package is
+        inactive, registered or not — so it is folded in here rather than left
+        as a second test asserting a subset of the same fact.
+        """
+        sellable_but_retired = [
             r[0] for r in conn.execute(
-                text("SELECT slug FROM plan_catalog WHERE NOT active")
+                text("SELECT slug FROM plan_catalog "
+                     "WHERE active AND kind IN ('center', 'addon', 'bundle') "
+                     "AND slug <> :qa ORDER BY slug"),
+                {"qa": SECOND_PLAN},
             )
+        ]
+        assert sellable_but_retired == [], sellable_but_retired
+
+        # ...and the rows are still THERE. 008 deactivates; it must never delete.
+        present = {
+            r[0] for r in conn.execute(text("SELECT slug FROM plan_catalog"))
         }
-        assert {"rnd", "support"} <= inactive
+        assert {"sales", "all_centers", "complete", "rnd", "support"} <= present
 
     def test_the_rate_card_ships_unpriced(self, conn):
         # Deliberate: CP-6 sets prices against measured burn, and rate_call()
@@ -253,7 +299,14 @@ class TestSeats:
 
         assert decision.allowed is False
         assert decision.status == 409
-        assert decision.buy_more["price_inr"] == "600.00"
+        # The upsell echoes the CATALOG's price, so the customer is quoted what
+        # the next seat actually costs. Asserted against the price this test
+        # just read rather than a transcribed number: the literal used to be
+        # "600.00" and D49 repriced the seat to 500, which is exactly the kind
+        # of edit a transcription turns into an unrelated red test.
+        assert decision.buy_more["price_inr"] == str(price)
+        # ...and the anchor for what that price IS today (D49, migration 008).
+        assert price == Decimal("500.00")
 
 
 # ── Credits and usage ───────────────────────────────────────────────────────

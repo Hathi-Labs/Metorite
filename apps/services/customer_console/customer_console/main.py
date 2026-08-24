@@ -508,14 +508,30 @@ class MemberView(BaseModel):
     The absences are the design. **No organization id / identity id:** the
     organization is the credential's, so echoing it back would name the one thing
     a customer must never be able to NAME (R11), and an internal ``user_identity``
-    id is not the customer's to hold. **No seat summary:** a member is a person,
-    not a seat count — "which seats does this member hold" is a second query over
-    ``seat_assignment`` this read is defined not to carry (DEFERRED, §6 item (i)).
+    id is not the customer's to hold.
+
+    ``seats`` was one of those absences — "which seats does this member hold" was
+    DEFERRED as a second query this read would not carry. **D49 undefers it**
+    (``launch_surface.md`` LS-7): *Unassigned* has to be a first-class state on
+    the seat surface so a released member can be reassigned, and an empty list
+    here is precisely what that means. It costs exactly **one** extra query for
+    the whole roster (:func:`customer_console.store.live_seats_by_email`), folded
+    in memory — never one per member.
+
+    It carries plan SLUGS and no counts. The counts stay ``GET /me/seats``'s, the
+    one seat vocabulary (§3.3, D32.5): a per-member count here would be a second
+    place the same arithmetic lives, and the second place is the one that
+    disagrees.
     """
 
     email: str
     role: str
     status: str
+    #: Live seat plan slugs this member holds. **Empty means Unassigned** — the
+    #: state the seat surface exists to make actionable. Never null: a missing
+    #: list and an empty one would read alike to a client, and one of them would
+    #: silently mean "we did not look".
+    seats: list[str] = Field(default_factory=list)
 
 
 class MembersView(BaseModel):
@@ -1528,16 +1544,42 @@ def _allocate_core_seat(
 
 @app.get("/billing/summary")
 def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
-    """Seats and credits for one organization — the console's single read."""
+    """Seats, credits and the member roster for one organization.
+
+    The Operator Console's per-org detail read, to ``GET /orgs``'s cross-org
+    list.
+
+    **``members`` (D49 / ``launch_surface.md`` LS-9).** The operator console can
+    already assign and release a customer's seats by email; what it could not do
+    was SEE whom to act on — the same gap ``GET /me/members`` had one door down,
+    and the reason an operator had to be told an address rather than pick one.
+    The roster carries each member's live seat slugs, so *Unassigned* is as
+    visible to us as it is to the customer's own admin.
+
+    It is the SAME pair of store reads the customer-facing roster uses
+    (``org_members`` + ``live_seats_by_email``), in the same transaction as the
+    seat grid, so an operator and a customer admin looking at the same
+    organization cannot be shown different answers. Two queries for any roster
+    size, never one per member.
+
+    The seat COUNTS remain ``_seat_grid`` → ``seat_counts``'s, the one seat
+    vocabulary (§3.3, D32.5) — this route surfaces membership facts beside them,
+    it does not compute a second set.
+    """
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug)
         seats = _seat_grid(conn, org_id)
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+        roster = store.org_members(conn, org_id=org_id)
+        held = store.live_seats_by_email(conn, org_id=org_id)
 
     return {
         "organization_id": org_id,
         "seats": seats,
         "credit_balance": str(balance),
+        "members": [
+            {**row, "seats": held.get(row["email"], [])} for row in roster
+        ],
     }
 
 
@@ -2542,13 +2584,27 @@ def my_members(caller: PayingCaller) -> MembersView:
     into ``MembersView``: there is no second SQL and no per-member recompute. The
     read applies no ``status`` filter — every membership row boards with its
     ``status`` and the surface chooses which to render (``store``'s "fetches rows,
-    decides nothing" doctrine); a per-member seat summary is a second query this
-    read is defined not to carry (DEFERRED, §6 item (i)).
+    decides nothing" doctrine).
+
+    **Seats (D49 / LS-7).** The per-member seat summary this read used to defer is
+    now carried, as **plan slugs only**, from ONE additional whole-org query
+    (``store.live_seats_by_email``) zipped onto the roster in memory. Two queries
+    for any roster size, not one per member. A member with no live seat gets
+    ``[]`` — *Unassigned* — which is the state the customer's seat surface needs
+    in order to offer a reassign, and which no existing read could express. The
+    seat COUNTS stay ``GET /me/seats``'s: this read carries membership facts, not
+    arithmetic (§3.3, D32.5).
+
+    Both queries run in ONE transaction, so the roster and the seats are a
+    consistent snapshot — a seat released between two connections would otherwise
+    surface as a member holding a seat that no longer exists, or the reverse.
     """
     with get_engine().begin() as conn:
+        rows = store.org_members(conn, org_id=caller.organization_id)
+        seats = store.live_seats_by_email(conn, org_id=caller.organization_id)
         return MembersView(members=[
-            MemberView(**row)
-            for row in store.org_members(conn, org_id=caller.organization_id)
+            MemberView(**row, seats=seats.get(row["email"], []))
+            for row in rows
         ])
 
 

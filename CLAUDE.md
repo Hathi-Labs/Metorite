@@ -26,18 +26,25 @@ reference tied to code. Do not put product specs in `docs/`.
 
 ## 2. The architecture, in one screen
 
-- **Centers** are *projections* of one platform for one audience — never
-  separate systems, never separate deployments, never a fork of an app per
-  department. Personal Center is the per-user private space; seven department
-  Centers; Company Center is the leadership rollup. (D22, `department_centers.md` §5)
-- **Apps** are the surfaces. The cross-cutting ones (Projects, Workflows, App
-  Builder, Agent Builder, Agent Chat, Dashboards, Knowledge Base) are reachable
-  **two ways with one permission model**: inside a Center pre-scoped to its
-  slice, and as a standalone app grouped by Center showing the union of the
-  caller's slices.
-- **Modules** are internal **billing atoms**. Customers buy **Center packages**,
-  two org-wide add-ons, or Complete — never a bare module. (D23/D24,
-  `saas_multitenancy.md` §2.4b)
+- **⚠️ Centers are WITHDRAWN FROM THE SURFACE (D49, 2026-08-24).** The nav
+  section is gone and nothing navigates to a Center. **The code is not** —
+  `lib/centers.ts`, `/centers/<slug>`, the `center.*` features and the
+  `group:<slug>` slice grants (D12) all stay, because the Center stopped being a
+  *destination* and is still the *scoping primitive* the live Projects grant
+  model rests on. Do not delete them; do not link to them.
+  `department_centers.md` is now a design record (WS-13/14/15/16 parked).
+- **Apps** are the surfaces, in four sections: **Personal Center** (the
+  per-user category, kept by name), **Apps**, **AI Studio**, **Admin**.
+  **Exactly eight panes are live**; every other pane is `preview` — routes,
+  API and tests intact, nav entry absent. The allowlist of record is
+  `specs/launch_surface.md` §2, mirrored in `src/lib/nav.ts`, and `nav.test.ts`
+  fails if the two disagree. `preview` is **not** a permission: never revoke a
+  feature to hide an app.
+- **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
+  (`core`), everything live included. Center packages, add-ons and Complete are
+  retired. `specs/launch_surface.md` §4 is the shape of record;
+  `saas_multitenancy.md` §2.4b is the superseded D23/D24 record. Still binding:
+  D19.3's hard cap, D32.5's three counts, the entitlement seam.
 - **Tenancy is a ROW, not a deployment.** `organization_id` + Postgres FORCE ROW
   LEVEL SECURITY bound at the `get_db()` seam. We are **multi-tenant from
   customer #1**; "silo" describes *placement* only. There is no phase in which

@@ -56,8 +56,11 @@ live in a **central Control Plane service** — owning spec
 is unchanged and still binding; only its placement moved. **D15 is untouched** — tenancy
 is still a ROW, the deployment still a placement. Read §3's banner before citing §3.
 MT-1's tenancy retrofit (H2–H6) is **unaffected and still the long pole**. ·
-**Updated 2026-08-10 (D23 pass): pricing is
-CENTER-SHAPED — §2.4b is the customer-facing shape of record** (Center packages
+**⚠️ Updated 2026-08-24 (D49): pricing is FLAT — ₹500/user/month + AI
+credits, and `specs/launch_surface.md` §4 is the customer-facing shape of record.
+§2.4b below is kept as the D23/D24 decision record and prices nothing.** ·
+*Prior update 2026-08-10 (D23 pass): pricing was
+CENTER-SHAPED — §2.4b was the customer-facing shape of record* (Center packages
 ₹600/₹300 + all-Centers seat ₹1,800 + add-ons Builder ₹500/Workflows ₹300 + Complete ₹3,000 (D24); modules demoted
 to internal billing atoms; D20's Team/Business retired; ₹10 credit model and D19.3
 seat rules carry over; §8 item 5 holds the OPEN customer-framing questions) ·
@@ -1156,7 +1159,20 @@ migrations 130 and 140):
 
 *(The former standalone `people` module row folded into `core` — D19.1.)*
 
-### 2.4b Center packages — the pricing shape of record (D23, 2026-08-10; supersedes 2.4a's Team/Business tiers)
+### 2.4b Center packages — ⚠️ **SUPERSEDED as the pricing shape of record by D49 (2026-08-24)**; kept as the decision record
+
+> **Read this before citing anything below.** D49 replaced the whole ladder with a
+> **flat ₹500 per user per month + AI credits**, carrying everything that is live.
+> Core-plus-packages, the two org-wide add-ons, the ₹1,800 all-Centers seat and
+> ₹3,000 Complete are **retired as customer objects**; the `core` slug survives as
+> the one seat vocabulary (D19.3) and is repriced rather than replaced. The pricing
+> shape of record is now **`specs/launch_surface.md` §4**. What D49 explicitly did
+> **not** touch: D19.3's hard cap, D32.5's three counts, the entitlement seam and
+> the 402-vs-403 partition, and the credit ledger. This section stays as the D23/D24
+> record — the reasoning is still worth reading the next time we tier — and prices
+> nothing.
+
+*(Original section, as taken on 2026-08-10, follows.)*
 
 **The sales object is the Center; the module stays the billing atom.** Full
 statement in `work_plan.md` §3 D23; the schema/enforcement consequences here:
@@ -1188,7 +1204,13 @@ statement in `work_plan.md` §3 D23; the schema/enforcement consequences here:
 - The tier machinery below (2.4a) survives only for `complete`; its Team and
   Business rows are **retired, never seeded**.
 
-### 2.4a Plan tiers — ⚠️ Team/Business SUPERSEDED by 2.4b (D23); Complete survives recast (D20, 2026-08-09)
+### 2.4a Plan tiers — ⚠️ Team/Business SUPERSEDED by 2.4b (D23); **`complete` in turn retired by D49 (2026-08-24)**
+
+> D49 leaves **no** surviving row in this table: `complete` joins Team and Business
+> as a retired customer object. The one sellable thing is the flat seat in
+> `specs/launch_surface.md` §4. Rule 1's schema (`plan_catalog`, `center_package`,
+> `user_module_seat.source`) is unaffected — it is how seats are *recorded*, not
+> what is *sold*.
 
 *(D23 body correction, 2026-08-10: the paragraph and table this section shipped
 with described Team/Business/Complete-₹2,400 over a purchasable a-la-carte list —

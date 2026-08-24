@@ -1,5 +1,17 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
+> ## ⚠️ D49 (2026-08-24) — one flat plan, so the Centers grid collapses to one column
+>
+> SC-1/SC-2 were specced against D23/D24's package ladder: a "Centers & add-ons"
+> panel and a **users × Centers** seat grid. D49 retires that ladder for a flat
+> **₹500/user/month + AI credits**, so there is exactly one sellable seat and the
+> grid is one column wide. The seat surface a customer admin actually uses now
+> lives in **Organisation → Seat assignments**, owned by
+> `specs/launch_surface.md` §6.2. Everything else in this spec — the transports
+> (SC-2a), the roster read (SC-2b), the cap's 409 + `buy_more`, the credit
+> monitor — is **unchanged and still binding**.
+
+
 **Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout's
 SERVER SIDE is BUILT and its SURFACE is now BUILT TOO — SC-4a's narrowed LAUNCH
 SLICE (the ₹0 / discount path) shipped 2026-08-19 on `ws-30-sc4a-surface`, dark

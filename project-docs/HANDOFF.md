@@ -66,6 +66,49 @@ this file grows a graveyard and the graveyard is what goes stale.
 
 # OPEN
 
+### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
+- **Check:** nothing in the repo can answer this — that is the point. Ask whether
+  anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
+  **Organisation → Seat assignments** and at a neighbouring app. Unanswered → pending.
+- **Why:** `workbench/control_plane/AGENTS.md` is explicit that the conformance
+  suite checks eight regexes and **nothing in this tree tests layout or cross-app
+  continuity**, so the theme switch is the real gate. WS-34 added two surfaces
+  (the seat roster, the four-tab strip) and moved a third (branding into a tab).
+  The suite is green and that proves no hardcoded colour, not that the surface
+  looks like the product beside it.
+- **Authority:** `specs/launch_surface.md` §10 · `workbench/control_plane/AGENTS.md`
+- **Added:** 2026-08-24 · WS-34 build session
+
+### H-20 · WS-34 LS-11: decide the fate of seats held on plans D49 retired · [OWNER]
+- **Check:** `SELECT o.slug, sa.plan_slug, count(*) FROM seat_assignment sa
+  JOIN organization o ON o.id = sa.organization_id
+  WHERE sa.released_at IS NULL AND sa.plan_slug <> 'core' GROUP BY 1, 2;` on the
+  Console database. Any row means a customer holds a seat on a retired plan and the
+  decision is still owed. Zero rows → delete this entry.
+- **Why:** Migration 008 deactivates every Center package, add-on and bundle so the
+  checkout cannot SELL them, and deliberately **touches no `seat_assignment` or
+  `seat_grant` row** — repricing, converting, refunding or prorating a seat somebody
+  already holds is money on a live system. Their seats keep working meanwhile; what
+  they should cost is the owner's call. Expected to be empty or Fracktal-only (D42's
+  ₹0 onboarding) today, which is why 008 could land as data now.
+- **Authority:** `specs/launch_surface.md` §4.4 · LS-11 · `work_plan.md` §6
+- **Added:** 2026-08-24 · WS-34 build session
+
+### H-21 · Promoting a `preview` app to `live` is an owner decision, not a code change · [OWNER]
+- **Check:** compare `specs/launch_surface.md` §2's live table against
+  `rg -n 'launch: "live"' workbench/control_plane/src/lib/nav.ts | wc -l` → 8 means
+  nothing has been promoted. This entry never "completes"; it is the standing rule
+  for the next person who finishes an app.
+- **Why:** Sixteen panes are `preview` — routes, API and tests intact, nav entry
+  absent. Turning one on is the judgement "this is finished enough to sell", which
+  is the owner's; the registry edit plus its `nav.test.ts` line is trivial once the
+  call is made. ⚠️ **Never promote an app by granting its feature** — `preview` is
+  not a permission (§3.4), and confusing the two makes a product decision into a
+  data migration and makes `/access` lie about why a pane is missing.
+- **Authority:** `specs/launch_surface.md` §2 · §3 · §11 item 4
+- **Added:** 2026-08-24 · WS-34 build session
+
+
 ### H-1 · Deploy: `main` is many migrations ahead of every box · [OWNER]
 - **Check:** compare `ls infra/postgres/[0-9]*.sql | sort -V | tail -1` against
   `SELECT max(filename) FROM schema_migrations;` on a box. A gap means still
