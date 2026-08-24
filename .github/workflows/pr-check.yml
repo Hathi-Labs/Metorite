@@ -233,6 +233,14 @@ jobs:
       # fails if the entry is ever removed; that is the closest a hand-list
       # gets to defending itself).
       #
+      # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
+      # `test_customer_console_member_write.py` — the member-add door and
+      # D49.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
+      # and carrying the same self-defending pair of tests (it reads this file
+      # AND `customer_console.md` §7). `test_invite_console_mirror.py` joins
+      # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
+      # it is named here so a DB gate leaking into it later disarms loudly.
+      #
       # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
       # -coded to the Console suites' skip string — so a suite gated on a
       # DIFFERENT variable could be added to the file list above, skip every
@@ -247,10 +255,12 @@ jobs:
             tests/unit/test_customer_console_resolve.py \
             tests/unit/test_customer_console_payments.py \
             tests/unit/test_customer_console_operator_list.py \
+            tests/unit/test_customer_console_member_write.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
             tests/unit/test_seat_admin_proxy_route.py \
+            tests/unit/test_invite_console_mirror.py \
             tests/unit/test_signup_provision_route.py \
             tests/unit/test_signup_reconciler.py \
             tests/unit/test_billing_purchase_capability.py \

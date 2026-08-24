@@ -129,6 +129,8 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/orgs/provision": "provision",
     "/registry/seats": "seat_admin",
     "/registry/seats/release": "seat_admin",
+    # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
+    "/registry/members": "member_admin",
 }
 
 

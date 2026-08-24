@@ -757,6 +757,101 @@ def deployment_visible_orgs(
     ]
 
 
+def add_invited_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> tuple[bool, str]:
+    """Create an ``invited`` membership if the org has none for this identity.
+
+    CP-2f / D49.2 — the ONLY member-add writer besides ``provision``'s founder
+    INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
+    and given a seat before they have ever signed in.
+
+    Returns ``(created, status_now)``.
+
+    **Create-only, by construction.** ``ON CONFLICT DO NOTHING`` means an existing
+    row is left exactly as it is: an ``active`` member is never demoted back to
+    ``invited`` by a re-invite, and a ``removed`` one is never silently
+    resurrected — reinstating somebody is an ``admin:members:manage`` decision on
+    the tenant plane and must not ride in on the weaker invite door. The caller is
+    told which happened (``created``) and what the row says now (``status_now``),
+    so a re-invite is legible rather than a silent 200.
+
+    **``role`` is not a parameter and never will be one.** It takes the column
+    default ``member`` (``001_customer_console.sql:121-124``). ``org_membership.
+    role`` is registry/billing vocabulary (D12); the tenant's permission
+    vocabulary is ``org_role``, and mapping one onto the other here would mint the
+    second grant vocabulary root ``CLAUDE.md`` §5 forbids by name — as well as
+    letting a customer admin create registry admins through an invite.
+
+    ⚠️ **This writes no seat.** A membership row is not a seat: Core-seat burn
+    stays at first resolve (D19.3 / D32.5, ``main._allocate_core_seat``).
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO org_membership
+                (organization_id, user_identity_id, status)
+            VALUES (:org, :i, 'invited')
+            ON CONFLICT (organization_id, user_identity_id) DO NOTHING
+            RETURNING status
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    if row is not None:
+        return True, str(row[0])
+
+    # The conflict path. Re-read rather than assume: what the row says now is
+    # exactly the thing the caller could not know, and inventing 'invited' here
+    # would report a demotion that did not happen.
+    existing = conn.execute(
+        text(
+            "SELECT status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalar_one()
+    return False, str(existing)
+
+
+def activate_invited_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> bool:
+    """Promote an ``invited`` membership to ``active``. Returns whether it moved.
+
+    D49.3 — *"first sign-in auto-activates an invited member"*, driven from the
+    DEPLOYMENT arm of ``POST /registry/resolve`` and from nowhere else.
+
+    ⚠️ **The guard is the ``AND status = 'invited'`` in this statement's own
+    ``WHERE``**, not an ``if`` beside the call. That is deliberate and it is the
+    whole safety argument: the natural implementation (*"anything that is not
+    active → activate"*) silently un-suspends people, which
+    ``colleague_onboarding.md`` §6 predicted in as many words before this existed.
+    Written as a predicate on the UPDATE, ``suspended``, ``removed`` and already-
+    ``active`` rows are untouched by construction, and a later edit that widens it
+    has to widen the SQL — which is where the fence is looking.
+
+    ``joined_at`` is stamped ``COALESCE(joined_at, now())``, the same rule the
+    tenant plane's activation uses, so a returning member keeps their first join
+    date.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE org_membership
+               SET status = 'active',
+                   joined_at = COALESCE(joined_at, now())
+             WHERE organization_id = :org
+               AND user_identity_id = :i
+               AND status = 'invited'
+            RETURNING user_identity_id
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    return row is not None
+
+
 def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
     """Every membership row in one organization: ``email · role · status``.
 

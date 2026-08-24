@@ -17,17 +17,26 @@ gateway-service module would place an identity decision outside the identity
 seam. This module owns the HTTP call, the read-through cache, the
 ``invalidate()`` escape hatch and the projection read/write.
 
-## The ONE caller, and why it is not ``resolve_access``
+## The ONE SEAT-ALLOCATING caller, and why it is not ``resolve_access``
 
-``apps/services/gateway/gateway/routes/signin.py`` and **nothing else**. The
-proposed default was to wire this behind ``access.resolve_access``; that was
+:func:`resolve_for_signin` — the function that allocates a Core seat — is called
+from ``apps/services/gateway/gateway/routes/signin.py`` and **nothing else**. The
+proposed default was to wire it behind ``access.resolve_access``; that was
 refused, and the code is why — ``resolve_access`` has six production call sites
 and one of them (``routes/rooms.py``) fans it over every participant of a room.
 A seat-allocating cross-service call there would fire one Console request **and
 one seat allocation** per participant per room load, which is precisely the
 farmable cap clause 11 exists to prevent. ``resolve_access``,
 ``_with_resolved_access`` and ``_ACCESS_SQL`` are untouched by this module.
-Fence: ``tests/unit/test_console_dependency_boundary.py``.
+
+The MODULE has four importers, each reaching a different, non-seat-allocating
+function, and each a **session-email-only** route: ``routes/signin.py``
+(:func:`resolve_for_signin`), ``routes/signup.py``
+(:func:`provision_org_on_console`), ``routes/seats.py`` (the two seat-admin
+writes) and — since CP-2f, 2026-08-24 — ``routes/admin/members.py``
+(:func:`invite_member_on_console`). A FIFTH is the drift. Fence:
+``tests/unit/test_console_dependency_boundary.py``, whose allow-list is the
+statement of that rule.
 
 ## Two caches, two axes, and this one is NOT ``access._cache``
 
@@ -161,12 +170,14 @@ __all__ = [
     "ACCESS_DENIED",
     "CONSOLE_UNAVAILABLE",
     "WORKSPACE_CHOOSER_REQUIRED",
+    "ConsoleMemberWriteUnavailable",
     "ConsoleProvisionUnavailable",
     "ConsoleSeatWriteUnavailable",
     "ReconcileSummary",
     "ResolveDecision",
     "assign_seat_on_console",
     "invalidate",
+    "invite_member_on_console",
     "is_wired",
     "provision_org_on_console",
     "reconcile",
@@ -687,6 +698,109 @@ async def release_seat_on_console(
         plan_slug=plan_slug,
         source=None,
     )
+
+
+# ── The MEMBER-write client (CP-2f · customer_console.md, D49.2) ─────────────
+#
+# ⚠️ **Still the ONE Console httpx client** (the note above the seat writes):
+# this function is the gateway's path to the Console's deployment-key
+# `member_admin` door (`POST /registry/members`), and it lives HERE — beside
+# `_post_provision` / `_post_resolve` / `_post_seat_write`, reusing
+# `_new_http_client` / `is_wired` / the settings reads — because a second Console
+# client anywhere is root `CLAUDE.md` §5's defect by name. `routes/admin/
+# members.py` holds no client, no URL and no key; it supplies the acting
+# `actor_email` (the AUTHENTICATED ADMIN's session email, R11) and ignores the
+# answer, because the tenant-plane write it mirrors has already committed.
+#
+# ⚠️ **The body carries `member_email` + `actor_email` and NO `org_slug`.** The
+# org is the ANSWER, derived Console-side from
+# `deployment_visible_orgs(deployment_id, actor_email)` — the same R11 shape the
+# three siblings apply — and the Console 400s a deployment key that names an
+# `org_slug`.
+#
+# ⚠️ **It carries no ROLE either, and that is a decision, not an omission.** The
+# tenant's role slugs and the registry's `{owner,admin,member}` are two
+# vocabularies (D12); mapping one onto the other on this wire would mint the
+# second grant vocabulary. The Console writes its column default.
+
+
+class ConsoleMemberWriteUnavailable(Exception):
+    """The Customer Console produced no member-write answer we could read.
+
+    Transport-only, the line `_post_resolve` draws: the box is not wired, the
+    network failed, or the Console answered with a status proving no ANSWER was
+    produced (a 5xx, a 401 on this box's own deployment key, a 408 or a 429). A
+    genuine verdict — 200, or the 400/403/409 the ``member_admin`` door itself
+    issues — is NOT this: it is returned as ``(status_code, body)``.
+
+    ⚠️ Unlike the seat write, **the caller does not relay this to a browser**.
+    The invite's authoritative tenant-plane write has already committed, so every
+    outcome here — outage and verdict alike — is best-effort telemetry. The type
+    exists so the two are still distinguishable in a log line.
+    """
+
+
+async def invite_member_on_console(
+    *,
+    actor_email: str,
+    member_email: str,
+    display_name: str = "",
+) -> tuple[int, dict[str, Any]]:
+    """Mirror an invited member onto the Customer Console (CP-2f, D49.2).
+
+    Writes an ``org_membership`` row with ``status='invited'`` for the
+    organization the acting admin belongs to on THIS deployment, so the invited
+    colleague is visible to ``GET /me/members``, is seat-assignable before their
+    first sign-in, and — the load-bearing one — resolves to their employer's org
+    rather than into the self-serve signup funnel.
+
+    Returns the Console's ``(status_code, body)``.
+
+    Raises:
+        ConsoleMemberWriteUnavailable: the box is not wired, or the Console
+            produced no answer. Never raised for a verdict.
+    """
+    if not is_wired():
+        # Ship-dark: an unwired box has no Console to mirror onto. The caller
+        # treats this exactly like any other failure — best-effort, post-commit,
+        # and it never changes the invite's answer.
+        raise ConsoleMemberWriteUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_deployment_key.strip()
+
+    payload: dict[str, Any] = {
+        "member_email": member_email,
+        "actor_email": actor_email,
+    }
+    if display_name:
+        payload["display_name"] = display_name
+
+    try:
+        client = _new_http_client()
+        async with client:
+            response = await client.post(
+                f"{base}/registry/members",
+                headers={"Authorization": f"Bearer {key}"},
+                json=payload,
+            )
+    except Exception as exc:
+        raise ConsoleMemberWriteUnavailable(str(exc)[:200]) from exc
+
+    # The same line `_post_resolve` and `_post_seat_write` draw (finding P1-1):
+    # 5xx / 401 / 408 / 429 prove no answer was produced. Everything else is an
+    # answer.
+    if response.status_code >= 500 or response.status_code in (401, 408, 429):
+        raise ConsoleMemberWriteUnavailable(f"HTTP {response.status_code}")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return response.status_code, body
 
 
 # ── The signup Console-mirror reconciler (CP-2e slice) ───────────────────────
