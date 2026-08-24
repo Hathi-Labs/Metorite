@@ -245,10 +245,13 @@ async def invite_member(
         # raised: the tenant-plane invite stands.
         _log.warning("member_invite_console_unavailable",
                      email=email, error=str(exc)[:200])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Belt and braces around a best-effort mirror on a shipped write path.
         # `mirror_identity_membership` swallows internally; this client returns
-        # verdicts instead, so the swallow lives at the call site.
+        # verdicts instead, so the swallow lives at the call site. (No
+        # `# noqa: BLE001` — the rule is not enabled in this repo's ruff config,
+        # so the directive would only add a RUF100 finding; the three older ones
+        # in this file are pre-existing.)
         _log.warning("member_invite_console_failed",
                      email=email, error=str(exc)[:200])
 
