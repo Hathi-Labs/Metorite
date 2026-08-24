@@ -30,6 +30,66 @@ export type OrgRow = {
 };
 
 export type OrgList = { organizations: OrgRow[] };
+/**
+ * One member of a customer's organization, from `GET /billing/summary`
+ * (D49 · `launch_surface.md` §7 / LS-9).
+ *
+ * The operator console could already assign and release a seat by typed email;
+ * what it could not do was SEE whom to act on. `seats` is the member's live
+ * plan slugs — **empty means Unassigned** — from the same pair of store reads
+ * the customer's own Organisation surface uses, so an operator and a customer
+ * admin looking at one organization cannot be shown different answers.
+ */
+export type MemberRow = {
+  email: string;
+  role: string;
+  status: string;
+  seats: string[];
+};
+
+/** Whether this member holds any live seat. The whole of Seated vs Unassigned. */
+export function isSeated(m: MemberRow): boolean {
+  return Array.isArray(m.seats) && m.seats.length > 0;
+}
+
+/**
+ * Read the roster off a `/billing/summary` body, tolerating its absence.
+ *
+ * A Console predating LS-9 sends no `members` key at all, and this console is
+ * deployed independently of it — so `[]` here must mean "no roster arrived",
+ * which the caller renders as a notice rather than as "this customer has no
+ * members". A malformed row is dropped rather than crashing the page: an
+ * operator surface that white-screens on one bad row is worse than one showing
+ * the other nine.
+ */
+export function readMembers(body: unknown): MemberRow[] {
+  const raw = (body as { members?: unknown } | null)?.members;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m): m is MemberRow => typeof (m as MemberRow)?.email === "string")
+    .map((m) => ({
+      email: m.email,
+      role: typeof m.role === "string" ? m.role : "",
+      status: typeof m.status === "string" ? m.status : "",
+      seats: Array.isArray(m.seats) ? m.seats : [],
+    }));
+}
+
+/**
+ * How many people hold a seat, and how many do not.
+ *
+ * ⚠️ **These count PEOPLE, not seats.** One person on two plans is one seated
+ * row and two assigned seats; the seat counts are `seatsTotals`' — the
+ * Console's own `seat_counts` — and presenting this tally as them would be
+ * quietly wrong exactly where it matters.
+ */
+export function memberTally(
+  members: MemberRow[],
+): { total: number; seated: number; unassigned: number } {
+  const seated = members.filter(isSeated).length;
+  return { total: members.length, seated, unassigned: members.length - seated };
+}
+
 
 export type CatalogPlan = {
   slug: string;
