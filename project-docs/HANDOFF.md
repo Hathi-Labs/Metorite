@@ -66,6 +66,71 @@ this file grows a graveyard and the graveyard is what goes stale.
 
 # OPEN
 
+### H-22 · Decide the development & delivery framework (D-A…D-F) and mint WS-35 · [OWNER]
+- **Check:** `rg -n "WS-35" project-docs/work_plan.md` → no hit means the board
+  row was never minted and the six decisions in
+  `specs/development_and_delivery_framework.md` §9 are still owed.
+- **Why:** The framework spec was written 2026-08-24 and is deliberately
+  **PROPOSED, binding nothing**. Its central item amends
+  `engineering_practice.md` §1's "we do not run a staging environment, and should
+  not" — sound for the premise it names (one box, single-digit customers, one
+  developer) and that is exactly the premise being changed. Overruling recorded
+  doctrine is not an agent's act. Until D-A is recorded, T-1…T-15 have no board
+  row to dispatch from.
+- **Authority:** `specs/development_and_delivery_framework.md` §9 · CLAUDE.md §5
+  (do not re-litigate decisions) · `work_plan.md` §3
+- **Added:** 2026-08-24 · delivery-framework planning session
+
+### H-23 · `main` reads `protected: false` — CI is advisory at merge · [OWNER]
+- **Check:** `gh api repos/Hathi-Labs/Metorite/branches/main/protection` → a
+  `404 Branch not protected` means still pending. ⚠️ Read it back from the API,
+  never from the settings page; and note a *ruleset* may protect the branch
+  without the branches API reporting `protected: true`.
+- **Why:** `work_plan.md` §2 exceptions row 1 records protection being enabled
+  2026-08-03 with `enforce_admins: true` — but that was the **pre-rebrand**
+  repository, and this one's workflows are dated 2026-08-16, so the protection
+  most likely did not travel. Measured 2026-08-24: `list_branches` reports
+  `"name":"main","protected":false`. Every gate in `pr-check.yml` is therefore
+  decorative at merge, which is survivable with one disciplined developer and is
+  not survivable with two. ⚠️ It cannot simply be switched on: `pr-check.yml`
+  carries `paths-ignore` for `**.md` and `project-docs/**`, so a docs-only PR
+  produces **zero** check-runs and requiring those contexts would make every docs
+  PR unmergeable. The always-runs sentinel job (T-1) lands first, then require
+  **that** one context.
+- **Authority:** `work_plan.md` §2 exceptions row 1 · §6 (GitHub settings) ·
+  `specs/development_and_delivery_framework.md` §1.3 · T-1/T-2
+- **Added:** 2026-08-24 · delivery-framework planning session
+
+### H-24 · The Customer Console ladder does not travel with the deploy · [AGENT]
+- **Check:** `rg -n "customer_console" scripts/vps_apply.sh` → no hit means the
+  delivery path still applies only the tenant ladder and the gap is open.
+- **Why:** `infra/customer_console/` has its own DSN-driven applier
+  (`scripts/apply_customer_console_migrations.sh`) that **nothing invokes
+  automatically**, so the Console service can be delivered carrying code that
+  expects a schema its database does not have — the board's own "`platform_api`
+  is on the box but inert". **D47 named closing this as the obligation on the way
+  in.** Two clauses matter and neither is optional: the applier runs **before**
+  the Console unit restarts (the R6 window), and it **fails the deploy** when its
+  DSN is unset rather than skipping — a silent skip is how four deploys once
+  reported success while shipping nothing. Building it is AGENT-SAFE; running it
+  anywhere real is OWNER-GATE.
+- **Authority:** `specs/customer_console_infrastructure.md` §5 item 4 (D47) ·
+  `specs/development_and_delivery_framework.md` §4.1 · T-5
+- **Added:** 2026-08-24 · delivery-framework planning session
+
+### H-25 · The Console ladder's idempotency is an unchecked claim; the Operator Console has no CI · [AGENT]
+- **Check:** `rg -n "infra/customer_console" .github/workflows/pr-check.yml` and
+  `rg -n "operator_console" .github/workflows/` → no hits means both gaps open.
+- **Why:** Two cheap holes with the same shape as ones this repo has already been
+  bitten by. (a) `apply_customer_console_migrations.sh`'s header asserts every
+  ladder file is additive and re-runnable; **nothing verifies it** — the tenant
+  ladder earned its triple-replay job precisely because "idempotent" was a claim
+  about files nobody had checked together. (b) `workbench/operator_console/`
+  ships `typecheck` and `test` scripts that **no workflow runs**, so the surface
+  that assigns seats and AI credits is the one surface with no CI at all.
+- **Authority:** `specs/development_and_delivery_framework.md` §4.2 · §5 · T-3/T-4
+- **Added:** 2026-08-24 · delivery-framework planning session
+
 ### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
 - **Check:** nothing in the repo can answer this — that is the point. Ask whether
   anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
