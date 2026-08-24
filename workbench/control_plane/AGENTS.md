@@ -101,6 +101,17 @@ Five rules on top of the three above. Each one exists because it was broken:
    non-JSON route. *(The previous version of that fence asserted
    `toContain("await res.text()")` and claimed `res.text()` "keeps the bytes" — it
    pinned the defect in place. A fence that holds a bug still is worse than none.)*
+   The same rule again, off the visual axis: **`src/lib/emailOtp.ts` is the one
+   outbound-email seam** — `resendSender` (the transport, and the only place in
+   this app that builds a Resend bearer) and `emailOtpFrom` (the one verified
+   sender). WS-30 SC-2c's invite notification (`src/lib/inviteEmail.ts`,
+   2026-08-24) **imports** both rather than moving or copying them: that file sits
+   on the live auth path, so refactoring it is a sign-in outage, and a second
+   transport would put a second `Authorization: Bearer` mint into the route tree —
+   which `src/lib/gateway.test.ts`'s three-name allow-list refuses by name. A
+   third consumer imports them too. Email bodies carry **no colour**: an email
+   renders outside the theme system, so a hex value there can never follow the
+   org's theme (fenced in `inviteEmail.test.ts`).
 5. **A category and a name must resolve to the same colour.** Some apps know
    what a lane *means* (Projects has `STATUS_CATEGORIES`); some can only read
    what it is *called* (Tasks' stages are user-typed). Those two routes must
