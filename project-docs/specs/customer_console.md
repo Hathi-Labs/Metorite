@@ -36,7 +36,10 @@ slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
 self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 `signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
-form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
+form UI + its `/api/signup` Next hop, BUILD+TEST only; **AMENDED 2026-08-24 by
+WS-29 MT-1f slice 1 — done-when 4a, the `ReservedSlug` refusal (owner ruling B7,
+a live-defect fix: `api`/`app`/`www` were registrable through the public form),
+and done-when 8a, `/signup` with no session redirects to `/signin`**) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
 owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
@@ -4169,8 +4172,15 @@ person visible in two orgs on one deployment · retiring the operator-auth shape
 · any Router or metering change.
 
 **CP-2c · The self-serve signup flow — the form over CP-2a's API.** ◐ **MINTED
-2026-08-19 (D46, owner directive); SLICE 1 BUILT 2026-08-19 — slices 2, 3 and 4
-open.** Slice 1 is the Console deployment-key provision arm (done-when 6 and
+2026-08-19 (D46, owner directive); SLICES 1–4 BUILT (2026-08-19/20).**
+⚠️ **Updated 2026-08-24 by WS-29 MT-1f slice 1's branch — two additions to the
+shipped surface, both recorded here because this ticket owns the signup door:**
+(i) **done-when 4a**, the **`ReservedSlug`** refusal (owner ruling B7 — a
+LIVE-DEFECT fix: `api`, `app` and `www` were registrable through the public form),
+with the reserved vocabulary shared cross-language and a NAMED gap left open at
+the Console's own provision door; and (ii) **done-when 8a**, `/signup` with no
+session **redirects to `/signin`** instead of rendering a form that could only
+401 at submit. Slice 1 is the Console deployment-key provision arm (done-when 6 and
 done-when 8's Console half) and it carries the D46.6-item-1 amendment; the
 record is in the slice list at the end of this ticket. Nothing of the *form*
 exists yet: no `/signup` route, no `SELF_SERVE_SIGNUP_ENABLED` flag, no gateway
@@ -4232,8 +4242,42 @@ overrule any numbered item)*:
    shape error (slice-2 P2, repaired at landing), and a spaced slug (`"a b"`)
    reached the cross-plane join key unvalidated. Refusals: **400**
    `InvalidGstin` / **400** `MissingState` / **400** `MissingSlug` / **400**
-   `InvalidSlug`, fenced red-first in `test_signup_provision_route.py`; the form
-   mirrors all four client-side (advisory — the route is the fence).
+   `InvalidSlug` / **400** `ReservedSlug`, fenced red-first in
+   `test_signup_provision_route.py`; the form mirrors all five client-side
+   (advisory — the route is the fence).
+
+   ⚠️ **RESERVED LABELS — added 2026-08-24, owner ruling B7 (`saas_multitenancy.md`
+   §11 MT-1f). This is a LIVE-DEFECT FIX, not a forward-looking nicety, and it
+   applies regardless of any flag.** `_SLUG_RE` is a *shape* rule and shape was
+   never the whole rule: measured 2026-08-24, the gate admits **`api`**, **`app`**
+   and **`www`**, so a self-serve customer can today register the slug that names
+   the gateway's own hostname — and the moment MT-1f's wildcard exists, that slug
+   is a hostname collision with a live service, minted by a stranger through a
+   public form. The reserved set is
+   `{app, api, www, admin, console, signin, signup, mail, static, cdn, status,
+   help, docs}` — refused at the **route**, in the same shape-violation class as
+   `InvalidSlug`, with the new code **`ReservedSlug`** (400) so the copy can say
+   *"reserved"* rather than *"malformed"*. Comparison is on the already-lowercased
+   slug, after the `_SLUG_RE` check, so a reserved label and a malformed one are
+   never confused. **It is not an existence oracle**: the set is static, public and
+   identical for every caller, which is exactly what distinguishes it from
+   `SlugTaken`.
+   **ONE vocabulary, two languages.** The canonical list is
+   `workbench/control_plane/src/lib/subdomain.ts`'s `RESERVED_LABELS` (it exists
+   because of DNS, so the host parser owns it); the gateway holds the runtime
+   literal it enforces, and `tests/unit/test_subdomain_host_vocabulary.py`
+   **parses the TypeScript** and pins the two sets equal — the
+   `test_seed_status_colours_match_the_shared_vocabulary` idiom, chosen for the
+   same reason (*a mirror goes stale and then lies*).
+   ⚠️ **NAMED GAP, not closed here: the Console-side provision door.**
+   `POST /orgs/provision` (`apps/services/customer_console/`) accepts a slug on
+   both arms and applies **no** reserved-label check of its own; migration 179's
+   `provision_organization` accepts any slug too. Every *self-serve* path reaches
+   the Console **through** this gateway route, so the public door is closed — but
+   an operator-arm provision, or any future caller that does not transit
+   `routes/signup.py`, is not. Closing the Console door belongs to the branch that
+   owns `apps/services/customer_console/` and is recorded here so it has a
+   referent rather than a disclaimer chain (the CP-2c/MT-1j failure mode).
 4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
    `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
    only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
@@ -4467,6 +4511,15 @@ mutation testing on auth/tenancy clauses)*:
    — no `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
    ConsoleOrgRow` (R8 against the Console ladder, the deployment-key arm) for
    the landing.
+   ✅ **4a MET — 2026-08-24 (MT-1f slice 1's branch).** A **reserved** slug is
+   **400 `ReservedSlug`**, refused at the route after the `_SLUG_RE` shape check
+   and before step 0/1/2 (item 3's reserved-label block; owner ruling B7). Fences:
+   `::TestTheReservedLabels` in `test_signup_provision_route.py` (hermetic,
+   red-first — `api` provisioned an organization before the gate, and the Console
+   is asserted never reached), plus the cross-language parity fence
+   `tests/unit/test_subdomain_host_vocabulary.py`, which reads
+   `RESERVED_LABELS` out of `src/lib/subdomain.ts` and pins the gateway's set
+   equal to it.
 5. ✅ **5b MET · 5a MET at plane level; the missing route-level convergence is
    deferred to CP-2e (an out-of-band sweep, not a route retry) —
    slice 2, 2026-08-20. The two-plane orchestration converges or
@@ -4558,6 +4611,18 @@ mutation testing on auth/tenancy clauses)*:
    that `console-empty` is the only `signup_eligible=True` outcome while
    `console-refused`, `cache-dead` and `console-error` are all False; plus the
    three route-dict updates in `test_signin_resolve_route.py`.)*
+8a. ✅ **MET — 2026-08-24 (MT-1f slice 1's branch).** `/signup` reached with **no
+   session redirects to `/signin`**, from the page itself, rather than rendering a
+   form whose only possible outcome is a 401 at submit. The form's `needsSignIn`
+   arm stays — it is the answer to a session that *expired between render and
+   submit* — but it is no longer the ordinary path for a signed-out visitor, who
+   used to be shown a four-field organization form and told nothing until they
+   filled it in. The check is a server-component `await auth()` beside the flag
+   gate, ordered **flag first, session second** (an un-opted-in box must not
+   disclose that the surface exists behind a sign-in). Fence: `signup.test.ts` —
+   a source pin on both gates and their order, `signin.test.ts:209`'s idiom,
+   because `next-auth`/`next/navigation` cannot load in this tree's node-env
+   vitest; the behaviour is the reviewer's manual gate.
 8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,
