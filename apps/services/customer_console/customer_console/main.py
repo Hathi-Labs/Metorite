@@ -48,6 +48,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -183,6 +184,19 @@ class LifecycleRequest(BaseModel):
     #: Days of export window when moving to `cancelled`. Named here so the
     #: window is an explicit act rather than an implicit default nobody chose.
     export_window_days: int = Field(default=30, ge=1)
+
+
+class OrgPurgeRequest(BaseModel):
+    """CP-2g — strip a DELETED organization's registry plane.
+
+    ``confirm`` must echo ``org_slug`` verbatim: the operator UI makes the
+    human type the slug, and this door refuses a caller that did not carry
+    that typing through — a purge must never be reachable by a mis-clicked
+    retry with a stale body.
+    """
+
+    org_slug: str
+    confirm: str
 
 
 class ResolveRequest(BaseModel):
@@ -1248,6 +1262,180 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
         "can_sign_in": caps.can_sign_in, "can_use_ai": caps.can_use_ai,
         "can_write_seats": caps.can_write_seats,
         "data_retained": caps.data_retained,
+    }
+
+
+#: What `/orgs/purge` deletes vs keeps vs scrubs, module-level so the receipt
+#: and the suite pin the SAME lists (the N8 `_PURGE_DELETES`/`_PURGE_KEEPS`
+#: idiom). Deleted = personal data (emails, identity links), live secrets,
+#: and per-org operational state (`org_placement`, `provisioning_run` — the
+#: latter also because its `provision:{slug}` idempotency key would otherwise
+#: re-attribute the OLD org's provisioning history to a NEW org that takes
+#: the freed slug). Kept = the financial record — a purge is entitled to take
+#: the people, never the books. SCRUBBED = kept rows whose columns carry an
+#: email: the row stays for the books, the address does not (review round 1,
+#: P1 — `usage_event.user_email` and `control_audit.detail` survived the
+#: first draft, contradicting this very comment).
+#:
+#: ⚠️ `user_identity` is KEPT and named: it is global and cross-org (three
+#: FKs), and an identity with no memberships is D51's org-less sign-in. An
+#: erasure request for a PERSON (as opposed to an org) is a different act and
+#: not this door.
+#:
+#: `TestTheClassificationCannotGoStale` in `test_org_purge_console.py`
+#: re-derives the full set of org-scoped Console tables from
+#: information_schema and pins DELETES union KEEPS_TABLES equal to it, so a
+#: new table cannot land in neither list silently.
+_ORG_PURGE_DELETES: tuple[str, ...] = (
+    "seat_assignment",
+    "member_ai_cap",
+    "org_membership",
+    "llm_api_key",
+    "provider_credential",
+    "org_placement",
+    "provisioning_run",
+)
+#: The org-scoped tables the purge keeps (the fence's other half). Prose for
+#: the receipt lives in `_ORG_PURGE_KEEPS`; this is the machine-checkable set.
+_ORG_PURGE_KEEPS_TABLES: tuple[str, ...] = (
+    "organization",
+    "org_subscription",
+    "seat_grant",
+    "credit_ledger",
+    "payment_order",
+    "usage_event",
+    "usage_rollup",
+    "control_audit",
+    "discount_code",
+    "discount_redemption",
+)
+_ORG_PURGE_KEEPS: tuple[str, ...] = (
+    "organization (tombstone row, slug renamed)",
+    "org_subscription",
+    "seat_grant",
+    "credit_ledger",
+    "payment_order",
+    "usage_event (user_email scrubbed)",
+    "usage_rollup",
+    "control_audit (email keys scrubbed from detail)",
+    "discount_code",
+    "discount_redemption",
+    "user_identity (global, cross-org — emails remain here)",
+)
+#: The jsonb keys under which Console audit details carry an address
+#: (`member.add`, `seat.assign`/`release`, `org.provision`). Stripped, not
+#: rewritten — an absent key reads as scrubbed, a fake value reads as data.
+_AUDIT_EMAIL_KEYS: tuple[str, ...] = (
+    "email", "owner_email", "member_email", "actor_email", "user_email",
+)
+
+#: The detail-strip expression, built ONCE from the module constant above —
+#: the operands are this tuple, never request input, which is what makes the
+#: interpolation below static SQL rather than construction from data.
+_AUDIT_DETAIL_STRIP_SQL = (
+    "UPDATE control_audit SET detail = detail - "
+    + " - ".join(f"'{k}'" for k in _AUDIT_EMAIL_KEYS)
+    + " WHERE organization_id = :i AND detail ?| :keys"
+)
+
+#: `control_audit.actor` is an EMAIL under the deployment-key scheme
+#: (`_admin_scheme_for_deployment` returns the acting admin's address, and
+#: `member.add`/`seat.assign`/`seat.release` write it straight into the
+#: column) — repair round 2's blocking find: the first scrub covered `detail`
+#: and left the address sitting one column over. The column is NOT NULL, so
+#: email-shaped actors are OVERWRITTEN with this placeholder; `'operator'`
+#: and other role-words carry no address and stay.
+_ACTOR_PURGED = "[purged]"
+
+_TOMBSTONE_RE = r"-purged-[0-9a-f]{6}$"
+
+
+@app.post("/orgs/purge")
+def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
+    """CP-2g — the registry half of destroying an organization.
+
+    Reachable ONLY in `deleted` — the lifecycle graph's terminal state, which
+    itself is reachable only from `cancelled`, i.e. only after the export
+    window. So the doctrine ("never destroy customer data without an export
+    window") holds by construction across all three acts: cancel → delete →
+    purge. This door strips personal data and live secrets, then RENAMES the
+    slug to a tombstone so the name is free for a fresh start; the registry
+    row and the financial ledger stay, because an organization having existed
+    and paid is a fact the books must keep.
+
+    The tenant plane is NOT touched here — the Console cannot reach the tenant
+    database by design. The operator BFF pairs this with the gateway's
+    `DELETE /internal/operator/organizations/{slug}` (the other half), and
+    both halves are idempotent so a half-failed pair is just re-run.
+    """
+    if req.confirm != req.org_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm must equal org_slug, verbatim",
+        )
+    # A tombstone is the RESULT of a purge, never its subject — without this,
+    # each press on a lingering `deleted` row appends another `-purged-` suffix
+    # and mints another audit row (measured, review round 1).
+    if re.search(_TOMBSTONE_RE, req.org_slug):
+        raise HTTPException(
+            status_code=409,
+            detail="this organization is already purged (tombstone row)",
+        )
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+        status = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if status != "deleted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"organization is {status!r}; purge is reachable only in "
+                    "'deleted'. The path is: cancel access (opens the export "
+                    "window), then mark deleted, then purge."
+                ),
+            )
+        deleted: dict[str, int] = {}
+        for table in _ORG_PURGE_DELETES:
+            deleted[table] = conn.execute(
+                text(f"DELETE FROM {table} WHERE organization_id = :i"),
+                {"i": org_id},
+            ).rowcount
+        # Scrub, don't delete: the books keep the usage and the audit trail,
+        # the addresses go. Key-stripping (not rewriting) so an absent key
+        # reads as scrubbed rather than as fake data.
+        scrubbed: dict[str, int] = {}
+        scrubbed["usage_event.user_email"] = conn.execute(
+            text("UPDATE usage_event SET user_email = NULL "
+                 "WHERE organization_id = :i AND user_email IS NOT NULL"),
+            {"i": org_id},
+        ).rowcount
+        scrubbed["control_audit.detail"] = conn.execute(
+            text(_AUDIT_DETAIL_STRIP_SQL),
+            {"i": org_id, "keys": list(_AUDIT_EMAIL_KEYS)},
+        ).rowcount
+        scrubbed["control_audit.actor"] = conn.execute(
+            text("UPDATE control_audit SET actor = :p "
+                 "WHERE organization_id = :i AND actor LIKE '%@%'"),
+            {"i": org_id, "p": _ACTOR_PURGED},
+        ).rowcount
+        tombstone = f"{req.org_slug}-purged-{uuid.uuid4().hex[:6]}"
+        conn.execute(
+            text(
+                "UPDATE organization SET slug = :t, updated_at = now() "
+                "WHERE id = :i"
+            ),
+            {"t": tombstone, "i": org_id},
+        )
+        _audit(conn, org_id, "org.purge",
+               {"slug": req.org_slug, "tombstone": tombstone,
+                "deleted": deleted, "scrubbed": scrubbed})
+    return {
+        "slug": req.org_slug,
+        "tombstone": tombstone,
+        "deleted": deleted,
+        "scrubbed": scrubbed,
+        "kept": list(_ORG_PURGE_KEEPS),
     }
 
 

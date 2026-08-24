@@ -47,7 +47,13 @@ owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write do
 — `POST /registry/members` on the `member_admin` capability, plus D50.3's
 `invited→active` promotion in the deployment resolve arm; **no migration**, the
 `001` CHECK already carries `invited`. Dark by construction: no live key holds
-the capability. Grant/deploy/live-write owner-gated) · CP-6
+the capability. Grant/deploy/live-write owner-gated) · **CP-2g MINTED + BUILT
+2026-08-24** (organization offboarding end to end: Console `POST /orgs/purge`
+reachable only in `deleted`, gateway operator door
+`DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
+— 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
+the operator console's cancel/delete edges + type-the-slug DangerPanel;
+env + live-purge owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -5315,6 +5321,133 @@ NOT accept or map a `role` · does NOT alter seat accounting, `_allocate_core_se
 or D19.3 · does NOT filter `deployment_visible_orgs` on `status` (the recorded
 finding at `store.py:720-726` is untouched) · does NOT add a chooser · does NOT
 mint a migration.
+
+**CP-2g · Organization offboarding, end to end — MINTED + BUILT 2026-08-24,
+REPAIRED the same day, twice (round 1: verify FAIL + adversarial review, 1 P0
+· 5 P1 · 2 P2; round 2: the re-verify found `control_audit.actor` still
+carrying the acting admin's address — now overwritten with `[purged]`, fenced;
+owner directive: "delete organizations … before I do the end-to-end
+onboarding").** ◐ **Ships dark** — the tenant half answers 503
+until `GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
+`GATEWAY_INTERNAL_URL` + `GATEWAY_INTERNAL_TOKEN` + the operator token.
+
+**What this is.** The lifecycle already ends at `deleted`, reachable only
+through `cancelled` (the export window) — `customer_console.lifecycle`'s graph
+enforces the doctrine by construction, and `POST /orgs/lifecycle` already walks
+it. What did NOT exist was the destruction: `deleted` retained every row on
+both planes and pinned the slug forever. CP-2g adds the **purge**, one act,
+three layers:
+
+1. **Console `POST /orgs/purge`** (Operator scheme; `{org_slug, confirm}`,
+   `confirm` must echo the slug): refuses **409** unless `status='deleted'`
+   (the refusal names the cancel→delete→purge path) and **409 for a
+   tombstone** (repair: tombstones stay listed at `status='deleted'`, so each
+   press used to re-purge them, appending suffixes and audit rows). Deletes
+   the personal-data/live-secret/per-org-ops tables (`_ORG_PURGE_DELETES`:
+   `seat_assignment`, `member_ai_cap`, `org_membership`, `llm_api_key`,
+   `provider_credential`, `org_placement`, `provisioning_run` — the last
+   because its `provision:{slug}` idempotency key would re-attribute the old
+   org's history to a new org taking the freed slug), **SCRUBS the books it
+   keeps** (repair, P1: `usage_event.user_email → NULL`; the email keys
+   stripped from `control_audit.detail` — row stays, address goes),
+   **tombstone-renames the slug** (`<slug>-purged-<hex6>`), KEEPS the
+   registry row and the money (`_ORG_PURGE_KEEPS_TABLES`, incl.
+   `discount_code`/`discount_redemption`; `user_identity` kept and NAMED in
+   the receipt — global, cross-org), audits `org.purge`, answers the
+   N8-style deleted/scrubbed/kept receipt.
+2. **Gateway `DELETE /internal/operator/organizations/{slug}?confirm=<slug>`**
+   (`gateway/routes/operator.py`; unset operator token ⇒ 503 ship-dark):
+   **TWO tokens, always** (repair, the P0): the route is deliberately NOT in
+   `PUBLIC_ROUTES`, so the app-level `require_authenticated` consumes
+   `Authorization: Bearer <GATEWAY_INTERNAL_TOKEN>` first, and the door then
+   demands `X-Operator-Token: <GATEWAY_OPERATOR_TOKEN>`. Neither alone
+   reaches the purge — the internal token's unprovisioned-box fallback is
+   `LITELLM_MASTER_KEY` (a credential agents hold), and the operator token
+   must not bypass ordinary machine auth. The first draft read the operator
+   token from `Authorization`, which the app-level gate consumed: the door
+   was a shipped no-op, green only against a bare test app — the suite now
+   runs against the REAL `gateway.main.app`. The purge itself:
+   `acb_auth.offboard.purge_tenant_organization` — **one
+   `DELETE FROM organization`** whose `ON DELETE CASCADE` FKs (33 tables
+   measured; all 140 in the generated promotion DDL) ARE the purge; slug
+   matched **byte-exactly** (repair, P1: `.lower()` made a mixed-case slug a
+   silent no-op); rowcount-0 answers `already_absent`, never "deleted: 0".
+   `user_identity` survives (global; the org-less D51 chooser is exactly the
+   after-state), `auth_email_otp_token` expires on its own. ⚠️ The `crm_*`
+   `organization_id` references `crm_organizations` (a CRM company), NOT the
+   tenant — named (`_NOT_TENANT_SCOPED`) and fenced.
+3. **Operator console**: the lifecycle panel gains the cancel/delete edges
+   (graph-mirrored in `lifecycleActions`, each with its own confirm copy),
+   and `deleted` renders the **DangerPanel** (never for a tombstone) —
+   type-the-slug to arm, then `POST /api/operator/purge`, which runs
+   **authority check (Console list, must be `deleted`) → tenant purge →
+   registry purge** in that order, because the registry purge renames the
+   slug the gateway door is addressed by. **`already_absent` is NOT success**
+   (repair, P1): it is either the legitimate retry or "this console points at
+   the wrong box", and finishing the registry half in the second case
+   destroys the `org_placement` record of where the data lives — the BFF
+   answers 409 `needs_accept_absent` and the UI makes a human choose before
+   re-posting with `accept_absent`. The **receipt is rendered**, not
+   collapsed to "✓ Done" (repair, P2 — the counts are the only visible
+   difference between a purge and a no-op).
+
+⚠️ **The honest boundary** (repair, P1 — the first confirm dialog promised
+"everything"): ~119 of ~155 tenant tables carry no `organization_id` and no
+FK path to `organization` — the un-threaded MT-1j remainder (chat, email,
+WhatsApp, meetings, GTD, apps, workflows, CRM). Their rows are not
+attributable to a tenant, so no per-tenant delete can exist for them until
+threading lands (deleting by member email would be wrong: an address can
+belong to a future org). The operator-facing copy now states this;
+`offboard.py`'s docstring carries the measurement; WS-29's H2 row is the
+standing owner of the gap. **Known limitation, recorded:** when the tenant
+half succeeds and the registry half then fails, the only durable record of
+the destruction is the gateway's `tenant_org_purged` log line — the tenant
+audit trail is itself cascade-deleted, and `org.purge` is only written when
+the registry half runs.
+
+**Done-when (all built + repaired; each names its fence).** (1) Purge refused
+outside `deleted` (the refusal teaches the path) and refused on a tombstone —
+`test_org_purge_console.py::TestTheGuards` / `::test_a_tombstone_is_refused…`
+(R8, real Console Postgres). (2) Personal data gone, the kept books lose
+their addresses (usage emails NULL, audit detail keys stripped — rows stay),
+slug freed — provisioning the same slug again mints a NEW org —
+`::TestThePurge`. (2a) Every org-scoped Console table is deleted or kept BY
+NAME — `::TestTheClassificationCannotGoStale` (DELETES ∪ KEEPS_TABLES
+re-derived from information_schema; a new table in neither list is red).
+(3) The tenant plane dies whole and the NEIGHBOUR org survives whole;
+identity survives; `already_absent` retry arm — `test_org_purge_tenant.py`
+(R8, real tenant Postgres). (4) Every `organization_id` column either
+cascades to `organization` or is the named CRM exclusion —
+`::TestTheExclusionCannotGoStale` (goes red the day CRM threading lands, on
+purpose). (5) The two-token ladder ON THE REAL `gateway.main.app` — door
+mounted and reachable; no app-level bearer ⇒ the gateway refuses first;
+internal token alone ⇒ 401 at the door; operator token unset ⇒ 503; confirm
+mismatch ⇒ 400; failure ⇒ 502 carrying the cause; every refusal before the
+purge runs — `test_operator_door.py`. (6) The BFF order, the confirmation
+protocol, and the `needs_accept_absent` stop — `purge/route.test.ts` (vitest;
+now IN CI via the new `frontend-operator` job). (7) All three gateway-side
+credentials stay server-side, one file — `console.test.ts`'s widened
+credential scan. (8) The unbound tenant-discovery read is DECLARED —
+`test_db_engine_seam.py::_FACTORY_OPEN_ALLOW` gains `offboard.py` (and
+repairs the stale `access.py` entry the D50 promotion left behind).
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** everything above, dark, against scratch.
+🔴 **OWNER-GATE — refuse by name:** setting `GATEWAY_OPERATOR_TOKEN` /
+`GATEWAY_INTERNAL_URL` / `GATEWAY_INTERNAL_TOKEN` on a live box (§8 env
+class) · **running the purge against a real organization** — it is the §6
+"production one-off" class made into a button; the operator console's typed
+confirmation exists precisely so the OWNER is the one pressing it. Deploy
+note (review P1): `api.metorite.com` proxies every path to the gateway, so
+arming the door on a box must be paired with a Caddy `/internal/*` block —
+the door then exists only on loopback, and the two tokens are defence in
+depth rather than the only wall.
+
+**Non-goals.** No customer-side self-delete (an org admin cannot destroy the
+org from inside the product) · no export bundle (the window keeps sign-in
+alive; a one-click export is future work) · no per-member operator delete —
+member offboarding/purge stays the customer admin's door
+(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+a purge is forward-only, like every act on this platform (R6).
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23

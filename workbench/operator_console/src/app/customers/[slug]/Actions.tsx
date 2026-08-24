@@ -7,6 +7,7 @@ import {
   lifecycleActions,
   formatPaise,
   memberTally,
+  TOMBSTONE_RE,
   type CatalogPlan,
   type MemberRow,
 } from "@/lib/format";
@@ -80,6 +81,9 @@ export default function Actions({
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
       </div>
+      {status === "deleted" && !TOMBSTONE_RE.test(slug) && (
+        <DangerPanel slug={slug} />
+      )}
     </>
   );
 }
@@ -408,13 +412,25 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
   const [busy, setBusy] = useState(false);
   const actions = lifecycleActions(status);
 
+  // The two offboarding edges get their own confirm copy — each states what
+  // the move does and does NOT do, because "cancel" destroying data is the
+  // misread the export window exists to prevent.
+  const CONFIRMS: Record<string, string> = {
+    suspended:
+      `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused ` +
+      `until you resume them. Their data is untouched.`,
+    cancelled:
+      `Cancel ${slug}?\n\nThis opens their export window: sign-in keeps ` +
+      `working so they can export, features are locked, and NO data is ` +
+      `deleted. You can reinstate them at any time inside the window.`,
+    deleted:
+      `Mark ${slug} deleted?\n\nThis ends the export window and refuses ` +
+      `every sign-in. Their data still exists until you run the purge — ` +
+      `which becomes available after this step and is IRREVERSIBLE.`,
+  };
+
   async function move(target: string) {
-    if (
-      target === "suspended" &&
-      !window.confirm(
-        `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused until you resume them. Their data is untouched.`,
-      )
-    ) {
+    if (CONFIRMS[target] && !window.confirm(CONFIRMS[target])) {
       return;
     }
     setBusy(true);
@@ -454,7 +470,11 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
           <button
             key={a.target}
             type="button"
-            className={a.target === "suspended" ? "danger" : undefined}
+            className={
+              ["suspended", "cancelled", "deleted"].includes(a.target)
+                ? "danger"
+                : undefined
+            }
             disabled={busy}
             onClick={() => move(a.target)}
           >
@@ -462,6 +482,124 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
           </button>
         ))}
       </div>
+      <ResultLine result={result} />
+    </form>
+  );
+}
+
+/**
+ * The purge — the one control in this console that destroys data. (CP-2g)
+ *
+ * Rendered ONLY in the `deleted` state, which the lifecycle graph makes
+ * reachable only through `cancelled` (the export window) — so by the time
+ * this panel exists, the doctrine's steps have all been walked — and NEVER
+ * for a tombstone row (a purged org stays listed at `status=deleted`; the
+ * Console door also refuses tombstones server-side). The typed slug is
+ * carried to the server as `confirm` and re-checked at every layer (BFF,
+ * gateway door, Console door): the confirmation is a protocol, not a UI
+ * nicety.
+ *
+ * The receipt is RENDERED, not collapsed to "✓ Done" — the deleted/scrubbed/
+ * kept counts are the operator's only record of what happened, and the two
+ * silent-no-op failure modes review round 1 found (wrong box, case-mismatched
+ * slug) are visible only in that receipt.
+ */
+function DangerPanel({ slug }: { slug: string }) {
+  const [typed, setTyped] = useState("");
+  const [result, setResult] = useState<Result>(null);
+  const [receipt, setReceipt] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(acceptAbsent: boolean) {
+    setBusy(true);
+    const r = await post("/api/operator/purge", {
+      org_slug: slug,
+      confirm: typed,
+      ...(acceptAbsent ? { accept_absent: true } : {}),
+    });
+    setBusy(false);
+    if (r?.ok) {
+      setResult(null);
+      try {
+        setReceipt(JSON.stringify(JSON.parse(r.text), null, 2));
+      } catch {
+        setReceipt(r.text);
+      }
+      return;
+    }
+    // The wrong-box / already-purged fork: the server refuses to finish the
+    // registry half until a human decides which case this is.
+    if (!acceptAbsent && r && r.text.includes('"needs_accept_absent"')) {
+      if (
+        window.confirm(
+          `The tenant plane reports NO organization "${slug}".\n\n` +
+            `If a previous purge already destroyed it, OK finishes the ` +
+            `registry half.\n\nIf you are not CERTAIN of that, Cancel and ` +
+            `check which deployment this organization lives on first — ` +
+            `continuing would erase the record of where its data is.`,
+        )
+      ) {
+        await run(true);
+        return;
+      }
+    }
+    setResult(r);
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (typed !== slug) return;
+    if (
+      !window.confirm(
+        `Purge ${slug} permanently?\n\nThis destroys the customer's ` +
+          `organization data: memberships and people, projects and tasks, ` +
+          `roles, settings and integrations — and strips their people from ` +
+          `the registry. Billing history is kept. There is NO undo and NO ` +
+          `backup restore for this.\n\nNot yet covered (apps that predate ` +
+          `per-organization scoping): chat, email, WhatsApp, meetings, GTD ` +
+          `and CRM data.`,
+      )
+    ) {
+      return;
+    }
+    await run(false);
+  }
+
+  if (receipt !== null) {
+    return (
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Purged</h2>
+        <p className="muted">
+          Keep this receipt — it is the record of what was destroyed, what was
+          scrubbed and what the books kept. <strong>{slug}</strong> is free
+          for reuse.
+        </p>
+        <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{receipt}</pre>
+      </div>
+    );
+  }
+
+  return (
+    <form className="panel" onSubmit={submit}>
+      <h2 style={{ marginTop: 0 }}>Purge data permanently</h2>
+      <p className="muted">
+        The export window is over and sign-in is refused. This last step
+        destroys the customer&apos;s organization data and frees{" "}
+        <strong>{slug}</strong> for reuse. Billing history is kept.
+      </p>
+      <label>Type the organization slug to arm the button</label>
+      <input
+        value={typed}
+        placeholder={slug}
+        onChange={(e) => setTyped(e.target.value)}
+      />
+      <button
+        type="submit"
+        className="danger"
+        disabled={busy || typed !== slug}
+      >
+        {busy ? "Purging…" : "Purge data permanently"}
+      </button>
       <ResultLine result={result} />
     </form>
   );

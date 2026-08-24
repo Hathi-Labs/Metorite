@@ -156,7 +156,22 @@ describe("the token never reaches a client bundle", () => {
     );
   });
 
-  it("no `use client` file imports the server Console client", () => {
+  // CP-2g added TWO more server-held credentials (the gateway's internal
+  // bearer + the operator door's token) — same rule, same fence, same
+  // single-file discipline.
+  it("names the gateway token envs only in server lib/tenantDoor.ts", () => {
+    for (const name of ["GATEWAY_OPERATOR_TOKEN", "GATEWAY_INTERNAL_TOKEN"]) {
+      const namers = files.filter((f) =>
+        readFileSync(f, "utf-8").includes(name),
+      );
+      expect(
+        namers.map((f) => f.replace(APP_ROOT, "").replace(/\\/g, "/")),
+        name,
+      ).toEqual(["/lib/tenantDoor.ts"]);
+    }
+  });
+
+  it("no `use client` file imports a server credential module", () => {
     const clientFiles = files.filter((f) =>
       /^["']use client["']/.test(readFileSync(f, "utf-8").trimStart()),
     );
@@ -164,6 +179,9 @@ describe("the token never reaches a client bundle", () => {
       const body = readFileSync(f, "utf-8");
       expect(body, `${f} must not import lib/console`).not.toMatch(
         /from\s+["'].*lib\/console["']/,
+      );
+      expect(body, `${f} must not import lib/tenantDoor`).not.toMatch(
+        /from\s+["'].*lib\/tenantDoor["']/,
       );
     }
   });

@@ -24,6 +24,13 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   `CUSTOMER_CONSOLE_OPERATOR_TOKEN`; the token goes in the OUTGOING request's
   `Authorization` header and **never** into a browser response. No `use client`
   file may import it (fenced by `console.test.ts`).
+- `src/lib/tenantDoor.ts` — SERVER-ONLY gateway operator-door client (CP-2g),
+  the ONE sanctioned exception to "Console is the only upstream". It exists
+  for exactly one act — destroying an organization's tenant plane after the
+  Console holds it at `deleted` — and holds TWO more server credentials
+  (`GATEWAY_INTERNAL_TOKEN` + `GATEWAY_OPERATOR_TOKEN`; both fenced by the
+  same `console.test.ts` scan). A second gateway call added here is a defect
+  until a spec says otherwise.
 - `src/lib/staff.ts` — the **INTERIM** staff-secret gate
   (`OPERATOR_CONSOLE_STAFF_SECRET`), marked for replacement by staff Entra.
   Fails closed when unset.
@@ -41,7 +48,9 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
 - Every Console call is server-side, through `src/lib/console.ts`. Never fetch
   the Console from a client component, and never expose the operator token.
 - Reuse the Console's existing operator routes; reimplement none of them. The
-  only new backend surface is `GET /orgs` (on the Console, not here).
+  new backend surfaces this app consumes are `GET /orgs` + `POST /orgs/purge`
+  (on the Console) and the gateway's CP-2g operator door (via
+  `src/lib/tenantDoor.ts`, its one permitted use).
 - Everything server-shaped or rule-shaped is a pure `src/lib/*` module,
   unit-tested; `src/app` is composition.
 
