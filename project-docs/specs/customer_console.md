@@ -41,7 +41,17 @@ WS-29 MT-1f slice 1 — done-when 4a, the `ReservedSlug` refusal (owner ruling B
 a live-defect fix: `api`/`app`/`www` were registrable through the public form),
 and done-when 8a, `/signup` with no session redirects to `/signin`; **repair round
 1 the same day** — the reserved set extended additively to 21 labels, 8a re-worded
-to name `currentIdentity()` and its defence-in-depth motivation**) · CP-2e BUILT 2026-08-20
+to name `currentIdentity()` and its defence-in-depth motivation**; **AMENDED AGAIN
+2026-08-24, onboarding UX (owner directive: "take a customer step by step … the
+side panel will confuse the customer")** — `/signin` + `/signup` render CHROMELESS
+(`isChromeless` in `lib/nav.ts`, the AppShell early-return; fenced in `nav.test.ts`
+incl. a segment-not-prefix pin and a no-pane-is-chromeless sweep), the Sidebar
+returns `null` for a signed-in org-less member (the D51 chooser is full-screen),
+the signup card carries a three-step narration (email verified ✓ with the session
+address → company details → start) — narration, not new mechanism: verification
+already precedes the page — and the post-create redirect lands `/?welcome=new-org`,
+arming the one-time `WelcomeDialog` (the ONE Modal primitive) that names
+Settings → Organization as where the team gets invited) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
 owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write door
 — `POST /registry/members` on the `member_admin` capability, plus D50.3's

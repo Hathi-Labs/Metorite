@@ -1,6 +1,6 @@
 "use client";
 
-import { signIn } from "next-auth/react";
+import { signIn, useSession } from "next-auth/react";
 import { useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
@@ -79,11 +79,68 @@ const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
  */
 const RESERVED = new Set<string>(RESERVED_LABELS);
 
+/**
+ * The onboarding stepper — narration, not navigation (owner directive
+ * 2026-08-24). The steps are already REAL: email verification happens at
+ * sign-in (Google attests it, or the OTP round-trip proves it) before this
+ * page is reachable, and step 3 is the post-create redirect with the
+ * WelcomeDialog. What was missing was the page SAYING so — a founder landing
+ * here had no way to know their email was already verified or what happens
+ * after the button.
+ */
+function Stepper({ email }: { email: string | null }) {
+  const steps: { label: string; sub: string | null; state: "done" | "current" | "next" }[] = [
+    { label: "Verify your email", sub: email, state: "done" },
+    { label: "Your company", sub: null, state: "current" },
+    { label: "Start using Metorite", sub: null, state: "next" },
+  ];
+  return (
+    <ol className="mb-6 flex items-start justify-center gap-0">
+      {steps.map((s, i) => (
+        <li key={s.label} className="flex flex-1 flex-col items-center text-center">
+          <div className="flex w-full items-center">
+            <div
+              className={`h-px flex-1 ${i === 0 ? "bg-transparent" : "bg-border"}`}
+            />
+            <div
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                s.state === "done"
+                  ? "bg-primary text-primary-foreground"
+                  : s.state === "current"
+                    ? "border-2 border-primary text-primary"
+                    : "border border-border text-muted-foreground"
+              }`}
+            >
+              {s.state === "done" ? "✓" : i + 1}
+            </div>
+            <div
+              className={`h-px flex-1 ${i === steps.length - 1 ? "bg-transparent" : "bg-border"}`}
+            />
+          </div>
+          <div
+            className={`mt-2 text-xs font-medium ${
+              s.state === "next" ? "text-muted-foreground" : "text-foreground"
+            }`}
+          >
+            {s.label}
+          </div>
+          {s.sub && (
+            <div className="mt-0.5 max-w-[12rem] truncate text-xs text-muted-foreground">
+              {s.sub}
+            </div>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export default function SignUpForm({
   providers,
 }: {
   providers: ConfiguredProvider[];
 }) {
+  const { data: session } = useSession();
   const [displayName, setDisplayName] = useState("");
   const [slug, setSlug] = useState("");
   const [state, setState] = useState("");
@@ -137,7 +194,9 @@ export default function SignUpForm({
         // Owner on both planes; the tenant `app_user` admits them into the app
         // even while the resolve flag is off (the flow works dark). A full
         // navigation re-runs the auth path against the freshly created org.
-        window.location.assign("/");
+        // `?welcome=new-org` arms the one-time WelcomeDialog — step 3 of the
+        // onboarding narration ("you're in; here's where you add your team").
+        window.location.assign("/?welcome=new-org");
         return;
       }
 
@@ -157,8 +216,10 @@ export default function SignUpForm({
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-10">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8">
+    <div className="flex min-h-screen items-center justify-center bg-background p-10">
+      <div className="w-full max-w-md">
+        <Stepper email={session?.user?.email ?? null} />
+        <div className="rounded-lg border border-border bg-card p-8">
         <h1 className="text-center text-xl font-semibold">
           Create a new organization
         </h1>
@@ -302,8 +363,12 @@ export default function SignUpForm({
             >
               Create new organization
             </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              Next: you land in your new workspace, ready to invite your team.
+            </p>
           </form>
         )}
+        </div>
       </div>
     </div>
   );
