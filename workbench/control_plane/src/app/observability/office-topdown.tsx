@@ -31,7 +31,7 @@ const TOOL_ICON_RULES: Array<[RegExp, IconType]> = [
   [/git|commit|push|pull|branch|\bpr\b|merge/, themedIcon("GitBranch")],
   [/diagram|draw|chart|render|image|figure/, themedIcon("PenTool")],
   [/artifact|share|export|upload|publish/, themedIcon("Share2")],
-  [/task|gtd|todo|ticket|clickup|reclarify/, themedIcon("ListTodo")],
+  [/task|gtd|todo|ticket|reclarify/, themedIcon("ListTodo")],
   [/calendar|schedule|meeting|event|remind/, themedIcon("Calendar")],
   [/ask|question|clarify|confirm/, themedIcon("MessageCircleQuestion")],
   [/sql|database|postgres|\bdb\b|record/, themedIcon("Database")],

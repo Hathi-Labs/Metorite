@@ -243,7 +243,7 @@ export default function TriggerPanel({
                 e.target.checked
                   ? upsert("event", {
                       enabled: true,
-                      config: { source: String(event?.config.source ?? "clickup") },
+                      config: { source: String(event?.config.source ?? "zoho") },
                     })
                   : remove("event")
               }
@@ -253,7 +253,7 @@ export default function TriggerPanel({
             <div className="mt-1.5 space-y-1">
               <div className="flex gap-1.5">
                 <select
-                  value={String(event.config.source ?? "clickup")}
+                  value={String(event.config.source ?? "zoho")}
                   onChange={(e) =>
                     upsert("event", {
                       config: { ...event.config, source: e.target.value },
@@ -261,7 +261,6 @@ export default function TriggerPanel({
                   }
                   className={inputCls}
                 >
-                  <option value="clickup">clickup</option>
                   <option value="zoho">zoho</option>
                   <option value="gmail">gmail</option>
                   <option value="custom">custom</option>
@@ -278,8 +277,8 @@ export default function TriggerPanel({
                 />
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Fires on provider events (e.g. ClickUp{" "}
-                <code className="bg-secondary px-1 rounded">taskUpdated</code>)
+                Fires on provider events (e.g. Zoho{" "}
+                <code className="bg-secondary px-1 rounded">Contacts.edit</code>)
                 and on signed posts to{" "}
                 <code className="bg-secondary px-1 rounded">
                   /agent/webhook/&#123;source&#125;

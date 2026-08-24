@@ -257,13 +257,11 @@ export function PersonEditor({
                 </Field>
               </>
             ) : null}
-            <Field label="ClickUp user id" full>
-              <Input
-                value={form.clickup_user_id}
-                onChange={(e) => set("clickup_user_id", e.target.value)}
-                placeholder="Assignment target (numeric id)"
-              />
-            </Field>
+            {/* ⚠️ The "ClickUp user id" field was removed 2026-08-24 (D52,
+                board WS-39 S1). `gtd_people.clickup_user_id` still exists —
+                D52.3 keeps the column under R6 — but it was the assignment
+                target for a provider that is gone, so offering the input
+                asked a customer to fill in a value nothing would read. */}
           </div>
 
           <Field label="Skills">

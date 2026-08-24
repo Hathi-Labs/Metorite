@@ -36,7 +36,6 @@ import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
-import { ImportClickUp } from "./components/ImportClickUp";
 import { MyWork } from "./components/MyWork";
 import { NotificationBell } from "./components/NotificationBell";
 import { ProjectTree } from "./components/ProjectTree";
@@ -167,7 +166,6 @@ function ProjectNav({
   onMine,
   onSelect,
   onAddChild,
-  onImport,
   onPicked,
   actions,
 }: {
@@ -177,7 +175,6 @@ function ProjectNav({
   onMine: () => void;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow) => void;
-  onImport: () => void;
   /** Called after any navigation, so the phone's drawer can close. */
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
@@ -203,10 +200,6 @@ function ProjectNav({
       </button>
       <ProjectTree
         roots={roots}
-        onImport={() => {
-          onImport();
-          onPicked?.();
-        }}
         selectedId={mine ? null : selectedId}
         onSelect={(project) => {
           onSelect(project);
@@ -334,7 +327,6 @@ function ProjectsWorkspace() {
   const [newTask, setNewTask] = useState("");
   const [treeKey, setTreeKey] = useState(0);
   const toast = useToast();
-  const [importing, setImporting] = useState(false);
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
   // is only a highlight: applying a view copies its config into these two, so
@@ -593,7 +585,6 @@ function ProjectsWorkspace() {
               setCreatingUnder(parent);
               setNewName("");
             }}
-            onImport={() => setImporting(true)}
             onPicked={() => setSheet(null)}
             actions={projectMenuActions}
           />
@@ -1034,7 +1025,6 @@ function ProjectsWorkspace() {
         if (what === "fields") setManagingFields(true);
         else if (what === "tags") setManagingTags(true);
         else if (what === "lifecycle") setManagingLifecycle(true);
-        else setImporting(true);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
@@ -1054,13 +1044,12 @@ function ProjectsWorkspace() {
     canToggleRail: !isMobile,
   };
 
-  // Anything modal is up. Sequences are suppressed under it: `g` while the
-  // ClickUp importer is open must not navigate the page out from under a
-  // half-filled form.
+  // Anything modal is up. Sequences are suppressed under it: `g` while a
+  // dialog is open must not navigate the page out from under a half-filled
+  // form.
   const overlayOpen =
     searching ||
     showingShortcuts ||
-    importing ||
     managingFields ||
     managingTags ||
     managingLifecycle;
@@ -1296,19 +1285,10 @@ function ProjectsWorkspace() {
    *  on both, so nothing is quietly unreachable on a phone. */
   const projectActions = (compact: boolean) => (
     <>
-      {/* Offered here too, not only from the empty state: the import is
-          idempotent and re-running it is how a workspace stays current until
-          WS-27g retires ClickUp. */}
-      <Button
-        variant="ghost"
-        size={compact ? "icon-sm" : "sm"}
-        icon="Download"
-        aria-label="Import from ClickUp"
-        title="Import from ClickUp"
-        onClick={() => setImporting(true)}
-      >
-        {compact ? null : "ClickUp"}
-      </Button>
+      {/* ⚠️ The "Import from ClickUp" action was REMOVED 2026-08-24 (D52,
+          board WS-39 S1). Metorite is the project-management system of
+          record — there is no workspace to import from, so an affordance
+          here would be a button that cannot succeed. */}
       {selected && !mine ? (
         <Button
           variant="ghost"
@@ -1691,15 +1671,6 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {importing ? (
-        <ImportClickUp
-          onClose={() => setImporting(false)}
-          // Re-reads the tree, so the departments appear behind the dialog
-          // rather than after a manual refresh.
-          onImported={() => setTreeKey((k) => k + 1)}
-        />
-      ) : null}
-
       {/* ── SEAM (WS-27ag) ────────────────────────────────────────────────
           The shared <Toast> mounts HERE, above both layouts and below every
           dialog — one mount point, so a notice raised from the phone and one
@@ -1817,8 +1788,7 @@ function ProjectsWorkspace() {
                 setCreatingUnder(parent);
                 setNewName("");
               }}
-              onImport={() => setImporting(true)}
-              actions={projectMenuActions}
+                actions={projectMenuActions}
             />
           </nav>
         ) : null}

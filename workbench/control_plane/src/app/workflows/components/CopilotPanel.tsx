@@ -111,7 +111,7 @@ export default function CopilotPanel({
             </p>
             <p>
               “When a lead webhook fires, classify it with triage, clean the
-              contact rows, and create a ClickUp follow-up task.”
+              contact rows, and create a follow-up task.”
             </p>
             <p>
               The copilot searches your agents, tools and modules — and if a

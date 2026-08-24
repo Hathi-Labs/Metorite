@@ -71,9 +71,6 @@ interface Props {
   onSelect: (project: ProjectRow) => void;
   /** Start creating a subproject under this node. Omitted = read-only tree. */
   onAddChild?: (parent: ProjectRow) => void;
-  /** Open the ClickUp import. Offered only from the empty state, where it is
-   *  the answer to "there is nothing here". */
-  onImport?: () => void;
   /** WS-27bg — right-click actions. Omitted = a read-only tree, no menu. */
   actions?: ProjectMenuHandlers;
 }
@@ -151,14 +148,11 @@ function Node({
             projectName={node.name}
           />
           <span className="truncate">{node.name}</span>
-          {node.clickup_id ? (
-            <span
-              title="Imported from ClickUp"
-              className="ml-auto shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground"
-            >
-              CU
-            </span>
-          ) : null}
+          {/* ⚠️ The "CU" (imported-from-ClickUp) provenance badge was removed
+              2026-08-24 (D52). `clickup_id` still EXISTS on the row — D52.3
+              keeps the column under R6 — but nothing writes it any more, so a
+              badge would only ever mark rows imported before the retirement.
+              It goes with the column, in the release that drops it. */}
         </button>
         {onAddChild ? (
           // A subproject is created HERE rather than from a dialog that asks
@@ -215,29 +209,14 @@ export function ProjectTree({
   selectedId,
   onSelect,
   onAddChild,
-  onImport,
   actions,
 }: Props) {
   if (roots.length === 0) {
     return (
       <div className="px-2 py-6">
         <p className="text-sm text-muted-foreground">
-          No projects yet. Create one with the + above, or bring your ClickUp
-          workspace across.
+          No projects yet. Create one with the + above.
         </p>
-        {/* This copy named an action that had no control anywhere in the
-            product for as long as the app has existed. Now it is a button. */}
-        {onImport ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="Download"
-            className="mt-2"
-            onClick={onImport}
-          >
-            Import from ClickUp
-          </Button>
-        ) : null}
       </div>
     );
   }

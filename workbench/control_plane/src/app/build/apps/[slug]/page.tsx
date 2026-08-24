@@ -49,11 +49,13 @@ function formatDate(iso: string): string {
 // ─── First-open consent interstitial (§4.8) ────────────────────────────────
 // Plain-language scope disclosure, platform-rendered (never app-rendered).
 
-/** A few well-known integrations don't title-case cleanly (`clickup` →
- * `ClickUp`, not `Clickup`) — everything else falls back to a generic
- * title-case of the `tool:` scope's service segment. */
+/** A few well-known integrations don't title-case cleanly (`serpapi` →
+ * `SerpAPI`, not `Serpapi`) — everything else falls back to a generic
+ * title-case of the `tool:` scope's service segment.
+ * ⚠️ The `clickup` entry was removed 2026-08-24 (D52): the tool registry it
+ * labelled is empty and no manifest can declare that scope any more. */
 const KNOWN_SERVICE_LABELS: Record<string, string> = {
-  clickup: "ClickUp",
+  serpapi: "SerpAPI",
 };
 
 function serviceLabel(service: string): string {
@@ -64,7 +66,7 @@ function serviceLabel(service: string): string {
     : service;
 }
 
-/** `tool:clickup.create_task?list=Procurement` → `clickup.create_task` +
+/** `tool:acme.create_task?list=Procurement` → `acme.create_task` +
  * `{list: "Procurement"}`. Mirrors `gateway/routes/apps/tools.py`'s
  * `parse_tool_scope` (split on the first `?`, `?`-side is `key=value&...`). */
 function parseToolScope(

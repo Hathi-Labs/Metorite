@@ -173,8 +173,11 @@ describe("what is offered where", () => {
     expect(ids).not.toContain("project.fields");
     expect(ids).not.toContain("project.tags");
     expect(ids).not.toContain("project.lifecycle");
-    // Import is how an empty workspace stops being empty, so it stays.
-    expect(ids).toContain("project.import");
+    // ⚠️ `project.import` was the exception here — "import is how an empty
+    // workspace stops being empty, so it stays". D52 (2026-08-24) removed the
+    // command with the ClickUp integration, so the rule now holds without an
+    // exception: nothing project-scoped is offered with no project selected.
+    expect(ids).not.toContain("project.import");
   });
 
   it("offers the lifecycle policy on a root and nowhere else", () => {
