@@ -106,16 +106,25 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // reach. `loading` is true only until the FIRST resolve (AccessProvider
   // keeps it false across refresh()), so this never strobes afterwards.
   if (accessLoading) {
+    // Owner feedback (2026-08-24, r2): the first cut was two faint pulsing
+    // blocks, which read as "nothing happening" — the opposite of what a hold
+    // screen owes the person waiting. Say it: spinner + sentence. Still
+    // neutral about WHAT loads (workspace, org-less card, denial) — the word
+    // "workspace" here means "your view of Metorite", not a resolved org.
     return (
       <div
-        className="flex h-screen items-center justify-center bg-background"
+        className="flex h-screen flex-col items-center justify-center gap-3 bg-background"
         aria-busy="true"
-        aria-label="Loading"
+        aria-live="polite"
       >
-        <div className="flex flex-col items-center gap-3" aria-hidden>
-          <div className="h-10 w-10 animate-pulse rounded-xl bg-secondary" />
-          <div className="h-2.5 w-24 animate-pulse rounded bg-secondary" />
-        </div>
+        <AppIcon
+          name="Loader2"
+          size={24}
+          className="animate-spin text-muted-foreground"
+        />
+        <p className="text-sm text-muted-foreground">
+          Loading your workspace…
+        </p>
       </div>
     );
   }
