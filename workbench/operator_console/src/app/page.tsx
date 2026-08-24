@@ -4,6 +4,7 @@ import { staffSession } from "@/lib/session";
 import {
   formatPaise,
   formatDate,
+  partitionRoster,
   seatsTotals,
   trialHint,
   statusHelp,
@@ -74,12 +75,12 @@ export default async function CustomersPage() {
   }
   if (!gate.ok) redirect("/login");
 
-  let rows: OrgRow[] = [];
+  let all: OrgRow[] = [];
   let error: string | null = null;
   try {
     const res = await listOrganizations();
     if (res.status === 200) {
-      rows = (JSON.parse(res.body) as OrgList).organizations;
+      all = (JSON.parse(res.body) as OrgList).organizations;
     } else {
       error = `Console returned ${res.status}: ${res.body}`;
     }
@@ -89,6 +90,11 @@ export default async function CustomersPage() {
         ? "Customer Console is not configured (CUSTOMER_CONSOLE_URL / token)."
         : `Could not reach the Customer Console: ${String(e)}`;
   }
+
+  // Tombstones are bookkeeping, not customers — they leave the roster, the
+  // headline numbers and the empty-state decision, and reappear only in the
+  // collapsed section at the bottom.
+  const { roster: rows, purged } = partitionRoster(all);
 
   const now = new Date();
   const count = (s: string) => rows.filter((o) => o.status === s).length;
@@ -194,6 +200,32 @@ export default async function CustomersPage() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {!error && purged.length > 0 && (
+        <details style={{ marginTop: 24 }}>
+          <summary className="muted" style={{ cursor: "pointer" }}>
+            {purged.length} purged{" "}
+            {purged.length === 1 ? "organization" : "organizations"} — data
+            destroyed; the record is kept for billing history
+          </summary>
+          <table>
+            <tbody>
+              {purged.map((o) => (
+                <tr key={o.slug}>
+                  <td>
+                    <a href={`/customers/${encodeURIComponent(o.slug)}`}>
+                      {o.name}
+                    </a>
+                    <div className="muted small">{o.slug}</div>
+                  </td>
+                  <td className="muted">purged</td>
+                  <td className="muted">{formatPaise(o.mrr_paise)} was MRR</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       )}
     </main>
   );

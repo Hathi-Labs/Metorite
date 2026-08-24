@@ -185,6 +185,25 @@ export function lifecycleActions(status: string): { label: string; target: strin
 // server-side). Fenced in `format.test.ts`.
 export const TOMBSTONE_RE = /-purged-[0-9a-f]{6}$/;
 
+/**
+ * Split the Console's org list into the CUSTOMER ROSTER and the purge
+ * tombstones (CP-2g follow-up, owner question 2026-08-24: "should we rather
+ * remove HathiLabs completely?"). A tombstone is a bookkeeping record — kept
+ * because deleting the row would cascade the billing ledger away with it —
+ * but it is not a customer, so it must not sit in the roster or inflate the
+ * headline count. Partitioned on the SLUG shape, not on `status`: an org at
+ * `deleted` that has NOT been purged yet must stay visible, because the
+ * DangerPanel it needs is on its detail page.
+ */
+export function partitionRoster<T extends { slug: string }>(
+  rows: T[],
+): { roster: T[]; purged: T[] } {
+  return {
+    roster: rows.filter((o) => !TOMBSTONE_RE.test(o.slug)),
+    purged: rows.filter((o) => TOMBSTONE_RE.test(o.slug)),
+  };
+}
+
 // The nudge that closes the gap between the two statuses, or `null`.
 //
 // `organization.status` (the lifecycle) and `org_subscription.status` (the
