@@ -5389,7 +5389,13 @@ three layers:
    answers 409 `needs_accept_absent` and the UI makes a human choose before
    re-posting with `accept_absent`. The **receipt is rendered**, not
    collapsed to "✓ Done" (repair, P2 — the counts are the only visible
-   difference between a purge and a no-op).
+   difference between a purge and a no-op). **Tombstones leave the roster**
+   (follow-up, owner question 2026-08-24): a purged org is bookkeeping, not
+   a customer, so `partitionRoster` moves tombstone slugs out of the
+   customer table and the headline counts into a collapsed "purged
+   organizations" section — while an un-purged `deleted` org STAYS listed,
+   because its detail page carries the DangerPanel. Fenced in
+   `format.test.ts`.
 
 ⚠️ **The honest boundary** (repair, P1 — the first confirm dialog promised
 "everything"): ~119 of ~155 tenant tables carry no `organization_id` and no

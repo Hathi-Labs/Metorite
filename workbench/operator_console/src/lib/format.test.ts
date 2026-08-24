@@ -13,6 +13,7 @@ import {
   plansNotice,
   lifecycleHint,
   TOMBSTONE_RE,
+  partitionRoster,
   isSeated,
   memberTally,
   readMembers,
@@ -138,6 +139,21 @@ describe("lifecycleActions (advisory UX only)", () => {
         expect(allowed).toContain(a.target);
       }
     }
+  });
+});
+
+describe("partitionRoster (CP-2g — tombstones leave the customer roster)", () => {
+  it("shelves tombstones and keeps everything else, including un-purged deleted orgs", () => {
+    const rows = [
+      { slug: "acme", status: "active" },
+      // Deleted but NOT purged: must STAY in the roster — its detail page
+      // carries the DangerPanel the operator still needs to reach.
+      { slug: "beta-co", status: "deleted" },
+      { slug: "hathilabs-purged-a1b2c3", status: "deleted" },
+    ];
+    const { roster, purged } = partitionRoster(rows);
+    expect(roster.map((o) => o.slug)).toEqual(["acme", "beta-co"]);
+    expect(purged.map((o) => o.slug)).toEqual(["hathilabs-purged-a1b2c3"]);
   });
 });
 
