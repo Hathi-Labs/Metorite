@@ -48,12 +48,20 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
           <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-muted">
             <Icon name="Building2" size={20} className="text-muted-foreground" />
           </div>
+          {/* Lead with the FACT, not the session state (owner feedback
+              2026-08-24): the reader's question is "why am I not in my
+              company's workspace?", and the answer is that no organization has
+              this address as a member. Saying it post-authentication is what
+              keeps it from being an enumeration oracle — only someone who
+              PROVED the mailbox gets told what it is linked to. */}
           <h1 className="text-center text-base font-semibold text-foreground">
-            You&apos;re signed in, but not part of an organization yet
+            No organization is linked to this email
           </h1>
           <p className="mt-2 text-center text-sm text-muted-foreground">
-            Signed in as{" "}
-            <span className="font-medium text-foreground">{access.email}</span>
+            You&apos;re signed in as{" "}
+            <span className="font-medium text-foreground">{access.email}</span>,
+            but that address isn&apos;t a member of any organization on Metorite
+            yet.
           </p>
           <div className="mt-6 space-y-3">
             <div className="rounded-lg border border-border bg-secondary p-4">
