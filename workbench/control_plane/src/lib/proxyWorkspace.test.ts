@@ -244,39 +244,67 @@ describe("flag ON, the slug DIFFERS — 302 to the apex (done-when 5)", () => {
 
 // ══ done-when 6 · signed out, and telling nobody anything ═══════════════════
 
-describe("flag ON, signed OUT — the ordinary path, and no oracle (done-when 6)", () => {
+describe("flag ON, signed OUT — 302 to the apex, and no oracle (done-when 6)", () => {
+  // ⚠️ **This whole block was rewritten on 2026-08-24 (repair round 1) and the
+  // shape it used to bless was the defect.** Slice 1 shipped with the signed-out
+  // caller falling through to `/signin` ON THE WORKSPACE HOST, and this file
+  // asserted exactly that (a 307 whose `Location` was host-relative, compared
+  // "modulo the caller's own hostname"). It is a dead end: owner ruling B2 keeps
+  // every Auth.js cookie host-only on `app.<domain>`, so the OAuth `state`/`pkce`
+  // cookies are written on `acme.<domain>` while B3's `AUTH_URL` pin returns the
+  // callback to `app.<domain>` — Auth.js then fails the check it cannot find
+  // (`InvalidCheck`); with the pin absent the same request mints a `redirect_uri`
+  // on a hostname no IdP has registered. And because B2 leaves signed-out as the
+  // ONLY state a workspace host can be in today, every workspace hostname was a
+  // sign-in page that could not sign anybody in. The answer is now B5's redirect
+  // — the same one a mismatch gets — which also STRENGTHENS B4: the `Location`
+  // no longer echoes the caller's host, so the two answers are byte-identical
+  // rather than identical-modulo-what-you-typed.
   beforeEach(() => {
     process.env.SUBDOMAIN_WORKSPACE_ENABLED = "true";
     posture.session = null;
   });
 
-  it("an existing and an invented slug are INDISTINGUISHABLE", async () => {
+  it("302s to the apex carrying the original path and query", async () => {
+    const res = await proxy(request("acme.metorite.com", "/projects?view=board"));
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://app.metorite.com/projects?view=board",
+    );
+  });
+
+  it("an existing and an invented slug are BYTE-IDENTICAL", async () => {
     const real = await proxy(request("acme.metorite.com", "/projects"));
     const invented = await proxy(
       request("no-such-tenant-anywhere.metorite.com", "/projects"),
     );
 
-    // ⚠️ **Compared modulo the caller's OWN hostname, and that is the correct
-    // statement of the property.** The ordinary sign-in redirect is
-    // host-relative (`new URL("/signin", req.url)`), so the two `Location`s
-    // differ in exactly the string the caller put in the request — which
-    // reveals nothing they did not already know, and keeps them on their own
-    // host to sign in. Everything an observer could learn FROM US is compared
-    // here, and it is compared to EACH OTHER rather than to a constant (the
-    // shape of `test_the_invisible_cases_are_indistinguishable`), so a change
-    // that starts telling the two apart reddens even if both stay redirects.
-    const shape = (res: Response, host: string) => ({
+    // Compared to EACH OTHER rather than to a constant (the shape of
+    // `test_the_invisible_cases_are_indistinguishable`,
+    // `tests/unit/test_customer_console_resolve.py:737`), so a change that
+    // starts telling the two apart reddens even if both stay redirects — and
+    // now with NO per-host normalisation, because there is nothing host-shaped
+    // left in the answer.
+    const shape = async (res: Response) => ({
       status: res.status,
-      location: res.headers.get("location")?.replace(`https://${host}`, "<host>"),
-      headers: [...res.headers.keys()].sort(),
+      headers: [...res.headers.entries()].map(([k, v]) => `${k}: ${v}`).sort(),
+      body: await res.text(),
     });
 
-    expect(shape(real, "acme.metorite.com")).toEqual(
-      shape(invented, "no-such-tenant-anywhere.metorite.com"),
-    );
-    // …and it is the ordinary sign-in redirect, not a workspace answer.
-    expect(real.status).toBe(307);
-    expect(real.headers.get("location")).toContain("/signin");
+    expect(await shape(real)).toEqual(await shape(invented));
+    expect(real.headers.get("location")).toBe("https://app.metorite.com/projects");
+  });
+
+  it("names NEITHER slug anywhere in the response", async () => {
+    const res = await proxy(request("acme.metorite.com", "/settings"));
+    const whole = [
+      res.status,
+      [...res.headers.entries()].map(([k, v]) => `${k}: ${v}`).join("\n"),
+      await res.text(),
+    ].join("\n");
+
+    expect(whole).not.toContain("acme");
   });
 
   it("asks the gateway NOTHING — the indistinguishability is by construction", async () => {
@@ -284,13 +312,33 @@ describe("flag ON, signed OUT — the ordinary path, and no oracle (done-when 6)
     await proxy(request("no-such-tenant-anywhere.metorite.com", "/projects"));
 
     // An answer that is identical because two lookups agreed is one a timing
-    // difference or a log line can unpick. This one never asked.
+    // difference or a log line can unpick. This one never asked — the whole
+    // point of deciding the signed-out case before a session could be resolved
+    // into a lookup.
     expect(calls).toEqual([]);
   });
 
-  it("401s a signed-out API caller on a workspace host, as everywhere else", async () => {
+  it("does NOT leave the workspace host's own /signin reachable", async () => {
+    // The mutation this kills: restore the fallthrough and `/signin` on a
+    // workspace host answers 307 to a host-relative location — the shape that
+    // shipped, and the one that cannot complete a sign-in.
+    const res = await proxy(request("acme.metorite.com", "/signin"));
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://app.metorite.com/signin");
+    expect(res.headers.get("location")).not.toContain("acme.metorite.com");
+  });
+
+  it("sends a signed-out API caller to the apex too, not a host-local 401", async () => {
+    // Deliberate, and a change from slice 1 as shipped. A workspace host has one
+    // answer for every path in this state; a 401 here would be a second one, and
+    // a signed-in mismatch on the same path already 302s. Nothing is lost: under
+    // B2 a workspace host carries no session, so an API call arriving here was
+    // never going to be served.
     const res = await proxy(request("acme.metorite.com", "/api/projects"));
-    expect(res.status).toBe(401);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://app.metorite.com/api/projects");
     expect(calls).toEqual([]);
   });
 });

@@ -11,8 +11,18 @@ verify-and-302; multi-org selection is deferred to the identity cutover; and the
 reserved-label set is enforced at the signup slug gate **as a live-defect fix**).
 The ticket's gate is now **split**: the code half is 🟢 AGENT-SAFE and ships dark
 behind `SUBDOMAIN_WORKSPACE_ENABLED`, while the wildcard DNS record, the DNS-01
-certificate + Caddy block, the `AUTH_URL` pin and the flag flip are 🔴 **OWNER-GATE**
-(`work_plan.md` §6). ·
+certificate + Caddy block, the `AUTH_URL` pin, `WORKSPACE_BASE_DOMAIN` on a
+non-`metorite.com` apex, and the flag flip are 🔴 **OWNER-GATE**
+(`work_plan.md` §6). **Slice 1 REPAIR ROUND 1 landed 2026-08-24** (branch
+`ws-29-mt1f-slice1`): **done-when 6 is AMENDED** — a signed-out visitor on a
+workspace host now gets the same 302 to the apex, because the old `/signin`
+fallthrough was a page that *could not sign anybody in* under B2's host-only
+cookies plus B3's `AUTH_URL` pin (the reasoning is written out at the clause); the
+reserved set is extended additively to 21 labels; and five stale/overstated
+statements are corrected (`auth.ts:163`→**`:389`**, "only host reader"→only
+**request**-host reader with `nextUrl.hostname` added to the fence, CP-2c 8a's
+`await auth()`→`currentIdentity()` and its motivation, and the
+`test_the_invisible_cases_are_indistinguishable` citation). ·
 ⚠️ **Updated 2026-08-19: `MT-1j · Tenant-side organization provisioning` MINTED,
 slices 6 + 1 + 2 + 3 + 4 (OPERATOR ARM) are BUILT, and slice 5 is on its RATCHET
 (rounds 1 + 2 landed — the ratchet now stands at `4 + 1`, exactly the owner-gated
@@ -2132,13 +2142,13 @@ construct an unprefixed key**; consumer groups are per-tenant; a grep-assertion 
 the build on a direct `redis.asyncio` client outside the wrapper. *A convention is a thing
 people forget; a client that cannot express the wrong thing is not.*
 
-#### MT-1f · Subdomain tenant resolution · ◐ **SLICE 1 SPEC'D + BUILT 2026-08-24** (owner rulings B1–B7 ratified the same day)
+#### MT-1f · Subdomain tenant resolution · ◐ **SLICE 1 SPEC'D + BUILT 2026-08-24 · REPAIR ROUND 1 LANDED 2026-08-24** (owner rulings B1–B7 ratified the same day; **done-when 6 amended in the repair — see the clause**)
 **Gate — the ticket is split, and the split is the whole point.**
 🟢 **AGENT-SAFE:** the host parser, the proxy branch, the flag, the reserved-label
 vocabulary, the signup slug gate, and every fence below. All of it ships **dark**
 (`SUBDOMAIN_WORKSPACE_ENABLED` unset = OFF) and is inert without the runtime half.
-🔴 **OWNER-GATE — four acts and no others, none of them agent-executable**
-*(registered in `work_plan.md` §6)*:
+🔴 **OWNER-GATE — five acts and no others, none of them agent-executable**
+*(registered in `work_plan.md` §6; the fifth was added 2026-08-24 in repair round 1)*:
 1. the **wildcard DNS record** `*.metorite.com` → the VPS;
 2. the **DNS-01 wildcard TLS certificate** and the Caddyfile block that serves it
    (`deploy/hostinger/caddy/Caddyfile` — the patch text rides the PR body; agents do
@@ -2146,6 +2156,15 @@ vocabulary, the signup slug gate, and every fence below. All of it ships **dark*
 3. the **`AUTH_URL=https://app.metorite.com` pin** in the workbench env — a **HARD
    prerequisite of the flip**, see B3;
 4. the **`SUBDOMAIN_WORKSPACE_ENABLED=true` flip** itself.
+5. **`WORKSPACE_BASE_DOMAIN`** in the workbench env, *when and only when the apex is
+   not `metorite.com`* (added 2026-08-24, repair round 1 — the verifier found it
+   missing from this checklist). `proxy.ts` defaults it to `metorite.com`, so on
+   any other apex an unset value **fails safe and silently**: `slugFromHost` matches
+   nothing, the branch never runs, and the flip appears to do nothing at all rather
+   than misrouting anybody. That is the right failure, and it is exactly the kind an
+   operator spends an afternoon on — so it belongs on the checklist beside the flip,
+   not in a code comment. Read **per request**, so it needs the same restart the
+   flip does.
 
 **Owner:** §1.5's binding rule
 
@@ -2166,7 +2185,7 @@ spec gained the eleventh rule with D15.)*
 | **B4** | Unknown slug vs. a slug that is not yours? | **BYTE-IDENTICAL responses**, and **no branding on any pre-auth subdomain path**. Whether `acme` exists is not a question an unauthenticated caller may ask a hostname. This is `customer_console.md` §5's *"no cross-org existence oracle"* (`:3713-3719`) applied at the edge, and it is why slice 1 performs **no slug lookup at all** on the signed-out path — an indistinguishability you get by never asking is one no future refactor can leak. |
 | **B5** | What IS slice 1? | **Verify membership, then 302 to `https://app.metorite.com<path>`.** Keeping the slug in the address bar — rewrites, per-host sessions, per-host branding — is **slice 2 and an explicit non-goal here.** |
 | **B6** | Multi-org selection? | **DEFERRED** until membership sets exist behind `IDENTITY_CUTOVER`. `access.resolve_identity` is LIMIT-1 today (`access.py:963-972`) and the cutover branch above it returns `(None, None)` for >1 active membership rather than picking one. Slice 1 is **assert-match only**: it compares one host slug against one resolved org slug and never chooses. |
-| **B7** | Reserved slugs? | `{app, api, www, admin, console, signin, signup, mail, static, cdn, status, help, docs}`, enforced **server-side in the signup slug gate** *and* shared with the host parser. ⚠️ **This half is a LIVE-DEFECT FIX and applies regardless of the flag** — measured 2026-08-24, `_SLUG_RE` (`gateway/routes/signup.py`) admits `api`, so a self-serve customer can register the slug that names the gateway's own hostname. It is fixed under `customer_console.md` §CP-2c's slug gate, not gated behind this ticket. |
+| **B7** | Reserved slugs? | `{app, api, www, admin, console, signin, signup, mail, static, cdn, status, help, docs}`, enforced **server-side in the signup slug gate** *and* shared with the host parser. ⚠️ **This half is a LIVE-DEFECT FIX and applies regardless of the flag** — measured 2026-08-24, `_SLUG_RE` (`gateway/routes/signup.py`) admits `api`, so a self-serve customer can register the slug that names the gateway's own hostname. It is fixed under `customer_console.md` §CP-2c's slug gate, not gated behind this ticket. **EXTENDED 2026-08-24 (repair round 1), additively — the ruling's thirteen all stand and eight more join them:** `{assets, auth, billing, dev, login, operator, staging, ws}`, each a hostname the platform already uses or has ticketed work for (`operator` = the Operator Console, D35; `billing` = the subscription surface; `auth`/`login` = the sign-in names a customer would assume are ours; `assets`/`ws`/`dev`/`staging` = ordinary infrastructure). The set is **21** labels in both languages and the cross-language pin keeps them equal. Widening is only safe while nobody can already hold a new label — self-serve signup is dark, so today nobody can; **a later addition must check the org table first**, because taking a label back from a live customer is a rename, not a rule. |
 
 ##### Slice 1 · subdomain workspace verify-and-redirect — **done when**, each clause naming its fence
 
@@ -2185,15 +2204,27 @@ spec gained the eleventh rule with D15.)*
    **redundancy itself** is the thing fenced — a case pins that `SLUG_RE` alone
    refuses `"a.b"` and `""`, so widening the charset reds there rather than
    silently promoting the depth line to load-bearing.
-2. **`proxy.ts` is the ONLY host reader in the browser tier.** **Fence:** a source
-   scan in `subdomain.test.ts`, over all of `src/`, failing on a second
-   `headers().get("host")` / `nextUrl.host` / `x-forwarded-host` read — with
-   non-vacuity asserted from **both** sides (the swept file list is > 80, and
-   `proxy.ts` must still contain a host read, so a proxy that stops reading the host
-   reds instead of emptying the scan).
+2. **`proxy.ts` is the ONLY reader of the REQUEST host in the browser tier.**
+   **Fence:** a source scan in `subdomain.test.ts`, over all of `src/`, failing on a
+   second `headers().get("host")` / `nextUrl.host` / `nextUrl.hostname` /
+   `x-forwarded-host` read — with non-vacuity asserted from **both** sides (the
+   swept file list is > 80, and `proxy.ts` must still contain a host read, so a
+   proxy that stops reading the host reds instead of emptying the scan).
+   ⚠️ **NARROWED 2026-08-24 (repair round 1), in prose and in regex.** The claim
+   was written as "the only host reader", which overstated it in one direction and
+   the regex understated it in another: `app/whatsapp/lib/callAudio.ts:91` reads
+   `window.location.host` (the browser reading the address bar it is already on —
+   it decides nothing about tenancy and is deliberately out of scope), while
+   `nextUrl.hostname` slipped past `nextUrl\.host\b` because `\b` does not match
+   between `host` and `name`. The alias is now in the pattern
+   (`nextUrl\.host(name)?\b`) and the pattern is asserted directly, since no file
+   contains one today and a scan of zero occurrences proves nothing.
 3. **Flag `SUBDOMAIN_WORKSPACE_ENABLED` OFF ⇒ byte-identical behaviour** for
    `app.metorite.com` **and** `acme.metorite.com`. Exact-string `"true"` (the
-   `auth.ts:163` idiom), default unset = OFF. **Fences:** `subdomain.test.ts`'s
+   `auth.ts:389` idiom — the `SELF_SERVE_SIGNUP_ENABLED` read inside the `signIn`
+   callback; **re-anchored 2026-08-24**, the widely-cited `auth.ts:163` is a
+   comment about the OTP provider and never was a flag site), default unset = OFF.
+   **Fences:** `subdomain.test.ts`'s
    decision table over both hosts and both flag positions, **and**
    `workbench/control_plane/src/lib/proxyWorkspace.test.ts`, which **executes
    `proxy()`** (the `authFailsClosed.test.ts` pattern: `vi.mock("@/auth")` + a
@@ -2211,15 +2242,48 @@ spec gained the eleventh rule with D15.)*
    path/query, and — over status, *every* header and the body — that neither slug
    appears anywhere. An **unresolvable** caller org is treated as *differs* — fail
    towards the neutral apex, never towards serving a workspace host.
-6. **Flag ON + signed-out ⇒ the ordinary `/signin` path, byte-identical for an
-   existing and a non-existent slug** (B4). Achieved by construction: the signed-out
-   branch performs **no lookup of any kind**. **Fence:** `proxyWorkspace.test.ts`
-   compares the two responses **to each other** (the shape of
-   `test_the_invisible_cases_are_indistinguishable`) modulo the caller's own
-   hostname — the sign-in redirect is host-relative, so the one differing byte is
-   the one the caller supplied — **and** asserts zero gateway calls, because an
-   answer that matches only because two lookups agreed is one a timing difference
-   or a log line can unpick.
+6. **Flag ON + signed-out ⇒ the SAME `302` to `https://app.metorite.com<path+query>`,
+   byte-identical for an existing and a non-existent slug** (B4), reaching that
+   answer with **no lookup of any kind**. **Fences:** `proxyWorkspace.test.ts`
+   compares the two responses **to each other** over status, every header and the
+   body (the shape of `test_the_invisible_cases_are_indistinguishable`,
+   `tests/unit/test_customer_console_resolve.py:737`) — now with **no per-host
+   normalisation**, because nothing host-shaped is left in the answer — asserts the
+   apex `Location`, asserts the workspace host's own `/signin` is no longer served,
+   and asserts **zero gateway calls**, because an answer that matches only because
+   two lookups agreed is one a timing difference or a log line can unpick.
+   `subdomain.test.ts` drives the same case in the pure decision table, including a
+   signed-out caller whose slug *matches* the host.
+
+   ⚠️ **AMENDED 2026-08-24 (repair round 1). The original clause said "the
+   ordinary `/signin` path", and that path is a DEAD END on a workspace host** —
+   diff-review P1, and the reason is a chain of the owner's own rulings rather
+   than a bug in the code that implemented it:
+
+   * **B2** keeps every Auth.js cookie **host-only on `app.metorite.com`**, and
+     that includes the OAuth `state`/`pkce`/`nonce` check cookies, not just the
+     session cookie — no `cookies{}` block widens either.
+   * **B3** pins `AUTH_URL=https://app.metorite.com`, so a sign-in *begun* on
+     `acme.metorite.com` writes those check cookies on `acme` while the provider
+     callback returns to `app` — which has none of them. Auth.js fails the check
+     it cannot find (`InvalidCheck`). **Without** the pin the same request instead
+     mints a `redirect_uri` on a hostname no IdP has registered, which is B3's own
+     stated failure.
+   * **B2 again**: because the session cookie does not widen, *signed-out is the
+     only state a workspace host can be in today.* So the fallthrough was not an
+     edge case — it made **every** workspace hostname a sign-in page that cannot
+     sign anybody in, from the moment of the flip.
+
+   The fix is B5's existing design applied to one more state rather than a new
+   mechanism, and it **strengthens B4**: the `Location` is assembled from the fixed
+   apex host, so it can no longer echo the hostname the caller invented, and the
+   two answers are byte-identical instead of identical-modulo-what-you-typed. Two
+   consequences are recorded rather than discovered later: a signed-out **API**
+   call on a workspace host now 302s instead of answering 401 (one host, one
+   answer — and under B2 no API call there could have been served anyway), and
+   `/api/auth/**` still passes through above the branch, because NextAuth's own
+   endpoints must stay reachable — no page served from a workspace host leads into
+   it any more, but a hand-typed URL still reaches a flow that cannot complete.
 7. **The gateway's tenant binding is UNMOVED.** `deps._with_resolved_access` binds
    from `resolve_identity(email)` alone; a request carrying
    `Host: other-org.metorite.com` with a valid identity binds **the identity's** org

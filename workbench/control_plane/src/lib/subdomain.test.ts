@@ -12,7 +12,8 @@
  *   this tree is node-env and `import("@/auth")` cannot load `next-auth`, so
  *   anything decided inside the proxy would have no runnable fence at all.
  * * **source scans** — the two claims that are about the SHAPE of the tree
- *   rather than a value: that `proxy.ts` is the only host reader, and that the
+ *   rather than a value: that `proxy.ts` is the only reader of the REQUEST host
+ *   (the three patterns below, not every appearance of the word), and that the
  *   browser never learns a gateway URL. Both carry a non-vacuity assertion,
  *   because a sweep whose file list silently empties is the classic way a scan
  *   like this rots.
@@ -163,7 +164,8 @@ describe("the flag is an equality against \"true\" (done-when 3)", () => {
     expect(isWorkspaceEnabled("true")).toBe(true);
     for (const v of ["false", "TRUE", "True", "1", "yes", "", " true", undefined]) {
       // An operator who writes `=false` while debugging must get OFF, and every
-      // truthy-string reading arms it instead (auth.ts:163's idiom).
+      // truthy-string reading arms it instead (auth.ts:389's idiom — the
+      // `SELF_SERVE_SIGNUP_ENABLED` read; re-anchored 2026-08-24).
       expect(isWorkspaceEnabled(v as string | undefined)).toBe(false);
     }
   });
@@ -208,6 +210,8 @@ describe("the workspace decision (done-when 3, 4, 5, 6)", () => {
   it("flag OFF: byte-identical for app.metorite.com AND acme.metorite.com", () => {
     for (const host of ["app.metorite.com", "acme.metorite.com"]) {
       expect(decide({ host, signedIn: true, callerSlug: "other" })).toBeNull();
+      // Including signed out: the amended clause 6 redirect is the FLAG-ON
+      // answer only — an un-flipped box must not start bouncing anybody.
       expect(decide({ host, signedIn: false })).toBeNull();
       expect(decide({ flag: "false", host, signedIn: true, callerSlug: "other" })).toBeNull();
     }
@@ -259,13 +263,21 @@ describe("the workspace decision (done-when 3, 4, 5, 6)", () => {
     expect(location).not.toContain("globex");
   });
 
-  it("flag ON + signed OUT: identical for a real and an invented slug (6, ruling B4)", () => {
-    // The shape of `test_the_subdomain_cases_are_indistinguishable`: the two
-    // answers are compared to EACH OTHER, not each to a constant, so a future
-    // change that starts distinguishing them fails here even if both stay
-    // "falsy". Nothing was looked up on this path — that is what makes the
-    // indistinguishability structural rather than a coincidence of two lookups
-    // returning the same thing.
+  it("flag ON + signed OUT: 302 to the apex, identical for a real and an invented slug (6, ruling B4)", () => {
+    // The shape of `test_the_invisible_cases_are_indistinguishable`
+    // (`tests/unit/test_customer_console_resolve.py:737`): the two answers are
+    // compared to EACH OTHER, not each to a constant, so a future change that
+    // starts distinguishing them fails here even if both stay redirects. Nothing
+    // was looked up on this path — that is what makes the indistinguishability
+    // structural rather than a coincidence of two lookups returning the same
+    // thing.
+    //
+    // ⚠️ AMENDED 2026-08-24 (repair round 1). This used to be `null` — "leave
+    // them on the workspace host's own /signin" — which under B2's host-only
+    // cookies plus B3's AUTH_URL pin is a sign-in page that cannot sign anybody
+    // in. The answer is now B5's redirect, and the equality below is over a
+    // STRING rather than over two nulls: the apex location is built from a fixed
+    // host, so it cannot echo the slug the caller invented.
     const existing = decide({ flag: "true", host: "acme.metorite.com", signedIn: false });
     const invented = decide({
       flag: "true",
@@ -273,13 +285,17 @@ describe("the workspace decision (done-when 3, 4, 5, 6)", () => {
       signedIn: false,
     });
     expect(existing).toEqual(invented);
-    expect(existing).toBeNull();
+    expect(existing).toBe("https://app.metorite.com/projects?view=board");
+    expect(existing).not.toContain("acme");
+    expect(existing).not.toContain("no-such-tenant");
   });
 
   it("a signed-out caller's slug is never consulted even if one is handed over", () => {
     // Guards the ORDER inside `workspaceRedirect`: the signed-out return sits
     // before the comparison, so a caller slug that leaked in cannot change the
-    // answer for anybody.
+    // answer for anybody — including a slug that MATCHES the host, which is the
+    // case that would otherwise pass a stranger through on a session-less host.
+    const apex = "https://app.metorite.com/";
     expect(
       workspaceRedirect({
         hostSlug: "acme",
@@ -288,16 +304,37 @@ describe("the workspace decision (done-when 3, 4, 5, 6)", () => {
         baseDomain: BASE,
         pathWithQuery: "/",
       }),
-    ).toBeNull();
+    ).toBe(apex);
+    expect(
+      workspaceRedirect({
+        hostSlug: "acme",
+        signedIn: false,
+        callerSlug: "acme",
+        baseDomain: BASE,
+        pathWithQuery: "/",
+      }),
+    ).toBe(apex);
   });
 });
 
 // ══ done-when 2 · one host reader ═══════════════════════════════════════════
 
-describe("proxy.ts is the ONLY host reader in this tier (done-when 2)", () => {
+describe("proxy.ts is the ONLY REQUEST-host reader in this tier (done-when 2)", () => {
+  /**
+   * ⚠️ **Exactly these three patterns, and the claim is no wider than they
+   * are** (narrowed 2026-08-24, repair round 1). The prose used to say "the only
+   * host reader", which is false in two directions and both were measured:
+   * `app/whatsapp/lib/callAudio.ts:91` reads `window.location.host` — the
+   * browser reading the address bar it is already on, which decides nothing
+   * about tenancy — and `nextUrl.hostname` used to slip past `nextUrl\.host\b`
+   * because `\b` does not match between `host` and `name`. The second was a real
+   * hole in the fence and is closed here by the optional `(name)?`; the first is
+   * deliberately out of scope and named so nobody "fixes" it by widening the
+   * regex into every client component.
+   */
   const HOST_READS = [
     /\.get\(\s*["'`]host["'`]\s*\)/i,
-    /nextUrl\.host\b/,
+    /nextUrl\.host(name)?\b/,
     /["'`]x-forwarded-host["'`]/i,
   ];
 
@@ -309,9 +346,20 @@ describe("proxy.ts is the ONLY host reader in this tier (done-when 2)", () => {
     expect(HOST_READS.some((re) => re.test(PROXY))).toBe(true);
   });
 
+  it("catches nextUrl.hostname too — the word-boundary hole, closed", () => {
+    // The pattern, not a file: `nextUrl.host\b` cannot match `nextUrl.hostname`,
+    // so the alias was a second request-host read the sweep would have waved
+    // through. Asserted directly, because no file in the tree contains one
+    // today and a scan of zero occurrences proves nothing.
+    const hostRead = HOST_READS.some((re) => re.test("const h = req.nextUrl.hostname;"));
+    expect(hostRead).toBe(true);
+    // …and the client-side address-bar read stays OUT of the claim.
+    expect(HOST_READS.some((re) => re.test("`${window.location.host}${x}`"))).toBe(false);
+  });
+
   it("finds no second reader outside proxy.ts", () => {
-    // A hostname is request input. Read in two places it becomes two opinions
-    // about which tenant you are looking at, and the losing one is a
+    // A REQUEST hostname is request input. Read in two places it becomes two
+    // opinions about which tenant you are looking at, and the losing one is a
     // cross-tenant surface. A new reader belongs in proxy.ts or nowhere.
     const offenders = FILES.filter(
       (f) =>

@@ -39,7 +39,9 @@ self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 form UI + its `/api/signup` Next hop, BUILD+TEST only; **AMENDED 2026-08-24 by
 WS-29 MT-1f slice 1 — done-when 4a, the `ReservedSlug` refusal (owner ruling B7,
 a live-defect fix: `api`/`app`/`www` were registrable through the public form),
-and done-when 8a, `/signup` with no session redirects to `/signin`**) · CP-2e BUILT 2026-08-20
+and done-when 8a, `/signup` with no session redirects to `/signin`; **repair round
+1 the same day** — the reserved set extended additively to 21 labels, 8a re-worded
+to name `currentIdentity()` and its defence-in-depth motivation**) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
 owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
@@ -4179,8 +4181,10 @@ shipped surface, both recorded here because this ticket owns the signup door:**
 LIVE-DEFECT fix: `api`, `app` and `www` were registrable through the public form),
 with the reserved vocabulary shared cross-language and a NAMED gap left open at
 the Console's own provision door; and (ii) **done-when 8a**, `/signup` with no
-session **redirects to `/signin`** instead of rendering a form that could only
-401 at submit. Slice 1 is the Console deployment-key provision arm (done-when 6 and
+session **redirects to `/signin`** — defence in depth behind `proxy.ts`, which
+already refuses the page to a signed-out visitor (both clauses were re-worded in
+repair round 1, 2026-08-24: the reserved set grew to **21** labels and 8a's check
+is `currentIdentity()`, never `await auth()`). Slice 1 is the Console deployment-key provision arm (done-when 6 and
 done-when 8's Console half) and it carries the D46.6-item-1 amendment; the
 record is in the slice list at the end of this ticket. Nothing of the *form*
 exists yet: no `/signup` route, no `SELF_SERVE_SIGNUP_ENABLED` flag, no gateway
@@ -4253,9 +4257,15 @@ overrule any numbered item)*:
    and **`www`**, so a self-serve customer can today register the slug that names
    the gateway's own hostname — and the moment MT-1f's wildcard exists, that slug
    is a hostname collision with a live service, minted by a stranger through a
-   public form. The reserved set is
+   public form. The reserved set is B7's thirteen —
    `{app, api, www, admin, console, signin, signup, mail, static, cdn, status,
-   help, docs}` — refused at the **route**, in the same shape-violation class as
+   help, docs}` — **plus eight added additively in repair round 1, 2026-08-24**:
+   `{assets, auth, billing, dev, login, operator, staging, ws}`, all names the
+   platform already uses or has ticketed (`operator` = the Operator Console D35,
+   `billing` = the subscription surface, `auth`/`login` = sign-in hostnames,
+   the rest infrastructure). **21 in total**, and safe to widen only because
+   self-serve signup is dark and nobody can already hold one — refused at the
+   **route**, in the same shape-violation class as
    `InvalidSlug`, with the new code **`ReservedSlug`** (400) so the copy can say
    *"reserved"* rather than *"malformed"*. Comparison is on the already-lowercased
    slug, after the `_SLUG_RE` check, so a reserved label and a malformed one are
@@ -4611,18 +4621,30 @@ mutation testing on auth/tenancy clauses)*:
    that `console-empty` is the only `signup_eligible=True` outcome while
    `console-refused`, `cache-dead` and `console-error` are all False; plus the
    three route-dict updates in `test_signin_resolve_route.py`.)*
-8a. ✅ **MET — 2026-08-24 (MT-1f slice 1's branch).** `/signup` reached with **no
-   session redirects to `/signin`**, from the page itself, rather than rendering a
-   form whose only possible outcome is a 401 at submit. The form's `needsSignIn`
-   arm stays — it is the answer to a session that *expired between render and
-   submit* — but it is no longer the ordinary path for a signed-out visitor, who
-   used to be shown a four-field organization form and told nothing until they
-   filled it in. The check is a server-component `await auth()` beside the flag
-   gate, ordered **flag first, session second** (an un-opted-in box must not
-   disclose that the surface exists behind a sign-in). Fence: `signup.test.ts` —
-   a source pin on both gates and their order, `signin.test.ts:209`'s idiom,
-   because `next-auth`/`next/navigation` cannot load in this tree's node-env
-   vitest; the behaviour is the reviewer's manual gate.
+8a. ✅ **MET — 2026-08-24 (MT-1f slice 1's branch; wording corrected the same day in
+   repair round 1).** `/signup` reached with **no session redirects to `/signin`**,
+   from the page itself. The check is a server-component **`await currentIdentity()`**
+   — the same `lib/gateway.ts` seam the `/api/signup` hop's `requireIdentity()` sits
+   on, so "may this render" and "will the submit work" cannot drift, and it carries
+   the laptop bypass — placed beside the flag gate and ordered **flag first, session
+   second** (an un-opted-in box must not disclose that the surface exists behind a
+   sign-in). ⚠️ **Not `await auth()`**: this clause said so until 2026-08-24 and the
+   shipped code never did; `signup.test.ts` asserts the page contains **no**
+   `await auth()` and no `from "next-auth"` import, so the old wording described a
+   shape its own fence forbids.
+   ⚠️ **It is DEFENCE IN DEPTH, not the repair of a reachable dead end** — the
+   second correction. The earlier motivation ("a signed-out visitor used to be shown
+   a four-field form and told nothing until submit") is **false**: `/signup` is
+   absent from `proxy.ts`'s `PUBLIC_PAGES`, so the proxy already 307'd a signed-out
+   page navigation to `/signin` and the form was never reachable without a session.
+   What the check buys is that the guarantee no longer depends on a set in another
+   file — adding `/signup` to `PUBLIC_PAGES` is a one-line edit somebody will make
+   the day the marketing CTA lands. The form's `needsSignIn` arm stays for the case
+   neither gate can see: a session that expires *between render and submit*.
+   Fence: `signup.test.ts` — a source pin on both gates, their order, and the
+   negative `await auth()` pin; `signin.test.ts:209`'s idiom, because
+   `next-auth`/`next/navigation` cannot load in this tree's node-env vitest; the
+   behaviour is the reviewer's manual gate.
 8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,

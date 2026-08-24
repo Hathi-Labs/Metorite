@@ -25,12 +25,26 @@
  *
  * ## The three rules that are load-bearing, each learned from the spec's own record
  *
- * 1. **The signed-out path performs NO LOOKUP OF ANY KIND** (owner ruling B4).
- *    Whether `acme` exists is not a question an unauthenticated caller may ask
- *    a hostname — `customer_console.md` §5's "no cross-org existence oracle"
- *    applied at the edge. An indistinguishability you get by *never asking* is
- *    one no later refactor can leak; one obtained by comparing two answers is
- *    one timing can unpick.
+ * 1. **The signed-out path performs NO LOOKUP OF ANY KIND** (owner ruling B4)
+ *    and answers with the **same 302 to the apex** the mismatch gets (done-when
+ *    6, AMENDED 2026-08-24 in repair round 1). Whether `acme` exists is not a
+ *    question an unauthenticated caller may ask a hostname —
+ *    `customer_console.md` §5's "no cross-org existence oracle" applied at the
+ *    edge. An indistinguishability you get by *never asking* is one no later
+ *    refactor can leak; one obtained by comparing two answers is one timing can
+ *    unpick. ⚠️ **The clause originally left a signed-out visitor on the
+ *    workspace host's own `/signin`, and that is a dead end, not a fallback**:
+ *    B2 keeps every Auth.js cookie host-only on `app.<domain>`, so the OAuth
+ *    `state`/`pkce` cookies would be written on `acme.<domain>` while B3's
+ *    `AUTH_URL` pin sends the callback to `app.<domain>` — a callback that
+ *    arrives without the checks it must verify (`InvalidCheck`); without the pin
+ *    the same request instead mints a `redirect_uri` on a hostname no IdP knows.
+ *    Since B2 also means signed-out is the ONLY state a workspace host can be in
+ *    today, that fallthrough made every workspace hostname *a sign-in page that
+ *    cannot sign you in*. Redirecting instead is B5's existing design applied to
+ *    one more state, and it **strengthens** B4: the `Location` no longer echoes
+ *    the caller's own hostname, so the two answers are byte-identical rather
+ *    than identical-modulo-the-host-you-typed.
  * 2. **An unresolvable caller organization is treated as a MISMATCH.** Failing
  *    towards the neutral apex discloses nothing; failing towards "serve the
  *    workspace host" would serve a tenant hostname to somebody we could not
@@ -56,29 +70,55 @@
  *
  * It is not a secret and not an oracle: the set is static, public and identical
  * for every caller, which is exactly what separates it from `SlugTaken`.
+ *
+ * ⚠️ **WIDENED 2026-08-24 (repair round 1), additively.** The owner's B7 ruling
+ * named thirteen labels and every one of them is still here — the eight added
+ * (`assets`, `auth`, `billing`, `dev`, `login`, `operator`, `staging`, `ws`)
+ * are hostnames the platform already uses or has named work for: `operator` is
+ * the Operator Console (D35), `billing` the subscription surface, `auth`/`login`
+ * the sign-in hostnames a customer would assume are ours, and
+ * `assets`/`ws`/`dev`/`staging` the ordinary infrastructure names. Widening a
+ * reserved set is only safe while nobody can already hold one of the new labels:
+ * self-serve signup ships dark, so today nobody can. A later addition must first
+ * check the org table, because taking a label back is a rename, not a rule.
  */
 export const RESERVED_LABELS: readonly string[] = [
   "admin",
   "api",
   "app",
+  "assets",
+  "auth",
+  "billing",
   "cdn",
   "console",
+  "dev",
   "docs",
   "help",
+  "login",
   "mail",
+  "operator",
   "signin",
   "signup",
+  "staging",
   "static",
   "status",
+  "ws",
   "www",
 ];
 
 const RESERVED = new Set(RESERVED_LABELS);
 
 /**
- * The slug's shape, byte-identical to the gateway's `_SLUG_RE`
- * (`routes/signup.py`) and to `SignUpForm.tsx`'s advisory mirror: a DNS-safe
- * label, lowercase alphanumeric with internal hyphens, at most 63 characters.
+ * The slug's shape: a DNS-safe label, lowercase alphanumeric with internal
+ * hyphens, at most 63 characters.
+ *
+ * ⚠️ **One home, and no copies of it in this language** (repair round 1,
+ * 2026-08-24). `SignUpForm.tsx` **imports this constant** — it used to carry a
+ * hand-copied literal, the kind of mirror `workbench/control_plane/AGENTS.md`
+ * rule 5 names ("a mirror goes stale and then lies"). The gateway's
+ * `_SLUG_RE` (`routes/signup.py`) is the other-language twin and is the real
+ * fence for a submitted slug; `tests/unit/test_subdomain_host_vocabulary.py`
+ * pins the two patterns equal AND scans the form for a re-grown local literal.
  *
  * A shape check is not the whole rule — `api` passes it, which is precisely the
  * live defect owner ruling B7 closes. Shape first, then the reserved set.
@@ -155,7 +195,10 @@ export function slugFromHost(
 
 /**
  * The flag, read the way every ship-dark flag in this tree is read: an equality
- * against the exact string `"true"` (`auth.ts:163`'s idiom), never truthiness.
+ * against the exact string `"true"` (`auth.ts:389`'s idiom — the
+ * `SELF_SERVE_SIGNUP_ENABLED` read inside the `signIn` callback; re-anchored
+ * 2026-08-24, the long-cited `:163` is a comment about the OTP provider and not
+ * a flag site at all), never truthiness.
  *
  * An operator who writes `SUBDOMAIN_WORKSPACE_ENABLED=false` while debugging
  * must get OFF, and every truthy-string reading arms it instead. Flipping it on
@@ -206,14 +249,15 @@ export interface WorkspaceCheck {
  * | state | answer | clause |
  * |---|---|---|
  * | not a workspace host (flag off, apex, reserved, malformed) | `null` | 3 |
- * | workspace host, **signed out** | `null` — the ordinary `/signin` path, and identical for a real and an invented slug because nothing was looked up | 6 |
+ * | workspace host, **signed out** | `https://app.<base><path>` — the SAME answer, byte-identical for a real and an invented slug because nothing was looked up | 6 |
  * | workspace host, signed in, slug **matches** | `null` — pass through | 4 |
  * | workspace host, signed in, slug **differs or is unresolvable** | `https://app.<base><path>` | 5 |
  *
  * The returned location **names no organization** — not the host's, not the
  * caller's. That is done-when 5's second half and it is structural: the only
  * pieces of this string are the fixed apex host and the path the caller already
- * had.
+ * had. Since 2026-08-24 that is also what makes done-when 6 byte-identical: an
+ * answer built from a fixed host cannot echo the hostname the caller invented.
  *
  * `https` is not configurable on purpose. The only deployment where a workspace
  * host can exist is the one behind the owner-gated wildcard certificate; a
@@ -222,9 +266,18 @@ export interface WorkspaceCheck {
 export function workspaceRedirect(check: WorkspaceCheck): string | null {
   const { hostSlug, signedIn, callerSlug, baseDomain, pathWithQuery } = check;
   if (hostSlug === null) return null;
-  // B4 — the signed-out answer must not depend on whether the slug is real, so
-  // it is reached before anything could have asked.
-  if (!signedIn) return null;
+
+  const apex = `https://${appHost(baseDomain)}${pathWithQuery}`;
+
+  // B4 + B5 — the signed-out answer must not depend on whether the slug is
+  // real, so it is decided HERE, before anything could have asked, and it is the
+  // same apex 302 a mismatch gets. Leaving this caller on the workspace host's
+  // own `/signin` was the shipped shape until 2026-08-24 and it is a dead end:
+  // under B2 the Auth.js cookies are host-only on the apex, so a sign-in started
+  // here writes its `state`/`pkce` on a host the pinned callback never returns
+  // to. See the module docstring's rule 1 for the full chain.
+  if (!signedIn) return apex;
+
   if (callerSlug !== null && callerSlug === hostSlug) return null;
-  return `https://${appHost(baseDomain)}${pathWithQuery}`;
+  return apex;
 }

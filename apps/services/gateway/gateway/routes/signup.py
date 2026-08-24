@@ -153,19 +153,34 @@ _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 #:
 #: It is not an existence oracle: static, public, and identical for every caller,
 #: which is exactly what separates it from ``SlugTaken``.
+#:
+#: ⚠️ **WIDENED 2026-08-24 (repair round 1) — additively, and in lockstep with
+#: the TypeScript.** B7's thirteen labels all remain; the eight added name
+#: surfaces the platform already has or has ticketed (``operator`` = the Operator
+#: Console, D35; ``billing``; ``auth``/``login``; ``assets``/``ws``/``dev``/
+#: ``staging``). Safe only because self-serve signup is dark, so no customer can
+#: already hold one — a later widening must check the org table first.
 _RESERVED_SLUGS = frozenset({
     "admin",
     "api",
     "app",
+    "assets",
+    "auth",
+    "billing",
     "cdn",
     "console",
+    "dev",
     "docs",
     "help",
+    "login",
     "mail",
+    "operator",
     "signin",
     "signup",
+    "staging",
     "static",
     "status",
+    "ws",
     "www",
 })
 

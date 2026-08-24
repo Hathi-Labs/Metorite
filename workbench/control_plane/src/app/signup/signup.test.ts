@@ -69,9 +69,11 @@ describe("the flag gates the whole surface — both positions (done-when 1)", ()
 describe("a signed-out visitor is sent to /signin, not to a dead form (8a)", () => {
   it("resolves the session server-side and redirects when there is none", () => {
     // The owner of the new organization is the SESSION email (R11), and the
-    // `/api/signup` hop 401s without one — so rendering the four-field form to
-    // a signed-out visitor asked them to name an organization, a slug, a state
-    // and a GSTIN before telling them the only thing that mattered.
+    // `/api/signup` hop 401s without one. ⚠️ DEFENCE IN DEPTH, stated
+    // accurately since 2026-08-24: `/signup` is not in `proxy.ts`'s
+    // `PUBLIC_PAGES`, so the proxy already redirects a signed-out navigation —
+    // this check is what stops that guarantee from living in another file's
+    // set, which is one line away from changing.
     expect(page).toContain('import { currentIdentity } from "@/lib/gateway"');
     expect(page).toMatch(/if \(!\(await currentIdentity\(\)\)\) redirect\("\/signin"\);/);
     // A server component that awaits must be async, or the check is a promise

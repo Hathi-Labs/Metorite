@@ -20,6 +20,12 @@ Direction is deliberate: the TypeScript is canonical because the list exists for
 DNS reasons and the host parser is what DNS reaches first. Either side drifting
 is red, so one direction suffices.
 
+A **third** consumer joined on 2026-08-24 (repair round 1) and is pinned
+differently on purpose: ``app/signup/SignUpForm.tsx`` *imports* both the reserved
+list and ``SLUG_RE`` from the canonical module, so the case below asserts the
+import and the ABSENCE of a local literal rather than comparing yet another
+copy — there is no fourth place for the pattern to be written down.
+
 **Deliberately DB-free**, like ``test_console_dependency_boundary.py``: a
 structural fence that skips whenever a database is absent is a fence that was
 never there. Nothing here opens a session.
@@ -37,6 +43,7 @@ from gateway.routes import signup as route
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SUBDOMAIN_TS = _ROOT / "workbench/control_plane/src/lib/subdomain.ts"
+_SIGNUP_FORM_TSX = _ROOT / "workbench/control_plane/src/app/signup/SignUpForm.tsx"
 _GATEWAY_MAIN = _ROOT / "apps/services/gateway/gateway/main.py"
 
 
@@ -92,6 +99,30 @@ class TestTheReservedVocabularyIsOneList:
         match = re.search(r"export const SLUG_RE\s*=\s*/(.+?)/;", ts)
         assert match is not None, "SLUG_RE is no longer an exported literal"
         assert match.group(1) == route._SLUG_RE.pattern
+
+    def test_the_signup_FORM_imports_the_shape_rather_than_copying_it(self):
+        """The third consumer, pinned by IMPORT rather than by comparison.
+
+        Added 2026-08-24 (repair round 1, diff-review P2): ``SignUpForm.tsx``
+        carried its own ``const SLUG_RE = /…/`` literal, byte-identical to this
+        one on the day it was written — which is the only day a copy ever is.
+        Pinning it by *equality* would have been the fourth place the pattern is
+        written down; pinning the IMPORT means there is nothing left to drift,
+        and this case is what makes a re-grown local literal red rather than
+        merely untidy.
+        """
+        form = _read(_SIGNUP_FORM_TSX)
+        assert re.search(
+            r'import \{[^}]*\bSLUG_RE\b[^}]*\} from "@/lib/subdomain"', form
+        ), "SignUpForm must IMPORT SLUG_RE from the one vocabulary"
+        # No local re-declaration of either half, under any name: a `const
+        # SLUG_RE = /…/` here is the mirror, and so is a fresh regex literal
+        # spelling the same DNS-label shape.
+        assert not re.search(r"const\s+SLUG_RE\s*=\s*/", form)
+        assert r"[a-z0-9]([a-z0-9-]" not in form
+        # Non-vacuity: the form still USES the imported rule, so the assertions
+        # above are not passing over a file that stopped validating slugs.
+        assert "SLUG_RE.test(" in form
 
 
 class TestTheBrowserNeverTalksToTheGatewayDirectly:

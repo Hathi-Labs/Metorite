@@ -141,10 +141,15 @@ export async function proxy(req: NextRequest) {
 
   // ── WS-29 MT-1f slice 1 · per-tenant workspace hostnames ──────────────────
   //
-  // THIS IS THE ONLY HOST READER IN THE BROWSER TIER, and `subdomain.test.ts`
-  // fails the build on a second one. A hostname is request input: read in two
-  // places it becomes two opinions about which tenant you are looking at, and
-  // the losing one is a cross-tenant surface.
+  // THIS IS THE ONLY READER OF THE REQUEST HOST IN THE BROWSER TIER, and
+  // `subdomain.test.ts` fails the build on a second one — precisely: on a second
+  // `headers().get("host")`, `nextUrl.host`/`nextUrl.hostname` or
+  // `x-forwarded-host` anywhere under `src/`. It is deliberately NOT a claim
+  // about `window.location.host`, which is the browser reading the address bar
+  // it is already on (`app/whatsapp/lib/callAudio.ts` does, legitimately) and
+  // decides nothing about tenancy. A REQUEST hostname is request input: read in
+  // two places it becomes two opinions about which tenant you are looking at,
+  // and the losing one is a cross-tenant surface.
   //
   // Placed AFTER the `/_next` and `/api/auth` passthroughs so static assets and
   // the sign-in machinery on a workspace host are untouched, and BEFORE
@@ -157,6 +162,15 @@ export async function proxy(req: NextRequest) {
   // existing and an invented slug must be indistinguishable, and the only way
   // that survives a refactor is never having asked. `signedIn` is therefore
   // resolved first and the gateway call is guarded on it.
+  //
+  // ⚠️ It also REDIRECTS rather than falling through to a host-local `/signin`
+  // (done-when 6 as amended 2026-08-24). Under B2 the Auth.js cookies stay
+  // host-only on the apex, so a sign-in begun on `acme.<domain>` writes its
+  // `state`/`pkce` there while B3's `AUTH_URL` pin returns the callback to
+  // `app.<domain>` — the sign-in cannot complete, and signed-out is the only
+  // state a workspace host is in today. `/api/auth/**` still passes through
+  // above (NextAuth's endpoints must stay reachable on every host), but no page
+  // served from a workspace host can now lead a person into it.
   const baseDomain = workspaceBaseDomain();
   const hostSlug = workspaceHostSlug(
     process.env.SUBDOMAIN_WORKSPACE_ENABLED,
@@ -174,7 +188,9 @@ export async function proxy(req: NextRequest) {
     });
     // 302 and nothing else: no body, no header, and a Location built from the
     // fixed apex host plus the caller's own path — so the answer NAMES NO
-    // ORGANIZATION, neither the host's nor the caller's (done-when 5).
+    // ORGANIZATION, neither the host's nor the caller's (done-when 5), and is
+    // byte-identical for a real and an invented slug (done-when 6): a location
+    // assembled from a FIXED host cannot echo the hostname the caller typed.
     if (location) return NextResponse.redirect(location, 302);
   }
 

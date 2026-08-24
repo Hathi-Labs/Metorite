@@ -40,9 +40,17 @@ export default async function SignUp() {
   //
   // Identity is IdP-attested BEFORE the form (CP-2c item 1): the owner of the
   // new organization is the SESSION email, resolved server-side, and the
-  // `/api/signup` hop 401s without one. Rendering the four-field form to a
-  // signed-out visitor therefore asked them to name an organization, a slug, a
-  // state and a GSTIN before telling them the only thing that mattered.
+  // `/api/signup` hop 401s without one.
+  //
+  // ⚠️ **This is DEFENCE IN DEPTH, not a repair of a reachable dead end**
+  // (corrected 2026-08-24 — the original comment here claimed signed-out
+  // visitors were being shown the form, and they were not). `/signup` is absent
+  // from `proxy.ts`'s `PUBLIC_PAGES`, so a signed-out page navigation is already
+  // redirected to `/signin` before this component runs. What the check buys is
+  // that the guarantee stops depending on a set in another file: add `/signup`
+  // to `PUBLIC_PAGES` — a one-line edit somebody will make the day the marketing
+  // CTA lands — and without this the form renders to a visitor who can only be
+  // 401'd at submit.
   //
   // `currentIdentity()` and not a second session read: it is the same seam the
   // hop's `requireIdentity()` sits on, so "may this render" and "will the
