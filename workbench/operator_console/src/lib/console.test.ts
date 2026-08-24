@@ -156,15 +156,19 @@ describe("the token never reaches a client bundle", () => {
     );
   });
 
-  // CP-2g added a SECOND server-held credential (the gateway operator door's
-  // token) — same rule, same fence, same single-file discipline.
-  it("names GATEWAY_OPERATOR_TOKEN only in server lib/tenantDoor.ts", () => {
-    const namers = files.filter((f) =>
-      readFileSync(f, "utf-8").includes("GATEWAY_OPERATOR_TOKEN"),
-    );
-    expect(namers.map((f) => f.replace(APP_ROOT, "").replace(/\\/g, "/"))).toEqual(
-      ["/lib/tenantDoor.ts"],
-    );
+  // CP-2g added TWO more server-held credentials (the gateway's internal
+  // bearer + the operator door's token) — same rule, same fence, same
+  // single-file discipline.
+  it("names the gateway token envs only in server lib/tenantDoor.ts", () => {
+    for (const name of ["GATEWAY_OPERATOR_TOKEN", "GATEWAY_INTERNAL_TOKEN"]) {
+      const namers = files.filter((f) =>
+        readFileSync(f, "utf-8").includes(name),
+      );
+      expect(
+        namers.map((f) => f.replace(APP_ROOT, "").replace(/\\/g, "/")),
+        name,
+      ).toEqual(["/lib/tenantDoor.ts"]);
+    }
   });
 
   it("no `use client` file imports a server credential module", () => {

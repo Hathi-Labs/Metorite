@@ -17,7 +17,10 @@ import type { ConsoleResult, FetchLike } from "./console";
 
 export type TenantDoorEnv = {
   url?: string;
-  token?: string;
+  /** The gateway's ordinary machine bearer — clears the APP-LEVEL auth gate. */
+  internalToken?: string;
+  /** The door's own credential, sent as X-Operator-Token. */
+  operatorToken?: string;
 };
 
 export class TenantDoorUnconfigured extends Error {}
@@ -32,23 +35,30 @@ export function readTenantDoorEnv(
 ): TenantDoorEnv {
   return {
     url: envTrim(env.GATEWAY_INTERNAL_URL),
-    token: envTrim(env.GATEWAY_OPERATOR_TOKEN),
+    internalToken: envTrim(env.GATEWAY_INTERNAL_TOKEN),
+    operatorToken: envTrim(env.GATEWAY_OPERATOR_TOKEN),
   };
 }
 
-// DELETE the organization's tenant plane. Fails CLOSED when unconfigured —
-// a dark deployment refuses rather than skipping the tenant half silently
-// (a "purge" that only stripped the registry would report success while the
-// customer's data survived).
+// DELETE the organization's tenant plane. TWO tokens, deliberately: the
+// gateway's app-level `require_authenticated` consumes `Authorization` (the
+// door is NOT in its public-routes exemption list), and the door itself then
+// demands `X-Operator-Token`. Neither credential alone reaches the purge —
+// the internal token has an unprovisioned-box fallback agents hold, and the
+// operator token must not bypass the gateway's ordinary gate.
+//
+// Fails CLOSED when unconfigured — a dark deployment refuses rather than
+// skipping the tenant half silently (a "purge" that only stripped the
+// registry would report success while the customer's data survived).
 export async function purgeTenantOrg(
   slug: string,
   deps: { env?: TenantDoorEnv; fetchImpl?: FetchLike } = {},
 ): Promise<ConsoleResult> {
   const env = deps.env ?? readTenantDoorEnv();
-  if (!env.url || !env.token) {
+  if (!env.url || !env.internalToken || !env.operatorToken) {
     throw new TenantDoorUnconfigured(
-      "GATEWAY_INTERNAL_URL and GATEWAY_OPERATOR_TOKEN must both be set " +
-        "server-side before the operator console can purge tenant data",
+      "the gateway URL, internal token and operator-door token must all be " +
+        "set server-side before the operator console can purge tenant data",
     );
   }
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
@@ -57,7 +67,10 @@ export async function purgeTenantOrg(
       `?confirm=${encodeURIComponent(slug)}`,
     {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${env.token}` },
+      headers: {
+        Authorization: `Bearer ${env.internalToken}`,
+        "X-Operator-Token": env.operatorToken,
+      },
     },
   );
   return { status: res.status, body: await res.text() };

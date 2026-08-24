@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/customer_console.md`` §CP-2g. The Console owns the
 lifecycle (``customer_console.lifecycle``: ``deleted`` is reachable only from
 ``cancelled``, i.e. only after the export window) and the Console's
 ``POST /orgs/purge`` strips its own plane; THIS module destroys the tenant
-plane — every row the organization owns in the tenant database.
+plane — every row the organization owns **in the tenant-scoped schema**.
 
 ## Why this is safe to be a single DELETE (measured 2026-08-24, scratch ladder)
 
@@ -32,6 +32,17 @@ What is deliberately KEPT:
   join-vs-create chooser), which is exactly the state a fresh start needs.
 - ``auth_email_otp_token`` — email-keyed and short-lived; it expires on its
   own schedule.
+
+⚠️ **What this purge CANNOT reach — the honest boundary** (review round 1,
+measured): ~119 of the tenant database's ~155 tables carry NO
+``organization_id`` and no FK path to ``organization`` at all — the
+un-threaded MT-1j remainder (chat, email, WhatsApp, meetings, GTD, apps,
+workflows, CRM), where rows are keyed by email or by nothing. Their data is
+not attributable to a tenant, so no per-tenant delete can exist for it until
+threading lands; deleting by member email would be WRONG (an address can
+belong to a future org). The operator-facing copy states this instead of
+promising "everything", and WS-29's board row carries it as the standing
+finding it already is.
 
 Unlike this module's neighbour ``promote_invited_member`` (best-effort, never
 raises), **this function RAISES on failure** — a purge that half-happened must
@@ -73,7 +84,12 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
     ``{"already_absent": True}`` when no such org exists — the retry arm, so a
     purge whose Console half failed can simply be run again.
     """
-    slug = (slug or "").strip().lower()
+    # Whitespace-trim ONLY — never case-fold. The tenant lookup must be
+    # byte-symmetric with what the Console's org list reported, or a
+    # mixed-case slug turns the purge into a silent no-op that answers 200
+    # (review round 1, P1: `.lower()` here + a mixed-case org meant "already
+    # absent" — and the registry half then destroyed the only record of it).
+    slug = (slug or "").strip()
     if not slug:
         raise ValueError("slug is required")
 
@@ -96,6 +112,12 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
         result = await session.execute(text(_DELETE_ORG_SQL), {"org_id": org_id})
         deleted["organization"] = result.rowcount or 0
 
+    if deleted["organization"] == 0:
+        # The row vanished between lookup and delete (a concurrent purge won).
+        # Answering "deleted: 0, already_absent: false" would read as a purge
+        # that destroyed nothing while claiming it ran — say which it was.
+        return {"slug": slug, "already_absent": True, "deleted": {}}
+
     _log.warning(
         "tenant_org_purged", slug=slug, organization_id=org_id, deleted=deleted
     )
@@ -108,6 +130,7 @@ async def purge_tenant_organization(*, slug: str) -> dict[str, Any]:
         "kept": [
             "user_identity",
             "auth_email_otp_token",
-            "crm_* (no tenancy column yet — the MT-1j remainder)",
+            "un-threaded tables (chat/email/wa/meetings/gtd/apps/workflows/"
+            "crm — no tenancy column yet; the MT-1j remainder)",
         ],
     }

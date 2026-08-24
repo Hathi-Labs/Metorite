@@ -6,13 +6,29 @@ idiom applied to the gateway), sequences the Console's authority check FIRST
 (``organization.status == 'deleted'`` — terminal on the lifecycle graph, so it
 cannot be un-entered between check and purge), and only then calls this door.
 That ordering is fenced from the BFF side
-(``operator_console/src/app/api/operator/purge/route.test.ts``); this door's
-own guards are the token, the typed ``confirm`` echo, and ship-dark.
+(``operator_console/src/app/api/operator/purge/route.test.ts``).
+
+## Two tokens, deliberately (repair round 1)
+
+The gateway mounts ``require_authenticated`` as an APP-LEVEL dependency, and
+this route is intentionally NOT in ``PUBLIC_ROUTES`` — so a caller must first
+clear the gateway's ordinary machine auth (``Authorization: Bearer`` with the
+internal token), and THEN present the door's own credential in
+``X-Operator-Token``. Review round 1's P0 was the first draft reading the
+operator token from ``Authorization``: the app-level gate consumed that header
+and refused every call — the door was a shipped no-op, green only against a
+bare test app. The fix is NOT an auth exemption: the internal token alone must
+never suffice (its unprovisioned-box fallback is ``LITELLM_MASTER_KEY`` — a
+credential agents hold cannot double as an org-destroy credential), and the
+operator token alone must not bypass the gateway's ordinary gate either. Both,
+always. ``test_operator_door.py`` runs against the REAL ``gateway.main.app``
+for exactly this reason.
 
 Ship-dark: with ``GATEWAY_OPERATOR_TOKEN`` unset the door answers **503** on
-every call — same posture as the Console's own auth ("not configured" is a
-server state, not a caller error), and the state every box is in until the
-owner writes the env.
+every call that cleared the app-level gate — same posture as the Console's own
+auth ("not configured" is a server state, not a caller error), and the state
+every box is in until the owner writes the env. Deploy-side, ``/internal/*``
+is additionally blocked at Caddy so the door is loopback-only.
 """
 from __future__ import annotations
 
@@ -28,8 +44,8 @@ _log = get_logger("gateway.routes.operator")
 router = APIRouter(prefix="/internal/operator", tags=["operator"])
 
 
-def _require_operator_token(authorization: str | None) -> None:
-    """Constant-time bearer check against ``GATEWAY_OPERATOR_TOKEN``.
+def _require_operator_token(presented: str | None) -> None:
+    """Constant-time check of ``X-Operator-Token`` against the env.
 
     Reads the env per-request (not module-load) so tests and env reloads see
     the current value — and because a cached secret is a rotation hazard.
@@ -40,9 +56,7 @@ def _require_operator_token(authorization: str | None) -> None:
             status_code=503,
             detail="GATEWAY_OPERATOR_TOKEN is not configured",
         )
-    presented = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        presented = authorization[7:].strip()
+    presented = (presented or "").strip()
     if not presented or not secrets.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="operator token refused")
 
@@ -51,16 +65,20 @@ def _require_operator_token(authorization: str | None) -> None:
 async def purge_organization(
     slug: str,
     confirm: str,
-    authorization: Annotated[str | None, Header()] = None,
+    x_operator_token: Annotated[
+        str | None, Header(alias="X-Operator-Token")
+    ] = None,
 ) -> dict[str, Any]:
     """Destroy every tenant-plane row the organization owns.
 
     ``confirm`` must echo the slug — the typed-confirmation contract the
     operator UI enforces, repeated here so a mis-wired caller cannot purge by
     accident. Idempotent: an already-absent org answers 200 with
-    ``already_absent: true`` (the retry arm for a half-failed two-plane purge).
+    ``already_absent: true`` (the retry arm for a half-failed two-plane purge;
+    the BFF surfaces that answer to the operator rather than treating it as
+    success — the wrong-box case must reach a human).
     """
-    _require_operator_token(authorization)
+    _require_operator_token(x_operator_token)
     if confirm != slug:
         raise HTTPException(
             status_code=400,

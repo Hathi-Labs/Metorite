@@ -687,7 +687,7 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "second engine.",
     ),
     "packages/acb_auth/acb_auth/access.py": (
-        10,
+        11,
         "reviewed access-resolution sites: `mirror_identity_membership` / "
         "`mirror_membership_status` / `purge_identity_shadow` (write only the "
         "RLS-EXEMPT shadow tables user_identity/org_membership — unbound by "
@@ -703,7 +703,19 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "`resolve_session_access` (reads via `tenant_session()` when a tenant is "
         "bound, raw+fail-closed otherwise) and `ensure_owner_bootstrap` "
         "(EXEMPT-`organization` probe, then `tenant_session(default_org)` for "
-        "the has-owner read + bootstrap INSERT).",
+        "the has-owner read + bootstrap INSERT). Raised 10→11 for WS-30 "
+        "D50.3's `promote_invited_member` (reads the EXEMPT `org_membership` "
+        "shadow to find `invited` rows — unbound by design; its WRITES go "
+        "through `tenant_session`); the entry was stale for a day because "
+        "this fence was red on the drift, which is exactly the state it "
+        "exists to prevent — measured by WS-36's verifier.",
+    ),
+    "packages/acb_auth/acb_auth/offboard.py": (
+        1,
+        "CP-2g's tenant-discovery read: `purge_tenant_organization` resolves "
+        "slug→org_id against the RLS-EXEMPT `organization` table — unbound by "
+        "design, the `resolve_identity` argument (it resolves WHICH tenant). "
+        "The destructive DELETE itself is bound via `tenant_session()`.",
     ),
     "packages/acb_auth/acb_auth/console_resolve.py": (
         5,

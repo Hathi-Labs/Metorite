@@ -107,6 +107,34 @@ describe("the order", () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("run this action again");
   });
+
+  // Review round 1, P1: `already_absent` is ambiguous between "retry after a
+  // half-failed pair" and "this console is pointed at the wrong box" — and
+  // finishing the registry half in the second case destroys the only record
+  // of where the data lives. The server refuses until a human decides.
+  it("an absent tenant plane STOPS before the registry, until accepted", async () => {
+    purgeTenantOrg.mockResolvedValue({
+      status: 200,
+      body: JSON.stringify({ already_absent: true, deleted: {} }),
+    });
+    const res = await POST(req({ org_slug: "acme", confirm: "acme" }));
+    expect(res.status).toBe(409);
+    expect(calls).toEqual(["list", "tenant"]);
+    const body = (await res.json()) as { needs_accept_absent?: boolean };
+    expect(body.needs_accept_absent).toBe(true);
+  });
+
+  it("accept_absent finishes the registry half of a confirmed retry", async () => {
+    purgeTenantOrg.mockResolvedValue({
+      status: 200,
+      body: JSON.stringify({ already_absent: true, deleted: {} }),
+    });
+    const res = await POST(
+      req({ org_slug: "acme", confirm: "acme", accept_absent: true }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(["list", "tenant", "registry"]);
+  });
 });
 
 describe("the confirmation protocol", () => {

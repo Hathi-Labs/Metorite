@@ -80,7 +80,9 @@ export default function Actions({
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
       </div>
-      {status === "deleted" && <DangerPanel slug={slug} />}
+      {status === "deleted" && !/-purged-[0-9a-f]{6}$/.test(slug) && (
+        <DangerPanel slug={slug} />
+      )}
     </>
   );
 }
@@ -489,38 +491,91 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
  *
  * Rendered ONLY in the `deleted` state, which the lifecycle graph makes
  * reachable only through `cancelled` (the export window) — so by the time
- * this panel exists, the doctrine's steps have all been walked. The typed
- * slug is carried to the server as `confirm` and re-checked at every layer
- * (BFF, gateway door, Console door): the confirmation is a protocol, not a
- * UI nicety.
+ * this panel exists, the doctrine's steps have all been walked — and NEVER
+ * for a tombstone row (a purged org stays listed at `status=deleted`; the
+ * Console door also refuses tombstones server-side). The typed slug is
+ * carried to the server as `confirm` and re-checked at every layer (BFF,
+ * gateway door, Console door): the confirmation is a protocol, not a UI
+ * nicety.
+ *
+ * The receipt is RENDERED, not collapsed to "✓ Done" — the deleted/scrubbed/
+ * kept counts are the operator's only record of what happened, and the two
+ * silent-no-op failure modes review round 1 found (wrong box, case-mismatched
+ * slug) are visible only in that receipt.
  */
 function DangerPanel({ slug }: { slug: string }) {
   const [typed, setTyped] = useState("");
   const [result, setResult] = useState<Result>(null);
+  const [receipt, setReceipt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  async function run(acceptAbsent: boolean) {
+    setBusy(true);
+    const r = await post("/api/operator/purge", {
+      org_slug: slug,
+      confirm: typed,
+      ...(acceptAbsent ? { accept_absent: true } : {}),
+    });
+    setBusy(false);
+    if (r?.ok) {
+      setResult(null);
+      try {
+        setReceipt(JSON.stringify(JSON.parse(r.text), null, 2));
+      } catch {
+        setReceipt(r.text);
+      }
+      return;
+    }
+    // The wrong-box / already-purged fork: the server refuses to finish the
+    // registry half until a human decides which case this is.
+    if (!acceptAbsent && r && r.text.includes('"needs_accept_absent"')) {
+      if (
+        window.confirm(
+          `The tenant plane reports NO organization "${slug}".\n\n` +
+            `If a previous purge already destroyed it, OK finishes the ` +
+            `registry half.\n\nIf you are not CERTAIN of that, Cancel and ` +
+            `check which deployment this organization lives on first — ` +
+            `continuing would erase the record of where its data is.`,
+        )
+      ) {
+        await run(true);
+        return;
+      }
+    }
+    setResult(r);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (typed !== slug) return;
     if (
       !window.confirm(
-        `Purge ${slug} permanently?\n\nThis destroys ALL of this customer's ` +
-          `data in the product (projects, tasks, chat, CRM — everything) and ` +
-          `strips their people from the registry. The financial record is ` +
-          `kept. There is NO undo and NO backup restore for this.`,
+        `Purge ${slug} permanently?\n\nThis destroys the customer's ` +
+          `organization data: memberships and people, projects and tasks, ` +
+          `roles, settings and integrations — and strips their people from ` +
+          `the registry. Billing history is kept. There is NO undo and NO ` +
+          `backup restore for this.\n\nNot yet covered (apps that predate ` +
+          `per-organization scoping): chat, email, WhatsApp, meetings, GTD ` +
+          `and CRM data.`,
       )
     ) {
       return;
     }
-    setBusy(true);
-    const r = await post("/api/operator/purge", {
-      org_slug: slug,
-      confirm: typed,
-    });
-    setResult(r);
-    setBusy(false);
-    // Deliberately NOT reload(): the receipt on screen is the only record the
-    // operator will see — the org vanishes from the list once this succeeds.
+    await run(false);
+  }
+
+  if (receipt !== null) {
+    return (
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Purged</h2>
+        <p className="muted">
+          Keep this receipt — it is the record of what was destroyed, what was
+          scrubbed and what the books kept. <strong>{slug}</strong> is free
+          for reuse.
+        </p>
+        <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{receipt}</pre>
+      </div>
+    );
   }
 
   return (
@@ -528,7 +583,7 @@ function DangerPanel({ slug }: { slug: string }) {
       <h2 style={{ marginTop: 0 }}>Purge data permanently</h2>
       <p className="muted">
         The export window is over and sign-in is refused. This last step
-        destroys the customer&apos;s data on every plane and frees{" "}
+        destroys the customer&apos;s organization data and frees{" "}
         <strong>{slug}</strong> for reuse. Billing history is kept.
       </p>
       <label>Type the organization slug to arm the button</label>

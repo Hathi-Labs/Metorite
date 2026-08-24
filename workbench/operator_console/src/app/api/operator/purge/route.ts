@@ -31,6 +31,7 @@ export async function POST(request: Request): Promise<Response> {
   const body = (await readJsonBody(request)) as {
     org_slug?: string;
     confirm?: string;
+    accept_absent?: boolean;
   };
   const slug = (body.org_slug ?? "").trim();
   const confirm = (body.confirm ?? "").trim();
@@ -72,6 +73,26 @@ export async function POST(request: Request): Promise<Response> {
           `the tenant purge answered ${tenant.status} — nothing was ` +
           `destroyed on the registry; fix the cause and run this again`,
         tenant: tenant.body,
+      });
+    }
+    // `already_absent` is NOT unconditional success (review round 1, P1):
+    // it is either the legitimate retry after a half-failed pair, or "this
+    // console is pointed at a box that never held the org" — and finishing
+    // the registry half in the second case would destroy the only record of
+    // where the data actually lives. A human decides which it is: the UI
+    // re-posts with accept_absent after its own explicit confirm.
+    const tenantReceipt = JSON.parse(tenant.body) as {
+      already_absent?: boolean;
+    };
+    if (tenantReceipt.already_absent && !body.accept_absent) {
+      return json(409, {
+        error:
+          `the tenant plane reports NO organization "${slug}" — either a ` +
+          `previous purge already destroyed it (finish by confirming), or ` +
+          `this console is pointed at the wrong deployment (STOP and check ` +
+          `org_placement before the registry record is lost)`,
+        needs_accept_absent: true,
+        tenant: tenantReceipt,
       });
     }
 

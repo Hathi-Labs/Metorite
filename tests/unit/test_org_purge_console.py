@@ -16,6 +16,7 @@ Run:
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -24,7 +25,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from customer_console.main import _ORG_PURGE_DELETES, app
+from customer_console.main import (
+    _AUDIT_EMAIL_KEYS,
+    _ORG_PURGE_DELETES,
+    _ORG_PURGE_KEEPS_TABLES,
+    app,
+)
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
@@ -198,3 +204,102 @@ class TestThePurge:
         _walk_to_deleted(client, org["slug"])
         assert _purge(client, org["slug"]).status_code == 200
         assert _purge(client, org["slug"]).status_code == 404
+
+    def test_a_tombstone_is_refused_not_re_purged(self, client):
+        """Review round 1: tombstones stay listed at `status=deleted`, so each
+        press used to append another `-purged-` suffix and mint another audit
+        row. Purging a tombstone is now a 409 that says which state this is."""
+        org = _new_org(client)
+        _walk_to_deleted(client, org["slug"])
+        r = _purge(client, org["slug"])
+        assert r.status_code == 200
+        tombstone = r.json()["tombstone"]
+        r2 = _purge(client, tombstone)
+        assert r2.status_code == 409, r2.text
+        assert "already purged" in r2.json()["detail"]
+
+    def test_the_kept_books_lose_their_email_addresses(self, client, db):
+        """Review round 1, P1: `usage_event.user_email` and the email keys in
+        `control_audit.detail` survived the first draft while the module
+        comment claimed emails were deleted. The rows stay (the books), the
+        addresses go."""
+        org = _new_org(client)
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO usage_event "
+                     "(organization_id, request_id, user_email) "
+                     "VALUES (:i, :r, :e)"),
+                {"i": org["id"], "r": f"req-{uuid.uuid4().hex[:8]}",
+                 "e": org["owner"]},
+            )
+            c.execute(
+                text("INSERT INTO control_audit "
+                     "(organization_id, actor, action, detail) "
+                     "VALUES (:i, 'operator', 'member.add', "
+                     "CAST(:d AS jsonb))"),
+                {"i": org["id"],
+                 "d": json.dumps({"email": org["owner"], "role": "member"})},
+            )
+        _walk_to_deleted(client, org["slug"])
+        r = _purge(client, org["slug"])
+        assert r.status_code == 200, r.text
+        assert r.json()["scrubbed"]["usage_event.user_email"] >= 1
+        assert r.json()["scrubbed"]["control_audit.detail"] >= 1
+        with db.begin() as c:
+            emails = c.execute(
+                text("SELECT count(*) FROM usage_event "
+                     "WHERE organization_id = :i AND user_email IS NOT NULL"),
+                {"i": org["id"]},
+            ).scalar_one()
+            assert emails == 0
+            # The usage row itself survives — scrubbed, not deleted.
+            rows = c.execute(
+                text("SELECT count(*) FROM usage_event "
+                     "WHERE organization_id = :i"),
+                {"i": org["id"]},
+            ).scalar_one()
+            assert rows == 1
+            leaking = c.execute(
+                text("SELECT count(*) FROM control_audit "
+                     "WHERE organization_id = :i AND detail ?| :keys"),
+                {"i": org["id"], "keys": list(_AUDIT_EMAIL_KEYS)},
+            ).scalar_one()
+            assert leaking == 0
+            # The audit rows themselves survive — the trail is the point.
+            trail = c.execute(
+                text("SELECT count(*) FROM control_audit "
+                     "WHERE organization_id = :i"),
+                {"i": org["id"]},
+            ).scalar_one()
+            assert trail >= 2  # the seeded row + org.purge at least
+
+
+class TestTheClassificationCannotGoStale:
+    def test_every_org_scoped_console_table_is_deleted_or_kept_by_name(
+        self, db
+    ):
+        """The tenant half's `TestTheExclusionCannotGoStale`, applied here
+        (review round 1, P2: `discount_code`/`discount_redemption`/
+        `provisioning_run` were in NEITHER list, and the receipt-vs-DELETES
+        assertion was tautological). A new org-scoped table must be placed —
+        deleted or kept, by name — or this goes red."""
+        with db.begin() as c:
+            org_scoped = {
+                r[0]
+                for r in c.execute(text(
+                    "SELECT table_name FROM information_schema.columns "
+                    "WHERE column_name = 'organization_id' "
+                    "  AND table_schema = 'public'"
+                ))
+            }
+        # The subject row itself: `organization` is keyed by `id`, not by an
+        # `organization_id` column, but it is emphatically part of the
+        # classification (kept, as the tombstone).
+        org_scoped.add("organization")
+        deletes, keeps = set(_ORG_PURGE_DELETES), set(_ORG_PURGE_KEEPS_TABLES)
+        assert deletes.isdisjoint(keeps), deletes & keeps
+        assert deletes | keeps == org_scoped, (
+            f"unclassified: {sorted(org_scoped - deletes - keeps)} · "
+            f"phantom: {sorted((deletes | keeps) - org_scoped)} — place every "
+            "org-scoped table in _ORG_PURGE_DELETES or _ORG_PURGE_KEEPS_TABLES"
+        )
