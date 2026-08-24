@@ -43,7 +43,11 @@ and done-when 8a, `/signup` with no session redirects to `/signin`; **repair rou
 1 the same day** — the reserved set extended additively to 21 labels, 8a re-worded
 to name `currentIdentity()` and its defence-in-depth motivation**) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
-owner-gated) · CP-6
+owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write door
+— `POST /registry/members` on the `member_admin` capability, plus D50.3's
+`invited→active` promotion in the deployment resolve arm; **no migration**, the
+`001` CHECK already carries `invited`. Dark by construction: no live key holds
+the capability. Grant/deploy/live-write owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -4669,7 +4673,14 @@ against fixtures, both flag positions fenced, is AGENT-SAFE.
 the marketing page (WS-33) · payment at signup — a self-serve org starts on
 CP-2a's trial; seats/credits purchases are in-app afterwards (WS-30 SC-4a,
 owner's point 3) · the multi-org chooser · certified deletion (CP-2a's open
-half) · invite emails (`members.py:149` — its own small ticket) · per-tenant
+half) · ~~invite emails (`members.py:149` — its own small ticket)~~ **STRUCK
+2026-08-24 — it was never a small ticket.** The audit that tried to dispatch it
+found the load-bearing half is not an email at all: **the Console has no
+member-add door**, so an invited colleague never reaches the registry and — with
+resolve ARMED, as it now is — resolves `console-empty` and is funnelled into
+creating **their own** organization instead of joining their employer's. The door
+is **CP-2f** (below); the mail is `subscription_console.md` **SC-2c**; the
+decision is **D50**. · per-tenant
 subdomains (MT-1f).
 
 **Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
@@ -5072,6 +5083,238 @@ does NOT re-enter the signup route's two-plane orchestration or re-touch the
 tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
 never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
 function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
+
+**CP-2f · The Console member-write door — the ONLY way a colleague who was
+INVITED (rather than a founder who signed up) reaches the registry.** ◐
+**MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D50**; the
+customer-facing surface + the notification mail are `subscription_console.md`
+**SC-2c**)*. **Number:** the auditor proposed "CP-2e" and CP-2e was already
+taken by the signup Console-mirror reconciler; **CP-2f is the next free number**,
+checked by listing every `CP-*` in this file at build time (R1's habit applied to
+ticket ids).
+
+**The gap, measured rather than assumed.** `POST /orgs/provision` writes the
+**founder's** `org_membership` row (`main.py`, the `INSERT … 'owner','active'`
+inside `provision`) and it is the **only** membership writer in this service.
+Nothing else in the tree adds a member to a Console organization. So today, when
+an admin invites a colleague through the tenant plane's `POST /admin/members`:
+
+1. the colleague is **invisible to `GET /me/members`** (item (i)'s roster reads
+   `store.org_members`, which reads `org_membership`), so the SC-2b manage-seats
+   grid cannot show them;
+2. **a seat cannot be assigned to them** — `_seat_admin_target` deliberately
+   *never mints* and 404s `"no such member in this organization"` for any address
+   without a membership row (item (h) clause 4);
+3. and — the load-bearing one — **with resolve ARMED their sign-in resolves
+   `console-empty`**: `store.deployment_visible_orgs` joins `org_membership`, so
+   zero rows come back, `_resolve_for_deployment` returns `{"organizations": []}`,
+   `resolve_for_signin` returns outcome iv with `signup_eligible=True`, and CP-2c
+   slice 3's limbo branch funnels the person into **creating their own
+   organization** rather than joining their employer's. An invite, correctly
+   performed, produces a second tenant.
+
+**What lands (the door).** `POST /registry/members`, the **exact sibling of item
+(h)'s `POST /registry/seats`** — the same `deployment_or_operator` factory, the
+same two-arm shape, the same "the credential chooses the scheme" rule. Not a
+second dispatcher, not a new auth scheme.
+
+- **Capability: a FOURTH one, `member_admin`**, beside `resolve`, `provision` and
+  `seat_admin`. **Not** a reuse of `seat_admin`: which capability a door demands
+  is written at the door, and folding "may create memberships" into "may move
+  seats" would silently widen a credential that has already been argued for on a
+  narrower basis. Like its two predecessors: **no migration carries the string**
+  (`deployment_key.capabilities` is `TEXT[]` with no `CHECK`,
+  `006_deployment_key.sql:56`), **no HTTP route issues or edits a key's set**, and
+  the enforcement is entirely `deployment_or_operator`. **The door therefore ships
+  DARK BY CONSTRUCTION** — no live key carries it until the owner adds it by hand
+  (§8 gate 8's capability-growth class).
+- **The org is DERIVED, never named (R11).** The deployment arm refuses an
+  `org_slug` with a **400, never ignored**, and resolves `(org, actor)` from
+  `store.deployment_visible_orgs(deployment_id, actor_email)` — placement ∩
+  membership — exactly as `_seat_admin_for_deployment` does. Zero admissible orgs
+  ⇒ one **403**, byte-identical whether the actor is unknown, a member only on
+  another deployment, or a member of a `deleted` org (CP-2b clause 5's
+  no-cross-org-oracle rule). More than one ⇒ **409**, because the chooser is a
+  named non-goal. The operator arm NAMES the org, as `POST /billing/seats` does.
+- **The derivation is EXTRACTED, not copied.** `_seat_admin_for_deployment` is
+  split into `_admin_scheme_context` (the R11 derivation: the `org_slug`
+  400, the `actor_email` 400, the 403 and the 409) and a **per-door registry
+  gate** applied by each caller. One derivation seam, two door policies stated at
+  their doors — the idiom this file already applies to capabilities.
+- **The invite door's registry gate is `status = 'active'`, ANY role**, and this
+  is a *narrower* claim than item (h)'s `owner|admin`, taken deliberately and for
+  a measured reason: **a Console-side `owner|admin` gate would silently re-open
+  the exact funnel this ticket closes.** The tenant plane's second admin is a
+  Console `member` (the registry role is billing vocabulary, D12, and nothing
+  maps tenant roles onto it), so an `owner|admin` gate would 403 their invites —
+  best-effort, so nothing surfaces — and every colleague *they* invite would
+  resolve `console-empty` into their own new org. The authorising gate for "may
+  this person add members" is the tenant plane's `admin:members:invite`; the
+  Console's contribution is placement ∩ membership plus *"the actor is really an
+  active member of the org they are adding to"*. A `suspended`, `removed` or
+  merely `invited` actor is refused.
+- **The write:** `store.ensure_identity` (the same global-identity upsert
+  provision and resolve use — `email` is `CITEXT`, so case is not a second human)
+  then a **create-only** `INSERT INTO org_membership … ON CONFLICT DO NOTHING`
+  with `status='invited'`. **`role` is left at the column default `member`** and
+  the endpoint takes no `role` field at all: mapping the tenant's `org_role`
+  slugs onto the registry's `{owner,admin,member}` would be the second grant
+  vocabulary D12 forbids by name, and accepting a role here would let a customer
+  admin mint registry admins through an invite. **A conflict changes NOTHING** —
+  an `active` member is not demoted to `invited` and a `removed` one is not
+  silently resurrected; the response reports `created` and the CURRENT `status`
+  so the caller can tell the two apart. *(Residual, named: re-inviting a
+  `removed` colleague leaves the Console row `removed`. They still resolve —
+  `deployment_visible_orgs` does not consult `status` — and they are still
+  seat-assignable, so the word is stale rather than load-bearing. A status-write
+  door is a separate ticket.)*
+- **No seat is burned here.** The membership row is not a seat: **Core-seat burn
+  stays at first resolve** (D19.3 / D32.5, `_allocate_core_seat`), unchanged. What
+  the row buys is that the seats grid can SEE the person and a *paid* seat can be
+  assigned to them before they have ever signed in (D50.2).
+
+**What lands (the promotion, D50.3).** In `_resolve_for_deployment`'s
+**single-admissible-org** branch, beside `_allocate_core_seat`, a Console
+membership whose status is exactly `invited` is promoted to `active` with
+`joined_at = COALESCE(joined_at, now())`. **The guard is structural**: it is the
+`AND status = 'invited'` in the UPDATE's own `WHERE`, so `suspended`, `removed`
+and `active` are untouched by construction rather than by an `if` a later edit
+can widen. **Only the deployment arm** — the operator arm is a staff query about
+a named customer, and a staff read must not activate anybody. **Only the
+single-org branch** — the multi-org branch deliberately allocates nothing (clause
+9) and its resolve REFUSES upstream (`WorkspaceChooserRequired`), so promoting
+there would activate a membership for a sign-in that never completed.
+
+**The TENANT half of D50.3 (review-round-1 repair, 2026-08-24).** The registry
+promotion alone left the colleague dead-ended at the tenant AccessGate ("Your
+account is not active"): flag-OFF access reads `app_user.status == "active"` and
+flag-ON's identity leg filters `m.status = 'active'` — both fail closed on
+`invited`. `acb_auth.access.promote_invited_member` closes it: called from
+exactly ONE site (the gateway's `POST /signin/resolve`, only after
+`decision.admit` — the same farmable-surface rule that keeps the resolve itself
+off the per-request path), it reads the RLS-EXEMPT identity shadow for this
+address's `invited` memberships and, per org, promotes `app_user.status` inside
+`tenant_session(org)` (the ONE GUC seam — `app_user` is RLS-forced in
+production) and forwards the shadow via the existing `mirror_membership_status`.
+Both UPDATEs carry `AND status = 'invited'` in their own `WHERE`; best-effort —
+a failed promotion never changes the resolve answer and fails CLOSED. Fence:
+`tests/unit/test_invited_member_promotion.py` (R8; guard shown red with
+parametrised `suspended`/`removed`/`active` rows, idempotence, both-tables
+promotion, never-raises) plus structural pins (the write inside the GUC seam;
+the call under `decision.admit`).
+
+**Seat cost, stated honestly (review finding 4).** An invited colleague's first
+admitted sign-in burns a Core seat — and with the tenant half above, that seat
+now funds a WORKING member (pre-repair it funded a dead end, unnamed). At the
+cap the resolve 409s and the shared transaction ROLLS THE PROMOTION BACK — the
+colleague stays `invited` and no seat burns; fenced by
+`::TestTheCapRollsThePromotionBack` (which also pins the corrected comment
+beside the promotion).
+
+**The BACKLOG, named (folded from the parallel PR #74 mint, which measured it in
+production).** This door fixes invites from NOW ON. Memberships created BEFORE
+it existed are still Console-invisible — measured live 2026-08-23 on the
+`hathilabs` org: **2 tenant members, 1 Console seat, zero `/seats/assign` calls
+in 24h of gateway logs** — i.e. the seat cap binds only people the Console
+knows, and an org that bought N seats can exceed them with pre-CP-2f members.
+**CP-2f slice 2 (unbuilt): the backlog sweep** — a reconcile in the CP-2e
+reconciler's shape that walks tenant memberships absent from the Console and
+mirrors them `invited`/`active` as their `app_user.status` says, idempotent,
+operator-triggered. Until it runs, pre-existing members resolve (the gateway
+admits from the tenant plane) but hold no registry membership and no seat.
+
+**NO MIGRATION.** `001_customer_console.sql:121-131` already declares
+`org_membership.status TEXT NOT NULL DEFAULT 'active' CHECK (status IN
+('invited','active','suspended','removed'))` and `role … DEFAULT 'member'`. R1 is
+satisfied by not taking a number at all. (The Console ladder did advance to
+008 the same day — D49's flat-plan repricing, a value change owned by
+`launch_surface.md` — but that number belongs to that decision, not this door.)
+
+**The gateway side.** `gateway/routes/admin/members.py::invite_member` calls the
+ONE Console client (`acb_auth.console_resolve.invite_member_on_console`)
+**POST-COMMIT**, best-effort, in its own session, exactly as the H6 shadow mirror
+two lines above it does — the authoritative `app_user` write stays
+byte-identical, and a Console outage can never fail an invite that already
+committed. It is the **FOURTH** importer of `console_resolve`, and
+`test_console_dependency_boundary.py`'s allow-list grows **three → four**; that
+fence firing is the design working. The argument for the fourth entry, written
+down as the fence demands: `invite_member_on_console` **allocates no seat** (it
+never touches `resolve_for_signin`), the route is **session-email-only** (the
+acting admin is `require_admin_user`'s authenticated identity, never the body),
+and the org is derived Console-side. What stays forbidden is wiring any of these
+functions behind `resolve_access` — six callers, one of them a fan-out over a
+room's participants — which is farmable seat burn.
+
+**Done-when (each names its R7 fence; all in
+`tests/unit/test_customer_console_member_write.py`, R8 against a real Postgres,
+plus the two structural fences named inline).**
+
+1. **The door exists, on the deployment-key scheme, behind `member_admin`.** A
+   key holding only `{resolve}` — the column default — gets **403** and a logged
+   `deployment_key.capability_refused`; a key holding `{member_admin}` gets in.
+   Fence: `::TestTheCapabilityGate`. Red-first by widening the mint's capability
+   set / by pointing the door at `SEAT_ADMIN_CAPABILITY`.
+2. **The org is never named and never inferred (R11).** A deployment key that
+   sends `org_slug` is **400 on shape**, before the value is read. Zero admissible
+   orgs is one 403 whose body is byte-identical for *unknown actor* / *member
+   elsewhere* / *deleted org*; two admissible orgs is 409. Fence:
+   `::TestTheOrgIsDerived`, including the byte-identical assertion across the
+   three negatives.
+3. **A member is written `invited`, is visible to `GET /me/members`, and is
+   seat-assignable.** After one call, `store.org_members` returns the address with
+   `status='invited'` and `role='member'`, and `POST /registry/seats` for that
+   address **succeeds** where it previously 404'd. Fence:
+   `::TestTheInvitedMemberIsVisibleAndSeatable` — the end-to-end proof that the
+   three consequences above are closed. Red-first by deleting the INSERT.
+4. **No seat is burned by the invite.** `seat_counts.assigned` is unchanged
+   across the call; the Core seat still appears only after a resolve. Fence:
+   `::TestTheInviteBurnsNoSeat`.
+5. **A conflict changes nothing.** Re-inviting an `active` member leaves them
+   `active` (`created: false`); re-inviting a `removed` one leaves them `removed`.
+   Fence: `::TestTheWriteIsCreateOnly`. Red-first by turning the `DO NOTHING` into
+   a `DO UPDATE SET status = 'invited'`, which then demotes an active member.
+6. **The actor gate.** An actor whose membership is `suspended` / `removed` /
+   `invited` is refused 403; an `active` `member` (not just an admin) succeeds,
+   and the reason is written down. Fence: `::TestTheActorMustBeAnActiveMember`.
+7. **D50.3 — first resolve promotes `invited` and NOTHING else.** A resolve for
+   an `invited` member returns their org (never `{"organizations": []}`) and
+   leaves them `active` with `joined_at` stamped; a `suspended` member's status is
+   untouched by a resolve and every shipped suspended-refusal test stays green; a
+   `removed` member stays `removed`; an `active` member's `joined_at` is not
+   re-stamped. Fence: `::TestFirstResolveActivatesTheInvited` +
+   `::TestThePromotionIsGuardedToInvited`. Red-first by dropping the
+   `AND status = 'invited'` from the UPDATE, which then reactivates a removed
+   member on their next sign-in — the whole reason the guard is in the `WHERE`.
+8. **Structural: the gateway calls it POST-COMMIT and stays the fourth
+   importer.** `tests/unit/test_console_dependency_boundary.py` — the allow-list
+   at four, red on a fifth — and `tests/unit/test_invite_console_mirror.py`'s AST
+   fence that the call sits **outside** `invite_member`'s `_tenant_session` block,
+   plus behavioural tests that an unwired box is a silent no-op and that a Console
+   failure never changes the invite's answer.
+9. **The suite is named in CI.** `pr-check.yml`'s R8 skip-guard hand-list gains
+   this file **in the PR that creates it** (the hand-list went 8 → 9), and
+   `::test_this_suite_is_named_in_the_ci_skip_guard` reads the workflow and §7 of
+   this file and fails if either entry is ever dropped — the closest a hand-list
+   gets to defending itself (CP-9 clause 11's precedent).
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** the endpoint, the capability constant, the
+derivation split, the store helpers, the promotion, the gateway post-commit call
+and every fence, against scratch Postgres, dark. 🔴 **OWNER-GATE — refuse by
+name:** granting `member_admin` to a REAL deployment key (§8 gate 8's
+capability-growth class; its bare issuance is gate 7) · deploying the Customer
+Console anywhere (§8 gate 2, D47) · **inviting a real member into a live
+organization** — it writes that org's membership on two planes, §8 gate 4's class
+(registered in `work_plan.md` §6). **No new gate number is minted.**
+
+**Non-goals.** Does NOT send mail (that is `subscription_console.md` SC-2c, and
+it is a *notification*, D50.1 — no token, ever) · does NOT change the tenant
+plane's `app_user` write, which stays byte-identical · does NOT activate the
+tenant plane's `app_user.status` — `colleague_onboarding.md` §2 Step 1b is
+unchanged and remains N6b's open half, named rather than quietly claimed · does
+NOT accept or map a `role` · does NOT alter seat accounting, `_allocate_core_seat`
+or D19.3 · does NOT filter `deployment_visible_orgs` on `status` (the recorded
+finding at `store.py:720-726` is untouched) · does NOT add a chooser · does NOT
+mint a migration.
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23
@@ -5636,7 +5879,7 @@ name. Neither slice flips a flag or deploys. *(Slice 1's anti-scope — "does NO
 add a database adapter, does NOT build the code-entry page" — is retired: those
 are exactly what slice 2 built, clauses 6–16.)*
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → **CP-2f** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6
 shipped before it, and it must land before the first Router caller, because
 every agent runtime streams. CP-4 is
@@ -6325,7 +6568,18 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
               tests/unit/test_customer_console_resolve.py \
               tests/unit/test_customer_console_payments.py \
-              tests/unit/test_customer_console_operator_list.py
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py
+# ⚠️ The `_member_write.py` line is CP-2f's suite (the Console member-add door
+# `POST /registry/members` and D50.3's `invited -> active` promotion), added
+# 2026-08-24 IN THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry
+# (the hand-list went 8 -> 9). It proves the `member_admin` capability gate, the
+# R11 derivation (no `org_slug`, one byte-identical 403 across the three
+# negatives), that an invited member becomes visible to `GET /me/members` AND
+# seat-assignable where `_seat_admin_target` previously 404'd, that the invite
+# burns no Core seat, that the write is create-only, and that the promotion is
+# guarded to `invited` alone. It reads this file and the workflow and fails if
+# its own name is dropped from either.
 # ⚠️ The `_payments.py` line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR
 # THAT CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
 # hand-list went 6 -> 7). It needs no Razorpay account: the seam runs against

@@ -122,3 +122,44 @@ describe("the message survives a missing display name", () => {
     expect(describeOutcome(out, "   ")).toMatch(/^The member/);
   });
 });
+
+describe("the notification email channel (SC-2c, D50 — review r1 finding F2)", () => {
+  it("says NOTHING when the deployment does not send invite mail", () => {
+    // The shipped default. "No email went out" on a box that never sends would
+    // read as a failure on every single invite — the F2 defect, verbatim.
+    const out = afterInvite({ kind: "ok" });
+    expect(out.kind === "invite-failed" ? "" : out.email).toBe("disabled");
+    expect(describeOutcome(out, "Priya")).not.toMatch(/email/i);
+    expect(shouldStayOpen(out)).toBe(false);
+  });
+
+  it("mentions the mail is on its way when it went out, and still closes", () => {
+    const out = afterInvite({ kind: "ok" }, "sent");
+    expect(describeOutcome(out, "Priya")).toMatch(/notification email is on its way/);
+    // A clean invite with a clean send needs no decision from the admin.
+    expect(shouldStayOpen(out)).toBe(false);
+  });
+
+  it("keeps the dialog OPEN on an armed-but-failed send, with the next action", () => {
+    // The one email state the admin must act on: the deployment DOES send
+    // invite mail and this one did not go out, so nobody will tell the
+    // colleague unless the admin does.
+    const out = afterInvite(null, "failed");
+    const said = describeOutcome(out, "Priya");
+    expect(said).toMatch(/^Priya is now a member/); // member-first, always
+    expect(said).toMatch(/did NOT go out/);
+    expect(said).toMatch(/tell them to sign in/);
+    expect(shouldStayOpen(out)).toBe(true);
+  });
+
+  it("appends the email clause AFTER the seat story on every path", () => {
+    const capped = afterInvite(
+      { kind: "cap", buyMore: { plan_slug: "core", purchased: 3, assigned: 3, additional_seats_required: 1, price_inr: "500" } },
+      "sent",
+    );
+    const said = describeOutcome(capped, "Priya");
+    expect(said.indexOf("now a member")).toBeLessThan(said.indexOf("on its way"));
+    // The seat refusal still keeps it open regardless of the mail's success.
+    expect(shouldStayOpen(capped)).toBe(true);
+  });
+});

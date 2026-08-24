@@ -64,6 +64,7 @@ from customer_console.auth import (
     DeploymentCaller,
     Internal,
     KeyCaller,
+    MemberAdminCaller,
     Operator,
     PayingCaller,
     ProvisionCaller,
@@ -213,17 +214,22 @@ class SeatWriteRequest(BaseModel):
     source: str = "alacarte"
 
 
-class SeatAdminRequest(BaseModel):
-    """The customer-authenticated seat write's body (§6 item (h)).
+class AdminSchemeRequest(BaseModel):
+    """The two fields that decide WHICH SCHEME a customer-admin write is under.
 
-    **The target member and the plan are the request; the org and the actor are
-    NOT.** Under the deployment-key scheme the org and the acting admin are
-    DERIVED together from ``store.deployment_visible_orgs(deployment_id,
-    actor_email)`` — the placement∩membership join — never asserted, which is
-    R11 at the same strength ``ResolveRequest`` applies it: the caller makes no
-    tenant claim, the org is the ANSWER. ``actor_email`` is the human the box
-    just authenticated (the same trust the sign-in resolve path already
-    extends, now for a write); the box vouches for it exactly as
+    Shared by ``POST /registry/seats{,/release}`` (§6 item (h)) and
+    ``POST /registry/members`` (CP-2f) because both doors ask the identical
+    question of the body and get it answered by :func:`_admin_scheme_context`.
+    Extracted rather than copied: two models with the same two fields are two
+    places for R11 to be applied differently, which is how a derivation becomes
+    an assertion.
+
+    **The org and the actor are NOT the request.** Under the deployment-key
+    scheme they are DERIVED together from ``store.deployment_visible_orgs(
+    deployment_id, actor_email)`` — the placement∩membership join — never
+    asserted, which is R11 at the same strength ``ResolveRequest`` applies it:
+    the caller makes no tenant claim, the org is the ANSWER. ``actor_email`` is
+    the human the box just authenticated; the box vouches for it exactly as
     ``ResolveRequest.email`` is vouched for.
 
     ``org_slug`` mirrors ``ResolveRequest``'s: **absent under a deployment key,
@@ -232,19 +238,49 @@ class SeatAdminRequest(BaseModel):
     a cross-org staff act, as at ``POST /billing/seats``.
     """
 
-    #: The target — the ONLY subject the body names. Validated against a
-    #: membership in the RESOLVED org (clause 4); never ``ensure_identity``-minted,
-    #: so an arbitrary typed-in email cannot become a global identity.
-    member_email: str
-    plan_slug: str
     #: Present under the deployment-key scheme; the box vouches for the acting
     #: admin. Absent under the operator scheme, which names the org instead.
     actor_email: str | None = None
     #: Named by the OPERATOR; a deployment key naming one is 400 (R11).
     org_slug: str | None = None
+
+
+class SeatAdminRequest(AdminSchemeRequest):
+    """The customer-authenticated seat write's body (§6 item (h))."""
+
+    #: The target — the ONLY subject the body names. Validated against a
+    #: membership in the RESOLVED org (clause 4); never ``ensure_identity``-minted,
+    #: so an arbitrary typed-in email cannot become a global identity.
+    member_email: str
+    plan_slug: str
     #: The seat's billing category. Never ``core`` — membership IS the Core seat
     #: (D19.3), so ``plan_slug='core'`` is refused outright below.
     source: str = "alacarte"
+
+
+class MemberAdminRequest(AdminSchemeRequest):
+    """The customer-authenticated MEMBER write's body (CP-2f, D50.2).
+
+    ⚠️ **There is no ``role`` field, and adding one is a design change, not a
+    convenience.** The membership is written at the ``org_membership.role``
+    column default (``member``). ``role`` is registry/billing vocabulary (D12)
+    while the tenant's permission vocabulary is ``org_role``; accepting a role
+    here would either mint a mapping between the two — the second grant
+    vocabulary root ``CLAUDE.md`` §5 forbids by name — or let a customer admin
+    create registry admins through the invite door. See
+    ``store.add_invited_member``.
+
+    ⚠️ **``display_name`` is a LABEL for the global identity, never an identity
+    and never a tenant** — the same status it has on ``ResolveRequest``. Nothing
+    branches on it.
+    """
+
+    #: The person being added. Unlike ``SeatAdminRequest.member_email`` this one
+    #: IS ``ensure_identity``-minted, because this door is what makes the member
+    #: exist — that is the difference between the write door and the seat door,
+    #: and it is why they take different capabilities.
+    member_email: str
+    display_name: str | None = None
 
 
 class CreditGrantRequest(BaseModel):
@@ -1390,6 +1426,38 @@ def _resolve_for_deployment(
         seat_outcomes: dict[str, str] = {}
         if len(admissible) == 1:
             org = admissible[0]
+
+            # ── D50.3 · first sign-in activates an INVITED member ───────────
+            # CP-2f's registry half. A colleague added through CP-2f's door sits
+            # at `invited` until they actually turn up; this is the turning up.
+            # It runs before the seat allocation, and the ORDER is cosmetic
+            # rather than semantic: both writes share this one transaction, so a
+            # seat-cap 409 (`_allocate_core_seat` raising) UNWINDS the promotion
+            # with it — measured on real PG (review round 1, finding 3): a
+            # colleague refused a seat stays `invited` and no seat is burned.
+            # That is the desirable behaviour — a person who cannot yet get in
+            # keeps the state the invite gave them — and it is now fenced
+            # (`test_a_cap_409_rolls_the_promotion_back`).
+            #
+            # ⚠️ **The guard lives in the UPDATE's own WHERE**
+            # (`store.activate_invited_member`), not here. `suspended`,
+            # `removed` and already-`active` rows are untouched by construction
+            # — the natural implementation ("anything that is not active →
+            # activate") silently un-suspends people, which
+            # `colleague_onboarding.md` §6 predicted in as many words before
+            # this existed. Refusal of a suspended ORGANIZATION is unaffected:
+            # that partition happened above, on `can_sign_in`.
+            #
+            # ⚠️ **Single-admissible-org branch ONLY.** The multi-org branch
+            # below deliberately allocates nothing (clause 9) and its resolve is
+            # REFUSED upstream with `WorkspaceChooserRequired`, so activating
+            # there would mark a membership active for a sign-in that never
+            # completed. The OPERATOR arm does not do this either: a staff query
+            # about a named customer must not activate anybody.
+            store.activate_invited_member(
+                conn, org_id=org["organization_id"], identity_id=identity_id
+            )
+
             seat_outcomes[org["organization_id"]] = _allocate_core_seat(
                 conn, org_id=org["organization_id"], identity_id=identity_id,
                 # The lifecycle decides whether a seat may be WRITTEN, and it
@@ -1874,10 +1942,33 @@ def release_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
 _SELF_SERVE_SEAT_SOURCES = frozenset({"center", "plan", "alacarte"})
 
 
-def _seat_admin_context(
-    conn, req: SeatAdminRequest, caller: DeploymentCaller | None
+#: The registry roles item (h)'s SEAT door demands of the acting member. A seat
+#: costs money, so moving one is an owner/admin act in the Console's own
+#: vocabulary — a plain member is refused HERE, not only by an upstream tier
+#: (clause 3).
+_SEAT_ADMIN_ROLES: frozenset[str] = frozenset({"owner", "admin"})
+
+#: The registry roles CP-2f's MEMBER door demands: **any** of them, and this is a
+#: narrower claim than the seat door's, taken deliberately and for a measured
+#: reason. An ``owner|admin`` gate here would silently re-open the exact funnel
+#: CP-2f closes: the tenant plane's second admin is a Console ``member`` (nothing
+#: maps tenant ``org_role`` slugs onto the registry's role, D12), so an
+#: ``owner|admin`` gate would 403 THEIR invites — best-effort, so nothing
+#: surfaces — and every colleague they invited would resolve ``console-empty``
+#: into an org of their own. The authorising gate for *"may this person add
+#: members"* is the tenant plane's ``admin:members:invite``; the Console's
+#: contribution is placement∩membership plus the ``status`` check below.
+_MEMBER_ADMIN_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
+
+
+def _admin_scheme_context(
+    conn,
+    req: AdminSchemeRequest,
+    caller: DeploymentCaller | None,
+    *,
+    roles: frozenset[str],
 ) -> tuple[str, str]:
-    """Resolve ``(org_id, actor)`` for a seat write — clauses 2-3, per scheme.
+    """Resolve ``(org_id, actor)`` for a customer-admin write — clauses 2-3.
 
     One door, two schemes, and the CREDENTIAL — never the body — chooses which,
     exactly as resolve/provision do:
@@ -1887,19 +1978,28 @@ def _seat_admin_context(
       actor_email)`` — placement∩membership, never a body field (R11). It must
       resolve to EXACTLY ONE admissible org or the write refuses (the chooser is
       a named non-goal, as at resolve). The acting member's registry
-      ``role``/``status`` is then read on the RESOLVED ``(org, identity)`` and
-      must be an **active owner/admin** — the Console's own vocabulary, so a
-      plain member is refused HERE, not only by an upstream tier (clause 3).
+      ``role``/``status`` is then read on the RESOLVED ``(org, identity)``; the
+      status must be ``active`` and the role must be in *roles*.
     * **Operator** (``caller is None``): a cross-org staff act that NAMES the org,
       as ``POST /billing/seats`` does. No actor, no role gate.
+
+    ⚠️ *roles* is a **required keyword**, and that is the point of this signature:
+    the derivation is ONE seam shared by the seat door and the member door, while
+    **which roles a door demands is written at the door** — the same rule this
+    service already applies to capabilities. A default here would silently give a
+    new door whichever policy happened to be written first.
     """
     if caller is not None:
-        return _seat_admin_for_deployment(conn, req, caller)
-    return _seat_admin_for_operator(conn, req)
+        return _admin_scheme_for_deployment(conn, req, caller, roles=roles)
+    return _admin_scheme_for_operator(conn, req)
 
 
-def _seat_admin_for_deployment(
-    conn, req: SeatAdminRequest, caller: DeploymentCaller
+def _admin_scheme_for_deployment(
+    conn,
+    req: AdminSchemeRequest,
+    caller: DeploymentCaller,
+    *,
+    roles: frozenset[str],
 ) -> tuple[str, str]:
     """The deployment-key arm: derive org+actor and gate on the registry role."""
     if req.org_slug is not None:
@@ -1956,6 +2056,10 @@ def _seat_admin_for_deployment(
     # org_membership`. `org_membership.role` is registry/billing vocabulary
     # (D12), and gating a BILLING write on it is using it for its stated
     # purpose, not inventing a second grant vocabulary.
+    #
+    # ⚠️ The `status == 'active'` half is the SAME for every door and is written
+    # once, here: an actor who is themselves `invited`, `suspended` or `removed`
+    # acts for nobody. Only the ROLE set varies, and it varies at the door.
     membership = conn.execute(
         text(
             "SELECT role, status FROM org_membership "
@@ -1965,7 +2069,7 @@ def _seat_admin_for_deployment(
     ).first()
     if (
         membership is None
-        or membership[0] not in ("owner", "admin")
+        or membership[0] not in roles
         or membership[1] != "active"
     ):
         raise HTTPException(
@@ -1975,7 +2079,7 @@ def _seat_admin_for_deployment(
     return org_id, req.actor_email
 
 
-def _seat_admin_for_operator(conn, req: SeatAdminRequest) -> tuple[str, str]:
+def _admin_scheme_for_operator(conn, req: AdminSchemeRequest) -> tuple[str, str]:
     """The operator arm: a cross-org staff act that NAMES the org."""
     if req.actor_email is not None:
         # The operator has no actor — an `actor_email` under this scheme is a
@@ -2032,8 +2136,9 @@ def assign_seat_admin(
     (``seat_rows`` → ``seat_counts`` → ``decide_assignment`` →
     ``try_assign_seat``) — NOT a fork, so the counts after a write reconcile with
     ``GET /me/seats`` (the same ``seat_rows``/``seat_counts``). What differs is
-    the door: org and actor are DERIVED from the credential (``_seat_admin_
-    context``), the target is validated against membership rather than minted,
+    the door: org and actor are DERIVED from the credential
+    (``_admin_scheme_context`` with ``_SEAT_ADMIN_ROLES``), the target is
+    validated against membership rather than minted,
     and this writer takes ``lock_seat_capacity`` BEFORE the count — closing the
     race the operator twin still carries.
 
@@ -2059,7 +2164,9 @@ def assign_seat_admin(
             ),
         )
     with get_engine().begin() as conn:
-        org_id, actor = _seat_admin_context(conn, req, caller)
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
         )
@@ -2119,7 +2226,9 @@ def release_seat_admin(
             detail="the Core seat is membership itself and is not released here",
         )
     with get_engine().begin() as conn:
-        org_id, actor = _seat_admin_context(conn, req, caller)
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
         )
@@ -2131,6 +2240,87 @@ def release_seat_admin(
                 "released": released}, actor=actor)
 
     return {"released": released}
+
+
+# ── CP-2f · the member-write door ───────────────────────────────────────────
+#
+# The gap this closes, measured rather than assumed: until 2026-08-24
+# `POST /orgs/provision`'s founder INSERT was the ONLY membership writer in this
+# service. So a colleague INVITED through the tenant plane never reached the
+# registry, and three things followed — they were invisible to `GET /me/members`
+# (§6 item (i) reads `org_membership`), `_seat_admin_target` 404'd them so no seat
+# could be assigned, and, worst, `store.deployment_visible_orgs` returned nothing
+# for them, so `_resolve_for_deployment` answered `{"organizations": []}` and the
+# box's self-serve funnel offered to create them an organization OF THEIR OWN.
+# An invite, correctly performed, produced a second tenant. See CP-2f / D50.2.
+
+@app.post("/registry/members")
+def add_member_admin(
+    req: MemberAdminRequest, caller: MemberAdminCaller
+) -> dict[str, Any]:
+    """Add a member under the customer's own admin credential (CP-2f, D50.2).
+
+    The **exact sibling of** ``POST /registry/seats``: the same
+    ``deployment_or_operator`` factory, the same two-arm shape, the same
+    "the credential chooses the scheme" rule, and the SAME derivation seam
+    (:func:`_admin_scheme_context`). What differs is the capability it demands
+    (``member_admin`` — see :data:`auth.MEMBER_ADMIN_CAPABILITY` for why this is
+    not a reuse of ``seat_admin``) and the role set the door accepts
+    (:data:`_MEMBER_ADMIN_ROLES` — any ACTIVE member, and the reason is written
+    at that constant).
+
+    **The write is create-only and mints no role.** ``store.add_invited_member``
+    inserts ``status='invited'`` at the ``role`` column default and leaves an
+    existing row untouched, so a re-invite neither demotes an ``active`` member
+    nor resurrects a ``removed`` one. The response says which happened —
+    ``created`` plus the row's CURRENT ``status`` — because a silent 200 over a
+    conflict is how two planes come to disagree without anybody noticing.
+
+    **It allocates NO seat.** A membership row is not a seat: Core-seat burn stays
+    at first resolve (D19.3 / D32.5, :func:`_allocate_core_seat`). What the row
+    buys is that the seats grid can SEE the person and a paid seat can be assigned
+    to them before their first sign-in.
+
+    **Unlike the seat door, this one MINTS the identity.** ``ensure_identity`` is
+    the same global upsert ``provision`` and ``resolve`` use (``user_identity.
+    email`` is ``CITEXT``, so case is not a second human). That asymmetry with
+    ``_seat_admin_target`` — which deliberately never mints — is exactly why the
+    two doors take different capabilities: this is the door that makes a member
+    exist, and it is gated on the lifecycle's ``can_write_seats``, so a
+    ``suspended`` or ``cancelled`` organization cannot grow.
+    """
+    with get_engine().begin() as conn:
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES
+        )
+
+        # The same lifecycle question the seat write asks, and for the same
+        # reason: growing an organization is a write, and a `suspended` or
+        # `cancelled` customer's account must not grow. `deleted` never reaches
+        # here — `can_sign_in` already excluded it in the derivation above.
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).can_write_seats:
+            raise HTTPException(
+                status_code=403,
+                detail=f"organization is {state}; membership is locked",
+            )
+
+        identity_id = store.ensure_identity(
+            conn, email=req.member_email, display_name=req.display_name
+        )
+        created, status_now = store.add_invited_member(
+            conn, org_id=org_id, identity_id=identity_id
+        )
+        # Audited on BOTH paths, and the payload says which — a re-invite that
+        # changed nothing is a real event an operator may need to see beside the
+        # one that did.
+        _audit(conn, org_id, "member.add",
+               {"email": req.member_email, "created": created,
+                "status": status_now}, actor=actor)
+
+    return {"created": created, "status": status_now}
 
 
 @app.post("/credits/grant")

@@ -691,10 +691,21 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
     async def _no_mirror(**_kw: Any) -> None:
         return None
 
+    # WS-31 CP-2f joins them, with one difference worth naming:
+    # `invite_member_on_console` is an HTTP hop rather than a second session, so
+    # left un-patched it would try to reach a Customer Console from a hermetic
+    # test. It happens to be inert on an unwired box (`is_wired()` is False with
+    # the two env vars absent, and it raises before opening a socket) — but
+    # "inert because the developer's environment happens to be empty" is not a
+    # property, and a box with `CUSTOMER_CONSOLE_URL` exported would put this
+    # suite on the network. No-oped explicitly instead. Its real behaviour is
+    # proven in `tests/unit/test_invite_console_mirror.py` and, Console-side, in
+    # `tests/unit/test_customer_console_member_write.py`.
     _shadow_seams = (
         "mirror_identity_membership",
         "mirror_membership_status",
         "purge_identity_shadow",
+        "invite_member_on_console",
     )
     for module in (_common_mod, *modules):
         for seam in _shadow_seams:

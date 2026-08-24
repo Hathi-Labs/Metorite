@@ -32,6 +32,10 @@ from acb_auth.access import (
     mirror_membership_status,
     purge_identity_shadow,
 )
+from acb_auth.console_resolve import (
+    ConsoleMemberWriteUnavailable,
+    invite_member_on_console,
+)
 from acb_auth.permissions import matched_by
 from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
@@ -152,10 +156,18 @@ async def invite_member(
 ) -> MemberEntry:
     """Create (or re-activate) a member row in the `invited` state.
 
-    No email is sent — sign-in is Entra ID SSO, so "inviting" means
-    provisioning the row that turns a directory identity into a member with
-    access. Until that row exists, an authenticated stranger resolves to no
-    access (``resolve_access`` returns inactive for an unknown email).
+    ⚠️ This docstring used to say *"No email is sent — sign-in is Entra ID SSO"*.
+    **Both halves are false** (corrected 2026-08-24, D50): sign-in is Google /
+    email OTP through Auth.js, and an invite notification email now exists —
+    ``subscription_console.md`` SC-2c, sent by the BFF hop
+    ``api/admin/members/invite`` AFTER this route answers 2xx, dark behind
+    ``MEMBER_INVITE_EMAIL_ENABLED``. **This route still sends nothing itself**,
+    and the mail carries **no token** (D50.1): identity is proven at sign-in, so
+    the mail is a notification and not an acceptance event.
+
+    "Inviting" means provisioning the row that turns a verified identity into a
+    member with access. Until that row exists, an authenticated stranger resolves
+    to no access (``resolve_access`` returns inactive for an unknown email).
 
     ⚠️ **This alone does not let anybody in.** `invited` is not `active`, and
     `is_active` is `status == "active"` exactly — the invited colleague sees
@@ -196,6 +208,64 @@ async def invite_member(
     await mirror_membership_status(
         email=member["email"], org_id=org_id, status=member["status"],
     )
+
+    # CP-2f (WS-31, D50.2): mirror the member onto the CUSTOMER CONSOLE — a
+    # different plane and a different database from the H6 shadow two calls
+    # above, and the one that decides whether this person can ever join.
+    #
+    # ⚠️ **Why this matters more than it looks.** Until this existed, the
+    # Console's ONLY membership writer was `POST /orgs/provision`'s founder
+    # INSERT, so an invited colleague never reached the registry: invisible to
+    # `GET /me/members`, a 404 at the seat-assign door, and — with sign-in
+    # resolve ARMED — `store.deployment_visible_orgs` returned nothing for them,
+    # so their first sign-in answered "zero organizations" and the self-serve
+    # funnel offered to create them an org OF THEIR OWN. An invite, correctly
+    # performed, produced a second tenant.
+    #
+    # POST-COMMIT, best-effort, own session (an HTTP hop, not a transaction) —
+    # the same posture as the two mirrors above and for the same reason: the
+    # authoritative `app_user` write has already committed and must stay
+    # byte-identical, so a Console outage can never fail an invite that
+    # happened. It ships dark by reach: an unwired box raises before any hop, and
+    # no live deployment key carries the `member_admin` capability until the
+    # owner grants it by hand (customer_console.md §8 gate 8).
+    #
+    # ⚠️ It supplies `actor_email` = the AUTHENTICATED ADMIN (R11 — never a body
+    # field), names NO organization (the Console derives it from
+    # placement ∩ membership) and names NO role (the registry's role vocabulary
+    # is not the tenant's — D12). See `acb_auth.console_resolve`.
+    try:
+        cc_status, cc_body = await invite_member_on_console(
+            actor_email=admin.email or "",
+            member_email=member["email"],
+            display_name=member.get("display_name") or "",
+        )
+        if cc_status >= 400:
+            # The Console REFUSED the mirror — capability revoked, the actor's
+            # registry membership suspended, org suspended, a two-org 409, or
+            # field-name drift. Without this line a refusal is silent and the
+            # invited colleague quietly falls back into the `console-empty`
+            # signup funnel, which is the exact failure CP-2f exists to close.
+            # (`ConsoleMemberWriteUnavailable`'s docstring promises the two are
+            # distinguishable in a log line; this is the verdict half.)
+            _log.warning(
+                "member_invite_console_refused",
+                email=email, status=cc_status, body=str(cc_body)[:200],
+            )
+    except ConsoleMemberWriteUnavailable as exc:
+        # The box is unwired, or the Console gave no answer. Logged, never
+        # raised: the tenant-plane invite stands.
+        _log.warning("member_invite_console_unavailable",
+                     email=email, error=str(exc)[:200])
+    except Exception as exc:
+        # Belt and braces around a best-effort mirror on a shipped write path.
+        # `mirror_identity_membership` swallows internally; this client returns
+        # verdicts instead, so the swallow lives at the call site. No ruff
+        # suppression comment here on purpose: the broad-except rule is not
+        # enabled in this repo's config, so a directive would only add an
+        # unused-suppression finding.
+        _log.warning("member_invite_console_failed",
+                     email=email, error=str(exc)[:200])
 
     invalidate_for(email)
     _log.info("member_invited", email=email, by=admin.email, roles=roles)
