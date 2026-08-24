@@ -36,8 +36,10 @@ from sqlalchemy import create_engine
 
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
+    SECOND_PLAN,
     apply_ladder,
     ensure_deployment,
+    ensure_second_plan,
 )
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -76,6 +78,9 @@ def deployment():
     eng = create_engine(_URL, future=True)
     with eng.begin() as conn:
         ensure_deployment(conn)
+        # Per-test, not per-module: this suite replays the ladder, and migration
+        # 008 deactivates every `center`-kind row (see `ensure_second_plan`).
+        ensure_second_plan(conn)
     eng.dispose()
     return DEFAULT_DEPLOYMENT_LABEL
 
@@ -148,19 +153,26 @@ class TestTheList:
     def test_an_active_subscription_reports_mrr_in_paise(
         self, client, deployment
     ):
-        # core_seats=2 (₹600) + a manual activation of `sales` 3 seats (₹600):
-        # MRR = (2 + 3) * ₹600 = ₹3000 = 300000 paise, and only because the
-        # subscription is now `active`.
+        # Two plans at DIFFERENT prices, on purpose — the sum has to be a real
+        # sum. core_seats=2 at ₹500 (D49's flat seat, migration 008) plus a
+        # manual activation of 3 seats on this suite's own second plan at ₹600
+        # (`_customer_console_ladder.SECOND_PLAN`, which is not a product and so
+        # cannot be repriced out from under this test):
+        #   MRR = 2 * ₹500 + 3 * ₹600 = ₹2,800 = 280000 paise.
+        # And only because the subscription is now `active`.
+        #
+        # It used to be one price twice (₹600 × 5), which a multiplication that
+        # ignored the per-plan price would have passed.
         slug = _provision(client, deployment, core_seats=2)
         r = client.post("/billing/subscriptions/activate", headers=AUTH, json={
-            "org_slug": slug, "plan_slug": "sales", "seats": 3})
+            "org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 3})
         assert r.status_code == 200, r.text
 
         row = _row_for(client, slug)
         assert row["subscription_status"] == "active"
-        assert row["mrr_paise"] == 300000
-        sales = next(s for s in row["seats"] if s["plan_slug"] == "sales")
-        assert (sales["purchased"], sales["assigned"]) == (3, 0)
+        assert row["mrr_paise"] == 280000
+        second = next(s for s in row["seats"] if s["plan_slug"] == SECOND_PLAN)
+        assert (second["purchased"], second["assigned"]) == (3, 0)
 
     def test_the_seat_grid_matches_billing_summary(self, client, deployment):
         # The ONE seat vocabulary (§3.3, D32.5): the cross-org list and the

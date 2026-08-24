@@ -182,3 +182,67 @@ def apply_ladder(conn) -> None:
     for path in ladder():
         with open(path, encoding="utf-8") as fh:
             conn.exec_driver_sql(fh.read())
+
+#: A SECOND active plan the suites can sell, grant and assign against.
+#:
+#: The suites used to use ``sales`` for this — a real Center package — because
+#: under D23's ladder there were always several active plans and one of them
+#: served as "a plan that is not core". **D49 retires every one of them**
+#: (`launch_surface.md` §4, migration 008): the catalog now offers exactly one
+#: thing, so ``sales`` is inactive and ``store.priced_plan`` refuses it. Thirty-one
+#: assertions turned red on a 400 that was the checkout working correctly.
+#:
+#: That coupling was always wrong, and this is where it gets cut: **what we test
+#: must not depend on what we sell.** A suite proving "two plans keep separate
+#: seat pools" needs two plans, not two *products*. Re-pointing those tests at
+#: whichever Center package happens to be active this quarter would only defer
+#: the same breakage to the next pricing decision.
+#:
+#: Named so a failure message is self-explaining: nobody reading
+#: ``'qa-second-seat' is not an active plan`` will mistake it for a product.
+SECOND_PLAN = "qa-second-seat"
+
+
+def ensure_second_plan(conn, *, price_inr: str = "600.00") -> str:
+    """Seed :data:`SECOND_PLAN` as an ACTIVE catalog row. Returns its slug.
+
+    Idempotent, and it never touches a shipped row — in particular it cannot
+    reactivate a plan D49 retired, which would make the catalog fence
+    (``test_the_catalog_sells_exactly_one_thing_at_500``) fail from a *test*
+    side effect and send the next reader hunting through migrations.
+
+    ⚠️ ``DO UPDATE SET active = TRUE``, not ``DO NOTHING``, and the difference is
+    load-bearing. Migration 008 deactivates every row whose ``kind`` is
+    ``center``/``addon``/``bundle`` — deliberately by kind, so a package seeded
+    by a later ladder file cannot slip back in as sellable — and this row is a
+    ``center``. Replaying the ladder therefore switches it OFF, and a
+    ``DO NOTHING`` upsert running afterwards leaves it off: the second run of any
+    suite fails with "'qa-second-seat' is not an active plan". Measured, not
+    hypothesised. ``ensure_deployment`` above makes the same call for the related
+    reason that a helper which no-ops on the second call is not idempotent.
+
+    ``kind = 'center'`` because the CHECK constraint admits only the four
+    shipped kinds and this row has to be *something*; nothing reads the kind of
+    a test plan. It is deliberately NOT ``'core'``: ``core`` is the seat
+    membership allocates (D19.3), and a second row of that kind would blur the
+    one distinction these suites exist to hold apart.
+
+    The default price is the pre-D49 ₹600 purely so that a suite asserting
+    "the order total is quantity times unit price" keeps arithmetic that differs
+    from the flat seat's ₹500 — two identical prices make a multiplication bug
+    invisible.
+    """
+    from sqlalchemy import text
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO plan_catalog (slug, name, kind, price_inr, active, sort_order)
+            VALUES (:slug, 'QA Second Seat', 'center', :price, TRUE, 900)
+            ON CONFLICT (slug) DO UPDATE
+                SET active = TRUE, price_inr = EXCLUDED.price_inr
+            """
+        ),
+        {"slug": SECOND_PLAN, "price": price_inr},
+    )
+    return SECOND_PLAN
