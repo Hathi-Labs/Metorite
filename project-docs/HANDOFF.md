@@ -66,10 +66,13 @@ this file grows a graveyard and the graveyard is what goes stale.
 
 # OPEN
 
-### H-22 · Decide the development & delivery framework (D-A…D-F) and mint WS-35 · [OWNER]
-- **Check:** `rg -n "WS-35" project-docs/work_plan.md` → no hit means the board
-  row was never minted and the six decisions in
-  `specs/development_and_delivery_framework.md` §9 are still owed.
+### H-22 · Decide the development & delivery framework (D-A…D-G) and mint WS-38 · [OWNER]
+- **Check:** `rg -n "WS-38" project-docs/work_plan.md` → no hit means the board
+  row was never minted and the seven decisions in
+  `specs/development_and_delivery_framework.md` §9 are still owed. (Renumbered
+  from WS-35 at merge 2026-08-24 — WS-35 was already minted for subdomain
+  workspaces / D51, so the original Check hit the wrong workstream and would
+  have read as done on arrival.)
 - **Why:** The framework spec was written 2026-08-24 and is deliberately
   **PROPOSED, binding nothing**. Its central item amends
   `engineering_practice.md` §1's "we do not run a staging environment, and should
@@ -118,17 +121,18 @@ this file grows a graveyard and the graveyard is what goes stale.
   `specs/development_and_delivery_framework.md` §4.1 · T-5
 - **Added:** 2026-08-24 · delivery-framework planning session
 
-### H-25 · The Console ladder's idempotency is an unchecked claim; the Operator Console has no CI · [AGENT]
-- **Check:** `rg -n "infra/customer_console" .github/workflows/pr-check.yml` and
-  `rg -n "operator_console" .github/workflows/` → no hits means both gaps open.
-- **Why:** Two cheap holes with the same shape as ones this repo has already been
-  bitten by. (a) `apply_customer_console_migrations.sh`'s header asserts every
+### H-25 · The Console ladder's idempotency is an unchecked claim · [AGENT]
+- **Check:** `rg -n "infra/customer_console" .github/workflows/pr-check.yml` →
+  no hit means the gap is open.
+- **Why:** A cheap hole with the same shape as one this repo has already been
+  bitten by: `apply_customer_console_migrations.sh`'s header asserts every
   ladder file is additive and re-runnable; **nothing verifies it** — the tenant
   ladder earned its triple-replay job precisely because "idempotent" was a claim
-  about files nobody had checked together. (b) `workbench/operator_console/`
-  ships `typecheck` and `test` scripts that **no workflow runs**, so the surface
-  that assigns seats and AI credits is the one surface with no CI at all.
-- **Authority:** `specs/development_and_delivery_framework.md` §4.2 · §5 · T-3/T-4
+  about files nobody had checked together. (This entry originally also carried
+  "the Operator Console has no CI"; that half landed the same day it was
+  measured — PR #80, 2026-08-24, added the `frontend-operator` job to
+  `pr-check.yml` — so only the ladder half remains.)
+- **Authority:** `specs/development_and_delivery_framework.md` §4.2 · §5 · T-3
 - **Added:** 2026-08-24 · delivery-framework planning session
 
 ### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]

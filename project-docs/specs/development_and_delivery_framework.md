@@ -2,7 +2,8 @@
 
 **Status:** 🟠 **PROPOSED — 2026-08-24.** Nothing here binds until the owner
 records §9's decisions. · **Owner:** vjvarada · **Classification:** CONTRACTS &
-DOCTRINE (`INDEX.md`) — no board row yet; §8 proposes **WS-35** ·
+DOCTRINE (`INDEX.md`) — no board row yet; §8 proposes **WS-38** (renumbered at
+merge 2026-08-24: WS-35 was already minted for subdomain workspaces / D51) ·
 **Verified against code and against the GitHub API on 2026-08-24** (§1 is a
 measurement, not a recollection).
 
@@ -58,6 +59,14 @@ the command in the right-hand column.
 | 1.6 | **The deploy does not apply the Console ladder.** `scripts/vps_apply.sh` calls `scripts/apply_migrations.sh`, which is bolted to the tenant Postgres. `infra/customer_console/` has its own DSN-driven applier that **nothing invokes automatically**. D47 named closing this as the obligation on the way in; it is still open. | `rg -n 'apply_migrations' scripts/vps_apply.sh` |
 | 1.7 | **124 remote branches.** `engineering_practice.md` §5 puts the work-in-flight ceiling at three or four. | `git ls-remote --heads origin \| wc -l` |
 | 1.8 | **What IS strong**, and must not be rebuilt: the tenant ladder replays from empty three times in CI and asserts the repeats are no-ops; the backup/restore rehearsal runs on every PR; the Console suites run against **two** real Postgres services (R8 honoured after an independent verification caught them silently skipping); `plan-guard` and the supervisor agents travel in `.claude/` (D29). | `pr-check.yml` jobs `migrations`, `backup-restore`, `test` |
+
+> **Landed between measurement and merge (same day, 2026-08-24):** 1.5 closed —
+> PR #80 added a `frontend-operator` job to `pr-check.yml` (typecheck + vitest in
+> `workbench/operator_console/`), so §10's 1.5 command now returns hits. And 1.2's
+> 21-commit gap closed by hand: PRs #78–#84 were deployed over SSH under a dated
+> D45 grant, `release` was pushed to each deployed SHA, and `008_flat_plan_d49.sql`
+> was hand-applied to the Console DB and verified. **1.1 is unchanged** — those
+> were hand-runs; both automatic delivery paths remain dark.
 
 **Read 1.1 and 1.3 together.** Today the only thing standing between an unreviewed
 commit and production is one person's discipline. That is a workable arrangement
@@ -341,7 +350,7 @@ Jobs marked **(new)** do not exist today.
 | `console-migrations` **(new)** | PR | ✅ | Replay `infra/customer_console/` from empty **twice**; assert the second run changes nothing. Closes 4.2. |
 | `backup-restore` | PR | ✅ | as today |
 | `frontend` (control_plane) | PR | ✅ | as today |
-| `operator-console` **(new)** | PR | ✅ | `npm ci && npm run typecheck && npm test` in `workbench/operator_console/`. Closes 1.5. A near-copy of `frontend`. |
+| `operator-console` — **landed 2026-08-24** as `frontend-operator` (PR #80) | PR | ✅ | typecheck + vitest in `workbench/operator_console/`. Closes 1.5. |
 | `secret-scan` | PR | report-only | graduate to blocking once proven |
 | `migration-collision` | PR | ✅ | `test_migration_prefixes.py` exists and works — but is **blind on a conflicted PR** (H-10). Fix the trigger, not the test. |
 | `staging-promote` **(new)** | push to `main`, on green | — | fast-forwards `staging` |
@@ -487,7 +496,7 @@ a licence to relax it.
 
 ---
 
-## 8. Proposed tickets — WS-35
+## 8. Proposed tickets — WS-38
 
 Not minted. The board row is the owner's act (§9 D-A). Gate labels per
 `work_plan.md` §1.7.
@@ -497,7 +506,7 @@ Not minted. The board row is the owner's act (§9 D-A). Gate labels per
 | **T-1** | `sentinel` job in `pr-check.yml` | A job with no `paths-ignore` runs on every PR, including a docs-only one; a docs-only PR shows exactly one check-run instead of zero | 🟢 AGENT-SAFE |
 | **T-2** | Require `sentinel`; restore protection on `main` | Protection reads back with the `sentinel` context required and `enforce_admins: true`; verified by reading it back, not by the settings page | 🔴 OWNER-GATE (GitHub settings) |
 | **T-3** | `console-migrations` CI job | `infra/customer_console/` replays from empty twice against Postgres 16; the second run is proven to change nothing (mirrors the tenant `migrations` job's assertion) | 🟢 AGENT-SAFE |
-| **T-4** | `operator-console` CI job | `npm ci && npm run typecheck && npm test` green in `workbench/operator_console/`; verified red first by breaking a type on a scratch branch | 🟢 AGENT-SAFE |
+| **T-4** | `operator-console` CI job | ✅ **Landed 2026-08-24** (PR #80, as `frontend-operator` in `pr-check.yml`; typecheck + vitest). ⚠️ "Verified red first" was not performed — the job went in green with the CP-2g suites | 🟢 AGENT-SAFE |
 | **T-5** | Console ladder in the delivery path | The applier runs **before** the Console unit restarts, from the same versioned script a human would hand-run; **fails the deploy** when its DSN is unset; the applied file list appears in the deploy log. Closes D47's named obligation | 🟢 AGENT-SAFE to build · 🔴 OWNER-GATE to run anywhere real |
 | **T-6** | Close H-10's blind window | A PR that is conflicted with `main` still runs the migration-collision fence; proven by opening a deliberately conflicted PR carrying a duplicate migration number and watching it go red | 🟢 AGENT-SAFE |
 | **T-7** | `staging` ref + `staging-promote` | `staging` fast-forwards on every green `main`; it is never a merge target; a non-fast-forward push is refused | 🟢 AGENT-SAFE |
@@ -512,7 +521,7 @@ Not minted. The board row is the owner's act (§9 D-A). Gate labels per
 | **T-15** | Branch hygiene | Auto-delete-on-merge on; merged/abandoned branches pruned; the count is reported | 🔴 OWNER-GATE (settings + deleting others' branches) |
 
 **Suggested order.** T-1 → T-2 (nothing else is enforceable until CI binds) →
-T-3, T-4, T-6 (cheap, close measured holes) → T-5 (the Console gap) → T-10, T-11
+T-3, T-6 (cheap, close measured holes; T-4 already landed) → T-5 (the Console gap) → T-10, T-11
 (money invariants) → T-7, T-8, T-9 (the staging ladder) → T-12 → T-13, T-14,
 T-15.
 
@@ -529,7 +538,7 @@ Proposed, not recorded. An agent must not mint these.
 
 | # | Decision | Why it cannot be defaulted |
 |---|---|---|
-| **D-A** | **Adopt this framework and mint WS-35.** Explicitly amends `engineering_practice.md` §1's "no staging" on the ground that its premise (one box, single-digit customers, one developer) is the premise being changed | §1's conclusion is D28-recorded doctrine; overriding it silently is exactly the CLAUDE.md §5 failure |
+| **D-A** | **Adopt this framework and mint WS-38.** Explicitly amends `engineering_practice.md` §1's "no staging" on the ground that its premise (one box, single-digit customers, one developer) is the premise being changed | §1's conclusion is D28-recorded doctrine; overriding it silently is exactly the CLAUDE.md §5 failure |
 | **D-B** | **Trunk + two promotion refs**, and **no long-lived `develop` branch** (§2) | The question was asked directly; recording the answer stops it being re-asked every quarter |
 | **D-C** | **Migration numbering at N>1 developers** — 7.3 (a) or (b) | R1's protocol has no coordinator; three collisions at N=1 |
 | **D-D** | **Where staging runs, and what it costs** — a second VPS, or a second Supabase pair, or both | Money, and it is an external account (owner-side by `customer_console_infrastructure.md` §7) |
