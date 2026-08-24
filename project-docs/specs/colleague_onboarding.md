@@ -32,8 +32,20 @@ this time a race, not a sequence — and with it the reason it kept recurring:
 **approve verified by prediction, never by reading back what it wrote.** It now
 requires the member to be `active` before the decision is stamped (§6 *Repair
 round 3*).
-**N6b needs no code** (§2 Step 1b shipped the fix) and leaves one recorded
-owner question. **Merging N6a is
+**N6b's open owner question is ANSWERED 2026-08-24 (R4, decision D49.3):
+(b) auto-promote on first sign-in — but on the REGISTRY plane only.** A Customer
+Console `org_membership` whose status is exactly `invited` is promoted to
+`active` at first resolve, guarded by the `AND status = 'invited'` in the
+UPDATE's own `WHERE` (the un-suspension trap §6 warned about is the mutation its
+fence is shown red with). **The tenant plane's `app_user.status` is untouched, so
+§2 Step 1b is still required** and N6b's tenant half is now a named ticket rather
+than a question. Two more corrections in the same pass: **§2's "Sign-in is Entra
+ID SSO — there is no invitation email" was false on both halves** (sign-in is
+Google / email OTP; an invitation email exists as `subscription_console.md`
+SC-2c, a NOTIFICATION with no accept-token, D49.1), and **invite now provisions
+on TWO planes** (`app_user` plus the Console's `org_membership`,
+`customer_console.md` CP-2f) — without the second, an invited colleague with
+registry resolve armed is funnelled into creating their own organization. **Merging N6a is
 OWNER-GATE**: `deploy.yml:202-203` replays every migration on deploy, so the
 merge arms an auth-behaviour deploy.
 **§2 Step 5 also gained N7, BUILT 2026-08-04 (`ws-24-n7-self-removal-guard`):
@@ -196,9 +208,23 @@ the owner loses work that has no backup.
 ## 2. The onboarding runbook
 
 Prerequisite: §1 is green (run `scripts/onboarding_preflight.py` on the box).
-Every step below is a real, shipped endpoint. Sign-in is Entra ID SSO — there
-is no invitation email; "inviting" means **provisioning the row that turns a
-directory identity into a member**.
+Every step below is a real, shipped endpoint.
+
+> ⚠️ **CORRECTED 2026-08-24 (R4, decision D49).** This paragraph used to read
+> *"Sign-in is Entra ID SSO — there is no invitation email."* **Both halves are
+> now false.** Sign-in is Google / email OTP through Auth.js
+> (`customer_console.md` CP-0, CP-2d) — Entra is gone — and an invitation email
+> exists: `subscription_console.md` **SC-2c**, dark behind
+> `MEMBER_INVITE_EMAIL_ENABLED`. It is a **notification, not an acceptance flow**
+> (D49.1): no token, no link that grants anything, no query-string secret.
+> Identity is still proven at sign-in by the IdP, so "inviting" still means
+> **provisioning the row that turns a verified identity into a member** — and
+> since **D49.2** it provisions that row on **two** planes: the tenant's
+> `app_user` and the Customer Console's `org_membership` (`status='invited'`,
+> `customer_console.md` **CP-2f**). The second is not optional bookkeeping —
+> without it the colleague is invisible to the seats grid, cannot be assigned a
+> seat, and with registry resolve armed their first sign-in funnels them into
+> creating **their own** organization instead of joining yours.
 
 ### Step 1 — Invite
 
@@ -234,12 +260,21 @@ directory identity into a member**.
 > `status == "active"` **exactly** (`access.py:288`). An invited colleague sees
 > the identical "Your account is not active" screen as a total stranger, while
 > the admin who invited them sees a row in the Members list and reasonably
-> believes the job is done. Sign-in is Entra SSO — there is no invitation email
-> and therefore no acceptance event that could promote them. **Steps 1 and 1b
+> believes the job is done. ~~Sign-in is Entra SSO — there is no invitation email
+> and therefore no acceptance event that could promote them.~~ **Steps 1 and 1b
 > are one operation performed in two clicks.**
 >
-> Whether that should stay two clicks is an open question, recorded in §6 as
-> N6b rather than decided here.
+> ⚠️ **The struck sentence was rewritten 2026-08-24 (R4, D49), and the
+> correction is narrower than it first looks.** There *is* now an invitation
+> email (SC-2c) — but it is a **notification**, so it is still not an acceptance
+> event, and it still cannot promote anybody: D49.1 refuses an accept-token by
+> name. What D49.3 adds is a promotion on the **registry** plane — a Console
+> `org_membership` whose status is exactly `invited` becomes `active` at first
+> resolve. **The tenant plane's `app_user.status` is UNCHANGED**, so the sentence
+> above stays true where it matters: **Step 1b is still required**, and Steps 1
+> and 1b are still one operation in two clicks. Folding the tenant-plane
+> activation in would put a second write on the live auth path and is
+> deliberately *not* part of D49 — it is N6b's remaining half, recorded in §6.
 
 ### Step 2 — Assign the role (if it is not the default)
 
@@ -1455,6 +1490,38 @@ If (b) is ever chosen, one non-obvious guard must come with it: `suspended` and
 `removed` must **not** be promoted. The natural implementation
 (`status != 'active'` → activate) silently un-suspends people.
 
+> ### ✅ ANSWERED 2026-08-24 — **(b), on the REGISTRY plane only** *(decision D49.3, owner-ratified; built on `ws-30-invites`)*
+>
+> The owner chose **(b) auto-promote on first sign-in**, and the guard this
+> section warned about is the one that was built: the promotion is
+> `UPDATE org_membership SET status='active', joined_at = COALESCE(joined_at,
+> now()) WHERE … AND status = 'invited'` — **the guard is in the statement's own
+> `WHERE`**, not an `if` beside it, so `suspended` / `removed` / `active` are
+> untouched by construction rather than by a comparison a later edit can widen.
+> The exact failure named above ("`status != 'active'` → activate silently
+> un-suspends people") is the mutation its fence is shown red with.
+>
+> ⚠️ **Scope — read this before citing N6b as closed.** The promotion landed on
+> the **Customer Console's** `org_membership`, inside the deployment arm of
+> `POST /registry/resolve` (`customer_console.md` **CP-2f**). It did **not** land
+> on `access.py` and it does **not** touch the tenant plane's `app_user.status`,
+> so the objection this section raised against (b) — *"it puts a second write on
+> the auth path"* — was **avoided rather than overruled**: the write is on the
+> registry service, which the sign-in path was already calling and already
+> writing to (the Core-seat allocation). What that closes is the far worse
+> failure the invite audit found: with resolve armed, an invited colleague with
+> no Console membership resolved `console-empty` and was funnelled into creating
+> **their own organization**. What it does **not** close is this section's
+> original complaint — **Step 1b is still required**, because `is_active` is
+> still `app_user.status == "active"` exactly.
+>
+> **N6b's remaining half, stated as a ticket rather than a question:** promote
+> the tenant `app_user` row `invited → active` on a successful resolve, with the
+> same `WHERE status = 'invited'` guard. It is a change to the live auth path
+> with a real lockout blast radius, it was **deliberately excluded from D49**,
+> and it needs its own slice. Until then this section stands: (a) in practice,
+> (b) on the registry.
+
 #### DECISION — a separate table `agent-proposed, owner may overrule`
 
 **Chosen: a new `access_request` table, not a fifth `app_user.status`.** The
@@ -1578,8 +1645,13 @@ everyone who knocked, not a list of colleagues.
     in"** rather than rendering it as though it were live. (Carried over from
     the retracted N6b; it is a label change, independent of the open question.)
 
-**Done when — N6b:** nothing to build. §2 Step 1b shipped the fix; the
-remaining question is the owner's (a)/(b)/(c) above.
+**Done when — N6b:** ~~nothing to build. §2 Step 1b shipped the fix; the
+remaining question is the owner's (a)/(b)/(c) above.~~ **UPDATED 2026-08-24
+(R4):** the owner answered **(b), on the registry plane only** — see the ANSWERED
+box above and **D49.3**. The Console-plane `invited → active` promotion is BUILT
+(`customer_console.md` CP-2f); the tenant-plane `app_user` half is explicitly
+**out of D49** and is now a named ticket rather than an open question. §2 Step 1b
+is unchanged and still required.
 
 #### As built (2026-08-04) — where each done-when landed, and what the ticket got wrong
 
