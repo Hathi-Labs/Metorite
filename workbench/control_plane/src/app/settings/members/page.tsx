@@ -1053,14 +1053,22 @@ function InviteDialog({
   const [role, setRole] = useState("member");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // What the invite hop reported about the NOTIFICATION email (WS-30 SC-2c).
+  // Never an error: the membership is written on both planes either way, so a
+  // notification that did not go out is something to MENTION, not to undo.
+  const [notice, setNotice] = useState("");
 
   const assignable = roles.filter((r) => r.slug !== "agent_service");
 
   const submit = async () => {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
-      const res = await fetch("/api/admin/members", {
+      // WS-30 SC-2c: `/api/admin/members/invite` SHADOWS the `/api/admin/[…]`
+      // catch-all for this one path. It forwards the identical gateway call and,
+      // when the deployment is configured for it, sends one notification email.
+      const res = await fetch("/api/admin/members/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1072,6 +1080,12 @@ function InviteDialog({
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail ?? "Invite failed.");
+      }
+      const body = await res.json().catch(() => ({}));
+      if (body.email_sent === false) {
+        setNotice(
+          "Invited. No notification email went out — tell them to sign in with this address.",
+        );
       }
       await onDone();
     } catch (e) {
@@ -1091,8 +1105,8 @@ function InviteDialog({
               <Icon name="UserPlus" size={15} /> Invite a member
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Sign-in is Microsoft SSO — this provisions their access, it does
-              not send an email.
+              This sets up their access. They sign in with this email address —
+              there is nothing for them to accept.
             </p>
           </div>
           <button
@@ -1145,6 +1159,12 @@ function InviteDialog({
         {error && (
           <p className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
+          </p>
+        )}
+
+        {notice && (
+          <p className="mb-3 rounded-lg border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+            {notice}
           </p>
         )}
 
