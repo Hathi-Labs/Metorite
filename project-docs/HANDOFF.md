@@ -431,13 +431,18 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §6 WS-27 (c-1) · D52.1
 - **Added:** 2026-08-24 · WS-39 S1 session
 
-### H-28 · WS-39: slices S2, S3a still to build · [AGENT]
-- **Check:** `rg -n '"/calendar"' workbench/control_plane/src/lib/nav.ts` → no hit
-  means **S2** unbuilt. `rg -l "/api/tasks/items" workbench/control_plane/src/app/tasks/`
-  → any hit means **S3a** unbuilt.
-- **Why:** S1 (ClickUp excision) landed; the re-plumbing it clears the way for did
-  not. S2 lifts the calendar to its own `live` pane (nav count fence 8→9); S3a
-  re-points the `/tasks` UI onto `/projects/my/*` so `pm_*` is the one task store.
+### H-28 · WS-39: slice S3a still to build · [AGENT]
+- **Check:** `rg -l "/api/tasks/items" workbench/control_plane/src/app/tasks/`
+  → any hit means **S3a** unbuilt. *(S2 is done — `nav.ts` carries `/calendar`.)*
+- **Why:** S1 (ClickUp excision) and S2 (the Calendar app) landed; the store move
+  did not. S3a re-points the `/tasks` UI onto `/projects/my/*` so `pm_*` is the
+  one task store, and moves the calendar's task reads from `gtd_items` to
+  `pm_tasks` in the same PR (D54.5).
+  📌 **Two findings S2 recorded for S3a to settle:** `CalendarView` hand-filters
+  `s.items` while `itemsForView("calendar")` — the canonical selector — has no
+  caller; and the shared task store should be promoted out of `app/tasks/lib/`
+  once it is rewritten, so both apps import it from a neutral home rather than
+  Calendar reaching into Tasks' directory.
   ⚠️ **Read `routes/projects/personal.py` before designing anything** — S3a's server
   side shipped in 2026-08-06 under D-PM-6, and an agent who starts writing endpoints
   is building a second one.

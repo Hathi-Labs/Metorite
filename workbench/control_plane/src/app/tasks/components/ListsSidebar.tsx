@@ -26,7 +26,10 @@ const PRIMARY: NavRow[] = [
   { view: "inbox", label: "Inbox", icon: "Inbox", showCount: true },
   { view: "next", label: "My Next Actions", icon: "ListChecks", showCount: true },
   { view: "waiting", label: "Waiting For", icon: "Clock", showCount: true },
-  { view: "calendar", label: "Calendar", icon: "Calendar", showCount: true },
+  // ⚠️ Calendar left this list 2026-08-24 (D54, board WS-39 S2): it is its own
+  // Personal Center app at `/calendar`. It is deliberately NOT re-added here as
+  // a link — a sidebar row that navigates OUT of the app it sits in is the kind
+  // of half-move that leaves two entry points for one surface.
   // Projects and People were removed here 2026-08-06 (owner decision): this
   // app is the personal lens. The company's projects live in `/projects` and
   // the directory in `/people`, each a whole app rather than a cramped tab

@@ -5,9 +5,9 @@
 // the rail, the planner panels and Focus Mode all agree on the same math.
 
 import { useEffect, useState } from "react";
-import type { EnergyWindow, DayTemplate } from "../../lib/api";
-import { startOfDay, addDays, sameDay, type Block } from "../../lib/scheduling";
-import type { GtdItem } from "../../lib/types";
+import type { EnergyWindow, DayTemplate } from "@/app/tasks/lib/api";
+import { startOfDay, addDays, sameDay, type Block } from "@/app/tasks/lib/scheduling";
+import type { GtdItem } from "@/app/tasks/lib/types";
 
 // ── layout constants ─────────────────────────────────────────────────────────
 export const DAY_START_HOUR = 7; // default grid window (overridden by prefs)
@@ -68,9 +68,12 @@ export const startOfMonthGrid = (d: Date) =>
 export const minutesInto = (d: Date) => d.getHours() * 60 + d.getMinutes();
 
 // ── formatters ───────────────────────────────────────────────────────────────
-/** "2:05 PM" — the calendar's one clock format. */
-export const fmtClock = (d: Date) =>
-  d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+/** "2:05 PM". Re-exported, not redefined — it moved to `@/app/tasks/lib/utils`
+ *  on 2026-08-24 so `FocusMode` (mounted globally by `AppShell`) could stop
+ *  importing across the app boundary. The five call sites in this directory
+ *  keep their import path; a second definition here would be the CLAUDE.md §5
+ *  defect. */
+export { fmtClock } from "@/app/tasks/lib/utils";
 
 /** "23m" / "1h 5m" — compact human duration for countdowns. */
 export function fmtLeft(mins: number): string {

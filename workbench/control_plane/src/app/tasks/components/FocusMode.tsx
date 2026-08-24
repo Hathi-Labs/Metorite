@@ -29,7 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { GtdItem } from "../lib/types";
 import { blocksForDay, startOfDay, type Block } from "../lib/scheduling";
-import { fmtClock } from "./calendar/shared";
+import { fmtClock } from "../lib/utils";
 import {
   loadFocusPrefs,
   saveFocusPrefs,

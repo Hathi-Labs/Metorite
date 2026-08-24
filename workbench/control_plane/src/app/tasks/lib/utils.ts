@@ -169,3 +169,20 @@ export function originEmailHref(origin?: {
   params.set("email", origin.emailId);
   return `/email?${params.toString()}`;
 }
+
+/**
+ * "2:05 PM" — the product's one clock format.
+ *
+ * ⚠️ Promoted here 2026-08-24 (D54, board WS-39 S2). It lived in the calendar's
+ * `shared.ts`, and `FocusMode` — which `AppShell` mounts GLOBALLY, so it is not
+ * a Tasks-only component — imported it across the app boundary. When Calendar
+ * became its own app that import pointed the wrong way: Tasks may not depend on
+ * Calendar (`calendarBoundary.test.ts` is the fence).
+ *
+ * It lands in `tasks/lib` rather than a new `src/lib` module because this is
+ * already the shared formatter module both surfaces consume (`durationLabel` is
+ * right above). When S3a re-points the store, this whole directory moves with
+ * it — one move, not two.
+ */
+export const fmtClock = (d: Date) =>
+  d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });

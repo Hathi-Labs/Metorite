@@ -136,6 +136,28 @@ export const NAV_SECTIONS: NavSection[] = [
         feature: "tasks",
         launch: "live",
       },
+      // Calendar — D54 (2026-08-24, board WS-39 S2). Lifted out of `/tasks`,
+      // where it had been a view mode rather than a destination.
+      //
+      // ⚠️ Gated on `feature:tasks`, NOT a new `feature:calendar`, and that is
+      // deliberate. A new slug is a grant nobody holds: minting one would ship
+      // this app DARK to every existing member, and un-darkening it is an
+      // owner-gated role write (`work_plan.md` §6, the WS-24 (d) class) on top
+      // of a migration that has to reach a box first (H-1). Riding the grant
+      // that already covers this surface keeps reachability exactly as it is
+      // today — the calendar was inside Tasks, so everyone with Tasks had it.
+      //
+      // `live`, not `preview`: the surface ships today inside a live app, so
+      // holding it back would WITHDRAW a capability customers already have.
+      // That is why `launch_surface.md` §2's live set is nine and not eight.
+      {
+        href: "/calendar",
+        label: "Calendar",
+        icon: "Calendar",
+        note: "When your work happens — timeboxing, day plan, focus",
+        feature: "tasks",
+        launch: "live",
+      },
       // Deliberately UNGATED, and it must stay that way (D-PC-15).
       // `feature:people` gates the DIRECTORY — other people — and is
       // `is_default false`; your own record is not the directory. Gating this

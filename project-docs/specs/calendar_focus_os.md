@@ -754,11 +754,30 @@ everything above it still owns *what the calendar does*.
 
 | | Before | After |
 |---|---|---|
-| Route | `/tasks/calendar` | **`/calendar`** |
-| Nav | none — reached from inside Tasks | a pane in **Personal Center** (`src/lib/nav.ts`) |
-| Gate | inherited `feature:tasks` | **`feature:calendar`** |
+| Route | ⚠️ **none** — a `ViewKey` inside `/tasks` | **`/calendar`**, a real route |
+| Nav | a row in the Tasks sidebar | a pane in **Personal Center** (`src/lib/nav.ts`) |
+| Gate | `feature:tasks` | **`feature:tasks`** — unchanged, see below |
 | Launch status | live by inheritance | **`live`**, explicitly |
 | Owner of behaviour | WS-21 | **still WS-21** |
+
+⚠️ **Correction, measured while building S2:** this section first said the route
+was `/tasks/calendar`. **There was no such route.** The calendar was a *view
+mode* — `selectedView === "calendar"`, a `ViewKey` in the shared task store,
+rendered full-width by `tasks/page.tsx`. That is why the move is a genuine
+extraction rather than a rename, and why `ViewKey` still carries a `"calendar"`
+member that nothing can select (its `itemsForView` and `viewQuickAdd` rules are
+still real; the member is annotated in `tasks/lib/types.ts`).
+
+🔴 **The gate stays `feature:tasks`, and this reverses what D54.1 first said.**
+A new `feature:calendar` slug is **a grant nobody holds**. Minting one would
+ship this app **dark to every existing member**, and un-darkening it is an
+owner-gated role write (`work_plan.md` §6, the WS-24 (d) class) *on top of* a
+migration that has to reach a box first — and H-1 records that `main` is many
+migrations ahead of every box. Riding the grant that already covers this
+surface keeps reachability exactly as it is today: the calendar lived inside
+Tasks, so everyone holding `feature:tasks` already had it. Minting
+`feature:calendar` is a later, deliberate act that must ship **with** its grant
+migration, not before it.
 
 **It ships `live`, and the count fence moves with it.** `launch_surface.md` §2's live
 set goes **8 → 9** and `nav.test.ts`'s assertion is updated in the same PR. That fence
@@ -813,22 +832,46 @@ does not touch that gate, and giving the calendar its own front door does not op
 
 ### 10.6 Acceptance — WS-39 S2 · AGENT-SAFE
 
-**Done when:**
+**Done when:** ✅ **ALL MET — BUILT 2026-08-24.**
 
-1. `/calendar` renders the calendar surface; `/tasks/calendar` no longer exists as a
-   route (or redirects once, permanently, and the redirect is tested).
-2. `src/lib/nav.ts` carries a Personal Center pane for `/calendar` with
-   `launch: "live"` and gate `feature:calendar`.
-3. `nav.test.ts` asserts the live set is exactly **nine** `(section, href)` pairs, and
-   `launch_surface.md` §2's table lists the ninth row.
-4. The Tasks app no longer imports any calendar component; the calendar components no
-   longer import from `src/app/tasks/`.
-5. `feature:calendar` exists as a grantable feature and `/access` reports it.
-6. `npx tsc --noEmit && npx vitest run` green in `workbench/control_plane`.
+1. ✅ `/calendar` renders the calendar surface as a real route (`next build`
+   emits `○ /calendar`), and the surface is **no longer reachable inside
+   `/tasks`** — `tasks/page.tsx` contains no `CalendarView` and no
+   `selectedView === "calendar"` branch. *(Amended: there was never a
+   `/tasks/calendar` route to retire — see §10.2's correction. Nothing to
+   redirect.)*
+2. ✅ `src/lib/nav.ts` carries a Personal Center pane for `/calendar` with
+   `launch: "live"`. *(Amended: gate is `feature:tasks`, per §10.2 — a new slug
+   would ship the app dark.)*
+3. ✅ `nav.test.ts` asserts the live set is exactly **nine** `(section, href)`
+   pairs, and `launch_surface.md` §2's table lists the ninth row.
+4. ✅ **The dependency runs one way.** Tasks imports nothing from
+   `app/calendar/`; Calendar imports Tasks' shared **lib and store** plus
+   exactly the four store-driven overlays it raises.
+   ⚠️ **This clause was CORRECTED during the build.** It first read "the
+   calendar components no longer import from `src/app/tasks/`", which was
+   written before the coupling was measured and is **wrong**: satisfying it
+   would mean either duplicating a 95 KB store — the CLAUDE.md §5 defect, and
+   the re-introduction of exactly the sync D53 removes — or promoting it days
+   before S3a rewrites it. Sharing the store is the *point* of D53; what must
+   not happen is the dependency pointing back. The asymmetric rule is what is
+   fenced.
+   *(One real violation was found and fixed: `FocusMode`, which `AppShell`
+   mounts **globally**, imported `fmtClock` from the calendar's `shared.ts`.
+   `fmtClock` was promoted to `app/tasks/lib/utils.ts` and re-exported, so the
+   five calendar call sites kept their path and no second definition exists.)*
+5. ~~`feature:calendar` exists as a grantable feature and `/access` reports
+   it.~~ **STRUCK** — §10.2: no new slug is minted, so there is nothing for
+   `/access` to report that it does not already report for `feature:tasks`.
+6. ✅ `npx tsc --noEmit` clean · `npx vitest run` **2553/2553** · `next build`
+   succeeds.
 
-**Fence (R7):** the `nav.test.ts` count assertion (structural — it fails on *any*
-undeclared pane, not just this one) plus an import-direction test asserting no module
-under `src/app/calendar/` imports from `src/app/tasks/`.
+**Fence (R7):** `nav.test.ts`'s count assertion (structural — it fails on *any*
+undeclared pane) plus `src/app/calendar/calendarBoundary.test.ts`, which walks
+every file under both app directories and asserts (a) Tasks imports nothing from
+Calendar, (b) Calendar reaches only Tasks' lib/store and the four allowed
+overlays, and (c) the calendar surface is gone from `tasks/page.tsx` — the
+half-move where a new route is added while the old entry point still works.
 
 ---
 

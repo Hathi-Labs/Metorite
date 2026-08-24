@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { GtdItem } from "../../lib/types";
-import type { Block } from "../../lib/scheduling";
-import type { DayTemplate } from "../../lib/api";
+import type { GtdItem } from "@/app/tasks/lib/types";
+import type { Block } from "@/app/tasks/lib/scheduling";
+import type { DayTemplate } from "@/app/tasks/lib/api";
 import { layoutBlocks, reservedWindowsForDay } from "./shared";
 
 const item = (id: string): GtdItem =>

@@ -2,16 +2,16 @@
 
 import Icon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
-import { GtdItem } from "../../lib/types";
-import { durationLabel } from "../../lib/utils";
-import { priorityRank } from "../../lib/priority";
+import { GtdItem } from "@/app/tasks/lib/types";
+import { durationLabel } from "@/app/tasks/lib/utils";
+import { priorityRank } from "@/app/tasks/lib/priority";
 import {
   DEFAULT_BLOCK_MINS,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   DRAG_TYPE,
 } from "./shared";
-import { ContextMenu } from "../ContextMenu";
+import { ContextMenu } from "@/components/ContextMenu";
 
 
 // ── Unscheduled rail ─────────────────────────────────────────────────────────
