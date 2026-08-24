@@ -80,6 +80,7 @@ export default function Actions({
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
       </div>
+      {status === "deleted" && <DangerPanel slug={slug} />}
     </>
   );
 }
@@ -408,13 +409,25 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
   const [busy, setBusy] = useState(false);
   const actions = lifecycleActions(status);
 
+  // The two offboarding edges get their own confirm copy — each states what
+  // the move does and does NOT do, because "cancel" destroying data is the
+  // misread the export window exists to prevent.
+  const CONFIRMS: Record<string, string> = {
+    suspended:
+      `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused ` +
+      `until you resume them. Their data is untouched.`,
+    cancelled:
+      `Cancel ${slug}?\n\nThis opens their export window: sign-in keeps ` +
+      `working so they can export, features are locked, and NO data is ` +
+      `deleted. You can reinstate them at any time inside the window.`,
+    deleted:
+      `Mark ${slug} deleted?\n\nThis ends the export window and refuses ` +
+      `every sign-in. Their data still exists until you run the purge — ` +
+      `which becomes available after this step and is IRREVERSIBLE.`,
+  };
+
   async function move(target: string) {
-    if (
-      target === "suspended" &&
-      !window.confirm(
-        `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused until you resume them. Their data is untouched.`,
-      )
-    ) {
+    if (CONFIRMS[target] && !window.confirm(CONFIRMS[target])) {
       return;
     }
     setBusy(true);
@@ -454,7 +467,11 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
           <button
             key={a.target}
             type="button"
-            className={a.target === "suspended" ? "danger" : undefined}
+            className={
+              ["suspended", "cancelled", "deleted"].includes(a.target)
+                ? "danger"
+                : undefined
+            }
             disabled={busy}
             onClick={() => move(a.target)}
           >
@@ -462,6 +479,71 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
           </button>
         ))}
       </div>
+      <ResultLine result={result} />
+    </form>
+  );
+}
+
+/**
+ * The purge — the one control in this console that destroys data. (CP-2g)
+ *
+ * Rendered ONLY in the `deleted` state, which the lifecycle graph makes
+ * reachable only through `cancelled` (the export window) — so by the time
+ * this panel exists, the doctrine's steps have all been walked. The typed
+ * slug is carried to the server as `confirm` and re-checked at every layer
+ * (BFF, gateway door, Console door): the confirmation is a protocol, not a
+ * UI nicety.
+ */
+function DangerPanel({ slug }: { slug: string }) {
+  const [typed, setTyped] = useState("");
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (typed !== slug) return;
+    if (
+      !window.confirm(
+        `Purge ${slug} permanently?\n\nThis destroys ALL of this customer's ` +
+          `data in the product (projects, tasks, chat, CRM — everything) and ` +
+          `strips their people from the registry. The financial record is ` +
+          `kept. There is NO undo and NO backup restore for this.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    const r = await post("/api/operator/purge", {
+      org_slug: slug,
+      confirm: typed,
+    });
+    setResult(r);
+    setBusy(false);
+    // Deliberately NOT reload(): the receipt on screen is the only record the
+    // operator will see — the org vanishes from the list once this succeeds.
+  }
+
+  return (
+    <form className="panel" onSubmit={submit}>
+      <h2 style={{ marginTop: 0 }}>Purge data permanently</h2>
+      <p className="muted">
+        The export window is over and sign-in is refused. This last step
+        destroys the customer&apos;s data on every plane and frees{" "}
+        <strong>{slug}</strong> for reuse. Billing history is kept.
+      </p>
+      <label>Type the organization slug to arm the button</label>
+      <input
+        value={typed}
+        placeholder={slug}
+        onChange={(e) => setTyped(e.target.value)}
+      />
+      <button
+        type="submit"
+        className="danger"
+        disabled={busy || typed !== slug}
+      >
+        {busy ? "Purging…" : "Purge data permanently"}
+      </button>
       <ResultLine result={result} />
     </form>
   );

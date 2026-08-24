@@ -273,6 +273,9 @@ jobs:
             tests/unit/test_h6_rbac_rekey.py \
             tests/unit/test_email_otp_token.py \
             tests/unit/test_invited_member_promotion.py \
+            tests/unit/test_org_purge_console.py \
+            tests/unit/test_org_purge_tenant.py \
+            tests/unit/test_operator_door.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -482,6 +485,34 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: workbench/control_plane/package-lock.json
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Unit tests
+        run: npm test
+
+  # The operator console had tests but NO CI running them — a fence that never
+  # runs is advisory by accident (R7). Same shape as the workbench job; its
+  # suite carries CP-2g's purge-route ORDER pin (tenant before registry,
+  # authority check first), which is the only fence on that ordering.
+  frontend-operator:
+    name: "Operator console (typecheck + unit tests)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workbench/operator_console
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: workbench/operator_console/package-lock.json
 
       - name: Install deps
         run: npm ci --no-audit --no-fund

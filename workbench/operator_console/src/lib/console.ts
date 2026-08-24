@@ -123,6 +123,15 @@ export const setLifecycle = (
   d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
 ) => callConsole("/orgs/lifecycle", { method: "POST", body }, d ?? {});
 
+// CP-2g — the registry half of destroying an organization. The Console refuses
+// unless the org is already `deleted` (terminal on the lifecycle graph), strips
+// personal data + live secrets, tombstone-renames the slug, and keeps the
+// financial record. Body {org_slug, confirm} where confirm must echo the slug.
+export const purgeOrgRegistry = (
+  body: unknown,
+  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
+) => callConsole("/orgs/purge", { method: "POST", body }, d ?? {});
+
 // Provision a new organization (create-only): the Console POST /orgs/provision
 // under the `Operator` scheme creates the org + its owner + Core seats, PLACES
 // it on the named deployment and starts a trial subscription in one idempotent

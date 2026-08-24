@@ -47,7 +47,13 @@ owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write do
 — `POST /registry/members` on the `member_admin` capability, plus D50.3's
 `invited→active` promotion in the deployment resolve arm; **no migration**, the
 `001` CHECK already carries `invited`. Dark by construction: no live key holds
-the capability. Grant/deploy/live-write owner-gated) · CP-6
+the capability. Grant/deploy/live-write owner-gated) · **CP-2g MINTED + BUILT
+2026-08-24** (organization offboarding end to end: Console `POST /orgs/purge`
+reachable only in `deleted`, gateway operator door
+`DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
+— 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
+the operator console's cancel/delete edges + type-the-slug DangerPanel;
+env + live-purge owner-gated) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -5315,6 +5321,79 @@ NOT accept or map a `role` · does NOT alter seat accounting, `_allocate_core_se
 or D19.3 · does NOT filter `deployment_visible_orgs` on `status` (the recorded
 finding at `store.py:720-726` is untouched) · does NOT add a chooser · does NOT
 mint a migration.
+
+**CP-2g · Organization offboarding, end to end — MINTED + BUILT 2026-08-24
+(owner directive: "delete organizations … before I do the end-to-end
+onboarding").** ◐ **Ships dark** — the tenant half answers 503 until
+`GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
+`GATEWAY_INTERNAL_URL` + the same token.
+
+**What this is.** The lifecycle already ends at `deleted`, reachable only
+through `cancelled` (the export window) — `customer_console.lifecycle`'s graph
+enforces the doctrine by construction, and `POST /orgs/lifecycle` already walks
+it. What did NOT exist was the destruction: `deleted` retained every row on
+both planes and pinned the slug forever. CP-2g adds the **purge**, one act,
+three layers:
+
+1. **Console `POST /orgs/purge`** (Operator scheme; `{org_slug, confirm}`,
+   `confirm` must echo the slug): refuses **409** unless `status='deleted'`
+   (the refusal names the cancel→delete→purge path), deletes the
+   personal-data/live-secret tables (`_ORG_PURGE_DELETES`: `seat_assignment`,
+   `member_ai_cap`, `org_membership`, `llm_api_key`, `provider_credential`,
+   `org_placement`), **tombstone-renames the slug**
+   (`<slug>-purged-<hex6>`) so the name is free for a fresh start, KEEPS the
+   registry row and the money (`_ORG_PURGE_KEEPS`: `org_subscription`,
+   `seat_grant`, `credit_ledger`, `payment_order`, `usage_*`,
+   `control_audit`), audits `org.purge`, answers the N8-style
+   deleted/kept receipt.
+2. **Gateway `DELETE /internal/operator/organizations/{slug}?confirm=<slug>`**
+   (`gateway/routes/operator.py`, static bearer `GATEWAY_OPERATOR_TOKEN`, the
+   Console operator-token idiom; unset ⇒ 503 ship-dark): calls
+   `acb_auth.offboard.purge_tenant_organization` — **one
+   `DELETE FROM organization`** whose `ON DELETE CASCADE` FKs (33 tables,
+   measured) ARE the purge. `user_identity` survives (global; the org-less
+   D51 chooser is exactly the after-state), `auth_email_otp_token` expires on
+   its own. ⚠️ The `crm_*` `organization_id` references `crm_organizations`
+   (a CRM company), NOT the tenant — no tenancy column exists there yet (the
+   MT-1j remainder), so there is nothing per-tenant to purge; the exclusion
+   is named (`_NOT_TENANT_SCOPED`) and fenced.
+3. **Operator console**: the lifecycle panel gains the cancel/delete edges
+   (graph-mirrored in `lifecycleActions`, each with its own confirm copy),
+   and `deleted` renders the **DangerPanel** — type-the-slug to arm, then
+   `POST /api/operator/purge`, which runs **authority check (Console list,
+   must be `deleted`) → tenant purge → registry purge** in that order,
+   because the registry purge renames the slug the gateway door is addressed
+   by. Both halves idempotent ⇒ a half-failure is retried as-is.
+
+**Done-when (all built; each names its fence).** (1) Purge refused outside
+`deleted`, and the refusal teaches the path — `test_org_purge_console.py::
+TestTheGuards` (R8, real Console Postgres). (2) Personal data gone, books
+kept, slug freed — provisioning the same slug again mints a NEW org —
+`::TestThePurge`. (3) The tenant plane dies whole and the NEIGHBOUR org
+survives whole; identity survives; `already_absent` retry arm —
+`test_org_purge_tenant.py` (R8, real tenant Postgres). (4) Every
+`organization_id` column either cascades to `organization` or is the named
+CRM exclusion — `::TestTheExclusionCannotGoStale` (goes red the day CRM
+threading lands, on purpose). (5) The gateway door's refusal ladder
+(unset ⇒ 503 before any purge, wrong token ⇒ 401, confirm mismatch ⇒ 400,
+failure ⇒ 502 carrying the cause) — `test_operator_door.py`. (6) The BFF
+order and the confirmation protocol — `purge/route.test.ts` (vitest; now IN
+CI via the new `frontend-operator` job). (7) The second token stays
+server-side, one file — `console.test.ts`'s widened credential scan.
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** everything above, dark, against scratch.
+🔴 **OWNER-GATE — refuse by name:** setting `GATEWAY_OPERATOR_TOKEN` /
+`GATEWAY_INTERNAL_URL` on a live box (§8 env class) · **running the purge
+against a real organization** — it is the §6 "production one-off" class made
+into a button; the operator console's typed confirmation exists precisely so
+the OWNER is the one pressing it.
+
+**Non-goals.** No customer-side self-delete (an org admin cannot destroy the
+org from inside the product) · no export bundle (the window keeps sign-in
+alive; a one-click export is future work) · no per-member operator delete —
+member offboarding/purge stays the customer admin's door
+(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+a purge is forward-only, like every act on this platform (R6).
 
 **CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
 SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23

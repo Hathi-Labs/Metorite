@@ -59,9 +59,10 @@ describe("formatDate", () => {
 });
 
 describe("lifecycleActions (advisory UX only)", () => {
-  it("offers Suspend for a live org", () => {
-    expect(lifecycleActions("active")).toEqual([
-      { label: "Suspend access", target: "suspended" },
+  it("offers Suspend and Cancel for a live org", () => {
+    expect(lifecycleActions("active").map((a) => a.target)).toEqual([
+      "suspended",
+      "cancelled",
     ]);
   });
 
@@ -80,14 +81,26 @@ describe("lifecycleActions (advisory UX only)", () => {
     );
   });
 
-  it("offers Resume for a suspended org", () => {
-    expect(lifecycleActions("suspended")).toEqual([
-      { label: "Resume access", target: "active" },
+  it("offers Resume and Cancel for a suspended org", () => {
+    expect(lifecycleActions("suspended").map((a) => a.target)).toEqual([
+      "active",
+      "cancelled",
     ]);
   });
 
-  it("offers nothing on a terminal lifecycle", () => {
-    expect(lifecycleActions("cancelled")).toEqual([]);
+  // CP-2g: the offboarding path. `cancelled` is the export window — the org
+  // can come back (reinstate) or go forward (deleted, the terminal). And
+  // `deleted` offers NO transition: the purge is deliberately not an edge
+  // here — it destroys data rather than moving state, so it lives behind its
+  // own typed confirmation in the DangerPanel.
+  it("offers Reinstate and Delete inside the export window", () => {
+    expect(lifecycleActions("cancelled").map((a) => a.target)).toEqual([
+      "active",
+      "deleted",
+    ]);
+  });
+
+  it("offers no transition out of deleted — the purge is not an edge", () => {
     expect(lifecycleActions("deleted")).toEqual([]);
   });
 
@@ -95,7 +108,13 @@ describe("lifecycleActions (advisory UX only)", () => {
   // distinct label ships a mislabelled control — which is how "Resume access"
   // would have appeared on a trial org's Activate button.
   it("gives every offered target a distinct, non-empty label", () => {
-    for (const status of ["active", "trial", "past_due", "suspended"]) {
+    for (const status of [
+      "active",
+      "trial",
+      "past_due",
+      "suspended",
+      "cancelled",
+    ]) {
       const actions = lifecycleActions(status);
       expect(actions.length).toBeGreaterThan(0);
       expect(actions.every((a) => a.label.trim().length > 0)).toBe(true);

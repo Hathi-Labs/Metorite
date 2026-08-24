@@ -145,16 +145,37 @@ export function formatDate(iso: string | null): string {
 //
 // The display label lives HERE rather than in the button, so a new target
 // cannot arrive with the button silently calling it "Resume access".
+//
+// CP-2g added the offboarding edges: cancel opens the export window from any
+// live state, delete (offered from `cancelled` ONLY — the graph's rule) ends
+// it. The PURGE in `deleted` is deliberately NOT an edge here — it destroys
+// data rather than moving state, so it is its own act with its own typed
+// confirmation (`Actions.tsx`'s DangerPanel).
 export function lifecycleActions(status: string): { label: string; target: string }[] {
-  if (status === "suspended") return [{ label: "Resume access", target: "active" }];
-  if (status === "cancelled" || status === "deleted") return [];
+  if (status === "suspended") {
+    return [
+      { label: "Resume access", target: "active" },
+      { label: "Cancel account (export window)", target: "cancelled" },
+    ];
+  }
+  if (status === "cancelled") {
+    return [
+      { label: "Reinstate account", target: "active" },
+      { label: "Mark deleted (ends export window)", target: "deleted" },
+    ];
+  }
+  if (status === "deleted") return [];
   if (status === "trial" || status === "past_due") {
     return [
       { label: "Activate account", target: "active" },
       { label: "Suspend access", target: "suspended" },
+      { label: "Cancel account (export window)", target: "cancelled" },
     ];
   }
-  return [{ label: "Suspend access", target: "suspended" }];
+  return [
+    { label: "Suspend access", target: "suspended" },
+    { label: "Cancel account (export window)", target: "cancelled" },
+  ];
 }
 
 // The nudge that closes the gap between the two statuses, or `null`.
@@ -239,9 +260,16 @@ export function statusHelp(status: string): string {
     case "past_due":
       return "Payment is overdue — access continues while you follow up.";
     case "cancelled":
-      return "Subscription ended. Data is retained for export.";
+      return (
+        "Cancelled — the export window is open: sign-in works, features are " +
+        "locked, data is retained. Reinstate or, when the window ends, mark " +
+        "deleted."
+      );
     case "deleted":
-      return "Organization removed.";
+      return (
+        "Deleted — sign-in refused, export window over. Data still exists " +
+        "until you run the purge below."
+      );
     default:
       return "";
   }

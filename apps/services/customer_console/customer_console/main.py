@@ -185,6 +185,19 @@ class LifecycleRequest(BaseModel):
     export_window_days: int = Field(default=30, ge=1)
 
 
+class OrgPurgeRequest(BaseModel):
+    """CP-2g — strip a DELETED organization's registry plane.
+
+    ``confirm`` must echo ``org_slug`` verbatim: the operator UI makes the
+    human type the slug, and this door refuses a caller that did not carry
+    that typing through — a purge must never be reachable by a mis-clicked
+    retry with a stale body.
+    """
+
+    org_slug: str
+    confirm: str
+
+
 class ResolveRequest(BaseModel):
     """One body, two schemes — and ``org_slug`` is what tells them apart.
 
@@ -1248,6 +1261,94 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
         "can_sign_in": caps.can_sign_in, "can_use_ai": caps.can_use_ai,
         "can_write_seats": caps.can_write_seats,
         "data_retained": caps.data_retained,
+    }
+
+
+#: What `/orgs/purge` deletes vs keeps, module-level so the receipt and the
+#: suite pin the SAME list (the N8 `_PURGE_DELETES`/`_PURGE_KEEPS` idiom).
+#: Deleted = personal data (emails, identity links) and live secrets. Kept =
+#: the financial record — a purge is entitled to take the people, never the
+#: books. Child-before-parent where it matters (`seat_assignment` and
+#: `member_ai_cap` reference `user_identity` rows that stay).
+_ORG_PURGE_DELETES: tuple[str, ...] = (
+    "seat_assignment",
+    "member_ai_cap",
+    "org_membership",
+    "llm_api_key",
+    "provider_credential",
+    "org_placement",
+)
+_ORG_PURGE_KEEPS: tuple[str, ...] = (
+    "organization (tombstone row, slug renamed)",
+    "org_subscription",
+    "seat_grant",
+    "credit_ledger",
+    "payment_order",
+    "usage_event",
+    "usage_rollup",
+    "control_audit",
+)
+
+
+@app.post("/orgs/purge")
+def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
+    """CP-2g — the registry half of destroying an organization.
+
+    Reachable ONLY in `deleted` — the lifecycle graph's terminal state, which
+    itself is reachable only from `cancelled`, i.e. only after the export
+    window. So the doctrine ("never destroy customer data without an export
+    window") holds by construction across all three acts: cancel → delete →
+    purge. This door strips personal data and live secrets, then RENAMES the
+    slug to a tombstone so the name is free for a fresh start; the registry
+    row and the financial ledger stay, because an organization having existed
+    and paid is a fact the books must keep.
+
+    The tenant plane is NOT touched here — the Console cannot reach the tenant
+    database by design. The operator BFF pairs this with the gateway's
+    `DELETE /internal/operator/organizations/{slug}` (the other half), and
+    both halves are idempotent so a half-failed pair is just re-run.
+    """
+    if req.confirm != req.org_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm must equal org_slug, verbatim",
+        )
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+        status = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if status != "deleted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"organization is {status!r}; purge is reachable only in "
+                    "'deleted'. The path is: cancel access (opens the export "
+                    "window), then mark deleted, then purge."
+                ),
+            )
+        deleted: dict[str, int] = {}
+        for table in _ORG_PURGE_DELETES:
+            deleted[table] = conn.execute(
+                text(f"DELETE FROM {table} WHERE organization_id = :i"),
+                {"i": org_id},
+            ).rowcount
+        tombstone = f"{req.org_slug}-purged-{uuid.uuid4().hex[:6]}"
+        conn.execute(
+            text(
+                "UPDATE organization SET slug = :t, updated_at = now() "
+                "WHERE id = :i"
+            ),
+            {"t": tombstone, "i": org_id},
+        )
+        _audit(conn, org_id, "org.purge",
+               {"slug": req.org_slug, "tombstone": tombstone,
+                "deleted": deleted})
+    return {
+        "slug": req.org_slug,
+        "tombstone": tombstone,
+        "deleted": deleted,
+        "kept": list(_ORG_PURGE_KEEPS),
     }
 
 

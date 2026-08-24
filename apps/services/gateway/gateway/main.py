@@ -1120,6 +1120,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # CP-2g — the operator door: tenant-plane organization purge, called only
+    # by the operator console's BFF. Ship-dark (503) until the owner sets
+    # GATEWAY_OPERATOR_TOKEN on the box.
+    from gateway.routes.operator import router as _operator_router
+
+    app.include_router(_operator_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # BO-1 / A2 — Action Broker approval inbox over the pending_actions queue.
     from gateway.routes.actions import router as _actions_router
 
