@@ -6871,9 +6871,23 @@ personal lens is an overlay rather than a filter.
 
 **Done when all of these hold:**
 
-1. `rg -i "clickup" apps/ packages/ workbench/ scripts/ infra/postgres/*.sql` returns
-   **no hit in executable code** — matches surviving only in (a) migration *comments*
-   that are historical record, (b) the preserved column names of D52.3, (c) docs.
+1. No ClickUp **integration surface** survives: no connector, no receiver, no
+   importer, no OAuth entry, no catalog tile, no settings field, no scheduled job,
+   no App-Workshop tool, no workflow tool. ⚠️ **This is deliberately narrower than
+   "no `rg -i clickup` hit anywhere", and the four carve-outs are the honest part:**
+   - **(a) `src/app/tasks/` — 210 references across 27 files, NOT touched.** That is
+     the GTD surface **S3a** re-points onto `/projects/my/*`. De-ClickUping it in S1
+     would rewrite code the next slice rewrites again.
+   - **(b) `routes/tasks/` connector plumbing (~100 call sites), NOT touched.**
+     Unreachable now that the registry is empty; deleted in S3a with the store it
+     serves.
+   - **(c) the preserved columns and their writers** — `clickup_id` /
+     `clickup_kind` / `clickup_snapshot` / `clickup_synced_at` / `clickup_user_id`,
+     plus `scripts/seed_demo.py`, `scripts/import_hr_people.py`,
+     `scripts/reconciler.py` and `infra/seed/hr/hr_structure.json`, which read or
+     write them. They go in the D52.3 column-drop release, not before (R6).
+   - **(d) migration comments, `learning-resources/`, `docs/*/mockup-*.html`** —
+     historical record and teaching material. Rewriting history is not retirement.
 2. `apps/services/ingestion/ingestion/sources/clickup/`, `apps/skills/skill-clickup-sync/`,
    `scripts/clickup_sync.py`, `routes/projects/import_clickup.py`,
    `routes/projects/import_tasks.py` and

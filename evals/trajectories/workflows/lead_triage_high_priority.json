@@ -1,6 +1,6 @@
 {
   "name": "lead-triage — high priority branch",
-  "description": "The spec's reference workflow (success criterion #1): webhook lead -> triage agent classifies -> module normalizes -> approval -> ClickUp task -> output. Pins the whole happy path including the {{...}} state bus threading a value through four nodes.",
+  "description": "The spec's reference workflow (success criterion #1): webhook lead -> triage agent classifies -> module normalizes -> approval -> outward write -> output. Pins the whole happy path including the {{...}} state bus threading a value through four nodes.",
   "catalog": {
     "agents": ["triage"],
     "modules": {
@@ -9,7 +9,7 @@
   },
   "stubs": {
     "agents": {"triage": "high"},
-    "tools": {"clickup.create_task": {"disposition": "needs_approval", "task_id": "CU-901"}}
+    "tools": {"http.request": {"disposition": "needs_approval", "task_id": "CU-901"}}
   },
   "approve": ["gate"],
   "trigger": {"name": "  ada lovelace  ", "email": "ada@example.com", "priority": "high"},
@@ -20,8 +20,8 @@
       {"id": "triage", "type": "agent", "position": {"x": 0, "y": 1}, "data": {"label": "Triage", "config": {"agent": "triage", "message": "Classify this lead: {{trigger.email}}"}}},
       {"id": "check", "type": "condition", "position": {"x": 0, "y": 2}, "data": {"label": "High?", "config": {"left": "{{triage.result}}", "op": "equals", "right": "high"}}},
       {"id": "clean", "type": "module", "position": {"x": 0, "y": 3}, "data": {"label": "Normalize", "config": {"module_id": "mod-clean", "inputs": {"name": "{{trigger.name}}"}}}},
-      {"id": "gate", "type": "approval", "position": {"x": 0, "y": 4}, "data": {"label": "Approve", "config": {"message": "Create a ClickUp task for {{clean.clean_name}}?"}}},
-      {"id": "task", "type": "tool", "position": {"x": 0, "y": 5}, "data": {"label": "ClickUp: create task", "config": {"action": "clickup.create_task", "args": {"list_id": "{{vars.list_id}}", "name": "{{clean.clean_name}}", "description": "Lead from {{trigger.email}}"}}}},
+      {"id": "gate", "type": "approval", "position": {"x": 0, "y": 4}, "data": {"label": "Approve", "config": {"message": "Create a task for {{clean.clean_name}}?"}}},
+      {"id": "task", "type": "tool", "position": {"x": 0, "y": 5}, "data": {"label": "HTTP: create task", "config": {"action": "http.request", "args": {"url": "{{vars.endpoint}}", "method": "POST", "body": {"name": "{{clean.clean_name}}", "from": "{{trigger.email}}"}}}}},
       {"id": "done", "type": "output", "position": {"x": 0, "y": 6}, "data": {"label": "Done", "config": {"value": "{{task.task_id}}"}}},
       {"id": "skipped", "type": "output", "position": {"x": 1, "y": 3}, "data": {"label": "Not now", "config": {"value": "low priority"}}}
     ],
@@ -39,7 +39,7 @@
     "status": "succeeded",
     "outputs": ["CU-901"],
     "agent_calls": ["triage"],
-    "tool_calls": ["clickup.create_task"],
+    "tool_calls": ["http.request"],
     "tool_args": [{"list_id": "LIST-7", "name": "Ada Lovelace", "description": "Lead from ada@example.com"}],
     "nodes": {
       "clean": {"status": "ok", "output": {"clean_name": "Ada Lovelace", "dropped": 0}},

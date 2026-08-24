@@ -445,6 +445,35 @@ this file grows a graveyard and the graveyard is what goes stale.
   `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
 - **Added:** 2026-08-24 · WS-39 S1 session
 
+### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
+- **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.
+- **Why:** D52 deleted every reader of these vars; the example file still offers
+  `CLICKUP_API_TOKEN`, `CLICKUP_WORKSPACE_ID`, `CLICKUP_WEBHOOK_SECRET` (lines
+  68–70) and mentions `AGENT_WEBHOOK_SECRET_CLICKUP` (line 193), so a fresh box
+  is still told to configure a retired integration. **`.env*` writes are an
+  agent refusal** (`work_plan.md` §6, the H-13 precedent), which is why this is
+  a handover and not a commit. ⚠️ Measured 2026-08-24: `plan-guard.mjs` on
+  `main` did **not** actually block a `sed -i` against `.env.example` — the
+  refusal was honoured by the agent, not enforced by the hook. That is a
+  **fence gap worth closing** (R7) and it is the more useful half of this entry.
+  The D45 branch's plan-guard may already cover it; check there first.
+- **Ready-made patch:** delete lines 68–70 and the `AGENT_WEBHOOK_SECRET_CLICKUP`
+  clause on line 193.
+- **Authority:** `work_plan.md` §6 · D52 · H-13 precedent
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
+- **Check:** `rg -n "clickup_event|zoho_event" tests/` → no test asserting the
+  rule means it is still advisory.
+- **Why:** Passing `event=` to a structlog logger raises `TypeError` at call
+  time, so receivers must use `<source>_event=`. The AST guard that enforced
+  this lived in `tests/unit/test_clickup_normalise_dlq.py`, **deleted by D52
+  with the receiver it covered**. `apps/AGENTS.md` still states the rule, and
+  under R7 a rule with no fence is advisory — it now says so, but the honest
+  fix is to re-home the guard over the surviving Gmail/Zoho receivers.
+- **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
+- **Added:** 2026-08-24 · WS-39 S1 session
+
 ### H-29 · WS-39 S3b/S3c: the `gtd_*` backfill and drop · [OWNER]
 - **Check:** `psql -c "\dt gtd_items"` on the box → table present means S3c is still
   pending. For S3b, `SELECT count(*) FROM gtd_items WHERE deleted_at IS NULL;` → a

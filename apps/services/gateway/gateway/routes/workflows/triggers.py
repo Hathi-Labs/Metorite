@@ -2,13 +2,13 @@
 
 The successor to ``agent_registry.json``'s hard-coded ``webhook_routes``: a
 ``workflow_triggers`` row with ``kind='event'`` and config
-``{"source": "clickup", "event_type": "taskUpdated"}`` (empty/omitted
+``{"source": "zoho", "event_type": "Contacts.edit"}`` (empty/omitted
 ``event_type`` matches every event from that source). Two entry points feed
 this, both existing plumbing:
 
 - the signed generic webhook ``POST /agent/webhook/{source}`` (routes/agent.py)
   calls :func:`dispatch_event` right after its agent routing, and
-- the native provider receivers (ClickUp today) emit through the ingestion
+- the native provider receivers (Zoho and Gmail) emit through the ingestion
   event-hook registry (``ingestion.event_hooks``), which the gateway wires to
   :func:`dispatch_event` at startup — the lower layer never imports upward
   (the ``post_sync.py`` hook pattern).

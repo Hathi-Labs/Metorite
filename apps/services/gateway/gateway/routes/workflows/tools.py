@@ -32,7 +32,7 @@ HTTP_MAX_RESPONSE_BYTES = 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class WorkflowToolSpec:
-    action: str  # e.g. "clickup.create_task"
+    action: str  # e.g. "zoho.create_lead"
     label: str
     description: str
     integration: str | None  # Integration Registry service, if any
@@ -242,24 +242,9 @@ register_tool(
     )
 )
 
-register_tool(
-    WorkflowToolSpec(
-        action="clickup.create_task",
-        label="ClickUp: create task",
-        description="Create a ClickUp task (approval-gated via the Action Broker).",
-        integration="clickup",
-        read_only=False,
-        destructive=True,
-        open_world=False,
-        args_schema={
-            "list_id": "string|ClickUp list the task is created in.",
-            "name": "string|Task title.",
-            "description": "string?|Task body (plain text or markdown).",
-            "assignees": "array?|ClickUp user ids to assign.",
-        },
-        handler=_broker_write("clickup.create_task", target_field="list_id"),
-    )
-)
+# ⚠️ The `clickup.create_task` workflow tool was REMOVED 2026-08-24 (D52,
+# board WS-39 S1). It proposed an outward write to a connector that no longer
+# exists, so a workflow node built on it could only ever fail on approval.
 
 register_tool(
     WorkflowToolSpec(
