@@ -63,7 +63,7 @@ const INTERNAL_TOKEN =
 /**
  * Bootstrap admin list. Retained because a deployment whose access tables have
  * not been migrated yet still needs someone to be an admin — see spec §7. Once
- * roles are assigned in /settings/members, the database is the source of truth
+ * roles are assigned in /settings/organization, the database is the source of truth
  * and the gateway upgrades the role itself.
  */
 const EXECUTIVE_EMAILS = new Set(
