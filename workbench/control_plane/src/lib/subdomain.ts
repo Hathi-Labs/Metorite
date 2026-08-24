@@ -92,3 +92,26 @@ export const RESERVED_LABELS: readonly string[] = [
  * shut.
  */
 export const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * Derive a workspace-address suggestion from a company's display name —
+ * "Hathi Labs Pvt. Ltd." → "hathi-labs-pvt-ltd".
+ *
+ * A UX convenience, never a fence: the user can overtype the suggestion, and
+ * whatever is submitted still walks `SLUG_RE` + the reserved set here and
+ * `signup.py`'s twins at the gateway. The contract this module owes (fenced in
+ * `subdomain.test.ts`) is narrower: the result is EITHER `""` or a string
+ * `SLUG_RE` accepts — a name with no usable characters suggests nothing rather
+ * than something invalid. A suggestion may land on a reserved label ("Operator
+ * GmbH") — the form's reserved-set message handles that, same as a typed one.
+ */
+export function suggestSlug(name: string): string {
+  return name
+    .normalize("NFKD") // "Café" → "Cafe" + combining accent…
+    .replace(/[\u0300-\u036f]/g, "") // …then drop the combining marks
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-") // a run of anything else becomes one hyphen
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 63)
+    .replace(/-+$/, ""); // the 63-cut may itself land on a hyphen
+}
