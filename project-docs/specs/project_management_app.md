@@ -1,6 +1,17 @@
-# Projects App — Master Plan (native project management; ClickUp retirement path)
+# Projects App — Master Plan (native project management; ~~ClickUp retirement path~~ **the PM system of record**)
 
-> **Product:** Metorite · **Feature:** Projects (the People Center's primary work-management
+> 🔴 **READ §12 FIRST — 2026-08-24, D52/D53 re-cut this spec's premise.**
+> ClickUp is **retired outright, not cut over**: there is no connector, no importer,
+> no sync and no coexistence window. **§6's ClickUp binding and the whole of §7's
+> migration path are SUPERSEDED** — they describe a staged inversion against an
+> external system that no longer exists in this product. §11's parity backlog stays
+> valuable as the *record of what parity required*, and its verdicts still stand;
+> read it as history, not as a plan. Board row **WS-39**.
+> The second half of §12 is the one every reader gets wrong: **Projects is now also
+> the store behind the Tasks app** (D53) — `pm_tasks` + `pm_task_personal` are the
+> only task store, and `routes/projects/personal.py` is the lens Tasks renders.
+
+> **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-11**
 > (**WS-27be built — §11.33, migration 170**; **WS-27ak's narrowed slice built — §11.31**;
 > **WS-27bc's one dispatchable slice built — §11.34**;
@@ -6780,6 +6791,129 @@ returned to a known state, or the later check measures the earlier one's leftove
   ⚠️ Falling through would have answered `None` → `False` → *"nothing is ever runnable"*,
   silently disabling recurrence and dispatch across the whole suite while every assertion still
   read as a real refusal. `tests/unit` 5999 passed / 51 skipped.
+
+---
+
+## 12. The 2026-08-24 re-cut — ClickUp out, Tasks in (D52 · D53)
+
+**Status:** owner directive 2026-08-24, recorded as **D52** and **D53** in
+`work_plan.md` §3. Board row **WS-39**. This section is the owning statement for
+both; where it disagrees with §6, §7 or §11, **this section wins**.
+
+### 12.1 What the owner asked for
+
+> *"Remove all the ClickUp integrations. The projects app becomes the ClickUp clone
+> itself, and we don't have to have an external integration. We have a full-blown
+> project management app within Metorite itself."*
+>
+> *"The projects app and the tasks app are tightly coupled to each other. The tasks
+> app is just the personal view of the company-wide projects. And in addition, the
+> tasks app has personal tasks that are not configured in the projects app because
+> they are specific only to the person."*
+
+### 12.2 What this SUPERSEDES in this spec
+
+| Section | Fate |
+|---|---|
+| **§6 Integrations — "bind, don't rebuild"** | **Superseded for ClickUp only.** The principle is untouched and still governs Zoho, Gmail and every future connector. ClickUp is no longer an integration of any kind. |
+| **§7 The migration path — coexistence, inversion, retirement** | **Superseded whole.** Every phase of it (§7.1 import, coexistence, last-import-wins on ClickUp-sourced fields, the inversion, the retirement) presumes an external system of record. There is none. |
+| **§8 D-PM-10** (owner confirms the Space→Center mapping) | **Moot.** There is no import, so there is no mapping to confirm. Kept in §8 as a record of *why* a mapping was owner-gated — the reasoning generalises to any future bulk grant. |
+| **§11 ClickUp parity — the measured gap** | **Kept, re-classified as history.** Its verdicts stand and its backlog closed on 2026-08-09; it is the record of what parity cost, not a plan. Do not dispatch from it. |
+| **§9.7 sequencing letters `c`, `g`, `h`** | **`c` cancelled** (two-way sync, unbuilt by decision). **`g` reduced** to the two owner acts in `work_plan.md` §6 (c-1)/(c-2). **`h` absorbed into WS-39 S3a–S3c.** |
+
+### 12.3 What Projects becomes
+
+**One store, three lenses.** `pm_tasks` + `pm_task_personal` hold every task in the
+product. Three surfaces render them, and none of them is a copy:
+
+| Lens | Route | Question it answers |
+|---|---|---|
+| **Projects** | `/projects` | What is the company doing, and where does this fit? |
+| **Tasks** | `/tasks` | What am *I* doing next? |
+| **Calendar** | `/calendar` | When am I doing it? (D54) |
+
+**The property that matters:** completing a task in Tasks completes it in Projects,
+at the same instant, because it is one row. There is no sync, no id mapping and no
+reconciliation — and there is nothing to *keep* consistent, which is a stronger
+guarantee than keeping two things consistent well.
+
+### 12.4 Personal tasks — the part that is genuinely new to read
+
+A personal task is **a private task in the member's own personal project**, not a row
+in a second table. The owner's "tasks specific only to the person… that particular
+person might not want to deploy to the overall project management app" is answered by
+two existing mechanisms and no new one:
+
+1. `POST /projects/my/project` creates (or adopts) the caller's personal project.
+2. The task is written with `visibility = private` — D12's model, unchanged.
+
+**Promotion is a move, not a publish.** Deciding a personal task *should* be on the
+company board is `PATCH` of `project_id` + `visibility`. The row keeps its id, its
+history, its comments and its attachments, because it never moved stores.
+
+⚠️ **Do not build endpoints for this.** `routes/projects/personal.py` shipped it under
+WS-27e / D-PM-6 on 2026-08-06: `/projects/my/inbox`, `/projects/my/project`,
+`/projects/my/tasks`, `/projects/my/contexts`, `PATCH /projects/tasks/{id}/personal`.
+The overlay table `pm_task_personal` already carries `disposition`, `next_action`,
+`context`, `energy`, `time_estimate_mins`, `is_two_minute`, `defer_until` and
+`clarified_at` — the GTD overlay, column for column (measured 2026-08-24). What is
+missing is a **caller**, not a contract.
+
+### 12.5 The overlay is per-member, and that is not an edge case
+
+Two people assigned one task legitimately hold different dispositions — the person
+doing it says `NEXT`, the person who delegated it says `WAITING`. A single column on
+`pm_tasks` cannot express that, which is why the overlay is keyed
+`(task_id, member_email)`. This is what delegation *is*, and it is the reason the
+personal lens is an overlay rather than a filter.
+
+### 12.6 Acceptance — WS-39 S1 (ClickUp excision) · AGENT-SAFE
+
+**Done when all of these hold:**
+
+1. `rg -i "clickup" apps/ packages/ workbench/ scripts/ infra/postgres/*.sql` returns
+   **no hit in executable code** — matches surviving only in (a) migration *comments*
+   that are historical record, (b) the preserved column names of D52.3, (c) docs.
+2. `apps/services/ingestion/ingestion/sources/clickup/`, `apps/skills/skill-clickup-sync/`,
+   `scripts/clickup_sync.py`, `routes/projects/import_clickup.py`,
+   `routes/projects/import_tasks.py` and
+   `workbench/control_plane/src/app/projects/components/ImportClickUp.tsx` **do not exist**.
+3. The `ClickUpProvider` arm is gone from `routes/tasks/providers.py` and no provider
+   registry resolves `"clickup"`.
+4. `CLICKUP_API_TOKEN` / `CLICKUP_WORKSPACE_ID` / `CLICKUP_WEBHOOK_SECRET` appear in no
+   settings object, no integration catalog entry and no OAuth entry.
+5. **No migration is added.** D52.3's columns stay; dropping them is `work_plan.md`
+   §6 (c-2).
+6. Root `AGENTS.md` constraint 8 is amended (D52.4).
+7. `uv run pytest` over the affected suites is green with the ClickUp tests **deleted,
+   not skipped**, and `npx tsc --noEmit && npx vitest run` is green in
+   `workbench/control_plane`.
+
+**Verification commands:** `uv run pytest tests/unit/test_projects_import_mapping.py
+tests/unit/test_projects_import_tasks.py tests/unit/test_clickup_ingestor.py
+tests/unit/test_clickup_normalise_dlq.py` must all report **collected 0 items / file
+not found** (the files are deleted), and
+`uv run pytest tests/unit/test_integration_env_scoping.py tests/unit/test_app_tools.py
+tests/unit/test_action_broker.py` must be green with their ClickUp cases removed.
+
+### 12.7 Acceptance — WS-39 S3a (Tasks becomes the lens) · AGENT-SAFE
+
+**Done when:** the `/tasks` frontend issues **no** request to `/api/tasks/items*`;
+every task read and write goes to `/projects/my/*` or `/projects/tasks/*`; no code path
+writes `gtd_items`; and a task created in `/tasks` is visible in `/projects` under the
+creator's personal project **in the same page load**, with no sync step.
+
+**Fence (R7):** a test that greps the `/tasks` app tree for `/api/tasks/items` and
+fails on any hit — a structural fence over the whole surface, not an example test,
+because the failure mode is *one component left behind*, not *the design was wrong*.
+
+### 12.8 Acceptance — WS-39 S3b/S3c (backfill and drop) · 🔴 OWNER-GATE
+
+Building and R8-testing against scratch databases is agent-safe. **Running either
+against a real database is the owner's act** (`work_plan.md` §6 (f)). S3b must be
+proven **two-org on real Postgres** before it is offered, and the specific thing to
+prove is that a mis-mapped `member_email` cannot publish one member's private task
+into another member's lens.
 
 ---
 

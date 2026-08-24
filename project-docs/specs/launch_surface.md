@@ -88,7 +88,8 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 
 | Section | App | Route | Gate | Note |
 |---|---|---|---|---|
-| **Personal Center** | Tasks | `/tasks` | `feature:tasks` | |
+| **Personal Center** | Tasks | `/tasks` | `feature:tasks` | The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
+| **Personal Center** | Calendar | `/calendar` | `feature:calendar` | 🆕 **Added 2026-08-24 by D54**, lifted out of `/tasks/calendar`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
@@ -97,7 +98,9 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-Eight entries, four sections, in that order. **"Personal Center" survives as a
+**Nine** entries, four sections, in that order *(eight until 2026-08-24; D54 added
+Calendar — `nav.test.ts`'s count fence moved 8 → 9 in the same PR that added the pane,
+which is exactly what the fence is for)*. **"Personal Center" survives as a
 section label and nothing else** — it is a category of apps mapped one-to-one to
 the signed-in person, not a projection of a department, and the directive keeps
 it by name.
@@ -126,9 +129,11 @@ answer rather than a diff:
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the eight rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **nine** rows
 above are `live` — so adding a pane without deciding its launch status fails,
-and promoting one is a deliberate one-line edit with a test to update.
+and promoting one is a deliberate one-line edit with a test to update. *(It worked:
+D54's Calendar pane could not land without this table and that assertion both being
+edited on purpose.)*
 
 ---
 

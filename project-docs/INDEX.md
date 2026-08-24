@@ -42,16 +42,16 @@ limitations). Do not add product specs to `docs/`.
 | `specs/launch_surface.md` | WS-34 — **the launch surface of record (D49)**: which apps go live, which stay `preview`, flat ₹500/user/month pricing, the seat lifecycle a customer admin drives, and the nav-resolution contract. ⚠️ Supersedes `saas_multitenancy.md` §2.4b as the **pricing shape of record** and withdraws the Centers surface (the code, features and group grants all stay). |
 | `specs/future_modules_roadmap.md` | D21 roadmap (no rows until specced) |
 | `specs/crm_app.md` | WS-26 |
-| `specs/project_management_app.md` | WS-27 |
+| `specs/project_management_app.md` | WS-27 · **WS-39** — ⚠️ **§12 is the 2026-08-24 re-cut (D52/D53) and wins over §6/§7/§11**: ClickUp retired outright (no connector, no importer, no sync), and `pm_tasks`/`pm_task_personal` are the **only task store in the product**. §7's whole migration path is superseded; §11 is history, not a plan. |
 | `specs/people_center_app.md` | WS-28 |
 | `specs/department_centers.md` | WS-13 · WS-14 · WS-15 · WS-16 — **all four PARKED by D49** (2026-08-24): the Centers *surface* is withdrawn, so nothing dispatches from this spec today. It stays ACTIVE as the **design record** and §5 remains the Center roster of record (D22) — `lib/centers.ts`, the `center.*` features and the `group:<slug>` slice grants are all still live. See `specs/launch_surface.md` §5. |
 | `specs/colleague_onboarding.md` | WS-24 |
 | `specs/deploy_delivery_path.md` | WS-25 |
 | `specs/email_app_master_plan.md` | WS-17 |
-| `specs/task_manager_app.md` | WS-18 |
+| `specs/task_manager_app.md` | WS-18 · **WS-39** — ⚠️ **§13 (D53) wins over the body**: Tasks is the **personal lens over Projects**, not an app with its own store. `gtd_*` is retired; the `gtd_*` schema described above is the app *as built*, not a build target. |
 | `specs/note_taker_app.md` + `specs/meeting_bot_platform_plan.md` | WS-19 |
 | `specs/whatsapp_message_manager.md` | WS-20 |
-| `specs/calendar_focus_os.md` + `specs/calendar_timeboxing.md` | WS-21 |
+| `specs/calendar_focus_os.md` + `specs/calendar_timeboxing.md` | WS-21 · **WS-39** — ⚠️ **§10 (D54)**: Calendar becomes its own `live` pane at `/calendar` under Personal Center. 🔴 **Correction both these specs carry:** `gtd_time_blocks` and `calendar_accounts` **do not exist** (measured 2026-08-24) — `calendar_timeboxing.md` §13 P4 cites them as built. The calendar persists to `gtd_items` directly, plus `gtd_settings`/`gtd_day_state`/`gtd_rollover_log`. |
 | `specs/skills_registry.md` + `specs/skills_scope_out.md` | WS-23 |
 | `specs/workflows_app.md` | WS-11 |
 | `specs/multi_agent_orchestration.md` | WS-12 — **Phase 4 ONLY** (D6); rest superseded |

@@ -1,5 +1,18 @@
 # Calendar → Focus OS — evaluation & redesign brainstorm
 
+> 🔴 **READ §10 FIRST — 2026-08-24, D54 gives Calendar its own app.**
+> The calendar stops being a view inside `/tasks` and becomes **`/calendar`**, a
+> top-level `live` pane in the **Personal Center** section. Board row **WS-39**.
+>
+> 🔴 **AND A CORRECTION THIS SPEC'S FAMILY HAS BEEN CARRYING:** measured
+> 2026-08-24, **`gtd_time_blocks` does not exist and `calendar_accounts` does not
+> exist** — there is no `CREATE TABLE` for either anywhere in `infra/postgres/`.
+> `calendar_timeboxing.md` §13 P4 and `work_plan.md`'s WS-21 row both cite them as
+> if built. What the calendar actually persists to is **`gtd_items` directly**
+> (scheduling is fields on the task row) plus `gtd_settings`, `gtd_day_state` and
+> `gtd_rollover_log`. Any plan that begins "move the calendar's tables" is built on
+> a table that was never created. See §10.3.
+
 Status: **F0 + F1 BUILT** (2026-07-22, branch
 `claude/calendar-productivity-redesign-rdh50k`) — **verified against code on
 2026-08-03**: leverage lens + One Thing +
@@ -725,6 +738,99 @@ filter); `test_email_calendar_context.py` = the email-side calendar context;
   between focus_os and timeboxing is clean (§5 here is canonical for
   `gtd_time_blocks`; `calendar_timeboxing.md` §13 is canonical for P4); the other
   two docs are unregistered.
+
+## 10. Calendar becomes its own app (D54) — 2026-08-24
+
+**Status:** owner directive 2026-08-24, recorded as **D54** in `work_plan.md` §3.
+Board row **WS-39**, slice **S2**. This section owns *where the calendar lives*;
+everything above it still owns *what the calendar does*.
+
+### 10.1 What the owner asked for
+
+> *"It might make sense to also remove calendar from the tasks app and make it into
+> an app by itself under personal center."*
+
+### 10.2 The change, precisely
+
+| | Before | After |
+|---|---|---|
+| Route | `/tasks/calendar` | **`/calendar`** |
+| Nav | none — reached from inside Tasks | a pane in **Personal Center** (`src/lib/nav.ts`) |
+| Gate | inherited `feature:tasks` | **`feature:calendar`** |
+| Launch status | live by inheritance | **`live`**, explicitly |
+| Owner of behaviour | WS-21 | **still WS-21** |
+
+**It ships `live`, and the count fence moves with it.** `launch_surface.md` §2's live
+set goes **8 → 9** and `nav.test.ts`'s assertion is updated in the same PR. That fence
+exists so a pane cannot be added without someone deciding its launch status — so this
+is a deliberate edit, not a test that broke. Shipping it `preview` was considered and
+rejected: the calendar is reachable today inside a live app, so `preview` would
+*withdraw* a capability customers already have.
+
+**"Personal Center" is D49's section label**, not a Center projection. D49 withdrew
+the Centers surface; `lib/centers.ts`, the `center.*` features and the `group:<slug>`
+vocabulary are untouched.
+
+### 10.3 ⚠️ The measurement that changes the plan
+
+`routes/tasks/calendar.py` (68 KB, live) reads and writes:
+
+| Table | Role | Fate |
+|---|---|---|
+| `gtd_items` | **the tasks themselves** — scheduling is fields on the task row | ⚠️ **re-points to `pm_tasks`** when D53's S3a lands |
+| `gtd_settings` | per-member calendar preferences (migrations 77, 78) | **survives** D53's retirement (D53.6) |
+| `gtd_day_state` | per-member day state | **survives** |
+| `gtd_rollover_log` | roll-over audit (migration 78) | **survives** |
+
+So the calendar is a **third lens on the same rows** — Projects is the company board,
+Tasks is my list, Calendar is my time — and not a separate system with a store to
+move. Its own three tables do not move at all.
+
+**This is why S2 is sequenced before S3a and does not touch the store.** Extracting
+the surface is a route + registry change with no data semantics; re-pointing the task
+reads is a store change. Landing them in one diff would put a nav edit and a store
+migration in the same review.
+
+### 10.4 Scope — personal, and deliberately so
+
+**In:** my time blocks, my scheduled work, my day plan / roll-over / shutdown ritual,
+my connected external calendars (when the OAuth gate below is opened).
+
+**Out, explicitly:** Center-wide and company calendars. They require a model for whose
+blocks are legible to whom, which is a new owner decision and not an extension of D54.
+Naming them out here so the next agent does not read "Calendar app" as "all calendars".
+
+### 10.5 What does NOT change
+
+F0/F1 as built, the leverage lens, One Thing, Gap Filler, the Startup and Shutdown
+rituals, Focus Mode, the packer and its breaks, P3 roll-over, ideal week — all of it
+is behaviour, all of it stays, and **WS-21 keeps owning it** (D54.6). Horizons remains
+WS-21's per `work_plan.md` §4 and remains DO-NOT-DISPATCH: it still has no acceptance.
+
+**External sync stays 🔴 OWNER-GATE** — Google Calendar / Microsoft Graph OAuth client
+credentials provisioned on the box and registered in the Integration Registry. D54
+does not touch that gate, and giving the calendar its own front door does not open it.
+
+### 10.6 Acceptance — WS-39 S2 · AGENT-SAFE
+
+**Done when:**
+
+1. `/calendar` renders the calendar surface; `/tasks/calendar` no longer exists as a
+   route (or redirects once, permanently, and the redirect is tested).
+2. `src/lib/nav.ts` carries a Personal Center pane for `/calendar` with
+   `launch: "live"` and gate `feature:calendar`.
+3. `nav.test.ts` asserts the live set is exactly **nine** `(section, href)` pairs, and
+   `launch_surface.md` §2's table lists the ninth row.
+4. The Tasks app no longer imports any calendar component; the calendar components no
+   longer import from `src/app/tasks/`.
+5. `feature:calendar` exists as a grantable feature and `/access` reports it.
+6. `npx tsc --noEmit && npx vitest run` green in `workbench/control_plane`.
+
+**Fence (R7):** the `nav.test.ts` count assertion (structural — it fails on *any*
+undeclared pane, not just this one) plus an import-direction test asserting no module
+under `src/app/calendar/` imports from `src/app/tasks/`.
+
+---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

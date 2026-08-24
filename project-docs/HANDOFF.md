@@ -418,6 +418,49 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
+### H-27 · Revoke the ClickUp tokens at ClickUp · [OWNER]
+- **Check:** `SELECT count(*) FROM integration_credentials WHERE service = 'clickup';`
+  on the box, **and** whether the token still authenticates against
+  `https://api.clickup.com/api/v2/user`. Either one alive → still pending.
+  ⚠️ A repo-side grep cannot answer this and never could: WS-39 S1 deleted every
+  *reader* of the token, which is not the same as the token being dead. A
+  credential nobody reads is still a live credential at the vendor.
+- **Why:** D52 retires ClickUp outright. `work_plan.md` §6 WS-27 **(c-1)** — a
+  credential act, so an agent must refuse it by name. Also drop the `CLICKUP_*`
+  values from the box `.env` while you are there (env-write, gated).
+- **Authority:** `work_plan.md` §6 WS-27 (c-1) · D52.1
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-28 · WS-39: slices S2, S3a still to build · [AGENT]
+- **Check:** `rg -n '"/calendar"' workbench/control_plane/src/lib/nav.ts` → no hit
+  means **S2** unbuilt. `rg -l "/api/tasks/items" workbench/control_plane/src/app/tasks/`
+  → any hit means **S3a** unbuilt.
+- **Why:** S1 (ClickUp excision) landed; the re-plumbing it clears the way for did
+  not. S2 lifts the calendar to its own `live` pane (nav count fence 8→9); S3a
+  re-points the `/tasks` UI onto `/projects/my/*` so `pm_*` is the one task store.
+  ⚠️ **Read `routes/projects/personal.py` before designing anything** — S3a's server
+  side shipped in 2026-08-06 under D-PM-6, and an agent who starts writing endpoints
+  is building a second one.
+- **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
+  `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-29 · WS-39 S3b/S3c: the `gtd_*` backfill and drop · [OWNER]
+- **Check:** `psql -c "\dt gtd_items"` on the box → table present means S3c is still
+  pending. For S3b, `SELECT count(*) FROM gtd_items WHERE deleted_at IS NULL;` → a
+  non-zero count after S3a shipped means rows are still stranded in the old store.
+- **Why:** D53.5 retires `gtd_*` in three releases; (2) the backfill into members'
+  personal `pm_project`s and (3) the drop are **data moves against live customer
+  data** — the WS-29 cutover class, on a ladder that cannot roll back (R6). Building
+  and R8-testing them against scratch databases is agent-safe; running them is not.
+  ⚠️ **Prove the mapping two-org on real Postgres first.** The failure mode is not
+  lost data — it is a mis-mapped `member_email` publishing one member's *private*
+  task into somebody else's lens.
+  ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
+  they are the Calendar app's per-member state and survive (D53.6).
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8
+- **Added:** 2026-08-24 · WS-39 S1 session
+
 ---
 
 # DONE — deleted, not archived

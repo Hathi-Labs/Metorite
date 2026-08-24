@@ -35,11 +35,26 @@ reference tied to code. Do not put product specs in `docs/`.
   `department_centers.md` is now a design record (WS-13/14/15/16 parked).
 - **Apps** are the surfaces, in four sections: **Personal Center** (the
   per-user category, kept by name), **Apps**, **AI Studio**, **Admin**.
-  **Exactly eight panes are live**; every other pane is `preview` — routes,
+  **Exactly nine panes are live** (eight until 2026-08-24; D54 added Calendar);
+  every other pane is `preview` — routes,
   API and tests intact, nav entry absent. The allowlist of record is
   `specs/launch_surface.md` §2, mirrored in `src/lib/nav.ts`, and `nav.test.ts`
   fails if the two disagree. `preview` is **not** a permission: never revoke a
   feature to hide an app.
+- **ONE task store, three lenses** *(D52/D53/D54, 2026-08-24 — board `WS-39`)*.
+  `pm_tasks` + `pm_task_personal` hold every task in the product. **Projects**
+  (`/projects`) is the company board, **Tasks** (`/tasks`) is my personal lens,
+  **Calendar** (`/calendar`) is my time — none is a copy, so completing a task in
+  one completes it in all, with no sync. A "personal task" is a **private task in
+  my own personal project**, not a row in a second table; publishing it is a
+  `PATCH` of `project_id`+`visibility`. The per-member overlay
+  (disposition/context/energy/defer) is `pm_task_personal`, keyed
+  `(task_id, member_email)`, because two people assigned one task legitimately
+  disagree about its disposition. ⚠️ **`gtd_*` is retired** — it is the old Tasks
+  store, still on disk during expand/contract; do not build against it, and do not
+  sweep `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` with it (they are the
+  Calendar's). ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
+  is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. Center packages, add-ons and Complete are
   retired. `specs/launch_surface.md` §4 is the shape of record;
