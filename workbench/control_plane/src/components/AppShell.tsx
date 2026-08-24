@@ -30,8 +30,9 @@ import { useSession, signOut } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
-import { visibleSections } from "@/lib/nav";
+import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
+import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
@@ -82,6 +83,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
+  // ── Onboarding routes carry NO application chrome ────────────────────────
+  // Sign-in and sign-up are the doorway, not the house: the sidebar, docks
+  // and bottom nav all assert "you are inside a workspace", which is exactly
+  // what someone on these pages is not yet (owner directive 2026-08-24 — the
+  // signup form rendered beside the full sidebar). One bare main, both form
+  // factors.
+  if (isChromeless(pathname ?? "")) {
+    return (
+      <main className="h-screen overflow-auto bg-background">{children}</main>
+    );
+  }
+
   // ── Desktop layout ───────────────────────────────────────────────────────
   if (!isMobile) {
     return (
@@ -90,6 +103,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 min-w-0 overflow-auto">
           <AccessGate>{children}</AccessGate>
         </main>
+        <WelcomeDialog />
         <FocusSession />
         <RecordingDock />
         <LiveDock />
@@ -122,6 +136,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
           <AccessGate>{children}</AccessGate>
         </main>
+        <WelcomeDialog />
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">

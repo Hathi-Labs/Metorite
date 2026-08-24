@@ -118,6 +118,17 @@ export default function Sidebar() {
     };
   }, []);
 
+  // A signed-in person with NO organization is mid-onboarding, not in a
+  // workspace — AccessGate is showing them the join-vs-create chooser, and a
+  // sidebar beside it (My Profile, My Access, Appearance) narrates a product
+  // they have not joined (owner directive 2026-08-24, riding D51.2's "the
+  // org is unmistakable": no org, no workspace chrome). Gated on the
+  // resolution having LANDED — hiding on `loading` would flash the whole
+  // layout on every ordinary sign-in. AFTER every hook, deliberately.
+  if (!accessLoading && access.authenticated && !access.organization?.slug) {
+    return null;
+  }
+
   return (
     <aside
       className={`shrink-0 border-r flex flex-col transition-all duration-200 bg-sidebar border-sidebar-border ${

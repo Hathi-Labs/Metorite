@@ -45,6 +45,25 @@ import { CENTERS } from "@/lib/centers";
  *               tests all intact; the gateway still authorizes it exactly as
  *               before. It simply is not offered.
  */
+/**
+ * Routes that render WITHOUT the application chrome — no sidebar, no docks,
+ * no mobile bottom nav (CP-2c onboarding UX, owner directive 2026-08-24: the
+ * signup form was rendering inside the app shell, sidebar and all, which
+ * reads as "you are already in the product" to someone who has not joined
+ * it). Prefix-matched, so `/signin/code` rides on `/signin`.
+ *
+ * Deliberately NOT the same thing as "public": `/signup` requires a session
+ * (its page redirects without one). Chrome is a statement about belonging to
+ * an organization's workspace; onboarding is the state of not yet belonging.
+ */
+export const CHROMELESS_ROUTES: readonly string[] = ["/signin", "/signup"];
+
+export function isChromeless(pathname: string): boolean {
+  return CHROMELESS_ROUTES.some(
+    (r) => pathname === r || pathname.startsWith(`${r}/`),
+  );
+}
+
 export type LaunchStatus = "live" | "preview";
 
 export type NavPane = {

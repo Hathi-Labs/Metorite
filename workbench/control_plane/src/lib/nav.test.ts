@@ -15,6 +15,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CHROMELESS_ROUTES,
+  isChromeless,
   LIVE_PANES,
   NAV_SECTIONS,
   PANES,
@@ -50,6 +52,30 @@ function panesWithSection(): Array<[string, NavPane]> {
 const ALL_FEATURES = PANES.map((p) => p.feature).filter(
   (f): f is string => typeof f === "string",
 );
+
+describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
+  it("covers exactly the doorway — sign-in and sign-up, with their subpaths", () => {
+    expect(CHROMELESS_ROUTES).toEqual(["/signin", "/signup"]);
+    expect(isChromeless("/signup")).toBe(true);
+    expect(isChromeless("/signin")).toBe(true);
+    expect(isChromeless("/signin/code")).toBe(true);
+  });
+
+  it("matches path SEGMENTS, never prefixes of other routes", () => {
+    // A route that merely starts with the same letters must keep its chrome —
+    // the naive startsWith("/signin") would strip the shell from a future
+    // "/signin-help" page.
+    expect(isChromeless("/signup-guide")).toBe(false);
+    expect(isChromeless("/")).toBe(false);
+    expect(isChromeless("/settings/organization")).toBe(false);
+  });
+
+  it("no chromeless route is a navigable pane — the doorway is not in the sidebar", () => {
+    for (const pane of PANES) {
+      expect(isChromeless(pane.href)).toBe(false);
+    }
+  });
+});
 
 describe("the launch allowlist (LS-1)", () => {
   it("ships exactly the eight panes launch_surface.md §2 names", () => {
