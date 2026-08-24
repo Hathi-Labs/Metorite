@@ -232,12 +232,15 @@ class TestThePurge:
                 {"i": org["id"], "r": f"req-{uuid.uuid4().hex[:8]}",
                  "e": org["owner"]},
             )
+            # Actor deliberately an ADDRESS: under the deployment-key scheme
+            # the acting admin's email lands in `control_audit.actor` itself
+            # (repair round 2's blocking find — the first scrub covered
+            # `detail` and left this column leaking).
             c.execute(
                 text("INSERT INTO control_audit "
                      "(organization_id, actor, action, detail) "
-                     "VALUES (:i, 'operator', 'member.add', "
-                     "CAST(:d AS jsonb))"),
-                {"i": org["id"],
+                     "VALUES (:i, :a, 'member.add', CAST(:d AS jsonb))"),
+                {"i": org["id"], "a": f"admin@{org['slug']}.example",
                  "d": json.dumps({"email": org["owner"], "role": "member"})},
             )
         _walk_to_deleted(client, org["slug"])
@@ -245,6 +248,7 @@ class TestThePurge:
         assert r.status_code == 200, r.text
         assert r.json()["scrubbed"]["usage_event.user_email"] >= 1
         assert r.json()["scrubbed"]["control_audit.detail"] >= 1
+        assert r.json()["scrubbed"]["control_audit.actor"] >= 1
         with db.begin() as c:
             emails = c.execute(
                 text("SELECT count(*) FROM usage_event "
@@ -265,6 +269,14 @@ class TestThePurge:
                 {"i": org["id"], "keys": list(_AUDIT_EMAIL_KEYS)},
             ).scalar_one()
             assert leaking == 0
+            # The column beside it too: no email-shaped actor survives (the
+            # role-word 'operator' does — it names no one).
+            actor_leak = c.execute(
+                text("SELECT count(*) FROM control_audit "
+                     "WHERE organization_id = :i AND actor LIKE '%@%'"),
+                {"i": org["id"]},
+            ).scalar_one()
+            assert actor_leak == 0
             # The audit rows themselves survive — the trail is the point.
             trail = c.execute(
                 text("SELECT count(*) FROM control_audit "

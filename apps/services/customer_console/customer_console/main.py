@@ -1282,10 +1282,10 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
 #: erasure request for a PERSON (as opposed to an org) is a different act and
 #: not this door.
 #:
-#: `_ORG_PURGE_ALL_ORG_SCOPED` in `test_org_purge_console.py` re-derives the
-#: full set of org-scoped Console tables from information_schema and pins
-#: DELETES ∪ KEEPS_TABLES equal to it, so a new table cannot land in neither
-#: list silently.
+#: `TestTheClassificationCannotGoStale` in `test_org_purge_console.py`
+#: re-derives the full set of org-scoped Console tables from
+#: information_schema and pins DELETES union KEEPS_TABLES equal to it, so a
+#: new table cannot land in neither list silently.
 _ORG_PURGE_DELETES: tuple[str, ...] = (
     "seat_assignment",
     "member_ai_cap",
@@ -1328,6 +1328,24 @@ _ORG_PURGE_KEEPS: tuple[str, ...] = (
 _AUDIT_EMAIL_KEYS: tuple[str, ...] = (
     "email", "owner_email", "member_email", "actor_email", "user_email",
 )
+
+#: The detail-strip expression, built ONCE from the module constant above —
+#: the operands are this tuple, never request input, which is what makes the
+#: interpolation below static SQL rather than construction from data.
+_AUDIT_DETAIL_STRIP_SQL = (
+    "UPDATE control_audit SET detail = detail - "
+    + " - ".join(f"'{k}'" for k in _AUDIT_EMAIL_KEYS)
+    + " WHERE organization_id = :i AND detail ?| :keys"
+)
+
+#: `control_audit.actor` is an EMAIL under the deployment-key scheme
+#: (`_admin_scheme_for_deployment` returns the acting admin's address, and
+#: `member.add`/`seat.assign`/`seat.release` write it straight into the
+#: column) — repair round 2's blocking find: the first scrub covered `detail`
+#: and left the address sitting one column over. The column is NOT NULL, so
+#: email-shaped actors are OVERWRITTEN with this placeholder; `'operator'`
+#: and other role-words carry no address and stay.
+_ACTOR_PURGED = "[purged]"
 
 _TOMBSTONE_RE = r"-purged-[0-9a-f]{6}$"
 
@@ -1392,11 +1410,14 @@ def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
                  "WHERE organization_id = :i AND user_email IS NOT NULL"),
             {"i": org_id},
         ).rowcount
-        strip = " - ".join(f"'{k}'" for k in _AUDIT_EMAIL_KEYS)
         scrubbed["control_audit.detail"] = conn.execute(
-            text(f"UPDATE control_audit SET detail = detail - {strip} "
-                 "WHERE organization_id = :i AND detail ?| :keys"),
+            text(_AUDIT_DETAIL_STRIP_SQL),
             {"i": org_id, "keys": list(_AUDIT_EMAIL_KEYS)},
+        ).rowcount
+        scrubbed["control_audit.actor"] = conn.execute(
+            text("UPDATE control_audit SET actor = :p "
+                 "WHERE organization_id = :i AND actor LIKE '%@%'"),
+            {"i": org_id, "p": _ACTOR_PURGED},
         ).rowcount
         tombstone = f"{req.org_slug}-purged-{uuid.uuid4().hex[:6]}"
         conn.execute(

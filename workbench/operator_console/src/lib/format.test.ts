@@ -12,6 +12,7 @@ import {
   suggestSlug,
   plansNotice,
   lifecycleHint,
+  TOMBSTONE_RE,
   isSeated,
   memberTally,
   readMembers,
@@ -137,6 +138,20 @@ describe("lifecycleActions (advisory UX only)", () => {
         expect(allowed).toContain(a.target);
       }
     }
+  });
+});
+
+describe("TOMBSTONE_RE (CP-2g — the purged-slug shape)", () => {
+  it("matches a tombstone and nothing that merely resembles one", () => {
+    expect(TOMBSTONE_RE.test("acme-purged-a1b2c3")).toBe(true);
+    expect(TOMBSTONE_RE.test("acme")).toBe(false);
+    // A customer whose real slug ENDS in the word is not a tombstone —
+    // the suffix demands exactly six hex characters.
+    expect(TOMBSTONE_RE.test("acme-purged")).toBe(false);
+    expect(TOMBSTONE_RE.test("acme-purged-xyzxyz")).toBe(false);
+    expect(TOMBSTONE_RE.test("acme-purged-a1b2c")).toBe(false);
+    // Double-purge relics from before the server-side 409 still match.
+    expect(TOMBSTONE_RE.test("acme-purged-a1b2c3-purged-d4e5f6")).toBe(true);
   });
 });
 

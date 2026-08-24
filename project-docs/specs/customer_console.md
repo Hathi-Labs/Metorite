@@ -5323,9 +5323,11 @@ finding at `store.py:720-726` is untouched) · does NOT add a chooser · does NO
 mint a migration.
 
 **CP-2g · Organization offboarding, end to end — MINTED + BUILT 2026-08-24,
-REPAIRED the same day (verify FAIL + adversarial review: 1 P0 · 5 P1 · 2 P2,
-all closed below; owner directive: "delete organizations … before I do the
-end-to-end onboarding").** ◐ **Ships dark** — the tenant half answers 503
+REPAIRED the same day, twice (round 1: verify FAIL + adversarial review, 1 P0
+· 5 P1 · 2 P2; round 2: the re-verify found `control_audit.actor` still
+carrying the acting admin's address — now overwritten with `[purged]`, fenced;
+owner directive: "delete organizations … before I do the end-to-end
+onboarding").** ◐ **Ships dark** — the tenant half answers 503
 until `GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
 `GATEWAY_INTERNAL_URL` + `GATEWAY_INTERNAL_TOKEN` + the operator token.
 

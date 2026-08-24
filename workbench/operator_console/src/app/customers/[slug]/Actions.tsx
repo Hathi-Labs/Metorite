@@ -7,6 +7,7 @@ import {
   lifecycleActions,
   formatPaise,
   memberTally,
+  TOMBSTONE_RE,
   type CatalogPlan,
   type MemberRow,
 } from "@/lib/format";
@@ -80,7 +81,7 @@ export default function Actions({
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
       </div>
-      {status === "deleted" && !/-purged-[0-9a-f]{6}$/.test(slug) && (
+      {status === "deleted" && !TOMBSTONE_RE.test(slug) && (
         <DangerPanel slug={slug} />
       )}
     </>

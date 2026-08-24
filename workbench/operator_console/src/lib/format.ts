@@ -178,6 +178,13 @@ export function lifecycleActions(status: string): { label: string; target: strin
   ];
 }
 
+// A purged organization's tombstone slug (CP-2g): `<slug>-purged-<hex6>`.
+// ONE home on this side — `Actions.tsx` imports it to suppress the
+// DangerPanel; the Console door's `_TOMBSTONE_RE` (customer_console/main.py)
+// is the other-language twin and the real fence (it 409s a tombstone
+// server-side). Fenced in `format.test.ts`.
+export const TOMBSTONE_RE = /-purged-[0-9a-f]{6}$/;
+
 // The nudge that closes the gap between the two statuses, or `null`.
 //
 // `organization.status` (the lifecycle) and `org_subscription.status` (the

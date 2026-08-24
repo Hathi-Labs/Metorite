@@ -43,6 +43,13 @@ the gate is platform-staff identity.
 | `CUSTOMER_CONSOLE_URL` | The Customer Console operator API base URL |
 | `CUSTOMER_CONSOLE_OPERATOR_TOKEN` | The staff operator token (server-side only) |
 | `OPERATOR_CONSOLE_STAFF_SECRET` | Interim staff gate; replaced by staff Entra |
+| `GATEWAY_INTERNAL_URL` | CP-2g purge only: the gateway's loopback base URL (e.g. `http://127.0.0.1:8080`) |
+| `GATEWAY_INTERNAL_TOKEN` | CP-2g purge only: the gateway's ordinary machine bearer (clears its app-level gate) |
+| `GATEWAY_OPERATOR_TOKEN` | CP-2g purge only: the operator door's own credential (`X-Operator-Token`) |
+
+The three `GATEWAY_*` variables arm exactly one action — destroying an
+organization's tenant plane from the DangerPanel. All server-side only
+(fenced by `console.test.ts`); unset, the purge fails CLOSED with a 503.
 
 ## Verify
 

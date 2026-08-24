@@ -161,6 +161,25 @@ class TestThePurge:
             with eng.begin() as conn:
                 _cleanup(conn, slug=slug, org=org)
 
+    async def test_a_mixed_case_slug_is_matched_byte_exactly(self, eng):
+        """R7 for offboard's "never case-fold" rule (repair round 2): the
+        tenant lookup must take the slug byte-identically. Round 1's `.lower()`
+        made a mixed-case org an `already_absent` no-op that answered 200 —
+        re-adding any normalisation turns this red."""
+        from acb_auth.offboard import purge_tenant_organization
+
+        slug = f"Purge-Mixed-{uuid.uuid4().hex[:8]}"
+        with eng.begin() as conn:
+            org = _seed_org(conn, slug=slug)
+        try:
+            async with tenant_engine_scope(_URL):
+                receipt = await purge_tenant_organization(slug=slug)
+            assert receipt["already_absent"] is False, receipt
+            assert receipt["deleted"] == {"organization": 1}
+        finally:
+            with eng.begin() as conn:
+                _cleanup(conn, slug=slug, org=org)
+
     async def test_an_absent_org_answers_already_absent(self, eng):
         """The retry arm: a half-failed two-plane purge is just run again."""
         from acb_auth.offboard import purge_tenant_organization
