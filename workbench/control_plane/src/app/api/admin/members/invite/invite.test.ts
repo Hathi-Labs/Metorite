@@ -108,7 +108,7 @@ describe("with the flag unset (the shipped default)", () => {
     stubFetch();
     const res = await invoke(VALID);
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ invited: true, email_sent: false });
+    expect(await res.json()).toMatchObject({ invited: true, email_sent: false, email_channel: "disabled" });
     expect(sends()).toHaveLength(0);
     // And exactly ONE gateway call: the `/auth/me` org read lives inside the
     // lit arm, so a dark box behaves as it did before this route existed.
@@ -147,7 +147,7 @@ describe("with the flag and the key set", () => {
   it("sends exactly ONE message, to the invited address alone", async () => {
     stubFetch();
     const res = await invoke(VALID);
-    expect(await res.json()).toMatchObject({ invited: true, email_sent: true });
+    expect(await res.json()).toMatchObject({ invited: true, email_sent: true, email_channel: "sent" });
     expect(sends()).toHaveLength(1);
     const body = JSON.parse(String(sends()[0].init?.body ?? "{}"));
     expect(body.to).toBe("new@customer.example");
@@ -182,7 +182,11 @@ describe("with the flag and the key set", () => {
     // sending it — the membership is written either way.
     stubFetch({ me: {} });
     const res = await invoke(VALID);
-    expect(await res.json()).toMatchObject({ invited: true, email_sent: false });
+    // The deployment IS armed and no mail went out — "failed", not "disabled",
+    // so the surface tells the admin to notify the colleague themselves.
+    expect(await res.json()).toMatchObject({
+      invited: true, email_sent: false, email_channel: "failed",
+    });
     expect(sends()).toHaveLength(0);
   });
 });
@@ -224,7 +228,9 @@ describe("when the send fails", () => {
 
     const res = await invoke(VALID);
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ invited: true, email_sent: false });
+    expect(await res.json()).toMatchObject({
+      invited: true, email_sent: false, email_channel: "failed",
+    });
     // One attempt, not two: the membership is already written on both planes
     // and cannot be repeated, so a retry risks a duplicate message for a write
     // that never happens twice.

@@ -5137,7 +5137,7 @@ second dispatcher, not a new auth scheme.
   no-cross-org-oracle rule). More than one ⇒ **409**, because the chooser is a
   named non-goal. The operator arm NAMES the org, as `POST /billing/seats` does.
 - **The derivation is EXTRACTED, not copied.** `_seat_admin_for_deployment` is
-  split into `_deployment_scheme_context` (the R11 derivation: the `org_slug`
+  split into `_admin_scheme_context` (the R11 derivation: the `org_slug`
   400, the `actor_email` 400, the 403 and the 409) and a **per-door registry
   gate** applied by each caller. One derivation seam, two door policies stated at
   their doors — the idiom this file already applies to capabilities.
@@ -5184,6 +5184,44 @@ a named customer, and a staff read must not activate anybody. **Only the
 single-org branch** — the multi-org branch deliberately allocates nothing (clause
 9) and its resolve REFUSES upstream (`WorkspaceChooserRequired`), so promoting
 there would activate a membership for a sign-in that never completed.
+
+**The TENANT half of D50.3 (review-round-1 repair, 2026-08-24).** The registry
+promotion alone left the colleague dead-ended at the tenant AccessGate ("Your
+account is not active"): flag-OFF access reads `app_user.status == "active"` and
+flag-ON's identity leg filters `m.status = 'active'` — both fail closed on
+`invited`. `acb_auth.access.promote_invited_member` closes it: called from
+exactly ONE site (the gateway's `POST /signin/resolve`, only after
+`decision.admit` — the same farmable-surface rule that keeps the resolve itself
+off the per-request path), it reads the RLS-EXEMPT identity shadow for this
+address's `invited` memberships and, per org, promotes `app_user.status` inside
+`tenant_session(org)` (the ONE GUC seam — `app_user` is RLS-forced in
+production) and forwards the shadow via the existing `mirror_membership_status`.
+Both UPDATEs carry `AND status = 'invited'` in their own `WHERE`; best-effort —
+a failed promotion never changes the resolve answer and fails CLOSED. Fence:
+`tests/unit/test_invited_member_promotion.py` (R8; guard shown red with
+parametrised `suspended`/`removed`/`active` rows, idempotence, both-tables
+promotion, never-raises) plus structural pins (the write inside the GUC seam;
+the call under `decision.admit`).
+
+**Seat cost, stated honestly (review finding 4).** An invited colleague's first
+admitted sign-in burns a Core seat — and with the tenant half above, that seat
+now funds a WORKING member (pre-repair it funded a dead end, unnamed). At the
+cap the resolve 409s and the shared transaction ROLLS THE PROMOTION BACK — the
+colleague stays `invited` and no seat burns; fenced by
+`::TestTheCapRollsThePromotionBack` (which also pins the corrected comment
+beside the promotion).
+
+**The BACKLOG, named (folded from the parallel PR #74 mint, which measured it in
+production).** This door fixes invites from NOW ON. Memberships created BEFORE
+it existed are still Console-invisible — measured live 2026-08-23 on the
+`hathilabs` org: **2 tenant members, 1 Console seat, zero `/seats/assign` calls
+in 24h of gateway logs** — i.e. the seat cap binds only people the Console
+knows, and an org that bought N seats can exceed them with pre-CP-2f members.
+**CP-2f slice 2 (unbuilt): the backlog sweep** — a reconcile in the CP-2e
+reconciler's shape that walks tenant memberships absent from the Console and
+mirrors them `invited`/`active` as their `app_user.status` says, idempotent,
+operator-triggered. Until it runs, pre-existing members resolve (the gateway
+admits from the tenant plane) but hold no registry membership and no seat.
 
 **NO MIGRATION.** `001_customer_console.sql:121-131` already declares
 `org_membership.status TEXT NOT NULL DEFAULT 'active' CHECK (status IN

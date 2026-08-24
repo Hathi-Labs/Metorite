@@ -140,7 +140,7 @@ def member_key(db):
     )
 
 
-def _add(client, key: str, **body) -> "object":
+def _add(client, key: str, **body) -> object:
     return client.post(
         "/registry/members",
         headers={"Authorization": f"Bearer {key}"},
@@ -680,3 +680,81 @@ def test_this_suite_is_named_in_the_spec_verification_block() -> None:
         "customer_console.md §7 does not name this suite — CP-2f's acceptance "
         "would then be verified by nobody following the spec"
     )
+
+
+# ── Review round 1, finding 3 — the cap-vs-promotion interaction ─────────────
+
+class TestTheCapRollsThePromotionBack:
+    def test_a_cap_409_rolls_the_promotion_back(self, client, db, member_key):
+        """A colleague refused a seat stays ``invited`` and no seat is burned.
+
+        Measured in review round 1 (finding 3): ``activate_invited_member`` and
+        ``_allocate_core_seat`` share one transaction, so the seat-cap
+        ``HTTPException`` unwinds the promotion with it. The comment above the
+        promotion used to claim the OPPOSITE order of events; this pins the
+        real one so neither the comment nor the behaviour can drift silently.
+        """
+        org = _new_org(client, core_seats=1)
+        resolve_key = _key(db, deployment_id=_deployment_id(db))
+        # The founder takes the only seat.
+        assert _resolve(client, resolve_key, email=org["owner"]).status_code == 200
+
+        who = f"capped-{uuid.uuid4().hex[:6]}@x.example"
+        assert _add(client, member_key, member_email=who,
+                    actor_email=org["owner"]).status_code == 200
+        assert _status(db, org_id=org["id"], email=who) == "invited"
+
+        r = _resolve(client, resolve_key, email=who)
+        assert r.status_code == 409, r.text
+        # The rollback is the assertion: still invited, joined_at never stamped.
+        assert _status(db, org_id=org["id"], email=who) == "invited"
+        assert _joined_at(db, org_id=org["id"], email=who) is None
+
+
+# ── Review round 1, finding 8 — the REAL client against the REAL route ───────
+
+class TestTheGatewayClientSpeaksThisDoorsWire:
+    def test_invite_member_on_console_lands_a_row_end_to_end(
+        self, client, db, member_key, monkeypatch
+    ):
+        """`acb_auth.console_resolve.invite_member_on_console` → the real app.
+
+        Both halves shipped with their own suites — the client against a
+        ``MockTransport``, the door via ``TestClient`` — so a field-name drift
+        between them would have stayed green on both sides and shown up only in
+        production as a silently-logged refusal (finding 1's blindness). This
+        drives the REAL client through ``httpx.ASGITransport`` into the REAL
+        Console app, the ``test_org_provisioning.py`` precedent applied to the
+        member door.
+        """
+        import asyncio
+
+        import httpx
+
+        from acb_auth import console_resolve as cr
+
+        org = _new_org(client)
+        who = f"wire-{uuid.uuid4().hex[:6]}@x.example"
+
+        monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "http://console.test")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", member_key)
+
+        from customer_console.main import app as console_app
+
+        def asgi_client():
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=console_app),
+                base_url="http://console.test",
+                timeout=5.0,
+            )
+
+        monkeypatch.setattr(cr, "_new_http_client", asgi_client)
+
+        status, body = asyncio.run(
+            cr.invite_member_on_console(
+                actor_email=org["owner"], member_email=who,
+            )
+        )
+        assert status == 200, body
+        # The wire matched: the row is really there, with the door's semantics.
+        assert _status(db, org_id=org["id"], email=who) == "invited"

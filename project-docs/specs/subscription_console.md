@@ -747,8 +747,20 @@ email is pure copy — losing it costs the recipient a nudge, nothing more.
   `/api/admin/[...path]` catch-all for this one path (Next's more-specific route
   wins). The catch-all is **NOT** special-cased: adding an `if (path[0] ===
   "members")` to a generic proxy is how a proxy becomes a router.
-- `src/app/settings/members/page.tsx` — `InviteDialog` posts to the new route and
-  reports the send outcome modestly.
+- The surface *(re-homed 2026-08-24 after D49's launch surface moved the roster)*:
+  `/settings/members` is now a redirect, and the invite lives in
+  `src/app/settings/organization/OrganizationAdmin.tsx`'s `InviteDialog`, which
+  posts to the new route and threads the response's **`email_channel`** into
+  `lib/inviteSeat.ts`'s outcome machine — `"disabled"` says NOTHING (the shipped
+  default is not a failure), `"sent"` appends "on its way", `"failed"` keeps the
+  dialog OPEN with the next action ("tell them to sign in with this address").
+  The member-first sentence rule and `shouldStayOpen` discipline are
+  `inviteSeat.ts`'s, extended rather than forked; fences in
+  `inviteSeat.test.ts::the notification email channel`. *(Review-round-1 F2: the
+  first shape set a notice React unmounted before paint, and told admins on
+  never-sending boxes that "no email went out" — a bare `email_sent` boolean
+  cannot separate dark-by-config from armed-and-failed, which is why the
+  response now carries the three-valued channel beside it.)*
 
 **Ships dark: `MEMBER_INVITE_EMAIL_ENABLED`.** Default OFF, compared to the
 **exact string `"true"`** (never truthiness — an operator who writes
@@ -798,10 +810,16 @@ this route**: the Console hop is the gateway's (CP-2f), one tier down.
    inside the `res.ok` arm, so a refusal cannot mail anybody. Fence:
    `invite.test.ts::a refused invite mails nobody`, parameterised over the four
    statuses.
-4. **Send failure ⇒ `{invited: true, email_sent: false}`, 200, no retry, and the
-   invite call is made exactly once.** The membership write already committed;
-   failing the response would tell the admin the invite did not happen when it
-   did. Fence: `invite.test.ts::a failed send never un-invites`.
+4. **Send failure ⇒ `{invited: true, email_sent: false, email_channel:
+   "failed"}`, 200, no retry, and the invite call is made exactly once.** The
+   membership write already committed; failing the response would tell the admin
+   the invite did not happen when it did. `email_channel` is three-valued —
+   `"disabled"` (flag/key unset, the shipped default, NOT a failure) ·
+   `"sent"` · `"failed"` (armed and no mail went out, incl. an unestablishable
+   org name) — because a bare boolean cannot separate the state the admin must
+   act on from the state that is nobody's problem (review-round-1 F2). Fence:
+   `invite.test.ts::a failed send never un-invites` + the channel pins on all
+   four arms.
 5. **R11 — the outbound body is rebuilt.** `org` / `actor_email` / `organization_id`
    present in the request body never appear on the wire to the gateway. Fence:
    `invite.test.ts::the forbidden keys are dropped`, red-first by forwarding the
@@ -815,7 +833,7 @@ this route**: the Console hop is the gateway's (CP-2f), one tier down.
    (`Button`/`Icon` from `src/components/ui/`), writes no colour and imports no
    `lucide-react`; `src/lib/theme/conformance.test.ts` stays green. Because
    nothing in this tree runs a DOM, the **theme-switch check (Fluent → Material →
-   Graphite, on `/settings/members` *and* a neighbour) is described in the PR
+   Graphite, on `/settings/organization` *and* a neighbour) is described in the PR
    rather than asserted** — that description is the gate, per root `CLAUDE.md` §4.
 
 **Copy that is now FALSE and is struck.** The dialog said *"Sign-in is Microsoft

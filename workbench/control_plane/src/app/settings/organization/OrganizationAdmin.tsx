@@ -1139,7 +1139,12 @@ function InviteDialog({
     setOutcome(null);
     const target = email.trim();
     try {
-      const res = await fetch("/api/admin/members", {
+      // WS-30 SC-2c (D50): `/api/admin/members/invite` SHADOWS the catch-all
+      // for this one path — it forwards the identical gateway call and, on a
+      // deployment configured for it, sends ONE notification email, reporting
+      // the channel back as `email_channel` ("disabled" | "sent" | "failed").
+      // A refusal is relayed verbatim, so the failure arm below is unchanged.
+      const res = await fetch("/api/admin/members/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1153,6 +1158,10 @@ function InviteDialog({
         setOutcome(fromInviteFailure(body.detail ?? "Invite failed."));
         return;
       }
+      const inviteBody = (await res.json().catch(() => ({}))) as {
+        email_channel?: "disabled" | "sent" | "failed";
+      };
+      const emailChannel = inviteBody.email_channel ?? "disabled";
 
       // The member now EXISTS. Everything below can fail without changing that.
       let seat = null;
@@ -1175,7 +1184,7 @@ function InviteDialog({
         }
       }
 
-      const result = afterInvite(seat);
+      const result = afterInvite(seat, emailChannel);
       setOutcome(result);
       // Refresh the roster whatever happened, so the new member appears even
       // when the seat half did not land.
