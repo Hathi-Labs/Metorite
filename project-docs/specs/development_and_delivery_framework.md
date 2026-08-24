@@ -129,6 +129,97 @@ the direct consequence of R6. **We cannot roll back.** A forward-only migration
 ladder with no blue/green means the only recovery is roll-forward or restore, so
 the last cheap moment to say "not this one" is *before* the ref moves.
 
+### 2.4 One repository, or three? — the marketing site and the Operator Console
+
+**Recommendation: keep both in this repository, and name the trigger that would
+change the answer.** Measured 2026-08-24; the reasoning differs per surface, so
+they are answered separately.
+
+**What is already true.** Both surfaces are *fully isolated inside the monorepo*,
+by recorded decision rather than by accident:
+
+| | `site/` (WS-33) | `workbench/operator_console/` (CP-8) |
+|---|---|---|
+| Shared code with `control_plane` | none — one self-contained HTML file | **none.** `rg` for cross-imports returns nothing; dependencies are `next`, `react`, `react-dom` and nothing else |
+| Design system | **exempt** — "not a product surface" (`site/AGENTS.md`) | **exempt by D35.4** — deliberately not on the customer design system; plain CSS |
+| Build | none at all | its own `next build`, its own port (3002) |
+| Deployment | a Caddy vhost over a static file | its own Next app, own systemd unit, own env, own hostname |
+| Coupling to the rest | the CTA URLs only | the **HTTP contract** with `apps/services/customer_console/` |
+
+So the deploy boundary, the dependency boundary and the design boundary already
+exist. **A repository boundary would add exactly one thing those three do not
+give you: an access boundary** — the ability to let somebody work on one surface
+without seeing the others. That reduces the decision to a single question, and it
+is not a technical one:
+
+> **Is there a person who should be able to change the landing page, or the
+> operator console, and *not* see the product source?**
+
+If no, splitting buys nothing and costs the four things below. If yes, split —
+that is the one thing a monorepo genuinely cannot do.
+
+**What a split costs here, specifically.**
+
+1. **It converts a same-PR change into cross-repo coordination, on the money
+   plane.** The Operator Console's BFF consumes the Customer Console's operator
+   routes. Today a route change and its consumer land in one PR under one CI run.
+   Split, and that becomes two PRs in two repos with nothing able to fence the
+   pair — which is exactly `engineering_practice.md` §0.1's *"two PRs green
+   alone, red together, twice in one day"*, with the fence removed rather than
+   improved. ⚠️ **No contract test exists between them today in either topology**
+   — the service side is covered by `test_customer_console_operator_list.py`, the
+   UI side by vitest, and nothing checks that the two agree. In a monorepo that is
+   a gap; across repos it is a permanent one.
+2. **The harness stops travelling (D29).** `.claude/` — `plan-guard`, the four
+   supervisor agents, the owner-gate refusals — is tracked precisely because a
+   checkout without it *"ran with no plan-guard, no supervisor-worker agent
+   definitions and no `/next-ticket`"*. A second repository either duplicates
+   `.claude/` (a mirror, which goes stale and then lies — CLAUDE.md §5) or is
+   built without it. **The surface that assigns seats and grants AI credits would
+   be the one surface with no owner-gate enforcement.** That is the strongest
+   single argument against splitting the Operator Console.
+3. **Code leaves its owning spec.** `customer_console.md` owns CP-8;
+   `marketing_site.md` owns WS-33; INDEX, the board and HANDOFF are all here. The
+   single-owner rule (`work_plan.md` §4) is enforced by proximity today.
+4. **The fences are Python, and they live here.** `test_marketing_site.py` is a
+   pytest file in `tests/unit/` fencing an HTML file in `site/` — every rule in
+   `site/AGENTS.md` (no `<script>`, no cookies, no external fetch, < 100 KB, the
+   exact CTA origins) is enforced by it. Split `site/` out and the fence either
+   emigrates into a repo with no Python toolchain, or is abandoned. A repository
+   holding one 38 KB static file would need its own CI, its own deploy path and
+   its own place for the Caddy config to be wrong.
+
+**Per surface.**
+
+- **`site/` — do not split.** The case is close to one-sided: one static file,
+  zero build, zero shared code, a fence that cannot travel. Trigger: **an outside
+  agency or marketing hire who must not see product source.** GitHub has no
+  per-path permissions, so if that person exists, splitting is the only mechanism
+  — and at that point the fence moves with the file and is rewritten in whatever
+  the new repo can run.
+- **`workbench/operator_console/` — do not split *yet*.** The code coupling is
+  genuinely zero, so the split is cheap *mechanically* and would be tempting for
+  that reason. Resist it while the coupling that matters — the HTTP contract and
+  the harness — is unfenced. Trigger: **a separate ops/support team owns it**, or
+  it needs a distinct access boundary. **Before that split, two things must exist:
+  a contract test between the Console's operator routes and this consumer, and a
+  decision about how `.claude/`'s gates reach the new repository.** Splitting
+  first and building those after is how the money surface ends up ungoverned.
+
+**One more reason, about order.** Three of this repository's own workflows are
+disabled, `main` is unprotected, and required status checks cannot be turned on
+until the sentinel job lands (§1). **You cannot run three well-governed
+repositories before you can run one.** Repo surgery before T-1/T-2 multiplies an
+ungoverned pipeline by three; after them, each split repo inherits a pattern that
+is known to work.
+
+**And note what a split does *not* fix.** The Operator Console's cross-org
+`CUSTOMER_CONSOLE_OPERATOR_TOKEN` is a deployment env var, not a repository
+artifact. Moving the source elsewhere does not protect it; the controls that do
+are the ones already in place — server-only client, fenced against client
+imports, staff gate failing closed, and the token never entering a browser
+response.
+
 ---
 
 ## 3. Environments — staging as a restore, not as a maintained copy
@@ -415,6 +506,7 @@ Not minted. The board row is the owner's act (§9 D-A). Gate labels per
 | **T-10** | The five §6.1 fences | Each named, each verified red first, each mutation-tested | 🟢 AGENT-SAFE |
 | **T-11** | Reconciliation cadence + report | The four §6.2 checks run on a schedule through the **existing** reconciler seam; divergence is reported, never auto-corrected | 🟢 AGENT-SAFE to build · 🔴 OWNER-GATE to schedule against live data |
 | **T-12** | Lifecycle rehearsal script (§6.3) | The full provision→seat→credits→gate→top-up→release run passes against staging and asserts the operator dashboard reflects every state | 🟢 AGENT-SAFE against fixtures/staging · 🔴 OWNER-GATE against any live org (§8 gate 4) |
+| **T-12b** | Contract test: Operator Console ↔ Console operator routes (§2.4) | A change to the Console's operator route shapes that the BFF client no longer matches turns a build red; verified red first by altering one route's response shape. **Prerequisite for ever splitting the repo, and worth having regardless** | 🟢 AGENT-SAFE |
 | **T-13** | `CODEOWNERS` for the shared seams (7.4) | Every seam in 7.4 maps to a required reviewer; a PR touching one cannot merge without it | 🟢 build AGENT-SAFE · 🔴 enabling the requirement is a settings change |
 | **T-14** | `make dev-up` — both planes, one command | A clean checkout reaches a working local Metorite **and** a working local Console, with a seeded demo org, from one command on Linux and Windows | 🟢 AGENT-SAFE |
 | **T-15** | Branch hygiene | Auto-delete-on-merge on; merged/abandoned branches pruned; the count is reported | 🔴 OWNER-GATE (settings + deleting others' branches) |
@@ -443,6 +535,7 @@ Proposed, not recorded. An agent must not mint these.
 | **D-D** | **Where staging runs, and what it costs** — a second VPS, or a second Supabase pair, or both | Money, and it is an external account (owner-side by `customer_console_infrastructure.md` §7) |
 | **D-E** | **Promotion cadence.** `engineering_practice.md` §2 says a fixed clock is optional but the ring order is not. Name the soak: hours, or a working day? | Sets how long a fix takes to reach a customer, which is a business call |
 | **D-F** | **Who reviews what** — the CODEOWNERS map (7.4), once there is a second developer to name | Cannot be written before the people exist |
+| **D-G** | **Repository topology: one repo, with `site/` and `workbench/operator_console/` staying in it** (§2.4), and the named triggers that would reverse it — an outside agency on the landing page, or a separate ops team on the Operator Console | The question will be re-asked every time someone notices the two surfaces share no code; recording the *trigger* rather than just the answer is what stops that |
 
 ---
 
