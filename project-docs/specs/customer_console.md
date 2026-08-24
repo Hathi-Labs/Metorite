@@ -63,7 +63,7 @@ reachable only in `deleted`, gateway operator door
 `DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
 — 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
 the operator console's cancel/delete edges + type-the-slug DangerPanel;
-env + live-purge owner-gated) · **CP-2h PROPOSED 2026-08-24** (seat-assignment UX doctrine, both personas — §6's CP-2h section; decisions D-SEAT-1…6 are the owner's, nothing dispatches until minted) · CP-6
+env + live-purge owner-gated) · **CP-2h MINTED 2026-08-24** (seat-assignment UX, both personas — §6's CP-2h section; D-SEAT-1…7 recorded on the owner's instruction 2026-08-24; slice 1 = the D-SEAT-4 reroute so the customer Seats tab works on a shared box) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -6705,8 +6705,12 @@ schema pre-provisioned exactly this door.
   free Customer-Console number is taken at build time by listing
   `infra/customer_console/`, never written ahead.)*
 
-**CP-2h · Seat assignments — the whole experience, both personas — PROPOSED
-2026-08-24, NOT MINTED.** Written after the owner's live E2E hit the Settings →
+**CP-2h · Seat assignments — the whole experience, both personas — MINTED
+2026-08-24** (owner instruction, same day as proposed: “can you also get it done
+on the app itself so the customer itself can give access to seats, see the
+number of active seats and the number of seats available, as well as be able to
+release seats”). **D-SEAT-1…7 are thereby RECORDED as proposed below, plus
+D-SEAT-7 (new, the release-consequences ruling the owner asked for):** Written after the owner's live E2E hit the Settings →
 Organization → Seat assignments tab reading “not configured for this
 deployment”, and asked for the full flow — use cases and edge cases, customer
 and operator — to be ironed out. Decisions D-SEAT-1…6 below are the owner's;
@@ -6787,6 +6791,30 @@ member (roster row persists, assign re-mints); oversubscribed clamp
 (`available` never negative); the unseated member's experience on EVERY
 surface (API calls refuse cleanly, not just the shell); seat writes when the
 Console is down (fail closed, nothing changes, the tab says so — built).
+
+**D-SEAT-7 — what releasing a seat DOES and DOES NOT do (recorded
+2026-08-24, owner's direct question):**
+
+- **Console:** the `seat_assignment` row is stamped `released_at` and KEPT —
+  seat history is billing evidence, never deleted. Capacity frees instantly;
+  `seat_counts` reflects it on the next read.
+- **Data: NOTHING happens to it.** Seats gate ENTRY, not data. Every object the
+  person created or touched — tasks, chats, projects, documents, CRM records,
+  messages, their Personal-Center content — is ORGANIZATION data on the tenant
+  plane and stays exactly where it is, under the org's normal visibility rules
+  (private → Center → org, D12). Releasing a seat deletes nothing, hides
+  nothing, reassigns nothing.
+- **The person:** keeps their membership and their roster row (**Unassigned**).
+  An already-open session lives until its next resolve (the TTL window, stated
+  in UI copy). At that next resolve: a FREE seat re-seats them automatically —
+  **seats are capacity, not access control** — and no free seat holds them at
+  the gate (D-SEAT-2's waiting card).
+- **Therefore, loudly, in the UI:** *release is not removal.* To bar a person,
+  suspend or remove them on the Members tab (remove auto-releases their seat,
+  D-SEAT-5; their data STILL remains org property under the existing
+  member-removal doctrine). Releasing while a seat stays free is a no-op from
+  the person's point of view by design — the admin who wants both the seat back
+  AND the person out performs two acts, and the UI says so.
 
 **Done-when (sketch, to be narrowed at mint):** (1) the Seats tab works on the
 shared box with NO per-org env, through the gateway door; (2) an invite at
