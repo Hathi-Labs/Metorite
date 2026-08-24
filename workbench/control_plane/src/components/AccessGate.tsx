@@ -20,7 +20,7 @@ import { canSeePath } from "@/lib/access";
 
 export default function AccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
-  const { access, loading } = useAccess();
+  const { access, loading, refresh } = useAccess();
 
   // Don't flash "no access" before the first resolution lands.
   if (loading) return <>{children}</>;
@@ -30,6 +30,69 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
   if (!access.authenticated) return <>{children}</>;
 
   if (canSeePath(access, pathname)) return <>{children}</>;
+
+  // ── The ORG-LESS arm (D51 / WS-35) — checked BEFORE "suspended" ───────────
+  //
+  // A person who signed in but belongs to NO organization used to fall into
+  // the suspended-member copy below ("your membership is suspended") — wrong
+  // on both facts, and it routed them nowhere. This fork is where the owner's
+  // stray-duplicate-org worry lives: an uninvited-but-legitimate employee, or
+  // a founder about to set up their company, must be told which of the two
+  // they are and what each path looks like. (An INVITED colleague never lands
+  // here — their first admitted sign-in activates them on both planes, D50.3.)
+  const orgless = !access.organization?.slug;
+  if (orgless) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="max-w-lg rounded-xl border border-border bg-card p-8">
+          <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-muted">
+            <Icon name="Building2" size={20} className="text-muted-foreground" />
+          </div>
+          <h1 className="text-center text-base font-semibold text-foreground">
+            You&apos;re signed in, but not part of an organization yet
+          </h1>
+          <p className="mt-2 text-center text-sm text-muted-foreground">
+            Signed in as{" "}
+            <span className="font-medium text-foreground">{access.email}</span>
+          </p>
+          <div className="mt-6 space-y-3">
+            <div className="rounded-lg border border-border bg-secondary p-4">
+              <p className="text-sm font-medium text-foreground">
+                My company already uses Metorite
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Don&apos;t create a duplicate — ask your organization&apos;s
+                admin to invite{" "}
+                <span className="font-medium">{access.email}</span>. The moment
+                they have, sign-in just works.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="mt-3 inline-flex items-center rounded-lg border border-border px-3 py-1.5 text-sm text-foreground tech-transition hover:bg-muted"
+              >
+                I&apos;ve been invited — check again
+              </button>
+            </div>
+            <div className="rounded-lg border border-border bg-secondary p-4">
+              <p className="text-sm font-medium text-foreground">
+                Set up Metorite for my company
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Creates a brand-new organization with you as its owner.
+              </p>
+              <Link
+                href="/signup"
+                className="mt-3 inline-flex items-center rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground tech-transition hover:opacity-90"
+              >
+                Create a new organization
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const suspended = !access.is_active;
 

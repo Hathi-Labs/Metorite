@@ -116,6 +116,16 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
             )}
           </div>
         )}
+
+        {/* D51 / WS-35 — the join-vs-create fork, stated at the first door.
+            Signing in is the SAME act for both: an invited member lands in
+            their organization; anyone else lands on the explicit chooser
+            (AccessGate's org-less arm), never silently in a create form. */}
+        <p className="mt-6 text-xs text-muted-foreground">
+          New to Metorite? If your company already uses it, ask your admin to
+          invite your email — then just sign in. Otherwise you can create a
+          new organization after signing in.
+        </p>
       </div>
     </div>
   );

@@ -181,7 +181,6 @@ const ROUTES = routeFiles(API_DIR).map((path) => ({
  */
 const NON_ROUTE_GATEWAY_CALLERS = [
   "../auth.ts",
-  "../proxy.ts",
   "./emailOtpAdapter.ts",
 ].map((rel) => {
   const path = fileURLToPath(new URL(rel, import.meta.url));
@@ -201,17 +200,20 @@ describe("the route surface", () => {
     expect(ROUTES.length).toBeGreaterThan(80);
   });
 
-  it("sweeps auth.ts, proxy.ts and the OTP adapter too, not just the route tree", () => {
+  it("sweeps auth.ts and the OTP adapter too, not just the route tree", () => {
     // Guards the WIDENING itself. A renamed or moved file would make the two
     // bearer checks below silently narrow again — back to exactly the blind
     // spot CP-2b widened them to cover, and the one CP-2d slice 2 claimed to
     // have covered without ever touching this list (finding F1).
+    // `src/proxy.ts` left the list under D51 (2026-08-24): the subdomain
+    // workspace branch was WITHDRAWN and with it the proxy's only gateway
+    // call — the proxy makes no outbound request at all now, which
+    // `subdomain.test.ts`'s zero-host-reader sweep pins from the other side.
     expect(NON_ROUTE_GATEWAY_CALLERS.map((f) => f.rel)).toEqual([
       "src/auth.ts",
-      "src/proxy.ts",
       "src/lib/emailOtpAdapter.ts",
     ]);
-    expect(BEARER_SWEEP.length).toBe(ROUTES.length + 3);
+    expect(BEARER_SWEEP.length).toBe(ROUTES.length + 2);
   });
 
   it("no module outside lib/gateway.ts mints a gateway bearer", () => {
