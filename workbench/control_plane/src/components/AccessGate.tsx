@@ -16,7 +16,7 @@ import Icon from "@/components/Icon";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
-import { canSeePath } from "@/lib/access";
+import { canSeePath, isOrgless } from "@/lib/access";
 
 export default function AccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
@@ -29,19 +29,22 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
   // ours — showing them "access denied" would misdescribe the situation.
   if (!access.authenticated) return <>{children}</>;
 
-  if (canSeePath(access, pathname)) return <>{children}</>;
-
-  // ── The ORG-LESS arm (D51 / WS-35) — checked BEFORE "suspended" ───────────
+  // ── The ORG-LESS arm (D51 / WS-35) — checked BEFORE `canSeePath` ──────────
   //
-  // A person who signed in but belongs to NO organization used to fall into
-  // the suspended-member copy below ("your membership is suspended") — wrong
-  // on both facts, and it routed them nowhere. This fork is where the owner's
-  // stray-duplicate-org worry lives: an uninvited-but-legitimate employee, or
-  // a founder about to set up their company, must be told which of the two
-  // they are and what each path looks like. (An INVITED colleague never lands
-  // here — their first admitted sign-in activates them on both planes, D50.3.)
-  const orgless = !access.organization?.slug;
-  if (orgless) {
+  // Before 2026-08-24 this sat AFTER the canSeePath pass, which made it
+  // unreachable on exactly the pages that matter: the home page and the floor
+  // panes are visible to every authenticated member, so an org-less sign-in
+  // fell straight through onto a working-looking dashboard (the owner's live
+  // report). Org-less now takes over every in-shell route — /signin and
+  // /signup stay reachable because AppShell's chromeless branch returns
+  // before this gate mounts.
+  //
+  // The fork below is where the owner's stray-duplicate-org worry lives: an
+  // uninvited-but-legitimate employee, or a founder about to set up their
+  // company, must be told which of the two they are and what each path looks
+  // like. (An INVITED colleague never lands here — their first admitted
+  // sign-in activates them on both planes, D50.3.)
+  if (isOrgless(access)) {
     return (
       <div className="flex h-full items-center justify-center p-8">
         <div className="max-w-lg rounded-xl border border-border bg-card p-8">
@@ -101,6 +104,8 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
       </div>
     );
   }
+
+  if (canSeePath(access, pathname)) return <>{children}</>;
 
   const suspended = !access.is_active;
 

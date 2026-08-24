@@ -173,6 +173,24 @@ export function hasCapability(access: Access, name: string): boolean {
   return access.capabilities.includes(name);
 }
 
+/**
+ * A signed-in person who belongs to NO organization (D51 / WS-35).
+ *
+ * ⚠️ **AccessGate must check this BEFORE `canSeePath`.** The home page and the
+ * floor panes (`/`, `/people/me`, `/access`, `/settings/appearance`) are
+ * visible to every authenticated member, so an org-less sign-in that is only
+ * gated on `canSeePath` falls straight through onto a working-looking
+ * dashboard — the live defect the owner hit on 2026-08-24 ("nothing to
+ * intimate me that I am not part of any organization"). Org-less takes over
+ * every in-shell route; `/signin` and `/signup` stay reachable because the
+ * chromeless branch returns before AccessGate mounts. The ordering itself
+ * lives in a component and is fenced only by `access.test.ts`'s named
+ * leak-path case (advisory, R7).
+ */
+export function isOrgless(access: Access): boolean {
+  return access.authenticated && !access.organization?.slug;
+}
+
 export function canSeePath(access: Access, pathname: string): boolean {
   if (isAlwaysAllowed(pathname)) return true;
   // Admin surfaces are gated on the resolved admin flag, not a feature slug —
