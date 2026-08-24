@@ -76,6 +76,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
+  const { loading: accessLoading } = useAccess();
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
@@ -92,6 +93,30 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (isChromeless(pathname ?? "")) {
     return (
       <main className="h-screen overflow-auto bg-background">{children}</main>
+    );
+  }
+
+  // ── Hold the door until access resolves (LS-4 §8.1, whole-shell form) ────
+  // The nav already obeys "an unresolved viewer sees nothing, never
+  // everything" — but the SHELL didn't: during the resolve round-trip it
+  // painted the skeleton sidebar and the page body, so an org-less sign-in
+  // flashed a working-looking app before snapping to the org-less card
+  // (owner report, 2026-08-24). Until the first resolution lands, show a
+  // neutral holding state that asserts nothing about what this person can
+  // reach. `loading` is true only until the FIRST resolve (AccessProvider
+  // keeps it false across refresh()), so this never strobes afterwards.
+  if (accessLoading) {
+    return (
+      <div
+        className="flex h-screen items-center justify-center bg-background"
+        aria-busy="true"
+        aria-label="Loading"
+      >
+        <div className="flex flex-col items-center gap-3" aria-hidden>
+          <div className="h-10 w-10 animate-pulse rounded-xl bg-secondary" />
+          <div className="h-2.5 w-24 animate-pulse rounded bg-secondary" />
+        </div>
+      </div>
     );
   }
 
