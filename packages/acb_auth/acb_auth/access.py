@@ -655,6 +655,106 @@ async def mirror_membership_status(
         )
 
 
+# ── Invited-member promotion, TENANT plane (WS-30/31 CP-2f, D50.3) ───────────
+#
+# The other half of D50.3. The Console promotes its registry membership at first
+# resolve (`store.activate_invited_member`); WITHOUT this twin the colleague then
+# hits the tenant plane still `invited` and dead-ends at the AccessGate: flag-OFF
+# reads `app_user.status == "active"` (:~873) and flag-ON's identity leg filters
+# `m.status = 'active'` (`_IDENTITY_LEG_SQL`) — both fail closed on 'invited',
+# which is correct for every OTHER status and wrong only for the person the org
+# explicitly invited and whose sign-in the Console just ADMITTED. So the
+# promotion fires at exactly ONE site — sign-in completion, `routes/signin.py`
+# after `decision.admit` — mirroring where the registry does it, and NEVER on the
+# per-request access path (the same farmable-surface argument that keeps the
+# resolve itself off `_with_resolved_access`).
+
+#: The orgs this address is INVITED to, read UNBOUND from the RLS-EXEMPT shadow
+#: (`user_identity ⋈ org_membership` — the identity-plane tables, readable
+#: pre-bind by design). `status = 'invited'` is load-bearing: suspended, removed
+#: and active rows never surface here, so they can never be promoted.
+_INVITED_MEMBERSHIPS_SQL = """
+    SELECT m.organization_id::text AS org_id
+      FROM user_identity ui
+      JOIN org_membership m ON m.user_id = ui.id
+     WHERE lower(ui.email) = lower(:email)
+       AND m.status = 'invited'
+"""
+
+#: The authoritative half. `app_user` is RLS-FORCED post-H3, so this runs inside
+#: `tenant_session(org)` (the ONE GUC seam, R5) — the bind narrows visible rows
+#: to that org, and the `AND status = 'invited'` guard lives in the UPDATE's own
+#: WHERE, same discipline as the Console's `activate_invited_member`: the
+#: natural "anything not active → activate" silently un-suspends people, the
+#: exact failure `colleague_onboarding.md` §6 predicted. Same SET shape as the
+#: admin approve writer (`members.py` — `status`, `updated_at = now()`).
+_PROMOTE_APP_USER_SQL = """
+    UPDATE app_user
+       SET status = 'active', updated_at = now()
+     WHERE lower(email) = lower(:email)
+       AND status = 'invited'
+"""
+
+
+async def promote_invited_member(*, email: str) -> None:
+    """Activate an ``invited`` member on the TENANT plane at sign-in completion.
+
+    D50.3's tenant half (the registry half is the Console's
+    ``activate_invited_member``, fired inside the same resolve that admitted this
+    sign-in). Best-effort, and **never raises, never changes the resolve
+    answer** — the posture of every mirror in this module: a failed promotion
+    leaves the person ``invited`` and they see the same AccessGate screen as
+    before this existed, which is the fail-closed direction.
+
+    Idempotent by construction: a second sign-in finds no ``invited`` shadow row
+    and does nothing. Multi-org note: a person invited to MORE than one org is
+    refused upstream by the Console's multi-org arm (``WorkspaceChooserRequired``)
+    before this runs, so the loop below promotes at most the single admitted
+    org in practice; promoting every ``invited`` row for an ADMITTED sign-in
+    would also be correct, which is why no count guard is needed.
+
+    R11: the email is the AUTHENTICATED session's (the route's ``UserContext``),
+    never a body field; the org comes from the exempt shadow the invite itself
+    wrote, never from request input.
+    """
+    email = (email or "").strip()
+    if not email or "@" not in email:
+        return
+    try:
+        from sqlalchemy import text
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            rows = (
+                await session.execute(
+                    text(_INVITED_MEMBERSHIPS_SQL), {"email": email}
+                )
+            ).mappings().all()
+        for row in rows:
+            org_id = str(row["org_id"])
+            # tenant_session applies SET LOCAL app.tenant_id and commits on
+            # exit — the ONE GUC seam (R5), same usage as the RBAC bridge above.
+            async with tenant_session(org_id) as session:
+                result = await session.execute(
+                    text(_PROMOTE_APP_USER_SQL), {"email": email}
+                )
+                promoted = result.rowcount or 0
+            # Forward the shadow the same way every other status change does —
+            # reuse, not a fork; it stamps joined_at on activation and its own
+            # WHERE scopes to (org, identity).
+            await mirror_membership_status(
+                email=email, org_id=org_id, status="active"
+            )
+            if promoted:
+                _log.info(
+                    "invited_member_promoted", email=email, org=org_id,
+                )
+    except Exception as exc:
+        _log.warning(
+            "invited_member_promotion_failed", email=email, error=str(exc)[:200],
+        )
+
+
 # ── Identity shadow: PURGE closure (WS-29 H6 orphan-closure, D48) — DARK ──────
 #
 # The mirror image of `mirror_identity_membership`. A member PURGE

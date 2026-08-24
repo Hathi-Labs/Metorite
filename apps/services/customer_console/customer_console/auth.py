@@ -15,11 +15,14 @@ request input").
     It is the credential that lets a box ask *"this person just signed in — do
     you know them, and may they have a seat?"* **What it reaches is decided
     per door by its CAPABILITY SET, never by the scheme**: ``resolve`` opens
-    ``POST /registry/resolve`` (CP-2b) and ``provision`` opens the second arm
-    of ``POST /orgs/provision`` (CP-2c slice 1, 2026-08-19). A key carrying
-    only ``{resolve}`` — the column default, and the only set anything mints
-    by accident — is refused at provision with a **403** and the refusal is
-    logged. Growing a REAL key's set is OWNER-GATE (§8 gate 7).
+    ``POST /registry/resolve`` (CP-2b), ``provision`` opens the second arm
+    of ``POST /orgs/provision`` (CP-2c slice 1, 2026-08-19), ``seat_admin``
+    opens ``POST /registry/seats{,/release}`` (§6 item (h)) and
+    ``member_admin`` opens ``POST /registry/members`` (CP-2f, 2026-08-24). A
+    key carrying only ``{resolve}`` — the column default, and the only set
+    anything mints by accident — is refused at every one of the other three
+    with a **403**, and the refusal is logged. Growing a REAL key's set is
+    OWNER-GATE (§8 gate 7 / gate 8's capability-growth class).
 
 ⚠️ **Why the fourth scheme rather than reusing one of the three.** The operator
 token is cross-organization and staff-held, and this service already argues in
@@ -79,6 +82,7 @@ from customer_console.lifecycle import OrgCapabilities, capabilities_of
 
 __all__ = [
     "AUTHENTICATING_DEPENDENCIES",
+    "MEMBER_ADMIN_CAPABILITY",
     "ORGANIZATION_KEY_DEPENDENCIES",
     "PROVISION_CAPABILITY",
     "RESOLVE_CAPABILITY",
@@ -88,6 +92,7 @@ __all__ = [
     "DeploymentCaller",
     "Internal",
     "KeyCaller",
+    "MemberAdminCaller",
     "Operator",
     "PayingCaller",
     "ProvisionCaller",
@@ -148,6 +153,28 @@ PROVISION_CAPABILITY = "provision"
 #: door ships dark by construction: no live key carries it until the owner adds
 #: it by hand.
 SEAT_ADMIN_CAPABILITY = "seat_admin"
+
+#: The FOURTH capability — WS-31 CP-2f (D50.2). It gates the customer-authenticated
+#: MEMBER write (``POST /registry/members``), the door through which a colleague
+#: who was INVITED — rather than a founder who signed up — reaches the registry at
+#: all.
+#:
+#: ⚠️ **Deliberately NOT a reuse of** :data:`SEAT_ADMIN_CAPABILITY`. Which
+#: capability a door demands is written at the door, never inferred from how many
+#: the caller happens to hold — and folding *"may create memberships"* into
+#: *"may move seats"* would silently widen a credential that was argued for on the
+#: narrower basis. They are also different acts: a seat costs money and is capped,
+#: a membership costs nothing and is what makes the cap addressable.
+#:
+#: ⚠️ **Same three rules as ``provision`` and ``seat_admin``.** A capability is
+#: not a scheme; **no migration carries this string and none may be minted for
+#: it** (``deployment_key.capabilities`` is ``TEXT[]`` with no ``CHECK``,
+#: ``006_deployment_key.sql:56``), so the enforcement is entirely
+#: :func:`deployment_or_operator`; and there is deliberately no HTTP route that
+#: issues or edits a key's set — so **the door ships dark by construction**: no
+#: live key carries it until the owner adds it by hand (``customer_console.md``
+#: §8 gate 8's capability-growth class, registered in ``work_plan.md`` §6).
+MEMBER_ADMIN_CAPABILITY = "member_admin"
 
 
 @dataclass(frozen=True)
@@ -402,11 +429,12 @@ class DeploymentCaller:
 
     deployment_id: str
     key_prefix: str
-    #: What this credential was issued for, as stored. Two capabilities exist
-    #: (``resolve``, ``provision``) and a key may hold either or both; the
-    #: DEFAULT here is the narrow one, so a construction that forgets to pass
-    #: the set denies rather than grants. Checked in the dependency below,
-    #: before the route body runs — never by an ``if`` inside an endpoint.
+    #: What this credential was issued for, as stored. Four capabilities exist
+    #: (``resolve``, ``provision``, ``seat_admin``, ``member_admin``) and a key
+    #: may hold any subset; the DEFAULT here is the narrowest one, so a
+    #: construction that forgets to pass the set denies rather than grants.
+    #: Checked in the dependency below, before the route body runs — never by an
+    #: ``if`` inside an endpoint.
     capabilities: frozenset[str] = frozenset({RESOLVE_CAPABILITY})
 
 
@@ -576,6 +604,12 @@ _provision_dependency = deployment_or_operator(PROVISION_CAPABILITY)
 #: they land.
 _seat_admin_dependency = deployment_or_operator(SEAT_ADMIN_CAPABILITY)
 
+#: The member-write arm's dependency — WS-31 CP-2f. A FOURTH closure from the same
+#: factory, differing from the three above only in the capability it demands, and
+#: registered in :data:`AUTHENTICATING_DEPENDENCIES` in the SAME change that
+#: creates it so CP-2b clause 1's fence covers its route the day it lands.
+_member_admin_dependency = deployment_or_operator(MEMBER_ADMIN_CAPABILITY)
+
 #: ``None`` means *the operator arm*; a :class:`DeploymentCaller` means the
 #: deployment arm. The route reads the credential's identity, never the header.
 ResolveCaller = Annotated[DeploymentCaller | None, Depends(_resolve_dependency)]
@@ -595,6 +629,14 @@ ProvisionCaller = Annotated[
 #: org in the body is refused rather than ignored (R11).
 SeatAdminCaller = Annotated[
     DeploymentCaller | None, Depends(_seat_admin_dependency)
+]
+
+#: The same two-arm shape for CP-2f's member WRITE. ``None`` is the operator, who
+#: NAMES the org; a :class:`DeploymentCaller` **is** the deployment, from which the
+#: org and the acting member are DERIVED via ``store.deployment_visible_orgs`` —
+#: naming an org in the body is refused rather than ignored (R11).
+MemberAdminCaller = Annotated[
+    DeploymentCaller | None, Depends(_member_admin_dependency)
 ]
 
 #: Every dependency in this module that authenticates somebody.
@@ -621,6 +663,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     _resolve_dependency,
     _provision_dependency,
     _seat_admin_dependency,
+    _member_admin_dependency,
 })
 
 #: The dependencies a CUSTOMER's own ``cc_live_`` key opens — all three.

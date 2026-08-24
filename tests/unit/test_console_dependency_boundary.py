@@ -203,7 +203,7 @@ def test_no_tenant_module_imports_customer_console() -> None:
 #: per participant per room load, which is exactly the farmable cap clause 11
 #: exists to prevent.
 #:
-#: ⚠️ **Three importers as of WS-30 SC-2a (2026-08-21), and no more.**
+#: ⚠️ **FOUR importers as of WS-31 CP-2f (2026-08-24), and no more.**
 #: ``routes/signup.py`` calls a DIFFERENT function on this module —
 #: ``provision_org_on_console``, which mirrors a provision and allocates no seat
 #: by itself — and is likewise a **session-email-only** route (the owner is the
@@ -213,14 +213,38 @@ def test_no_tenant_module_imports_customer_console() -> None:
 #: capped ``seat_admin`` door (``POST /registry/seats``) — and it is likewise a
 #: **session-email-only** route (the acting admin is the authenticated session's
 #: ``actor_email``, never the body; the org is derived Console-side). What stays
-#: forbidden is wiring ANY of the three functions behind ``resolve_access`` =
-#: farmable seat burn. A FOURTH importer is a new call site that no runtime
-#: assertion sees until a customer's seat cap is exhausted.
+#: forbidden is wiring ANY of these functions behind ``resolve_access`` =
+#: farmable seat burn.
+#:
+#: ⚠️ **The FOURTH entry — ``routes/admin/members.py``, WS-31 CP-2f — and the
+#: argument for it, because "a fourth is the drift" was this list's own rule.**
+#: It calls ``invite_member_on_console``, which writes an ``org_membership`` row
+#: at ``status='invited'`` and **allocates no seat**: it never touches
+#: ``resolve_for_signin``, and the Core-seat burn stays exactly where D19.3 put
+#: it, at first resolve. The route is **session-email-only** on both subjects —
+#: the acting admin is ``require_admin_user``'s authenticated identity and the
+#: org is derived Console-side from placement ∩ membership — and it is already
+#: gated on ``admin:members:invite``, so it is not reachable by fan-out. The
+#: alternative was worse in the direction this fence exists to protect: without
+#: it, an invited colleague has NO Console membership, so
+#: ``deployment_visible_orgs`` returns nothing and their sign-in resolves
+#: ``console-empty`` into the self-serve funnel that creates them an
+#: organization of their own.
+#:
+#: A **FIFTH** importer is a new call site that no runtime assertion sees until a
+#: customer's seat cap is exhausted. Widening this list again needs the same
+#: thing this entry got: the argument, written down, next to the name.
 _RESOLVE_CLIENT = "packages/acb_auth/acb_auth/console_resolve.py"
 _THE_ONE_CALLER = "apps/services/gateway/gateway/routes/signin.py"
 _THE_SIGNUP_CALLER = "apps/services/gateway/gateway/routes/signup.py"
 _THE_SEAT_CALLER = "apps/services/gateway/gateway/routes/seats.py"
-_ALLOWED_CALLERS = (_THE_ONE_CALLER, _THE_SIGNUP_CALLER, _THE_SEAT_CALLER)
+_THE_INVITE_CALLER = "apps/services/gateway/gateway/routes/admin/members.py"
+_ALLOWED_CALLERS = (
+    _THE_ONE_CALLER,
+    _THE_SIGNUP_CALLER,
+    _THE_SEAT_CALLER,
+    _THE_INVITE_CALLER,
+)
 
 
 def _imports_console_resolve(path: Path) -> bool:
@@ -239,20 +263,23 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly THREE callers, and all are named here.
+    """``console_resolve`` has exactly FOUR callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
     customer's seat cap is exhausted.
 
-    ⚠️ Grown ONE → TWO by CP-2c slice 2 (2026-08-20) and TWO → THREE by WS-30
-    SC-2a (2026-08-21): ``routes/signin.py`` (``resolve_for_signin``),
-    ``routes/signup.py`` (``provision_org_on_console``) and ``routes/seats.py``
+    ⚠️ Grown ONE → TWO by CP-2c slice 2 (2026-08-20), TWO → THREE by WS-30
+    SC-2a (2026-08-21) and THREE → FOUR by WS-31 CP-2f (2026-08-24):
+    ``routes/signin.py`` (``resolve_for_signin``), ``routes/signup.py``
+    (``provision_org_on_console``), ``routes/seats.py``
     (``assign_seat_on_console`` / ``release_seat_on_console`` — the admin-gated,
-    capped ``seat_admin`` door, which allocates NO seat via ``resolve_for_signin``).
-    All three are **session-email-only** routes; what stays forbidden is wiring
-    any of them behind ``resolve_access`` (six callers, one a room fan-out) =
-    farmable seat burn. A FOURTH is the drift.
+    capped ``seat_admin`` door, which allocates NO seat via ``resolve_for_signin``)
+    and ``routes/admin/members.py`` (``invite_member_on_console`` — the
+    ``member_admin`` door, which writes a membership row and likewise allocates
+    NO seat). All four are **session-email-only** routes; what stays forbidden is
+    wiring any of them behind ``resolve_access`` (six callers, one a room
+    fan-out) = farmable seat burn. A FIFTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -275,13 +302,14 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly three sites may "
+        "It allocates a SEAT (`resolve_for_signin`). Exactly four sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
-        "and the customer seat-admin write — each with a provider-verified "
-        "session email. Never `resolve_access` (six callers, one of them a "
-        "fan-out over a room's participants), never `_with_resolved_access` "
-        "(every authenticated request). customer_console.md §6 clause 11 · "
-        "CP-2c slice 2 · WS-30 SC-2a."
+        "the customer seat-admin write, and the member-invite mirror — each with "
+        "a provider-verified session email. Never `resolve_access` (six callers, "
+        "one of them a fan-out over a room's participants), never "
+        "`_with_resolved_access` (every authenticated request). "
+        "customer_console.md §6 clause 11 · CP-2c slice 2 · WS-30 SC-2a · "
+        "WS-31 CP-2f."
     )
 
 
