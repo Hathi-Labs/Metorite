@@ -22,22 +22,38 @@
  *    have held one). Releasing somebody must leave them on this screen with an
  *    enabled Assign — see `lib/seatRoster.ts` for the join and why it is that
  *    way round.
- * 3. **The refusals are the Console's, relayed.** A cap 409 shows the Console's
- *    own `buy_more` sentence; a 403 (not an admin) and a 503 (unwired
- *    deployment) arrive as themselves. This surface pre-judges nothing — the
- *    authorization is `_admin_scheme_context`'s and the capacity check is
- *    `decide_assignment`'s.
+ * 3. **The refusals are the Console's, relayed — and a refusal is not an
+ *    outage.** A cap 409 on a WRITE shows the Console's own `buy_more`
+ *    sentence. On the READ, `interpretOverviewRead` (in `lib/seatRoster.ts`,
+ *    where a test can reach it — inline here it was not, which is how it stayed
+ *    wrong) maps the status onto five states: **403 is the founder-only state**,
+ *    calm and non-red, because the Console ANSWERED and said this account is not
+ *    an active `owner|admin` in its registry — which today is every admin except
+ *    the founder, no Console code path ever writing `role='admin'` (§6 CP-2f);
+ *    **409 is the multi-org state**, its own sentence, fixed by CP-2h slice 2;
+ *    503 alone means this deployment is unwired; and only an unrecognised status
+ *    is an error. This surface still pre-judges nothing — the authorization is
+ *    `_admin_scheme_context`'s and the capacity check is `decide_assignment`'s;
+ *    it just stops relabelling their verdicts as an incident.
  *
  * ## Where the data comes from — CP-2h slice 1 (2026-08-24)
  *
- * `/api/org/seats` and `/api/org/seats/{assign,release}`: browser → Next hop →
- * **gateway** → Console's deployment-key `seat_admin` door. The reads used to
- * come from `/api/billing/{seats,members}`, which present a per-org
+ * The READ is `/api/org/seats`: browser → Next hop → **gateway** → Console's
+ * deployment-key `seat_admin` door. It used to come from
+ * `/api/billing/{seats,members}`, which present a per-org
  * `CUSTOMER_CONSOLE_ORG_KEY` — and on a shared multi-tenant deployment there is
  * no single correct org key, so the variable is unset and the tab read
  * "not configured for this deployment" **forever**. That was structural, not a
  * missing flag. One read now returns both halves, so the counts and the roster
  * are one consistent snapshot rather than two races.
+ *
+ * The WRITES stay on `/api/billing/seats/{assign,release}` — which despite the
+ * path are **already** the gateway hops, holding no Console credential and
+ * reaching the same deployment-key door. A duplicate pair under `/api/org/`
+ * shipped with this slice and was deleted in the same review: the seam is the
+ * gateway route, and a second BFF file in front of it is a second way to say one
+ * thing (CLAUDE.md §5). Retiring the `/api/billing/` NAME for these two is a
+ * later slice's rename, not a reason to keep two implementations.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -59,21 +75,26 @@ import { SEAT_COUNTS, type SeatPlan } from "@/app/settings/billing/lib/seats";
 import {
   buildSeatRows,
   canOfferSeat,
+  interpretOverviewRead,
   isSeated,
   readSeatOverview,
   tally,
   type SeatOverviewPayload,
+  type SeatPlaneRead,
   type SeatRow,
 } from "./lib/seatRoster";
 
 /**
- * How the seat plane answered.
+ * How the seat plane answered, plus the one state that is not an answer.
  *
  * Distinguished for `launch_surface.md` §8.2's reason, one layer along: an
  * unreachable Console and a Console reporting nobody-has-a-seat look identical
  * in an empty list, and only one of them means the admin should stop and read.
+ * The five answered states are `SeatPlaneRead`'s and are decided in
+ * `lib/seatRoster.ts`; `loading` is this component's own and means we have not
+ * asked yet.
  */
-type PlaneState = "loading" | "ready" | "unconfigured" | "error";
+type PlaneState = SeatPlaneRead | "loading";
 
 export default function SeatsTab({
   members,
@@ -111,24 +132,20 @@ export default function SeatsTab({
       // grid and the roster in a single transaction, so the counts and the rows
       // cannot disagree the way two independent fetches could.
       const r = await fetch("/api/org/seats", { cache: "no-store" });
-      // 503 is this deployment's own missing configuration, not the customer's
-      // problem and not an error they can act on — so it gets its own state and
-      // its own sentence rather than a red banner.
-      if (r.status === 503) {
+      const payload = await r.json().catch(() => null);
+      // Status → state in ONE place, `lib/seatRoster.ts`, because "which
+      // non-2xx is an outage" is a judgement and a judgement inline in a
+      // callback is a judgement no test can reach. 503 is this deployment's
+      // missing configuration; 403 and 409 are the Console ANSWERING; only the
+      // remainder is an incident.
+      const state = interpretOverviewRead(r.status, payload);
+      if (state !== "ready") {
         setPlans(null);
         setBilling(null);
-        setPlane("unconfigured");
+        setPlane(state);
         return;
       }
-      if (!r.ok) {
-        setPlans(null);
-        setBilling(null);
-        setPlane("error");
-        return;
-      }
-      const overview = readSeatOverview(
-        (await r.json()) as SeatOverviewPayload,
-      );
+      const overview = readSeatOverview(payload as SeatOverviewPayload | null);
       setPlans(overview.plans);
       setBilling(overview.members);
       setPlane("ready");
@@ -171,7 +188,10 @@ export default function SeatsTab({
           kind === "assign"
             ? assignBody(row.email, plan)
             : releaseBody(row.email, row.seats[0] ?? plan);
-        const res = await fetch(`/api/org/seats/${kind}`, {
+        // The EXISTING gateway-backed write pair — no Console credential, same
+        // deployment-key door as the read. The `/api/billing/` prefix is a name
+        // this slice deliberately did not duplicate under `/api/org/`.
+        const res = await fetch(`/api/billing/seats/${kind}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -213,6 +233,32 @@ export default function SeatsTab({
     );
   }
 
+  // 403 — the Console answered. It is not an outage and it must not look like
+  // one: the registry role it gates on is only ever `owner` for the founder (no
+  // Console door writes `role='admin'`), so this is the state MOST admins see.
+  if (plane === "restricted") {
+    return (
+      <Notice
+        icon="Info"
+        title="Seats are managed by this organization's founder"
+        body="Seat management is limited to the organization's founder for now — you can manage members on the Members tab. Nothing is wrong: the seat plane answered, it just does not recognise this account as the one that holds the subscription."
+      />
+    );
+  }
+
+  // 409 — the acting email is a member of more than one organization on this
+  // deployment and the seat plane will not guess between them. Slice 2 threads
+  // the signed-in organization through, which removes this state entirely.
+  if (plane === "ambiguous") {
+    return (
+      <Notice
+        icon="Layers"
+        title="This email belongs to more than one organization here"
+        body="Seat management cannot yet tell which organization's seats to show for an account that is a member of several on this deployment, so it is showing none rather than guessing. Members and roles are unaffected — the Members tab works normally."
+      />
+    );
+  }
+
   if (plane === "error") {
     return (
       <Notice
@@ -231,7 +277,7 @@ export default function SeatsTab({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* ── The counts, verbatim from GET /me/seats ───────────────────────── */}
+      {/* ── The counts, verbatim from the Console's seat grid ─────────────── */}
       <div className="rounded-xl border border-border bg-card/40 p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-foreground">Seats</h2>
@@ -291,10 +337,19 @@ export default function SeatsTab({
         </div>
       ) : null}
 
+      {/* Reaching this list at all means the Console admitted the caller as an
+          `owner|admin` of the org, so the old "you can look but not touch"
+          reader — a plain member — cannot get here any more; they are the 403
+          above. What remains is the genuine, narrow case: the two gates live on
+          two different planes (registry role vs tenant capability) and can
+          disagree, so the copy names both instead of implying a read-only
+          viewer role that does not exist. */}
       {!canManage ? (
         <p className="text-xs text-muted-foreground">
-          You can see who is seated. Changing seats needs the{" "}
-          <code className="font-mono">billing:purchase</code> capability.
+          Reading seats needs your registry role and changing them needs the{" "}
+          <code className="font-mono">billing:purchase</code> capability — two
+          different planes. This account has the first and not the second, so
+          the roster is visible and Assign / Release are not.
         </p>
       ) : null}
 

@@ -70,10 +70,21 @@ and it is BUILT**: the Console's deployment-key seat READ
 `POST /registry/seats/overview` on the existing `seat_admin` capability
 (composing `SeatsView`'s grid and `MembersView`'s roster — no new SQL, no second
 seat vocabulary, no migration), `acb_auth.seat_overview_on_console`, the gateway
-`GET /seats/overview`, the three `/api/org/seats*` BFF hops, and `SeatsTab.tsx`
-swung onto them — so the customer Seats tab works on a SHARED deployment with NO
-per-org env. Slices 2-5 remain: the waiting card, Awaiting-seat, the blocked
-count, buy-more-files-a-request, and remove-releases/suspend-does-not. Still DARK
+`GET /seats/overview`, the ONE new `/api/org/seats` READ hop (the writes stay on
+the pre-existing gateway-backed `/api/billing/seats/{assign,release}` pair), and
+`SeatsTab.tsx` swung onto them — so the customer Seats tab works on a SHARED
+deployment with NO per-org env **for an admin who is `owner|admin` in the Console
+registry AND whose email holds a membership in exactly ONE organization placed on
+that box**. Repair round 1, 2026-08-24: the read's 403 and multi-org 409 were
+rendering as "the seat plane did not answer" — a refusal drawn as an outage, for
+what is in fact most admins — and a byte-identical twin write pair was deleted.
+**The honest residual belongs to slice 2**: a multi-org actor is permanently 409,
+and since `deployment_visible_orgs` does not consult membership STATUS, an admin
+of org B inviting org A's owner's address switches org A's seat surface off,
+cross-tenant. Slices 2-5 remain: **the SESSION-org thread (slice 2, which fixes
+the 409, the cross-tenant switch-off and the registry-vs-tenant org mismatch)**,
+the waiting card, Awaiting-seat, the blocked count, buy-more-files-a-request, and
+remove-releases/suspend-does-not. Still DARK
 by construction — no live key holds `seat_admin`; granting it and landing the
 deployment key/URL are OWNER-GATE §8 gates 7/8) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
@@ -6835,8 +6846,54 @@ waiting card, and assigning a seat admits them on their next resolve; (3) the
 blocked-count is visible to the admin; (4) buy-more files a visible request;
 (5) remove releases the seat, suspend does not — each fenced.
 
-**Slice 1 — the D-SEAT-4 reroute — BUILT 2026-08-24.** Done-when **1** is met;
-2-5 remain and are later slices, deliberately untouched here (no waiting card, no
+**Slice 1 — the D-SEAT-4 reroute — BUILT 2026-08-24, repaired (round 1) the same
+day.** Done-when **1** is met **for a SINGLE-membership admin who is `owner` or
+`admin` in the Console registry**, and that qualification is the whole of the
+slice's honesty:
+
+- **A multi-org actor gets a permanent 409.** `_admin_scheme_for_deployment`
+  refuses to guess between two admissible orgs (the chooser is a named non-goal),
+  so an email holding memberships in two organizations placed on this box has NO
+  seat surface at all. Repair round 1 made that state say so instead of reading
+  as an outage; it did not remove it.
+- **And it is reachable CROSS-TENANT by an unrelated org.**
+  `store.deployment_visible_orgs` (`store.py` ~:722) joins `org_membership`
+  **without consulting `status`** — deliberately, as CP-2b clause 4 words the
+  predicate, and already recorded there as a finding. Consequence, unrecorded
+  until now: an admin of org B who *invites* org A's owner's email creates an
+  `invited` row in B, which makes that email multi-org, which turns off **org A's
+  entire seat surface** — a switch org A neither owns nor can see, with no UI
+  anywhere explaining why. No data crosses; the damage is availability, and the
+  actor is outside the affected tenant.
+- **The tenant/registry org mismatch is the same root.** The org this read and
+  these writes resolve is the REGISTRY's (placement ∩ membership), never the
+  tenant org the caller is signed into. Where those differ, an actor reads and
+  writes the *wrong* org's seats from the right org's page (P2 — no unauthorized
+  disclosure of another tenant's data beyond its seat roster, but a wrong-tenant
+  WRITE). Nothing compares them today.
+
+**Slice 2 gains an item, and it goes FIRST — thread the caller's SESSION
+organization through, and VALIDATE it** *(added by repair round 1; it owns all
+three defects above, and it precedes the waiting card because until it lands the
+surface is simply wrong for a multi-org actor).* The gateway knows the tenant org
+of the
+authenticated session; it must carry that org to the Console, and the Console
+must check it against the caller's admissible set rather than deriving one by
+uniqueness. That turns "exactly one admissible org" from a precondition into a
+comparison — which is precisely the §4 idiom `api/billing/_console.ts`
+`requirePurchaser` already applies (*"the caller's organization must BE the
+key's"*, added 2026-08-19, after the same class of bug: capability answered *may
+they buy* while the credential decided *whose account*). R11 is preserved because
+the org still comes from the authenticated session and never from request input.
+Fixes, together: the multi-org 409, the cross-tenant switch-off above, and the
+registry-vs-tenant mismatch. *(Anchor, re-verify at dispatch:
+`acb_auth.roles.UserContext.organization_id` is where the gateway already holds
+it. The one thing slice 2 must SETTLE rather than assume is whether that id and
+the Console's `organization.id` are the same id space — if they are not, the
+comparison is on the slug, and asserting sameness without checking is how this
+class of bug got here in the first place.)*
+
+The rest of slices 2-5 remain, deliberately untouched here (no waiting card, no
 invite banner, no Awaiting-seat state, no blocked count, no buy-more request).
 What shipped, one layer per line:
 
@@ -6864,21 +6921,42 @@ What shipped, one layer per line:
   `_unwired_read_refusal()` — the same status as the write arm, logged
   `seats.read_unwired` at WARNING rather than the write's `seats.write_unwired`
   ERROR, so an operator grepping for genuinely dark writes keeps finding writes.
-- **Workbench** — `src/app/api/org/seats/{route,assign/route,release/route}.ts`,
-  all three on the session-hop idiom (`proxyToGateway`), holding no Console URL
-  and no key. The org-key path (`api/billing/_console.ts` and the billing pages)
-  is **untouched** — those are per-org surfaces by construction.
+- **Workbench** — ONE new hop, `src/app/api/org/seats/route.ts`, on the
+  session-hop idiom (`proxyToGateway`), holding no Console URL and no key. *(The
+  first draft added `assign/route.ts` + `release/route.ts` beside it; they were
+  byte-identical to the ALREADY gateway-backed `api/billing/seats/{assign,
+  release}` and were deleted in repair round 1 — the seam is the gateway route,
+  and a second BFF file in front of it is a second way to say one thing,
+  CLAUDE.md §5. The `/api/billing/` NAME on those two is now only a name; both
+  hold no credential and reach the deployment-key door. Renaming them is a later
+  slice's cosmetic move, not a reason to keep two implementations.)* The org-KEY
+  path (`api/billing/_console.ts` and the billing pages) is **untouched** —
+  those are per-org surfaces by construction.
 - **UI** — `SeatsTab.tsx` reads `/api/org/seats` once for both halves and posts
-  to `/api/org/seats/{assign,release}`. Every UX semantic is unchanged:
-  `PlaneState`'s 503 → "unconfigured", the counts block, the buy-more sentence,
-  the oversubscribed badge, the roster join. No restyle.
+  to `/api/billing/seats/{assign,release}`. Every UX semantic is unchanged
+  except the read's outcome handling: the counts block, the buy-more sentence,
+  the oversubscribed badge and the roster join are as they were, and no restyle.
+  **Repair round 1 replaced the inline status branch with
+  `interpretOverviewRead(status, payload)` in `lib/seatRoster.ts`** — five
+  states, testable: 503 `unconfigured`, **403 `restricted`** (a calm
+  founder-only sentence, no red banner — the Console ANSWERED, and since no
+  Console door ever writes `role='admin'` (§6 CP-2f) this is every admin but the
+  founder), **409 `ambiguous`** (its own multi-org sentence; a 409 carrying the
+  write doors' `buy_more` degrades to `error` rather than telling a confident
+  lie), and only the remainder `error`. Before it, every non-2xx that was not
+  503 read "Could not read seats — the seat plane did not answer", so a refusal
+  drew as an outage and an operator got a fabricated incident.
 - **Fences (R7/R8)** — `tests/unit/test_customer_console_seat_overview.py` (R8,
   real Postgres, 21 tests, 0 skipped: the read is byte-identical to
   `GET /me/seats` + `GET /me/members`, org A never reads org B, a key placed on
   another box resolves nobody, capability/role/R11/lifecycle gates, and the read
   allocates nothing); `test_seat_admin_proxy_route.py` grew four classes for the
   overview route and its client (36 tests); `seatRoster.test.ts` grew the payload
-  reader and a source scan pinning the tab off `/api/billing/`.
+  reader, `interpretOverviewRead`'s five outcomes (403 and the multi-org 409 are
+  NOT errors; a `buy_more` 409 is), and a source scan pinning the tab off the
+  org-KEY reads `GET /api/billing/seats` + `/api/billing/members` — deliberately
+  narrower than "no `/api/billing/` string", because forbidding the prefix
+  wholesale is what pushed the duplicate write pair into `/api/org/`.
   `test_customer_console_resolve.py`'s route-table parametrisation picked the new
   door up automatically and required its capability entry.
 

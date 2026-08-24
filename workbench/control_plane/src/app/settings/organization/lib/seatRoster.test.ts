@@ -27,6 +27,7 @@ import type { SeatPlan } from "@/app/settings/billing/lib/seats";
 import {
   buildSeatRows,
   canOfferSeat,
+  interpretOverviewRead,
   isSeated,
   readSeatOverview,
   tally,
@@ -210,8 +211,13 @@ describe("the tally counts ROWS, and says so", () => {
 
 const TAB = code(source("../SeatsTab.tsx"));
 const OVERVIEW_ROUTE = code(source("../../../api/org/seats/route.ts"));
-const ASSIGN_ROUTE = code(source("../../../api/org/seats/assign/route.ts"));
-const RELEASE_ROUTE = code(source("../../../api/org/seats/release/route.ts"));
+// The WRITE hops are the pre-existing gateway-backed pair. Slice 1 first shipped
+// byte-identical twins under `/api/org/seats/{assign,release}` and they were
+// deleted in review: one gateway route, one BFF file in front of it. If these
+// paths stop resolving, the twins came back or the pair moved — either way this
+// fence must be re-read rather than re-pointed.
+const ASSIGN_ROUTE = code(source("../../../api/billing/seats/assign/route.ts"));
+const RELEASE_ROUTE = code(source("../../../api/billing/seats/release/route.ts"));
 
 const plan = (over: Partial<SeatPlan> = {}): SeatPlan => ({
   plan_slug: "core",
@@ -254,35 +260,134 @@ describe("the overview payload is read, never reshaped", () => {
   });
 });
 
-describe("the tab reads the GATEWAY's door, not the org-key billing hop", () => {
-  it("fetches the overview and posts the writes under /api/org/seats", () => {
-    // The whole slice, as a source scan: three endpoints, all on the org
-    // namespace, all reaching the Console through the gateway's per-BOX
-    // deployment key.
-    expect(TAB).toContain('/api/org/seats"');
-    expect(TAB).toContain("/api/org/seats/${kind}");
-  });
+describe("a refusal is not an outage — the read's five outcomes", () => {
+  // The repair this block exists for (review round 1): every non-2xx that was
+  // not 503 collapsed into "Could not read seats — the seat plane did not
+  // answer". The Console 403s any actor who is not an active `owner|admin` in
+  // its registry, and NO Console code path ever writes `role='admin'` (§6
+  // CP-2f: the member-add door leaves `role` at the column default on purpose),
+  // so the second tenant admin is a Console `member` and is 403 here. That made
+  // "almost every admin except the founder" see a fabricated outage — and gave
+  // whoever is on call a fabricated incident to chase.
 
-  it("reads NOTHING from /api/billing any more — that is what was dark", () => {
-    // The failure this fence exists for: `/api/billing/{seats,members}` present
-    // a per-org `CUSTOMER_CONSOLE_ORG_KEY`, which cannot be correct on a shared
-    // multi-tenant box. The env is unset there, the reads 503, and the tab shows
-    // "not configured for this deployment" permanently. A reintroduced
-    // `/api/billing/...` fetch here is that outage coming back.
-    expect(TAB).not.toContain("/api/billing/");
+  it("reads a 2xx as ready", () => {
+    expect(interpretOverviewRead(200, { plans: [], members: [] })).toBe("ready");
+    expect(interpretOverviewRead(204)).toBe("ready");
   });
 
   it("keeps 503 as the ONE unconfigured signal", () => {
-    // `PlaneState` distinguishes an unreachable seat plane from an empty one,
-    // and 503 is the status it keys on. If the tab stopped branching on it, an
-    // unwired deployment would render an empty grid that looks like a
-    // confident answer.
-    expect(TAB).toMatch(/status === 503/);
-    expect(TAB).toContain('setPlane("unconfigured")');
+    // The gateway answers 503 on an unwired box (`_unwired_read_refusal`) and
+    // the BFF answers 503 when the gateway itself is unreachable. If this
+    // stopped being distinguished, an unwired deployment would draw an empty
+    // grid that looks like a confident answer.
+    expect(interpretOverviewRead(503, { detail: "unavailable" })).toBe(
+      "unconfigured",
+    );
+  });
+
+  it("reads a 403 as the calm founder-only state, never an error", () => {
+    // `_admin_scheme_for_deployment`'s two 403s, byte-identical on the wire:
+    // no admissible org, and an admissible org where the actor's registry row
+    // is not an active owner|admin. Both mean the plane ANSWERED.
+    expect(
+      interpretOverviewRead(403, {
+        detail: "the acting member is not an active admin of this organization",
+      }),
+    ).toBe("restricted");
+    expect(
+      interpretOverviewRead(403, {
+        detail: "the acting member is not an admin on this deployment",
+      }),
+    ).toBe("restricted");
+  });
+
+  it("reads the multi-org 409 as its own state", () => {
+    // The Console's shape, re-derived from the gateway relay's fence
+    // (`test_seat_admin_proxy_route.py::test_a_multi_org_409_surfaces_as_itself`)
+    // and from `main.py` `_admin_scheme_for_deployment`: a bare `{detail: str}`.
+    // CP-2h slice 2 threads the session org through and this state disappears.
+    expect(
+      interpretOverviewRead(409, {
+        detail:
+          "the acting member belongs to more than one organization on this " +
+          "deployment; the organization cannot be inferred",
+      }),
+    ).toBe("ambiguous");
+    // Status-classified, not phrase-matched: rewording the Console's sentence
+    // must not silently turn this back into an outage banner.
+    expect(interpretOverviewRead(409, { detail: "reworded upstream" })).toBe(
+      "ambiguous",
+    );
+    expect(interpretOverviewRead(409, null)).toBe("ambiguous");
+  });
+
+  it("refuses to call a CAP 409 a multi-org 409", () => {
+    // The sibling WRITE doors answer 409 with `{detail: {buy_more: …}}` and
+    // relay through the same gateway. The read door makes no capacity decision,
+    // so this shape should never arrive here — and if it does, "your email is
+    // in two organizations" would be a confident lie. Degrade to `error`, which
+    // claims only that we do not know what that was.
+    expect(
+      interpretOverviewRead(409, {
+        detail: { reason: "no seats available", buy_more: { plan_slug: "core" } },
+      }),
+    ).toBe("error");
+  });
+
+  it("leaves every other non-2xx an error", () => {
+    for (const status of [400, 401, 404, 429, 500, 502, 504]) {
+      expect(interpretOverviewRead(status, { detail: "x" }), String(status)).toBe(
+        "error",
+      );
+    }
   });
 });
 
-describe("the three hops name no tenant and hold no credential (R11)", () => {
+describe("the tab reads the GATEWAY's door, not the org-key billing hop", () => {
+  it("fetches the overview from /api/org/seats and writes through the gateway pair", () => {
+    // The slice, as a source scan: the NEW read hop, and the writes on the
+    // pre-existing gateway-backed pair rather than a duplicate of it.
+    expect(TAB).toContain('/api/org/seats"');
+    expect(TAB).toContain("/api/billing/seats/${kind}");
+  });
+
+  it("never READS an org-key billing hop again — that is what was dark", () => {
+    // The failure this fence exists for: `GET /api/billing/seats` and
+    // `/api/billing/members` present a per-org `CUSTOMER_CONSOLE_ORG_KEY`
+    // (`api/billing/_console.ts`), which cannot be correct on a shared
+    // multi-tenant box. The env is unset there, the reads 503, and the tab shows
+    // "not configured for this deployment" permanently. A reintroduced read
+    // against either is that outage coming back.
+    //
+    // ⚠️ This is deliberately narrower than "no `/api/billing/` string at all":
+    // `/api/billing/seats/{assign,release}` are NOT org-key routes — they are
+    // `proxyToGateway` hops onto the same deployment-key door as the read, and
+    // the scan below proves they carry no credential. Forbidding the prefix
+    // wholesale is what pushed a byte-identical twin pair into `/api/org/`.
+    expect(TAB).not.toContain('/api/billing/seats"');
+    expect(TAB).not.toContain("/api/billing/members");
+    expect(TAB).not.toContain("_console");
+  });
+
+  it("delegates the read outcome to the testable classifier", () => {
+    // The status→state judgement lives in `interpretOverviewRead`, not inline
+    // in the fetch callback: a branch inside a `useCallback` is unreachable by
+    // any test in this tree, and it stayed wrong for exactly that reason.
+    expect(TAB).toContain("interpretOverviewRead(r.status, payload)");
+    expect(TAB).not.toMatch(/status === 503/);
+  });
+
+  it("draws every answered state, and only the unknown one in red", () => {
+    // Each `SeatPlaneRead` needs a branch or the state renders as an empty
+    // roster. `tone="warning"` is the red-ish one and belongs to `error` alone.
+    for (const state of ["unconfigured", "restricted", "ambiguous", "error"]) {
+      expect(TAB, state).toContain(`plane === "${state}"`);
+    }
+    expect(TAB.match(/tone="warning"/g) ?? []).toHaveLength(1);
+  });
+});
+
+describe("the hops name no tenant and hold no credential (R11)", () => {
   const ROUTES: ReadonlyArray<[string, string]> = [
     ["overview", OVERVIEW_ROUTE],
     ["assign", ASSIGN_ROUTE],
