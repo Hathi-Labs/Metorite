@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 
-import { RESERVED_LABELS, SLUG_RE } from "./subdomain";
+import { RESERVED_LABELS, SLUG_RE, suggestSlug } from "./subdomain";
 
 describe("the reserved-label vocabulary (owner ruling B7 · CP-2c 4a)", () => {
   it("holds every label the owner named, and the platform's own hostnames", () => {
@@ -55,6 +55,46 @@ describe("the slug shape (one home; the gateway's _SLUG_RE is the twin)", () => 
     ]) {
       expect(SLUG_RE.test(slug)).toBe(false);
     }
+  });
+});
+
+describe("suggestSlug — the address suggestion the signup form derives from the company name", () => {
+  it("turns ordinary company names into their tidy slug", () => {
+    expect(suggestSlug("Hathi Labs")).toBe("hathi-labs");
+    expect(suggestSlug("Acme Inc.")).toBe("acme-inc");
+    expect(suggestSlug("Fracktal Works Pvt. Ltd.")).toBe("fracktal-works-pvt-ltd");
+    expect(suggestSlug("  A1  Motors  ")).toBe("a1-motors");
+  });
+
+  it("transliterates accents rather than dropping the letters", () => {
+    expect(suggestSlug("Café Müller")).toBe("cafe-muller");
+  });
+
+  it("suggests NOTHING for a name with no usable characters — never something invalid", () => {
+    expect(suggestSlug("")).toBe("");
+    expect(suggestSlug("   ")).toBe("");
+    expect(suggestSlug("『株式会社』")).toBe("");
+    expect(suggestSlug("---")).toBe("");
+  });
+
+  it("every non-empty suggestion satisfies SLUG_RE — the module's contract", () => {
+    // The form submits whatever ends up in the field, so a suggestion that
+    // fails the shape it sits next to would paint the field red as you type
+    // your own company's name.
+    for (const name of [
+      "Hathi Labs", "Acme Inc.", "Café Müller", "-lead-", "a".repeat(200),
+      "Tata & Sons", "3M", "x", "O'Brien & Co", "A—B–C", "Ltd.",
+    ]) {
+      const s = suggestSlug(name);
+      if (s !== "") expect(SLUG_RE.test(s), `${name} → ${s}`).toBe(true);
+    }
+  });
+
+  it("truncates a very long name to the 63-char DNS bound, never ending on a hyphen", () => {
+    const s = suggestSlug("word ".repeat(40));
+    expect(s.length).toBeLessThanOrEqual(63);
+    expect(s.endsWith("-")).toBe(false);
+    expect(SLUG_RE.test(s)).toBe(true);
   });
 });
 

@@ -6,7 +6,7 @@ import { useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
-import { RESERVED_LABELS, SLUG_RE } from "@/lib/subdomain";
+import { RESERVED_LABELS, SLUG_RE, suggestSlug } from "@/lib/subdomain";
 
 import { signInErrorMessage } from "../signin/errorCopy";
 
@@ -143,6 +143,10 @@ export default function SignUpForm({
   const { data: session } = useSession();
   const [displayName, setDisplayName] = useState("");
   const [slug, setSlug] = useState("");
+  // The address follows the company name until the founder edits it by hand —
+  // clearing the field hands it back to the suggestion (owner feedback
+  // 2026-08-24: the empty field made people guess what an "address" is).
+  const [slugTouched, setSlugTouched] = useState(false);
   const [state, setState] = useState("");
   const [gstin, setGstin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -277,7 +281,10 @@ export default function SignUpForm({
               <Input
                 inputSize="lg"
                 value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(e) => {
+                  setDisplayName(e.target.value);
+                  if (!slugTouched) setSlug(suggestSlug(e.target.value));
+                }}
                 placeholder="Acme Inc"
                 autoComplete="organization"
               />
@@ -291,7 +298,12 @@ export default function SignUpForm({
                 inputSize="lg"
                 icon="Globe"
                 value={slug}
-                onChange={(e) => setSlug(e.target.value)}
+                onChange={(e) => {
+                  setSlug(e.target.value);
+                  // Typing marks the field hand-edited; emptying it un-marks,
+                  // so the suggestion resumes rather than leaving a hole.
+                  setSlugTouched(e.target.value !== "");
+                }}
                 placeholder="acme"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -309,6 +321,17 @@ export default function SignUpForm({
                 // the route makes between `InvalidSlug` and `ReservedSlug`.
                 <span className="text-xs text-destructive">
                   That address is reserved. Please choose a different one.
+                </span>
+              )}
+              {(trimmedSlug === "" || slugOk) && (
+                // The standing explanation, not an error: this field used to
+                // sit silent until you typed something invalid, and a single
+                // typed letter is valid — so nothing ever told the founder
+                // what an "address" is (owner feedback, 2026-08-24).
+                <span className="text-xs text-muted-foreground">
+                  Your organization&apos;s short, permanent ID on Metorite —
+                  filled in from your company name, e.g.{" "}
+                  <span className="font-medium">acme</span> for Acme Inc.
                 </span>
               )}
             </label>
