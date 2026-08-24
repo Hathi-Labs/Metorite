@@ -25,8 +25,14 @@ export default function Sidebar() {
   const [agentUpdateCount, setAgentUpdateCount] = useState(0);
   const [pinnedApps, setPinnedApps] = useState<PinnedApp[]>([]);
   // Org access control (spec §5, seam 5): the sidebar shows only what this
-  // member can reach. `null` while unresolved keeps the full list, so the
-  // nav does not visibly shrink on first paint.
+  // member can reach, and only what we have launched (`launch_surface.md` §2).
+  //
+  // `null` while unresolved now yields NO sections, and the skeleton below
+  // holds the space. It used to yield the FULL list, on the reasoning that the
+  // nav should not visibly shrink on first paint — but showing everything IS
+  // the shrink: every sign-in painted the complete application and then removed
+  // most of it, for as long as `/api/auth/me` took. That is the reported
+  // "sometimes all the apps appear, sometimes they don't" (§8.1).
   const { access, loading: accessLoading } = useAccess();
   const sections = visibleSections(
     accessLoading ? null : access.features,
@@ -143,18 +149,22 @@ export default function Sidebar() {
           themed utility already existed in globals.css; this scroller just never
           opted in. */}
       <nav className="scrollbar-thin flex flex-col flex-1 overflow-y-auto">
-        {sections.map((section) => (
-          <NavSectionBlock
-            key={section.id}
-            section={section}
-            pathname={pathname}
-            collapsed={collapsed}
-            folded={!!foldedSections[section.id]}
-            onToggle={() => toggleSection(section.id)}
-            agentUpdateCount={agentUpdateCount}
-            pinnedApps={pinnedApps}
-          />
-        ))}
+        {accessLoading ? (
+          <NavSkeleton collapsed={collapsed} />
+        ) : (
+          sections.map((section) => (
+            <NavSectionBlock
+              key={section.id}
+              section={section}
+              pathname={pathname}
+              collapsed={collapsed}
+              folded={!!foldedSections[section.id]}
+              onToggle={() => toggleSection(section.id)}
+              agentUpdateCount={agentUpdateCount}
+              pinnedApps={pinnedApps}
+            />
+          ))
+        )}
       </nav>
 
       {/* User / sign-out footer */}
@@ -187,6 +197,48 @@ export default function Sidebar() {
         </div>
       )}
     </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Nav skeleton — what an unresolved viewer sees
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder rows held while access resolves (`launch_surface.md` §8.1).
+ *
+ * The rail is a fixed width and the sections are a known shape, so the honest
+ * thing to draw before we know WHICH panes this member has is the right number
+ * of rows in the right places — not a guess at their contents, and not an empty
+ * rail that then fills. Nothing here is a link, so there is nothing to click
+ * that could turn out not to exist.
+ */
+function NavSkeleton({ collapsed }: { collapsed: boolean }) {
+  // Two groups of four, which is the shape of a typical resolved sidebar.
+  return (
+    <div className="px-2 py-3" aria-hidden data-testid="nav-skeleton">
+      {[0, 1].map((group) => (
+        <div key={group} className={group === 0 ? "" : "mt-6"}>
+          {!collapsed && (
+            <div className="mx-2 mb-2 h-2 w-20 animate-pulse rounded bg-sidebar-accent" />
+          )}
+          {[0, 1, 2, 3].map((row) => (
+            <div
+              key={row}
+              className={`mb-1 flex items-center gap-2 rounded-lg px-2 py-2 ${
+                collapsed ? "justify-center" : ""
+              }`}
+            >
+              <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-sidebar-accent" />
+              {!collapsed && (
+                <div className="h-2.5 flex-1 animate-pulse rounded bg-sidebar-accent" />
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+      <span className="sr-only">Loading navigation…</span>
+    </div>
   );
 }
 
