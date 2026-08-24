@@ -15,7 +15,7 @@ from acb_skills.write_artifact import _WRITE_ARTIFACT_CONTEXT
 async def list_integrations() -> str:
     """List the integrations available to you and how scripts access them.
 
-    Shows which platform integrations (ClickUp, Zoho CRM, Gmail, SerpAPI, …)
+    Shows which platform integrations (Zoho CRM, Gmail, SerpAPI, …)
     are configured for you this run, and the environment-variable NAMES your
     scripts (``run_script`` / ``code_task``) can read for each — credential
     values are injected at run time and are never shown here. Also lists any

@@ -15,7 +15,7 @@ What Graphiti adds over the Postgres entity graph:
 - Agents can call search_entity_timeline() to get time-contextualised
   answers that the flat Postgres graph cannot provide.
 
-Episodes are added after each ingestion event (ClickUp webhook, Zoho sync,
+Episodes are added after each ingestion event (Zoho sync, Gmail webhook,
 Gmail ingest) and after each significant agent conversation turn.
 
 Typical usage in an agent:
@@ -192,7 +192,7 @@ class GraphitiClient:
         Non-blocking — designed to be called as a background task.
 
         Args:
-            name: Short label, e.g. "ClickUp task updated: TASK-123"
+            name: Short label, e.g. "Task updated: TASK-123"
             content: Full text content to extract facts from.
             source_description: Origin of the episode.
             reference_time: When the event occurred (defaults to now).

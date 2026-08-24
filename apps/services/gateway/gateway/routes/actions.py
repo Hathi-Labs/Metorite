@@ -14,13 +14,13 @@ outward-write bodies — CRM/email content — so it is never anonymous-reachabl
 Approve/reject go through ``action_broker.approve``/``reject``, which fail
 CLOSED: a missing or non-pending row is never run, and a handler error marks the
 row ``failed``, not ``applied``. Real handlers ARE registered (six sites as of
-2026-08-05 — ClickUp task writes, the three ``crm.zoho_*`` pushes, workflow
+2026-08-05 — task writes, the three ``crm.zoho_*`` pushes, workflow
 resume, WhatsApp broadcast, two app-tool actions), so ``approve`` performs the
 real write for those actions. An action with no registered handler still gets a
 refusal ("no handler") and the row is marked ``failed``. ⚠️ That branch used to
-swallow the two ClickUp verbs ``delete_task``/``archive_task``; **BO-1a closed
+swallow the two task verbs ``delete_task``/``archive_task``; **BO-1a closed
 that on 2026-08-11** and a test derived from the gate call sites now fails if a
-gated ClickUp action loses its handler again.
+gated action loses its handler again.
 """
 from __future__ import annotations
 

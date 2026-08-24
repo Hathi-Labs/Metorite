@@ -6,7 +6,7 @@ stored in plain text outside this module's in-memory cache.
 
 Supports TWO credential types via the credential_type column:
   - 'llm'          — LLM provider API keys (OpenAI, Anthropic, Gemini, etc.)
-  - 'integration'  — Business integration credentials (Zoho, ClickUp, etc.)
+  - 'integration'  — Business integration credentials (Zoho, Gmail, etc.)
 
 Usage:
     from acb_llm.key_store import get_key_store
@@ -324,7 +324,7 @@ class ProviderKeyStore:
         """Return this org's keys for a given service (decrypted).
 
         Args:
-            service: Service name, e.g. 'zoho-crm', 'clickup'.
+            service: Service name, e.g. 'zoho-crm', 'gmail'.
             organization_id: MT-0d — omitted resolves to the sole organization.
 
         Returns:
@@ -359,10 +359,6 @@ class ProviderKeyStore:
                 "api_domain": "ZOHO_API_DOMAIN",
                 "accounts_url": "ZOHO_ACCOUNTS_URL",
                 "region": "ZOHO_REGION",
-            },
-            "clickup": {
-                "api_token": "CLICKUP_API_TOKEN",
-                "workspace_id": "CLICKUP_WORKSPACE_ID",
             },
             "apollo": {
                 "api_key": "APOLLO_API_KEY",

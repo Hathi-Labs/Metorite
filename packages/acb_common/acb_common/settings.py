@@ -106,10 +106,10 @@ class Settings(BaseSettings):
     #: path and says the origin is unconfigured rather than inventing one.
     public_api_base_url: str = ""
 
-    # ClickUp (Phase 0)
-    clickup_api_token: str = ""
-    clickup_workspace_id: str = ""
-    clickup_webhook_secret: str = ""
+    # ⚠️ The three CLICKUP_* settings were REMOVED 2026-08-24 by D52 (board
+    # WS-39 S1): ClickUp is retired outright and Metorite is the
+    # project-management system of record. Do not re-add them — a settings
+    # field is how a connector grows back.
 
     # Zoho CRM (Phase 0)
     zoho_client_id: str = ""
@@ -369,10 +369,7 @@ class Settings(BaseSettings):
     # Public base URL the provider redirects back to (no trailing slash).
     oauth_redirect_base: str = "http://localhost:8000"
 
-    # ClickUp OAuth app (app.clickup.com/settings/apps)
-    clickup_client_id: str = ""
-    clickup_client_secret: str = ""
-    clickup_access_token: str = ""        # set by the OAuth callback
+    # ⚠️ The ClickUp OAuth app fields were REMOVED 2026-08-24 by D52.
 
     # Google OAuth app (console.cloud.google.com — Gmail scopes)
     google_client_id: str = ""

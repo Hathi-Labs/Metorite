@@ -38,7 +38,7 @@ You can describe the following categories of built-in connections:
 - **CRM**: Zoho CRM
 - **Prospecting**: Apollo.io, Google Maps/Places, AnyMailFinder
 - **Email**: Gmail, SMTP, Instantly.ai
-- **Productivity**: ClickUp, Google Sheets
+- **Productivity**: Google Sheets
 - **Search**: SerpAPI, Apify
 
 ## Rules

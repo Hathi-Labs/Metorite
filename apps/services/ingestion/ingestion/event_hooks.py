@@ -3,7 +3,7 @@ events without ingestion importing upward (the ``email_ingestion/post_sync.py``
 hook pattern).
 
 The gateway registers the Workflows event dispatcher here at startup
-(``gateway/main.py``), so a ClickUp/Zoho/Gmail webhook can fire workflow
+(``gateway/main.py``), so a Zoho/Gmail webhook can fire workflow
 event triggers. With nothing registered, ``emit_event`` is a no-op — the
 receivers behave exactly as before, and ingestion keeps working standalone.
 

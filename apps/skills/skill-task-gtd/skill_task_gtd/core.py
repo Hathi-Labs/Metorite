@@ -313,10 +313,11 @@ async def gtd_accounts() -> str:
 async def gtd_sync(account_id: str = "", full: bool = False) -> str:
     """Pull existing tasks from the connected PM tool(s) into the GTD views.
 
-    Use when the user asks to refresh/sync their ClickUp (or other provider)
-    tasks, or when Waiting/Next look stale. Incremental by default; set
-    full=True to re-pull everything. account_id from gtd_accounts; empty
-    syncs every sync-enabled workspace.
+    ⚠️ **This is a no-op today and the tool is deprecated.** D52 (2026-08-24)
+    retired the only connector, so there is nothing to pull from: Metorite is
+    the system of record and the store is never stale. Kept as a tool so an
+    agent that still calls it gets an empty, honest result rather than a
+    tool-not-found error; it goes with the provider layer in WS-39 S3a.
     """
     body = {"account_id": account_id or None, "full": bool(full)}
     results = await _request("POST", "/tasks/sync", json=body)
@@ -513,17 +514,18 @@ async def gtd_plan_project(
          and confirm before creating anything.
       2. After the user approves, call again with apply=true to create it.
 
-    target="local" creates the project + tasks + subtasks in the local GTD store.
-    target="clickup" is a provider write — the agent NEVER pushes to ClickUp
-    itself; propose the plan and tell the user to apply it to ClickUp from the
-    Tasks UI (account_id/space_id are only used by that UI action).
+    target="local" creates the project + tasks + subtasks in the task store.
+
+    ⚠️ ``target`` has exactly one valid value since D52 (2026-08-24) retired the
+    provider connectors. ``account_id``/``space_id``/``folder_id`` are vestigial
+    and ignored; they go with the provider layer in WS-39 S3a.
 
     Args:
         name: The project name / goal.
         description: Extra brief detail (scope, constraints, deadline).
-        apply: false = propose only; true = create it (local only).
-        target: "local" | "clickup".
-        account_id / space_id / folder_id: ClickUp destination (UI apply only).
+        apply: false = propose only; true = create it.
+        target: "local" — the only accepted value.
+        account_id / space_id / folder_id: ignored (vestigial, see above).
     """
     plan = await _request("POST", "/tasks/plan", json={
         "name": name, "description": description or None, "target": target})
@@ -531,11 +533,12 @@ async def gtd_plan_project(
     if not apply:
         return ("Proposed plan (review with the user, then call gtd_plan_project "
                 "with apply=true to create it):\n\n" + summary)
-    if target == "clickup":
-        # C-04: the agent can't write to a provider. Hand the plan back for the
-        # human to apply from the UI (which stages/pushes with confirmation).
-        return ("Plan ready. Creating in ClickUp is a manual step — open Tasks → "
-                "Plan a project, review, and Apply → ClickUp. Proposed plan:\n\n"
+    if target != "local":
+        # D52: there is no provider to target any more. Refuse loudly rather
+        # than silently creating locally under a name nobody asked for.
+        return (f"Unknown plan target {target!r}. Metorite is the project-"
+                "management system of record and there are no external "
+                'targets (D52); use target="local". Proposed plan:\n\n'
                 + summary)
     res = await _request("POST", "/tasks/plan/apply",
                          json={"plan": plan, "target": "local"})

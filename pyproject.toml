@@ -5,7 +5,7 @@
 [project]
 name = "project-docs"
 version = "0.0.1"
-description = "Fracktal Works internal multi-agent brain — mirror + reasoning + action layer over ClickUp/Zoho/Odoo."
+description = "Metorite — an AI-driven company operating system: the project-management system of record, plus a mirror/reasoning/action layer over Zoho and Odoo."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { text = "Proprietary" }
@@ -32,7 +32,6 @@ dependencies = [
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError
     # (they resolve locally only because a dev venv already has them editable).
     "skill-task-gtd",
-    "skill-clickup-sync",
     "bcrypt>=5.0.0",
     "python-multipart>=0.0.32",
 ]
@@ -89,7 +88,6 @@ customer-console   = { workspace = true }
 email-ingestion = { workspace = true }
 whatsapp-ingestion = { workspace = true }
 skill-task-gtd  = { workspace = true }
-skill-clickup-sync = { workspace = true }
 
 # ---------- Tooling config ----------
 

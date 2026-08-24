@@ -4,7 +4,6 @@ Design
 ------
 Each inbound event is written to a Redis Stream keyed by source:
 
-    ingestion:clickup   — ClickUp task webhooks
     ingestion:zoho      — Zoho CRM webhooks
     ingestion:gmail     — Gmail Pub/Sub notifications
 
@@ -20,7 +19,6 @@ Complex payloads are JSON-encoded into a single "data" field.
 
 Stream names
 ------------
-    STREAM_CLICKUP = "ingestion:clickup"
     STREAM_ZOHO    = "ingestion:zoho"
     STREAM_GMAIL   = "ingestion:gmail"
 
@@ -37,7 +35,6 @@ from acb_common import get_logger, get_settings
 
 _log = get_logger("ingestion.queue")
 
-STREAM_CLICKUP = "ingestion:clickup"
 STREAM_ZOHO = "ingestion:zoho"
 STREAM_GMAIL = "ingestion:gmail"
 STREAM_DLQ = "ingestion:dlq"
@@ -55,7 +52,7 @@ def enqueue(stream: str, event_type: str, payload: dict[str, Any]) -> str:
     """Append an event to a Redis Stream.
 
     Args:
-        stream:     Stream name, e.g. ``STREAM_CLICKUP``.
+        stream:     Stream name, e.g. ``STREAM_ZOHO``.
         event_type: The source event type string (e.g. ``"taskUpdated"``).
         payload:    Arbitrary dict; JSON-encoded into the ``"data"`` field.
 
@@ -101,7 +98,6 @@ def enqueue_dlq(stream_origin: str, event_type: str, payload: dict[str, Any], er
 
 
 __all__ = [
-    "STREAM_CLICKUP",
     "STREAM_ZOHO",
     "STREAM_GMAIL",
     "STREAM_DLQ",

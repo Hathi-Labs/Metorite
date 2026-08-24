@@ -2,23 +2,23 @@
 
 The agent behind the /tasks app (spec: project-docs/specs/
 task_manager_app.md §3.1): captures thoughts, clarifies the inbox through
-the GTD decision tree, organizes items toward LOCAL or a connected PM
-workspace (ClickUp first), and answers status/progress/workload questions.
+the GTD decision tree, organizes them, and answers status/progress/workload
+questions.
 
 Tool surface:
-  skill-task-gtd     — the GTD engine over the gateway /tasks API. Every ClickUp
-                       read/stage goes through the gateway's provider interface
-                       layer, which resolves the RIGHT per-workspace connector
-                       from the user's ``task_accounts`` rows (multi-workspace,
-                       per-account encrypted token).
+  skill-task-gtd     — the GTD engine over the gateway /tasks API.
 
-The legacy ``skill-clickup-sync`` tools (``get_task_status`` /
-``list_project_tasks``) were RETIRED from this agent (2026-07-05): they read a
-single process-global ``CLICKUP_API_TOKEN`` (System A), which can only ever see
-one workspace and contradicts the multi-workspace architecture. Status/progress
-questions are now answered through the per-account GTD store — ``gtd_list``
-(SYNCED provider tasks, with URLs) and ``gtd_list_projects`` — so one clean,
-multi-workspace-correct credential path serves the whole agent.
+⚠️ **There is no external PM system, and there is no connector.** **D52**
+(2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the
+project-management system of record. ``skill-clickup-sync`` is deleted and the
+gateway's connector registry is empty by decision. Status and progress questions
+are answered from Metorite's own store.
+
+⚠️ **This agent is scheduled to be re-pointed, not retired.** **D53** makes
+``pm_tasks``/``pm_task_personal`` the one task store and the ``gtd_*`` tables its
+predecessor; WS-39 **S3a** moves the surface. Until then this agent still reads
+the GTD store, which is correct-but-temporary — do not build new behaviour on
+``gtd_*`` here.
 
 Exports:
     build_agents() -> list[GitHubCopilotAgent]   (Dynamic Agent Loader entry point)
@@ -41,11 +41,9 @@ INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_F
 
 # ---------------------------------------------------------------------------
 # Tools
-#   skill-task-gtd — capture/clarify/organize/list/sync over the gateway
-#                    /tasks API (provider-agnostic; the interface layer
-#                    resolves the per-workspace connector). This is the ONLY
-#                    ClickUp path the agent uses — the legacy direct-REST
-#                    skill-clickup-sync tools were retired (see module docstring).
+#   skill-task-gtd — capture/clarify/organize/list over the gateway /tasks
+#                    API. The connector registry is empty (D52), so there is no
+#                    outward path at all — every read is Metorite's own store.
 # ---------------------------------------------------------------------------
 
 _TOOLS: list = []

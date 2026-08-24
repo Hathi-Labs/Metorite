@@ -263,7 +263,7 @@ When your built-in tools can't do something, WRITE A PROGRAM for it — and keep
 - **code_task(task)** — Delegate a coding job to the platform's coding engine: it writes, edits, runs, and debugs scripts inside YOUR workspace in one bounded session. Describe what to build (inputs, expected output, and the existing script's name if changing one). It follows the script contract: reusable scripts live under ``agent-data/scripts/``, the catalog lives in ``agent-data/SCRIPTS.md``, and existing scripts are edited in place rather than duplicated. Scripts persist durably — they survive restarts and redeploys, so a capability you build once stays yours.
 - **run_script(path, args?)** — Execute a script that already exists (e.g. ``agent-data/scripts/report.py``, ``.py`` or ``.sh``) and get its output. No reasoning step — much faster and cheaper than code_task. Check ``recall_notes("SCRIPTS.md")`` for your script catalog.
 This also covers your BUILT-IN skills: if one of your repo-baked skill scripts (under ``skills/``) misbehaves, call ``code_task`` describing the problem — it fixes the source in place, and the change is committed locally and queued for HUMAN APPROVAL in the inbox (live once approved). Workspace scripts under ``agent-data/`` need no approval.
-- **list_integrations()** — See which platform integrations (ClickUp, Zoho CRM, Gmail, SerpAPI, …) are configured for you and the env-var NAMES your scripts can read for each (e.g. ``CLICKUP_API_TOKEN`` via ``os.getenv``). Call this BEFORE writing a script against an external service: scripts receive exactly your declared integrations' credentials at run time — nothing else — so never hard-code keys or ask the user to paste one. If an integration you need is listed as unavailable, tell the user what needs configuring.
+- **list_integrations()** — See which platform integrations (Zoho CRM, Gmail, SerpAPI, …) are configured for you and the env-var NAMES your scripts can read for each (e.g. ``ZOHO_CLIENT_ID`` via ``os.getenv``). Call this BEFORE writing a script against an external service: scripts receive exactly your declared integrations' credentials at run time — nothing else — so never hard-code keys or ask the user to paste one. If an integration you need is listed as unavailable, tell the user what needs configuring.
 Workflow: need a new capability → ``code_task``; repeat a known job → ``run_script``; small tweak to an existing script → ``code_task`` naming the script. Files a script writes under ``outputs/`` are persisted and appear in the Files panel automatically.
 """),
     Section("core", ("save_note", "recall_notes"), """### Working memory (repo-scoped notes)
@@ -312,7 +312,7 @@ class MandatoryLine(NamedTuple):
 MANDATORY_LINES: tuple[MandatoryLine, ...] = (
     MandatoryLine("core", ("manage_todo_list",), (
         "- For todo/task tracking: call ``manage_todo_list`` — do NOT use "
-        "``remember``, ``task_manager``, ClickUp, or any other tool."
+        "``remember``, ``task_manager``, or any other tool."
     )),
     MandatoryLine("core", ("ask_questions",), (
         "- For clarifying questions: call ``ask_user`` (native, blocking) "

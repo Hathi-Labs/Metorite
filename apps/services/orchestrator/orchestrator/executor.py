@@ -16,7 +16,7 @@ Usage::
     from orchestrator.executor import run_agent, run_agent_stream
 
     # Batch (existing):
-    result = await run_agent("task-manager", {"clickup_event": {...}})
+    result = await run_agent("task-manager", {"task_event": {...}})
 
     # Streaming SSE (new — for /agent/run/stream endpoint):
     async for line in run_agent_stream("task-manager", payload, run_id=..., thread_id=...):
@@ -2032,7 +2032,7 @@ async def _run_agent_inner(
             agent=agent_name, thread_id=thread_id,
             source=_batch_source or "batch",
         )
-    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp/ClickUp) + email-automation
+    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp) + email-automation
     # chat need a mailbox/account→org resolver over an RLS-scoped table before they
     # can pass organization_id here (exempt-resolver design). TODO(WS-29 slice 6c):
     # the workflow cron scheduler / orphan reconciler / schedule sweep resolve the
@@ -2595,7 +2595,7 @@ async def run_agent_stream(
     # WS-29 slice 6a: sub-agent runs now inherit the parent's org (via the batch
     # path's organization_id, resolved by _resolve_sub_agent_org), and /copilot/
     # chat threads its org through run_detached. TODO(WS-29 slice 6b): email-
-    # automation chat + inbound webhooks (WhatsApp/ClickUp) need an RLS-scoped
+    # automation chat + inbound webhooks (WhatsApp) need an RLS-scoped
     # mailbox/account→org resolver. TODO(WS-29 slice 6c): the workflow cron
     # scheduler / orphan reconciler / schedule sweep resolve the owning record's
     # org and pass it into the batch path.

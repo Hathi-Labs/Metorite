@@ -1,7 +1,7 @@
 [project]
 name = "ingestion"
 version = "0.0.1"
-description = "Webhook receivers, REST/poll workers, MCP clients for ClickUp/Zoho/Gmail/WhatsApp."
+description = "Webhook receivers, REST/poll workers, MCP clients for Zoho/Gmail/WhatsApp."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.115",

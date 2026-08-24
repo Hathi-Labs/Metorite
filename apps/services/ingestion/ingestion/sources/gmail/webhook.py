@@ -7,7 +7,7 @@ base64-encoded JSON `{ emailAddress, historyId }` blob.
 We verify the bearer token (an audience we configure on the Pub/Sub subscription),
 ack-200 immediately, best-effort `enqueue` the decoded notification onto
 `ingestion:gmail`, and fan it out to the event-sink registry (workflow event
-triggers) — ClickUp's shape, per §BO-20 BO-20f. The `list_history(historyId)`
+triggers) — the shape BO-20f settled on, per §BO-20. The `list_history(historyId)`
 follow-up chain is still TODO.
 """
 from __future__ import annotations

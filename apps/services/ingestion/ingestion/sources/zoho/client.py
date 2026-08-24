@@ -178,7 +178,7 @@ async def list_notes(*, modified_since: "datetime | None" = None) -> list[dict[s
 
 
 async def list_tasks(*, modified_since: "datetime | None" = None) -> list[dict[str, Any]]:
-    """Zoho CRM Tasks (not to be confused with ClickUp tasks)."""
+    """Zoho CRM Tasks (not to be confused with Metorite `pm_tasks`)."""
     return await _list_module("Tasks", modified_since=modified_since)
 
 

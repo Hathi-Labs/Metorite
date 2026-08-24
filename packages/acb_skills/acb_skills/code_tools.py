@@ -80,7 +80,7 @@ def _script_env() -> dict[str, str]:
     The base allowlist is secret-free (deny-pattern on top). On top of it, the
     canonical env vars of the integrations this agent declared in its
     ``config.json`` — and that resolved for this run — are passed through
-    (``acb_skills.integrations.FIELD_TO_ENV``). So a script gets the ClickUp
+    (``acb_skills.integrations.FIELD_TO_ENV``). So a script gets the Zoho
     token *its own agent* declared, but not the gateway master key or the DB URL.
 
     **MT-0a: the credential values come from the run's ContextVar binding**

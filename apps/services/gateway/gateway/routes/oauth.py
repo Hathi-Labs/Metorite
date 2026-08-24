@@ -69,17 +69,6 @@ _PROVIDERS: dict[str, dict[str, Any]] = {
         "expiry_env": "ZOHO_TOKEN_EXPIRY",
         "extra_authorize": {"access_type": "offline", "prompt": "consent"},
     },
-    "clickup": {
-        "authorize_url": lambda s: "https://app.clickup.com/api",
-        "token_url": lambda s: "https://api.clickup.com/api/v2/oauth/token",
-        "scopes": "",  # ClickUp grants full access; no scopes, no refresh token
-        "client_id_attr": "clickup_client_id",
-        "client_secret_attr": "clickup_client_secret",
-        "access_env": "CLICKUP_ACCESS_TOKEN",
-        "refresh_env": None,
-        "expiry_env": None,
-        "extra_authorize": {},
-    },
     "google": {
         "authorize_url": lambda s: "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": lambda s: "https://oauth2.googleapis.com/token",

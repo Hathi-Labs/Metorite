@@ -166,27 +166,6 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "GMAIL_DEFAULT_USER", "label": "Default Mailbox", "sensitive": False},
         ],
     },
-    "clickup": {
-        "label": "ClickUp",
-        "description": "Task and project management. Connect one or more "
-        "workspaces — each stored as its own per-account encrypted token so "
-        "several companies can coexist.",
-        "setup_url": "https://app.clickup.com/settings/apps",
-        "docs_url": "https://clickup.com/api/",
-        "instructions": (
-            "Connect ClickUp per-workspace (multi-account) from the panel:\n"
-            "1. ClickUp → Settings → Apps → Generate a Personal API Token.\n"
-            "2. Paste it to list the workspaces it can reach, then connect "
-            "each one you want. Repeat with other tokens for other companies."
-        ),
-        # NO env_vars: ClickUp is NOT a process-wide env credential. It uses the
-        # multi-account System-B store (task_accounts, per-account encrypted
-        # tokens) via /tasks/accounts. Empty env_vars keeps it out of
-        # _ALLOWED_ENV_KEYS so the legacy single-token write path is closed; the
-        # APIs-tab tile renders a dedicated multi-account connector instead of
-        # the generic credential form.
-        "env_vars": [],
-    },
     "whatsapp": {
         "label": "WhatsApp Business",
         "description": "Manage WhatsApp Business numbers via Meta's official "
@@ -201,7 +180,7 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             "2. The wizard live-tests the credentials against Meta before "
             "saving. Repeat to add more numbers."
         ),
-        # NO env_vars: like ClickUp, WhatsApp is multi-account (wa_accounts,
+        # NO env_vars: WhatsApp is multi-account (wa_accounts,
         # per-account encrypted tokens) via /whatsapp/accounts — not a
         # process-wide credential. The APIs tab renders a dedicated connector
         # (list numbers + disconnect + a link to the connect wizard).
@@ -380,7 +359,6 @@ _GUIDE_CATEGORIES: dict[str, str] = {
     "instantly":      "email",
     "gmail":          "email",
     "gmail-send":     "email",
-    "clickup":        "productivity",
     "whatsapp":       "communication",
     "smtp":           "email",
     "serpapi":        "search",
@@ -394,27 +372,6 @@ async def _db_query(sql: str, **params: Any) -> list[dict[str, Any]]:
     """Execute SQL via the key store's Postgres connection."""
     from acb_llm.key_store import get_key_store  # noqa: PLC0415
     return await get_key_store()._execute(sql, **params)
-
-
-async def _clickup_account_count() -> int:
-    """Count connected ClickUp workspaces in the System-B store.
-
-    ClickUp is multi-account: its "connected" state lives in ``task_accounts``
-    (per-account encrypted tokens), NOT a process-wide env var — which is why
-    :func:`_is_configured` hardcodes ``clickup`` to ``False``. The APIs-tab
-    tile already overrides ``configured`` from this count on the client, but the
-    Agents view trusts the server value, so it wrongly showed a connected
-    workspace as "not connected" / the agent as "not fully configured". Resolve
-    the real count server-side so BOTH surfaces agree. Fail-soft: 0 on error.
-    """
-    try:
-        rows = await _db_query(
-            "SELECT count(*) AS n FROM task_accounts WHERE provider = :p",
-            p="clickup",
-        )
-        return int(rows[0]["n"]) if rows else 0
-    except Exception:  # noqa: BLE001 — status must never 500 on a count
-        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -435,14 +392,10 @@ def _is_configured(service_name: str, settings: Any) -> bool:
             (s.msft_oauth_client_id and s.msft_oauth_client_secret)
             or (os.getenv("AUTH_MICROSOFT_ENTRA_ID_ID") and os.getenv("AUTH_MICROSOFT_ENTRA_ID_SECRET"))
         ),
-        # ClickUp is multi-account (task_accounts, System B) — its "connected"
-        # state is NOT a process-wide env token. The APIs-tab tile overrides
-        # `configured` from the real task_accounts count on the client, so the
-        # server-side env check is deliberately False (never report the legacy
-        # global CLICKUP_API_TOKEN as "connected").
-        "clickup":       lambda s: False,
-        # WhatsApp is multi-account (wa_accounts) too — the APIs-tab tile
-        # overrides `configured` from the connected-number count on the client.
+        # WhatsApp is multi-account (wa_accounts) — its "connected" state is
+        # NOT a process-wide env token, so the server-side env check is
+        # deliberately False and the APIs-tab tile overrides `configured` from
+        # the connected-number count on the client.
         "whatsapp":      lambda s: False,
 
         "smtp":          lambda s: bool(s.smtp_host and s.smtp_username),
@@ -614,11 +567,6 @@ async def integration_status(
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
-        # ClickUp is multi-account (System B / task_accounts): _is_configured
-        # can't see it, so resolve the real connection count here. Keeps the
-        # Agents view in agreement with the APIs-tab tile.
-        if svc == "clickup":
-            configured = await _clickup_account_count() > 0
         # For GitHub, always compute missing_keys from actual env vars
         # because the service can be "configured" via PAT (GITHUB_TOKEN)
         # alone, but the OAuth device flow (Option B) needs
@@ -826,7 +774,7 @@ async def configure_integrations(
 # ---------------------------------------------------------------------------
 
 class IntegrationKeyRequest(BaseModel):
-    service: str        # e.g. "zoho-crm", "clickup", "apollo"
+    service: str        # e.g. "zoho-crm", "apollo"
     key_name: str       # e.g. "client_id", "api_token", "api_key"
     value: str          # plain-text credential value
 
@@ -1371,15 +1319,6 @@ async def _run_test(service: str, settings: Any) -> dict[str, Any]:
             if sa_path.exists():
                 return {"ok": True, "detail": "Service account key file found."}
             return {"ok": False, "detail": f"Key file not found: {sa_path}"}
-
-        if service == "clickup":
-            resp = await client.get(
-                "https://api.clickup.com/api/v2/user",
-                headers={"Authorization": settings.clickup_api_token},
-            )
-            if resp.status_code == 200:
-                return {"ok": True, "detail": "ClickUp API reachable."}
-            return {"ok": False, "detail": f"Status {resp.status_code}: {resp.text[:200]}"}
 
         if service == "github":
             resp = await client.get(

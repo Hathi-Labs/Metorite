@@ -90,7 +90,7 @@ def test_instructions_come_from_the_agent_directory() -> None:
 
 def test_repo_name_maps_to_module_name() -> None:
     assert declarative.skill_module_name("skill-task-gtd") == "skill_task_gtd"
-    assert declarative.skill_module_name(" skill-clickup-sync ") == "skill_clickup_sync"
+    assert declarative.skill_module_name(" skill-zoho-crm ") == "skill_zoho_crm"
 
 
 def test_missing_skill_is_skipped_not_raised() -> None:

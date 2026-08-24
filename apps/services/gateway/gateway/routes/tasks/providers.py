@@ -1,85 +1,39 @@
-"""Provider interface layer — the PM-agnostic contract + connectors (§5.2/§5.5).
+"""Provider interface layer — the PM-agnostic contract (§5.2/§5.5).
 
-Everything above this module (schema, routes, agent, UI) is provider-agnostic:
-routes call ``provider_for_account(row, creds)`` and get a ``BaseTaskProvider``.
-ClickUp is the first API connector; Asana/Jira/Linear and a generic MCP
-connector slot in beside it later without touching the routes.
+🔴 **THE REGISTRY IS EMPTY, AND THAT IS THE DECISION — not a gap to fill.**
+**D52** (2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the
+project-management system of record, so there is no external PM system to
+connect to and none is planned. ``ClickUpProvider`` — the only connector this
+layer ever had — was deleted with it, along with the poll scheduler, the webhook
+receiver and both importers.
 
-Credentials are per-account (decrypted from ``task_accounts``), NOT process-wide
-env vars — that is what lets several ClickUp workspaces/companies coexist, each
-connected with its own token (multi-account, like email_accounts).
+**Do not add a connector here.** If a future decision reverses D52 it will say so
+by name in ``work_plan.md`` §3; until then, an implementation in this registry is
+a second write path into the task store, which is what D53 exists to prevent.
 
-Writes to a provider are user-approved only (constraint C-04: staged as
-``sync_state='pending'`` until the user explicitly pushes; the Action Broker
-takes over the gating in Phase 4).
+⚠️ **This whole framework is scheduled for deletion.** It is the GTD-side
+connector layer, and WS-39 **S3a** retires the GTD store it serves (D53) — at
+which point ``BaseTaskProvider``, ``task_accounts``, ``sync.py`` and this module
+go together. It survives S1 only because deleting it now would cascade into ~100
+call sites across the Tasks app that S3a rewrites anyway. Left in place, fenced
+by ``test_no_task_provider_connectors``, rather than half-removed.
+
+Credentials were per-account (decrypted from ``task_accounts``), NOT
+process-wide env vars. Writes were user-approved only (constraint C-04: staged
+as ``sync_state='pending'`` until the user explicitly pushed; the Action Broker
+took over the gating in Phase 4).
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from abc import ABC, abstractmethod
 from typing import Any
 
-import httpx
 from acb_common import get_logger
 from fastapi import HTTPException
 
 _log = get_logger("gateway.tasks.providers")
-
-_CLICKUP = "https://api.clickup.com/api/v2"
-# ClickUp rate-limits at 100 req/min/token → HTTP 429. Retry a bounded number of
-# times, honouring Retry-After, so a burst (a full schema pull, a planned-project
-# create) degrades to slower-but-correct instead of a hard failure (PM API rule).
-_RATE_LIMIT_RETRIES = 3
-_RATE_LIMIT_MAX_SLEEP = 30.0
-
-
-async def _clickup_send(
-    method: str, url: str, *, headers: dict[str, str],
-    retries: int = _RATE_LIMIT_RETRIES, **kwargs: Any,
-) -> httpx.Response:
-    """One ClickUp HTTP call with 429 back-off. Opens a client, sends, and on a
-    rate-limit sleeps (Retry-After when given, else exponential) up to ``retries``
-    times before returning the last response for the caller to handle."""
-    delay = 1.0
-    async with httpx.AsyncClient(timeout=20.0) as http:
-        # Dispatch to the verb method (http.get/post/put/delete) rather than
-        # http.request(method, ...) — it's the idiomatic httpx call AND keeps the
-        # provider compatible with test doubles that stub the verb methods.
-        send = getattr(http, method.lower())
-        response: httpx.Response | None = None
-        for attempt in range(retries + 1):
-            response = await send(url, headers=headers, **kwargs)
-            if response.status_code != 429 or attempt >= retries:
-                return response
-            ra = response.headers.get("Retry-After")
-            try:
-                wait = float(ra) if ra else delay
-            except ValueError:
-                wait = delay
-            _log.info("clickup.rate_limited", attempt=attempt + 1,
-                      sleep=min(wait, _RATE_LIMIT_MAX_SLEEP))
-            await asyncio.sleep(min(wait, _RATE_LIMIT_MAX_SLEEP))
-            delay *= 2
-        return response  # type: ignore[return-value]
-
-
-def _clickup_due(due_at_ms: Any) -> tuple[int | None, bool]:
-    """Normalise a due timestamp for ClickUp (PM API rule). Returns
-    (due_date_ms, due_date_time). A date-only value (midnight) is nudged to 18:00
-    so the task lands end-of-day, not start; ``due_date_time=True`` makes ClickUp
-    honour the exact time. None/blank → (None, False)."""
-    try:
-        ms = int(due_at_ms)
-    except (TypeError, ValueError):
-        return None, False
-    if ms <= 0:
-        return None, False
-    # Midnight UTC (date-only, e.g. from a relative offset) → 18:00 same day.
-    if ms % 86_400_000 == 0:
-        ms += 18 * 3_600_000
-    return ms, True
 
 
 class ProviderError(HTTPException):
@@ -113,10 +67,18 @@ def _broker_enforced(action: str) -> bool:
       **KeyError → HTTP 500** on ``POST /tasks/accounts/{id}/projects`` and on
       ``POST /tasks/accounts/{id}/folders``;
     * ``routes/tasks/planning.py`` — ``list_ref = created["id"]`` → the same
-      **500** on ``POST /tasks/plan/apply`` with ``target="clickup"``;
+      **500** on ``POST /tasks/plan/apply``;
     * ``routes/tasks/items.py::_push_patch_upstream`` — no 500, but a member's
       edit to a synced task reports local success with **nothing upstream and no
       state saying so**.
+
+    ⚠️ **Re-measured 2026-08-24 (D52).** Those three sites were reachable only
+    through the ClickUp connector, and the registry is now empty — so today they
+    cannot be *reached*, which is not the same as being *fixed*. **BO-1d stays
+    open** and stays the named blocker on the flip, because the defect is in the
+    CALLERS' contract with this gate (they index a marker as a result), not in
+    ClickUp: the same shape is waiting for the next gated writer. Do not close
+    BO-1d on the strength of D52 — the ticket outlives the connector.
 
     (``planning.py`` already defends against this shape at its per-task create
     below the list create, which is why the gap is a known one in that file
@@ -307,573 +269,12 @@ class BaseTaskProvider(ABC):
         """
 
 
-# ── ClickUp (reference API connector) ────────────────────────────────────────
-
-class ClickUpProvider(BaseTaskProvider):
-    """ClickUp REST v2. One instance per connected workspace account.
-
-    ClickUp needs two pieces to operate (not just a token): the personal API
-    token AND the workspace/team id. ``list_workspaces`` is the discovery step
-    between them — the connect flow verifies the token, shows the token's
-    workspaces, and stores one account row per chosen workspace.
-    """
-
-    provider = "clickup"
-
-    def __init__(
-        self, token: str, workspace_id: str | None = None,
-        account_id: str | None = None,
-    ):
-        self._token = token
-        self._workspace_id = workspace_id
-        # The task_accounts id this provider was built from — needed so a QUEUED
-        # write can re-resolve the token at approval time (see broker_handlers).
-        self._account_id = account_id
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": self._token, "Content-Type": "application/json"}
-
-    def _broker_actor(self) -> str:
-        # Workspace id is a non-secret account discriminator (never the token).
-        ws = self._workspace_id or "?"
-        return f"tasks:clickup:ws:{ws}"
-
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        r = await _clickup_send(
-            "GET", f"{_CLICKUP}{path}", headers=self._headers(),
-            params=params or {})
-        if r.status_code == 401:
-            raise ProviderError("clickup", "invalid API token", status_code=401)
-        if r.status_code >= 400:
-            raise ProviderError("clickup", f"GET {path} → {r.status_code}")
-        return r.json()
-
-    async def verify(self) -> dict[str, Any]:
-        data = await self._get("/user")
-        u = data.get("user") or {}
-        return {"user": {
-            "name": u.get("username") or u.get("email") or "ClickUp user",
-            "email": u.get("email"),
-            "provider_user_id": str(u.get("id", "")),
-        }}
-
-    async def list_workspaces(self) -> list[dict[str, Any]]:
-        data = await self._get("/team")
-        return [
-            {
-                "id": str(t.get("id", "")),
-                "name": t.get("name", "Workspace"),
-                "member_count": len(t.get("members") or []),
-            }
-            for t in data.get("teams") or []
-        ]
-
-    async def get_schema(self, workspace_id: str) -> dict[str, Any]:
-        """Projects = every list in every space (foldered + folderless);
-        members from the team record; statuses from each space's workflow."""
-        members: list[dict[str, Any]] = []
-        teams = (await self._get("/team")).get("teams") or []
-        for t in teams:
-            if str(t.get("id")) != str(workspace_id):
-                continue
-            for m in t.get("members") or []:
-                u = m.get("user") or {}
-                if not (u.get("username") or u.get("email")):
-                    continue
-                members.append({
-                    "name": u.get("username") or u.get("email"),
-                    "email": u.get("email"),
-                    "provider_user_id": str(u.get("id", "")),
-                })
-
-        projects: list[dict[str, Any]] = []
-        # Case-insensitive dedup, first spelling wins. Aggregated from BOTH the
-        # space workflow AND every list's own statuses: ClickUp lists frequently
-        # override the space defaults (e.g. add a "Done" distinct from the space
-        # "Closed"), and a list-only status would otherwise never reach the
-        # status-mapping settings or a synced task's stage picker — leaving the
-        # user unable to set it. List objects from /space/{id}/list and the
-        # folder payload already carry their `statuses`, so this needs no extra
-        # API calls.
-        statuses: list[str] = []
-        def _add_statuses(raw: Any) -> None:
-            for st in raw or []:
-                name = ((st or {}).get("status") or "").strip()
-                if name and name.lower() not in (s.lower() for s in statuses):
-                    statuses.append(name)
-        # Structured hierarchy for the picker accordion: mirrors ClickUp's
-        # navigation exactly (space → folder → list).
-        hierarchy: list[dict[str, Any]] = []
-        spaces = (await self._get(
-            f"/team/{workspace_id}/space", {"archived": "false"}
-        )).get("spaces") or []
-        for space in spaces:
-            _add_statuses(space.get("statuses"))
-            sid, sname = str(space.get("id") or ""), space.get("name", "")
-            space_node: dict[str, Any] = {
-                "id": sid, "name": sname, "folders": [], "lists": [],
-            }
-            folderless = (await self._get(
-                f"/space/{sid}/list", {"archived": "false"}
-            )).get("lists") or []
-            folders = (await self._get(
-                f"/space/{sid}/folder", {"archived": "false"}
-            )).get("folders") or []
-            for lst in folderless:
-                _add_statuses(lst.get("statuses"))
-                entry = {"id": str(lst["id"]), "name": lst.get("name", ""),
-                         "space": sname, "space_id": sid,
-                         "folder_id": None, "folder_name": None}
-                projects.append(entry)
-                space_node["lists"].append(
-                    {"id": entry["id"], "name": entry["name"]})
-            for folder in folders:
-                fid, fname = str(folder.get("id") or ""), folder.get("name", "")
-                folder_node: dict[str, Any] = {
-                    "id": fid, "name": fname, "lists": [],
-                }
-                for lst in folder.get("lists") or []:
-                    _add_statuses(lst.get("statuses"))
-                    entry = {
-                        "id": str(lst["id"]), "name": lst.get("name", ""),
-                        "space": f"{sname} / {fname}", "space_id": sid,
-                        "folder_id": fid, "folder_name": fname,
-                    }
-                    projects.append(entry)
-                    folder_node["lists"].append(
-                        {"id": entry["id"], "name": entry["name"]})
-                space_node["folders"].append(folder_node)
-            hierarchy.append(space_node)
-
-        return {"projects": projects, "members": members,
-                "statuses": statuses, "hierarchy": hierarchy}
-
-    async def create_task(
-        self, project_ref: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {"name": payload.get("title") or "Untitled"}
-        if payload.get("description"):
-            body["description"] = payload["description"]
-        if payload.get("status"):
-            body["status"] = payload["status"]
-        if payload.get("due_at_ms"):
-            due_ms, due_time = _clickup_due(payload["due_at_ms"])
-            if due_ms is not None:
-                body["due_date"] = due_ms
-                body["due_date_time"] = due_time
-        if payload.get("assignee_id"):
-            with contextlib.suppress(TypeError, ValueError):
-                body["assignees"] = [int(payload["assignee_id"])]
-        # A subtask: ClickUp models children via the task's `parent` id. The
-        # subtask still POSTs to its parent's LIST, so project_ref = the list.
-        if payload.get("parent"):
-            body["parent"] = str(payload["parent"])
-
-        return await self._broker_gate(
-            "clickup.create_task", f"list:{project_ref}",
-            {"account_id": self._account_id,
-             "args": {"project_ref": project_ref, "body": body}},
-            lambda: self._raw_create_task(project_ref, body),
-        )
-
-    async def _raw_create_task(
-        self, project_ref: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """The actual ClickUp create — bypasses the broker gate. Called by the
-        gate on auto-apply AND by the persistent handler on approval."""
-        r = await _clickup_send(
-            "POST", f"{_CLICKUP}/list/{project_ref}/task",
-            headers=self._headers(), json=body)
-        if r.status_code >= 400:
-            raise ProviderError("clickup", f"create task → {r.status_code}: {r.text[:200]}")
-        t = r.json()
-        return {
-            "provider_task_id": str(t.get("id", "")),
-            "provider_url": t.get("url"),
-            "provider_status": (t.get("status") or {}).get("status"),
-        }
-
-    async def update_task(
-        self, provider_task_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """PUT the changed fields to ClickUp. Field edits (name/description/
-        status/due) go on the task; assignee changes use ClickUp's add/rem
-        assignee delta on the same PUT."""
-        body: dict[str, Any] = {}
-        if "title" in payload:
-            body["name"] = payload["title"] or "Untitled"
-        if "description" in payload:
-            body["description"] = payload["description"] or ""
-        if payload.get("status"):
-            body["status"] = payload["status"]
-        # Mark done → set the task's list's closed-type status (its name varies
-        # per workspace: Complete / Closed / Done …). Look it up from the task.
-        if payload.get("mark_done") and "status" not in body:
-            closed = await self._closed_status_for(provider_task_id)
-            if closed:
-                body["status"] = closed
-        if "due_at_ms" in payload:
-            if payload["due_at_ms"]:
-                due_ms, due_time = _clickup_due(payload["due_at_ms"])
-                body["due_date"] = due_ms
-                body["due_date_time"] = due_time
-            else:
-                body["due_date"] = None  # explicit clear
-        # Assignees are a delta on ClickUp: {add: [...], rem: [...]}.
-        if "assignee_ids" in payload:
-            # Multi-assignee: diff the new set against the previous set.
-            with contextlib.suppress(TypeError, ValueError):
-                new_ids = {int(i) for i in payload.get("assignee_ids") or []}
-                prev_ids = {int(i) for i in payload.get("prev_assignee_ids") or []}
-                add = sorted(new_ids - prev_ids)
-                rem = sorted(prev_ids - new_ids)
-                if add or rem:
-                    body["assignees"] = {"add": add, "rem": rem}
-        elif payload.get("clear_assignee") and payload.get("prev_assignee_id"):
-            with contextlib.suppress(TypeError, ValueError):
-                body["assignees"] = {"rem": [int(payload["prev_assignee_id"])]}
-        elif payload.get("assignee_id"):
-            with contextlib.suppress(TypeError, ValueError):
-                add = [int(payload["assignee_id"])]
-                rem = ([int(payload["prev_assignee_id"])]
-                       if payload.get("prev_assignee_id")
-                       and str(payload["prev_assignee_id"])
-                       != str(payload["assignee_id"]) else [])
-                body["assignees"] = {"add": add, "rem": rem}
-        if not body:
-            # Nothing ClickUp-writable changed (e.g. a local-only field) — no
-            # outward write, so it does not go through the broker.
-            return {"provider_task_id": provider_task_id}
-
-        return await self._broker_gate(
-            "clickup.update_task", f"task:{provider_task_id}",
-            {"account_id": self._account_id,
-             "args": {"provider_task_id": provider_task_id, "body": body}},
-            lambda: self._raw_update_task(provider_task_id, body),
-        )
-
-    async def _raw_update_task(
-        self, provider_task_id: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """The actual ClickUp PUT — bypasses the broker gate. Called by the gate
-        on auto-apply AND by the persistent handler on approval."""
-        r = await _clickup_send(
-            "PUT", f"{_CLICKUP}/task/{provider_task_id}",
-            headers=self._headers(), json=body)
-        if r.status_code >= 400:
-            raise ProviderError(
-                "clickup", f"update task → {r.status_code}: {r.text[:200]}")
-        t = r.json()
-        return {
-            "provider_task_id": str(t.get("id", provider_task_id)),
-            "provider_url": t.get("url"),
-            "provider_status": (t.get("status") or {}).get("status"),
-        }
-
-    async def delete_task(self, provider_task_id: str) -> None:
-        """DELETE the task on ClickUp — an irreversible upstream write, so it
-        goes through the broker gate like every other outward mutation."""
-        await self._broker_gate(
-            "clickup.delete_task", f"task:{provider_task_id}",
-            {"account_id": self._account_id,
-             "args": {"provider_task_id": provider_task_id}},
-            lambda: self._raw_delete_task(provider_task_id),
-        )
-
-    async def _raw_delete_task(self, provider_task_id: str) -> None:
-        """The actual ClickUp DELETE — bypasses the broker gate. Called by the
-        gate on auto-apply AND by the persistent handler on approval. A 404 is
-        treated as success: the task is already gone, which is the goal."""
-        r = await _clickup_send(
-            "DELETE", f"{_CLICKUP}/task/{provider_task_id}",
-            headers=self._headers())
-        if r.status_code == 404:
-            return
-        if r.status_code >= 400:
-            raise ProviderError(
-                "clickup", f"delete task → {r.status_code}: {r.text[:200]}")
-
-    async def archive_task(self, provider_task_id: str, archived: bool = True) -> None:
-        """Archive (or un-archive) the task on ClickUp — the reversible upstream
-        counterpart to a delete. It's an outward mutation, so it goes through the
-        broker gate like every other write."""
-        await self._broker_gate(
-            "clickup.archive_task", f"task:{provider_task_id}",
-            {"account_id": self._account_id,
-             "args": {"provider_task_id": provider_task_id,
-                      "archived": archived}},
-            lambda: self._raw_archive_task(provider_task_id, archived),
-        )
-
-    async def _raw_archive_task(
-        self, provider_task_id: str, archived: bool
-    ) -> None:
-        """The actual ClickUp archive — a PUT with {archived: bool}. Bypasses the
-        broker gate (called by the gate on auto-apply AND by the persistent
-        handler on approval). A 404 is treated as success: the task is already
-        gone, which subsumes 'archived'."""
-        r = await _clickup_send(
-            "PUT", f"{_CLICKUP}/task/{provider_task_id}",
-            headers=self._headers(), json={"archived": archived})
-        if r.status_code == 404:
-            return
-        if r.status_code >= 400:
-            raise ProviderError(
-                "clickup", f"archive task → {r.status_code}: {r.text[:200]}")
-
-    async def _list_statuses_raw(
-        self, provider_task_id: str
-    ) -> list[dict[str, Any]]:
-        """The raw status objects ({status, type, orderindex}) of a task's list,
-        sorted by pipeline order. Best-effort: [] when it can't be resolved.
-
-        ClickUp usually returns `statuses` already ordered, but that's not
-        guaranteed — we sort by `orderindex` explicitly so `_status_for_stage`
-        deterministically picks the LOWEST status feeding a stage (a board move
-        into a stage lands on the earliest of its ClickUp statuses, not a random
-        one). Unknown/unparseable orderindex sorts last."""
-        def _orderindex(st: dict[str, Any]) -> float:
-            try:
-                return float(st.get("orderindex"))
-            except (TypeError, ValueError):
-                return float("inf")
-
-        with contextlib.suppress(ProviderError, KeyError, TypeError):
-            task = await self._get(f"/task/{provider_task_id}")
-            list_id = str((task.get("list") or {}).get("id") or "")
-            if not list_id:
-                return []
-            lst = await self._get(f"/list/{list_id}")
-            statuses = [
-                st for st in lst.get("statuses") or [] if st.get("status")
-            ]
-            statuses.sort(key=_orderindex)
-            return statuses
-        return []
-
-    async def list_statuses_for_task(self, provider_task_id: str) -> list[str]:
-        """The ordered status NAMES of this task's own list (varies per project).
-        Empty when unresolvable → caller keeps the board move local."""
-        return [str(st.get("status")) for st in
-                await self._list_statuses_raw(provider_task_id)]
-
-    async def _closed_status_for(self, provider_task_id: str) -> str | None:
-        """The closed/done-type status name of a task's list (varies per
-        workspace). Best-effort: returns None if it can't be resolved."""
-        for st in await self._list_statuses_raw(provider_task_id):
-            if (st.get("type") or "").lower() in ("closed", "done"):
-                return str(st.get("status"))
-        return None
-
-    async def list_members(self, workspace_id: str) -> list[dict[str, Any]]:
-        members: list[dict[str, Any]] = []
-        for t in (await self._get("/team")).get("teams") or []:
-            if str(t.get("id")) != str(workspace_id):
-                continue
-            for m in t.get("members") or []:
-                u = m.get("user") or {}
-                if not (u.get("username") or u.get("email")):
-                    continue
-                members.append({
-                    "name": u.get("username") or u.get("email"),
-                    "email": u.get("email"),
-                    "provider_user_id": str(u.get("id", "")),
-                })
-        return members
-
-    async def create_project(
-        self, workspace_id: str, name: str,
-        space_id: str, folder_id: str | None = None,
-    ) -> dict[str, Any]:
-        """ClickUp: a project = a List, created in a folder when given,
-        else directly in the space (folderless)."""
-        return await self._broker_gate(
-            "clickup.create_project",
-            f"space:{space_id}" + (f"/folder:{folder_id}" if folder_id else ""),
-            {"account_id": self._account_id,
-             "args": {"name": name, "space_id": space_id, "folder_id": folder_id}},
-            lambda: self._raw_create_project(name, space_id, folder_id),
-        )
-
-    async def create_folder(
-        self, workspace_id: str, space_id: str, name: str,
-    ) -> dict[str, Any]:
-        """ClickUp: a Folder groups lists inside a space (space→folder→list)."""
-        return await self._broker_gate(
-            "clickup.create_folder",
-            f"space:{space_id}",
-            {"account_id": self._account_id,
-             "args": {"name": name, "space_id": space_id}},
-            lambda: self._raw_create_folder(name, space_id),
-        )
-
-    async def _raw_create_folder(
-        self, name: str, space_id: str,
-    ) -> dict[str, Any]:
-        """The actual ClickUp folder-create — bypasses the broker gate. Called
-        by the gate on auto-apply AND by the persistent handler on approval."""
-        r = await _clickup_send(
-            "POST", f"{_CLICKUP}/space/{space_id}/folder",
-            headers=self._headers(), json={"name": name})
-        if r.status_code >= 400:
-            raise ProviderError(
-                "clickup", f"create folder → {r.status_code}: {r.text[:200]}")
-        f = r.json()
-        return {
-            "id": str(f.get("id", "")),
-            "name": f.get("name", name),
-            "space_id": space_id,
-        }
-
-    async def _raw_create_project(
-        self, name: str, space_id: str, folder_id: str | None = None,
-    ) -> dict[str, Any]:
-        """The actual ClickUp list-create — bypasses the broker gate. Called by
-        the gate on auto-apply AND by the persistent handler on approval."""
-        path = (f"/folder/{folder_id}/list" if folder_id
-                else f"/space/{space_id}/list")
-        r = await _clickup_send(
-            "POST", f"{_CLICKUP}{path}", headers=self._headers(),
-            json={"name": name})
-        if r.status_code >= 400:
-            raise ProviderError(
-                "clickup", f"create list → {r.status_code}: {r.text[:200]}")
-        lst = r.json()
-        return {
-            "id": str(lst.get("id", "")),
-            "name": lst.get("name", name),
-            "space_id": space_id,
-            "folder_id": folder_id,
-        }
-
-    async def list_tasks(
-        self, workspace_id: str, *, updated_since_ms: int | None = None
-    ) -> list[dict[str, Any]]:
-        """Filtered team-tasks endpoint, paginated (100/page, last_page flag).
-
-        include_closed=true so upstream completions flow into the mirror;
-        order_by=updated + date_updated_gt gives cheap incremental pulls.
-        """
-        def _ms(val: Any) -> int | None:
-            try:
-                return int(val) if val not in (None, "") else None
-            except (TypeError, ValueError):
-                return None
-
-        out: list[dict[str, Any]] = []
-        page = 0
-        while True:
-            params: dict[str, Any] = {
-                "page": page,
-                "include_closed": "true",
-                "subtasks": "false",
-                "order_by": "updated",
-                "reverse": "true",
-            }
-            if updated_since_ms:
-                params["date_updated_gt"] = int(updated_since_ms)
-            data = await self._get(f"/team/{workspace_id}/task", params)
-            tasks = data.get("tasks") or []
-            for t in tasks:
-                status = t.get("status") or {}
-                out.append({
-                    "provider_task_id": str(t.get("id", "")),
-                    "provider_url": t.get("url"),
-                    "title": t.get("name") or "Untitled",
-                    "description": (t.get("text_content")
-                                    or t.get("description") or None),
-                    "status": (status.get("status") or "").strip() or None,
-                    "status_type": (status.get("type") or "").strip() or None,
-                    "assignees": [
-                        {
-                            "name": a.get("username") or a.get("email") or "",
-                            "email": a.get("email"),
-                            "provider_user_id": str(a.get("id", "")),
-                        }
-                        for a in t.get("assignees") or []
-                        if a.get("username") or a.get("email")
-                    ],
-                    "due_at_ms": _ms(t.get("due_date")),
-                    "created_at_ms": _ms(t.get("date_created")),
-                    "updated_at_ms": _ms(t.get("date_updated")),
-                    "closed_at_ms": _ms(t.get("date_closed")),
-                    "project_ref": str((t.get("list") or {}).get("id") or "") or None,
-                })
-            if data.get("last_page", True) or not tasks:
-                break
-            page += 1
-            if page > 100:  # hard stop: 10k tasks per sync run
-                _log.warning("clickup.list_tasks.page_cap",
-                             workspace_id=workspace_id)
-                break
-        return out
-
-    async def get_task_detail(self, provider_task_id: str) -> dict[str, Any]:
-        """One GET /task (with subtasks+attachments) + one GET /task/comment."""
-        def _ms(val: Any) -> int | None:
-            try:
-                return int(val) if val not in (None, "") else None
-            except (TypeError, ValueError):
-                return None
-
-        def _person(u: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "name": u.get("username") or u.get("email") or "",
-                "email": u.get("email"),
-                "provider_user_id": str(u.get("id", "")),
-            }
-
-        task = await self._get(
-            f"/task/{provider_task_id}",
-            {"include_subtasks": "true", "include_markdown_description": "false"},
-        )
-        attachments = [
-            {
-                "id": str(a.get("id", "")),
-                "name": a.get("title") or a.get("name") or "attachment",
-                "url": a.get("url") or a.get("url_w_query"),
-                "mime": a.get("mimetype") or a.get("extension"),
-                "size": a.get("size"),
-            }
-            for a in task.get("attachments") or []
-            if a.get("url") or a.get("url_w_query")
-        ]
-        subtasks = [
-            {
-                "provider_task_id": str(s.get("id", "")),
-                "title": s.get("name") or "Untitled",
-                "status": ((s.get("status") or {}).get("status") or "").strip()
-                or None,
-                "status_type": ((s.get("status") or {}).get("type") or "").strip()
-                or None,
-                "provider_url": s.get("url"),
-                "assignees": [_person(a) for a in s.get("assignees") or []
-                              if a.get("username") or a.get("email")],
-            }
-            for s in task.get("subtasks") or []
-        ]
-
-        comments: list[dict[str, Any]] = []
-        with contextlib.suppress(ProviderError):
-            cdata = await self._get(f"/task/{provider_task_id}/comment")
-            for c in cdata.get("comments") or []:
-                comments.append({
-                    "id": str(c.get("id", "")),
-                    "author": (c.get("user") or {}).get("username")
-                    or (c.get("user") or {}).get("email") or "Someone",
-                    "text": c.get("comment_text") or "",
-                    "created_at_ms": _ms(c.get("date")),
-                })
-
-        return {"comments": comments, "attachments": attachments,
-                "subtasks": subtasks}
-
-
 # ── Registry ─────────────────────────────────────────────────────────────────
 
-_CONNECTORS: dict[str, type[BaseTaskProvider]] = {
-    "clickup": ClickUpProvider,
-}
+#: Deliberately EMPTY — see the module docstring. D52 retired the only entry.
+#: ``build_provider`` therefore refuses every name, which is the correct answer
+#: while Metorite is itself the system of record.
+_CONNECTORS: dict[str, type[BaseTaskProvider]] = {}
 
 
 def connector_names() -> list[str]:

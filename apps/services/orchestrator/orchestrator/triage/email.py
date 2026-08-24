@@ -126,7 +126,7 @@ def classify_by_rules(msg: EmailMessage) -> EmailTriageDecision:
             "drop",
         )
     if _is_bot_sender(from_addr):
-        # Notification mails are not always junk (e.g. ClickUp updates),
+        # Notification mails are not always junk (e.g. CI or vendor updates),
         # so we route them to ingest-only rather than drop.
         return _d(
             "automated",

@@ -131,18 +131,6 @@ def _gmail_send(s: Any) -> dict[str, Any]:
     return _gmail(s)
 
 
-def _clickup(s: Any) -> dict[str, Any]:
-    token = getattr(s, "clickup_api_token", "") or os.getenv("CLICKUP_API_TOKEN", "")
-    workspace = getattr(s, "clickup_workspace_id", "") or os.getenv("CLICKUP_WORKSPACE_ID", "")
-    if not token:
-        raise IntegrationMisconfiguredError("clickup: CLICKUP_API_TOKEN is required.")
-    return {
-        "type": "api_key",
-        "api_token": token,
-        "workspace_id": workspace,
-    }
-
-
 def _smtp(s: Any) -> dict[str, Any]:
     host = getattr(s, "smtp_host", "") or os.getenv("SMTP_HOST", "")
     username = getattr(s, "smtp_username", "") or os.getenv("SMTP_USERNAME", "")
@@ -226,10 +214,6 @@ FIELD_TO_ENV: dict[str, list[tuple[str, str]]] = {
         ("accounts_url",  "ZOHO_ACCOUNTS_URL"),
         ("region",        "ZOHO_REGION"),
     ],
-    "clickup": [
-        ("api_token",    "CLICKUP_API_TOKEN"),
-        ("workspace_id", "CLICKUP_WORKSPACE_ID"),
-    ],
     "apollo":        [("api_key", "APOLLO_API_KEY")],
     "serpapi":       [("api_key", "SERPAPI_API_KEY")],
     "apify":         [("api_token", "APIFY_API_TOKEN")],
@@ -269,7 +253,7 @@ def env_var_names(services: list[str] | tuple[str, ...]) -> set[str]:
 # window."
 #
 # Under one tenant that is a within-org concern. Under two it is a credential
-# leak: tenant A's ClickUp token is readable by tenant B's concurrently-running
+# leak: tenant A's Zoho token is readable by tenant B's concurrently-running
 # agent — and agents run model-generated tool calls over content ingested from
 # email and WhatsApp, which is precisely the code that must be assumed hostile.
 #
@@ -363,7 +347,6 @@ _REGISTRY: dict[str, Any] = {
     "instantly":     _instantly,
     "gmail":         _gmail,
     "gmail-send":    _gmail_send,
-    "clickup":       _clickup,
     "smtp":          _smtp,
     "litellm":       _litellm,
     "serpapi":       _serpapi,
