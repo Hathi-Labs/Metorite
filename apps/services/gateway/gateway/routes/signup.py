@@ -80,7 +80,7 @@ _log = get_logger("gateway.signup")
 
 router = APIRouter(prefix="/signup", tags=["signup"])
 
-# ── The wire vocabulary (item 3's four outcome codes + the four 400 codes) ───
+# ── The wire vocabulary (item 3's four outcome codes + the five 400 codes) ───
 
 #: The flag was not exactly ``"true"``. The feature is off; nothing is created.
 SIGNUP_DISABLED = "SignupDisabled"
@@ -106,6 +106,13 @@ MISSING_SLUG = "MissingSlug"
 #: hole for a non-empty-but-malformed slug (e.g. an internal space) that would
 #: otherwise reach the cross-plane join key unvalidated.
 INVALID_SLUG = "InvalidSlug"
+#: A well-formed slug that names a PLATFORM hostname (400). WS-29 MT-1f owner
+#: ruling B7, 2026-08-24. Distinct from ``InvalidSlug`` because the value is
+#: perfectly well-formed, and distinct from ``SlugTaken`` because the reserved
+#: set is static, public and identical for every caller — it reveals nothing
+#: about any organization, which is precisely what "taken" would if the two
+#: shared one code.
+RESERVED_SLUG = "ReservedSlug"
 
 #: R11: the tenant/identity claims a caller must not assert in the body. The
 #: owner is the SESSION email; the deployment is the Console key's own. Present
@@ -125,6 +132,43 @@ _GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 #: and slice 4's form mirrors it client-side (advisory — THIS route is the fence).
 _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
+#: Hostnames a customer may never own, because the platform already does — or
+#: intends to. **Owner ruling B7, 2026-08-24** (`saas_multitenancy.md` §11 MT-1f).
+#:
+#: ⚠️ **This is a LIVE-DEFECT fix and it is not gated by anything.** ``_SLUG_RE``
+#: is a *shape* rule, and shape was never the whole rule: measured 2026-08-24 the
+#: gate above admits ``api``, ``app`` and ``www``, so a self-serve customer could
+#: register the slug that names this very gateway's hostname. The moment MT-1f's
+#: wildcard record exists that slug is a hostname collision with a live service,
+#: minted by a stranger through a public form — so the refusal ships now, ahead of
+#: and independent of ``SUBDOMAIN_WORKSPACE_ENABLED``.
+#:
+#: ⚠️ **The canonical list lives in ONE place and it is not this one.**
+#: ``workbench/control_plane/src/lib/subdomain.ts``'s ``RESERVED_LABELS`` owns the
+#: vocabulary (it exists because of DNS, so the host parser owns it) and
+#: ``tests/unit/test_subdomain_host_vocabulary.py`` PARSES that file and pins this
+#: set equal to it — the ``test_seed_status_colours_match_the_shared_vocabulary``
+#: idiom, chosen for the same stated reason: a hand-copied mirror goes stale and
+#: then lies. Editing one side without the other is a red test.
+#:
+#: It is not an existence oracle: static, public, and identical for every caller,
+#: which is exactly what separates it from ``SlugTaken``.
+_RESERVED_SLUGS = frozenset({
+    "admin",
+    "api",
+    "app",
+    "cdn",
+    "console",
+    "docs",
+    "help",
+    "mail",
+    "signin",
+    "signup",
+    "static",
+    "status",
+    "www",
+})
+
 
 def _refuse(code: str, **extra: Any) -> dict[str, Any]:
     """A 200 outcome refusal — the refusal is the ANSWER, carried as a code."""
@@ -142,10 +186,11 @@ def _bad_request(code: str, detail: str) -> JSONResponse:
 
 def _slug_shape_refusal(slug: str) -> JSONResponse | None:
     """The slug SHAPE gate: a 400 for a missing/blank slug (the mirror of
-    ``MissingState``) or one that is not DNS-label-safe, else ``None``. Extracted
-    so the handler stays under the complexity fence while the two refusals join
-    the same shape-violation class as ``MissingState``/``InvalidGstin`` — a
-    malformed REQUEST, never a 200 outcome."""
+    ``MissingState``), one that is not DNS-label-safe, or one that names a
+    PLATFORM hostname; else ``None``. Extracted so the handler stays under the
+    complexity fence while the three refusals join the same shape-violation
+    class as ``MissingState``/``InvalidGstin`` — a malformed REQUEST, never a
+    200 outcome."""
     if not slug:
         return _bad_request(MISSING_SLUG, "an organization slug is required")
     if not _SLUG_RE.fullmatch(slug):
@@ -154,6 +199,18 @@ def _slug_shape_refusal(slug: str) -> JSONResponse | None:
             "the slug must be a DNS-label-safe subdomain: lowercase "
             "alphanumeric and internal hyphens, no leading or trailing hyphen, "
             "at most 63 characters",
+        )
+    # AFTER the shape check, deliberately: a reserved label is perfectly
+    # well-formed, so reporting it as malformed would send the customer to fix a
+    # thing that is not wrong. Two causes, two codes. The comparison needs no
+    # `.lower()` — `_SLUG_RE` above admits lowercase only, so anything reaching
+    # here is already folded, and adding one would imply a case this gate can
+    # see and the regex cannot.
+    if slug in _RESERVED_SLUGS:
+        return _bad_request(
+            RESERVED_SLUG,
+            "that workspace address is reserved for the platform; "
+            "please choose a different one",
         )
     return None
 

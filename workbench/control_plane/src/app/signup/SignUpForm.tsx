@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { ConfiguredProvider } from "@/authPosture";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
+import { RESERVED_LABELS } from "@/lib/subdomain";
 
 import { signInErrorMessage } from "../signin/errorCopy";
 
@@ -64,6 +65,15 @@ const REGISTERED_STATES: readonly { code: string; name: string }[] = [
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
+/**
+ * The reserved workspace labels (owner ruling B7). **Imported, never mirrored**
+ * — `@/lib/subdomain` is the one vocabulary, shared with `proxy.ts`'s host
+ * parser and pinned to the gateway's set by
+ * `tests/unit/test_subdomain_host_vocabulary.py`. This is advisory UX only;
+ * `signup.py`'s `ReservedSlug` refusal is the fence.
+ */
+const RESERVED = new Set<string>(RESERVED_LABELS);
+
 export default function SignUpForm({
   providers,
 }: {
@@ -80,7 +90,9 @@ export default function SignUpForm({
 
   const trimmedSlug = slug.trim();
   const trimmedGstin = gstin.trim().toUpperCase();
-  const slugOk = SLUG_RE.test(trimmedSlug);
+  const slugShapeOk = SLUG_RE.test(trimmedSlug);
+  const slugReserved = RESERVED.has(trimmedSlug.toLowerCase());
+  const slugOk = slugShapeOk && !slugReserved;
   const gstinOk = trimmedGstin === "" || GSTIN_RE.test(trimmedGstin);
   const canSubmit =
     displayName.trim() !== "" && slugOk && state !== "" && gstinOk && !pending;
@@ -211,10 +223,18 @@ export default function SignUpForm({
                 autoCorrect="off"
                 spellCheck={false}
               />
-              {trimmedSlug !== "" && !slugOk && (
+              {trimmedSlug !== "" && !slugShapeOk && (
                 <span className="text-xs text-destructive">
                   Lowercase letters, numbers and hyphens only — no leading or
                   trailing hyphen, up to 63 characters.
+                </span>
+              )}
+              {trimmedSlug !== "" && slugShapeOk && slugReserved && (
+                // A reserved label is well-formed, so the shape message above
+                // would be a lie. Two causes, two sentences — the same split
+                // the route makes between `InvalidSlug` and `ReservedSlug`.
+                <span className="text-xs text-destructive">
+                  That address is reserved. Please choose a different one.
                 </span>
               )}
             </label>

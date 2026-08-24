@@ -124,6 +124,81 @@ async def test_the_middleware_scope_does_not_leak_across_requests(identity):
     assert current_tenant() is None
 
 
+def test_a_workspace_host_header_cannot_steer_the_tenant(identity):
+    """WS-29 **MT-1f slice 1, done-when 7** — the tenant binding is UNMOVED.
+
+    MT-1f gives every tenant a hostname, which makes ``Host`` the most plausible
+    place for a tenant claim to grow: it looks like infrastructure rather than
+    input, and a header that says ``acme`` in front of a request that says
+    ``globex`` is the one-line cross-tenant read §1.5's binding rule forbids by
+    name. **A ``Host`` header is request input**, so R11 applies to it exactly as
+    it applies to ``X-Organization-Id``: the acting tenant comes from the
+    authenticated identity and from nowhere else.
+
+    The proxy's subdomain check (`workbench/control_plane/src/proxy.ts`) decides
+    which hostname a person should be LOOKING at; it never decides what they may
+    see. This is the assertion that keeps those two apart.
+
+    Driven through a REAL request rather than a direct call, because the direct
+    call cannot express the hazard — the header has to actually be on the wire.
+    Sync (not ``async def``) on purpose: ``TestClient`` runs its own loop and
+    cannot be driven from inside one.
+
+    Mutation, measured: give ``get_current_user`` an
+    ``x_forwarded_host``/``Host`` parameter and bind from its label, and
+    ``seen == [ORG]`` goes red with the host's org instead.
+    """
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.main import TenantScopeMiddleware
+
+    seen: list[str | None] = []
+
+    app = FastAPI()
+    app.add_middleware(TenantScopeMiddleware)
+
+    @app.get("/whoami")
+    async def whoami(user=Depends(deps.get_current_user)):
+        # Captured INSIDE the request: the middleware releases the scope on the
+        # way out, so an assertion afterwards would see None either way.
+        seen.append(current_tenant())
+        return {"org": user.organization_id}
+
+    with TestClient(app) as client:
+        answer = client.get(
+            "/whoami",
+            headers={
+                "Host": "other-org.metorite.com",
+                "X-User-Email": "priya@fracktal.in",
+                "X-User-Role": "employee",
+                "Authorization": "Bearer tok",
+            },
+        )
+
+    assert answer.status_code == 200
+    # The identity's organization, not the hostname's.
+    assert answer.json()["org"] == ORG
+    assert seen == [ORG]
+
+
+def test_the_dependency_takes_no_host_derived_input_at_all(identity):
+    """The same claim by construction, so it cannot be satisfied by a lookup
+    that happens to agree today.
+
+    ``get_current_user`` is the ONE place a request binds its tenant (H2). Its
+    whole parameter list is three headers, none of them host-shaped: there is no
+    ``Request``, no ``Host``, no ``X-Forwarded-Host``, so there is nothing for a
+    future edit to *read* without first widening this signature — which reddens
+    here, at the place the rule is written down.
+    """
+    import inspect
+
+    params = set(inspect.signature(deps.get_current_user).parameters)
+    assert params == {"x_user_email", "x_user_role", "authorization"}
+    for banned in ("host", "x_forwarded_host", "request", "origin", "referer"):
+        assert banned not in params
+
+
 async def test_a_non_http_scope_is_passed_through_untouched(identity):
     from gateway.main import TenantScopeMiddleware
 

@@ -66,6 +66,47 @@ describe("the flag gates the whole surface — both positions (done-when 1)", ()
   });
 });
 
+describe("a signed-out visitor is sent to /signin, not to a dead form (8a)", () => {
+  it("resolves the session server-side and redirects when there is none", () => {
+    // The owner of the new organization is the SESSION email (R11), and the
+    // `/api/signup` hop 401s without one — so rendering the four-field form to
+    // a signed-out visitor asked them to name an organization, a slug, a state
+    // and a GSTIN before telling them the only thing that mattered.
+    expect(page).toContain('import { currentIdentity } from "@/lib/gateway"');
+    expect(page).toMatch(/if \(!\(await currentIdentity\(\)\)\) redirect\("\/signin"\);/);
+    // A server component that awaits must be async, or the check is a promise
+    // and `!promise` is always false — a guard that reads correct and passes
+    // everybody.
+    expect(page).toMatch(/export default async function SignUp\(\)/);
+  });
+
+  it("uses the ONE identity seam, not a second session read", () => {
+    // `currentIdentity()` is what the hop's `requireIdentity()` sits on, so
+    // "may this render" and "will the submit work" cannot drift — and it
+    // carries the laptop bypass, so an unconfigured dev box is unchanged.
+    expect(page).not.toContain('from "next-auth"');
+    expect(page).not.toMatch(/await auth\(\)/);
+  });
+
+  it("checks the FLAG before the SESSION", () => {
+    // An un-opted-in deployment must not disclose that this surface exists
+    // behind a sign-in. Both gates land on /signin; only one of them may be
+    // reached by somebody who has not signed in.
+    const flag = page.indexOf("SELF_SERVE_SIGNUP_ENABLED");
+    const session = page.indexOf("currentIdentity()", page.indexOf("export default"));
+    expect(flag).toBeGreaterThan(-1);
+    expect(session).toBeGreaterThan(flag);
+  });
+
+  it("keeps the form's own needsSignIn arm, which answers a DIFFERENT case", () => {
+    // A session that expired between render and submit is invisible to a
+    // server-component check. Deleting the arm would turn that into a silent
+    // failure at the one button on the screen.
+    expect(form).toContain("setNeedsSignIn(true)");
+    expect(form).toContain("res.status === 401");
+  });
+});
+
 describe("the form renders outcome codes through the ONE errorCopy seam", () => {
   it("imports signInErrorMessage from the signin errorCopy module, never a copy", () => {
     expect(form).toMatch(
@@ -74,18 +115,20 @@ describe("the form renders outcome codes through the ONE errorCopy seam", () => 
     expect(form).toContain("signInErrorMessage(");
   });
 
-  it("errorCopy speaks the three CP-2c signup codes, and D33.1-safely", () => {
+  it("errorCopy speaks the four CP-2c signup codes, and D33.1-safely", () => {
     const disabled = signInErrorMessage("SignupDisabled");
     const already = signInErrorMessage("AlreadyMember");
     const taken = signInErrorMessage("SlugTaken");
+    const reserved = signInErrorMessage("ReservedSlug");
 
     expect(disabled).toBeTruthy();
     expect(already).toBeTruthy();
     expect(taken).toBeTruthy();
+    expect(reserved).toBeTruthy();
 
     // D33.1: none blames the person for a state they did not create — no
     // reused Auth.js `AccessDenied` phrasing.
-    for (const copy of [disabled, already, taken]) {
+    for (const copy of [disabled, already, taken, reserved]) {
       expect(copy).not.toMatch(/access denied|isn't authorized/i);
     }
 
@@ -93,10 +136,19 @@ describe("the form renders outcome codes through the ONE errorCopy seam", () => 
     expect(disabled).toMatch(/not available|invitation|administrator/i);
     expect(already).toMatch(/already belong|sign in/i);
     expect(taken).toMatch(/already taken|different/i);
+    expect(reserved).toMatch(/reserved/i);
 
     // SlugTaken names nothing beyond "unavailable" — no owner, no cross-tenant
     // oracle (§6 CP-2c item 5).
     expect(taken).not.toMatch(/owned by|belongs to|held by/i);
+
+    // ⚠️ ReservedSlug and SlugTaken must NOT collapse into one string. They are
+    // different facts — one is a static platform rule, the other is about an
+    // organization that exists — and only the first may be said out loud.
+    // Merging them would either leak "taken" as "reserved" or teach a customer
+    // that `api` is somebody's workspace (WS-29 MT-1f, owner ruling B7).
+    expect(reserved).not.toBe(taken);
+    expect(reserved).not.toMatch(/taken|owned by|belongs to/i);
   });
 });
 

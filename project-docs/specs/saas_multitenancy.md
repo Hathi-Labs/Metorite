@@ -2176,30 +2176,50 @@ spec gained the eleventh rule with D15.)*
    `_SLUG_RE`, and any host outside the base domain. Case-insensitive; a `Host` with a
    port is handled. **Fence:** a vitest table in
    `workbench/control_plane/src/lib/subdomain.test.ts` including `app`, `api`,
-   `a.b.metorite.com`, `METORITE.COM`, `evil.com`, `.metorite.com`, a 64-character
-   label and `acme.metorite.com:3001`.
+   `a.b.metorite.com`, `METORITE.COM`, `evil.com`, `evilmetorite.com`,
+   `acme.metorite.com.evil.com`, `.metorite.com`, a 64-character label,
+   `acme.metorite.com:3001` and a bracketed IPv6 literal.
+   ⚠️ **One line in that parser is honestly labelled advisory** (R7): the explicit
+   depth guard `label.includes(".")` kills **no mutant**, because `SLUG_RE` already
+   excludes a dot and the empty string. It is kept as belt-and-braces and the
+   **redundancy itself** is the thing fenced — a case pins that `SLUG_RE` alone
+   refuses `"a.b"` and `""`, so widening the charset reds there rather than
+   silently promoting the depth line to load-bearing.
 2. **`proxy.ts` is the ONLY host reader in the browser tier.** **Fence:** a source
-   scan in the same file, over all of `src/`, failing on a second
-   `headers().get("host")` / `nextUrl.host` / `x-forwarded-host` read — plus a
-   non-vacuity assertion that `proxy.ts` still contains one.
+   scan in `subdomain.test.ts`, over all of `src/`, failing on a second
+   `headers().get("host")` / `nextUrl.host` / `x-forwarded-host` read — with
+   non-vacuity asserted from **both** sides (the swept file list is > 80, and
+   `proxy.ts` must still contain a host read, so a proxy that stops reading the host
+   reds instead of emptying the scan).
 3. **Flag `SUBDOMAIN_WORKSPACE_ENABLED` OFF ⇒ byte-identical behaviour** for
    `app.metorite.com` **and** `acme.metorite.com`. Exact-string `"true"` (the
-   `auth.ts:163` idiom), default unset = OFF. **Fence:**
-   `subdomain.test.ts`'s decision table drives both hosts under both flag positions,
-   plus a source pin that the gate is an equality against `"true"`.
+   `auth.ts:163` idiom), default unset = OFF. **Fences:** `subdomain.test.ts`'s
+   decision table over both hosts and both flag positions, **and**
+   `workbench/control_plane/src/lib/proxyWorkspace.test.ts`, which **executes
+   `proxy()`** (the `authFailsClosed.test.ts` pattern: `vi.mock("@/auth")` + a
+   stand-in request) and asserts the two hosts answer identically *and that the
+   gateway is never called*.
 4. **Flag ON + signed-in + host slug == the caller's resolved org slug ⇒ pass through
-   unchanged** (no redirect, no rewrite). **Fence:** the same decision table.
+   unchanged** (no redirect, no rewrite). **Fences:** the same decision table, plus
+   `proxyWorkspace.test.ts` driving the real proxy — which also pins that the
+   `/auth/me` call carries the CALLER's identity and never the hostname.
 5. **Flag ON + signed-in + slug differs ⇒ `302` to `https://app.metorite.com<path>`,
    and the response NAMES NO ORGANIZATION** — not the host's, not the caller's.
-   **Fence:** the decision table asserts the `Location` is exactly the apex host plus
-   the original path/query, and a dedicated case asserts neither slug appears anywhere
-   in the outcome. An **unresolvable** caller org is treated as *differs* — fail
+   **Fences:** `proxyWorkspace.test.ts` asserts the status is `302` (Next's
+   `redirect()` defaults to **307**, which preserves the method and would replay a
+   POST at the apex), that the `Location` is the apex host plus the original
+   path/query, and — over status, *every* header and the body — that neither slug
+   appears anywhere. An **unresolvable** caller org is treated as *differs* — fail
    towards the neutral apex, never towards serving a workspace host.
 6. **Flag ON + signed-out ⇒ the ordinary `/signin` path, byte-identical for an
    existing and a non-existent slug** (B4). Achieved by construction: the signed-out
-   branch performs **no lookup of any kind**. **Fence:** the decision-table pair for
-   an existing and an invented slug asserts one identical outcome, in the shape of
-   `test_the_subdomain_cases_are_indistinguishable`.
+   branch performs **no lookup of any kind**. **Fence:** `proxyWorkspace.test.ts`
+   compares the two responses **to each other** (the shape of
+   `test_the_invisible_cases_are_indistinguishable`) modulo the caller's own
+   hostname — the sign-in redirect is host-relative, so the one differing byte is
+   the one the caller supplied — **and** asserts zero gateway calls, because an
+   answer that matches only because two lookups agreed is one a timing difference
+   or a log line can unpick.
 7. **The gateway's tenant binding is UNMOVED.** `deps._with_resolved_access` binds
    from `resolve_identity(email)` alone; a request carrying
    `Host: other-org.metorite.com` with a valid identity binds **the identity's** org
@@ -2208,9 +2228,12 @@ spec gained the eleventh rule with D15.)*
    request-path case through `TenantScopeMiddleware` + `get_current_user`, plus a
    signature assertion that no host-derived parameter exists on the dependency.
 8. **No CORS change and no browser-side gateway call.** **Fences:** a source scan for
-   `process.env.NEXT_PUBLIC_GATEWAY*` in `src/` (`subdomain.test.ts`), and a scan of
-   `gateway/main.py`'s CORS allow-list for a wildcard or regex origin
-   (`tests/unit/test_subdomain_host_vocabulary.py`).
+   `process.env.NEXT_PUBLIC_GATEWAY*` in `src/` (`subdomain.test.ts` — matched on the
+   READ, not the name, because two files legitimately mention the variable in
+   comments explaining why they do not use it), and a scan of `gateway/main.py`'s
+   CORS allow-list for a wildcard entry or an `allow_origin_regex`
+   (`tests/unit/test_subdomain_host_vocabulary.py`) — the "obvious fix" somebody
+   reaches for the day a wildcard of hostnames exists.
 
 ##### Where slice 1 learns the caller's organization — **DECIDED here** (the auditor left it open)
 
