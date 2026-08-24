@@ -1412,13 +1412,16 @@ def _resolve_for_deployment(
             org = admissible[0]
 
             # ── D49.3 · first sign-in activates an INVITED member ───────────
-            # CP-2f's other half. A colleague added through CP-2f's door sits at
-            # `invited` until they actually turn up; this is the turning up. It
-            # runs BEFORE the seat allocation on purpose — the seat is the
-            # expensive, capped act, and promoting a membership we then refuse a
-            # seat to is the honest order: the person IS a member of this
-            # organization either way, and whether a seat is free is a separate
-            # question the 409 answers.
+            # CP-2f's registry half. A colleague added through CP-2f's door sits
+            # at `invited` until they actually turn up; this is the turning up.
+            # It runs before the seat allocation, and the ORDER is cosmetic
+            # rather than semantic: both writes share this one transaction, so a
+            # seat-cap 409 (`_allocate_core_seat` raising) UNWINDS the promotion
+            # with it — measured on real PG (review round 1, finding 3): a
+            # colleague refused a seat stays `invited` and no seat is burned.
+            # That is the desirable behaviour — a person who cannot yet get in
+            # keeps the state the invite gave them — and it is now fenced
+            # (`test_a_cap_409_rolls_the_promotion_back`).
             #
             # ⚠️ **The guard lives in the UPDATE's own WHERE**
             # (`store.activate_invited_member`), not here. `suspended`,

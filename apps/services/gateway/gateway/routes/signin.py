@@ -47,6 +47,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
+from acb_auth.access import promote_invited_member
 from acb_auth.console_resolve import (
     CONSOLE_UNAVAILABLE,
     is_wired,
@@ -128,6 +129,20 @@ async def resolve_sign_in(
         (user.email or "") if user else "",
         display_name=(req.display_name if req else ""),
     )
+    if decision.admit:
+        # ── D49.3, the TENANT half ─────────────────────────────────────────
+        # The Console just admitted this sign-in and (if they were `invited`)
+        # promoted its REGISTRY membership; this is the twin that activates the
+        # TENANT plane (`app_user` + the identity shadow) so the person lands
+        # in a working app instead of the AccessGate's "account is not active"
+        # dead end. ONE call site, at sign-in completion — the same
+        # farmable-surface argument (module docstring) that keeps the resolve
+        # itself off the per-request path applies here verbatim. Best-effort:
+        # `promote_invited_member` never raises and never changes the answer
+        # below; a failed promotion fails CLOSED (they stay invited).
+        # Guarded to `invited` ONLY, in the UPDATE's own WHERE — suspended and
+        # removed members are never touched (D49.3; the guard is fenced).
+        await promote_invited_member(email=(user.email or "") if user else "")
     if not decision.admit:
         # One line per refusal, because the person on the other side is about
         # to see a page that cannot say why in any more detail than the copy.

@@ -141,9 +141,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     member = null;
   }
 
+  // ── The email channel's OUTCOME, distinguishable (review round 1, F2) ──────
+  // "disabled" = this deployment does not send invite mail (flag/key unset) —
+  //              the shipped default, NOT a failure, and the UI must not imply
+  //              one. "sent" = exactly one message went out. "failed" = the
+  //              deployment IS armed and the send did not happen (transport
+  //              error, or the org name could not be established) — the one
+  //              case the admin should act on ("tell them to sign in").
   const env = process.env as unknown as InviteEmailEnv;
-  let emailSent = false;
+  let emailChannel: "disabled" | "sent" | "failed" = "disabled";
   if (isInviteEmailConfigured(env)) {
+    emailChannel = "failed";
     const to = String(raw.email ?? "").trim();
     const orgName = to ? await organizationName(me.email) : "";
     if (to && orgName) {
@@ -153,16 +161,24 @@ export async function POST(req: NextRequest): Promise<Response> {
           orgName,
           env,
         });
-        emailSent = true;
+        emailChannel = "sent";
       } catch {
         // The membership is already written on both planes. Failing the
         // response would tell the admin the invite did not happen when it did,
         // and a retry here would risk a second message for a write that cannot
         // be repeated. So: report it, and stop.
-        emailSent = false;
+        emailChannel = "failed";
       }
     }
   }
 
-  return NextResponse.json({ invited: true, email_sent: emailSent, member });
+  return NextResponse.json({
+    invited: true,
+    // Kept for compatibility with the first-shipped shape; `email_channel` is
+    // the field the UI branches on (a bare boolean cannot distinguish
+    // dark-by-config from armed-and-failed, which is F2's whole finding).
+    email_sent: emailChannel === "sent",
+    email_channel: emailChannel,
+    member,
+  });
 }

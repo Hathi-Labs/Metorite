@@ -235,11 +235,23 @@ async def invite_member(
     # placement ∩ membership) and names NO role (the registry's role vocabulary
     # is not the tenant's — D12). See `acb_auth.console_resolve`.
     try:
-        await invite_member_on_console(
+        cc_status, cc_body = await invite_member_on_console(
             actor_email=admin.email or "",
             member_email=member["email"],
             display_name=member.get("display_name") or "",
         )
+        if cc_status >= 400:
+            # The Console REFUSED the mirror — capability revoked, the actor's
+            # registry membership suspended, org suspended, a two-org 409, or
+            # field-name drift. Without this line a refusal is silent and the
+            # invited colleague quietly falls back into the `console-empty`
+            # signup funnel, which is the exact failure CP-2f exists to close.
+            # (`ConsoleMemberWriteUnavailable`'s docstring promises the two are
+            # distinguishable in a log line; this is the verdict half.)
+            _log.warning(
+                "member_invite_console_refused",
+                email=email, status=cc_status, body=str(cc_body)[:200],
+            )
     except ConsoleMemberWriteUnavailable as exc:
         # The box is unwired, or the Console gave no answer. Logged, never
         # raised: the tenant-plane invite stands.
@@ -248,10 +260,10 @@ async def invite_member(
     except Exception as exc:
         # Belt and braces around a best-effort mirror on a shipped write path.
         # `mirror_identity_membership` swallows internally; this client returns
-        # verdicts instead, so the swallow lives at the call site. (No
-        # `# noqa: BLE001` — the rule is not enabled in this repo's ruff config,
-        # so the directive would only add a RUF100 finding; the three older ones
-        # in this file are pre-existing.)
+        # verdicts instead, so the swallow lives at the call site. No ruff
+        # suppression comment here on purpose: the broad-except rule is not
+        # enabled in this repo's config, so a directive would only add an
+        # unused-suppression finding.
         _log.warning("member_invite_console_failed",
                      email=email, error=str(exc)[:200])
 
