@@ -66,6 +66,24 @@ this file grows a graveyard and the graveyard is what goes stale.
 
 # OPEN
 
+### H-26 · Decide D-SEAT-1…6 and mint CP-2h (seat-assignment UX) · [OWNER]
+- **Check:** `rg -n "CP-2h" project-docs/work_plan.md` → no hit means no board
+  row exists and the six decisions in `specs/customer_console.md` §6 CP-2h are
+  still owed.
+- **Why:** The owner's live E2E (2026-08-24) hit Settings → Organization →
+  Seat assignments reading "not configured for this deployment" and asked for
+  the whole seat flow to be ironed out. The proposal is written (CP-2h,
+  PROPOSED): the load-bearing item is **D-SEAT-4** — the customer seat surface
+  must reach the Console through the GATEWAY's existing deployment-key
+  `seat_admin` door instead of the BFF's per-org `CUSTOMER_CONSOLE_ORG_KEY`
+  env, which no shared multi-tenant box can carry (why the tab is dark).
+  D-SEAT-1…3/5/6 fix invite-at-zero-seats, the waiting-for-a-seat card,
+  release/remove/suspend semantics and the owner-takes-a-seat rule. Until
+  minted, the working seat path is the OPERATOR console only.
+- **Authority:** `specs/customer_console.md` §6 CP-2h · `routes/seats.py` ·
+  `api/billing/_console.ts` · CLAUDE.md §5 (no second seam)
+- **Added:** 2026-08-24 · onboarding E2E session
+
 ### H-22 · Decide the development & delivery framework (D-A…D-G) and mint WS-38 · [OWNER]
 - **Check:** `rg -n "WS-38" project-docs/work_plan.md` → no hit means the board
   row was never minted and the seven decisions in

@@ -63,7 +63,7 @@ reachable only in `deleted`, gateway operator door
 `DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
 — 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
 the operator console's cancel/delete edges + type-the-slug DangerPanel;
-env + live-purge owner-gated) · CP-6
+env + live-purge owner-gated) · **CP-2h PROPOSED 2026-08-24** (seat-assignment UX doctrine, both personas — §6's CP-2h section; decisions D-SEAT-1…6 are the owner's, nothing dispatches until minted) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -6704,6 +6704,96 @@ schema pre-provisioned exactly this door.
   running. *(R1: no migration is needed here; were one ever required, the next
   free Customer-Console number is taken at build time by listing
   `infra/customer_console/`, never written ahead.)*
+
+**CP-2h · Seat assignments — the whole experience, both personas — PROPOSED
+2026-08-24, NOT MINTED.** Written after the owner's live E2E hit the Settings →
+Organization → Seat assignments tab reading “not configured for this
+deployment”, and asked for the full flow — use cases and edge cases, customer
+and operator — to be ironed out. Decisions D-SEAT-1…6 below are the owner's;
+an agent builds none of this until a board row exists.
+
+**What is TRUE today (measured 2026-08-24 — re-verify anchors at dispatch):**
+
+1. The model is right and already fenced: membership ≠ seat; `seat_counts`
+   (purchased / assigned / available, clamped, plus the server-computed
+   `oversubscribed` flag) is computed once, Console-side (D32.5); the partial
+   unique index makes double-assignment impossible; “Unassigned is a state,
+   not an absence” (LS-7).
+2. `resolve_for_signin` AUTO-ALLOCATES a Core seat on a member's first admitted
+   sign-in — the seat cap is real because a person cannot become a user
+   without the Console allocating a seat (`console_resolve.py`).
+3. The gateway already carries the multi-tenant-correct seat-admin door:
+   `POST /seats/assign` + `/seats/release` proxy to the Console's deployment-key
+   `seat_admin` capability, org derived from the session, never from input
+   (`routes/seats.py`, fenced by `test_seat_admin_proxy_route.py`).
+4. The Settings tab's UI is BUILT (counts, Seated/Unassigned roster,
+   assign/release, the Console's own buy-more sentence on a cap 409, the
+   oversubscribed badge) — but its BFF (`api/billing/_console.ts`) calls the
+   Console DIRECTLY with `CUSTOMER_CONSOLE_URL` + a per-org
+   `CUSTOMER_CONSOLE_ORG_KEY` env var. On a shared multi-tenant box no single
+   org key is correct, the env is unset, and the tab fails closed to
+   “unconfigured” — which is the state the owner photographed. The surface is
+   dark for a STRUCTURAL reason, not a missing flag flip.
+
+**The one structural decision (D-SEAT-4, recommended first):** the customer
+seat surface must reach the Console THROUGH THE GATEWAY's deployment-key door
+— the seam that already exists for writes — with a matching gateway READ proxy
+for `seat_counts` + per-member seat state; the BFF→Console org-key path for
+seats is then retired (CLAUDE.md §5: no second way). A per-org env key on a
+shared deployment is the single-tenant assumption wearing a new hat.
+
+**The flow proposed, customer side:**
+
+- **Invite (D-SEAT-1).** Inviting NEVER blocks on seats — membership is free;
+  the seat is the paid thing. The invite surface shows availability inline
+  (“2 of 3 seats free”) and, at zero, says out loud: “No free seat — they'll
+  join as Unassigned and can't enter the workspace until one is free.”
+  Rationale: seat purchase is operator-mediated bank transfer today (H-14), so
+  coupling invite to purchase would block team setup on a payment round-trip.
+- **First sign-in (D-SEAT-2).** Keep auto-allocation when a seat is free
+  (today's behaviour — zero-friction for the ordinary case). When none is
+  free, ADMIT the member but hold them at a full-screen “waiting for a seat”
+  card — the org-less card's sibling: “<org> has no free seat for you. Your
+  admin can assign one from Settings → Organization.” Never a raw 409, never
+  a sign-in error. Their roster row reads **Awaiting seat**.
+- **The Seats tab.** Counts always on top, verbatim from the Console; roster
+  states: Seated · Unassigned · Awaiting seat (invited, not yet signed in);
+  Assign / Release per row; cap 409 renders the Console's buy-more sentence
+  (all built). Add: the count of people BLOCKED waiting is surfaced beside the
+  counts, because that number is the admin's to-do.
+- **Buy more.** Until Razorpay (H-14), “buy more seats” files a request the
+  operator sees (the Requests tab exists) rather than dead-ending.
+- **Release (D-SEAT-3).** Releasing frees the seat immediately; the released
+  member keeps membership and their roster row, and loses ENTRY at their next
+  resolve (the session-TTL window is stated in the UI copy, not hidden).
+- **Remove vs suspend (D-SEAT-5).** Removing a member auto-releases their
+  seat (a seat held by a non-member is a leak). Suspending KEEPS the seat —
+  suspend/unsuspend cycles must not churn seat history; releasing a suspended
+  member's seat is a separate, explicit act.
+- **The owner (D-SEAT-6).** The owner occupies a seat like anyone else — one
+  rule, no special case; the plan minimum of one seat is why an org of one
+  always works.
+
+**Operator side:** set seats-purchased at activation and adjust on payment
+(built); see per-org assigned/purchased and the oversubscribed flag in the
+customer detail; reducing purchased below assigned WARNS and sets the flag but
+NEVER auto-releases — divergence is reported, never auto-corrected, same
+doctrine as reconciliation (§6.2 of the delivery framework). Offboarding
+already releases seats via CP-2g's purge.
+
+**Edge cases the build must fence (R7):** concurrent assigns (the DB index
+wins, the loser gets the cap sentence); re-inviting a previously released
+member (roster row persists, assign re-mints); oversubscribed clamp
+(`available` never negative); the unseated member's experience on EVERY
+surface (API calls refuse cleanly, not just the shell); seat writes when the
+Console is down (fail closed, nothing changes, the tab says so — built).
+
+**Done-when (sketch, to be narrowed at mint):** (1) the Seats tab works on the
+shared box with NO per-org env, through the gateway door; (2) an invite at
+zero seats lands a member who is visibly Awaiting seat and is held at the
+waiting card, and assigning a seat admits them on their next resolve; (3) the
+blocked-count is visible to the admin; (4) buy-more files a visible request;
+(5) remove releases the seat, suspend does not — each fenced.
 
 ## 7. Verification
 

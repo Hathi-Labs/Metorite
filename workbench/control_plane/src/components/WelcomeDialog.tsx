@@ -47,7 +47,10 @@ function WelcomeDialogInner() {
       icon="Sparkles"
       size="sm"
     >
-      <div className="flex flex-col gap-4">
+      {/* The Modal primitive renders children bare — every consumer pads its
+          own body (owner report 2026-08-24: this one didn't, and the text sat
+          flush against the dialog edges). */}
+      <div className="flex flex-col gap-4 p-4">
         <p className="text-sm text-muted-foreground">
           Working with a team? Invite them from{" "}
           <span className="font-medium text-foreground">
