@@ -78,6 +78,32 @@ describe("pruned packs", () => {
   );
 });
 
+/**
+ * Material Symbols encodes fill in the NAME: `outline` means FILL 0, and its
+ * absence means FILL 1 — `inbox-rounded` is the solid glyph, and it paints its
+ * interior in `currentColor` rather than letting the surface show through. A
+ * whole pack of those reads as black blobs on a light theme, which is exactly
+ * the regression this pins: the build script once ordered `-rounded` ahead of
+ * `-outline-rounded` and every Material screen shipped solid.
+ *
+ * Anything listed below genuinely has no unfilled sibling upstream. Adding to
+ * the list is a claim — check `@iconify-json/material-symbols` for a
+ * `<base>-outline-rounded` or `<base>-outline` before you do.
+ */
+const MATERIAL_NO_UNFILLED_VARIANT = new Set(["auto-fix-high"]);
+
+describe("material glyphs are unfilled", () => {
+  it("no mapping uses a FILL 1 glyph unless the icon has no unfilled variant", () => {
+    const solid = Object.entries(ICON_REGISTRY)
+      .map(([lucideName, mapping]) => [lucideName, mapping.material] as const)
+      .filter(([, name]) => name && !name.includes("outline"))
+      .filter(([, name]) => !MATERIAL_NO_UNFILLED_VARIANT.has(name!))
+      .map(([lucideName, name]) => `${lucideName} → ${name}`);
+
+    expect(solid).toEqual([]);
+  });
+});
+
 describe("navigation coverage", () => {
   it.each(["fluent", "material"] as const)(
     "every sidebar icon has a %s equivalent",
