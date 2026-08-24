@@ -6867,6 +6867,36 @@ doing it says `NEXT`, the person who delegated it says `WAITING`. A single colum
 `(task_id, member_email)`. This is what delegation *is*, and it is the reason the
 personal lens is an overlay rather than a filter.
 
+### 12.5a The scheduled block — per member, per D53.7
+
+`pm_task_personal` gained six columns in **migration 187** (WS-39 S3a):
+`scheduled_start`, `scheduled_end`, `flexible`, `is_hard_date`, `actual_start`,
+`actual_end`.
+
+**They are on the overlay for the same reason `disposition` is**, and it is
+worth stating plainly because it is the question every reader asks: two people
+assigned one task each block *their own* time for it. A `scheduled_start` on
+`pm_tasks` would make one person's calendar a write to everybody's — and the
+second assignee's afternoon would simply vanish the moment the first scheduled
+theirs, with neither told.
+
+`pm_tasks.due_at` is the opposite case and stays where it is: **one deadline,
+shared by everyone assigned**, a fact about the work rather than about anyone's
+week. Two axes, two homes, no third.
+
+⚠️ `flexible` is **nullable**. NULL is "never stated" — resolved as flexible by
+the reader, deliberately distinct from a member explicitly pinning it, because
+"never stated" is what the Ideal Week packer is allowed to fill in.
+
+The read is `GET /projects/my/calendar?start=&end=`, a **half-open** `[start,
+end)` window so consecutive weeks tile rather than double-counting a block that
+begins exactly at midnight. It reuses `_MY_TASKS_SQL`, so it inherits the tenant
+and identity clauses rather than restating them.
+
+Verified against a real Postgres: `tests/live/live_ws39_s3a.sql` (8 checks,
+including that the partial index is *chosen*) and `tests/live/live_ws39_s3a_bind.py`
+(which caught two would-be 500s the hermetic suite could not see).
+
 ### 12.6 Acceptance — WS-39 S1 (ClickUp excision) · AGENT-SAFE
 
 **Done when all of these hold:**
