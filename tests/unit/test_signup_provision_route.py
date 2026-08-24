@@ -560,6 +560,129 @@ class TestTheShapeClasses:
 
 
 @pytest.mark.usefixtures("_stub_mirror_writes")
+class TestTheReservedLabels:
+    """done-when 4a — a slug that names a PLATFORM hostname is 400 ``ReservedSlug``.
+
+    WS-29 MT-1f owner ruling B7 (2026-08-24), and a **live-defect fix**: before
+    this gate, ``_SLUG_RE`` admitted ``api``, ``app`` and ``www``, so a self-serve
+    customer could register the slug naming this gateway's own hostname through a
+    public form. The refusal is NOT gated by ``SUBDOMAIN_WORKSPACE_ENABLED`` —
+    the hazard predates the wildcard and does not wait for it.
+
+    Hermetic on purpose (the shape classes' layer): the subject is the mapping,
+    and the fakes below would provision an organization if the gate were absent —
+    which is exactly what makes the red-first version fail loudly rather than
+    quietly.
+    """
+
+    @pytest.fixture
+    def _would_provision(self, monkeypatch):
+        """Fakes that ADMIT. With the reserved gate removed each case below
+        200-admits and writes ``api``/``app``/``www`` into the cross-plane join
+        key — the measured red-first state."""
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(
+            route, "provision_local_organization", _areturn("org-id")
+        )
+        return monkeypatch
+
+    @pytest.mark.parametrize("slug", sorted(route._RESERVED_SLUGS))
+    def test_every_reserved_label_is_400_ReservedSlug(
+        self, flag_on, _would_provision, slug
+    ):
+        # Parametrised over the SET, not a hand-picked few: a label added to the
+        # frozenset without being wired cannot pass by being forgotten here.
+        _forbid_console(_would_provision)
+
+        r = _client().post("/signup/provision", json=_body(slug=slug))
+
+        assert r.status_code == 400
+        assert r.json()["code"] == "ReservedSlug"
+
+    def test_the_live_defect_case_by_name(self, flag_on, _would_provision):
+        """``api`` — the one that would collide with the gateway's own host."""
+        _forbid_console(_would_provision)
+
+        r = _client().post("/signup/provision", json=_body(slug="api"))
+
+        assert r.status_code == 400
+        assert r.json()["code"] == "ReservedSlug"
+
+    def test_neither_plane_is_touched(self, flag_on, monkeypatch):
+        """The refusal lands BEFORE step 0/1/2, so nothing is created anywhere —
+        the same ordering property the other shape classes have."""
+        reached: list[str] = []
+
+        async def _tenant(*_a, **_k):
+            reached.append("tenant")
+            return "org-id"
+
+        async def _console(*_a, **_k):
+            reached.append("console")
+            return {"organization_id": "c"}
+
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(route, "provision_local_organization", _tenant)
+        monkeypatch.setattr(route, "provision_org_on_console", _console)
+
+        r = _client().post("/signup/provision", json=_body(slug="app"))
+
+        assert r.status_code == 400
+        assert reached == []
+
+    def test_a_reserved_label_is_NOT_reported_as_malformed(
+        self, flag_on, _would_provision
+    ):
+        """``ReservedSlug`` and ``InvalidSlug`` are two causes and two codes.
+
+        A reserved label is perfectly well-formed; telling the customer to fix
+        the charset sends them to correct a thing that is not wrong. The
+        ordering (shape check FIRST, reserved check second) is what keeps the
+        two apart, so this asserts the pair in both directions.
+        """
+        _forbid_console(_would_provision)
+        c = _client()
+
+        assert c.post(
+            "/signup/provision", json=_body(slug="api")
+        ).json()["code"] == "ReservedSlug"
+        assert c.post(
+            "/signup/provision", json=_body(slug="a b")
+        ).json()["code"] == "InvalidSlug"
+
+    def test_a_slug_merely_CONTAINING_a_reserved_label_is_fine(
+        self, flag_on, _would_provision
+    ):
+        """The set is matched WHOLE, never as a substring — ``apixel`` and
+        ``my-app`` are ordinary customer names and refusing them would be a
+        namespace grab, not a safety property."""
+        _would_provision.setattr(
+            route, "provision_org_on_console",
+            _areturn({"organization_id": "c", "slug": "apixel"}),
+        )
+
+        r = _client().post("/signup/provision", json=_body(slug="apixel"))
+
+        assert r.status_code == 200
+        assert r.json()["admit"] is True
+
+    def test_the_refusal_names_no_organization(self, flag_on, _would_provision):
+        """Unlike ``SlugTaken``, this refusal is about a STATIC platform rule —
+        so it may be said out loud, and it must not acquire an org-shaped field
+        on the way (`org_name` is `AlreadyMember`'s alone)."""
+        _forbid_console(_would_provision)
+
+        body = _client().post(
+            "/signup/provision", json=_body(slug="console")
+        ).json()
+
+        assert set(body) == {"code", "detail"}
+        assert "org" not in body
+
+
+@pytest.mark.usefixtures("_stub_mirror_writes")
 class TestThePosture:
     def test_an_anonymous_caller_never_reaches_the_handler(self, flag_on):
         r = _client(ANON).post("/signup/provision", json=_body())
