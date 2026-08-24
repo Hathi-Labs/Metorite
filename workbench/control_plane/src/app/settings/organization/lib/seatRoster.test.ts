@@ -1,21 +1,47 @@
 /**
- * The seat roster's fence (R7 · `launch_surface.md` LS-7 / §6.2).
+ * The seat roster's fence (R7 · `launch_surface.md` LS-7 / §6.2), and — since
+ * CP-2h slice 1 — the **D-SEAT-4 reroute's** frontend half.
  *
  * The claim worth pinning, and the reason the module exists:
  *
  * > Releasing somebody's seat must not remove them from the screen that offers
  * > to give it back.
  *
+ * The claim CP-2h adds, and the reason the surface was dark:
+ *
+ * > The Seats tab must work on a SHARED deployment with no per-org env — so it
+ * > reads the GATEWAY's deployment-key door, never the org-key billing hop.
+ *
  * Everything else here defends a case that would otherwise be invisible until
  * it happened to one real colleague.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { Member } from "@/app/settings/members/types";
 import type { Member as BillingMember } from "@/app/settings/billing/lib/manage";
+import type { SeatPlan } from "@/app/settings/billing/lib/seats";
 
-import { buildSeatRows, canOfferSeat, isSeated, tally } from "./seatRoster";
+import {
+  buildSeatRows,
+  canOfferSeat,
+  isSeated,
+  readSeatOverview,
+  tally,
+} from "./seatRoster";
+
+function source(relative: string): string {
+  return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf-8");
+}
+
+/** The file with comments removed — a scan is about what the code DOES. */
+function code(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
 
 const member = (over: Partial<Member> = {}): Member => ({
   email: "priya@fracktal.in",
@@ -169,11 +195,142 @@ describe("the tally counts ROWS, and says so", () => {
   it("counts a multi-plan holder ONCE — these are people, not seats", () => {
     // The trap this guards: presenting `seated` as the seat count. One person
     // on two plans is one seated row and two assigned seats, and the surface
-    // must take the second number from `GET /me/seats`, never from here.
+    // must take the second number from the Console's grid, never from here.
     const rows = buildSeatRows(
       [member({ email: "a@x.test" })],
       [billed("a@x.test", ["core", "qa-second-seat"])],
     );
     expect(tally(rows)).toEqual({ total: 1, seated: 1, unassigned: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CP-2h slice 1 — the D-SEAT-4 reroute
+// ---------------------------------------------------------------------------
+
+const TAB = code(source("../SeatsTab.tsx"));
+const OVERVIEW_ROUTE = code(source("../../../api/org/seats/route.ts"));
+const ASSIGN_ROUTE = code(source("../../../api/org/seats/assign/route.ts"));
+const RELEASE_ROUTE = code(source("../../../api/org/seats/release/route.ts"));
+
+const plan = (over: Partial<SeatPlan> = {}): SeatPlan => ({
+  plan_slug: "core",
+  purchased: 3,
+  assigned: 1,
+  available: 2,
+  oversubscribed: false,
+  ...over,
+});
+
+describe("the overview payload is read, never reshaped", () => {
+  it("passes both halves through verbatim", () => {
+    const payload = {
+      plans: [plan()],
+      members: [billed("priya@fracktal.in", ["core"])],
+    };
+    expect(readSeatOverview(payload)).toEqual(payload);
+  });
+
+  it("guards a malformed 2xx on EITHER half rather than white-screening", () => {
+    // The hop relays whatever the Console said. A non-array `plans` would crash
+    // the counts block on `.map` — the same trap `readMembers` already guards
+    // one field along, which is why both are guarded and not just the roster.
+    expect(readSeatOverview(null)).toEqual({ plans: [], members: [] });
+    expect(readSeatOverview({})).toEqual({ plans: [], members: [] });
+    expect(
+      readSeatOverview({ plans: "oops" as unknown as SeatPlan[] }),
+    ).toEqual({ plans: [], members: [] });
+    expect(
+      readSeatOverview({ members: "oops" as unknown as BillingMember[] }),
+    ).toEqual({ plans: [], members: [] });
+  });
+
+  it("computes no count — an inconsistent row survives untouched", () => {
+    // The ONE seat vocabulary (D32.5): `available`'s clamp and `oversubscribed`
+    // are the Console's. A client that "fixed" them would be the second source
+    // of truth this whole surface exists to avoid.
+    const odd = plan({ purchased: 2, assigned: 5, available: 0, oversubscribed: true });
+    expect(readSeatOverview({ plans: [odd] }).plans[0]).toEqual(odd);
+  });
+});
+
+describe("the tab reads the GATEWAY's door, not the org-key billing hop", () => {
+  it("fetches the overview and posts the writes under /api/org/seats", () => {
+    // The whole slice, as a source scan: three endpoints, all on the org
+    // namespace, all reaching the Console through the gateway's per-BOX
+    // deployment key.
+    expect(TAB).toContain('/api/org/seats"');
+    expect(TAB).toContain("/api/org/seats/${kind}");
+  });
+
+  it("reads NOTHING from /api/billing any more — that is what was dark", () => {
+    // The failure this fence exists for: `/api/billing/{seats,members}` present
+    // a per-org `CUSTOMER_CONSOLE_ORG_KEY`, which cannot be correct on a shared
+    // multi-tenant box. The env is unset there, the reads 503, and the tab shows
+    // "not configured for this deployment" permanently. A reintroduced
+    // `/api/billing/...` fetch here is that outage coming back.
+    expect(TAB).not.toContain("/api/billing/");
+  });
+
+  it("keeps 503 as the ONE unconfigured signal", () => {
+    // `PlaneState` distinguishes an unreachable seat plane from an empty one,
+    // and 503 is the status it keys on. If the tab stopped branching on it, an
+    // unwired deployment would render an empty grid that looks like a
+    // confident answer.
+    expect(TAB).toMatch(/status === 503/);
+    expect(TAB).toContain('setPlane("unconfigured")');
+  });
+});
+
+describe("the three hops name no tenant and hold no credential (R11)", () => {
+  const ROUTES: ReadonlyArray<[string, string]> = [
+    ["overview", OVERVIEW_ROUTE],
+    ["assign", ASSIGN_ROUTE],
+    ["release", RELEASE_ROUTE],
+  ];
+
+  it("forwards through the single gateway door", () => {
+    // `proxyToGateway` is the only module that may mint the internal bearer and
+    // it attaches the signed-in member's identity; a hop that built its own
+    // headers would be free to omit the identity, which `lib/gateway.ts`'s
+    // header records as a PRIVILEGE ESCALATION rather than a downgrade.
+    for (const [name, src] of ROUTES) {
+      expect(src, name).toContain("proxyToGateway(");
+      expect(src, name).toContain('export const dynamic = "force-dynamic"');
+    }
+  });
+
+  it("holds no Console URL and no Console key", () => {
+    // The deployment key is fenced OUT of the Next/browser tier by name
+    // (`customer_console.md` §6(f)); the org key belongs to the billing hops.
+    // A hop here naming either has moved a credential into the wrong tier.
+    for (const [name, src] of ROUTES) {
+      expect(src, name).not.toContain("CUSTOMER_CONSOLE_DEPLOYMENT_KEY");
+      expect(src, name).not.toContain("CUSTOMER_CONSOLE_ORG_KEY");
+      expect(src, name).not.toContain("CUSTOMER_CONSOLE_URL");
+    }
+  });
+
+  it("never forwards an org or an actor the browser could name", () => {
+    // R11: the acting admin is the SESSION (the gateway reads `X-User-Email`)
+    // and the org is derived Console-side. The write hops rebuild the outbound
+    // body from the three allowed fields; the read hop sends no body at all.
+    for (const [name, src] of ROUTES) {
+      expect(src, name).not.toMatch(/\borg_slug\b/);
+      expect(src, name).not.toMatch(/\bactor_email\b/);
+    }
+    for (const [name, src] of [ROUTES[1], ROUTES[2]]) {
+      expect(src, name).toContain("member_email: raw.member_email");
+      expect(src, name).toContain("plan_slug: raw.plan_slug");
+      // A spread of the browser's body would carry whatever it sent.
+      expect(src, name).not.toMatch(/\.\.\.raw/);
+    }
+  });
+
+  it("answers 503 when the gateway itself is unreachable", () => {
+    // One hop earlier than the gateway's own 503, and the same fact, so the
+    // surface's "unconfigured" state keeps meaning what it says instead of
+    // flipping to the red error banner.
+    expect(OVERVIEW_ROUTE).toContain("status: 503");
   });
 });

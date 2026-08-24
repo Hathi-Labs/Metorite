@@ -208,13 +208,17 @@ def test_no_tenant_module_imports_customer_console() -> None:
 #: ``provision_org_on_console``, which mirrors a provision and allocates no seat
 #: by itself — and is likewise a **session-email-only** route (the owner is the
 #: authenticated session, never the body). ``routes/seats.py`` (WS-30 SC-2a)
-#: calls ``assign_seat_on_console`` / ``release_seat_on_console``, which allocate
-#: **no** seat via ``resolve_for_signin`` — they drive the Console's admin-gated,
-#: capped ``seat_admin`` door (``POST /registry/seats``) — and it is likewise a
-#: **session-email-only** route (the acting admin is the authenticated session's
-#: ``actor_email``, never the body; the org is derived Console-side). What stays
-#: forbidden is wiring ANY of these functions behind ``resolve_access`` =
-#: farmable seat burn.
+#: calls ``assign_seat_on_console`` / ``release_seat_on_console`` — and, since
+#: WS-31 CP-2h slice 1 (D-SEAT-4), ``seat_overview_on_console`` — which allocate
+#: **no** seat via ``resolve_for_signin``: all three drive the Console's
+#: admin-gated, capped ``seat_admin`` door (``POST /registry/seats{,/release,
+#: /overview}``), and it is likewise a **session-email-only** route (the acting
+#: admin is the authenticated session's ``actor_email``, never the body; the org
+#: is derived Console-side). A third FUNCTION on an already-named file is not a
+#: fifth importer — the fence counts call SITES, and the property it protects
+#: (nothing here allocates a seat) holds for the read by construction: it writes
+#: nothing at all. What stays forbidden is wiring ANY of these functions behind
+#: ``resolve_access`` = farmable seat burn.
 #:
 #: ⚠️ **The FOURTH entry — ``routes/admin/members.py``, WS-31 CP-2f — and the
 #: argument for it, because "a fourth is the drift" was this list's own rule.**

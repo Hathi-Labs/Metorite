@@ -10,8 +10,10 @@
  *
  * - the **gateway's** `/api/admin/members` — every member of the organization,
  *   with their status and roles. This is the org's directory.
- * - the **Console's** `/api/billing/members` — the billing plane's view, now
- *   carrying each member's live seat slugs (LS-7).
+ * - the **Console's**, carried by `/api/org/seats` — the registry plane's view,
+ *   with each member's live seat slugs (LS-7). *(It reached this surface as the
+ *   org-key `/api/billing/members` until CP-2h slice 1, 2026-08-24; the rows are
+ *   the same `MemberView` either way, which is why only the fetch moved.)*
  *
  * A member who has **never** held a seat, or whose seat was **released**, is
  * absent from every seat query by construction. So if the surface were driven
@@ -33,6 +35,40 @@
 
 import type { Member } from "@/app/settings/members/types";
 import type { Member as BillingMember } from "@/app/settings/billing/lib/manage";
+import type { SeatPlan } from "@/app/settings/billing/lib/seats";
+
+/**
+ * `GET /api/org/seats` — the Console's `SeatOverviewView`, as the wire sends it
+ * (CP-2h slice 1, D-SEAT-4).
+ *
+ * ⚠️ **Two existing shapes, composed — not a third vocabulary.** `plans` is
+ * exactly `SeatsPayload["plans"]` (`GET /me/seats`'s rows, the ONE seat
+ * vocabulary) and `members` is exactly `MembersPayload["members"]`
+ * (`GET /me/members`'s rows). Both fields are optional here for the reason
+ * `readMembers` guards its own: a malformed 2xx must not white-screen the page.
+ */
+export interface SeatOverviewPayload {
+  plans?: SeatPlan[];
+  members?: BillingMember[];
+}
+
+/**
+ * Read the overview payload into the two lists the surface renders.
+ *
+ * Array-guarded on both fields, `readMembers`'s guard applied to the second
+ * half: the hop relays whatever the Console said, and a non-array `plans` would
+ * crash the counts block on `.map`. Neither list is transformed — this is a
+ * guard, not a view-model, and nothing here computes a seat count.
+ */
+export function readSeatOverview(payload: SeatOverviewPayload | null): {
+  plans: SeatPlan[];
+  members: BillingMember[];
+} {
+  return {
+    plans: Array.isArray(payload?.plans) ? payload.plans : [],
+    members: Array.isArray(payload?.members) ? payload.members : [],
+  };
+}
 
 /** One row on the seat surface: a person, and whether they hold a seat. */
 export interface SeatRow {

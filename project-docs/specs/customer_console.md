@@ -63,7 +63,19 @@ reachable only in `deleted`, gateway operator door
 `DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
 — 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
 the operator console's cancel/delete edges + type-the-slug DangerPanel;
-env + live-purge owner-gated) · **CP-2h MINTED 2026-08-24** (seat-assignment UX, both personas — §6's CP-2h section; D-SEAT-1…7 recorded on the owner's instruction 2026-08-24; slice 1 = the D-SEAT-4 reroute so the customer Seats tab works on a shared box) · CP-6
+env + live-purge owner-gated) · **CP-2h MINTED 2026-08-24, SLICE 1 of 5 BUILT
+2026-08-24** (seat-assignment UX, both personas — §6's CP-2h section; D-SEAT-1…7
+recorded on the owner's instruction 2026-08-24. **Slice 1 = the D-SEAT-4 reroute
+and it is BUILT**: the Console's deployment-key seat READ
+`POST /registry/seats/overview` on the existing `seat_admin` capability
+(composing `SeatsView`'s grid and `MembersView`'s roster — no new SQL, no second
+seat vocabulary, no migration), `acb_auth.seat_overview_on_console`, the gateway
+`GET /seats/overview`, the three `/api/org/seats*` BFF hops, and `SeatsTab.tsx`
+swung onto them — so the customer Seats tab works on a SHARED deployment with NO
+per-org env. Slices 2-5 remain: the waiting card, Awaiting-seat, the blocked
+count, buy-more-files-a-request, and remove-releases/suspend-does-not. Still DARK
+by construction — no live key holds `seat_admin`; granting it and landing the
+deployment key/URL are OWNER-GATE §8 gates 7/8) · CP-6
 mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
 Operator Console — slice 1 the live customer-management surface, slice 2
 provision-a-new-customer create-only; a SEPARATE Next.js app
@@ -6823,6 +6835,57 @@ waiting card, and assigning a seat admits them on their next resolve; (3) the
 blocked-count is visible to the admin; (4) buy-more files a visible request;
 (5) remove releases the seat, suspend does not — each fenced.
 
+**Slice 1 — the D-SEAT-4 reroute — BUILT 2026-08-24.** Done-when **1** is met;
+2-5 remain and are later slices, deliberately untouched here (no waiting card, no
+invite banner, no Awaiting-seat state, no blocked count, no buy-more request).
+What shipped, one layer per line:
+
+- **Console** — `POST /registry/seats/overview` beside the two `seat_admin`
+  writes, on the SAME capability and the SAME `_admin_scheme_context` role gate
+  (`owner|admin`): "may read the roster and the counts" is the same question as
+  "may move a seat", so a second, looser gate would be a policy nobody asked
+  for. It returns `SeatOverviewView` = `SeatsView`'s `_seat_grid` plus
+  `MembersView`'s `store.org_members` ⋈ `store.live_seats_by_email`, in ONE
+  transaction — **two existing models composed, no new SQL, no second seat
+  vocabulary (D32.5), no migration**. POST rather than GET so the actor travels
+  in the body exactly as the sibling writes send it; a GET would need a header or
+  a query string, i.e. a second way to say who is asking on the one axis where a
+  second way turns a derivation into an assertion. A `suspended` org can still
+  read (the §9.3(5) reasoning — it is the one deciding whether to buy); a
+  `deleted` one cannot.
+- **`acb_auth.console_resolve`** — `seat_overview_on_console`, the third arm on
+  the ONE Console client, sharing the extracted `_post_seat_call` transport with
+  the two writes so there is one bearer, one timeout and one verdict-vs-outage
+  policy. Non-allocating: it never touches `resolve_for_signin`, so the cap
+  cannot be farmed through it. `routes/seats.py` was already an allowed importer,
+  so the four-caller boundary did not widen.
+- **Gateway** — `GET /seats/overview`, session-derived actor, relaying the
+  Console's 403/409 as themselves. 503 on an unwired box via
+  `_unwired_read_refusal()` — the same status as the write arm, logged
+  `seats.read_unwired` at WARNING rather than the write's `seats.write_unwired`
+  ERROR, so an operator grepping for genuinely dark writes keeps finding writes.
+- **Workbench** — `src/app/api/org/seats/{route,assign/route,release/route}.ts`,
+  all three on the session-hop idiom (`proxyToGateway`), holding no Console URL
+  and no key. The org-key path (`api/billing/_console.ts` and the billing pages)
+  is **untouched** — those are per-org surfaces by construction.
+- **UI** — `SeatsTab.tsx` reads `/api/org/seats` once for both halves and posts
+  to `/api/org/seats/{assign,release}`. Every UX semantic is unchanged:
+  `PlaneState`'s 503 → "unconfigured", the counts block, the buy-more sentence,
+  the oversubscribed badge, the roster join. No restyle.
+- **Fences (R7/R8)** — `tests/unit/test_customer_console_seat_overview.py` (R8,
+  real Postgres, 21 tests, 0 skipped: the read is byte-identical to
+  `GET /me/seats` + `GET /me/members`, org A never reads org B, a key placed on
+  another box resolves nobody, capability/role/R11/lifecycle gates, and the read
+  allocates nothing); `test_seat_admin_proxy_route.py` grew four classes for the
+  overview route and its client (36 tests); `seatRoster.test.ts` grew the payload
+  reader and a source scan pinning the tab off `/api/billing/`.
+  `test_customer_console_resolve.py`'s route-table parametrisation picked the new
+  door up automatically and required its capability entry.
+
+**Still DARK.** No live deployment key holds `seat_admin` and no environment sets
+`CUSTOMER_CONSOLE_URL`/`_DEPLOYMENT_KEY`, so every layer refuses honestly today.
+Granting the capability and landing the key are OWNER-GATE (§8 gates 7/8).
+
 ## 7. Verification
 
 ```bash
@@ -6836,7 +6899,19 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_resolve.py \
               tests/unit/test_customer_console_payments.py \
               tests/unit/test_customer_console_operator_list.py \
-              tests/unit/test_customer_console_member_write.py
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_seat_overview.py
+# ⚠️ The `_seat_overview.py` line is CP-2h slice 1's suite (the D-SEAT-4
+# deployment-key seat READ `POST /registry/seats/overview`), added 2026-08-24 IN
+# THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry (the hand-list
+# went 9 -> 10). It proves the read is byte-identical to `GET /me/seats` +
+# `GET /me/members` for the same org (the ONE seat vocabulary, D32.5), that org
+# A's actor can never read org B and that a key placed on another box resolves
+# nobody here, the `seat_admin` capability gate (a `cc_live_` org key is 401),
+# the role gate (an active plain `member` is 403), R11 (`org_slug` is 400, never
+# ignored), that a `deleted` org is refused while a `suspended` one can still
+# see what it holds, and that the read allocates nothing. It reads this file and
+# the workflow and fails if its own name is dropped from either.
 # ⚠️ The `_member_write.py` line is CP-2f's suite (the Console member-add door
 # `POST /registry/members` and D50.3's `invited -> active` promotion), added
 # 2026-08-24 IN THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry

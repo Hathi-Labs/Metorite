@@ -233,6 +233,16 @@ jobs:
       # fails if the entry is ever removed; that is the closest a hand-list
       # gets to defending itself).
       #
+      # ⚠️ WS-31 CP-2h slice 1 (2026-08-24) adds the TENTH Console suite,
+      # `test_customer_console_seat_overview.py` — the D-SEAT-4 deployment-key
+      # seat READ (`POST /registry/seats/overview`), added IN THE PR THAT
+      # CREATED IT and carrying the same self-defending pair of tests (it reads
+      # this file AND `customer_console.md` §7). It proves the read is byte-
+      # identical to `GET /me/seats` + `GET /me/members` (the ONE seat
+      # vocabulary), that org A's actor can never read org B, the `seat_admin`
+      # capability and role gates, and that a `deleted` org is refused while a
+      # `suspended` one can still see what it holds.
+      #
       # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
       # `test_customer_console_member_write.py` — the member-add door and
       # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
@@ -256,6 +266,7 @@ jobs:
             tests/unit/test_customer_console_payments.py \
             tests/unit/test_customer_console_operator_list.py \
             tests/unit/test_customer_console_member_write.py \
+            tests/unit/test_customer_console_seat_overview.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \

@@ -4,10 +4,11 @@
  * Organisation → Seat assignments.
  *
  * Owning spec: `project-docs/specs/launch_surface.md` §6.2 · LS-7. D49.
+ * The plumbing is `customer_console.md` §6 **CP-2h slice 1 — D-SEAT-4**.
  *
  * One row per member of the organization, each **Seated** or **Unassigned**,
  * with Assign / Release. Above them, the seat counts — `purchased`,
- * `assigned`, `available` — read verbatim from `GET /me/seats`.
+ * `assigned`, `available` — read verbatim from the Console's seat grid.
  *
  * ## Three rules this surface exists to keep
  *
@@ -24,8 +25,19 @@
  * 3. **The refusals are the Console's, relayed.** A cap 409 shows the Console's
  *    own `buy_more` sentence; a 403 (not an admin) and a 503 (unwired
  *    deployment) arrive as themselves. This surface pre-judges nothing — the
- *    authorization is `_seat_admin_for_deployment`'s and the capacity check is
+ *    authorization is `_admin_scheme_context`'s and the capacity check is
  *    `decide_assignment`'s.
+ *
+ * ## Where the data comes from — CP-2h slice 1 (2026-08-24)
+ *
+ * `/api/org/seats` and `/api/org/seats/{assign,release}`: browser → Next hop →
+ * **gateway** → Console's deployment-key `seat_admin` door. The reads used to
+ * come from `/api/billing/{seats,members}`, which present a per-org
+ * `CUSTOMER_CONSOLE_ORG_KEY` — and on a shared multi-tenant deployment there is
+ * no single correct org key, so the variable is unset and the tab read
+ * "not configured for this deployment" **forever**. That was structural, not a
+ * missing flag. One read now returns both halves, so the counts and the roster
+ * are one consistent snapshot rather than two races.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -39,22 +51,18 @@ import {
   assignBody,
   buyMoreMessage,
   interpretSeatAction,
-  readMembers,
   releaseBody,
   type Member as BillingMember,
-  type MembersPayload,
 } from "@/app/settings/billing/lib/manage";
-import {
-  SEAT_COUNTS,
-  type SeatPlan,
-  type SeatsPayload,
-} from "@/app/settings/billing/lib/seats";
+import { SEAT_COUNTS, type SeatPlan } from "@/app/settings/billing/lib/seats";
 
 import {
   buildSeatRows,
   canOfferSeat,
   isSeated,
+  readSeatOverview,
   tally,
+  type SeatOverviewPayload,
   type SeatRow,
 } from "./lib/seatRoster";
 
@@ -79,7 +87,7 @@ export default function SeatsTab({
   onChanged: () => Promise<void> | void;
 }) {
   const { access } = useAccess();
-  const [seats, setSeats] = useState<SeatsPayload | null>(null);
+  const [plans, setPlans] = useState<SeatPlan[] | null>(null);
   const [billing, setBilling] = useState<BillingMember[] | null>(null);
   const [plane, setPlane] = useState<PlaneState>("loading");
   const [busy, setBusy] = useState("");
@@ -99,30 +107,33 @@ export default function SeatsTab({
   const load = useCallback(async () => {
     setPlane("loading");
     try {
-      const [s, m] = await Promise.all([
-        fetch("/api/billing/seats", { cache: "no-store" }),
-        fetch("/api/billing/members", { cache: "no-store" }),
-      ]);
+      // ONE read for both halves (CP-2h slice 1): the Console composes the seat
+      // grid and the roster in a single transaction, so the counts and the rows
+      // cannot disagree the way two independent fetches could.
+      const r = await fetch("/api/org/seats", { cache: "no-store" });
       // 503 is this deployment's own missing configuration, not the customer's
       // problem and not an error they can act on — so it gets its own state and
       // its own sentence rather than a red banner.
-      if (s.status === 503 || m.status === 503) {
-        setSeats(null);
+      if (r.status === 503) {
+        setPlans(null);
         setBilling(null);
         setPlane("unconfigured");
         return;
       }
-      if (!s.ok || !m.ok) {
-        setSeats(null);
+      if (!r.ok) {
+        setPlans(null);
         setBilling(null);
         setPlane("error");
         return;
       }
-      setSeats((await s.json()) as SeatsPayload);
-      setBilling(readMembers((await m.json()) as MembersPayload));
+      const overview = readSeatOverview(
+        (await r.json()) as SeatOverviewPayload,
+      );
+      setPlans(overview.plans);
+      setBilling(overview.members);
       setPlane("ready");
     } catch {
-      setSeats(null);
+      setPlans(null);
       setBilling(null);
       setPlane("error");
     }
@@ -138,7 +149,7 @@ export default function SeatsTab({
   );
   const counts = useMemo(() => tally(rows), [rows]);
 
-  const plans: SeatPlan[] = Array.isArray(seats?.plans) ? seats.plans : [];
+  const grid: SeatPlan[] = plans ?? [];
   /**
    * The plan a seat is assigned ON.
    *
@@ -148,7 +159,7 @@ export default function SeatsTab({
    * rather than hardcoded, so the surface follows the catalog rather than
    * needing an edit if a second plan ever returns.
    */
-  const plan = plans[0]?.plan_slug ?? "core";
+  const plan = grid[0]?.plan_slug ?? "core";
 
   const act = useCallback(
     async (row: SeatRow, kind: "assign" | "release") => {
@@ -160,7 +171,7 @@ export default function SeatsTab({
           kind === "assign"
             ? assignBody(row.email, plan)
             : releaseBody(row.email, row.seats[0] ?? plan);
-        const res = await fetch(`/api/billing/seats/${kind}`, {
+        const res = await fetch(`/api/org/seats/${kind}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -229,14 +240,14 @@ export default function SeatsTab({
             {counts.unassigned} unassigned
           </span>
         </div>
-        {plans.length === 0 ? (
+        {grid.length === 0 ? (
           <p className="mt-2 text-xs text-muted-foreground">
             No seats have been bought yet. Assigning one will report how many
             more you need.
           </p>
         ) : (
           <div className="mt-3 flex flex-wrap gap-6">
-            {plans.map((p) => (
+            {grid.map((p) => (
               <div key={p.plan_slug} className="flex gap-6">
                 {SEAT_COUNTS.map((c) => (
                   <div key={c.key}>
