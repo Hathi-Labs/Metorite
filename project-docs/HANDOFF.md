@@ -329,9 +329,24 @@ line — never reclaim a number by deleting the other entry.
   Microsoft Entra for now") — restore it when an M365 customer needs it, per
   D41.2's registration shape. Until the secrets + workflows land, every deploy
   is a hand-run of `deploy/hostinger/deploy.sh` over SSH.
-- **Authority:** `work_plan.md` §6 · D40 · D41 · D44 (in flight)
+  ⚠️ **Measured 2026-08-25 — `release` no longer means what `vps_pull.sh` reads
+  it to mean.** `origin/release` sits exactly on `origin/main`, but
+  `gh run list --workflow deploy.yml` is **empty** — the workflow has never run,
+  so `publish-release` did not put it there. Someone fast-forwarded the ref by
+  hand. That is the whole safety argument of pull-based delivery
+  (`specs/deploy_delivery_path.md`): the box applies `release` and NOT `main`
+  precisely so a commit whose tests failed can never reach it, and the box has
+  no GitHub credential with which to check for itself. A hand-pushed `release`
+  is indistinguishable on the box from a CI-gated one. Harmless on this
+  occasion — `main`'s checks are green — but the guarantee is not currently
+  being *produced* by the mechanism that is supposed to produce it, and the
+  failure mode is silent. Re-enabling `deploy` restores it; until then, treat
+  every `release` push as un-gated.
+- **Authority:** `work_plan.md` §6 · D40 · D41 · D44 (in flight) ·
+  `specs/deploy_delivery_path.md` §"Why it polls `release` and NOT `main`"
 - **Added:** 2026-08-16 · updated 2026-08-17, 2026-08-18 · trimmed 2026-08-19
-  (VPS bring-up session: done clauses deleted, Entra suspended)
+  (VPS bring-up session: done clauses deleted, Entra suspended) · updated
+  2026-08-25 (the hand-pushed `release` ref)
 
 ### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
 - **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
