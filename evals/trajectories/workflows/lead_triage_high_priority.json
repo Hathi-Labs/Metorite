@@ -13,7 +13,7 @@
   },
   "approve": ["gate"],
   "trigger": {"name": "  ada lovelace  ", "email": "ada@example.com", "priority": "high"},
-  "variables": {"list_id": "LIST-7"},
+  "variables": {"endpoint": "https://example.invalid/tasks"},
   "graph": {
     "nodes": [
       {"id": "start", "type": "trigger", "position": {"x": 0, "y": 0}, "data": {"label": "Webhook", "config": {"kind": "webhook"}}},
@@ -40,7 +40,7 @@
     "outputs": ["CU-901"],
     "agent_calls": ["triage"],
     "tool_calls": ["http.request"],
-    "tool_args": [{"list_id": "LIST-7", "name": "Ada Lovelace", "description": "Lead from ada@example.com"}],
+    "tool_args": [{"url": "https://example.invalid/tasks", "method": "POST", "body": {"name": "Ada Lovelace", "from": "ada@example.com"}}],
     "nodes": {
       "clean": {"status": "ok", "output": {"clean_name": "Ada Lovelace", "dropped": 0}},
       "task": {"status": "ok"},

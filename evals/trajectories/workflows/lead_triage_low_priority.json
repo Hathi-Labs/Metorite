@@ -7,7 +7,7 @@
   },
   "stubs": {"agents": {"triage": "low"}, "tools": {}},
   "trigger": {"name": "tim", "email": "tim@example.com", "priority": "low"},
-  "variables": {"list_id": "LIST-7"},
+  "variables": {"endpoint": "https://example.invalid/tasks"},
   "graph": {
     "nodes": [
       {"id": "start", "type": "trigger", "position": {"x": 0, "y": 0}, "data": {"label": "Webhook", "config": {"kind": "webhook"}}},
