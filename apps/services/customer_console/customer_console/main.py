@@ -48,6 +48,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -60,9 +61,11 @@ from sqlalchemy import text
 from customer_console import payments, store
 from customer_console.auth import (
     Caller,
+    CatalogCaller,
     DeploymentCaller,
     Internal,
     KeyCaller,
+    MemberAdminCaller,
     Operator,
     PayingCaller,
     ProvisionCaller,
@@ -72,6 +75,7 @@ from customer_console.auth import (
 )
 from customer_console.credits import (
     CREDIT_QUANTUM,
+    LEDGER_REASON_MANUAL,
     LEDGER_REASON_PURCHASE,
     LEDGER_REASONS,
     OverdraftPolicy,
@@ -182,6 +186,19 @@ class LifecycleRequest(BaseModel):
     export_window_days: int = Field(default=30, ge=1)
 
 
+class OrgPurgeRequest(BaseModel):
+    """CP-2g — strip a DELETED organization's registry plane.
+
+    ``confirm`` must echo ``org_slug`` verbatim: the operator UI makes the
+    human type the slug, and this door refuses a caller that did not carry
+    that typing through — a purge must never be reachable by a mis-clicked
+    retry with a stale body.
+    """
+
+    org_slug: str
+    confirm: str
+
+
 class ResolveRequest(BaseModel):
     """One body, two schemes — and ``org_slug`` is what tells them apart.
 
@@ -211,17 +228,22 @@ class SeatWriteRequest(BaseModel):
     source: str = "alacarte"
 
 
-class SeatAdminRequest(BaseModel):
-    """The customer-authenticated seat write's body (§6 item (h)).
+class AdminSchemeRequest(BaseModel):
+    """The two fields that decide WHICH SCHEME a customer-admin write is under.
 
-    **The target member and the plan are the request; the org and the actor are
-    NOT.** Under the deployment-key scheme the org and the acting admin are
-    DERIVED together from ``store.deployment_visible_orgs(deployment_id,
-    actor_email)`` — the placement∩membership join — never asserted, which is
-    R11 at the same strength ``ResolveRequest`` applies it: the caller makes no
-    tenant claim, the org is the ANSWER. ``actor_email`` is the human the box
-    just authenticated (the same trust the sign-in resolve path already
-    extends, now for a write); the box vouches for it exactly as
+    Shared by ``POST /registry/seats{,/release}`` (§6 item (h)) and
+    ``POST /registry/members`` (CP-2f) because both doors ask the identical
+    question of the body and get it answered by :func:`_admin_scheme_context`.
+    Extracted rather than copied: two models with the same two fields are two
+    places for R11 to be applied differently, which is how a derivation becomes
+    an assertion.
+
+    **The org and the actor are NOT the request.** Under the deployment-key
+    scheme they are DERIVED together from ``store.deployment_visible_orgs(
+    deployment_id, actor_email)`` — the placement∩membership join — never
+    asserted, which is R11 at the same strength ``ResolveRequest`` applies it:
+    the caller makes no tenant claim, the org is the ANSWER. ``actor_email`` is
+    the human the box just authenticated; the box vouches for it exactly as
     ``ResolveRequest.email`` is vouched for.
 
     ``org_slug`` mirrors ``ResolveRequest``'s: **absent under a deployment key,
@@ -230,19 +252,49 @@ class SeatAdminRequest(BaseModel):
     a cross-org staff act, as at ``POST /billing/seats``.
     """
 
-    #: The target — the ONLY subject the body names. Validated against a
-    #: membership in the RESOLVED org (clause 4); never ``ensure_identity``-minted,
-    #: so an arbitrary typed-in email cannot become a global identity.
-    member_email: str
-    plan_slug: str
     #: Present under the deployment-key scheme; the box vouches for the acting
     #: admin. Absent under the operator scheme, which names the org instead.
     actor_email: str | None = None
     #: Named by the OPERATOR; a deployment key naming one is 400 (R11).
     org_slug: str | None = None
+
+
+class SeatAdminRequest(AdminSchemeRequest):
+    """The customer-authenticated seat write's body (§6 item (h))."""
+
+    #: The target — the ONLY subject the body names. Validated against a
+    #: membership in the RESOLVED org (clause 4); never ``ensure_identity``-minted,
+    #: so an arbitrary typed-in email cannot become a global identity.
+    member_email: str
+    plan_slug: str
     #: The seat's billing category. Never ``core`` — membership IS the Core seat
     #: (D19.3), so ``plan_slug='core'`` is refused outright below.
     source: str = "alacarte"
+
+
+class MemberAdminRequest(AdminSchemeRequest):
+    """The customer-authenticated MEMBER write's body (CP-2f, D50.2).
+
+    ⚠️ **There is no ``role`` field, and adding one is a design change, not a
+    convenience.** The membership is written at the ``org_membership.role``
+    column default (``member``). ``role`` is registry/billing vocabulary (D12)
+    while the tenant's permission vocabulary is ``org_role``; accepting a role
+    here would either mint a mapping between the two — the second grant
+    vocabulary root ``CLAUDE.md`` §5 forbids by name — or let a customer admin
+    create registry admins through the invite door. See
+    ``store.add_invited_member``.
+
+    ⚠️ **``display_name`` is a LABEL for the global identity, never an identity
+    and never a tenant** — the same status it has on ``ResolveRequest``. Nothing
+    branches on it.
+    """
+
+    #: The person being added. Unlike ``SeatAdminRequest.member_email`` this one
+    #: IS ``ensure_identity``-minted, because this door is what makes the member
+    #: exist — that is the difference between the write door and the seat door,
+    #: and it is why they take different capabilities.
+    member_email: str
+    display_name: str | None = None
 
 
 class CreditGrantRequest(BaseModel):
@@ -275,6 +327,51 @@ class CreditGrantRequest(BaseModel):
                 f"{sorted(LEDGER_REASONS)} (subscription_console.md SC-4g (v))"
             )
         return value
+
+
+class ManualActivationRequest(BaseModel):
+    """Operator-only. Activate a PAID plan a customer paid for OUT OF BAND.
+
+    The offline twin of ``payments.fulfil`` (§6 item (j)): it composes the same
+    three writers — the subscription, the seat grant, the optional credit —
+    **minus the Razorpay order**, because there is none. The money arrived by
+    bank transfer and an operator is recording it, so ``provider='manual'`` (the
+    name ``001_customer_console.sql:163``'s CHECK pre-provisioned for exactly
+    this) and the provider id columns stay NULL.
+
+    ``org_slug`` names the customer. **R11 does not bind a NAMED-org staff route**
+    — ``Operator`` is cross-org and carries no tenant of its own, exactly as
+    ``POST /billing/seats``'s ``SeatWriteRequest`` names one — but the org is
+    still resolved from the validated slug, never taken from an unauthenticated
+    body identity.
+    """
+
+    #: The customer whose PAID plan is being activated. Resolved to an
+    #: ``organization_id`` by ``_org_id`` (404 if unknown), never trusted as an
+    #: identity — the credential is the operator's, cross-org by design.
+    org_slug: str
+    #: The plan the seats are granted on. Must be an ACTIVE ``plan_catalog`` row
+    #: (``store.priced_plan``) or the route answers 400 — a manual activation
+    #: sells only what the catalog prices, exactly as the checkout does (§9.1).
+    plan_slug: str
+    #: PAID seats to grant on ``plan_slug`` — the plan's paid capacity, not a
+    #: per-member assignment. A signed ``seat_grant`` quantity (``grant_seats``);
+    #: at least one, because activating zero paid seats is not an activation.
+    seats: int = Field(ge=1)
+    #: AI credits to add, when the bank transfer included them. Decimal, never
+    #: float — the ledger is a customer's dispute evidence (``credits`` doctrine).
+    credits: Decimal | None = None
+    #: The subscription term. Defaults to ``payments.SUBSCRIPTION_TERM_MONTHS``
+    #: (the one purchased term the checkout path also uses) — the catalog defines
+    #: no per-plan term, so there is nothing narrower to read.
+    term_months: int | None = Field(default=None, ge=1)
+    #: The operator's free-text note — e.g. the bank-transfer reference. Recorded
+    #: in the audit detail and, when credits are added, as the ledger ``ref``.
+    reference: str | None = None
+
+    #: A value-moving write: an unknown field is a caller mistake, refused rather
+    #: than silently ignored (as ``CreateOrderRequest``/``IssueDiscountRequest``).
+    model_config = {"extra": "forbid"}
 
 
 class IssueKeyRequest(BaseModel):
@@ -461,14 +558,30 @@ class MemberView(BaseModel):
     The absences are the design. **No organization id / identity id:** the
     organization is the credential's, so echoing it back would name the one thing
     a customer must never be able to NAME (R11), and an internal ``user_identity``
-    id is not the customer's to hold. **No seat summary:** a member is a person,
-    not a seat count — "which seats does this member hold" is a second query over
-    ``seat_assignment`` this read is defined not to carry (DEFERRED, §6 item (i)).
+    id is not the customer's to hold.
+
+    ``seats`` was one of those absences — "which seats does this member hold" was
+    DEFERRED as a second query this read would not carry. **D49 undefers it**
+    (``launch_surface.md`` LS-7): *Unassigned* has to be a first-class state on
+    the seat surface so a released member can be reassigned, and an empty list
+    here is precisely what that means. It costs exactly **one** extra query for
+    the whole roster (:func:`customer_console.store.live_seats_by_email`), folded
+    in memory — never one per member.
+
+    It carries plan SLUGS and no counts. The counts stay ``GET /me/seats``'s, the
+    one seat vocabulary (§3.3, D32.5): a per-member count here would be a second
+    place the same arithmetic lives, and the second place is the one that
+    disagrees.
     """
 
     email: str
     role: str
     status: str
+    #: Live seat plan slugs this member holds. **Empty means Unassigned** — the
+    #: state the seat surface exists to make actionable. Never null: a missing
+    #: list and an empty one would read alike to a client, and one of them would
+    #: silently mean "we did not look".
+    seats: list[str] = Field(default_factory=list)
 
 
 class MembersView(BaseModel):
@@ -480,6 +593,77 @@ class MembersView(BaseModel):
     """
 
     members: list[MemberView]
+
+
+class SeatOverviewView(BaseModel):
+    """The seat surface's whole answer, under the DEPLOYMENT-key door (CP-2h).
+
+    ⚠️ **Two existing views, composed — never a third shape.** ``plans`` is
+    exactly :class:`SeatsView`'s list (``_seat_grid`` → ``seat_counts``, the ONE
+    seat vocabulary, §3.3 / D32.5) and ``members`` is exactly
+    :class:`MembersView`'s (``store.org_members`` zipped with
+    ``store.live_seats_by_email``). Nothing here adds a field, renames one, or
+    computes a count: an admin reading this and an admin reading
+    ``GET /me/seats`` + ``GET /me/members`` must never be shown two answers, and
+    the way to guarantee that is to hand back the same two models.
+
+    It exists because the two customer-key reads it mirrors are unreachable on a
+    SHARED deployment (**D-SEAT-4**): a ``cc_live_`` organization key is
+    per-organization, so a box hosting N tenants has no single correct one, and
+    the seat surface fails closed to "not configured". The deployment key is the
+    one customer credential that resolves a MEMBER, so it is the door that works
+    for every tenant on the box. See :func:`seat_overview_admin`.
+    """
+
+    plans: list[SeatPlanView]
+    members: list[MemberView]
+
+
+class OrgSummaryView(BaseModel):
+    """One organization's line on the Operator Console customer list (§4.1a, CP-8).
+
+    The cross-org twin of ``GET /billing/summary``'s per-org envelope: the same
+    ``seats`` (the ONE seat vocabulary, :class:`SeatPlanView`) and
+    ``credit_balance`` (``SUM(delta)`` as a decimal string), plus the fields a
+    staff list needs that a single-org detail read does not — the lifecycle
+    ``status``, the billing ``subscription_status``, trial expiry, and MRR.
+
+    ⚠️ **``mrr_paise`` is PAISE**, the one money denomination on this API
+    (``CatalogPlanView`` keeps rupees off the wire for ``payments.paise``'s
+    reason, §9.2): the browser formats, it never converts. It is the recurring
+    value of the org's *purchased* seats and is **zero unless the subscription is
+    active** — a trial is not revenue yet and a suspended or cancelled org is
+    churned, so an MRR that counted them would misreport the book. That gate is
+    an agent-proposed default the owner may overrule (D16/D17).
+
+    **Two statuses, because they legitimately diverge.** ``status`` is the
+    ``organization`` lifecycle (§4.1d) the suspend/resume act moves;
+    ``subscription_status`` is ``org_subscription.status``, which a manual
+    activation sets to ``active`` without touching the lifecycle. Both are on the
+    wire so the operator reads the real state rather than an inferred one.
+    """
+
+    slug: str
+    name: str
+    status: str
+    subscription_status: str | None
+    provider: str | None
+    trial_ends_at: str | None
+    current_period_end: str | None
+    export_until: str | None
+    credit_balance: str
+    mrr_paise: int
+    seats: list[SeatPlanView]
+
+
+class OrgListView(BaseModel):
+    """Every organization, one :class:`OrgSummaryView` each (§4.1a, CP-8).
+
+    In ``created_at, slug`` order (``store.cross_org_summary``) so the list is
+    stable across reads; the surface sorts and filters, this read does not.
+    """
+
+    organizations: list[OrgSummaryView]
 
 
 class UsageRequest(BaseModel):
@@ -589,6 +773,16 @@ def _org_id(conn, slug: str) -> str:
     if row is None:
         raise HTTPException(status_code=404, detail=f"no organization {slug!r}")
     return str(row[0])
+
+
+def _iso(value) -> str | None:
+    """ISO-8601 a nullable ``date``/``datetime`` for the wire, or ``None``.
+
+    A timestamp column that is unset (a never-trialled org's ``trial_ends_at``,
+    a live org's ``export_until``) is ``NULL`` and stays ``null`` on the wire —
+    not coerced to a sentinel date the surface would render as a real deadline.
+    """
+    return value.isoformat() if value is not None else None
 
 
 def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
@@ -1095,6 +1289,180 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
     }
 
 
+#: What `/orgs/purge` deletes vs keeps vs scrubs, module-level so the receipt
+#: and the suite pin the SAME lists (the N8 `_PURGE_DELETES`/`_PURGE_KEEPS`
+#: idiom). Deleted = personal data (emails, identity links), live secrets,
+#: and per-org operational state (`org_placement`, `provisioning_run` — the
+#: latter also because its `provision:{slug}` idempotency key would otherwise
+#: re-attribute the OLD org's provisioning history to a NEW org that takes
+#: the freed slug). Kept = the financial record — a purge is entitled to take
+#: the people, never the books. SCRUBBED = kept rows whose columns carry an
+#: email: the row stays for the books, the address does not (review round 1,
+#: P1 — `usage_event.user_email` and `control_audit.detail` survived the
+#: first draft, contradicting this very comment).
+#:
+#: ⚠️ `user_identity` is KEPT and named: it is global and cross-org (three
+#: FKs), and an identity with no memberships is D51's org-less sign-in. An
+#: erasure request for a PERSON (as opposed to an org) is a different act and
+#: not this door.
+#:
+#: `TestTheClassificationCannotGoStale` in `test_org_purge_console.py`
+#: re-derives the full set of org-scoped Console tables from
+#: information_schema and pins DELETES union KEEPS_TABLES equal to it, so a
+#: new table cannot land in neither list silently.
+_ORG_PURGE_DELETES: tuple[str, ...] = (
+    "seat_assignment",
+    "member_ai_cap",
+    "org_membership",
+    "llm_api_key",
+    "provider_credential",
+    "org_placement",
+    "provisioning_run",
+)
+#: The org-scoped tables the purge keeps (the fence's other half). Prose for
+#: the receipt lives in `_ORG_PURGE_KEEPS`; this is the machine-checkable set.
+_ORG_PURGE_KEEPS_TABLES: tuple[str, ...] = (
+    "organization",
+    "org_subscription",
+    "seat_grant",
+    "credit_ledger",
+    "payment_order",
+    "usage_event",
+    "usage_rollup",
+    "control_audit",
+    "discount_code",
+    "discount_redemption",
+)
+_ORG_PURGE_KEEPS: tuple[str, ...] = (
+    "organization (tombstone row, slug renamed)",
+    "org_subscription",
+    "seat_grant",
+    "credit_ledger",
+    "payment_order",
+    "usage_event (user_email scrubbed)",
+    "usage_rollup",
+    "control_audit (email keys scrubbed from detail)",
+    "discount_code",
+    "discount_redemption",
+    "user_identity (global, cross-org — emails remain here)",
+)
+#: The jsonb keys under which Console audit details carry an address
+#: (`member.add`, `seat.assign`/`release`, `org.provision`). Stripped, not
+#: rewritten — an absent key reads as scrubbed, a fake value reads as data.
+_AUDIT_EMAIL_KEYS: tuple[str, ...] = (
+    "email", "owner_email", "member_email", "actor_email", "user_email",
+)
+
+#: The detail-strip expression, built ONCE from the module constant above —
+#: the operands are this tuple, never request input, which is what makes the
+#: interpolation below static SQL rather than construction from data.
+_AUDIT_DETAIL_STRIP_SQL = (
+    "UPDATE control_audit SET detail = detail - "
+    + " - ".join(f"'{k}'" for k in _AUDIT_EMAIL_KEYS)
+    + " WHERE organization_id = :i AND detail ?| :keys"
+)
+
+#: `control_audit.actor` is an EMAIL under the deployment-key scheme
+#: (`_admin_scheme_for_deployment` returns the acting admin's address, and
+#: `member.add`/`seat.assign`/`seat.release` write it straight into the
+#: column) — repair round 2's blocking find: the first scrub covered `detail`
+#: and left the address sitting one column over. The column is NOT NULL, so
+#: email-shaped actors are OVERWRITTEN with this placeholder; `'operator'`
+#: and other role-words carry no address and stay.
+_ACTOR_PURGED = "[purged]"
+
+_TOMBSTONE_RE = r"-purged-[0-9a-f]{6}$"
+
+
+@app.post("/orgs/purge")
+def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
+    """CP-2g — the registry half of destroying an organization.
+
+    Reachable ONLY in `deleted` — the lifecycle graph's terminal state, which
+    itself is reachable only from `cancelled`, i.e. only after the export
+    window. So the doctrine ("never destroy customer data without an export
+    window") holds by construction across all three acts: cancel → delete →
+    purge. This door strips personal data and live secrets, then RENAMES the
+    slug to a tombstone so the name is free for a fresh start; the registry
+    row and the financial ledger stay, because an organization having existed
+    and paid is a fact the books must keep.
+
+    The tenant plane is NOT touched here — the Console cannot reach the tenant
+    database by design. The operator BFF pairs this with the gateway's
+    `DELETE /internal/operator/organizations/{slug}` (the other half), and
+    both halves are idempotent so a half-failed pair is just re-run.
+    """
+    if req.confirm != req.org_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm must equal org_slug, verbatim",
+        )
+    # A tombstone is the RESULT of a purge, never its subject — without this,
+    # each press on a lingering `deleted` row appends another `-purged-` suffix
+    # and mints another audit row (measured, review round 1).
+    if re.search(_TOMBSTONE_RE, req.org_slug):
+        raise HTTPException(
+            status_code=409,
+            detail="this organization is already purged (tombstone row)",
+        )
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+        status = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if status != "deleted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"organization is {status!r}; purge is reachable only in "
+                    "'deleted'. The path is: cancel access (opens the export "
+                    "window), then mark deleted, then purge."
+                ),
+            )
+        deleted: dict[str, int] = {}
+        for table in _ORG_PURGE_DELETES:
+            deleted[table] = conn.execute(
+                text(f"DELETE FROM {table} WHERE organization_id = :i"),
+                {"i": org_id},
+            ).rowcount
+        # Scrub, don't delete: the books keep the usage and the audit trail,
+        # the addresses go. Key-stripping (not rewriting) so an absent key
+        # reads as scrubbed rather than as fake data.
+        scrubbed: dict[str, int] = {}
+        scrubbed["usage_event.user_email"] = conn.execute(
+            text("UPDATE usage_event SET user_email = NULL "
+                 "WHERE organization_id = :i AND user_email IS NOT NULL"),
+            {"i": org_id},
+        ).rowcount
+        scrubbed["control_audit.detail"] = conn.execute(
+            text(_AUDIT_DETAIL_STRIP_SQL),
+            {"i": org_id, "keys": list(_AUDIT_EMAIL_KEYS)},
+        ).rowcount
+        scrubbed["control_audit.actor"] = conn.execute(
+            text("UPDATE control_audit SET actor = :p "
+                 "WHERE organization_id = :i AND actor LIKE '%@%'"),
+            {"i": org_id, "p": _ACTOR_PURGED},
+        ).rowcount
+        tombstone = f"{req.org_slug}-purged-{uuid.uuid4().hex[:6]}"
+        conn.execute(
+            text(
+                "UPDATE organization SET slug = :t, updated_at = now() "
+                "WHERE id = :i"
+            ),
+            {"t": tombstone, "i": org_id},
+        )
+        _audit(conn, org_id, "org.purge",
+               {"slug": req.org_slug, "tombstone": tombstone,
+                "deleted": deleted, "scrubbed": scrubbed})
+    return {
+        "slug": req.org_slug,
+        "tombstone": tombstone,
+        "deleted": deleted,
+        "scrubbed": scrubbed,
+        "kept": list(_ORG_PURGE_KEEPS),
+    }
+
+
 @app.post("/registry/resolve")
 def resolve(req: ResolveRequest, caller: ResolveCaller) -> dict[str, Any]:
     """Resolve a person against the registry at sign-in, consuming a Core seat.
@@ -1270,6 +1638,38 @@ def _resolve_for_deployment(
         seat_outcomes: dict[str, str] = {}
         if len(admissible) == 1:
             org = admissible[0]
+
+            # ── D50.3 · first sign-in activates an INVITED member ───────────
+            # CP-2f's registry half. A colleague added through CP-2f's door sits
+            # at `invited` until they actually turn up; this is the turning up.
+            # It runs before the seat allocation, and the ORDER is cosmetic
+            # rather than semantic: both writes share this one transaction, so a
+            # seat-cap 409 (`_allocate_core_seat` raising) UNWINDS the promotion
+            # with it — measured on real PG (review round 1, finding 3): a
+            # colleague refused a seat stays `invited` and no seat is burned.
+            # That is the desirable behaviour — a person who cannot yet get in
+            # keeps the state the invite gave them — and it is now fenced
+            # (`test_a_cap_409_rolls_the_promotion_back`).
+            #
+            # ⚠️ **The guard lives in the UPDATE's own WHERE**
+            # (`store.activate_invited_member`), not here. `suspended`,
+            # `removed` and already-`active` rows are untouched by construction
+            # — the natural implementation ("anything that is not active →
+            # activate") silently un-suspends people, which
+            # `colleague_onboarding.md` §6 predicted in as many words before
+            # this existed. Refusal of a suspended ORGANIZATION is unaffected:
+            # that partition happened above, on `can_sign_in`.
+            #
+            # ⚠️ **Single-admissible-org branch ONLY.** The multi-org branch
+            # below deliberately allocates nothing (clause 9) and its resolve is
+            # REFUSED upstream with `WorkspaceChooserRequired`, so activating
+            # there would mark a membership active for a sign-in that never
+            # completed. The OPERATOR arm does not do this either: a staff query
+            # about a named customer must not activate anybody.
+            store.activate_invited_member(
+                conn, org_id=org["organization_id"], identity_id=identity_id
+            )
+
             seat_outcomes[org["organization_id"]] = _allocate_core_seat(
                 conn, org_id=org["organization_id"], identity_id=identity_id,
                 # The lifecycle decides whether a seat may be WRITTEN, and it
@@ -1424,14 +1824,251 @@ def _allocate_core_seat(
 
 @app.get("/billing/summary")
 def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
-    """Seats and credits for one organization — the console's single read."""
+    """Seats, credits and the member roster for one organization.
+
+    The Operator Console's per-org detail read, to ``GET /orgs``'s cross-org
+    list.
+
+    **``members`` (D49 / ``launch_surface.md`` LS-9).** The operator console can
+    already assign and release a customer's seats by email; what it could not do
+    was SEE whom to act on — the same gap ``GET /me/members`` had one door down,
+    and the reason an operator had to be told an address rather than pick one.
+    The roster carries each member's live seat slugs, so *Unassigned* is as
+    visible to us as it is to the customer's own admin.
+
+    It is the SAME pair of store reads the customer-facing roster uses
+    (``org_members`` + ``live_seats_by_email``), in the same transaction as the
+    seat grid, so an operator and a customer admin looking at the same
+    organization cannot be shown different answers. Two queries for any roster
+    size, never one per member.
+
+    The seat COUNTS remain ``_seat_grid`` → ``seat_counts``'s, the one seat
+    vocabulary (§3.3, D32.5) — this route surfaces membership facts beside them,
+    it does not compute a second set.
+    """
     with get_engine().begin() as conn:
         org_id = _org_id(conn, org_slug)
+        seats = _seat_grid(conn, org_id)
+        balance = balance_of(store.credit_deltas(conn, org_id=org_id))
+        roster = store.org_members(conn, org_id=org_id)
+        held = store.live_seats_by_email(conn, org_id=org_id)
+
+    return {
+        "organization_id": org_id,
+        "seats": seats,
+        "credit_balance": str(balance),
+        "members": [
+            {**row, "seats": held.get(row["email"], [])} for row in roster
+        ],
+    }
+
+
+@app.get("/orgs")
+def list_organizations(_: Operator) -> OrgListView:
+    """Every organization, with plan/MRR, seats, credits, status and trial
+    expiry — the Operator Console's customer list (§4.1a, CP-8).
+
+    The cross-org *list* to ``GET /billing/summary``'s per-org *detail*, and the
+    read CP-8's separate app renders its customer table from. ``Operator``-only
+    and cross-tenant BY DESIGN: this is THE read that spans organizations
+    (``saas_multitenancy.md`` §0.9.2), and no customer credential can reach it —
+    ``store.cross_org_summary`` carries no ``organization_id`` filter because its
+    whole job is to answer "which customers exist and how are they doing", the
+    question no single tenant deployment can answer.
+
+    **Every number is surfaced, never recomputed.** The seat grid is
+    :func:`seat_counts` over the rows the store fetched — byte-identical to
+    ``billing_summary``'s, the ONE seat vocabulary (§3.3, D32.5) — and MRR is the
+    ONE money conversion ``payments.paise`` (§9.2) applied to the recurring value
+    of *purchased* seats. MRR is **zero unless the subscription is active**: a
+    trial is not revenue yet and a suspended/cancelled org is churned, so a book
+    that counted them would overstate. That gate is an agent-proposed default the
+    owner may overrule (D16/D17); the lifecycle and subscription statuses are
+    both on the wire so an operator sees the real state, not an inferred one.
+
+    ⚠️ Ships DARK: the Console deploys nowhere yet and the operator token is
+    OWNER-GATE (§8). This is the route existing, not running.
+    """
+    with get_engine().begin() as conn:
+        rows = store.cross_org_summary(conn)
+
+    organizations: list[OrgSummaryView] = []
+    for r in rows:
+        seats: list[SeatPlanView] = []
+        mrr_inr = Decimal(0)
+        for line in r["seats"]:
+            counts = seat_counts(line["plan_slug"], line["grants"],
+                                 line["assigned"])
+            seats.append(SeatPlanView(
+                plan_slug=counts.plan_slug,
+                purchased=counts.purchased,
+                assigned=counts.assigned,
+                available=counts.available,
+                oversubscribed=counts.oversubscribed,
+            ))
+            mrr_inr += counts.purchased * line["price_inr"]
+
+        active = r["subscription_status"] == "active"
+        organizations.append(OrgSummaryView(
+            slug=r["slug"],
+            name=r["name"],
+            status=r["status"],
+            subscription_status=r["subscription_status"],
+            provider=r["provider"],
+            trial_ends_at=_iso(r["trial_ends_at"]),
+            current_period_end=_iso(r["current_period_end"]),
+            export_until=_iso(r["export_until"]),
+            credit_balance=str(r["credit_balance"]),
+            mrr_paise=payments.paise(mrr_inr) if active else 0,
+            seats=seats,
+        ))
+
+    return OrgListView(organizations=organizations)
+
+
+@app.post("/billing/subscriptions/activate")
+def activate_subscription_manual(
+    req: ManualActivationRequest, _: Operator
+) -> dict[str, Any]:
+    """MANUAL / bank-transfer activation — the offline twin of ``payments.fulfil``
+    (§6 item (j)).
+
+    Platform staff activate a PAID plan for a customer that paid OUT OF BAND,
+    with **no Razorpay order**. It composes ``fulfil``'s grant, minus the order,
+    through the SAME store seams — no new seam:
+
+    * ``store.activate_subscription`` with ``provider='manual'`` and NULL provider
+      ids: ``org_subscription`` goes ``status='active'`` with a real period, the
+      value ``001_customer_console.sql:163``'s ``CHECK`` pre-provisioned and
+      nothing wrote until now. Never ``'none'`` — that belongs to
+      ``payment_order.provider``, not here (``store.activate_subscription``).
+    * ``store.grant_seats`` for the plan's PAID seats (``reason='manual'``).
+    * ``store.add_credit`` when the request carries AI credits, under
+      :data:`credits.LEDGER_REASON_MANUAL` with the bank reference as ``ref``.
+
+    It does **not** touch ``organization.status`` — like ``fulfil``, a suspended
+    org that pays holds an active paid term and stays suspended until an operator
+    posts the transition (done-when 16). Only ``org_subscription`` moves here.
+
+    **Idempotency / the double-grant guard.** Activating grants PAID capacity, and
+    ``grant_seats``/``add_credit`` are append-only INSERTs — a second call would
+    grant twice (``activate_subscription`` upserts and is harmless alone; the
+    seats and credits are not). So an org already holding an **active**
+    subscription is refused **409**: an operator adjusts a live term through the
+    seat and credit routes, never by re-activating it. A ``trial`` (or any
+    non-active) subscription, and an org with no subscription row, activate.
+
+    The 409 is a check-then-grant, so it is serialised by
+    ``store.lock_org_activation`` — an org-keyed advisory lock taken as the first
+    statement of this transaction, before the status read. Without it two
+    concurrent activations of one fresh org would both pass the 409 and both
+    grant (the append-only INSERTs have no conflict target); with it the second
+    blocks, then reads ``active`` and 409s. The one-grant guarantee therefore
+    holds under CONCURRENCY, not merely for a sequential repeat.
+
+    ⚠️ Ships DARK: the Console deploys nowhere yet, and both the operator token
+    and issuing it are OWNER-GATE (§8). This is the route existing, not running.
+    """
+    term = req.term_months or payments.SUBSCRIPTION_TERM_MONTHS
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug)
+
+        # Serialise the whole guard-then-grant on this org BEFORE the status
+        # read (see the docstring's double-grant note). The seat/discount caps'
+        # idiom one plane along: at READ COMMITTED two concurrent activations of
+        # a fresh org would both read status≠'active', both pass the 409, and —
+        # since `grant_seats`/`add_credit` are conflict-free INSERTs — both
+        # grant. `FOR UPDATE` cannot help (a fresh org has no `org_subscription`
+        # row to lock), so it must be an org-keyed advisory lock; it releases at
+        # txn end. Taken here, not after the read, or the stale status is
+        # already in hand.
+        store.lock_org_activation(conn, org_id=org_id)
+
+        plan = store.priced_plan(conn, plan_slug=req.plan_slug)
+        if plan is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{req.plan_slug!r} is not an active plan; a manual "
+                    "activation grants seats only on priced, active catalog rows"
+                ),
+            )
+
+        # The double-grant guard (see the docstring). Read BEFORE any write, so
+        # the refusal rolls nothing back.
+        current = conn.execute(
+            text("SELECT status FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id},
+        ).scalar_one_or_none()
+        if current == "active":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "already_active",
+                    "message": (
+                        "organization already holds an active subscription; "
+                        "adjust its seats or credits directly rather than "
+                        "re-activating"
+                    ),
+                },
+            )
+
+        # Mirror `payments.fulfil`, minus the order: `provider='manual'`, NULL
+        # provider ids (no provider was involved), the period from the database
+        # clock.
+        store.activate_subscription(
+            conn, org_id=org_id, term_months=term, provider="manual",
+            provider_customer_id=None, provider_subscription_id=None,
+        )
+        store.grant_seats(
+            conn, org_id=org_id, plan_slug=req.plan_slug,
+            quantity=req.seats, reason="manual",
+        )
+        if req.credits is not None:
+            store.add_credit(
+                conn, org_id=org_id, delta=req.credits,
+                reason=LEDGER_REASON_MANUAL, ref=req.reference,
+            )
+
+        # Recorded as a manual staff grant. `control_audit` has no `reason`
+        # column — actor/action/detail(JSONB) — so `reason='manual'` and the
+        # operator's free-text `reference` ride in the detail, where the seat and
+        # credit facts already sit.
+        detail: dict[str, Any] = {
+            "plan": req.plan_slug,
+            "seats": req.seats,
+            "term_months": term,
+            "reason": "manual",
+            "reference": req.reference,
+        }
+        if req.credits is not None:
+            detail["credits"] = str(req.credits)
+        _audit(conn, org_id, "subscription.activate_manual", detail,
+               actor="operator")
+
+        # Surface the result from the same view models the reads use — never a
+        # recompute: the seat grid is `_seat_grid` (as `billing_summary`), the
+        # balance is `balance_of(credit_deltas)`.
+        sub = conn.execute(
+            text(
+                "SELECT status, provider, current_period_start, "
+                "current_period_end FROM org_subscription "
+                "WHERE organization_id = :i"
+            ),
+            {"i": org_id},
+        ).one()
         seats = _seat_grid(conn, org_id)
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
 
     return {
         "organization_id": org_id,
+        "subscription": {
+            "status": sub.status,
+            "provider": sub.provider,
+            "current_period_start": sub.current_period_start.isoformat(),
+            "current_period_end": sub.current_period_end.isoformat(),
+        },
         "seats": seats,
         "credit_balance": str(balance),
     }
@@ -1517,10 +2154,33 @@ def release_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
 _SELF_SERVE_SEAT_SOURCES = frozenset({"center", "plan", "alacarte"})
 
 
-def _seat_admin_context(
-    conn, req: SeatAdminRequest, caller: DeploymentCaller | None
+#: The registry roles item (h)'s SEAT door demands of the acting member. A seat
+#: costs money, so moving one is an owner/admin act in the Console's own
+#: vocabulary — a plain member is refused HERE, not only by an upstream tier
+#: (clause 3).
+_SEAT_ADMIN_ROLES: frozenset[str] = frozenset({"owner", "admin"})
+
+#: The registry roles CP-2f's MEMBER door demands: **any** of them, and this is a
+#: narrower claim than the seat door's, taken deliberately and for a measured
+#: reason. An ``owner|admin`` gate here would silently re-open the exact funnel
+#: CP-2f closes: the tenant plane's second admin is a Console ``member`` (nothing
+#: maps tenant ``org_role`` slugs onto the registry's role, D12), so an
+#: ``owner|admin`` gate would 403 THEIR invites — best-effort, so nothing
+#: surfaces — and every colleague they invited would resolve ``console-empty``
+#: into an org of their own. The authorising gate for *"may this person add
+#: members"* is the tenant plane's ``admin:members:invite``; the Console's
+#: contribution is placement∩membership plus the ``status`` check below.
+_MEMBER_ADMIN_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
+
+
+def _admin_scheme_context(
+    conn,
+    req: AdminSchemeRequest,
+    caller: DeploymentCaller | None,
+    *,
+    roles: frozenset[str],
 ) -> tuple[str, str]:
-    """Resolve ``(org_id, actor)`` for a seat write — clauses 2-3, per scheme.
+    """Resolve ``(org_id, actor)`` for a customer-admin write — clauses 2-3.
 
     One door, two schemes, and the CREDENTIAL — never the body — chooses which,
     exactly as resolve/provision do:
@@ -1530,19 +2190,28 @@ def _seat_admin_context(
       actor_email)`` — placement∩membership, never a body field (R11). It must
       resolve to EXACTLY ONE admissible org or the write refuses (the chooser is
       a named non-goal, as at resolve). The acting member's registry
-      ``role``/``status`` is then read on the RESOLVED ``(org, identity)`` and
-      must be an **active owner/admin** — the Console's own vocabulary, so a
-      plain member is refused HERE, not only by an upstream tier (clause 3).
+      ``role``/``status`` is then read on the RESOLVED ``(org, identity)``; the
+      status must be ``active`` and the role must be in *roles*.
     * **Operator** (``caller is None``): a cross-org staff act that NAMES the org,
       as ``POST /billing/seats`` does. No actor, no role gate.
+
+    ⚠️ *roles* is a **required keyword**, and that is the point of this signature:
+    the derivation is ONE seam shared by the seat door and the member door, while
+    **which roles a door demands is written at the door** — the same rule this
+    service already applies to capabilities. A default here would silently give a
+    new door whichever policy happened to be written first.
     """
     if caller is not None:
-        return _seat_admin_for_deployment(conn, req, caller)
-    return _seat_admin_for_operator(conn, req)
+        return _admin_scheme_for_deployment(conn, req, caller, roles=roles)
+    return _admin_scheme_for_operator(conn, req)
 
 
-def _seat_admin_for_deployment(
-    conn, req: SeatAdminRequest, caller: DeploymentCaller
+def _admin_scheme_for_deployment(
+    conn,
+    req: AdminSchemeRequest,
+    caller: DeploymentCaller,
+    *,
+    roles: frozenset[str],
 ) -> tuple[str, str]:
     """The deployment-key arm: derive org+actor and gate on the registry role."""
     if req.org_slug is not None:
@@ -1599,6 +2268,10 @@ def _seat_admin_for_deployment(
     # org_membership`. `org_membership.role` is registry/billing vocabulary
     # (D12), and gating a BILLING write on it is using it for its stated
     # purpose, not inventing a second grant vocabulary.
+    #
+    # ⚠️ The `status == 'active'` half is the SAME for every door and is written
+    # once, here: an actor who is themselves `invited`, `suspended` or `removed`
+    # acts for nobody. Only the ROLE set varies, and it varies at the door.
     membership = conn.execute(
         text(
             "SELECT role, status FROM org_membership "
@@ -1608,7 +2281,7 @@ def _seat_admin_for_deployment(
     ).first()
     if (
         membership is None
-        or membership[0] not in ("owner", "admin")
+        or membership[0] not in roles
         or membership[1] != "active"
     ):
         raise HTTPException(
@@ -1618,7 +2291,7 @@ def _seat_admin_for_deployment(
     return org_id, req.actor_email
 
 
-def _seat_admin_for_operator(conn, req: SeatAdminRequest) -> tuple[str, str]:
+def _admin_scheme_for_operator(conn, req: AdminSchemeRequest) -> tuple[str, str]:
     """The operator arm: a cross-org staff act that NAMES the org."""
     if req.actor_email is not None:
         # The operator has no actor — an `actor_email` under this scheme is a
@@ -1675,8 +2348,9 @@ def assign_seat_admin(
     (``seat_rows`` → ``seat_counts`` → ``decide_assignment`` →
     ``try_assign_seat``) — NOT a fork, so the counts after a write reconcile with
     ``GET /me/seats`` (the same ``seat_rows``/``seat_counts``). What differs is
-    the door: org and actor are DERIVED from the credential (``_seat_admin_
-    context``), the target is validated against membership rather than minted,
+    the door: org and actor are DERIVED from the credential
+    (``_admin_scheme_context`` with ``_SEAT_ADMIN_ROLES``), the target is
+    validated against membership rather than minted,
     and this writer takes ``lock_seat_capacity`` BEFORE the count — closing the
     race the operator twin still carries.
 
@@ -1702,7 +2376,9 @@ def assign_seat_admin(
             ),
         )
     with get_engine().begin() as conn:
-        org_id, actor = _seat_admin_context(conn, req, caller)
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
         )
@@ -1762,7 +2438,9 @@ def release_seat_admin(
             detail="the Core seat is membership itself and is not released here",
         )
     with get_engine().begin() as conn:
-        org_id, actor = _seat_admin_context(conn, req, caller)
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
         )
@@ -1774,6 +2452,157 @@ def release_seat_admin(
                 "released": released}, actor=actor)
 
     return {"released": released}
+
+
+# ── CP-2h · the customer-authenticated seat READ (D-SEAT-4) ─────────────────
+#
+# The read-side twin of the two writes above, on the SAME `seat_admin`
+# capability: one door per plane. `GET /me/seats` + `GET /me/members` remain the
+# ORGANIZATION-key reads for the per-org billing pages; this is the same picture
+# under the credential a SHARED deployment can actually hold.
+
+@app.post("/registry/seats/overview")
+def seat_overview_admin(
+    req: AdminSchemeRequest, caller: SeatAdminCaller
+) -> SeatOverviewView:
+    """The seat surface's READ under the customer's own admin credential (CP-2h).
+
+    **The door split this closes — D-SEAT-4** (``customer_console.md`` §6 CP-2h).
+    Until now the ``seat_admin`` capability opened two WRITES and no read, so the
+    customer's Seats tab had to compose its own picture from the two
+    ORGANIZATION-KEY reads ``GET /me/seats`` + ``GET /me/members``. That works on
+    a box dedicated to one tenant and cannot work on a shared one: a ``cc_live_``
+    key **is** an organization (CP-3), so a deployment hosting N tenants has no
+    single correct key to hold, the per-org env var is unset, and the tab fails
+    closed to "not configured for this deployment" — the state the owner
+    photographed on 2026-08-24. **One plane, one door:** the writes already reach
+    this service through the gateway's deployment-key hop, and after this so does
+    the read. The org-key reads stay exactly as they are for the billing pages,
+    which are per-org surfaces by construction.
+
+    **Why POST for a read.** The actor travels in the body precisely as the two
+    sibling writes send it (:class:`AdminSchemeRequest`), so R11's derivation is
+    the SAME code on all three doors — ``_admin_scheme_context`` with
+    ``_SEAT_ADMIN_ROLES``. A GET would have to carry the acting member in a query
+    string or a header, i.e. a second way to say who is asking, on the one axis
+    where a second way is how a derivation quietly becomes an assertion. Nothing
+    here writes: no ledger row, no seat, no membership, no audit line.
+
+    **Same gate as the writes, deliberately.** The Seats tab is an admin surface —
+    it exists to move seats — so "may read the roster and the counts" is the same
+    question as "may move a seat", and answering it with a second, looser role set
+    would mint a policy nobody asked for. A non-admin member is refused here for
+    the same reason they are refused at the write: 403, byte-identical, from the
+    one shared derivation.
+
+    **The org is the ANSWER, never the request** (R11): it comes from
+    ``deployment_visible_orgs(deployment_id, actor_email)`` — placement ∩
+    membership — so org A's admin cannot name org B, and a ``deleted``
+    organization is inadmissible (``capabilities_of(...).can_sign_in``) exactly as
+    it is at the writes. A ``suspended`` organization CAN read: it is the one
+    deciding whether to buy more seats, so it must be able to see them — the
+    ``my_seats`` / ``billing_catalog`` reasoning (§9.3(5)), and the reason no
+    ``can_write_seats`` gate appears on a read.
+
+    Both queries plus the grid run in ONE transaction, so the counts and the
+    roster are a consistent snapshot — ``my_members``'s argument, extended to the
+    grid: a seat released between two connections would otherwise surface as a
+    member holding a seat the counts no longer show.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
+        rows = store.org_members(conn, org_id=org_id)
+        seats = store.live_seats_by_email(conn, org_id=org_id)
+        return SeatOverviewView(
+            plans=_seat_grid(conn, org_id),
+            members=[
+                MemberView(**row, seats=seats.get(row["email"], []))
+                for row in rows
+            ],
+        )
+
+
+# ── CP-2f · the member-write door ───────────────────────────────────────────
+#
+# The gap this closes, measured rather than assumed: until 2026-08-24
+# `POST /orgs/provision`'s founder INSERT was the ONLY membership writer in this
+# service. So a colleague INVITED through the tenant plane never reached the
+# registry, and three things followed — they were invisible to `GET /me/members`
+# (§6 item (i) reads `org_membership`), `_seat_admin_target` 404'd them so no seat
+# could be assigned, and, worst, `store.deployment_visible_orgs` returned nothing
+# for them, so `_resolve_for_deployment` answered `{"organizations": []}` and the
+# box's self-serve funnel offered to create them an organization OF THEIR OWN.
+# An invite, correctly performed, produced a second tenant. See CP-2f / D50.2.
+
+@app.post("/registry/members")
+def add_member_admin(
+    req: MemberAdminRequest, caller: MemberAdminCaller
+) -> dict[str, Any]:
+    """Add a member under the customer's own admin credential (CP-2f, D50.2).
+
+    The **exact sibling of** ``POST /registry/seats``: the same
+    ``deployment_or_operator`` factory, the same two-arm shape, the same
+    "the credential chooses the scheme" rule, and the SAME derivation seam
+    (:func:`_admin_scheme_context`). What differs is the capability it demands
+    (``member_admin`` — see :data:`auth.MEMBER_ADMIN_CAPABILITY` for why this is
+    not a reuse of ``seat_admin``) and the role set the door accepts
+    (:data:`_MEMBER_ADMIN_ROLES` — any ACTIVE member, and the reason is written
+    at that constant).
+
+    **The write is create-only and mints no role.** ``store.add_invited_member``
+    inserts ``status='invited'`` at the ``role`` column default and leaves an
+    existing row untouched, so a re-invite neither demotes an ``active`` member
+    nor resurrects a ``removed`` one. The response says which happened —
+    ``created`` plus the row's CURRENT ``status`` — because a silent 200 over a
+    conflict is how two planes come to disagree without anybody noticing.
+
+    **It allocates NO seat.** A membership row is not a seat: Core-seat burn stays
+    at first resolve (D19.3 / D32.5, :func:`_allocate_core_seat`). What the row
+    buys is that the seats grid can SEE the person and a paid seat can be assigned
+    to them before their first sign-in.
+
+    **Unlike the seat door, this one MINTS the identity.** ``ensure_identity`` is
+    the same global upsert ``provision`` and ``resolve`` use (``user_identity.
+    email`` is ``CITEXT``, so case is not a second human). That asymmetry with
+    ``_seat_admin_target`` — which deliberately never mints — is exactly why the
+    two doors take different capabilities: this is the door that makes a member
+    exist, and it is gated on the lifecycle's ``can_write_seats``, so a
+    ``suspended`` or ``cancelled`` organization cannot grow.
+    """
+    with get_engine().begin() as conn:
+        org_id, actor = _admin_scheme_context(
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES
+        )
+
+        # The same lifecycle question the seat write asks, and for the same
+        # reason: growing an organization is a write, and a `suspended` or
+        # `cancelled` customer's account must not grow. `deleted` never reaches
+        # here — `can_sign_in` already excluded it in the derivation above.
+        state = conn.execute(
+            text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
+        ).scalar_one()
+        if not capabilities_of(state).can_write_seats:
+            raise HTTPException(
+                status_code=403,
+                detail=f"organization is {state}; membership is locked",
+            )
+
+        identity_id = store.ensure_identity(
+            conn, email=req.member_email, display_name=req.display_name
+        )
+        created, status_now = store.add_invited_member(
+            conn, org_id=org_id, identity_id=identity_id
+        )
+        # Audited on BOTH paths, and the payload says which — a re-invite that
+        # changed nothing is a real event an operator may need to see beside the
+        # one that did.
+        _audit(conn, org_id, "member.add",
+               {"email": req.member_email, "created": created,
+                "status": status_now}, actor=actor)
+
+    return {"created": created, "status": status_now}
 
 
 @app.post("/credits/grant")
@@ -2130,20 +2959,28 @@ def _no_such_code() -> HTTPException:
 
 
 @app.get("/billing/catalog")
-def billing_catalog(_: PayingCaller) -> CatalogView:
+def billing_catalog(_: CatalogCaller) -> CatalogView:
     """The priced ladder a customer may buy from (§6 item (f)).
 
-    **Why ``can_pay`` and not ``can_use_ai``**: this is the read a customer
-    makes on the way to paying us, so gating it on the AI door would shut it on
-    exactly the ``suspended`` organization who most needs it — §9.3(5)'s
-    measured defect, one route along. A ``deleted`` organization is refused,
-    like everywhere else.
+    **Two schemes, one route** (:func:`auth.customer_or_operator`). A CUSTOMER
+    key reads it on the way to paying us; the OPERATOR token reads it because
+    the Operator Console's manual-activation form is a plan picker and a picker
+    needs the ladder. Before the operator arm existed that form presented the
+    only credential it holds, got the customer door's 401, and rendered an
+    empty dropdown over a permanently disabled Activate button.
+
+    **Why ``can_pay`` and not ``can_use_ai``** on the customer arm: this is the
+    read a customer makes on the way to paying us, so gating it on the AI door
+    would shut it on exactly the ``suspended`` organization who most needs it —
+    §9.3(5)'s measured defect, one route along. A ``deleted`` organization is
+    refused, like everywhere else.
 
     **The caller is authenticated and then deliberately unused.** The catalog
     is the same for every customer, so binding it to ``_`` is the structural
     statement that no per-org answer is computable here: there is no
-    organization id in scope to compute one from. Per-org pricing is MT-2 /
-    SC-1a's and neither is built.
+    organization id in scope to compute one from — which is also why the second
+    scheme can share this body and could not share ``/me/seats``'. Per-org
+    pricing is MT-2 / SC-1a's and neither is built.
 
     Rupees become paise through ``payments.paise`` — the ONE conversion (§9.2),
     the same call ``_priced_basket`` makes, so what the ladder quotes and what
@@ -2219,13 +3056,27 @@ def my_members(caller: PayingCaller) -> MembersView:
     into ``MembersView``: there is no second SQL and no per-member recompute. The
     read applies no ``status`` filter — every membership row boards with its
     ``status`` and the surface chooses which to render (``store``'s "fetches rows,
-    decides nothing" doctrine); a per-member seat summary is a second query this
-    read is defined not to carry (DEFERRED, §6 item (i)).
+    decides nothing" doctrine).
+
+    **Seats (D49 / LS-7).** The per-member seat summary this read used to defer is
+    now carried, as **plan slugs only**, from ONE additional whole-org query
+    (``store.live_seats_by_email``) zipped onto the roster in memory. Two queries
+    for any roster size, not one per member. A member with no live seat gets
+    ``[]`` — *Unassigned* — which is the state the customer's seat surface needs
+    in order to offer a reassign, and which no existing read could express. The
+    seat COUNTS stay ``GET /me/seats``'s: this read carries membership facts, not
+    arithmetic (§3.3, D32.5).
+
+    Both queries run in ONE transaction, so the roster and the seats are a
+    consistent snapshot — a seat released between two connections would otherwise
+    surface as a member holding a seat that no longer exists, or the reverse.
     """
     with get_engine().begin() as conn:
+        rows = store.org_members(conn, org_id=caller.organization_id)
+        seats = store.live_seats_by_email(conn, org_id=caller.organization_id)
         return MembersView(members=[
-            MemberView(**row)
-            for row in store.org_members(conn, org_id=caller.organization_id)
+            MemberView(**row, seats=seats.get(row["email"], []))
+            for row in rows
         ])
 
 

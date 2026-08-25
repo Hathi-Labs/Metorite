@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -635,7 +636,20 @@ async def reconcile_orphaned_runs() -> int:
     F13 agent tools, and anything else reading the table agree immediately.
     ``paused`` rows are deliberately untouched: resume rebuilds everything
     from the pause snapshot, so they legitimately survive restarts.
+
+    WS-29 launch-defang kill-switch (default ON), same flag as the cron scanner
+    — WORKFLOW_SCHEDULER_ENABLED gates the whole workflow scheduling subsystem,
+    this reconciler included. The RLS-cutover runbook sets it false so neither
+    writes UNBOUND under FORCE ROW LEVEL SECURITY (the sweep is out of launch
+    scope and not yet tenant-bound, H4 slice 6c). The gate lives HERE, inside
+    the function — never as an ``if`` at the gateway call site. Returns 0 (no
+    rows reconciled) when disabled.
     """
+    if os.getenv("WORKFLOW_SCHEDULER_ENABLED", "").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        _log.info("workflows.reconcile_disabled")
+        return 0
     try:
         db = await _get_db()
         try:

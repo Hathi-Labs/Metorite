@@ -366,8 +366,14 @@ async def add_group_member(
 
         await db.execute(
             text(
-                "INSERT INTO org_group_member (group_id, user_id, role, added_by) "
-                "VALUES (CAST(:gid AS uuid), CAST(:uid AS uuid), :role, :by) "
+                # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via the
+                # lower(email) bridge so migration 184's column stays current.
+                # app_user.id stays authoritative; this only READS user_identity.
+                "INSERT INTO org_group_member (group_id, user_id, role, added_by, user_identity_id) "
+                "VALUES (CAST(:gid AS uuid), CAST(:uid AS uuid), :role, :by, "
+                "        (SELECT ui.id FROM user_identity ui "
+                "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                "          WHERE au.id = CAST(:uid AS uuid))) "
                 "ON CONFLICT (group_id, user_id) DO UPDATE SET role = EXCLUDED.role"
             ),
             {"gid": group["id"], "uid": member["id"], "role": req.role,
@@ -378,9 +384,15 @@ async def add_group_member(
         if wants_grant:
             result = await db.execute(
                 text(
+                    # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via
+                    # the lower(email) bridge so migration 184's column stays
+                    # current. app_user.id stays authoritative; READS user_identity.
                     "INSERT INTO user_permission_override "
-                    "  (user_id, permission, effect, reason, set_by) "
-                    "VALUES (CAST(:uid AS uuid), :perm, 'allow', :reason, :by) "
+                    "  (user_id, permission, effect, reason, set_by, user_identity_id) "
+                    "VALUES (CAST(:uid AS uuid), :perm, 'allow', :reason, :by, "
+                    "        (SELECT ui.id FROM user_identity ui "
+                    "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                    "          WHERE au.id = CAST(:uid AS uuid))) "
                     "ON CONFLICT (user_id, permission) DO NOTHING"
                 ),
                 {"uid": member["id"], "perm": f"feature:center.{slug}",

@@ -43,6 +43,11 @@ from acb_auth import (
     invalidate_access,
     permission_matches,
 )
+
+# WS-29 H6 (DARK): the identity-shadow mirror lives in `acb_auth.access` (NOT
+# `console_resolve`, whose importer set is capped by a farmable-seat fence). It is
+# imported and called by `provision_member`'s CALLERS post-commit, never here — see
+# the note in `provision_member` for why the mirror moved out of this transaction.
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -536,8 +541,16 @@ async def set_roles(
     for role_id, _slug in role_ids:
         await db.execute(
             text(
-                "INSERT INTO user_role (user_id, role_id, assigned_by) "
-                "VALUES (CAST(:uid AS uuid), CAST(:rid AS uuid), :by) "
+                # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via the
+                # lower(email) bridge (RBAC.user_id → app_user → user_identity) so
+                # migration 184's column stays current. app_user.id stays the
+                # authoritative key; this only READS user_identity. NULL only where
+                # no identity exists (backfill 184 / CONTRACT slice reconcile).
+                "INSERT INTO user_role (user_id, role_id, assigned_by, user_identity_id) "
+                "VALUES (CAST(:uid AS uuid), CAST(:rid AS uuid), :by, "
+                "        (SELECT ui.id FROM user_identity ui "
+                "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                "          WHERE au.id = CAST(:uid AS uuid))) "
                 "ON CONFLICT DO NOTHING"
             ),
             {"uid": user_id, "rid": role_id, "by": assigned_by},
@@ -763,6 +776,19 @@ async def provision_member(
     # could not have written to in the first place.
     member = await get_member(db, org_id, email)
     await set_roles(db, member["id"], role_ids, admin.email)
+
+    # ⚠️ The RLS-EXEMPT identity-shadow mirror is deliberately NOT called here.
+    # It is the CALLER's responsibility, AFTER its `_tenant_session` has
+    # committed — the same post-commit posture `members.update_member` /
+    # `remove_member` already use, and the fix for the WS-29 H6 orphan-closure
+    # slice: mirroring inside this still-open transaction committed the shadow on
+    # its own session while the authoritative `app_user` write could still roll
+    # back (a concurrent-approve 409 in `access_requests._decide`), leaving an
+    # active shadow ORPHAN. Both callers (`members.invite_member`,
+    # `access_requests.approve_access_request`) now call
+    # `mirror_identity_membership` + `mirror_membership_status` once their commit
+    # is durable — so the shadow only ever mirrors an `app_user` write that
+    # actually landed. See `acb_auth.access` and §H6.
     return member, [slug for _rid, slug in role_ids]
 
 

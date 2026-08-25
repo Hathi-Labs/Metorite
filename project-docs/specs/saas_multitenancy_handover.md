@@ -1,7 +1,28 @@
 # Multi-tenancy handover — execution runbook for an agent with database access
 
-**Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09** (see H1's result
-block; prod apply rides **PR #404**, the owner's merge) · **Created:** 2026-08-08 ·
+**Status:** 🟢 **In execution — H1 scratch gate PASSED 2026-08-09; H3 REHEARSED on
+scratch 2026-08-22; H6 SLICES 1 + 3a + ORPHAN-CLOSURE + 3b (READ CUTOVER, behind `IDENTITY_CUTOVER`
+default OFF) + 4-EXPAND (RBAC RE-KEY) SHIPPED (dark) 2026-08-22** (see
+H1's result block and the H3 REHEARSAL RESULT block; the two-org isolation fixture + brick
+characterization landed as `tests/unit/test_h3_rls_promotion_rehearsal.py`, and the app_user
+sign-in brick is now written up as an OWNER DECISION in §H3.2; **the H6 dark slices** = the
+identity-shadow dual-write + catch-up backfill (migration 182), the forward status mirror +
+reconcile (migration 183, D48), the orphan-closure — purge now deletes the shadow and the
+invite/approve mirror moved post-commit — **slice 3b, the read cutover** (`resolve_identity`'s
+tenant-discovery read moves to the RLS-EXEMPT `user_identity ⋈ org_membership` (active-only);
+`deps._with_resolved_access` binds BEFORE the bound role leg, which now runs GUC-bound via
+`tenant_session`; all behind `IDENTITY_CUTOVER`, default OFF = byte-identical to today) — and the
+**RBAC re-key EXPAND** (migration 184: nullable `user_identity_id` on the three RBAC tables,
+backfilled via the lower(email) bridge, dual-written on the five Python RBAC INSERTs + bridged
+GUC-bound at mirror-time for the sixth, `provision_org_owner`). All fenced by
+`tests/unit/test_h6_identity_shadow.py` + `tests/unit/test_h6_rbac_rekey.py` +
+`test_h3_rls_promotion_rehearsal.py` — **no read moved while the flag is OFF; the flag-ON
+identity leg resolves an active member GREEN unbound under phase-4 RLS while the flag-OFF
+app_user read still bricks RED**, see §H6. Building the read cutover (slice 3b) + the per-module
+RBAC read cutovers DARK is AGENT-SAFE per D48; only the `IDENTITY_CUTOVER` flip, the CONTRACT drop
+of the old `user_id`, H3 phase-4 promotion, and running the prod backfill remain OWNER-GATE, not
+enacted**) ·
+**Created:** 2026-08-08 ·
 **Owner:** vjvarada ·
 ⚠️ **Updated 2026-08-19: a ticket was minted that this runbook has no H-slot for —
 `saas_multitenancy.md` §11 **MT-1j · Tenant-side organization provisioning**.** It is not
@@ -62,7 +83,7 @@ Start with H1. Report the GATE result before moving on.
 | MT-0d per-org provider keys | ✅ | migration **158** — scratch-applied + verified 2026-08-09 (H1); prod = PR #404 |
 | MT-1a control plane | ◐ | migration **159** — scratch-applied + verified 2026-08-09 (H1); identity cutover NOT done |
 | MT-1b RLS | ◐ | generated into `infra/postgres/generated/`, **never applied** (H3's act, after H2 — the scratch DB `mt-scratch` is its test target) |
-| MT-1c binding seam | ◐ | `tenant_session()` built; **561 call sites unconverted** |
+| MT-1c binding seam | ◐ | `tenant_session()` built (async); **sync twin `acb_graph.db.tenant_session()` added dark 2026-08-23, §0.1 path 4**; **call sites converted dark behind `ACB_GRAPH_TENANT_BIND`: the executor's four `chat_session` writes/reads (slice 3) + the `pending_commit` write/read (slice 4) + `acb_audit._persist`'s `audit_event` write (slice 5, org on the event, operator-org fallback)**; **run-based org SOURCES threaded (slice 6a): `/copilot/chat` → `run_detached`, sub-agent inheritance, batch `_run_agent_inner` honours its org param — so the slice 3-5 writes get the right tenant for those runs**; **~554 call sites unconverted** |
 | MT-1e Redis wrapper | ◐ | built; **~58 key sites unconverted** |
 | MT-1i leak sites | ✅ | five predicates derived; one DB-backed criterion open |
 | MT-1j org provisioning | 🔲 | **minted 2026-08-19**, not built. Six slices; no H-slot — build it in parallel, **execute it after H3** (D43-C) |
@@ -384,17 +405,208 @@ running as the owner.**
 > ```
 > Phases 1–3 are additive and do not need rolling back.
 
-**Done when:** all four phases applied, **and**
-```bash
-DATABASE_URL=... uv run pytest tests/unit/test_tenant_coverage.py -v -rs
-```
-shows the two previously-skipped tests as **PASSED**, not skipped.
+**Done when:**
+1. **(claim a — RLS applies)** all four phases applied, **and**
+   ```bash
+   DATABASE_URL=... uv run pytest tests/unit/test_tenant_coverage.py -v -rs
+   ```
+   shows the two previously-skipped tests as **PASSED**, not skipped. ⚠️ See
+   §H3.3 — as rehearsed, `test_live_catalog_has_column_force_and_policy` needs a
+   one-line correctness fix first (it does not yet subtract `HOMONYM_BLOCKED`),
+   and applying that fix is guarded because it edits the security fence.
+2. **(claim b — bootstrap + sign-in resolve, CHARACTERIZATION done-when, added
+   2026-08-22)** the rehearsal demonstrates **whether** bootstrap + sign-in
+   identity resolution succeed under phase-4 policies; **if not, it records the
+   exact fix as an owner decision.** Rehearsed: they do **not** resolve — the
+   unbound `app_user` reads return zero rows and the bootstrap write is refused
+   by WITH CHECK (§H3.2). The characterization lives in
+   `tests/unit/test_h3_rls_promotion_rehearsal.py::TestSignInBrickCharacterization`
+   and the owner decision in §H3.2.
+3. **(two-org isolation, MT-1i's owed fixture)** a real-Postgres two-org fixture
+   binds a session to org A and proves it reads ONLY org A rows and cannot WRITE
+   a row stamped org B — `passed`, never `skipped`
+   (`tests/unit/test_h3_rls_promotion_rehearsal.py::TestTwoOrgIsolation`).
 
-**GATE:** those two tests pass against the live catalog.
+**GATE:** claim (a)'s two tests pass against the live catalog (after §H3.3's fix),
+and claims (b) + the two-org fixture pass on scratch.
 
 ---
 
-## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE
+## H3 REHEARSAL RESULT (2026-08-22) — scratch only; live promotion is OWNER-GATE
+
+> Executed on a local Docker scratch (`pgvector/pgvector:pg16`, 127.0.0.1:5443)
+> — plan-guard makes every VPS/deploy path OWNER-GATE, so this is a **rehearsal
+> of the promotion**, not the promotion. Stood up a **dedicated** database, ran
+> `tests/unit/_tenant_ladder.py::apply_ladder` (full ladder 01→ladder tip on
+> `pgvector/pgvector:pg16` — stock `postgres:16` cannot build `01_schema.sql`,
+> which needs `uuid-ossp` + `vector`), created the non-privileged `acb_app` role
+> per §H3's pre-phase-1 SQL (NOT superuser / owner / BYPASSRLS), seeded two
+> organizations, then applied `generated/{01,02,03,04}.sql` **by hand in phase
+> order** (the ladder deliberately never replays `generated/`). All four phases
+> applied clean; RLS came up on **137 of 140** scoped tables.
+>
+> **What passed (evidence, real DB, never skipped):**
+> - **Two-org isolation + WITH-CHECK + fail-closed** (MT-1i's owed fixture) —
+>   `TENANT_LADDER_DATABASE_URL=… uv run pytest
+>   tests/unit/test_h3_rls_promotion_rehearsal.py -v -rs` → **12 passed**
+>   (10 DB-backed on real Postgres + 2 always-on structural arm-checks; 0 skipped).
+>   Bound to org A: sees its 2 `apps` rows, 0 of org B's; org B sees its 3;
+>   **unbound → 0 rows** (fail-closed); an A-bound INSERT stamped org B is
+>   refused (`new row violates row-level security policy`); the phase-1 DEFAULT
+>   stamps the bound tenant.
+> - **The app role cannot bypass RLS** —
+>   `test_tenant_coverage.py::test_app_role_cannot_bypass_rls` → **PASSED** as
+>   `acb_app` (not super, not BYPASSRLS).
+>
+> **What the brick characterization SHOWED — sign-in does NOT survive phase 4.**
+> Running the code's **own** SQL (`_ACCESS_SQL`, `_BOOTSTRAP_OWNER_SQL`) and the
+> real `acb_auth.access` functions as `acb_app` with no `app.tenant_id` bound:
+> `resolve_access(owner).is_active = False` (logs `access_unprovisioned_signin`
+> even though the row EXISTS — RLS hides it); `resolve_identity(owner) =
+> (None, None)` (no tenant to bind — the chicken-and-egg); `ensure_owner_bootstrap()
+> = None` with the underlying `new row violates row-level security policy for
+> table "app_user"`. This is the 2026-07-30 lockout shape, now by construction
+> for every user. **The fix is §H3.2, an OWNER DECISION — not enacted here.**
+>
+> **What did NOT pass, and why it is not a promotion defect:**
+> `test_tenant_coverage.py::test_live_catalog_has_column_force_and_policy`
+> **FAILED** on exactly `['crm_activities', 'crm_contacts', 'crm_deals']` — the
+> three CRM homonym tables. RLS applied cleanly to every table the generator
+> scopes; these three are `HOMONYM_BLOCKED` (excluded from the generated set on
+> purpose) and the gate test does not yet subtract them. See §H3.3 — this is a
+> one-line correctness fix to the gate, guarded because it edits the fence.
+
+### H3.1 Promotion runbook — exact order (what an owner runs, in a window)
+
+**We cannot roll back** (R6, forward-only ladder; recovery is roll-forward or
+restore) — so every step below is rehearsed on a scratch restore of the
+**production** dump first, in this exact order:
+
+1. **Prereq — the app role**, once, as the DB owner (§H3 pre-phase-1 SQL):
+   `CREATE ROLE acb_app LOGIN PASSWORD … NOSUPERUSER NOCREATEDB NOCREATEROLE
+   NOBYPASSRLS`; `GRANT CONNECT`/`USAGE`/`SELECT,INSERT,UPDATE,DELETE ON ALL
+   TABLES`/`USAGE,SELECT ON ALL SEQUENCES`; `ALTER DEFAULT PRIVILEGES … GRANT …`.
+   Point the gateway, orchestrator and ingestion processes at `acb_app`.
+   **Migrations keep running as the owner.**
+2. **H2 complete and verified in production first** (the non-negotiable ordering).
+   The bind the policies read is `SELECT set_config('app.tenant_id', :org, true)`
+   inside a transaction — `packages/acb_common/acb_common/db.py:292` in
+   `tenant_session()` (opened by the request middleware
+   `apps/services/gateway/gateway/main.py` `TenantScopeMiddleware`, filled from
+   the authenticated session by `acb_auth`). No bind ⇒ the GUC is NULL ⇒ zero
+   rows (fail-closed). This is what H2 makes true for all 561 sites.
+3. **Apply the SAFE phases, by hand, in order**, from `infra/postgres/generated/`:
+   `01_add_columns.sql` (nullable ADD COLUMN — safe live) → `02_backfill.sql`
+   (batched, re-runnable — the slow one) → `03_constraints.sql` (**ACCESS
+   EXCLUSIVE**, scans each table — window; table-by-table if needed; never behind
+   a long transaction). **STOP after phase 3. Do NOT apply `04_policies.sql` yet.**
+4. **🚨 PHASE-4 GATE — the whole point of this rehearsal. Do NOT proceed to
+   step 5 until BOTH are true:** (a) H2 is complete and verified in production
+   (step 2), and (b) the app_user brick fix in **§H3.2 is ratified and enacted**
+   — either the app_user carve-out is in the generator, OR H6's identity cutover
+   has landed. **As generated today, phase 4 bricks sign-in for every user** (an
+   unbound `app_user` read returns zero rows → identity resolution fails; see the
+   REHEARSAL RESULT above). If either condition is unmet, you are not ready —
+   stop here.
+5. **Apply the cliff — ONLY after step 4 is cleared:** `04_policies.sql`
+   (**the cliff** — instant; the moment it applies, any unbound connection reads
+   zero rows). This is irreversible except by the phase-4 rollback in step 7.
+6. **Verification queries** (as `acb_app`, against the promoted catalog):
+   ```bash
+   DATABASE_URL=postgresql+asyncpg://acb_app:<pw>@<host>:<port>/<db> \
+     uv run pytest tests/unit/test_tenant_coverage.py \
+       ::test_app_role_cannot_bypass_rls \
+       ::test_live_catalog_has_column_force_and_policy -v -rs
+   ```
+   plus a spot check: `SELECT count(*) FROM app_data;` returns 0 unbound, and the
+   real row count inside `BEGIN; SELECT set_config('app.tenant_id', '<org>',
+   true); SELECT count(*) FROM app_data; COMMIT;`.
+7. **Rollback for phase 4 only** (the one you will want): `ALTER TABLE <t>
+   DISABLE ROW LEVEL SECURITY;` per table. Phases 1–3 are additive.
+
+### H3.2 The app_user sign-in brick — OWNER DECISION (written up, NOT enacted)
+
+**Confirmed on scratch:** `app_user` gets a phase-4 policy
+(`04_policies.sql:128-133`), but identity resolution reads `app_user.organization_id`
+on an **unbound** session to discover the tenant (`acb_auth/access.py` —
+`_ACCESS_SQL`/`resolve_access`, `resolve_identity`, `_BOOTSTRAP_OWNER_SQL`/
+`ensure_owner_bootstrap`; all via the plain `get_session_factory()`). Under
+fail-closed RLS: unset GUC → NULL → zero rows → bind never happens → **sign-in
+bricks**, and the owner bootstrap's INSERT is refused by WITH CHECK.
+`user_identity`/`org_membership` are already EXEMPT (control plane), which is why
+H6's identity cutover exists.
+
+Two ways forward. **Both are owner calls; neither is enacted in this change** —
+the EXEMPT map IS the security review and H3-before-H6 is an owner-set ordering.
+
+- **Option A — an app_user bootstrap carve-out designed INTO
+  `scripts/gen_tenant_migration.py`.** Concretely: add `app_user` to the
+  generator's `EXEMPT` map with a reason (e.g. *"identity table read unbound to
+  discover the tenant; the tenant-scoped identity is H6's `org_membership`, which
+  is exempt for the same reason"*), regenerate the four phase files, so `app_user`
+  carries **no** RLS. **Prototyped on scratch (throwaway `ALTER TABLE app_user
+  DISABLE ROW LEVEL SECURITY`, never committed):**
+  - **Benefit, measured:** the unbound identity read returns the row → **sign-in
+    survives** (0 rows before the carve-out, 1 after).
+  - **Real tenant data stays isolated, measured:** with `app_user` exempt, an
+    org-A-bound session still sees only org A's `apps` (1), org B only its own —
+    the carve-out touches nothing but `app_user`.
+  - **Cost, measured:** `app_user` becomes **cross-tenant readable** — an
+    org-A-bound session sees org B's `app_user` rows (2 of 2). That leaks the
+    user directory *and* each user's `organization_id`/`role`/`status` across
+    tenants. It is the same posture `user_identity` already accepts, but
+    `app_user` carries more (org + role + status), so it is a real widening.
+    Mitigation the owner may prefer over a bare EXEMPT: a **carve-out POLICY**
+    that keeps `WITH CHECK` (writes stay tenant-stamped) and narrows `USING` to
+    what identity resolution needs — but that is a bespoke policy the generator
+    does not emit today, i.e. more generator surface than option A's one line.
+  - ⚠️ **This branch does NOT make the EXEMPT change** — the prototype lived in a
+    throwaway SQL toggle, reverted; the committed generator and its EXEMPT map
+    are untouched.
+- **Option B — sequence H6 (identity cutover) BEFORE a clean phase-4 sign-in.**
+  H6 moves sign-in onto `user_identity` + `org_membership` (already EXEMPT), so
+  the unbound read hits an exempt table and no carve-out is needed; `app_user`
+  can then be dropped to a compatibility view or fully scoped. This retires the
+  "one person = one organization" encoding (migration 161's D-MT-1) as a bonus.
+  Cost: H6 is a larger, live-sign-in-path change (21 `app_user`-derived org reads
+  across 6 modules per H6) and it reorders H3/H6, which is an owner call.
+
+**Recommendation: Option B, with Option A as a bridge only if phase 4 must ship
+before H6.** Evidence: Option A un-bricks sign-in but *widens* cross-tenant
+exposure of exactly the table (`app_user`) whose per-tenant `organization_id`,
+`role` and `status` are the isolation we are promoting phase 4 to enforce — so it
+trades a directory leak for a promotion, and the mitigation that removes the leak
+(a bespoke carve-out policy) is more generator surface than option A claims to be.
+Option B removes the unbound read from a scoped table entirely, which is the root
+cause, and folds in the multi-org identity work H6 owns anyway. If the schedule
+forces phase 4 first, ship Option A's carve-out **and** open the app_user
+directory-leak as a tracked item that H6 closes. **Owner ratifies; not enacted
+here.**
+
+### H3.3 Gate finding — the live-catalog test vs `HOMONYM_BLOCKED`
+
+`test_tenant_coverage.py::test_live_catalog_has_column_force_and_policy` subtracts
+only `EXEMPT`, not `HOMONYM_BLOCKED`, from the set it demands be scoped. But
+`gen_tenant_migration` scopes `discover_tables() - EXEMPT - HOMONYM_BLOCKED`
+(`main()`; the sibling drift test at `:104` uses that exact set), so a **faithful**
+phase-4 promotion always leaves `crm_contacts`/`crm_deals`/`crm_activities` with
+an `organization_id` column and no policy — and the gate then flags them and can
+**never go green**. Rehearsed 2026-08-22: it failed on exactly those three.
+
+**Proposed one-line fix** (an OWNER-ratified change to the fence, deliberately not
+applied here because the classifier guards edits that weaken a security gate):
+add `and r["table_name"] not in gen.HOMONYM_BLOCKED` to the `bad` comprehension,
+with a comment that the CRM homonym hole is tracked separately (still 🔴 owner
+call — rename the column) in `HOMONYM_BLOCKED`, the leak audit and
+`test_tenancy_boundary.py`, and is NOT a promotion failure. This aligns the gate
+with the generator's contract without masking the real CRM hole (entry into
+`HOMONYM_BLOCKED` is itself gated by the generator's homonym refusal). Until it
+lands, claim (a)'s live-catalog test cannot pass; `test_app_role_cannot_bypass_rls`
+already passes.
+
+---
+
+## H4 · Bind a tenant in every background job (MT-1d) · 🟢 AGENT-SAFE · ◐ tasks/calendar + acb_graph sync seam + executor org threading (chat) + executor chat_session (slice 3) + pending_commit (slice 4) + audit_event (slice 5) writes/reads bound + run-based org sources (copilot/chat + sub-agent + batch, slice 6a) threaded + agent-tool READS (entity/sales retrieval, granted apps, skill toggles, slice 7) bound (dark, `ACB_GRAPH_TENANT_BIND`) SHIPPED (dark) · 🚦 launch-defang kill-switches (`EMAIL_SYNC_ENABLED` / `WORKFLOW_SCHEDULER_ENABLED`, default ON) for the OUT-of-scope loops SHIPPED (dark) 2026-08-23
 
 *"A job that forgets doesn't leak one row; it leaks unbounded."*
 
@@ -405,6 +617,345 @@ Jobs have no request, so no session to inherit from. Cover: the ingestion schedu
 **Done when:** every queued/scheduled unit carries `organization_id` on its record and
 binds it before any DB access; a job constructed **without** one **refuses to run** rather
 than defaulting; a test proves the refusal.
+
+> ✅ **Tasks + Calendar SHIPPED 2026-08-22 (WS-29, DARK — byte-identical pre-flip).**
+> The 5 scheduler + rollover background sites now bind each job's own tenant via
+> `tenant_session(org)` (the one GUC seam) and REFUSE (`TenantUnbound`, never
+> default) when no org is resolvable:
+> - `routes/tasks/scheduler.py` — `_run_one_cycle` / `_read_interval` bound
+>   single-org (org threaded from the loop); `start_background_sync` /
+>   `_enabled_accounts_by_org` is now a **per-org sweep** — it enumerates orgs
+>   from the RLS-EXEMPT `organization` table on an unbound session, then binds
+>   `tenant_session(org)` per org to read that org's `task_accounts`.
+> - `routes/tasks/calendar.py` — `_rollover_one_user` bound single-user/org;
+>   `_run_rollover_sweep` is the matching per-org sweep over `gtd_settings`.
+>
+> Each single-org job wraps its DB work in `tenant_session(org)`; the two sweeps
+> keep ONE unbound `get_db()` each for the exempt-`organization` enumeration
+> (`test_db_engine_seam.py` elsewhere-baseline 111 → 108). R7 fences (R8, real
+> non-priv `acb_app` role on the phase-4 catalog, in
+> `tests/unit/test_h3_rls_promotion_rehearsal.py`): `calendar-rollover-bound-under-rls`
+> and `tasks-scheduler-bound-under-rls` — GREEN bound (each sweep releases/reads
+> only its own org's rows across TWO seeded orgs), RED unbound (0 rows read /
+> WITH-CHECK refused), and a no-org unit RAISES `TenantUnbound`.
+> ⚠️ **The tasks broker handler (`routes/tasks/broker_handlers.py`) is NOT in
+> this change** — a separate later PR, dormant unless `ACTION_BROKER_ENFORCE`.
+
+> ✅ **acb_graph sync tenant seam SHIPPED 2026-08-23 (WS-29, DARK — seam ONLY,
+> no call site converted, byte-identical at runtime).** The core write paths
+> (the best-effort `acb_audit` write, orchestrator agent runs) go through
+> `acb_graph.get_session()` — a SEPARATE **sync** engine (§0.1 path 4) that had
+> no tenant binding, so it would read 0 rows / refuse writes on FORCE-RLS'd
+> tables post phase-4. `acb_graph.db` now carries `tenant_session(organization_id)`,
+> the sync twin of `acb_common.db.tenant_session`: same GUC name, the IDENTICAL
+> `SELECT set_config('app.tenant_id', :tenant, true)` (bound param), an explicit
+> `session.begin()` transaction, and the SHARED `TenantUnbound` (imported, not
+> re-declared). It is **explicit-tenant-only — no ambient ContextVar fallback**,
+> because the sync engine serves background/service paths that must not inherit
+> an upstream tenant (the H4 rule). `get_session()` is untouched and stays for
+> RLS-exempt/discovery reads until later slices convert specific callers behind
+> `ACB_GRAPH_TENANT_BIND`. This is the foundation those slices build on.
+> R7 fences (R8, real non-priv `acb_app` role on the phase-4 catalog, in
+> `tests/unit/test_acb_graph_tenant_seam.py`): `acb-graph-sync-bind-sets-guc`
+> (a bound write lands + is org-isolated GREEN; the unbound `get_session()` read
+> is 0-rows / write WITH-CHECK-refused; no-org RAISES `TenantUnbound`) and
+> `acb-graph-cross-engine-bind-drift` (both engines grep-match the identical bind
+> statement and share one `TenantUnbound` type). `test_db_engine_seam.py`'s
+> `_ALLOWED_SYNC` reason for `acb_graph/db.py` is updated to record the seam.
+
+> ✅ **acb_graph slice 2 — executor org threading SHIPPED 2026-08-23 (WS-29,
+> DARK — plumbing + run state ONLY, no DB write converted, runtime unchanged).**
+> The core agent run (`run_agent_stream` → the drained detached task) writes
+> tenant tables through the sync `acb_graph` engine inside
+> `loop.run_in_executor(...)` worker threads — where Python contextvars are NOT
+> copied, and where the detached run has already outlived the request scope, so
+> the request's ambient tenant binding is gone. This slice threads the tenant
+> explicitly so later slices' worker-thread writes can bind it:
+> - `run_agent_stream` / `run_agent` (executor.py) and `run_detached`
+>   (stream_relay.py) gain an `organization_id: str | None = None` parameter.
+> - `executor._RUN_ORG: dict[str, str]` — a run-keyed plain dict (the tenant twin
+>   of `_RUN_QUEUES`) set at the top of `run_agent_stream` and deleted in its
+>   `finally`; this is what a worker-thread write reads (captured into the
+>   closure before the executor hop) in slice 3+.
+> - `run_agent_stream` also calls `acb_common.db.bind_tenant(org)` at run start
+>   (released in the `finally`), and `run_detached` binds it for the detached
+>   drain task's whole life (so the `on_complete` persist hook, which runs after
+>   the generator's own binding is released, still sees the tenant). No
+>   fail-closed refusal yet — a chat run with no org LOGS a warning; the
+>   refuse-on-missing behaviour lands with the write conversions behind
+>   `ACB_GRAPH_TENANT_BIND` (later slices).
+> - **The org is stamped SERVER-SIDE** at the gateway chat route
+>   (`routes/agent.py`) from the authenticated `UserContext.organization_id`,
+>   **never from `event_payload`** — sourcing the tenant from the client/agent-
+>   visible payload is R11's tenant-spoofing hole; the route carries a comment
+>   saying so.
+> - **Scope = the CHAT source only.** Workflow / schedule / sub-agent runs
+>   (the batch `run_agent` path) get the parameter but are NOT yet wired — a
+>   `TODO(WS-29 slice 6)` marks where their own org resolution lands.
+> R7 fence `executor-run-carries-org` (`tests/unit/test_executor_org_threading.py`):
+> driving a chat `run_agent_stream` with a known org asserts `_RUN_ORG[thread_id]`
+> equals it DURING the run and is absent AFTER (cleared in `finally`); a value in
+> `event_payload` never becomes the run's org (spoofing guard); and an AST fence
+> proves the route sources `organization_id` from the authenticated user, never
+> `req.payload`.
+
+> ✅ **acb_graph slice 3 — chat_session writes/reads bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's four `chat_session` touch points now go through the slice-1
+> sync seam when the flag is ON: the two writes `_store_session_id` /
+> `_clear_stored_session_id` (fired inside `loop.run_in_executor(...)` worker
+> threads) and the two reads `_get_stored_session_id` /
+> `_session_workspace_override`. One helper, `_graph_session_opener(thread_id)`,
+> makes the choice on the CALLER's frame — flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a resolvable tenant → a
+> `lambda: acb_graph.tenant_session(org)`; flag ON + NO tenant → `None`. **The
+> org is captured on the EVENT LOOP before the `run_in_executor` hop and closed
+> over** (a worker thread never reads `_RUN_ORG` or a ContextVar — neither
+> survives the hop). **Fail-closed:** flag ON + no tenant → the write is SKIPPED
+> and logged (`executor.session_store_skipped_no_org` /
+> `…session_clear_skipped_no_org`), never written unbound, and the run never
+> crashes (best-effort session bookkeeping); the reads fall back (a fresh
+> session / the agent clone). The single flag reader is
+> `acb_graph.tenant_bind_enabled()` — later slices convert more `acb_graph` paths
+> behind it; do not add a second reader.
+> **Two slice-2 review findings folded in (load-bearing NOW that this slice reads
+> `_RUN_ORG` fail-closed):**
+> - **P2 — guarded pop.** `run_agent_stream`'s `finally` now calls
+>   `_guarded_pop_run_org(thread_id, organization_id)`, which drops the record
+>   ONLY if it is STILL this run's org (mirrors `_DETACHED_TASKS.pop` in
+>   stream_relay). A superseded run's late `finally` can no longer delete a newer
+>   same-thread run's org.
+> - **P1 — missing-org signal broadened.** The executor's missing-org warning
+>   now fires for EVERY source (`executor.run_missing_org`, was chat-only), and
+>   `run_detached` logs `stream_relay.detached_run_missing_org` when no org is
+>   threaded — so the plumbing gap on `/copilot/chat` (runs the MAF agent
+>   directly, not `run_agent_stream`) and email-automation chat (`source !=
+>   "chat"`) is VISIBLE in logs. Org threading for those two surfaces is still
+>   slice 6; this is signal only.
+> R7 fences (`tests/unit/test_acb_graph_chatsession_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `chat-session-write-bound-under-rls` (flag ON + orgA: the UPSERT lands and is
+> visible ONLY to orgA; flag ON + no org: SKIPPED + logged, no raise; RED-on-
+> removal: reverting to the unbound `get_session()` is RLS-refused so the row
+> never lands); `run-org-guarded-pop` (a superseded run's late finally preserves
+> a newer run's org — RED if the pop is made unconditional); and the flag-OFF
+> regression (opener IS `get_session`). Both RED-on-removal properties were
+> demonstrated by mutation on 2026-08-23.
+
+> ✅ **acb_graph slice 4 — pending_commit write/read bound SHIPPED 2026-08-23
+> (WS-29, DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).**
+> The executor's agent-self-commit registration now goes through the slice-1 sync
+> seam when the flag is ON: the dedup read in `_detect_agent_commits` (the
+> `SELECT commit_sha FROM pending_commit` the reviewer flagged as an unbound
+> `get_session()`) and the INSERT in `mutation._register_pending_commit`.
+> **`_detect_agent_commits` resolves the opener ONCE via
+> `_graph_session_opener(thread_id)` on its own (event-loop) frame** — it runs
+> before `run_agent_stream`'s finally pops `_RUN_ORG`, so the run's tenant is
+> valid there and no worker-thread / ContextVar hop has intervened — and reuses
+> that single opener for BOTH the read and every write, passing it down as
+> `_register_pending_commit(..., opener=…)`. flag OFF → the unbound
+> `acb_graph.get_session` (byte-identical); flag ON + a tenant →
+> `tenant_session(org)` (the phase-1 DEFAULT stamps the bound org — the INSERT
+> names no `organization_id`); flag ON + NO tenant → the opener is `None` and the
+> path **fails closed**: the read falls back to an empty dedup set and the write
+> is SKIPPED + logged (`mutation.pending_commit_skipped_no_org`), never run
+> unbound on the FORCE-RLS'd `pending_commit`, never raised. `_register_pending_
+> commit` takes the opener as a keyword defaulting to a private `_OPENER_UNSET`
+> sentinel → the still-un-converted self-mutation-sandbox caller
+> (`attempt_self_mutation`, whose org threading is a later slice) keeps opening
+> the unbound `get_session`, byte-identical. Both `_detect_agent_commits`
+> callers now thread `thread_id`: the STREAM path (`_RUN_ORG` set → binds) and the
+> BATCH path (`_RUN_ORG` unset until slice 6 → fail-closed when ON, byte-identical
+> when OFF).
+> R7 fences (`tests/unit/test_acb_graph_pending_commit_bind.py`): R8 against the
+> reused two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `pending-commit-write-bound-under-rls` (flag ON + orgA: the INSERT lands and is
+> visible ONLY to orgA, stamped orgA; flag ON + no org: SKIPPED + logged, no raise;
+> RED-on-removal: reverting the writer to the unbound `get_session()` is
+> RLS-refused — `new row violates row-level security policy for table
+> "pending_commit"` — so the write returns None and the row never lands) and the
+> flag-OFF regression (opener IS `get_session`; the default-opener caller still
+> opens `get_session`). The RED-on-removal property was demonstrated by mutation
+> on 2026-08-23.
+
+> ✅ **acb_graph slice 5 — `audit_event` write bound SHIPPED 2026-08-23 (WS-29,
+> DARK behind `ACB_GRAPH_TENANT_BIND`, default OFF = byte-identical).** The
+> highest-risk slice: `acb_audit._persist` swallows every error, so a broken bind
+> would fail SILENTLY — the R7 fence is the only guard, and it asserts the ROW
+> LANDED (queries the table), never merely that nothing raised. **OWNER DECISION
+> (ratified, Option-A): `audit_event` is tenant-SCOPED, AND a tenant-less
+> system/cron event is BOUND to the operator/DEFAULT org so it is RETAINED, never
+> dropped.** So — unlike slices 3/4 which SKIP on no-org — audit FALLS BACK to the
+> operator org; it skips + logs (`audit.persist_skipped_no_org`) only if BOTH the
+> event org and the default-org lookup are unavailable (near-impossible — the
+> `default` org is seeded by migration 130).
+> **How the org reaches `_persist`:** it rides ON THE `AuditEvent` object
+> (`organization_id: str | None`, new field), stamped by the caller ON ITS OWN
+> FRAME — the executor's five core-path `record` sites (`agent_run_start` /
+> `_complete` / `_load_error` / `_run_error` in `_run_agent_inner`, and
+> `agent_self_commit_detected` in `_detect_agent_commits`) set
+> `organization_id=_RUN_ORG.get(thread_id)`. This is deliberate: `record()` hands
+> the write to `asyncio.to_thread`, and the design **never relies on contextvar
+> copying across that hop** (the same rule slices 2–4 follow for `_RUN_ORG`), so
+> the value must live on the event, never be read from a ContextVar inside
+> `_persist`. Stream/chat runs (`_RUN_ORG` set) stamp their real tenant; batch
+> runs (`_RUN_ORG` unset until slice 6) stamp None → operator-org fallback.
+> `_persist`: flag OFF → the unbound `acb_graph.get_session` (byte-identical);
+> flag ON → `tenant_session(event.organization_id OR operator_org)`. The GUC
+> DEFAULT stamps the column — the ORM INSERT names no `organization_id`, and the
+> ORM `AuditEvent` model is UNCHANGED (adding the column there would make
+> SQLAlchemy send an explicit NULL and defeat the DEFAULT). `_resolve_operator_
+> org_id()` reads the RLS-EXEMPT `organization` table for `slug = 'default'` (or
+> the `OPERATOR_ORG_ID` env), cached module-level, failure NOT cached; a
+> `slug = 'default'` fallback is CORRECT here (audit RETENTION, not key service —
+> the opposite of acb_llm's fail-closed rule, and it never serves one tenant's
+> secrets to another).
+> **pull_agent (`orchestrator/agents/pull_agent.py`) NOT stamped:** its `answer()`
+> has no `thread_id`/`_RUN_ORG` in scope, so its two `record` events carry
+> `organization_id=None` → operator-org fallback — the conditional "where a run's
+> thread_id is in scope" plus §H4's non-chat-source rule (slice 6 owns threading
+> org for non-chat sources); acceptable while dark.
+> R7 fences (`tests/unit/test_acb_graph_audit_bind.py`): R8 against the reused
+> two-org phase-4 catalog (non-priv `acb_app_h3rls`) —
+> `audit-event-write-bound-under-rls` (flag ON + orgA: the row LANDS visible ONLY
+> to orgA, stamped orgA), `audit-system-event-falls-back-to-operator-org` (flag ON
+> + no org: the row LANDS under the DEFAULT org, retained), the swallow guard (no
+> org anywhere → skip + NO row lands), the flag-OFF regression (a real row lands
+> via `get_session` on the pre-phase-4 shared ladder), and the RED-on-removal
+> mechanism proof (an unbound `get_session()` INSERT into the phase-4 `audit_event`
+> is NOT-NULL/RLS refused). RED-on-removal was demonstrated by mutation on
+> 2026-08-23 (reverting `_persist` to `get_session()` → both DB fences RED, no row).
+
+> ✅ **acb_graph slice 6a — run-based org SOURCES threaded SHIPPED 2026-08-23
+> (WS-29, DARK — only populates `_RUN_ORG` / binds the tenant for more runs; the
+> slice 3-5 writes consume it only when `ACB_GRAPH_TENANT_BIND` is ON).** Slices
+> 2-5 bound the executor's writes but only the `/agent/run/stream` CHAT source
+> stamped an org; the other run-based sources that resolve their tenant from
+> in-hand SERVER-SIDE identity (no scoped DB read) did not, so those writes fell
+> to the operator-org fallback / fail-closed skip and the slice-3 broadened
+> missing-org warning fired. This slice threads the org for the three such
+> sources (closing the slice-2 P1 copilot-lockout risk and narrowing the audit
+> operator-org fallback):
+> - **`/copilot/chat`** (`apps/services/gateway/gateway/main.py`): stamps
+>   `user.organization_id` (SERVER-SIDE, from `get_current_user` /
+>   `_with_resolved_access` — the SAME provenance `routes/agent.py` uses; NEVER
+>   from `input_data`/`request_body`/the message list, R11) and passes it to
+>   `run_detached`, which binds the tenant for the whole detached drain task. This
+>   chat runs the MAF orchestrator DIRECTLY (not `run_agent_stream`), so that bind
+>   is what its async reads, the `on_complete` persist hook, and delegated
+>   sub-agents resolve. Stops `stream_relay.detached_run_missing_org` for it.
+> - **Sub-agent inheritance** (`_run_sub_agent_streaming` → `run_agent`): a
+>   delegated sub-run acts in its PARENT's tenant. `_resolve_sub_agent_org()`
+>   resolves it SERVER-SIDE on the caller's frame — `_RUN_ORG` keyed by the
+>   parent thread id (`_stream_relay_thread_id` / the bound run context), falling
+>   back to the async bound tenant (`current_tenant`, for the `/copilot/chat`
+>   parent that binds but sets no `_RUN_ORG`) — NEVER from the delegated message
+>   (the resolver takes no argument). It is passed into the batch path.
+> - **Batch path** (`run_agent` / `_run_agent_inner`): now HONOURS the
+>   `organization_id` its callers pass — sets `_RUN_ORG[thread_id]` +
+>   `bind_tenant` (guarded pop + release in the `finally`, mirroring slice 3),
+>   exactly as `run_agent_stream` does. So an org-carrying batch run (a sub-agent
+>   today) stamps its real tenant on its audit events and binds its
+>   chat_session / pending_commit writes. When the caller passes `None`
+>   (the workflow cron scheduler / schedule sweep until slice 6c, or the
+>   self-mutation sandbox) the run stays byte-identical to pre-slice behaviour
+>   (operator-org audit fallback / flag-ON write skip) and LOGS
+>   `executor.run_missing_org` so the gap stays visible.
+> After this slice the broadened missing-org warning no longer fires for
+> `/copilot/chat`, sub-agent runs, or org-supplied batch runs (they carry org);
+> it still fires for the org-less batch runs slices 6b/6c own.
+> **Explicitly OUT (later sub-slices):** email-automation chat + inbound webhooks
+> (WhatsApp/ClickUp) need a mailbox/account→org resolver over an RLS-scoped table
+> (`TODO(WS-29 slice 6b)`); the workflow cron scheduler / orphan reconciler /
+> schedule sweep use the `acb_common` async engine, not this batch path
+> (`TODO(WS-29 slice 6c)`).
+> R7 fences (`tests/unit/test_org_sources_run.py`, 10 tests, no DB —
+> AST/behavioral like slice 2): `copilot-run-carries-org` (the route passes
+> `user.organization_id` to `run_detached`, never request input — AST);
+> `sub-agent-inherits-parent-org` (`_resolve_sub_agent_org` returns the parent's
+> `_RUN_ORG`, takes no payload arg, and a sub-run driven with it carries the
+> parent org in `_RUN_ORG[thread_id]`); `batch-run-honours-org-param`
+> (`_run_agent_inner` with an org sets `_RUN_ORG[thread_id]` during / clears
+> after; `None` and even a spoofed payload org set nothing + log the gap). Each
+> RED-on-removal was demonstrated by mutation on 2026-08-23 (batch ignores the
+> param / sub-agent resolver returns `None` / copilot sources from `input_data`
+> → the matching fence RED). The slice 3-5 R8 fences stay green (28 tests).
+
+> ✅ **acb_graph slice 7 — agent-tool READS bound SHIPPED 2026-08-23 (WS-29,
+> DARK, `ACB_GRAPH_TENANT_BIND`).** Slices 2-6a bound the executor's WRITES and
+> threaded the org for run-based sources; this slice binds the READS an agent run
+> makes through the `acb_graph` sync engine, so post-cutover they RETURN ROWS
+> under FORCE RLS instead of silently reading 0 (which would strip the agent's
+> entity context, its granted apps, and its skill toggles). New seam:
+> `executor._graph_session_opener_current()` → `_current_run_org()` — the
+> ambient-frame twin of `_graph_session_opener`, for a converted read that has no
+> `thread_id` in hand. It resolves the run's tenant SERVER-SIDE on the event-loop
+> frame (`_RUN_ORG` keyed by `_stream_relay_thread_id`, else the async
+> `current_tenant()`; NEVER from tool args / the payload, R11) and hands it to the
+> shared `_opener_for_org` (extracted so the thread-keyed and ambient openers keep
+> ONE flag/opener doctrine). `_resolve_sub_agent_org` (slice 6a) now delegates to
+> `_current_run_org` — one resolver, not two. Sites converted (each verified
+> FORCE-RLS'd, opener captured BEFORE any `asyncio.to_thread` hop, fail-closed to
+> empty when the flag is ON and no org resolves):
+> - **`agents.py`** `retrieve_entity_context` / `retrieve_sales_context` — the
+>   orchestrator's entity/sales retrieval tools (project/task/person/deal/customer
+>   via `retrieval.retrieve` / `sales_views.sales_context`).
+> - **`app_tools.py`** `_granted_live_apps` — the `apps ⋈ app_grants ⋈
+>   app_versions` grant lookup that decides which Custom Apps the agent may call.
+> - **`_tool_injection.py`** `_load_disabled_skill_families` — the
+>   `agent_skill_setting` admin toggle read.
+> - **`agents/pull_agent.py`** / **`agents/sales_pull_agent.py`** `answer()` — the
+>   Phase-0 pull/sales pipelines (no live caller today; converted for when wired).
+> `sales_views.py` reads through the caller-supplied session, so binding the two
+> retrieval openers binds it transitively — no change there.
+> **Explicitly LEFT by slice 7 (found, deliberately not converted here — now
+> CLOSED, see the next block):** `_inject_mcp_servers` reads `mcp_servers`, which
+> is RLS-EXEMPT (`gen_tenant_migration.EXEMPT` — "keyed (organization_id, name) by
+> MT-0d / 158"), so it is NOT FORCE-RLS'd and an unbound read does not collapse to
+> 0 rows; binding a `tenant_session` there would be a no-op against a table with no
+> policy. Its missing `organization_id` query filter (every org's servers are
+> visible) was an MT-0d query-scope finding, not this slice's RLS-bind concern —
+> **since closed at the app level by the mcp_servers org-filter follow-up below.**
+> R7/R8 fence
+> (`tests/unit/test_acb_graph_agenttool_reads_bind.py`, 7 tests): the opener
+> matrix (flag OFF → the unbound `get_session`; flag ON + org → `tenant_session`;
+> flag ON + no org → `None`), and R8 on the two-org phase-4 catalog —
+> `agent-retrieval-reads-bound-return-rows`: flag ON + orgA bound, the REAL
+> `retrieve_entity_context` and `_granted_live_apps` RETURN orgA's rows, orgB sees
+> nothing, and the SAME read via the unbound `get_session()` returns 0 rows
+> (RED-on-removal). One skill-toggle fence (`test_skill_toggle_enforcement.py`)
+> updated: its faked `acb_graph` module now also exposes `tenant_bind_enabled`
+> (the loader consults the flag before choosing its opener; flag OFF stays
+> byte-identical). **Explicitly OUT (later sub-slices, unchanged):** slice 6b
+> (email-automation + inbound webhooks), slice 6c (workflow cron / schedule sweep).
+
+> ✅ **mcp_servers cross-tenant read gap CLOSED 2026-08-23 (WS-29, DARK,
+> `ACB_GRAPH_TENANT_BIND`).** Slice 7 (above) explicitly left `_inject_mcp_servers`
+> unfiltered and recorded the cross-tenant read as an MT-0d finding for the board;
+> agent chat is in launch scope, so this follow-up closes it. `mcp_servers` **stays
+> RLS-EXEMPT by design** (`gen_tenant_migration.EXEMPT` — "keyed (organization_id,
+> name) by MT-0d/158"): it has no FORCE-RLS policy, so the RLS cutover does not
+> isolate it and a `tenant_session` bind would be a no-op. The read
+> (`apps/services/orchestrator/orchestrator/_tool_injection.py::_inject_mcp_servers`)
+> is instead scoped at the **APP level**: behind the same flag as slices 3-7, the
+> query gains `AND organization_id = :org`, so an agent is only ever injected its
+> OWN org's MCP servers (otherwise, once a second tenant exists, an agent in org A
+> would receive org B's MCP endpoints/config — a cross-tenant read of tool
+> config). The run's org is resolved SERVER-SIDE on the event-loop frame by
+> `executor._current_run_org` (the slice-7 resolver: `_RUN_ORG` keyed by
+> `_stream_relay_thread_id`, else the async `current_tenant()`), NEVER from tool
+> args / the message (R11). **No global/shared-server case exists:**
+> `mcp_servers.organization_id` is **NOT NULL** (migration 158), so there are no
+> org-less rows — the filter is strictly `= :org` and the flag-ON-no-org fail-closed
+> subset is EMPTY (never every org's servers). Flag OFF → no filter, byte-identical
+> (single-org today). **No migration, no RLS policy** (mcp_servers stays exempt);
+> scope was this one query. R7/R8 fence `tests/unit/test_mcp_servers_org_scope.py`
+> (3 tests, real PG, reuses the two-org phase-4 `promoted` catalog):
+> `mcp-servers-scoped-to-run-org` — flag ON + orgA bound, the REAL
+> `_inject_mcp_servers` injects orgA's server and NOT orgB's, and the SAME rows read
+> without the filter show BOTH (RED-on-removal, mutation-proven 2026-08-23: dropping
+> `AND organization_id = :org` → orgB's server appears → RED); flag-OFF regression
+> (no filter, both inject); flag-ON-no-org fails closed to empty.
 
 > ✅ **Two of these are done, and they are the pattern to copy** (2026-08-10):
 > `routes/crm/auto_lead` (the mailbox owner's org) and, by **WS-27aa**,
@@ -421,6 +972,45 @@ than defaulting; a test proves the refusal.
 Also here: **`scripts/import_hr_people.py:177`** (§0.1 path 9) — it opens its own engine and
 **upserts people rows**, which are tenant data. It must take a tenant from argv. Under
 phase-4 policies it currently writes unowned rows or fails.
+
+> ### 🚦 Launch defang — kill-switches for the OUT-of-scope always-on loops (WS-29, 2026-08-23, DARK)
+>
+> **Launch scope is Tasks, Calendar, Projects, User-management + agent chat only.** Two
+> always-on background loops are OUT of that scope and NOT yet tenant-bound (their H4 binds
+> are slices 6b/6c above, deferred post-launch), so under FORCE RLS after the phase-4 cutover
+> they would query/write UNBOUND and error. Rather than bind them now, each loop's STARTUP is
+> gated behind a **default-ON** env flag so the cutover runbook sets it false and the loop
+> simply never starts. **Default ON = byte-identical to today (dark); the cutover runbook
+> flips them OFF.** The gate is at the call site in
+> `apps/services/gateway/gateway/main.py` (`_maybe_start_email_sync` /
+> `_maybe_start_workflow_scheduler`), not inside the start functions, so it is testable by
+> monkeypatching the start functions.
+>
+> | Flag | Default | Gates (start site) | Loop |
+> |---|---|---|---|
+> | `EMAIL_SYNC_ENABLED` | ON | `email_ingestion.scheduler.start_background_sync` (the `_account_sync_loop` launch) | email ingestion / sync |
+> | `WORKFLOW_SCHEDULER_ENABLED` | ON | `routes/workflows.start_workflow_scheduler` **and** `reconcile_orphaned_runs` (one scheduling subsystem, one flag) | workflow cron scanner + orphan-run reconcile sweep |
+>
+> The email post-sync hook registration (`register_email_post_sync_hooks`) stays
+> UNCONDITIONAL — manual sync and the Graph webhook share that pipeline; only the background
+> loop is gated. The shutdown stops stay unconditional (a flag-gated loop that never started
+> is still stopped — the same contract the ingestion-consumer / whatsapp-enrichment stops
+> follow). R7 fence: `tests/unit/test_launch_defang_kill_switches.py`
+> (`email-sync-loop-gated`, `workflow-scheduler-gated`) — flag off ⇒ the start function is
+> NOT awaited (RED if the guard is removed), default/true ⇒ awaited as today. The
+> already-gated loops (`CRM_ZOHO_SYNC`, `INGESTION_CONSUMER`, `WHATSAPP_ENRICHMENT`) keep
+> their own off-switches and were not touched.
+>
+> **Projects background-writer check (Projects is IN launch scope, so it must be BOUND, not
+> defanged): ✅ already BOUND, no change.** The only Projects background writer is
+> `routes/projects/automation.py::run_lifecycle_sweep` (WS-27aa). It is NOT a startup loop —
+> it runs as a scheduled `/workflows` node — and it is tenant-bound two ways: it **refuses**
+> without an explicit `organization_id` (`TenantUnbound`, `automation.py:362-368`) and its
+> roots query is org-scoped (`automation.py:376-383`); its one caller
+> `routes/workflows/service.py::_pm_lifecycle_sweeper` (`:244`, `:284-288`) resolves the org
+> from the workflow owner's `app_user` row (a stored fact, R11) and opens
+> `_tenant_session(org)` for the sweep. `routes/projects` holds ZERO unbound sites (H2 note
+> above). No fence added for Part B (no code change).
 
 ---
 
@@ -449,10 +1039,424 @@ recorded.
 
 ---
 
-## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path
+## H6 · Identity cutover (MT-1a-2) · 🟡 CAREFUL — live sign-in path · ◐ SLICES 1+3a+ORPHAN-CLOSURE+3b+4-EXPAND+RLS-BIND-HARDENING+PROVISION-RLS-BIND SHIPPED (dark)
 
 Migration 159 created `user_identity` + `org_membership` and seeded them. `app_user` is
 still authoritative and **nothing reads the new tables**.
+
+⚠️ **SLICE 1 SHIPPED 2026-08-22 (WS-29, DARK — no read moved).** The shadow tables were
+COMPLETE only for members present at 159 and STALE for every invite/bootstrap since. Slice
+1 closes that so H6's read cutover has current tables to move onto, WITHOUT moving any read:
+- **Dual-write** on both `app_user` write paths — `acb_auth.access.mirror_identity_membership`
+  (best-effort, own session, mirroring `_record_signin_request`) is called after
+  `_BOOTSTRAP_OWNER_SQL` (in `ensure_owner_bootstrap`) and after `_PROVISION_MEMBER_SQL` (in
+  `_common.provision_member`). It upserts one `user_identity` per `lower(email)` and a
+  **create-only** `org_membership` (`ON CONFLICT (organization_id, user_id) DO NOTHING`,
+  no `SET organization_id`) — so it can NEVER move an identity between orgs (done-when 3).
+- **Catch-up backfill** — `infra/postgres/182_identity_membership_catchup.sql` re-runs 159's
+  idempotent seed for every member added since (additive, `DO NOTHING`, re-run = 0 net change).
+- Fence: `tests/unit/test_h6_identity_shadow.py` (R8, in `pr-check.yml`'s skip guard) proves
+  one email holds membership in TWO orgs, the create-only guard never rewrites the first, and
+  the backfill reconciles + is idempotent (done-when 2 + 3). `app_user` reads and both upserts
+  are byte-identical — the dual-write is purely additive on separate statements/session.
+
+🚨 **SLICE 1 MIRRORS EXISTENCE, NOT STATUS — a HARD INPUT the read cutover MUST handle
+(reviewer P2, could become a P0 in the cutover).** The dual-write is create-only and fires
+only on invite/approve/bootstrap; the suspend / remove / reactivate paths (`members.py`
+`update_member`/`remove_member`) mutate `app_user.status` and do NOT call the mirror, and
+`ON CONFLICT DO NOTHING` suppresses any status update on the existing row. So
+`org_membership.status` (and `joined_at`/`last_active_at`) drift STALE from `app_user`.
+Harmless while dark — no tenant-plane reader consumes `org_membership.status`
+(`console_resolve` filters `resolved_at IS NOT NULL` only). ✅ **The forward half — status
+mirroring on suspend/remove/reactivate — is now built (slice 3a below);** and ✅ **the two
+related inputs this note deferred are now CLOSED by the orphan-closure slice** (see the CUTOVER
+CHECKLIST): the create-only invite/approve over-count ORPHAN is gone because the mirror moved
+POST-COMMIT (a rolled-back caller txn now mirrors nothing), and the two identity/org SQL
+constants are pinned byte-equal by `test_h6_identity_shadow.py::TestTheOrphanClosure`. For
+historical context this note read: *the create-only invite path can leave an over-count ORPHAN
+row (`resolved_at` NULL, no `app_user`) if the caller's txn rolls back after `provision_member`
+returns — migration 182 (`DO NOTHING`, no `DELETE`) cannot prune it; and the two identity/org
+SQL constants are byte-identical to `console_resolve`'s
+(`_UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL`) but not pinned equal by a
+test (silent-drift risk — a later slice should add the equality assertion or lift them to a
+shared module; a module-level import is blocked by `test_console_dependency_boundary`'s
+importer cap).* Both are done now — see the CUTOVER CHECKLIST.
+
+✅ **SLICE 3a SHIPPED 2026-08-22 (WS-29, DARK — D48 RATIFIED) closes the FORWARD half of
+the status-drift P0 above.** D48 (2026-08-22, owner-ratified; `work_plan.md` §3) re-keys
+RBAC onto `user_identity` in two phases with status mirrored FORWARD — reconcile-from-
+`app_user` is impossible post-RLS (the identity leg reads UNBOUND while `app_user` is
+RLS-forced), so status must live current in the RLS-EXEMPT `org_membership.status`. Slice
+3a builds exactly that, still moving NO read:
+- **Forward status mirror** — `acb_auth.access.mirror_membership_status` (best-effort, own
+  session, mirroring `mirror_identity_membership`) called after the authoritative
+  `app_user` write in `members.py`'s `update_member` (suspend/reactivate/activate) and
+  `remove_member` (remove), and in `_common.provision_member` (approve's invited→active,
+  which the create-only mirror could not propagate). It is a **scoped UPDATE of an EXISTING
+  (org, identity) row** — sets ONLY `status` (+ `joined_at` on activation, as `app_user`
+  does), NEVER `organization_id`/`user_id`, so it can never move an identity between orgs;
+  a missing row is a 0-row no-op (existence stays 159/182/slice-1's job).
+- **Reconcile migration** — `infra/postgres/183_org_membership_status_reconcile.sql` aligns
+  every already-drifted `org_membership.status` to `app_user.status`
+  (`IS DISTINCT FROM`-guarded, idempotent, no INSERT/DELETE, never touches `resolved_at`).
+- Fence: `tests/unit/test_h6_identity_shadow.py` extended (R8) — suspend/remove/reactivate
+  propagate, the mirror + reconcile never move an identity (org-B row untouched), the
+  reconcile aligns a drifted row and re-runs at 0 changes, and `app_user` is byte-identical
+  after the mirror. `app_user` stays authoritative; the mirror is additive on separate
+  statements/session.
+✅ **ORPHAN-CLOSURE SLICE SHIPPED 2026-08-22 (WS-29, DARK — D48) — the CUTOVER CHECKLIST below
+is now CLOSED at the SOURCE.** This is the slice that lands BEFORE slice 4 (the RBAC re-key)
+and the flip, because an active `org_membership` orphan (an identity with no live `app_user`)
+becomes a wrong-ADMIT the moment RBAC stops gating on `app_user`, and reconcile 183 can never
+reach it (it joins the deleted/rolled-back `app_user`). So each orphan had to be closed where
+it is CREATED, not where it is read. All four were DARK (no reader consumes
+`org_membership.status` yet); all four are now closed:
+1. **PURGE orphan — CLOSED.** `members.py` `purge_member` (`_PURGE_DELETES` ~:452) deletes
+   `app_user` but not the shadow, so it now also calls `acb_auth.access.purge_identity_shadow`
+   post-commit (the call is `members.py` ~:678; best-effort, own session): it deletes ONLY the
+   org's `org_membership` row — the active-shadow wrong-ADMIT source. It **NEVER** touches the
+   GLOBAL `user_identity`: deleting it on the human's LAST membership was a check-then-cascade
+   cross-tenant erasure RACE (a concurrent other-org membership committed between the
+   `NOT EXISTS` re-eval and the delete was CASCADE-erased — org A's purge wiping org B's
+   member), so the identity delete was dropped and the race eliminated by construction. A
+   membership-less `user_identity` is harmless (the identity leg reads
+   `user_identity ⋈ org_membership` → no org → no access, fail-closed) and re-used on re-join
+   via `ON CONFLICT (lower(email))`; global `user_identity` lifecycle/pruning of the
+   membership-less leftover is deferred to slice 5's atomic mirror+prune. A failed best-effort
+   purge is NOT self-healed by 182/183 (182 never deletes; 183 joins the now-gone `app_user`) —
+   that swallowed-failure window is also slice 5's. Fence: `test_h6_identity_shadow.py`
+   `TestThePurgeClosure` (R8, incl. the kept-identity case) + `TestTheOrphanClosure`'s
+   `no-user_identity-delete-on-purge` (shape).
+2. **APPROVE-ROLLBACK orphan — CLOSED.** The provision-path mirror used to commit on its OWN
+   session INSIDE the caller's still-open txn. Both mirror calls moved OUT of
+   `_common.provision_member` into its callers (`members.invite_member`,
+   `access_requests.approve_access_request`), fired only AFTER their `_tenant_session` commits —
+   matching how `update_member`/`remove_member` already mirror. So a concurrent-approve 409
+   (`access_requests._decide`) or the `member["status"] != "active"` guard rolls the whole block
+   back BEFORE the mirror runs, and no active shadow is ever committed. Fence:
+   `TestTheOrphanClosure` post-commit-ordering (the mirror call is lexically after the block's
+   single commit; `provision_member` names neither mirror).
+3. **Create-only over-count orphan — CLOSED by the same move.** A caller rollback after
+   `provision_member` returns no longer commits an existence orphan: the mirror runs only once
+   the caller's commit is durable, so a rollback mirrors nothing.
+4. **Un-pinned SQL — CLOSED.** `access._MIRROR_IDENTITY_SQL`/`_MIRROR_ORG_BY_SLUG_SQL` are now
+   pinned byte-equal to `console_resolve._UPSERT_IDENTITY_SQL`/`_ORG_BY_SLUG_SQL` by
+   `test_h6_identity_shadow.py::TestTheOrphanClosure::test_the_identity_write_sql_is_pinned_equal_to_the_console_upserts`.
+   A TEST importing `console_resolve` is NOT counted by `test_console_dependency_boundary`'s
+   PRODUCTION importer cap (it sweeps `packages/` + `apps/`, never `tests/`), so pinning the
+   equality here is the alternative that clause named to lifting the constants to a shared module.
+
+**Slice 3b — the read cutover, correctly stated.** The earlier "read status only for rows still
+present in `app_user` (join / intersect)" is UNBUILDABLE post-RLS: under H3 phase-4 the identity
+resolution runs on an UNBOUND session, `app_user` is FORCE-RLS'd, so it returns ZERO rows and
+any join/intersect against it is empty for EVERYONE. What 3b actually does, with
+`IDENTITY_CUTOVER` ON under phase-4 RLS:
+- the **identity leg** reads identity + org + status from `user_identity ⋈ org_membership`
+  UNBOUND (both tables are RLS-EXEMPT) and filters `org_membership.status = 'active'` — this is
+  what resolves *which tenant* and *is this member live* on the one path that must work before a
+  tenant is bound;
+- the **role leg** stays BOUND, and its `app_user`-derived permission read remains the ACCESS
+  authority — so any residual shadow orphan that source-closure somehow missed resolves to
+  **bind-with-no-access** (fail-closed: an identity with no live `app_user` grant gets nothing),
+  never a wrong-ADMIT.
+Orphan SOURCE-closure (the checklist above) is THIS orphan-closure slice and a PREREQUISITE of
+3b + the flip: it is what lets the identity leg trust its own `status='active'` filter — the
+filter is only safe because a purged/rolled-back ghost no longer sits in `org_membership`.
+
+**Slice 3b done-when (testable):** on the promoted two-org catalog
+(`test_h3_rls_promotion_rehearsal.py`'s `promoted()` fixture), a clean active member resolves
+GREEN under phase-4 RLS with the session UNBOUND and `IDENTITY_CUTOVER` ON, while the
+pre-cutover brick (the `app_user` UNBOUND read returning zero rows) reproduces RED with the flag
+OFF — the same red/green characterization the H3 rehearsal already lands, now driven through the
+identity leg.
+
+### Slice 4 — RBAC re-key (EXPAND) · ✅ SHIPPED (dark) 2026-08-22 · repaired 2026-08-22 (provision-owner + RBAC-first bridge; round 2 — the bridge is now GUC-BOUND under FORCE RLS) · the shared first PR
+
+D48 re-keys the three RBAC tables — `user_role`, `user_permission_override`, `org_group_member` —
+from `app_user.id` → `user_identity.id` in an expand/contract. **This EXPAND is the shared first
+PR:** it adds the column, backfills it, indexes it and dual-writes it, so the per-module READ
+cutovers below can each move onto a populated column in their own later PR. It moves **NO read**.
+
+- **Migration 184** (`184_rbac_user_identity_rekey_expand.sql`; highest was 183, re-check at
+  merge per R1) adds nullable `user_identity_id UUID` to each of the three tables, BACKFILLS it
+  via the `lower(email)` bridge (RBAC.user_id → `app_user.id` → `lower(app_user.email)` →
+  `user_identity.id`), and indexes the new column per table. Additive, forward-only, idempotent
+  (`IS DISTINCT FROM ui.id`-guarded → re-run = 0 rows), mirroring 158's credential re-key + 182's
+  backfill shape. The FK is **`ON DELETE SET NULL`, not 158's `CASCADE`** — `user_identity_id` is
+  a nullable SHADOW while `app_user.id` stays the authoritative key, so a deleted identity must
+  NULL the shadow, never cascade-delete a still-authoritative grant (the CONTRACT slice re-keys
+  to `CASCADE` when the shadow takes over). It creates no table and does **not** touch the three
+  tables' RLS (ENABLE/FORCE/policies stay in `generated/04_policies.sql`).
+- **Dual-write** `user_identity_id` on the FIVE Python RBAC INSERTs (the identity-FIRST order),
+  resolving the identity through the same bridge at insert time. The write sites (re-verified by
+  grep, one bridge each):
+  - `user_role` — `acb_auth/access.py` `_BOOTSTRAP_OWNER_SQL` (resolves by `lower(:email)` — its
+    `app_user` is in the same `WITH` and unreadable, and at bootstrap the identity is minted
+    AFTER the commit, so a fresh box writes NULL, reconciled by the mirror-time backfill below +
+    a later migration re-run) and `gateway/routes/admin/_common.py` `set_roles`;
+  - `user_permission_override` — `admin/groups.py` (the center-access grant) and `admin/members.py`
+    `set_member_overrides`;
+  - `org_group_member` — `admin/groups.py` `add_group_member`.
+  The `DELETE`s keyed on `user_id` stay correct during the dark expand and are unchanged
+  (`_common.set_roles`, `members.set_member_overrides`'s delete-then-insert, `members.remove_member`).
+- **The SIXTH RBAC INSERT — `provision_org_owner`, bridged at mirror-time (repair 2026-08-22).**
+  `provision_org_owner` (the tenant-plane SQL function, `infra/postgres/180_...:153-155`) INSERTs
+  the owner's `user_role` DURING provisioning — before any `user_identity` exists (provisioning
+  mints the owner's identity only AFTER it commits), so the five in-INSERT dual-writes cannot reach
+  it. It is instead bridged when the identity is ensured: the provision caller
+  (`acb_common.provisioning.provision_local_organization`) reuses the ONE identity-creation seam
+  (`acb_auth.access.mirror_identity_membership`, best-effort, own session, after the authoritative
+  commit — no second `user_identity` writer, no SQL fork of `provision_org_owner`), and that mirror
+  now ALSO backfills the human's existing RBAC rows (`_bridge_rbac_to_identity`: a scoped UPDATE per
+  RBAC table via the same `lower(email)` bridge, setting ONLY the still-NULL `user_identity_id`,
+  idempotent, moves no grant). Because the mirror is called by invite / approve / bootstrap AND now
+  provision, this closes the RBAC-FIRST order (a provisioned owner, a bootstrap owner, any future
+  one) in one place — so the earlier "exactly five, no sixth missed" claim was wrong. **Why it
+  matters:** without it a freshly-provisioned owner's `user_role.user_identity_id` stays NULL and,
+  once `IDENTITY_CUTOVER` flips the role leg onto that column, they resolve to NO roles → locked
+  out of their own org (fail-closed, but a real break, on a path run continuously).
+- **The bridge is GUC-BOUND, because the three RBAC tables are RLS-FORCED (repair 2026-08-22, round
+  2).** `user_role` / `user_permission_override` / `org_group_member` all carry `FORCE ROW LEVEL
+  SECURITY` keyed on `organization_id = current_setting('app.tenant_id', true)::uuid`
+  (`generated/04_policies.sql`), so `_bridge_rbac_to_identity`'s UPDATEs run on an UNBOUND session
+  see the GUC as NULL → 0 visible rows → they silently no-op (the best-effort catch swallows it) and
+  the owner's `user_identity_id` stays NULL under real phase-4 RLS — the SAME class as slice 3b's
+  unbound `resolve_access`. The fix runs the bridge inside the ONE GUC seam `tenant_session()`
+  (`SET LOCAL app.tenant_id`, no second GUC path) bound to the human's org — threaded in from the
+  mirror's already-resolved org (== the human's `app_user.organization_id`; a human is in ONE org,
+  migration 162). The org is NOT re-derived by reading `app_user` in the bridge: that read is itself
+  unbound → 0 rows, the chicken-and-egg the H3 rehearsal pins. This **corrects the earlier R5
+  justification that over-generalized** "the shadow tables are RLS-EXEMPT so no bind is needed" from
+  the mirror's OWN writes (`user_identity` / `org_membership`, genuinely exempt) to the bridge's
+  writes (RLS-FORCED). The same GUC-bind requirement binds **any** H6 write path touching an
+  RLS-forced table — the SECURITY-INVOKER-under-FORCE-RLS tension migration 179's header flagged as
+  "REVISIT AT H3". Fence: `test_h6_rbac_rekey.py::TestTheRealBridgeFunctionUnderForceRls` (drives
+  the real bridge as the non-priv `acb_app` role — RED if the bind is removed; the bypass-role R8
+  tests are blind to it) + `::TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound
+  RED at the SQL level).
+- **Testable EXPAND done-when (R8, real PG):** after migration 184 on a ladder-replayed DB,
+  `user_identity_id` becomes correct for EVERY RBAC row once the human's identity exists — it equals
+  the `user_identity.id` whose `lower(email)` matches its `user_id`'s `app_user.email` (dual-write
+  when identity-FIRST; mirror-time backfill when RBAC-FIRST), NULL only where no identity exists yet;
+  the migration re-run and the mirror re-run are both 0-change no-ops (idempotent); a fresh Python
+  RBAC INSERT (via `set_roles` / bootstrap / group add) populates both columns to the same identity;
+  and driving `provision_local_organization` end-to-end leaves the owner with a `user_identity` AND
+  their owner `user_role.user_identity_id` == that identity. The migration-184 backfill still
+  reconciles pre-existing rows. Fence: **`tests/unit/test_h6_rbac_rekey.py`** (structural half incl.
+  `TestTheProvisionOwnerBridgeMechanism`; R8 half — `TestTheBackfill`, `TestTheDualWriteAtRuntime`,
+  `TestTheProvisionOwnerIsBridged`, `TestRbacCreatedBeforeIdentityIsBridged`, and — the round-2
+  FORCE-RLS fences — `TestTheRealBridgeFunctionUnderForceRls` (real bridge as the non-priv `acb_app`
+  role) + `TestTheBridgeSqlNeedsTheGucBindUnderForceRls` (bound GREEN / unbound RED); the last two
+  reuse `test_h3_rls_promotion_rehearsal.promoted` for the phase-4-promoted catalog — on
+  `TENANT_LADDER_DATABASE_URL`, in `pr-check.yml`'s skip guard).
+
+### Slice 4 — per-module READ cutover · 🟡 later parallel PRs, one per module
+
+Each module's `app_user.id`-keyed RBAC read moves onto `user_identity_id` in its OWN PR, behind
+`IDENTITY_CUTOVER`. **Per-module done-when:** with the flag ON, that module's access answer is
+**byte-identical** to the `app_user.id`-keyed answer for a clean member, and **zero**
+`app_user.id`-keyed RBAC joins remain in that module. The 15 read sites, grouped by module
+(⚠️ = TRICKY, see below):
+
+- **acb_auth** — `access.py` `_ACCESS_SQL` (:166-194), `_ORG_OWNER_SQL` (:705-713),
+  `_GROUP_MEMBER_SQL` (:836-846)⚠️
+- **admin** — `_common.py` `roles_for_user` (:270-281), `caller_rank` (:292-305),
+  `owner_count` (:308-321)⚠️ · `members.py` list subquery (:117-129), `_load_overrides` (:749-760),
+  `_role_permission_map` (:763-777)
+- **projects** — `core.py` `_MY_GROUPS_SQL` (:599-605)⚠️, `_EFFECTIVE_PERMISSIONS_SQL` (:760-771)⚠️ ·
+  `mapping.py` `_GROUP_MEMBERS_SQL` (:98-104)⚠️
+- **people** — `chart.py` (:98-105)
+- **gateway** — `rooms.py` `MY_GROUPS_SQL` (:165-173), session-visibility `EXISTS` (:404-413)
+
+⚠️ **The 5 TRICKY reads** (`access._GROUP_MEMBER_SQL`, `_common.owner_count`,
+`projects/core._MY_GROUPS_SQL`, `projects/core._EFFECTIVE_PERMISSIONS_SQL`,
+`projects/mapping._GROUP_MEMBERS_SQL`) read `app_user.status`/`app_user.organization_id`
+ALONGSIDE the RBAC join. Under phase-4 RLS `app_user` is unreadable on the unbound leg, so a bare
+key-swap breaks them: **status/org must come from `org_membership`** (slice 3a's forward mirror is
+what makes that safe), not from an `app_user` join. These are not a mechanical rename.
+
+(The audit found **zero** RBAC refs in `crm`/`auto_lead`, `people/core`, `workflows/service`,
+`projects/assignees` — they are not in the cutover set.)
+
+**Dependency order.** The EXPAND builds **parallel to slice 3b** (they touch different regions of
+`access.py` — 3b the READ functions, this the `_BOOTSTRAP_OWNER_SQL` INSERT). The per-module READ
+cutovers build **AFTER both 3b (the resolve split + `IDENTITY_CUTOVER` flag) AND this EXPAND
+land**. 🔴 **OWNER-GATE, do NOT enact:** the CONTRACT migration dropping the old `user_id` column,
+flipping `IDENTITY_CUTOVER`, H3 phase-4 promotion, and running the 184 backfill against prod.
+
+✅ **SLICE 3b SHIPPED 2026-08-22 (WS-29, DARK behind `IDENTITY_CUTOVER`, default OFF).** The read
+cutover, built exactly as stated above and no wider (RBAC re-key remains slice 4):
+- **The flag** — `acb_auth.access.identity_cutover_enabled()` reads `IDENTITY_CUTOVER` (unset =
+  OFF, fail-closed, the `deps._refuse_llm_key_identity` env idiom). Read server-side in
+  `deps._with_resolved_access` (the one place that resolves + binds); NOT the Next-side
+  `CUSTOMER_CONSOLE_RESOLVE_ENABLED` — the two-phase resolve is entirely server-side in `acb_auth`.
+- **The identity leg** — `acb_auth.access.resolve_identity` reads the new `_IDENTITY_LEG_SQL`
+  (`user_identity ⋈ org_membership ⋈ organization`, all RLS-EXEMPT, filtered `status='active'` —
+  the `console_resolve._READ_SQL` shape, reused not forked) when the flag is ON, and the
+  byte-identical `app_user` statement when OFF.
+- **The orchestration** — `deps._with_resolved_access` runs the identity leg FIRST, `bind_tenant`s
+  the resolved org, THEN calls `resolve_access` (the role leg), so its `app_user`-derived
+  permission read stays the ACCESS authority (a residual shadow orphan resolves to
+  bind-with-no-access, never a wrong-admit). ⚠️ **The role leg is GUC-bound INSIDE `resolve_access`,
+  not by `bind_tenant` (P0 repair 2026-08-22 — see below).** `bind_tenant` sets only the
+  `_TENANT` ContextVar; the GUC `app.tenant_id` that phase-4 RLS keys on is applied ONLY by
+  `tenant_session()` (`set_config(..., true)`, db.py). So when the flag is ON and a tenant is
+  bound, `resolve_access` opens its `app_user` read through `tenant_session()` (the ONE GUC seam,
+  reused not forked — R5); flag OFF, or ON with nothing bound, keeps the raw unbound session
+  byte-identical to today.
+- Fences (R7, R8): `test_h3_rls_promotion_rehearsal.py::TestTheReadCutoverIdentityLeg` — flag-ON
+  GREEN, flag-OFF RED (brick, even with the shadow seeded), and a SUSPENDED member refused by the
+  `status='active'` filter, through `resolve_identity`'s own call path; **`::TestTheReadCutoverEndToEnd`
+  (the end-to-end-two-phase fence, P0 repair) — the FULL `deps._with_resolved_access` composition
+  (identity leg → bind → role leg) UNBOUND with the flag ON admits a clean ACTIVE member
+  is_active=True WITH their real role (GREEN), and the mutation (role leg blind to the bound tenant)
+  → is_active=False (RED), plus the multi-org-safe deny**; all against the phase-4 catalog as
+  `acb_app` UNBOUND. `test_h6_identity_shadow.py::TestTheReadCutoverFlag` — the DB-free flag-switch
+  (OFF→`app_user`, ON→exempt shadow), default-OFF env idiom, and the multi-org COUNT decision
+  (one binds, two deny).
+- **DEFERRED to a later slice (not the sign-in brick, and RBAC-blocked):** `org_owner_of` /
+  `_HAS_OWNER_SQL` / `ensure_owner_bootstrap` resolve the OWNER *role*, which lives in the
+  FORCE-RLS'd `user_role` table with no exempt-table equivalent (`org_membership` has no `role`
+  column) — moving them IS the slice-4 RBAC re-key this slice's gate excludes. `membership_of` is
+  a signup-path read whose active-only semantics belong with that path's decision, not the
+  sign-in cutover.
+
+🔧 **SLICE 3b REPAIR ROUND 2026-08-22 (WS-29, branch `ws-29-h6-slice3b-readcutover-v2`) — one P0 + two P2s from diff-review, all closed DARK.**
+- **P0 — the role leg was NOT actually RLS-bound (total-lockout brick unfixed).** `bind_tenant`
+  (db.py) sets only the `_TENANT` ContextVar; the GUC `app.tenant_id` phase-4 RLS keys on is
+  applied in EXACTLY ONE place — `tenant_session()`'s `set_config(..., true)`. But `resolve_access`
+  opened a RAW `get_session_factory()` session with no GUC, so under phase-4 RLS + `IDENTITY_CUTOVER`
+  ON its read of the FORCE-RLS'd `app_user`/`user_role` returned 0 rows → `EffectiveAccess(is_active=False)`
+  → **every member locked out**, the exact brick the cutover exists to remove (it only "worked"
+  pre-phase-4, where `app_user` is readable unbound — the condition under which the slice is
+  pointless). **Fix:** when the flag is ON and a tenant is bound (`current_tenant()` set),
+  `resolve_access` opens its read through `tenant_session()` — the existing GUC seam, reused not
+  forked (R5); the OFF/unbound path stays the raw session, byte-identical. Fence: the new
+  `TestTheReadCutoverEndToEnd` (R8) — GREEN admits, mutation (role leg blind to the bind) → RED
+  is_active=False. This is the fence whose absence let the P0 through: the prior GREEN drove only
+  `resolve_identity` in isolation, never `resolve_access` under the bind.
+- **P2a — multi-org identity-leg determinism.** `_IDENTITY_LEG_SQL`'s `ORDER BY joined_at DESC …
+  LIMIT 1` could bind the WRONG org for a human with >1 active membership (console-created
+  memberships leave `joined_at` NULL → tiebreak on slug). Now `LIMIT 2` + a COUNT decision in
+  `resolve_identity`: exactly one active membership binds; more than one with no disambiguating host
+  is the WorkspaceChooserRequired / deny case (`(None, None)`; host-based selection is MT-1f) —
+  never a silent arbitrary bind. Fences: the multi-org-safe cases in `TestTheReadCutoverEndToEnd`
+  (R8, two real memberships) and `TestTheReadCutoverFlag` (DB-free COUNT).
+- **P2b — `user_id` id-space divergence.** ON, `resolve_identity` returns `user_identity.id`; OFF,
+  `app_user.id` — different UUID spaces, surfaced by `/auth/me` (`routes/admin/me.py`). No consumer
+  keys on it (the backend keys on email; chat.py's "user_id" is the email), so it is DOCUMENTED as
+  an opaque per-human identity token, never an `app_user` FK, at `resolve_identity`,
+  `UserContext.user_id` (roles.py) and the `/auth/me` payload — so a future consumer cannot silently
+  treat it as an `app_user` key.
+- ✅ ~~**STILL-OPEN WRITE-BRICK before the flip (co-located here from §H3.2).**~~ **CLOSED
+  2026-08-22 by the H6 RLS-BIND HARDENING slice (WS-29) — see the PRE-FLIP RLS-BINDING CHECKLIST
+  below.** `resolve_access`'s READ was GUC-bound in the 3b repair; `ensure_owner_bootstrap()` now
+  resolves the `default` org's id from the RLS-EXEMPT `organization` table and runs its
+  `_HAS_OWNER_SQL` read + `_BOOTSTRAP_OWNER_SQL` INSERT inside `tenant_session(default_org_id)` (the
+  ONE GUC seam, reused not forked — R5), so an ownerless box CAN bootstrap its first owner under
+  phase-4 RLS. For historical context the note read: *`ensure_owner_bootstrap()` still runs
+  `_BOOTSTRAP_OWNER_SQL`'s INSERT into the RLS-FORCED `app_user` at gateway startup on an UNBOUND
+  session … its `WITH CHECK` compares `organization_id` against the unset GUC (NULL) and REFUSES the
+  write — an ownerless box can never bootstrap its first owner (§H3.2, and
+  `test_the_unbound_owner_bootstrap_write_is_rejected` characterizes it).* The raw-SQL
+  characterization stays RED by design (the unbound INSERT is still refused); the FIX is proven
+  GREEN by `test_h3_rls_promotion_rehearsal.py::TestEnsureOwnerBootstrapBindUnderForceRls` (the real
+  function bootstraps under FORCE RLS as `acb_app`, unbound at entry; bound GREEN / unbound RED at
+  the SQL level).
+
+### H6 PRE-FLIP RLS-BINDING CHECKLIST · ◐ 4 fixes SHIPPED (dark) 2026-08-22 · 2 OWNER-DECISION items + the H4 dependency OPEN
+
+The systematic RLS-binding audit that this checklist records asked one question of
+every site that touches an RLS-FORCED table: *does it run on a session with
+`app.tenant_id` bound?* The GUC is set in EXACTLY ONE place —
+`tenant_session()`'s `set_config('app.tenant_id', …, true)` (`acb_common/db.py`);
+`bind_tenant()` sets only the `_TENANT` ContextVar, never the GUC. A site that
+reads/writes a FORCE-RLS'd table on an UNBOUND session reads 0 rows / refuses
+writes once phase-4 is live — the class the 3b P0 and the slice-4 bridge already
+hit. The audit closed the three agent-safe sites and itemised the rest for the
+owner. **Nothing here flips a flag or promotes RLS — all of it is DARK (binds are
+no-ops until phase-4 is live).**
+
+**(a) FIXED here (WS-29 H6 RLS-bind hardening, DARK):**
+1. **`resolve_session_access`** (`acb_auth/access.py`) — its participant/member
+   fold reads `chat_session_participant` + `org_group_member` + `app_user` (all
+   FORCE-RLS'd). Now reads through `tenant_session()` when the cutover is ON and a
+   tenant is bound (the request path); the unbound/no-tenant path (the background
+   folds — see the H4 dependency below) stays byte-identical and fail-closed.
+   Fence: `test_h3_rls_promotion_rehearsal.py::TestResolveSessionAccessBindUnderForceRls`
+   (bound GREEN / unbound-mutation RED, non-priv `acb_app`).
+2. **`ensure_owner_bootstrap`** (`acb_auth/access.py`) — resolves the `default`
+   org id from the RLS-EXEMPT `organization` table, then runs `_HAS_OWNER_SQL` +
+   `_BOOTSTRAP_OWNER_SQL` inside `tenant_session(default_org_id)`, so first-owner
+   bootstrap is no longer bricked under phase-4. Fence:
+   `::TestEnsureOwnerBootstrapBindUnderForceRls` (real function GREEN; bound/unbound
+   RED at the SQL level).
+3. **The ratchet blind-spot fence** — `test_db_engine_seam.py`'s `get_db` ratchet
+   matched only `await get_db()` and was BLIND to sites that open
+   `get_session_factory()()` / `_get_session_factory()()` directly, which is the
+   EXACT class every unbound-RLS bug hid in. NEW `test_no_new_unbound_factory_opens`
+   pins every direct factory open in `apps/`+`packages/` to a reviewed per-file
+   count (`_FACTORY_OPEN_ALLOW`), so a new unreviewed one goes RED. This is what
+   stops the whole class recurring silently.
+4. **New-org provisioning writes** (was OWNER-DECISION (b)1; FIXED 2026-08-22, WS-29
+   `ws-29-provision-rls-bind`) — `provision_organization` creates the `organization`
+   row + `tenant_placement` (both RLS-EXEMPT — they land unbound), so the org
+   **exists** before the create act's FORCE-RLS'd writes (`org_role_permission` via
+   `provision_org_roles`; `app_user` + `user_role` via `provision_org_owner`). The
+   earlier "no tenant to bind yet / the GUC would be the org that does not exist"
+   framing was wrong: the org id is known the moment the exempt row lands.
+   **Migration 185** (`185_provision_org_rls_bind.sql`; highest was 184, re-check at
+   merge per R1) CREATE OR REPLACEs `provision_organization` forward-only (R6;
+   179/180 byte-untouched) to `PERFORM set_config('app.tenant_id', v_org_id::text,
+   true)` right after the org id is known and BEFORE the forced writes — the ONE GUC
+   seam (`SET LOCAL`, transaction-scoped, propagates into the PERFORMed
+   sub-functions), so the create act's own writes satisfy the policy. **SECURITY
+   INVOKER preserved** (no privilege escalation, no DEFINER outliving its reason —
+   `SET LOCAL` was preferred over SECURITY DEFINER exactly as 179's "REVISIT AT H3"
+   note anticipated). The `provisioning.py` factory opens stay allow-listed in
+   `_FACTORY_OPEN_ALLOW` (the Python still opens an unbound session; the SQL binds
+   inside the act). Fence: `test_h3_rls_promotion_rehearsal.py::
+   TestProvisionOrgBindUnderForceRls` (R7 `provision-under-force-rls`; R8, non-priv
+   `acb_app` on the phase-4 catalog — GREEN the real 185 provisions unbound; RED the
+   no-set_config mutation is refused with a row-level-security violation; the owner
+   app_user/user_role write bound-GREEN/unbound-RED; 180's create-only guard still
+   holds under the bind). 🔴 EXECUTING a real customer provision stays OWNER-GATE.
+
+**(b) OWNER-DECISION — NOT fixed here (each needs an owner act; all stay 🔴):**
+1. **`access_request`** — FORCE-RLS'd (`generated/04_policies.sql`), but its
+   writers are **tenant-less by construction**: a sign-in request
+   (`_record_signin_request`) is filed for an UNPROVISIONED email, before any
+   tenant is known, so nothing can bind. Decision owed: **add `access_request` to
+   `gen_tenant_migration.EXEMPT`** (it is control-plane-ish — a queue of people
+   who are not yet members) **or** give it a deliberate tenant column + a bound
+   writer. Until decided, its writes refuse under phase-4.
+2. **`reconcile_orphaned_runs`** (`routes/workflows/service.py:628`, `_get_db()`
+   at `:640`) — a CROSS-TENANT startup sweep: `UPDATE workflow_runs SET
+   status='failed' WHERE status='running'` over EVERY org's rows. `workflow_runs`
+   is FORCE-RLS'd, so unbound under phase-4 it updates 0 rows and dead runs never
+   get marked failed. Needs a **per-org loop** (bind each tenant in turn) **or a
+   BYPASSRLS maintenance role** — an owner call on the deploy/role side.
+
+**(c) THE H4 DEPENDENCY (the largest open item, blocks the flip for background
+features).** ~111 unbound `get_db()` sites remain outside `routes/projects`
+(`test_db_engine_seam.py`'s `H2_BASELINE_ELSEWHERE`), each a scheduler / webhook /
+consumer / service-identity path that carries no request and so binds no tenant.
+Under phase-4 RLS every one reads 0 rows / refuses writes — the feature goes DARK
+at the flip, silently. The two background callers of `resolve_session_access`
+(`executor._integration_authorizer`, `chat_fold._run_authority`) are in this set:
+their fold correctly fails closed to actor-only today, but the shared-run
+authority only comes back once they thread an explicit tenant. **H4 (explicit-
+tenant threading for these jobs/consumers) MUST land before `IDENTITY_CUTOVER` is
+flipped alongside phase-4**, or those features are the ones that go dark. H4 owns
+retiring the whole set; this checklist is the flip's precondition list, not H4's
+work.
+
+**Gate (D48 — H6 "ships dark, lands dark BEFORE H3").** Building H6 slices DARK — flag OFF,
+byte-identical `app_user` writes/reads, no read moved — is 🟢 AGENT-SAFE, and that INCLUDES
+slice 3b behind `IDENTITY_CUTOVER` (default OFF). What stays 🔴 OWNER-GATE is only: flipping
+`IDENTITY_CUTOVER` on a live box, H3 phase-4 promotion, and running the 182 backfill against
+prod. (The earlier "slice 3b … stays OWNER-GATE" wording conflated building-it-dark with
+flipping-the-flag; D48 separates them.)
 
 ⚠️ **The two upserts that block this — anchors re-measured 2026-08-19:**
 `acb_auth/access.py` (`_BOOTSTRAP_OWNER_SQL`) and

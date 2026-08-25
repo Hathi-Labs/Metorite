@@ -1,5 +1,17 @@
 # Subscription Console — the customer-facing billing surface (WS-30)
 
+> ## ⚠️ D50 (2026-08-24) — one flat plan, so the Centers grid collapses to one column
+>
+> SC-1/SC-2 were specced against D23/D24's package ladder: a "Centers & add-ons"
+> panel and a **users × Centers** seat grid. D50 retires that ladder for a flat
+> **₹500/user/month + AI credits**, so there is exactly one sellable seat and the
+> grid is one column wide. The seat surface a customer admin actually uses now
+> lives in **Organisation → Seat assignments**, owned by
+> `specs/launch_surface.md` §6.2. Everything else in this spec — the transports
+> (SC-2a), the roster read (SC-2b), the cap's 409 + `buy_more`, the credit
+> monitor — is **unchanged and still binding**.
+
+
 **Status:** ◐ **The billing view is MERGED and live-but-inert; the checkout's
 SERVER SIDE is BUILT and its SURFACE is now BUILT TOO — SC-4a's narrowed LAUNCH
 SLICE (the ₹0 / discount path) shipped 2026-08-19 on `ws-30-sc4a-surface`, dark
@@ -72,6 +84,30 @@ bodies/no-arithmetic/refetch/cap-409 view-model, red-first), `members/members.te
 Console (§8 gate 2), any flag flip. The surface is inert until the transport is
 live: the members read 503s (Console deployed nowhere) and the roster renders
 absent, exactly as the SC-1a panel handles its own 503.
+
+**SC-2c invite surface + notification email ◐ MINTED + BUILT 2026-08-24 — R4**
+*(WS-30 `ws-30-invites`; decision **D50**)*: member invites, end to end. The
+spec-audit that tried to dispatch "invite emails" returned **NO-GO** and found
+the load-bearing half was not an email: **the Customer Console had no member-add
+door at all**, so an invited colleague never reached the registry — invisible to
+`GET /me/members`, a 404 at `_seat_admin_target`, and, with resolve ARMED,
+resolving `console-empty` straight into the self-serve funnel that makes them
+create **their own** org. That half is `customer_console.md` **CP-2f**
+(`POST /registry/members` on a fourth `member_admin` capability, plus D50.3's
+`invited → active` promotion at first resolve; **no migration** — the `001` CHECK
+already carries `invited`). This ticket is the customer-facing half:
+`src/lib/inviteEmail.ts` (importing `resendSender`/`emailOtpFrom` from
+`emailOtp.ts`, never a second transport), `api/admin/members/invite/route.ts`
+(a shadow over the `/api/admin/[...path]` catch-all — the catch-all is untouched)
+and the `/settings/members` dialog. **Dark behind `MEMBER_INVITE_EMAIL_ENABLED`**
+(default OFF, exact-string `"true"`, ANDed with `RESEND_API_KEY` — the
+`isEmailOtpConfigured` idiom); the flag gates **the mail only**, the Console
+member write is dark-by-reach. **No accept-token, by decision (D50.1)** — the
+mail is a notification and identity is proven at sign-in. 🔓 **Named accepted
+risk: no invite rate limit in slice 1** (admin-authenticated,
+`admin:members:invite`-gated). 🔴 **OWNER-GATE:** the flag flip · a real invite on
+a live org · granting `member_admin` to a real deployment key. Seven done-whens
+with named fences in SC-2c below.
 
 **SC-2 manage-seats surface SPECCED 2026-08-21 — R4** *(WS-30 `ws-30-manage-seats`,
 docs-only)*: with `customer_console.md` §6 item (h)'s backend seat WRITE + door
@@ -679,6 +715,144 @@ verbatim (no client arithmetic); an already-assigned member is an idempotent
 no-op; the UI holds **no** seat arithmetic of its own — the counts are the read's
 (`GET /me/seats`, SC-1a). Ships dark: inert until the Console is deployed and the
 transport is live (owner-gated, above).
+
+#### SC-2c — the invite surface + the notification email *(◐ MINTED + BUILT 2026-08-24 · 🟢 AGENT-SAFE, dark · no migration)*
+
+**Spec:** decision **D50** (`work_plan.md` §3) · the Console half is
+`customer_console.md` **CP-2f** · `colleague_onboarding.md` §2 Step 1 ·
+`user_management_contract.md` R11.
+
+**What this is.** The customer-facing half of member invites: the
+`/settings/members` invite dialog, and a **notification** email telling the
+person they have been added. It is deliberately *not* an acceptance flow.
+
+**D50.1 — no accept-token, ever.** The mail says *"you've been added to
+&lt;org&gt; on Metorite — sign in with this address at
+`https://app.metorite.com/signin`"* and carries **no token, no query parameter
+and no secret**. Identity is proven at sign-in by the IdP (Google, or CP-2d's
+email OTP). A mail-borne bearer would be a **second identity system** beside the
+one `user_management_contract.md` binds, living in a mailbox we do not control;
+and it would be redundant, because CP-2f has already written the membership. The
+email is pure copy — losing it costs the recipient a nudge, nothing more.
+
+**Where it lives (Place Before Building).**
+- `src/lib/inviteEmail.ts` — the pure builder plus `sendInviteEmail`, which
+  **IMPORTS `resendSender` and `emailOtpFrom` from `src/lib/emailOtp.ts`**. Those
+  two are **not moved**: `emailOtp.ts` is on the live auth path and a refactor
+  there is a sign-in outage. A second Resend transport anywhere is root
+  `CLAUDE.md` §5's defect by name — and it would also put a second
+  `Authorization: Bearer` mint into the route tree, which `gateway.test.ts:232`
+  exists to refuse.
+- `src/app/api/admin/members/invite/route.ts` — a **shadow** over the
+  `/api/admin/[...path]` catch-all for this one path (Next's more-specific route
+  wins). The catch-all is **NOT** special-cased: adding an `if (path[0] ===
+  "members")` to a generic proxy is how a proxy becomes a router.
+- The surface *(re-homed 2026-08-24 after D49's launch surface moved the roster)*:
+  `/settings/members` is now a redirect, and the invite lives in
+  `src/app/settings/organization/OrganizationAdmin.tsx`'s `InviteDialog`, which
+  posts to the new route and threads the response's **`email_channel`** into
+  `lib/inviteSeat.ts`'s outcome machine — `"disabled"` says NOTHING (the shipped
+  default is not a failure), `"sent"` appends "on its way", `"failed"` keeps the
+  dialog OPEN with the next action ("tell them to sign in with this address").
+  The member-first sentence rule and `shouldStayOpen` discipline are
+  `inviteSeat.ts`'s, extended rather than forked; fences in
+  `inviteSeat.test.ts::the notification email channel`. *(Review-round-1 F2: the
+  first shape set a notice React unmounted before paint, and told admins on
+  never-sending boxes that "no email went out" — a bare `email_sent` boolean
+  cannot separate dark-by-config from armed-and-failed, which is why the
+  response now carries the three-valued channel beside it.)*
+
+**Ships dark: `MEMBER_INVITE_EMAIL_ENABLED`.** Default OFF, compared to the
+**exact string `"true"`** (never truthiness — an operator who writes
+`=false` while debugging gets OFF), **ANDed with a present `RESEND_API_KEY`**.
+That is `isEmailOtpConfigured`'s idiom, reused rather than re-invented.
+⚠️ **The flag gates the EMAIL ONLY.** CP-2f's Console member write is the
+structural half and ships **ungated, dark by reach**: it fires on an invite,
+which is already `admin:members:invite`-gated, it is best-effort and post-commit,
+and it is inert until the owner grants a real deployment key the `member_admin`
+capability. Gating it behind the email flag would mean the fix for the
+`console-empty` funnel only worked on boxes that also send mail.
+
+🔓 **Named accepted risk — no invite rate limit in slice 1.** The door is
+admin-authenticated and `admin:members:invite`-gated, so the mail can only be
+driven by somebody already trusted to add members to this org; the blast radius
+is a trusted admin sending unsolicited notifications from
+`no-reply@metorite.com`. It is **named, not overlooked**: CP-2d's OTP send has a
+server-side hourly budget precisely because its door is *unauthenticated*, and
+that asymmetry is the reason this one ships without. Flipping the flag on a live
+deployment is OWNER-GATE (`work_plan.md` §6(d)), and the first flip is the right
+moment to reconsider.
+
+**R11 at this hop.** The outbound gateway body is rebuilt from
+`{email, display_name, roles}` **and nothing else**. An `org` or `actor_email` in
+the request body is **dropped, never forwarded** — the acting identity is the
+session's, established by `proxyToGateway`'s `gatewayHeaders`, and the tenant is
+the gateway's answer. **No deployment key and no Console credential is read in
+this route**: the Console hop is the gateway's (CP-2f), one tier down.
+
+**Done when** *(the seven acceptance clauses, each naming its fence in
+`src/app/api/admin/members/invite/invite.test.ts` or
+`src/lib/inviteEmail.test.ts`)*:
+
+1. **Flag unset ⇒ byte-identical to today, and ZERO transport calls.** With
+   `MEMBER_INVITE_EMAIL_ENABLED` absent (or `RESEND_API_KEY` absent, or the flag
+   set to anything but `"true"`), the route forwards the invite and the injected
+   transport spy is called **zero** times. Fence:
+   `invite.test.ts::the dark default`, shown **red first** by flipping the gate's
+   sense.
+2. **Flag + key set and the gateway answered 2xx ⇒ exactly ONE send**, to the
+   **invited address only** (never the actor, never a cc), `from` =
+   `emailOtpFrom(env)`; the body carries the **org name** and the **sign-in
+   link**, and **no token and no query-string secret** — asserted as a scan of
+   the rendered `text`/`html` for `?`-bearing links and token-shaped strings, not
+   as a spot check. Fence: `inviteEmail.test.ts` + `invite.test.ts::the lit path`.
+3. **Gateway non-2xx ⇒ ZERO sends**, for 400, 403, 409 and 502 alike. The send is
+   inside the `res.ok` arm, so a refusal cannot mail anybody. Fence:
+   `invite.test.ts::a refused invite mails nobody`, parameterised over the four
+   statuses.
+4. **Send failure ⇒ `{invited: true, email_sent: false, email_channel:
+   "failed"}`, 200, no retry, and the invite call is made exactly once.** The
+   membership write already committed; failing the response would tell the admin
+   the invite did not happen when it did. `email_channel` is three-valued —
+   `"disabled"` (flag/key unset, the shipped default, NOT a failure) ·
+   `"sent"` · `"failed"` (armed and no mail went out, incl. an unestablishable
+   org name) — because a bare boolean cannot separate the state the admin must
+   act on from the state that is nobody's problem (review-round-1 F2). Fence:
+   `invite.test.ts::a failed send never un-invites` + the channel pins on all
+   four arms.
+5. **R11 — the outbound body is rebuilt.** `org` / `actor_email` / `organization_id`
+   present in the request body never appear on the wire to the gateway. Fence:
+   `invite.test.ts::the forbidden keys are dropped`, red-first by forwarding the
+   raw body.
+6. **No new credential in the route.** The route file contains no
+   `Authorization: \`Bearer ${…}\`` of its own and reads no Console key; the
+   repo-wide fence `src/lib/gateway.test.ts` ("builds no Authorization header
+   from a secret of its own", allow-list of three) stays green **unchanged** —
+   which is only true because the transport is imported from `emailOtp.ts`.
+7. **Theme conformance.** The dialog uses shared primitives only
+   (`Button`/`Icon` from `src/components/ui/`), writes no colour and imports no
+   `lucide-react`; `src/lib/theme/conformance.test.ts` stays green. Because
+   nothing in this tree runs a DOM, the **theme-switch check (Fluent → Material →
+   Graphite, on `/settings/organization` *and* a neighbour) is described in the PR
+   rather than asserted** — that description is the gate, per root `CLAUDE.md` §4.
+
+**Copy that is now FALSE and is struck.** The dialog said *"Sign-in is Microsoft
+SSO — this provisions their access, it does not send an email."* Post CP-0 /
+CP-2d that is wrong on both halves. `colleague_onboarding.md` §2/§6 carried the
+same sentence and is corrected in the same change (R4).
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** the builder, the route, the dialog and every
+fence, both flag positions, no network. 🔴 **OWNER-GATE — refuse by name:** setting
+`MEMBER_INVITE_EMAIL_ENABLED=true` with a real `RESEND_API_KEY` on a live
+deployment · inviting a REAL member into a live organization (it writes that
+org's membership on two planes — `customer_console.md` §8 gate 4) · granting a
+real deployment key `member_admin` (§8 gate 8's class).
+
+**Non-goals.** No accept-token and no acceptance page (D50.1) · no re-send button
+· no invite expiry (there is nothing to expire) · no rate limit in slice 1 (named
+above) · no bulk/CSV invite · does NOT change the tenant plane's
+`app_user.status` — activation is still §2 Step 1b · does NOT touch the catch-all
+proxy · does NOT move `resendSender`/`emailOtpFrom` out of `emailOtp.ts`.
 
 ### SC-3 — Change requests *(the manual-fulfilment bridge)*
 `POST /billing/requests` (add module / change seat count / cancel). Creates a
@@ -2003,7 +2177,21 @@ uv run pytest tests/unit/test_permission_policy.py tests/unit/test_org_access_co
 # real handlers, @/auth mocked, fetch stubbed) and done-when 1/5a/6/9's fences
 # (src/app/settings/billing/lib/checkout.test.ts) run here.
 # ✅ Measured 2026-08-19 on the launch slice: 106 files / 2305 tests, 0 failures.
+#
+# SC-2c's own fences run in the same command: `src/lib/inviteEmail.test.ts`
+# (the builder — one recipient, `emailOtpFrom`'s sender, org name + sign-in link,
+# and the NO-TOKEN scan) and
+# `src/app/api/admin/members/invite/invite.test.ts` (both flag positions, the
+# four non-2xx statuses, the send-failure answer, and the R11 forbidden-key
+# drop). `src/lib/gateway.test.ts`'s three-name Authorization allow-list must
+# stay UNCHANGED — that is done-when 6.
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+
+# SC-2c's Console half is `customer_console.md` CP-2f and its R8 suite runs on
+# the Customer Console database, beside the other WS-31 suites:
+uv run pytest tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_invite_console_mirror.py \
+              tests/unit/test_console_dependency_boundary.py
 ```
 
 The two-org fixture from MT-1i is reused for every SC-1 read test.
@@ -2060,3 +2248,11 @@ owner-gated** — the Razorpay account is `work_plan.md` §6(b), even in test mo
 Building every surface: **AGENT-SAFE**. Fulfilling a change request, editing any
 live org's entitlements, granting the console to a real customer admin:
 **OWNER-GATE** (work_plan.md §6).
+
+**SC-2c adds three to the OWNER-GATE column**, registered in `work_plan.md` §6:
+setting `MEMBER_INVITE_EMAIL_ENABLED=true` with a real `RESEND_API_KEY` on a live
+deployment (the first flip makes the product mail third parties, unrated) ·
+**inviting a REAL member into a live organization** (it writes that org's
+membership on two planes — `customer_console.md` §8 gate 4's class) · granting a
+real deployment key the `member_admin` capability (§8 gate 8's class). Building
+and R8-testing all of it against scratch Postgres is AGENT-SAFE.

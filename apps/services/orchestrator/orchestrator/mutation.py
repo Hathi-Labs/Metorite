@@ -983,6 +983,16 @@ async def _git_diff(agent_dir: str, commit_sha: str) -> str:
         return ""
 
 
+# Sentinel: the caller did NOT resolve a tenant-scoped opener, so the write uses
+# the unbound ``acb_graph.get_session`` — byte-identical to the pre-slice-4
+# runtime. This is the self-mutation-sandbox caller (``attempt_self_mutation``),
+# whose org threading is a later slice; the converted executor path always passes
+# an explicit ``opener`` (the resolved value of ``_graph_session_opener``, which
+# may be ``None`` to signal fail-closed). Distinguishing "unset" from ``None`` is
+# the whole reason this is a sentinel and not just ``opener=None``.
+_OPENER_UNSET: object = object()
+
+
 async def _register_pending_commit(
     *,
     agent_name: str,
@@ -994,6 +1004,7 @@ async def _register_pending_commit(
     test_summary: str,
     status: str = "pending",
     reviewed_by: str | None = None,
+    opener: Any = _OPENER_UNSET,
 ) -> str | None:
     """Insert a row into ``pending_commit`` and return its UUID string.
 
@@ -1002,17 +1013,48 @@ async def _register_pending_commit(
     - ``'eval_failed'`` — tests failed, awaiting human decision
     - ``'pending'``    — auto-push failed for infra reasons, awaiting human push
 
-    Returns ``None`` if the DB write fails (non-fatal — audit event still fired).
+    ``opener`` binds the write to the run's tenant behind ``ACB_GRAPH_TENANT_BIND``
+    (WS-29 acb_graph slice 4). The executor resolves it ON THE EVENT-LOOP FRAME —
+    ``_graph_session_opener(thread_id)``, before any thread hop, so the run's org
+    is captured from ``_RUN_ORG`` where it is valid, never from a worker thread —
+    and passes the result here:
+
+    * a zero-arg context-manager factory (``get_session`` when the flag is OFF —
+      byte-identical; ``lambda: tenant_session(org)`` when ON + a resolvable
+      tenant) → the INSERT opens it and the phase-1 DEFAULT stamps the bound org.
+    * ``None`` → flag ON + NO resolvable tenant → **fail closed**: the write is
+      SKIPPED and logged (``mutation.pending_commit_skipped_no_org``), never run
+      unbound on a FORCE-RLS'd table, and this NEVER raises (best-effort inbox
+      bookkeeping — mirrors slice 3's ``session_store_skipped_no_org``).
+    * ``_OPENER_UNSET`` (default) → an un-converted caller (the self-mutation
+      sandbox) → the unbound ``get_session``, byte-identical to before.
+
+    Returns ``None`` if the write is skipped or fails (non-fatal — audit event
+    still fired).
     """
+    # Fail-closed BEFORE the try so the skip is always visible and never swallowed
+    # by the write's own broad except (flag ON + no resolvable tenant).
+    if opener is None:
+        _log.warning(
+            "mutation.pending_commit_skipped_no_org",
+            agent=agent_name,
+            commit_sha=commit_sha,
+        )
+        return None
     try:
         import uuid  # noqa: PLC0415
 
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
+
+        if opener is _OPENER_UNSET:
+            from acb_graph import get_session  # noqa: PLC0415
+            _open = get_session
+        else:
+            _open = opener
 
         row_id = str(uuid.uuid4())
         reviewed_at_expr = "now()" if reviewed_by is not None else "NULL"
-        with get_session() as sess:
+        with _open() as sess:
             sess.execute(
                 text(
                     "INSERT INTO pending_commit "

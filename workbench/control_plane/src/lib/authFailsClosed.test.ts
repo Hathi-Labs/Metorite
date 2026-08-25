@@ -44,11 +44,20 @@ vi.mock("@/auth", () => ({
 import { proxy } from "@/proxy";
 import { currentIdentity } from "@/lib/gateway";
 
-/** Minimal stand-in for the NextRequest fields `proxy` actually reads. */
+/**
+ * Minimal stand-in for the NextRequest fields `proxy` actually reads.
+ *
+ * `headers` joined the set with WS-29 MT-1f slice 1: the proxy now reads the
+ * `Host` header to recognise a per-tenant workspace hostname. `cc.example.com`
+ * is outside the workspace base domain, so every case below stays on the
+ * pre-MT-1f path — which is the point: this file is about the auth posture and
+ * must keep measuring exactly that.
+ */
 function request(pathname: string) {
   return {
     nextUrl: new URL(`https://cc.example.com${pathname}`),
     url: `https://cc.example.com${pathname}`,
+    headers: new Headers({ host: "cc.example.com" }),
   } as unknown as Parameters<typeof proxy>[0];
 }
 

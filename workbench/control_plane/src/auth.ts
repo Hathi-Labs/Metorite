@@ -2,6 +2,19 @@ import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import MicrosoftEntraId from "next-auth/providers/microsoft-entra-id";
 import Google from "next-auth/providers/google";
+import Resend from "next-auth/providers/resend";
+
+import {
+  DEFAULT_OTP_MAX_AGE_S,
+  type EmailOtpEnv,
+  emailOtpFrom,
+  generateOtp,
+  isEmailOtpProviderReady,
+  otpWireHash,
+  resendSender,
+  sendOtpEmail,
+} from "@/lib/emailOtp";
+import { emailOtpAdapter, reserveOtpSend } from "@/lib/emailOtpAdapter";
 
 /**
  * Sign-in for Metorite — **a platform, not one company's app** (WS-31 CP-0,
@@ -99,11 +112,144 @@ if (process.env.AUTH_GOOGLE_ID) {
     }),
   );
 }
+/**
+ * The NextAuth signing secret, named ONCE.
+ *
+ * ⚠️ It is a const rather than an inline `process.env` read at the `secret:`
+ * option because `sendVerificationRequest` below must recompute the exact hash
+ * `@auth/core` will store for the same send (`send-token.js:46,61` —
+ * `createHash(\`${token}${provider.secret ?? options.secret}\`)`). Two copies of
+ * "what the secret is" that drifted would make the send leg claim a slot with a
+ * hash the person's mailed code can never produce, which is a code that never
+ * verifies — the failure this recomputation exists to remove, reintroduced from
+ * the other end. Fence: `emailOtp.test.ts` compares `otpWireHash` against the
+ * pinned `@auth/core`'s own `createHash`; `signin.test.ts` pins that both the
+ * `secret:` option and the hash call read this one name.
+ */
+const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";
+
+// ── CP-2d · passwordless email OTP via Resend — ships DARK ──────────────────
+//
+// Registered ONLY when `isEmailOtpProviderReady` — env configured
+// (`EMAIL_OTP_ENABLED === "true"` AND a Resend key, the Google
+// `if (process.env.AUTH_GOOGLE_ID)` idiom one notch stricter) **AND** the
+// Auth.js database adapter is wired (`EMAIL_OTP_ADAPTER_READY`, `false` today).
+// With any of those absent the provider is never in the array and NextAuth
+// initialises **byte-identical** to today: no send, no crash,
+// `/api/auth/providers` unchanged. It rides the ONE NextAuth session below —
+// same handlers, same `jwt`/`session` callbacks, JWT strategy unchanged — never
+// a second auth path.
+//
+// 🛑 **The adapter half is not a nicety — it is a site-safety gate.**
+// `@auth/core`'s `assertConfig` returns `MissingAdapter` for ANY email provider
+// registered without an adapter, and it does so on **every** `/api/auth/*`
+// request — so an email provider without an adapter **500s ALL sign-in, Google
+// and Microsoft included**, not merely OTP. Gating on the env flag alone would
+// make `EMAIL_OTP_ENABLED=true` a one-line documented owner action that takes
+// the whole site's auth down. `isEmailOtpProviderReady` is what makes that
+// impossible: with the adapter unwired (today) the flag+key are inert.
+//
+// **OTP, not magic-link** (owner's ask, D46.3): `generateVerificationToken`
+// mints a 6-digit numeric code and `sendVerificationRequest` emails THAT code
+// via the injectable Resend transport, so the person types a code rather than
+// following a link. Auth.js v5's built-in `Resend` provider is magic-link by
+// default; the two overrides below turn it into numeric OTP without leaving the
+// one provider mechanism. The verified address is Auth.js's `identifier`, never
+// a request body field (R11).
+//
+// ✅ **Slice 2 (2026-08-23) ARMED it**: the adapter below is wired in as
+// NextAuth's `adapter`, `EMAIL_OTP_ADAPTER_READY` is now `true`, and the
+// code-entry page is `pages.verifyRequest`. So the gate is once again exactly
+// "the owner set the flag and the key" — which is the point, and why the rate
+// limit (gateway-side, `routes/email_otp.py`) is now what carries the safety
+// rather than the adapter guard.
+const emailOtpArmed = isEmailOtpProviderReady(process.env as EmailOtpEnv);
+if (emailOtpArmed) {
+  const apiKey = process.env.RESEND_API_KEY as string;
+  const from = emailOtpFrom(process.env as EmailOtpEnv);
+  const send = resendSender(apiKey);
+  providers.push(
+    Resend({
+      apiKey,
+      from,
+      maxAge: DEFAULT_OTP_MAX_AGE_S,
+      generateVerificationToken: generateOtp,
+      // ⚠️ **The send budget is reserved BEFORE the mail goes out, and it has
+      // to be here** (customer_console.md §CP-2d clause 11). `@auth/core`'s
+      // `lib/actions/signin/send-token.js` starts THIS function and
+      // `adapter.createVerificationToken` concurrently in one `Promise.all`,
+      // and hands the token hash only to the second — so a budget enforced in
+      // the adapter alone would refuse the token while this function had
+      // already mailed a code. Both legs name the same send by its `expires`
+      // instant, which is how the gateway counts one send once. A refusal
+      // throws, so nothing is sent and the sign-in fails closed.
+      //
+      // ⚠️ **The claim carries the hash of the code THIS leg is about to mail**
+      // (repair of review finding P2, round 2, 2026-08-23). Stopping the
+      // duplicate's *mail* was only half of it: `send-token.js` starts both legs
+      // in one `Promise.all`, so a rejected `sendVerificationRequest` cancels
+      // nothing and the loser's `createVerificationToken` still landed on the
+      // shared `(identifier, expires)` row — overwriting the winner's hash, so
+      // the one email that DID go out carried a code that could never verify.
+      // `@auth/core` hands this leg the raw code and the other leg the hash, so
+      // this is the only place the two can be reconciled: recompute the same
+      // `createHash(`${token}${secret}`)` (`send-token.js:46,61`) and hand it to
+      // the claim, which writes it atomically. `record_token` server-side then
+      // refuses to overwrite. `provider.secret` first, exactly as `send-token.js`
+      // resolves it — this deployment sets none, but a copy that ignored it would
+      // be wrong the day one is set.
+      sendVerificationRequest: async ({ identifier, token, expires, provider }) => {
+        const tokenHash = await otpWireHash(
+          token,
+          (provider as { secret?: string }).secret ?? AUTH_SECRET,
+        );
+        await reserveOtpSend(identifier, expires, tokenHash);
+        await sendOtpEmail(send, {
+          to: identifier,
+          from: provider.from ?? from,
+          code: token,
+          maxAgeS: DEFAULT_OTP_MAX_AGE_S,
+        });
+      },
+    }),
+  );
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
-  secret: process.env.AUTH_SECRET ?? "dev-local-insecure-change-me",
+  secret: AUTH_SECRET,
   providers,
+  // ⚠️ **CP-2d slice 2 (ruling H-D): the adapter and the strategy pin are ONE
+  // change and must never be separated.** `@auth/core@0.41.2`'s `lib/init.js:74`
+  // derives `strategy: config.adapter ? "database" : "jwt"`, so merely PASSING
+  // an adapter silently converts the whole product — Google and Microsoft
+  // included — to database sessions. `assertConfig` does not catch it: with an
+  // email provider present it demands only the three `emailMethods` and never
+  // the ten `sessionMethods` (`lib/utils/assert.js:129-145`), so the failure is
+  // not a config error at boot but a `createSession is not a function` on every
+  // sign-in. Pinning `jwt` is also what keeps this adapter's method set minimal
+  // and keeps permissions OUT of the token (see `workbench/AGENTS.md`: a JWT
+  // outlives an access change, so authorization stays server-resolved). Fenced
+  // both ways by `signin.test.ts`.
+  session: { strategy: "jwt" },
+  // Passed as `undefined` when OTP is not armed, which `@auth/core` treats
+  // exactly as absent (`assert.js:157` guards on truthiness) — so an
+  // OAuth-only box is unchanged, no adapter method is ever reachable, and the
+  // dark-ship promise holds.
+  //
+  // 🛑 **When it IS armed, this adapter is on Google's and Microsoft's path
+  // too, not only OTP's** (repair of review finding P0, 2026-08-23).
+  // `lib/actions/callback/index.js:56-62` destructures and calls
+  // `getUserByAccount` for every OAuth callback the moment an adapter is
+  // present, and `handle-login.js:175-250` calls it again and then consults
+  // `getUserByEmail`. So the adapter is written to be behaviourally
+  // TRANSPARENT — stateless user methods that reproduce the adapter-less path
+  // — rather than minimal. See `lib/emailOtp.ts::emailOtpAdapterOver`; the
+  // reachable set is derived from the pinned source by
+  // `emailOtpAdapter.test.ts` and replayed against the real object by
+  // `emailOtp.test.ts`, so a version bump that adds a call site reds instead of
+  // taking every sign-in down on the day the flag is flipped.
+  adapter: emailOtpArmed ? emailOtpAdapter() : undefined,
   callbacks: {
     /**
      * **Ask the registry whether this sign-in may proceed** (WS-31 CP-2b,
@@ -159,7 +305,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
      * request input (R11) — the same value the `jwt` callback below already
      * trusts.
      */
-    async signIn({ profile, user }) {
+    // `email` is Auth.js's own parameter name for the email-flow marker; it is
+    // renamed on binding because the resolved address below is called `email`
+    // and two things called that in one function is how the wrong one gets read.
+    async signIn({ profile, user, email: emailFlow }) {
+      // ── CP-2d slice 2 · the email provider calls this callback TWICE ───────
+      //
+      // `@auth/core`'s `lib/actions/signin/send-token.js` invokes it once at
+      // "send me a code", with `email.verificationRequest` set and BEFORE the
+      // person has proved anything, and `lib/actions/callback/index.js` invokes
+      // it again after the code round-trip. **Only the second leg may resolve.**
+      //
+      // ⚠️ A resolve on the first leg would allocate a SEAT for an address
+      // typed by an anonymous visitor on the sign-in form — the farmable seat
+      // cap `gateway/routes/signin.py`'s docstring exists to prevent, which it
+      // does by reducing resolve from *every authenticated call* to *the
+      // completion of a sign-in*. A send is not a completion.
+      //
+      // The code is still emailed (the refusal is the answer, delivered once
+      // the code is entered) and the volume is bounded by the gateway's
+      // three-sends-an-hour budget. Beyond that, the OTP path is byte-for-byte
+      // the Google path from here down: no branch of its own, the same
+      // `console-empty` → `signup_eligible` → limbo funnel, the same refusal
+      // codes. See `customer_console.md` §CP-2d clause 13.
+      if (emailFlow?.verificationRequest) return true;
+
       if (process.env.CUSTOMER_CONSOLE_RESOLVE_ENABLED !== "true") return true;
 
       const email =
@@ -236,9 +406,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return "/signin?error=ConsoleUnavailable";
       }
     },
-    async jwt({ token, profile, account }) {
+    async jwt({ token, profile, account, user }) {
       if (profile?.email) {
         token.email = profile.email as string;
+      } else if (typeof user?.email === "string") {
+        // CP-2d: the email OTP provider carries no OAuth `profile`. The verified
+        // address rides `user.email` from Auth.js's completed round-trip — the
+        // code proved ownership — never from request input (R11).
+        token.email = user.email;
       }
       if (account?.provider) {
         token.provider = account.provider;
@@ -257,6 +432,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   pages: {
     signIn: "/signin",
+    // CP-2d slice 2. Without this, a person who asked for a code lands on
+    // `@auth/core`'s built-in "check your email" page — correct for a magic
+    // link, a dead end for an OTP, because there is nowhere to type the code.
+    // `lib/pages/index.js:107-110` redirects here carrying the original query.
+    // The route is in `proxy.ts`'s PUBLIC_PAGES: it is reached by somebody who
+    // is, by definition, not signed in yet.
+    verifyRequest: "/signin/code",
   },
 });
 

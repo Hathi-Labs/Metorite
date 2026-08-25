@@ -4,16 +4,94 @@
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
-**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2c
+**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2d
+SLICES 1+2 of 2 BUILT (slice 1 2026-08-22 — passwordless email OTP via Resend,
+the Auth.js provider + `EMAIL_OTP_ENABLED` flag, DARK; **slice 2 2026-08-23 — the
+Auth.js DB adapter (tenant-plane migration 186 `auth_email_otp_token`,
+RLS-EXEMPT), the gateway-side token routes with the server-side rate limit, the
+`session: { strategy: "jwt" }` pin, the `/signin/code` entry page, and
+`EMAIL_OTP_ADAPTER_READY = true` — OTP is now ARMED BY THE FLAG, still DARK
+because the flag and the key are unset everywhere**; the RESEND_API_KEY secret +
+the live flag flip are OWNER-GATE; **slice 2 REVIEWED and REPAIRED 2026-08-23
+(round 1) on one P0, two P1s, one P2 and four accuracy findings — the adapter is
+now STATELESS-TRANSPARENT rather than "minimal" (the five-method shape would
+have taken Google and Microsoft sign-in down on the flag flip,
+`callback/index.js:56-62`), the OTP identifier is canonical at both browser write
+sites and echoed as requested, the send budget is enforced by an atomic slot
+claim rather than an in-flight exclusion, and the consume statement takes exactly
+one row**; **slice 2 RE-REVIEWED and REPAIRED 2026-08-23 (round 2) on three
+findings — (P1) the `/signin/code` fallback arm was UNUSABLE, because `known`
+derived from the live input and `"a"` canonicalises to `"a"`, so the first
+keystroke unmounted the field being typed into; the decision is now the pure
+`codeEntryState` helper keyed on the mount-time stash ALONE. (P2) the burst's one
+mailed code could be CLOBBERED by the send loser's token leg — `Promise.all`
+cancels nothing, so refusing the mail did not refuse the write — and the claim
+now carries the winner's hash while `record_token` is first-writer-wins, so the
+row's hash at mail time is the slot winner's under every interleaving. (P2) the
+`updateUser` trap's fence is now STRUCTURAL (an identity comparison against the
+exported constant-null implementation) rather than a three-address value
+check**) · CP-2c
 SLICES 1+2+3+4 of 4 BUILT (slice 1 2026-08-19 — the deployment-key provision arm;
 slice 2 2026-08-20 — the gateway `POST /signup/provision` route + the
 Console-provision client; slice 3 2026-08-20 — the `signIn` callback
 self-serve-signup "limbo" branch (zero-org-only, keyed on the gateway's additive
 `signup_eligible` signal), BUILD+TEST only; slice 4 2026-08-20 — the `/signup`
-form UI + its `/api/signup` Next hop, BUILD+TEST only) · CP-2e BUILT 2026-08-20
+form UI + its `/api/signup` Next hop, BUILD+TEST only; **AMENDED 2026-08-24 by
+WS-29 MT-1f slice 1 — done-when 4a, the `ReservedSlug` refusal (owner ruling B7,
+a live-defect fix: `api`/`app`/`www` were registrable through the public form),
+and done-when 8a, `/signup` with no session redirects to `/signin`; **repair round
+1 the same day** — the reserved set extended additively to 21 labels, 8a re-worded
+to name `currentIdentity()` and its defence-in-depth motivation**; **AMENDED AGAIN
+2026-08-24, onboarding UX (owner directive: "take a customer step by step … the
+side panel will confuse the customer")** — `/signin` + `/signup` render CHROMELESS
+(`isChromeless` in `lib/nav.ts`, the AppShell early-return; fenced in `nav.test.ts`
+incl. a segment-not-prefix pin and a no-pane-is-chromeless sweep), the Sidebar
+returns `null` for a signed-in org-less member (the D51 chooser is full-screen),
+the signup card carries a three-step narration (email verified ✓ with the session
+address → company details → start) — narration, not new mechanism: verification
+already precedes the page — and the post-create redirect lands `/?welcome=new-org`,
+arming the one-time `WelcomeDialog` (the ONE Modal primitive) that names
+Settings → Organization as where the team gets invited) · CP-2e BUILT 2026-08-20
 (the signup Console-mirror reconciler — build + R8 fence; RUN/deploy/key/flag
-owner-gated) · CP-6
-mechanism BUILT (refusals ship OFF) · CP-9 SUBSTRATE HALF BUILT** —
+owner-gated) · **CP-2f MINTED + BUILT 2026-08-24** (the Console member-write door
+— `POST /registry/members` on the `member_admin` capability, plus D50.3's
+`invited→active` promotion in the deployment resolve arm; **no migration**, the
+`001` CHECK already carries `invited`. Dark by construction: no live key holds
+the capability. Grant/deploy/live-write owner-gated) · **CP-2g MINTED + BUILT
+2026-08-24** (organization offboarding end to end: Console `POST /orgs/purge`
+reachable only in `deleted`, gateway operator door
+`DELETE /internal/operator/organizations/{slug}` on `GATEWAY_OPERATOR_TOKEN`
+— 503 ship-dark — driving `acb_auth.offboard`'s single cascade DELETE, and
+the operator console's cancel/delete edges + type-the-slug DangerPanel;
+env + live-purge owner-gated) · **CP-2h MINTED 2026-08-24, SLICE 1 of 5 BUILT
+2026-08-24** (seat-assignment UX, both personas — §6's CP-2h section; D-SEAT-1…7
+recorded on the owner's instruction 2026-08-24. **Slice 1 = the D-SEAT-4 reroute
+and it is BUILT**: the Console's deployment-key seat READ
+`POST /registry/seats/overview` on the existing `seat_admin` capability
+(composing `SeatsView`'s grid and `MembersView`'s roster — no new SQL, no second
+seat vocabulary, no migration), `acb_auth.seat_overview_on_console`, the gateway
+`GET /seats/overview`, the ONE new `/api/org/seats` READ hop (the writes stay on
+the pre-existing gateway-backed `/api/billing/seats/{assign,release}` pair), and
+`SeatsTab.tsx` swung onto them — so the customer Seats tab works on a SHARED
+deployment with NO per-org env **for an admin who is `owner|admin` in the Console
+registry AND whose email holds a membership in exactly ONE organization placed on
+that box**. Repair round 1, 2026-08-24: the read's 403 and multi-org 409 were
+rendering as "the seat plane did not answer" — a refusal drawn as an outage, for
+what is in fact most admins — and a byte-identical twin write pair was deleted.
+**The honest residual belongs to slice 2**: a multi-org actor is permanently 409,
+and since `deployment_visible_orgs` does not consult membership STATUS, an admin
+of org B inviting org A's owner's address switches org A's seat surface off,
+cross-tenant. Slices 2-5 remain: **the SESSION-org thread (slice 2, which fixes
+the 409, the cross-tenant switch-off and the registry-vs-tenant org mismatch)**,
+the waiting card, Awaiting-seat, the blocked count, buy-more-files-a-request, and
+remove-releases/suspend-does-not. Still DARK
+by construction — no live key holds `seat_admin`; granting it and landing the
+deployment key/URL are OWNER-GATE §8 gates 7/8) · CP-6
+mechanism BUILT (refusals ship OFF) · CP-8 SLICES 1+2 BUILT 2026-08-22 (the
+Operator Console — slice 1 the live customer-management surface, slice 2
+provision-a-new-customer create-only; a SEPARATE Next.js app
+`workbench/operator_console/`, DARK; deploy + operator-token env + staff Entra
+owner-gated) · CP-9 SUBSTRATE HALF BUILT** —
 **CP-9's substrate half BUILT 2026-08-18**, the same day it was minted and
 twice audited: migration `007_payments.sql`, `customer_console/payments.py`
 (the seam, the order state machine, integer paise, the one `fulfil`),
@@ -24,9 +102,54 @@ two P2s (2026-08-19)**: **115** tests in
 `tests/unit/test_customer_console_payments.py` against a real Postgres 16,
 **0 skipped**, every load-bearing fence shown red first.
 
+**§6 item (j) — the MANUAL / bank-transfer activation
+(`POST /billing/subscriptions/activate`) BUILT 2026-08-21 (`cc-manual-activate`)**:
+the Operator-only offline twin of `payments.fulfil` — `org_subscription`
+`provider='manual'` + the paid seat grant + an optional `manual`-reason credit,
+one transaction over the existing store seams (no new seam), refusing **409** on
+an org that already holds an active subscription (the double-grant guard). The
+check-then-grant is serialised by an org-keyed advisory lock
+(`store.lock_org_activation`, the seat/discount-cap idiom), so the one-grant
+guarantee holds under CONCURRENCY, not merely for a sequential repeat — a real
+two-thread race is the fence (`test_two_concurrent_activations_grant_exactly_once`,
+red-first without the lock). Suite **145/145** against a real Postgres 16, 0
+skipped; the authz 401 mutation-proved.
+Ships **DARK** — the Console deploys nowhere, and both the operator token and
+issuing it stay **OWNER-GATE** (§8). `credits.LEDGER_REASONS` grew one member
+(`manual`); no migration.
+
+**CP-8 SLICE 1 BUILT 2026-08-22 (`cp-8-operator-console`) — the Operator
+Console's live customer-management surface.** Two halves, both DARK. **Backend:**
+the §4.1a cross-org read `GET /orgs` (`store.cross_org_summary` + `OrgListView`),
+the one read that spans organizations — Operator-only (a `cc_live_` customer key
+is 401), returning per company its plan/seat grid (folded through the ONE
+`seat_counts` vocabulary, byte-identical to `GET /billing/summary`), credit
+balance, lifecycle + subscription status, trial expiry, and MRR (paise, the one
+`payments.paise` denomination, **zero unless the subscription is active** — an
+agent-proposed default, D16/D17). No new seam, no migration.
+`tests/unit/test_customer_console_operator_list.py` — R8 against a real Postgres
+16, **0 skipped**, joined to §7's command block and `pr-check.yml`'s skip-guard
+(Console hand-list 7 → 8) in this same change. **App:** a SEPARATE Next.js app
+`workbench/operator_console/` (D35 — its own package.json/build, NOT a route in
+the customer workbench; theming-exempt per D35.4), with a customers list + a
+customer-detail surface wiring the management ACTIONS (activate subscription,
+grant seats, add AI credits, suspend/resume) through **server-side BFF routes**
+that hold `CUSTOMER_CONSOLE_OPERATOR_TOKEN` + `CUSTOMER_CONSOLE_URL` — the token
+NEVER reaches the browser. Staff auth is gated behind an **interim server-side
+staff secret** (`OPERATOR_CONSOLE_STAFF_SECRET`, clearly marked); the staff
+Entra directory (D35.3) is an OWNER dependency, not built. **DEFERRED to later
+CP-8 slices:** the payment-reconciliation queue (NULL-`order_id` +
+capture-after-terminal `payment_event` rows), the nightly seat/subscription
+drift job, invoice rendering. **OWNER-GATE go-live:** deploy the app, wire a
+hostname/Caddy route, set the operator token in its env, stand up the staff
+Entra app.
+
 **CP-2c (the self-serve signup flow — the form over CP-2a's API) MINTED
-2026-08-19 (D46, owner directive); CP-2d (second factor / email OTP)
-documented-deferred, nothing built.** CP-2c's hard dependency —
+2026-08-19 (D46, owner directive); CP-2d (passwordless email OTP via Resend)
+MINTED + FIRST SLICE BUILT 2026-08-22 (owner directive) — the provider + flag
+(`EMAIL_OTP_ENABLED`) ship DARK; the DB-adapter + code-entry-page prerequisites
+are named-deferred and the two runtime flips are OWNER-GATE.** CP-2c's hard
+dependency —
 MT-1j slice 4 (`saas_multitenancy.md` §11), the Console↔tenant seam it
 orchestrates — is **✅ MET on the operator arm as of 2026-08-19**: the
 `org_placement` write and the `provision_local_organization` seam both ship.
@@ -1243,6 +1366,50 @@ per-deployment round trip on the request path; the reconciler alerts on a seeded
 drift between seat counts and subscription items; no route of the customer
 workbench can reach a cross-org read.
 
+> **Slice 1 — the live customer-management surface — BUILT 2026-08-22
+> (`cp-8-operator-console`, DARK).** ✅ *renders from the Customer Console alone,
+> no per-deployment round trip* — the app's BFF calls only `CUSTOMER_CONSOLE_URL`
+> (the operator API), never a tenant box. ✅ *no route of the customer workbench
+> can reach a cross-org read* — the cross-org read is `GET /orgs` on the Console
+> behind the `Operator` scheme, and its sole consumer is `workbench/
+> operator_console/` (a DIFFERENT app), so the customer workbench has no route to
+> it by construction (D35's deployment boundary). ⏳ *the reconciler alerts on a
+> seeded drift* — the nightly seat/subscription drift job is DEFERRED to a later
+> slice, with the reconciliation queue and invoice rendering. The management MVP
+> (list every customer; activate a subscription, allocate seats, grant AI
+> credits, suspend/resume) is the whole of slice 1.
+
+> **Slice 2 — provision a new customer (create-only) — BUILT 2026-08-22
+> (`cp-8-provision-customer`, DARK).** A "New customer" CTA + form on the
+> operator console's customers list (`workbench/operator_console/`) creates an
+> organization through the Console's **operator** provision arm. A NEW BFF route
+> `POST /api/operator/provision` MIRRORS `/api/operator/activate` exactly: it
+> gates on staff (`gateStaff` via `proxyToConsole`) and relays the Console `POST
+> /orgs/provision` status + JSON **verbatim**, through the same server-side
+> Console client (`provisionOrg` in `src/lib/console.ts`) that holds the operator
+> token. Body: `{slug, name, owner_email, deployment_label, gstin?,
+> billing_state?, core_seats}`. `deployment_label` is **operator-named, never
+> inferred and never hardcoded** (D46.6 items 1 & 3): the field is editable
+> free-text, prefilled from a new server env
+> `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` (the box's value is `gateway`) and
+> required client-side; a wrong label is the Console's relayed **404**.
+> Create-only by design — activate / seats / lifecycle already live on the
+> customer-detail Actions, and a two-call provision+activate wizard has a
+> half-provisioned failure mode. **Done when:** ✅ the BFF relays the Console's
+> **200 / 400** (missing `deployment_label` under the operator scheme) **/ 404**
+> (unknown label) **/ 409** (already placed on another deployment) unchanged to
+> the operator; ✅ the operator token appears ONLY on the outgoing Console
+> request, never in a browser response (the source-scan fence in
+> `src/lib/console.test.ts`); ✅ the route is behind `gateStaff()` (unconfigured
+> → 503, non-staff → 401) like every `/api/operator/*` route; ✅ after a 200 the
+> new org appears in `GET /orgs`. `npm run typecheck` · `typecheck:lib` · `test`
+> green — the verbatim-relay + token-not-bundled vitest fences. The Console
+> provision contract itself is already R8-proven
+> (`tests/unit/test_org_provisioning.py` et al.), so no new Python. 🔴
+> **OWNER-GATE go-live:** deploy the app · set the operator-token env · set
+> `OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL` on the box · provision a REAL
+> customer through the finished UI.
+
 **CP-9 · The payment-provider seam (Razorpay), and the money→entitlement path.**
 ◐ **SUBSTRATE HALF BUILT 2026-08-18** (minted the same day) — the ticket three
 documents already cited and nobody had written.
@@ -2141,6 +2308,57 @@ below) at flip-time.*
     *and* on the wire; the roster equals `store.org_members`; a `suspended` org
     reads it, a `deleted` org 403s). **No migration:** a read over `org_membership`
     + `user_identity` in `001` already ships.
+
+*Clause 21 authored + ✅ **BUILT** 2026-08-21 (WS-31, `cc-manual-activate`) with
+§6 item (j) — the MANUAL / bank-transfer activation, the offline twin of
+`payments.fulfil`. R8 against a real Postgres 16; the Console deploy, the operator
+token and issuing it stay owner-gated (§8), and the route ships DARK.*
+
+21. ✅ **BUILT — An operator can activate a PAID plan a customer paid for OUT OF
+    BAND (§6 item (j)):** `POST /billing/subscriptions/activate` (Operator-only,
+    `main.py` `activate_subscription_manual`) writes `org_subscription`
+    `status='active'` with `provider='manual'` (the value
+    `001_customer_console.sql:163`'s CHECK pre-provisioned and nothing wrote
+    until now, NULL provider ids), grants the plan's PAID seats
+    (`grant_seats`, `reason='manual'`), and — when the request carries AI credits
+    — adds them (`add_credit`, `reason=credits.LEDGER_REASON_MANUAL`, the bank
+    reference as `ref`), all in ONE transaction over the SAME store seams
+    `payments.fulfil` uses, minus the order — no new seam. It does **not** touch
+    `organization.status` (like `fulfil`, a suspended org that pays holds an
+    active term and stays suspended until an operator posts the transition,
+    done-when 16). The operator's free-text `reference` and `reason='manual'` land
+    in the `control_audit` detail (the table has no `reason` column). **The
+    double-grant guard:** activating grants paid capacity and `grant_seats` /
+    `add_credit` are append-only, so an org that already holds an **active**
+    subscription is refused **409** (an operator adjusts a live term through the
+    seat/credit routes, never by re-activating) — a `trial` (or any non-active)
+    org, and one with no subscription row, activate. The 409 is a
+    check-then-grant, so it is **serialised by an org-keyed advisory lock**
+    (`store.lock_org_activation`, the `lock_seat_capacity` / `lock_discount_capacity`
+    idiom — `pg_advisory_xact_lock(hashtext('activation:<org_id>'))`, taken as the
+    first statement of the transaction, before the status read, auto-released at
+    txn end): without it two concurrent activations of one fresh org would both
+    pass the 409 and both grant (the append-only INSERTs have no conflict target),
+    so the one-grant guarantee holds under **concurrency**, not merely a sequential
+    repeat. Per-org key, so different orgs never serialise. An unknown/inactive
+    `plan_slug` is **400** (priced active rows only, as the checkout), an unknown
+    org **404**. Not an org-key route, so
+    `test_no_org_key_route_writes_an_entitlement_or_ledger_row` stays green — this
+    grant never rides a customer credential. — Fences in
+    `tests/unit/test_customer_console_payments.py::TestTheManualActivation`
+    (already on §7's list and pr-check's skip-guard), all R8 against a real
+    Postgres: the happy path (active + `provider='manual'` + period; paid seats;
+    credits; the audit reference), idempotency (a repeat activate 409s and
+    double-grants nothing) **and its concurrency proof** (two threads activating
+    one fresh org, released on a barrier, land exactly one grant / credit /
+    subscription — red-first without `lock_org_activation`, the
+    `test_a_concurrent_double_redeem` idiom), authz (Operator required — org key / deployment key /
+    no auth each 401, mutation-proved via `dependency_overrides`, and the
+    operator IS admitted), plan validation (unknown/inactive → 400, nothing
+    written), and the provider + ledger-reason fences unweakened
+    (`credits.LEDGER_REASONS` gains exactly `'manual'`). **No migration:** the
+    `'manual'` provider value already ships in `001`; the ledger reason is not
+    CHECK-constrained (R6, `credits.py`).
 
 **Build-slice edits this repair round could NOT make — it is docs-only.** Listed
 so the implementer does not have to rediscover them, and because **nothing tests
@@ -3999,8 +4217,17 @@ person visible in two orgs on one deployment · retiring the operator-auth shape
 · any Router or metering change.
 
 **CP-2c · The self-serve signup flow — the form over CP-2a's API.** ◐ **MINTED
-2026-08-19 (D46, owner directive); SLICE 1 BUILT 2026-08-19 — slices 2, 3 and 4
-open.** Slice 1 is the Console deployment-key provision arm (done-when 6 and
+2026-08-19 (D46, owner directive); SLICES 1–4 BUILT (2026-08-19/20).**
+⚠️ **Updated 2026-08-24 by WS-29 MT-1f slice 1's branch — two additions to the
+shipped surface, both recorded here because this ticket owns the signup door:**
+(i) **done-when 4a**, the **`ReservedSlug`** refusal (owner ruling B7 — a
+LIVE-DEFECT fix: `api`, `app` and `www` were registrable through the public form),
+with the reserved vocabulary shared cross-language and a NAMED gap left open at
+the Console's own provision door; and (ii) **done-when 8a**, `/signup` with no
+session **redirects to `/signin`** — defence in depth behind `proxy.ts`, which
+already refuses the page to a signed-out visitor (both clauses were re-worded in
+repair round 1, 2026-08-24: the reserved set grew to **21** labels and 8a's check
+is `currentIdentity()`, never `await auth()`). Slice 1 is the Console deployment-key provision arm (done-when 6 and
 done-when 8's Console half) and it carries the D46.6-item-1 amendment; the
 record is in the slice list at the end of this ticket. Nothing of the *form*
 exists yet: no `/signup` route, no `SELF_SERVE_SIGNUP_ENABLED` flag, no gateway
@@ -4062,8 +4289,48 @@ overrule any numbered item)*:
    shape error (slice-2 P2, repaired at landing), and a spaced slug (`"a b"`)
    reached the cross-plane join key unvalidated. Refusals: **400**
    `InvalidGstin` / **400** `MissingState` / **400** `MissingSlug` / **400**
-   `InvalidSlug`, fenced red-first in `test_signup_provision_route.py`; the form
-   mirrors all four client-side (advisory — the route is the fence).
+   `InvalidSlug` / **400** `ReservedSlug`, fenced red-first in
+   `test_signup_provision_route.py`; the form mirrors all five client-side
+   (advisory — the route is the fence).
+
+   ⚠️ **RESERVED LABELS — added 2026-08-24, owner ruling B7 (`saas_multitenancy.md`
+   §11 MT-1f). This is a LIVE-DEFECT FIX, not a forward-looking nicety, and it
+   applies regardless of any flag.** `_SLUG_RE` is a *shape* rule and shape was
+   never the whole rule: measured 2026-08-24, the gate admits **`api`**, **`app`**
+   and **`www`**, so a self-serve customer can today register the slug that names
+   the gateway's own hostname — and the moment MT-1f's wildcard exists, that slug
+   is a hostname collision with a live service, minted by a stranger through a
+   public form. The reserved set is B7's thirteen —
+   `{app, api, www, admin, console, signin, signup, mail, static, cdn, status,
+   help, docs}` — **plus eight added additively in repair round 1, 2026-08-24**:
+   `{assets, auth, billing, dev, login, operator, staging, ws}`, all names the
+   platform already uses or has ticketed (`operator` = the Operator Console D35,
+   `billing` = the subscription surface, `auth`/`login` = sign-in hostnames,
+   the rest infrastructure). **21 in total**, and safe to widen only because
+   self-serve signup is dark and nobody can already hold one — refused at the
+   **route**, in the same shape-violation class as
+   `InvalidSlug`, with the new code **`ReservedSlug`** (400) so the copy can say
+   *"reserved"* rather than *"malformed"*. Comparison is on the already-lowercased
+   slug, after the `_SLUG_RE` check, so a reserved label and a malformed one are
+   never confused. **It is not an existence oracle**: the set is static, public and
+   identical for every caller, which is exactly what distinguishes it from
+   `SlugTaken`.
+   **ONE vocabulary, two languages.** The canonical list is
+   `workbench/control_plane/src/lib/subdomain.ts`'s `RESERVED_LABELS` (it exists
+   because of DNS, so the host parser owns it); the gateway holds the runtime
+   literal it enforces, and `tests/unit/test_subdomain_host_vocabulary.py`
+   **parses the TypeScript** and pins the two sets equal — the
+   `test_seed_status_colours_match_the_shared_vocabulary` idiom, chosen for the
+   same reason (*a mirror goes stale and then lies*).
+   ⚠️ **NAMED GAP, not closed here: the Console-side provision door.**
+   `POST /orgs/provision` (`apps/services/customer_console/`) accepts a slug on
+   both arms and applies **no** reserved-label check of its own; migration 179's
+   `provision_organization` accepts any slug too. Every *self-serve* path reaches
+   the Console **through** this gateway route, so the public door is closed — but
+   an operator-arm provision, or any future caller that does not transit
+   `routes/signup.py`, is not. Closing the Console door belongs to the branch that
+   owns `apps/services/customer_console/` and is recorded here so it has a
+   referent rather than a disclaimer chain (the CP-2c/MT-1j failure mode).
 4. **Submit → a NEW gateway route `POST /signup/provision`** (mirror of
    `/signin/resolve`'s posture: BFF-internal bearer, **session-derived email
    only, a body email/tenant is 400 never ignored** — CP-2b clause 11's rule).
@@ -4297,6 +4564,15 @@ mutation testing on auth/tenancy clauses)*:
    — no `deployment_label`, GST fields on the wire) plus `::TestGstLandsOnThe
    ConsoleOrgRow` (R8 against the Console ladder, the deployment-key arm) for
    the landing.
+   ✅ **4a MET — 2026-08-24 (MT-1f slice 1's branch).** A **reserved** slug is
+   **400 `ReservedSlug`**, refused at the route after the `_SLUG_RE` shape check
+   and before step 0/1/2 (item 3's reserved-label block; owner ruling B7). Fences:
+   `::TestTheReservedLabels` in `test_signup_provision_route.py` (hermetic,
+   red-first — `api` provisioned an organization before the gate, and the Console
+   is asserted never reached), plus the cross-language parity fence
+   `tests/unit/test_subdomain_host_vocabulary.py`, which reads
+   `RESERVED_LABELS` out of `src/lib/subdomain.ts` and pins the gateway's set
+   equal to it.
 5. ✅ **5b MET · 5a MET at plane level; the missing route-level convergence is
    deferred to CP-2e (an out-of-band sweep, not a route retry) —
    slice 2, 2026-08-20. The two-plane orchestration converges or
@@ -4388,6 +4664,30 @@ mutation testing on auth/tenancy clauses)*:
    that `console-empty` is the only `signup_eligible=True` outcome while
    `console-refused`, `cache-dead` and `console-error` are all False; plus the
    three route-dict updates in `test_signin_resolve_route.py`.)*
+8a. ✅ **MET — 2026-08-24 (MT-1f slice 1's branch; wording corrected the same day in
+   repair round 1).** `/signup` reached with **no session redirects to `/signin`**,
+   from the page itself. The check is a server-component **`await currentIdentity()`**
+   — the same `lib/gateway.ts` seam the `/api/signup` hop's `requireIdentity()` sits
+   on, so "may this render" and "will the submit work" cannot drift, and it carries
+   the laptop bypass — placed beside the flag gate and ordered **flag first, session
+   second** (an un-opted-in box must not disclose that the surface exists behind a
+   sign-in). ⚠️ **Not `await auth()`**: this clause said so until 2026-08-24 and the
+   shipped code never did; `signup.test.ts` asserts the page contains **no**
+   `await auth()` and no `from "next-auth"` import, so the old wording described a
+   shape its own fence forbids.
+   ⚠️ **It is DEFENCE IN DEPTH, not the repair of a reachable dead end** — the
+   second correction. The earlier motivation ("a signed-out visitor used to be shown
+   a four-field form and told nothing until submit") is **false**: `/signup` is
+   absent from `proxy.ts`'s `PUBLIC_PAGES`, so the proxy already 307'd a signed-out
+   page navigation to `/signin` and the form was never reachable without a session.
+   What the check buys is that the guarantee no longer depends on a set in another
+   file — adding `/signup` to `PUBLIC_PAGES` is a one-line edit somebody will make
+   the day the marketing CTA lands. The form's `needsSignIn` arm stays for the case
+   neither gate can see: a session that expires *between render and submit*.
+   Fence: `signup.test.ts` — a source pin on both gates, their order, and the
+   negative `await auth()` pin; `signin.test.ts:209`'s idiom, because
+   `next-auth`/`next/navigation` cannot load in this tree's node-env vitest; the
+   behaviour is the reviewer's manual gate.
 8. No new engine sites (R5(b)); all tenant writes through slice 4's seam
    function; **zero migrations on BOTH ladders** (tenant: nothing to add;
    Console: done-when 6's no-CHECK fact — if something genuinely needs one,
@@ -4412,7 +4712,14 @@ against fixtures, both flag positions fenced, is AGENT-SAFE.
 the marketing page (WS-33) · payment at signup — a self-serve org starts on
 CP-2a's trial; seats/credits purchases are in-app afterwards (WS-30 SC-4a,
 owner's point 3) · the multi-org chooser · certified deletion (CP-2a's open
-half) · invite emails (`members.py:149` — its own small ticket) · per-tenant
+half) · ~~invite emails (`members.py:149` — its own small ticket)~~ **STRUCK
+2026-08-24 — it was never a small ticket.** The audit that tried to dispatch it
+found the load-bearing half is not an email at all: **the Console has no
+member-add door**, so an invited colleague never reaches the registry and — with
+resolve ARMED, as it now is — resolves `console-empty` and is funnelled into
+creating **their own** organization instead of joining their employer's. The door
+is **CP-2f** (below); the mail is `subscription_console.md` **SC-2c**; the
+decision is **D50**. · per-tenant
 subdomains (MT-1f).
 
 **Dependencies, in dispatch order**: **MT-1j slice 4** (the Console↔tenant
@@ -4816,22 +5123,935 @@ tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
 never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
 function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
 
-**CP-2d · Second factor and email verification — DOCUMENTED-DEFERRED, not
-MVP (D46.3, owner's words 2026-08-19: "Eventually, we should also have a
-two-factor authentication and email OTP system set up. Not made it by MVP,
-but documented for eventual build up.").** 🔲 **No board row until minted;
-nothing may build against this stub.** The shape when it is built: identity
-stays IdP-attested (Google, Entra when un-deferred) — there is **no password
-system in the tree to add a factor to** (verified: no credentials provider in
-`auth.ts`), so (a) **email OTP** becomes relevant only when a non-OAuth
-identity is admitted (an Auth.js v5 magic-link/OTP provider), and it must ride
-the ONE existing session idiom, never a parallel one; (b) **TOTP/passkey
-step-up** rides the Auth.js session and is enforced at the gateway identity
-seam (`deps.py`), never per-app; (c) either lands behind its own default-OFF
-flag with both positions fenced. Anti-scope: SMS OTP (cost + SIM-swap
-surface) unless the owner asks by name.
+**CP-2f · The Console member-write door — the ONLY way a colleague who was
+INVITED (rather than a founder who signed up) reaches the registry.** ◐
+**MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D50**; the
+customer-facing surface + the notification mail are `subscription_console.md`
+**SC-2c**)*. **Number:** the auditor proposed "CP-2e" and CP-2e was already
+taken by the signup Console-mirror reconciler; **CP-2f is the next free number**,
+checked by listing every `CP-*` in this file at build time (R1's habit applied to
+ticket ids).
 
-**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → CP-3 → CP-4 →
+**The gap, measured rather than assumed.** `POST /orgs/provision` writes the
+**founder's** `org_membership` row (`main.py`, the `INSERT … 'owner','active'`
+inside `provision`) and it is the **only** membership writer in this service.
+Nothing else in the tree adds a member to a Console organization. So today, when
+an admin invites a colleague through the tenant plane's `POST /admin/members`:
+
+1. the colleague is **invisible to `GET /me/members`** (item (i)'s roster reads
+   `store.org_members`, which reads `org_membership`), so the SC-2b manage-seats
+   grid cannot show them;
+2. **a seat cannot be assigned to them** — `_seat_admin_target` deliberately
+   *never mints* and 404s `"no such member in this organization"` for any address
+   without a membership row (item (h) clause 4);
+3. and — the load-bearing one — **with resolve ARMED their sign-in resolves
+   `console-empty`**: `store.deployment_visible_orgs` joins `org_membership`, so
+   zero rows come back, `_resolve_for_deployment` returns `{"organizations": []}`,
+   `resolve_for_signin` returns outcome iv with `signup_eligible=True`, and CP-2c
+   slice 3's limbo branch funnels the person into **creating their own
+   organization** rather than joining their employer's. An invite, correctly
+   performed, produces a second tenant.
+
+**What lands (the door).** `POST /registry/members`, the **exact sibling of item
+(h)'s `POST /registry/seats`** — the same `deployment_or_operator` factory, the
+same two-arm shape, the same "the credential chooses the scheme" rule. Not a
+second dispatcher, not a new auth scheme.
+
+- **Capability: a FOURTH one, `member_admin`**, beside `resolve`, `provision` and
+  `seat_admin`. **Not** a reuse of `seat_admin`: which capability a door demands
+  is written at the door, and folding "may create memberships" into "may move
+  seats" would silently widen a credential that has already been argued for on a
+  narrower basis. Like its two predecessors: **no migration carries the string**
+  (`deployment_key.capabilities` is `TEXT[]` with no `CHECK`,
+  `006_deployment_key.sql:56`), **no HTTP route issues or edits a key's set**, and
+  the enforcement is entirely `deployment_or_operator`. **The door therefore ships
+  DARK BY CONSTRUCTION** — no live key carries it until the owner adds it by hand
+  (§8 gate 8's capability-growth class).
+- **The org is DERIVED, never named (R11).** The deployment arm refuses an
+  `org_slug` with a **400, never ignored**, and resolves `(org, actor)` from
+  `store.deployment_visible_orgs(deployment_id, actor_email)` — placement ∩
+  membership — exactly as `_seat_admin_for_deployment` does. Zero admissible orgs
+  ⇒ one **403**, byte-identical whether the actor is unknown, a member only on
+  another deployment, or a member of a `deleted` org (CP-2b clause 5's
+  no-cross-org-oracle rule). More than one ⇒ **409**, because the chooser is a
+  named non-goal. The operator arm NAMES the org, as `POST /billing/seats` does.
+- **The derivation is EXTRACTED, not copied.** `_seat_admin_for_deployment` is
+  split into `_admin_scheme_context` (the R11 derivation: the `org_slug`
+  400, the `actor_email` 400, the 403 and the 409) and a **per-door registry
+  gate** applied by each caller. One derivation seam, two door policies stated at
+  their doors — the idiom this file already applies to capabilities.
+- **The invite door's registry gate is `status = 'active'`, ANY role**, and this
+  is a *narrower* claim than item (h)'s `owner|admin`, taken deliberately and for
+  a measured reason: **a Console-side `owner|admin` gate would silently re-open
+  the exact funnel this ticket closes.** The tenant plane's second admin is a
+  Console `member` (the registry role is billing vocabulary, D12, and nothing
+  maps tenant roles onto it), so an `owner|admin` gate would 403 their invites —
+  best-effort, so nothing surfaces — and every colleague *they* invite would
+  resolve `console-empty` into their own new org. The authorising gate for "may
+  this person add members" is the tenant plane's `admin:members:invite`; the
+  Console's contribution is placement ∩ membership plus *"the actor is really an
+  active member of the org they are adding to"*. A `suspended`, `removed` or
+  merely `invited` actor is refused.
+- **The write:** `store.ensure_identity` (the same global-identity upsert
+  provision and resolve use — `email` is `CITEXT`, so case is not a second human)
+  then a **create-only** `INSERT INTO org_membership … ON CONFLICT DO NOTHING`
+  with `status='invited'`. **`role` is left at the column default `member`** and
+  the endpoint takes no `role` field at all: mapping the tenant's `org_role`
+  slugs onto the registry's `{owner,admin,member}` would be the second grant
+  vocabulary D12 forbids by name, and accepting a role here would let a customer
+  admin mint registry admins through an invite. **A conflict changes NOTHING** —
+  an `active` member is not demoted to `invited` and a `removed` one is not
+  silently resurrected; the response reports `created` and the CURRENT `status`
+  so the caller can tell the two apart. *(Residual, named: re-inviting a
+  `removed` colleague leaves the Console row `removed`. They still resolve —
+  `deployment_visible_orgs` does not consult `status` — and they are still
+  seat-assignable, so the word is stale rather than load-bearing. A status-write
+  door is a separate ticket.)*
+- **No seat is burned here.** The membership row is not a seat: **Core-seat burn
+  stays at first resolve** (D19.3 / D32.5, `_allocate_core_seat`), unchanged. What
+  the row buys is that the seats grid can SEE the person and a *paid* seat can be
+  assigned to them before they have ever signed in (D50.2).
+
+**What lands (the promotion, D50.3).** In `_resolve_for_deployment`'s
+**single-admissible-org** branch, beside `_allocate_core_seat`, a Console
+membership whose status is exactly `invited` is promoted to `active` with
+`joined_at = COALESCE(joined_at, now())`. **The guard is structural**: it is the
+`AND status = 'invited'` in the UPDATE's own `WHERE`, so `suspended`, `removed`
+and `active` are untouched by construction rather than by an `if` a later edit
+can widen. **Only the deployment arm** — the operator arm is a staff query about
+a named customer, and a staff read must not activate anybody. **Only the
+single-org branch** — the multi-org branch deliberately allocates nothing (clause
+9) and its resolve REFUSES upstream (`WorkspaceChooserRequired`), so promoting
+there would activate a membership for a sign-in that never completed.
+
+**The TENANT half of D50.3 (review-round-1 repair, 2026-08-24).** The registry
+promotion alone left the colleague dead-ended at the tenant AccessGate ("Your
+account is not active"): flag-OFF access reads `app_user.status == "active"` and
+flag-ON's identity leg filters `m.status = 'active'` — both fail closed on
+`invited`. `acb_auth.access.promote_invited_member` closes it: called from
+exactly ONE site (the gateway's `POST /signin/resolve`, only after
+`decision.admit` — the same farmable-surface rule that keeps the resolve itself
+off the per-request path), it reads the RLS-EXEMPT identity shadow for this
+address's `invited` memberships and, per org, promotes `app_user.status` inside
+`tenant_session(org)` (the ONE GUC seam — `app_user` is RLS-forced in
+production) and forwards the shadow via the existing `mirror_membership_status`.
+Both UPDATEs carry `AND status = 'invited'` in their own `WHERE`; best-effort —
+a failed promotion never changes the resolve answer and fails CLOSED. Fence:
+`tests/unit/test_invited_member_promotion.py` (R8; guard shown red with
+parametrised `suspended`/`removed`/`active` rows, idempotence, both-tables
+promotion, never-raises) plus structural pins (the write inside the GUC seam;
+the call under `decision.admit`).
+
+**Seat cost, stated honestly (review finding 4).** An invited colleague's first
+admitted sign-in burns a Core seat — and with the tenant half above, that seat
+now funds a WORKING member (pre-repair it funded a dead end, unnamed). At the
+cap the resolve 409s and the shared transaction ROLLS THE PROMOTION BACK — the
+colleague stays `invited` and no seat burns; fenced by
+`::TestTheCapRollsThePromotionBack` (which also pins the corrected comment
+beside the promotion).
+
+**The BACKLOG, named (folded from the parallel PR #74 mint, which measured it in
+production).** This door fixes invites from NOW ON. Memberships created BEFORE
+it existed are still Console-invisible — measured live 2026-08-23 on the
+`hathilabs` org: **2 tenant members, 1 Console seat, zero `/seats/assign` calls
+in 24h of gateway logs** — i.e. the seat cap binds only people the Console
+knows, and an org that bought N seats can exceed them with pre-CP-2f members.
+**CP-2f slice 2 (unbuilt): the backlog sweep** — a reconcile in the CP-2e
+reconciler's shape that walks tenant memberships absent from the Console and
+mirrors them `invited`/`active` as their `app_user.status` says, idempotent,
+operator-triggered. Until it runs, pre-existing members resolve (the gateway
+admits from the tenant plane) but hold no registry membership and no seat.
+
+**NO MIGRATION.** `001_customer_console.sql:121-131` already declares
+`org_membership.status TEXT NOT NULL DEFAULT 'active' CHECK (status IN
+('invited','active','suspended','removed'))` and `role … DEFAULT 'member'`. R1 is
+satisfied by not taking a number at all. (The Console ladder did advance to
+008 the same day — D49's flat-plan repricing, a value change owned by
+`launch_surface.md` — but that number belongs to that decision, not this door.)
+
+**The gateway side.** `gateway/routes/admin/members.py::invite_member` calls the
+ONE Console client (`acb_auth.console_resolve.invite_member_on_console`)
+**POST-COMMIT**, best-effort, in its own session, exactly as the H6 shadow mirror
+two lines above it does — the authoritative `app_user` write stays
+byte-identical, and a Console outage can never fail an invite that already
+committed. It is the **FOURTH** importer of `console_resolve`, and
+`test_console_dependency_boundary.py`'s allow-list grows **three → four**; that
+fence firing is the design working. The argument for the fourth entry, written
+down as the fence demands: `invite_member_on_console` **allocates no seat** (it
+never touches `resolve_for_signin`), the route is **session-email-only** (the
+acting admin is `require_admin_user`'s authenticated identity, never the body),
+and the org is derived Console-side. What stays forbidden is wiring any of these
+functions behind `resolve_access` — six callers, one of them a fan-out over a
+room's participants — which is farmable seat burn.
+
+**Done-when (each names its R7 fence; all in
+`tests/unit/test_customer_console_member_write.py`, R8 against a real Postgres,
+plus the two structural fences named inline).**
+
+1. **The door exists, on the deployment-key scheme, behind `member_admin`.** A
+   key holding only `{resolve}` — the column default — gets **403** and a logged
+   `deployment_key.capability_refused`; a key holding `{member_admin}` gets in.
+   Fence: `::TestTheCapabilityGate`. Red-first by widening the mint's capability
+   set / by pointing the door at `SEAT_ADMIN_CAPABILITY`.
+2. **The org is never named and never inferred (R11).** A deployment key that
+   sends `org_slug` is **400 on shape**, before the value is read. Zero admissible
+   orgs is one 403 whose body is byte-identical for *unknown actor* / *member
+   elsewhere* / *deleted org*; two admissible orgs is 409. Fence:
+   `::TestTheOrgIsDerived`, including the byte-identical assertion across the
+   three negatives.
+3. **A member is written `invited`, is visible to `GET /me/members`, and is
+   seat-assignable.** After one call, `store.org_members` returns the address with
+   `status='invited'` and `role='member'`, and `POST /registry/seats` for that
+   address **succeeds** where it previously 404'd. Fence:
+   `::TestTheInvitedMemberIsVisibleAndSeatable` — the end-to-end proof that the
+   three consequences above are closed. Red-first by deleting the INSERT.
+4. **No seat is burned by the invite.** `seat_counts.assigned` is unchanged
+   across the call; the Core seat still appears only after a resolve. Fence:
+   `::TestTheInviteBurnsNoSeat`.
+5. **A conflict changes nothing.** Re-inviting an `active` member leaves them
+   `active` (`created: false`); re-inviting a `removed` one leaves them `removed`.
+   Fence: `::TestTheWriteIsCreateOnly`. Red-first by turning the `DO NOTHING` into
+   a `DO UPDATE SET status = 'invited'`, which then demotes an active member.
+6. **The actor gate.** An actor whose membership is `suspended` / `removed` /
+   `invited` is refused 403; an `active` `member` (not just an admin) succeeds,
+   and the reason is written down. Fence: `::TestTheActorMustBeAnActiveMember`.
+7. **D50.3 — first resolve promotes `invited` and NOTHING else.** A resolve for
+   an `invited` member returns their org (never `{"organizations": []}`) and
+   leaves them `active` with `joined_at` stamped; a `suspended` member's status is
+   untouched by a resolve and every shipped suspended-refusal test stays green; a
+   `removed` member stays `removed`; an `active` member's `joined_at` is not
+   re-stamped. Fence: `::TestFirstResolveActivatesTheInvited` +
+   `::TestThePromotionIsGuardedToInvited`. Red-first by dropping the
+   `AND status = 'invited'` from the UPDATE, which then reactivates a removed
+   member on their next sign-in — the whole reason the guard is in the `WHERE`.
+8. **Structural: the gateway calls it POST-COMMIT and stays the fourth
+   importer.** `tests/unit/test_console_dependency_boundary.py` — the allow-list
+   at four, red on a fifth — and `tests/unit/test_invite_console_mirror.py`'s AST
+   fence that the call sits **outside** `invite_member`'s `_tenant_session` block,
+   plus behavioural tests that an unwired box is a silent no-op and that a Console
+   failure never changes the invite's answer.
+9. **The suite is named in CI.** `pr-check.yml`'s R8 skip-guard hand-list gains
+   this file **in the PR that creates it** (the hand-list went 8 → 9), and
+   `::test_this_suite_is_named_in_the_ci_skip_guard` reads the workflow and §7 of
+   this file and fails if either entry is ever dropped — the closest a hand-list
+   gets to defending itself (CP-9 clause 11's precedent).
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** the endpoint, the capability constant, the
+derivation split, the store helpers, the promotion, the gateway post-commit call
+and every fence, against scratch Postgres, dark. 🔴 **OWNER-GATE — refuse by
+name:** granting `member_admin` to a REAL deployment key (§8 gate 8's
+capability-growth class; its bare issuance is gate 7) · deploying the Customer
+Console anywhere (§8 gate 2, D47) · **inviting a real member into a live
+organization** — it writes that org's membership on two planes, §8 gate 4's class
+(registered in `work_plan.md` §6). **No new gate number is minted.**
+
+**Non-goals.** Does NOT send mail (that is `subscription_console.md` SC-2c, and
+it is a *notification*, D50.1 — no token, ever) · does NOT change the tenant
+plane's `app_user` write, which stays byte-identical · does NOT activate the
+tenant plane's `app_user.status` — `colleague_onboarding.md` §2 Step 1b is
+unchanged and remains N6b's open half, named rather than quietly claimed · does
+NOT accept or map a `role` · does NOT alter seat accounting, `_allocate_core_seat`
+or D19.3 · does NOT filter `deployment_visible_orgs` on `status` (the recorded
+finding at `store.py:720-726` is untouched) · does NOT add a chooser · does NOT
+mint a migration.
+
+**CP-2g · Organization offboarding, end to end — MINTED + BUILT 2026-08-24,
+REPAIRED the same day, twice (round 1: verify FAIL + adversarial review, 1 P0
+· 5 P1 · 2 P2; round 2: the re-verify found `control_audit.actor` still
+carrying the acting admin's address — now overwritten with `[purged]`, fenced;
+owner directive: "delete organizations … before I do the end-to-end
+onboarding").** ◐ **Ships dark** — the tenant half answers 503
+until `GATEWAY_OPERATOR_TOKEN` is set on the box and the console env gains
+`GATEWAY_INTERNAL_URL` + `GATEWAY_INTERNAL_TOKEN` + the operator token.
+
+**What this is.** The lifecycle already ends at `deleted`, reachable only
+through `cancelled` (the export window) — `customer_console.lifecycle`'s graph
+enforces the doctrine by construction, and `POST /orgs/lifecycle` already walks
+it. What did NOT exist was the destruction: `deleted` retained every row on
+both planes and pinned the slug forever. CP-2g adds the **purge**, one act,
+three layers:
+
+1. **Console `POST /orgs/purge`** (Operator scheme; `{org_slug, confirm}`,
+   `confirm` must echo the slug): refuses **409** unless `status='deleted'`
+   (the refusal names the cancel→delete→purge path) and **409 for a
+   tombstone** (repair: tombstones stay listed at `status='deleted'`, so each
+   press used to re-purge them, appending suffixes and audit rows). Deletes
+   the personal-data/live-secret/per-org-ops tables (`_ORG_PURGE_DELETES`:
+   `seat_assignment`, `member_ai_cap`, `org_membership`, `llm_api_key`,
+   `provider_credential`, `org_placement`, `provisioning_run` — the last
+   because its `provision:{slug}` idempotency key would re-attribute the old
+   org's history to a new org taking the freed slug), **SCRUBS the books it
+   keeps** (repair, P1: `usage_event.user_email → NULL`; the email keys
+   stripped from `control_audit.detail` — row stays, address goes),
+   **tombstone-renames the slug** (`<slug>-purged-<hex6>`), KEEPS the
+   registry row and the money (`_ORG_PURGE_KEEPS_TABLES`, incl.
+   `discount_code`/`discount_redemption`; `user_identity` kept and NAMED in
+   the receipt — global, cross-org), audits `org.purge`, answers the
+   N8-style deleted/scrubbed/kept receipt.
+2. **Gateway `DELETE /internal/operator/organizations/{slug}?confirm=<slug>`**
+   (`gateway/routes/operator.py`; unset operator token ⇒ 503 ship-dark):
+   **TWO tokens, always** (repair, the P0): the route is deliberately NOT in
+   `PUBLIC_ROUTES`, so the app-level `require_authenticated` consumes
+   `Authorization: Bearer <GATEWAY_INTERNAL_TOKEN>` first, and the door then
+   demands `X-Operator-Token: <GATEWAY_OPERATOR_TOKEN>`. Neither alone
+   reaches the purge — the internal token's unprovisioned-box fallback is
+   `LITELLM_MASTER_KEY` (a credential agents hold), and the operator token
+   must not bypass ordinary machine auth. The first draft read the operator
+   token from `Authorization`, which the app-level gate consumed: the door
+   was a shipped no-op, green only against a bare test app — the suite now
+   runs against the REAL `gateway.main.app`. The purge itself:
+   `acb_auth.offboard.purge_tenant_organization` — **one
+   `DELETE FROM organization`** whose `ON DELETE CASCADE` FKs (33 tables
+   measured; all 140 in the generated promotion DDL) ARE the purge; slug
+   matched **byte-exactly** (repair, P1: `.lower()` made a mixed-case slug a
+   silent no-op); rowcount-0 answers `already_absent`, never "deleted: 0".
+   `user_identity` survives (global; the org-less D51 chooser is exactly the
+   after-state), `auth_email_otp_token` expires on its own. ⚠️ The `crm_*`
+   `organization_id` references `crm_organizations` (a CRM company), NOT the
+   tenant — named (`_NOT_TENANT_SCOPED`) and fenced.
+3. **Operator console**: the lifecycle panel gains the cancel/delete edges
+   (graph-mirrored in `lifecycleActions`, each with its own confirm copy),
+   and `deleted` renders the **DangerPanel** (never for a tombstone) —
+   type-the-slug to arm, then `POST /api/operator/purge`, which runs
+   **authority check (Console list, must be `deleted`) → tenant purge →
+   registry purge** in that order, because the registry purge renames the
+   slug the gateway door is addressed by. **`already_absent` is NOT success**
+   (repair, P1): it is either the legitimate retry or "this console points at
+   the wrong box", and finishing the registry half in the second case
+   destroys the `org_placement` record of where the data lives — the BFF
+   answers 409 `needs_accept_absent` and the UI makes a human choose before
+   re-posting with `accept_absent`. The **receipt is rendered**, not
+   collapsed to "✓ Done" (repair, P2 — the counts are the only visible
+   difference between a purge and a no-op). **Tombstones leave the roster**
+   (follow-up, owner question 2026-08-24): a purged org is bookkeeping, not
+   a customer, so `partitionRoster` moves tombstone slugs out of the
+   customer table and the headline counts into a collapsed "purged
+   organizations" section — while an un-purged `deleted` org STAYS listed,
+   because its detail page carries the DangerPanel. Fenced in
+   `format.test.ts`.
+
+⚠️ **The honest boundary** (repair, P1 — the first confirm dialog promised
+"everything"): ~119 of ~155 tenant tables carry no `organization_id` and no
+FK path to `organization` — the un-threaded MT-1j remainder (chat, email,
+WhatsApp, meetings, GTD, apps, workflows, CRM). Their rows are not
+attributable to a tenant, so no per-tenant delete can exist for them until
+threading lands (deleting by member email would be wrong: an address can
+belong to a future org). The operator-facing copy now states this;
+`offboard.py`'s docstring carries the measurement; WS-29's H2 row is the
+standing owner of the gap. **Known limitation, recorded:** when the tenant
+half succeeds and the registry half then fails, the only durable record of
+the destruction is the gateway's `tenant_org_purged` log line — the tenant
+audit trail is itself cascade-deleted, and `org.purge` is only written when
+the registry half runs.
+
+**Done-when (all built + repaired; each names its fence).** (1) Purge refused
+outside `deleted` (the refusal teaches the path) and refused on a tombstone —
+`test_org_purge_console.py::TestTheGuards` / `::test_a_tombstone_is_refused…`
+(R8, real Console Postgres). (2) Personal data gone, the kept books lose
+their addresses (usage emails NULL, audit detail keys stripped — rows stay),
+slug freed — provisioning the same slug again mints a NEW org —
+`::TestThePurge`. (2a) Every org-scoped Console table is deleted or kept BY
+NAME — `::TestTheClassificationCannotGoStale` (DELETES ∪ KEEPS_TABLES
+re-derived from information_schema; a new table in neither list is red).
+(3) The tenant plane dies whole and the NEIGHBOUR org survives whole;
+identity survives; `already_absent` retry arm — `test_org_purge_tenant.py`
+(R8, real tenant Postgres). (4) Every `organization_id` column either
+cascades to `organization` or is the named CRM exclusion —
+`::TestTheExclusionCannotGoStale` (goes red the day CRM threading lands, on
+purpose). (5) The two-token ladder ON THE REAL `gateway.main.app` — door
+mounted and reachable; no app-level bearer ⇒ the gateway refuses first;
+internal token alone ⇒ 401 at the door; operator token unset ⇒ 503; confirm
+mismatch ⇒ 400; failure ⇒ 502 carrying the cause; every refusal before the
+purge runs — `test_operator_door.py`. (6) The BFF order, the confirmation
+protocol, and the `needs_accept_absent` stop — `purge/route.test.ts` (vitest;
+now IN CI via the new `frontend-operator` job). (7) All three gateway-side
+credentials stay server-side, one file — `console.test.ts`'s widened
+credential scan. (8) The unbound tenant-discovery read is DECLARED —
+`test_db_engine_seam.py::_FACTORY_OPEN_ALLOW` gains `offboard.py` (and
+repairs the stale `access.py` entry the D50 promotion left behind).
+
+**Gates.** 🟢 **AGENT-SAFE — BUILD:** everything above, dark, against scratch.
+🔴 **OWNER-GATE — refuse by name:** setting `GATEWAY_OPERATOR_TOKEN` /
+`GATEWAY_INTERNAL_URL` / `GATEWAY_INTERNAL_TOKEN` on a live box (§8 env
+class) · **running the purge against a real organization** — it is the §6
+"production one-off" class made into a button; the operator console's typed
+confirmation exists precisely so the OWNER is the one pressing it. Deploy
+note (review P1): `api.metorite.com` proxies every path to the gateway, so
+arming the door on a box must be paired with a Caddy `/internal/*` block —
+the door then exists only on loopback, and the two tokens are defence in
+depth rather than the only wall.
+
+**Non-goals.** No customer-side self-delete (an org admin cannot destroy the
+org from inside the product) · no export bundle (the window keeps sign-in
+alive; a one-click export is future work) · no per-member operator delete —
+member offboarding/purge stays the customer admin's door
+(`colleague_onboarding.md` N8), deliberately · no backup/restore integration:
+a purge is forward-only, like every act on this platform (R6).
+
+**CP-2d · Passwordless email OTP via Resend — MINTED + SLICE 1 BUILT 2026-08-22,
+SLICE 2 BUILT 2026-08-23, SLICE 2 REPAIRED (review rounds 1 and 2) 2026-08-23
+(owner directive, D46.3).** ◐ **Both slices ship DARK —
+the flag and the key are unset everywhere — but the flag now ARMS the feature
+rather than being inert.** *(Owner's words
+2026-08-19: "Eventually, we should also have a two-factor authentication and
+email OTP system set up. Not made it by MVP, but documented for eventual build
+up." Dispatched 2026-08-22 as the email-OTP half; TOTP/passkey step-up stays
+deferred — see anti-scope.)*
+
+**What this slice IS.** A **passwordless email one-time-code** sign-in provider:
+the person enters an address, Resend emails a 6-digit numeric code, and the code
+round-trip verifies email ownership (the anti-spam gate). Identity stays
+IdP-attested for OAuth; this adds a **non-OAuth** identity path — and it does so
+by riding the **ONE** Auth.js v5 NextAuth session (`workbench/control_plane/src/
+auth.ts`), never a parallel auth/session store. **OTP, not magic-link** (owner's
+ask): Auth.js's built-in `Resend` provider is magic-link by default, and the two
+overrides `generateVerificationToken` (→ `generateOtp`, a crypto-strong 6-digit
+code) and `sendVerificationRequest` (→ emails THAT code) turn it into numeric OTP
+without leaving the one provider mechanism.
+
+**Where it lands.** The framework-free pure half — code generator, message, the
+Resend transport (injectable so tests never touch the network), and the config
+gate — is `workbench/control_plane/src/lib/emailOtp.ts`. The Auth.js wiring is a
+conditional block in `auth.ts` mirroring the Google `if (process.env.
+AUTH_GOOGLE_ID)` idiom. The surface reuses the ONE provider-rendering seam:
+`authPosture.ts::configuredProviders` gains a `resend` entry (`kind:"email"`)
+when configured, and `signin/SignInForm.tsx` renders an email field for the
+email-kind provider through the shared `Input` primitive. Slice 1 took **zero
+migrations**; **slice 2 takes exactly one** (tenant-plane **186**,
+`auth_email_otp_token`, RLS-EXEMPT — clauses 7 and 8) and still adds **no new
+engine, no DB driver in the Next tier and no Redis site** (R5, clause 6): the
+Next-side adapter is a thin object over new gateway routes, and the gateway
+reaches the row through the existing unbound `get_session_factory()` idiom.
+
+**Flag: `EMAIL_OTP_ENABLED`** — minted here (existed nowhere, verified);
+default unset = OFF; the exact-string-`"true"` idiom of `auth.ts:163`, never
+truthiness. `EMAIL_OTP_FROM` optionally overrides the verified sender.
+
+🛑 **The flag alone does NOT register the provider — and that is a safety
+requirement, not a nicety** *(hardening from the CP-2d review, 2026-08-22)*. An
+Auth.js email provider registered **without a database adapter** makes
+`@auth/core`'s `assertConfig` return **`MissingAdapter`** on **every**
+`/api/auth/*` request — so it **500s ALL sign-in, Google and Microsoft
+included**, not merely OTP. Gating registration on `EMAIL_OTP_ENABLED` alone
+would make one documented owner flag a **site-wide auth outage**. So the real
+gate is `isEmailOtpProviderReady` = env configured (`EMAIL_OTP_ENABLED ===
+"true"` **AND** `RESEND_API_KEY`) **AND** `EMAIL_OTP_ADAPTER_READY` — a single
+module constant, `false` until slice-2 wires the adapter. It is read by both
+`auth.ts` (the provider) and `configuredProviders` (the button), so a half-armed
+flag (key set, adapter absent) registers **nothing**: no provider, no button, no
+`MissingAdapter`, no outage, `/api/auth/providers` unchanged, byte-identical to
+today. `isEmailOtpConfigured` (the env half) stays separate and fully tested.
+
+**Done when** *(each clause names its fence; the fences that CAN run do, in this
+tree's node-env vitest — the framework-bound ones are source-regex + a review
+note, the `signin.test.ts:38-45` reason)*:
+
+1. ✅ **MET 2026-08-22.** Flag off OR key absent ⇒ the provider is NOT
+   registered and the sign-in surface offers no email option — byte-identical to
+   pre-CP-2d. Fence: `src/lib/emailOtp.test.ts` — the EXECUTED gate matrix
+   (`isEmailOtpConfigured` off unless flag `=== "true"` **and** key present; every
+   truthy-string reading of the flag stays OFF) and the seam proof
+   (`configuredProviders` yields no `resend` entry until configured), shown
+   red-first by mutating the gate to truthiness. The RUNTIME "`/api/auth/
+   providers` unchanged" is the source guard in `signin.test.ts`
+   (*"registers the Resend provider ONLY under the isEmailOtpProviderReady gate"*)
+   plus the reviewer's manual gate (next-auth cannot load here).
+1a. ✅ **MET 2026-08-22 (hardening — the flag cannot cause a site-wide auth
+   DoS).** Even with `EMAIL_OTP_ENABLED=true` **and** `RESEND_API_KEY` set, the
+   provider is NOT registered and the button does NOT appear while the adapter is
+   unwired (`EMAIL_OTP_ADAPTER_READY === false`, today) — so flipping the flag
+   before slice-2 is inert, never `MissingAdapter`. Fence:
+   `src/lib/emailOtp.test.ts` — *"the adapter guard makes the flag
+   un-footgun-able"* (env configured ⇒ `isEmailOtpConfigured` true but
+   `isEmailOtpProviderReady` false and `configuredProviders` has no `resend`
+   entry; the combined gate is exactly env-AND-adapter). Removing the
+   `&& adapterReady` term from either gate turns it RED.
+2. ✅ **MET 2026-08-22.** The provider only admits a **verified** email: the
+   recipient is Auth.js's resolved `identifier` and the session email is the
+   verified `user.email` (jwt callback), never a request body field (R11).
+   Fence: `signin.test.ts` — *"takes the verified email from Auth.js, never from
+   request input (R11)"*.
+3. ✅ **MET 2026-08-22.** No parallel session/auth path: the provider rides the
+   single `NextAuth({…})` config with the JWT strategy unchanged, and is the
+   Auth.js email provider, not a hand-rolled `Credentials` door. Fence:
+   `signin.test.ts` — *"rides the ONE NextAuth session"* + *"uses the Auth.js
+   email provider, never a hand-rolled credentials path"*.
+4. ✅ **MET 2026-08-22.** The sender is **Resend** and is never invoked over the
+   network in tests (injected + mocked); a non-2xx from Resend fails **CLOSED**
+   (throws, so a sign-in cannot silently appear to succeed). Fence:
+   `emailOtp.test.ts` — the fake-`fetch` transport assertions and the 422
+   fail-closed case.
+5. ✅ **MET 2026-08-22.** The Resend key never reaches the browser tier: the
+   surface derives from the seam props, and neither `signin/page.tsx` nor
+   `SignInForm.tsx` reads `RESEND_API_KEY`/`EMAIL_OTP_ENABLED`. Fence:
+   `signin.test.ts` — *"keeps the Resend key out of the browser tier"*.
+
+---
+
+**SLICE 2 — arming OTP.** *(Clauses 6–16, authored 2026-08-23 from the owner's
+three answers B1/B2/B3 and the dispatch audit's rulings H-A…H-F; the slice was
+NO-GO before them purely because it had no testable acceptance.)* Slice 2 is
+what makes `EMAIL_OTP_ENABLED` mean something: the Auth.js **database adapter**,
+the **rate limiter** that is the only defence a 6-digit code has, the
+**code-entry page**, and the flip of `EMAIL_OTP_ADAPTER_READY` to `true` — all in
+one change, because any subset of them is either inert or unsafe.
+
+6. ✅ **MET 2026-08-23 — no database in the Next tier (R5, ruling H-A).** The
+   adapter is a **thin custom object** whose persisting methods call new gateway
+   BFF-internal routes; the control plane gains **no** `pg` / `postgres` /
+   `@auth/*-adapter` dependency and opens no connection. It reaches the gateway
+   through the ONE existing seam (`lib/gateway.ts::headersActingAs`,
+   `gateway.ts:137`) and mints no second copy of the internal bearer.
+   ⚠️ **The object lives in TWO files, and the split is load-bearing** *(repair
+   round 1, finding P0)*: its **behaviour** — the method set and what each method
+   answers — is `src/lib/emailOtp.ts::emailOtpAdapterOver(call)`, parameterised
+   by the one outbound call, because that module is framework-free and therefore
+   **executable** in this tree's node-env vitest; `src/lib/emailOtpAdapter.ts` is
+   reduced to building that call out of `headersActingAs` and is the file the
+   bearer sweeps scan. The reason is finding P0 itself: the adapter's shape had
+   been argued in a docstring, the docstring was wrong, and no source-regex could
+   have seen it. This is the same seam, moved so it can be tested — never a
+   second one. Fences (**R7, the fence this rule did not have**):
+   `src/lib/emailOtpAdapter.test.ts` — an EXECUTED scan of `package.json` for a
+   pg/postgres/adapter dependency in either dependency block, an EXECUTED scan of
+   every file under `src/` for a `pg`/`postgres` import, a pin that the pure half
+   stays framework-free (a value import of `lib/gateway.ts` there would silently
+   stop every executed fence from running), and a source pin that the adapter's
+   only outbound call goes through `headersActingAs` and names no token env var
+   of its own. ⚠️ **The second half of that double-fence did not exist until the
+   repair** *(finding F1)*: both docstrings claimed `gateway.test.ts`'s bearer
+   sweep covered this module, and it did not — `NON_ROUTE_GATEWAY_CALLERS` was
+   pinned to `auth.ts` and `proxy.ts` with an exact-length assertion. The sweep
+   now names `src/lib/emailOtpAdapter.ts` and pins the length at
+   `ROUTES.length + 3`.
+7. ✅ **MET 2026-08-23 — the token lives on the TENANT plane and is RLS-EXEMPT
+   (owner answer B1, ruling H-B).** ⚠️ **This corrects a recorded defect in this
+   ticket**: the slice-1 text said the table would be *"tenant-scoped by R5"*,
+   and that is **wrong and would have bricked OTP on the day it shipped**. The
+   row is minted **before any session exists**, for an address that may belong to
+   no organization at all (the `console-empty` signup funnel is the whole reason
+   the address is being verified), so there is no `organization_id` to stamp and
+   an org-scoped policy would make every verification read return zero rows under
+   H3's now-LIVE phase-4 RLS. R5(a)'s exempt-identity-table permission is the
+   applicable clause — the same one `user_identity` and `org_membership` sit
+   under. Migration **186** (`infra/postgres/186_auth_email_otp_token.sql`, the
+   next free number taken at build time and re-checked at merge, **R1**) creates
+   `auth_email_otp_token`, and the table joins `gen_tenant_migration.EXEMPT` with
+   the reason *"belongs to an email, minted pre-session; no organization_id exists
+   to stamp"*. *(Repair round 1 added a nullable `reserved_at` to the same
+   migration — the send-slot claim of clause 11 — with an
+   `ALTER TABLE … ADD COLUMN IF NOT EXISTS` beside the idempotent create, so a
+   box that already applied the first cut of 186 gets the column on the next
+   ladder replay. 186 was and remains the next free number; **max is still 185**
+   elsewhere, re-checked 2026-08-23.)* Fences:
+   `tests/unit/test_tenant_coverage.py` (source gate + the
+   exemption-reason and exemption-count tripwires) and
+   `tests/unit/test_tenancy_boundary.py` (the partition assertions, which read the
+   same map).
+8. ✅ **MET 2026-08-23 — the name is PREFIXED and the migration fails LOUDLY on a
+   clash (ruling H-C).** The table is `auth_email_otp_token`, **never** a bare
+   Auth.js-conventional `verification_token`: the staging box's database also
+   carries Langfuse's schema, the collision is real, and
+   `CREATE TABLE IF NOT EXISTS` on a colliding name is a **silent no-op** that
+   leaves the adapter writing into somebody else's table. 186 therefore opens with
+   a `DO` block that raises when a relation of that name exists without this
+   migration's own column set, and only then runs the idempotent create. Fence:
+   `tests/unit/test_email_otp_token.py::TestTheMigrationRefusesAForeignTable`
+   (R8 — it plants a foreign `auth_email_otp_token` on a scratch database and
+   asserts the migration RAISES, shown red by removing the guard).
+9. ✅ **MET 2026-08-23 — the session strategy is PINNED in the same change that
+   passes an adapter (ruling H-D).** `NextAuth({ … })` now carries an explicit
+   `session: { strategy: "jwt" }`. Without it `@auth/core@0.41.2` (`lib/init.js:74`)
+   derives `strategy: config.adapter ? "database" : "jwt"`, so merely *passing* an
+   adapter silently converts the whole product — Google and Microsoft included —
+   to **database sessions**, and `assertConfig` does **not** catch it (with an
+   email provider present it demands only the three `emailMethods`, never the ten
+   `sessionMethods`). The failure would therefore be a runtime `createSession is
+   not a function` on every sign-in, not a config error. Fence: `signin.test.ts` —
+   *"pins the jwt session strategy in the same config that takes an adapter"*,
+   which reds **both** ways (adapter present without the pin, and the pin
+   removed).
+10. ✅ **MET 2026-08-23 (REWRITTEN in repair round 1) — the adapter is
+   STATELESS-TRANSPARENT and implements every method the pinned
+   `@auth/core@0.41.2` can invoke under this configuration (ruling H-E).**
+
+   🛑 **What this clause said before, and why it was a site-wide outage waiting
+   on a flag flip (finding P0).** It claimed a MINIMAL five-method set —
+   `createVerificationToken`, `useVerificationToken`, `getUserByEmail`,
+   `getUser`, `updateUser` — on the premise that *"`createUser`, `linkAccount`
+   and `getUserByAccount` are reachable only from the `!useJwtSession` branches
+   or from the webauthn/oauth arms, none of which this configuration can enter."*
+   **That premise is false**, and it was fenced INTO place by an assertion that
+   the adapter must *not* declare `getUserByAccount`:
+
+   - `lib/actions/callback/index.js:56-62` destructures and calls
+     `getUserByAccount` on **every** OAuth callback the moment an adapter is
+     present. Missing method ⇒ `TypeError` ⇒ `CallbackRouteError` on every Google
+     and Microsoft sign-in — not merely OTP — from the instant the owner sets
+     `EMAIL_OTP_ENABLED=true`. `handle-login.js:175-178` calls it a second time.
+   - Worse, adding that one method would not have fixed it. With
+     `getUserByAccount` answering null, `handle-login.js:231-250` consults
+     `getUserByEmail(profile.email)` — and the old adapter's `getUserByEmail` was
+     deliberately **total** (it never returned null). A truthy answer there with
+     no `allowDangerousEmailAccountLinking` is **`OAuthAccountNotLinked`**, so
+     Google would still have been refused, and the "totality" the clause called
+     load-bearing was the thing doing the refusing.
+
+   **What it is now.** With the adapter present, behaviour must equal behaviour
+   with **no adapter at all**, plus a verification-token store for the email arm
+   — because the adapter is passed to the ONE `NextAuth` config that also serves
+   Google and Microsoft. So the user-side methods are stateless and honest:
+   `getUserByEmail` · `getUserByAccount` · `getUser` answer **null** (there is no
+   user store to look in), and `createUser` · `updateUser` · `linkAccount`
+   **echo** what they are handed and persist nothing. Walked against the pinned
+   source under `jwt` that reproduces the adapter-less path exactly: on the OAuth
+   arm `createUser` echoes `userFromProvider` (name and image intact, so
+   `session.user.name` and CP-2b's `display_name` are unchanged); on the email
+   arm `getUserByEmail`'s null is what makes `index.js:156-160` derive
+   `{ id: randomUUID(), email: identifier }`, which `createUser` then echoes, so
+   the verified address still reaches the `jwt` callback. The one measurable
+   difference is `isNewUser`, `true` where the adapter-less path left it
+   `undefined` — read by nothing here (no `events`, no `pages.newUser`, and the
+   `jwt` callback ignores `trigger`).
+
+   Session methods (`createSession`, `getSessionAndUser`, `deleteSession`) and
+   `createAuthenticator` stay absent, but on a checked basis rather than an
+   asserted one: the pinned source shows every call site of the first three
+   behind a `useJwtSession` guard and the fourth inside the webauthn arm, and no
+   webauthn provider is registered.
+
+   ⚠️ **The adapter persists NO user rows and that is the design**: identity in
+   this product is the tenant plane's (`app_user`/`user_identity`, reached
+   through CP-2b's resolve), and an Auth.js `users`/`accounts`/`sessions` table
+   set would be the second identity store root `CLAUDE.md` §5 forbids by name.
+   ⚠️ **The database never holds the raw code**:
+   `lib/actions/signin/send-token.js` stores `createHash(`${token}${secret}`)` —
+   a SHA-256 of the code salted with `AUTH_SECRET` — so a database reader cannot
+   sign in, and **the rate limiter of clause 11 is the whole defence against
+   guessing**.
+
+   Fences, and the shape of them is the lesson: **(a)** `emailOtpAdapter.test.ts`
+   derives the reachable set FROM `node_modules/@auth/core` — it enumerates every
+   adapter method the three reachable arm files name (by call or by
+   destructuring), subtracts only those whose guard it also asserts by regex,
+   and requires the object's own `Object.keys` to equal the remainder; it
+   additionally pins the FILE LIST in `@auth/core` that mentions the adapter at
+   all, so a version bump that adds a call site in a new file reds before any of
+   the reasoning is trusted, and it re-asserts the premises (`jwt` pinned, no
+   webauthn provider, no `allowDangerousEmailAccountLinking`).
+   **(b)** `emailOtp.test.ts` **replays both arms** — transcribed line-by-line
+   from `callback/index.js` and `handle-login.js` with citations, raising a
+   `TypeError` for a missing method exactly as the destructure-then-call does —
+   against the real object, and asserts a Google callback completes with the
+   provider's user, that `getUserByEmail` never answers on the OAuth arm, that
+   the email arm still yields the derived user through `createUser`, and that a
+   full replay of both arms touches only the consume route. The old
+   `not.toContain("getUserByAccount")` assertion is **deleted**: it forbade the
+   fix.
+
+   ⚠️ **The `updateUser` trap is fenced STRUCTURALLY since repair round 2**
+   *(2026-08-23)*. `updateUser` is a deliberate echo and is only safe because
+   `handle-login.js:68` reaches it *exclusively* when `getUserByEmail` answers —
+   `@auth/core` calls it with `{ id, emailVerified }` alone, so a reachable one
+   returns a user with **no address** and the session comes out **anonymous**.
+   The fence for that coupling was a value check: `getUserByEmail` returns null
+   for three literal addresses. A store-backed lookup that simply *missed* on
+   those three would have stayed green while the trap was armed. The
+   implementation is now the exported constant `NO_STORED_USER` and the adapter
+   assembles it **by reference**, so `emailOtp.test.ts` identity-compares the two
+   (`expect(adapter.getUserByEmail).toBe(NO_STORED_USER)`) and **any** change
+   away from constant-null reds — including a behaviourally identical inline
+   rewrite (measured red 2026-08-23), which is the point: the property is the
+   shape, not the answer. The value assertions and the echo's address-less
+   consequence are asserted beside it.
+11. ✅ **MET 2026-08-23 — the rate limit is SERVER-SIDE in the gateway, with the
+   owner's numbers (owner answer B3, ruling H-F).** Enforcement is in the gateway
+   routes, **never** page-level: the Auth.js callback URL
+   (`/api/auth/callback/resend?token=…&email=…`) is directly reachable by anyone,
+   so a limiter on the entry page limits nothing. The numbers, all per
+   **identifier**: **5 verification attempts per 10-minute window**; on exhaustion
+   the outstanding token is **invalidated** *and* further attempts answer **429**
+   for the remainder of the window; **3 code-sends per hour**. The counter lives
+   **on the token row** (`attempts`, `last_attempt_at`) and is read and written
+   inside one transaction under `pg_advisory_xact_lock` keyed on the identifier —
+   **no new Redis surface**, because the tenant Redis seam deliberately has no
+   unbound fallback and this row exists before any tenant does.
+
+   ⚠️ **The send budget is enforced by an atomic SLOT CLAIM, not by the
+   in-flight exclusion — and believing otherwise was a real bypass** *(repair
+   round 1, finding P1b)*. Both legs of one send name it by the same `expires`
+   instant, and the count excludes it so the two legs agree. But `expires` is
+   `Date.now() + maxAge`: **two different sends started in the same millisecond
+   carry the same instant**, so they excluded each other, both passed a budget of
+   three, both upserted the one row, and **two emails went out for one slot** —
+   repeatable per millisecond, i.e. unbounded mail to a chosen address. The send
+   leg now claims the row in one statement (`INSERT … ON CONFLICT … DO UPDATE SET
+   reserved_at = now() WHERE reserved_at IS NULL`, migration 186's new nullable
+   `reserved_at`) and is refused with a new code `SendDuplicate` when the claim
+   finds the slot taken; the adapter turns that 429 into a throw, and the throw
+   is what keeps `sendVerificationRequest` from reaching Resend. The two legs
+   still converge on one row: the token leg creates the row **unclaimed** when it
+   wins the race, so the send leg claims rather than being refused. The two gates
+   now count different things on purpose — the send leg counts CLAIMED rows
+   (mails), the token leg counts ROWS (so a caller driving `/signin/otp/token`
+   alone, the clause-12 residual, is still bounded).
+
+   ⚠️ **The burst's ONE email must carry a code that verifies, and it did not**
+   *(repair round 2, finding P2)*. Refusing the duplicate send's **mail** was
+   only half of P1b. `send-token.js` starts `sendVerificationRequest` and
+   `createVerificationToken` in ONE `Promise.all`, so a rejected send leg cancels
+   nothing: the slot **loser's** `createVerificationToken` still landed on the
+   shared `(identifier, expires)` row, and `_UPSERT_SQL`'s
+   `COALESCE(EXCLUDED.token, …)` overwrote the winner's hash with it —
+   `EXCLUDED.token` is never NULL (`record_token` rejects an empty one), so the
+   docstring's claim that "`COALESCE` keeps an already-written hash" described
+   the **opposite** of the delivered SQL. The one email that went out therefore
+   carried a code that could never verify, with nothing anywhere reporting an
+   error.
+
+   The property is now whole-system: **under every interleaving of two
+   same-`expires` sends the row's hash at mail time is the SLOT WINNER's.** Two
+   statements make it true. `reserve_send(identifier, token, expires)` takes the
+   winner's hash and `_CLAIM_SEND_SQL` writes it **inside the statement that
+   decides who won**; `_UPSERT_SQL` is **first-writer-wins**
+   (`COALESCE(auth_email_otp_token.token, EXCLUDED.token)`) so no token leg can
+   replace it. The browser tier can supply that hash because `@auth/core` hands
+   the send leg the **raw** code: `emailOtp.ts::otpWireHash` recomputes
+   `createHash(`${token}${secret}`)` (`send-token.js:46,61`) and `auth.ts`
+   resolves the salt the same way (`provider.secret ?? AUTH_SECRET`, now a single
+   named const so the two reads cannot drift). A "`record_token` must not
+   overwrite a CLAIMED row" fix alone would **not** have sufficed — in the
+   record→reserve interleaving the loser's write lands while there is no claim
+   yet. Nothing new crosses the wire (it is the same value `/signin/otp/token`
+   already carries), no migration changed, and a token-less send is refused on
+   shape by the route and by `ValueError` in the store.
+
+   ⚠️ **A duplicate 6-digit code no longer 500s sign-in** *(finding P2)*.
+   `(identifier, token)` is deliberately not unique — two live codes for one
+   address can collide (≈1e-6 per pair) — but the consume `UPDATE … RETURNING`
+   then matched two rows and was read with `.one_or_none()`, which raises
+   `MultipleResultsFound`. It now updates `WHERE id = (SELECT … ORDER BY
+   created_at DESC, id DESC LIMIT 1)`, consuming the newest match.
+
+   Fence: `tests/unit/test_email_otp_token.py` (**R8, real Postgres** —
+   create/consume round-trip, single-use, expiry, the **6th attempt refused even
+   with the correct code**, the 429 window, the 4th send refused, **two sends
+   sharing an `expires` millisecond mailing once** and the burst spending exactly
+   one of the three, the token leg claiming no slot, and **two live codes with
+   the same hash consuming one row**), plus — since repair round 2 —
+   `TestTheBurstsOneMailCarriesAWorkingCode`, which drives **three orderings**
+   (reserve→record→reserve→record, record→reserve→reserve→record and
+   record→record→reserve→reserve) and asserts in each that the winner's code
+   **consumes successfully**, the loser's does not, the burst is still ONE row
+   and ONE of the three slots, and that a hash-less send raises. Measured red
+   2026-08-23 by restoring `COALESCE(EXCLUDED.token, …)` on the token leg (one
+   case) and by dropping the `token` write from the claim's conflict arm (the
+   other two). The browser half — that the recomputed hash equals `@auth/core`'s
+   own — is `emailOtp.test.ts`, which **imports `createHash` out of the pinned
+   `node_modules`** and compares outputs, and pins the expression `send-token.js`
+   hashes and where it resolves the secret.
+12. ✅ **MET 2026-08-23 — the pre-auth route residual is ACCEPTED and NAMED
+   (owner answer B2).** The three new gateway routes sit behind the app-wide
+   `require_authenticated` and are deliberately **not** in `PUBLIC_ROUTES`, the
+   posture `routes/signin.py:23-40` and `routes/signup.py:31-36` already state.
+   They inherit those routes' accepted risk in as many words: **a holder of the
+   internal token ALONE can drive them for arbitrary addresses**, because
+   `deps.py` trusts an `X-User-Email` presented with that bearer by design. What
+   that buys an attacker is narrower than either predecessor — no seat is
+   allocated and no organization is created — and it is bounded on purpose:
+   **tokens are single-use**; the **expiry is short** (Auth.js `maxAge`, which
+   this deployment sets to the module default of **10 minutes**,
+   `DEFAULT_OTP_MAX_AGE_S`); and **the rate limit applies to every caller,
+   internal bearer included** — there is no bypass path, which is why the limiter
+   is in the route rather than in the browser tier. The residual is therefore
+   *up to three emails an hour to a chosen address, and a ten-minute denial of
+   email-OTP sign-in for an address whose attempts are burned*. **The structural
+   narrowing remains §4.3's `GATEWAY_INTERNAL_TOKEN` / `LITELLM_MASTER_KEY` split**
+   (`work_plan.md` §6, §8 gate 1) — referenced, not built here.
+
+   ⚠️ **The DENIAL half needs no token at all, and attributing it to the
+   internal bearer understated it** *(repair round 1, finding F5)*. `proxy.ts`
+   passes `/api/auth/**` through **unauthenticated** — it must, or nobody could
+   sign in — so **anyone on the internet** can drive
+   `GET /api/auth/callback/resend?token=<junk>&email=<victim>`. Each request
+   reaches `POST /signin/otp/consume` through the BFF's own bearer, spends one of
+   the victim's five attempts, and the fifth **invalidates their outstanding
+   code**. Five anonymous requests therefore deny email-OTP sign-in to a chosen
+   address for ten minutes. That is **accepted and unchanged**: not charging
+   attempts for unauthenticated callers would be a limiter with a documented
+   bypass, and OAuth sign-in for the same person is unaffected. Per-IP throttling
+   is the answer and belongs at the reverse proxy (already in this ticket's
+   deferred list). P1b's slot claim narrows the *mail* half of the residual; the
+   attempt-burn denial is untouched by it and stays accepted.
+
+   ⚠️ Two smaller residuals, recorded so they are not rediscovered as findings.
+   **(i)** The send slot is reserved BEFORE the mail is handed to Resend, so a
+   **Resend transport failure spends the slot** — three failed sends lock an
+   address out for an hour. That is the fail-CLOSED direction and is deliberate:
+   releasing the slot on a transport error would make "make the transport fail"
+   the bypass. **(ii)** Every call here drives `deps._with_resolved_access` with
+   a **caller-chosen address** (that is what `require_authenticated` does with an
+   `X-User-Email`); for an address belonging to no member the resolver degrades
+   to no-access and logs a swallowed warning, so a novel address per request
+   writes a warning line per request on a phase-4-promoted catalog. Log volume,
+   not an access decision.
+13. ✅ **MET 2026-08-23 — the resolve interaction is IDENTICAL to Google, and the
+   one place it cannot be is stated.** An OTP sign-in for an org-less address
+   flows into the same `signIn` callback → `console-empty` → `signup_eligible` →
+   signup-limbo funnel as Google, with no branch of its own; a suspended or
+   seat-capped org is refused with the same codes. Two facts make that true rather
+   than merely intended. **(a)** On the email path there is no OAuth `profile`;
+   the callback already falls back to `user?.email` (`auth.ts:233-236`), which is
+   Auth.js's own resolved identifier, so the resolve gets the same verified
+   address it gets from Google. **(b)** ⚠️ **The email provider calls the `signIn`
+   callback TWICE** — once from `send-token.js` with `email.verificationRequest`
+   set, before the person has proved anything, and once from the callback leg
+   after the code round-trip. **Only the second leg resolves.** A resolve on the
+   first would allocate a seat for an address supplied by an anonymous visitor to
+   the sign-in form, which is precisely the farmable seat cap
+   `routes/signin.py`'s docstring exists to prevent — reduced there from *every
+   authenticated request* to *the completion of a sign-in*, and the send leg is
+   not a completion. The verification email is still sent (the refusal is the
+   answer, delivered after the code is entered), and the volume is bounded by
+   clause 11's three-per-hour. Fence: `signin.test.ts` — *"the send leg never
+   resolves"* (the guard is present and precedes the flag gate) plus the existing
+   CP-2b/CP-2c shape pins, which stay green unchanged.
+14. ✅ **MET 2026-08-23 — the code-entry page reuses slice 1, and never forks it.**
+   `pages: { verifyRequest: "/signin/code" }` (previously absent, so a person was
+   left on Auth.js's built-in "check your email" page with nowhere to type a
+   code). The route carries the identifier and submits the typed code to the
+   Auth.js callback as a plain `GET` form, which is byte-for-byte the URL shape
+   `send-token.js` builds for a magic link. The 6-digit code and the email body
+   remain `src/lib/emailOtp.ts`'s `generateOtp`/`otpEmail` — reused, never
+   reimplemented — and the page adds `/signin/code` to `proxy.ts`'s
+   `PUBLIC_PAGES`, without which the entry page redirects a not-yet-signed-in
+   person back to `/signin` and the flow cannot complete.
+
+   ⚠️ **The submitted address is CANONICAL, and it was not** *(repair round 1,
+   finding P1a)*. `@auth/core`'s send leg normalises through
+   `send-token.js`'s `defaultNormalizer`, so the token is minted for
+   `ada@customer.example`; the hand-built `GET` form submitted what was typed.
+   `callback/index.js:151-152` compares `invite.identifier !== paramIdentifier`
+   **verbatim** and throws `Verification` — but only **after**
+   `useVerificationToken` has consumed the row and charged an attempt. So
+   `Ada@Customer.Example` spent the person's code, told them it was wrong, and
+   burned one of their five attempts per retry until the address was locked out
+   for ten minutes. Two fixes, both required: **(a)** a
+   `canonicalOtpIdentifier` mirroring `defaultNormalizer` (lowercase, trim,
+   domain truncated at the first comma; never throws, unlike the original) is
+   applied at **both** browser write sites — the `sessionStorage` hand-off in
+   `SignInForm.tsx` and the code form's submitted field, which is now a single
+   hidden input carrying the canonical value with the visible box deliberately
+   unnamed; **(b)** `useVerificationToken` echoes the **requested** identifier
+   rather than the wire's canonical one, so the comparison is structurally
+   incapable of stranding a person on a code they have already spent. That is
+   safe because the comparison is not what enforces ownership here: the gateway
+   scopes the consume to the caller's `X-User-Email`, which *is* that identifier.
+
+   ⚠️ **The no-stashed-address arm was UNUSABLE, and the cause was a decision
+   taken over the LIVE input value** *(repair round 2, finding P1)*. The
+   component computed `known = canonicalOtpIdentifier(email) !== ""`, and `"a"`
+   canonicalises to `"a"` — so the **first keystroke** flipped `known` true and
+   unmounted the very field being typed into. A person arriving without a stash
+   (a different tab, a cleared store, private mode — the case the arm exists for)
+   could never finish entering their address; the only escape was *Start again*.
+   The property is now explicit: **`known` derives ONCE from the mount-time read
+   succeeding — `?email=`, else the `sessionStorage` hand-off — and never from
+   what is being typed**, while the typed value may only influence what is
+   SUBMITTED, still canonically. Both variables come from one pure helper,
+   `emailOtp.ts::codeEntryState(stash, typed) → { known, submitEmail }`, placed in
+   the lib layer for a measured reason: **this package has no DOM renderer** (no
+   jsdom, no testing-library, and adding one is out of scope), so a decision
+   written inside the component has no fence at all. The component holds `stash`
+   with exactly ONE writer (the storage effect) and feeds the visible box into a
+   separate `typed`.
+
+   Fence: `src/app/signin/code/code.test.ts` (source-regex: the callback path is
+   `/api/auth/callback/${EMAIL_OTP_PROVIDER_ID}`, the form is a `GET`, the page
+   reads no secret, it is in `PUBLIC_PAGES`, there is exactly ONE control named
+   `email` and it carries the helper's `submitEmail`, the `sessionStorage` write
+   is canonical too, and — since round 2 — that the component **destructures**
+   `known` out of `codeEntryState(stash, typed)`, binds it nowhere else, never
+   calls the canonicaliser itself, and has exactly one `setStash(` call site;
+   comments are stripped before the negative pins so the docstring may quote the
+   defect it forbids) — vitest here is node-env and cannot render the page, the
+   `signin.test.ts:38-45` reason. The executed half is in `emailOtp.test.ts`,
+   which drives the wire shape with `Ada@Customer.Example`, proves the identifier
+   the adapter returns is the one the callback will compare, carries the
+   canonicaliser's own matrix, and — since round 2 — drives `codeEntryState`
+   across the **whole typing sequence** (`""`, `"a"`, `"ad"`, `"ada@"`, the full
+   address, mixed case, whitespace) for both stash-present and stash-absent,
+   including the one-assertion form of the property: hold the stash, vary the
+   input, and `known` must not move. Measured red 2026-08-23 by deriving `known`
+   from the live value in the helper (3 cases) and by recomputing it in the
+   component (1 case).
+15. ✅ **MET 2026-08-23 — `EMAIL_OTP_ADAPTER_READY` is `true`, in this same
+   change.** That constant is what clause 1a's guard reads, so flipping it here
+   is what converts `EMAIL_OTP_ENABLED` from an inert documented flag into a real
+   owner switch. Fence: `emailOtp.test.ts`'s existing matrix, with **exactly one
+   assertion inverted and two re-parameterized** *(corrected in repair round 1,
+   finding F3 — the sentence here had said "two inverted and one strengthened",
+   which does not describe the diff)* — the **inverted** one is
+   `EMAIL_OTP_ADAPTER_READY` itself, now asserted `true`; the **re-parameterized**
+   two are `isEmailOtpProviderReady(configured, false)` and
+   `configuredProviders(configured, false)`, which drive the adapter half through
+   the **parameter** rather than through the constant, so the "adapter not ready
+   ⇒ no provider, no button" guard stays EXECUTED instead of becoming a tautology
+   on the day it was armed. Everything else in the file's pre-existing matrix is
+   untouched; repair round 1 then APPENDED the executed adapter fences clause 10
+   names, which are new tests rather than changes to old ones.
+16. ✅ **MET 2026-08-23 — both flag positions stay fenced; a dark box is
+   unchanged.** With `EMAIL_OTP_ENABLED` unset or `RESEND_API_KEY` absent — the
+   state of every environment — no provider is registered, `adapter` is passed as
+   `undefined` (which `@auth/core` treats exactly as absent, `assert.js:157`), the
+   sign-in surface offers no email option, and `/signin/code` is an orphan route
+   nothing links to. The one unconditional change is the `session: { strategy:
+   "jwt" }` pin, which is the value `@auth/core` already derives for an
+   adapter-less config. Fence: the pre-existing `emailOtp.test.ts` matrix stays
+   green with only clause 15's three adapter-state assertions changed, plus
+   `signin.test.ts`'s dark-ship pins (the provider push is still inside the
+   `isEmailOtpProviderReady` gate, and the `adapter:` option is ternaried off the
+   same predicate). *(Repair round 1, finding F2: that last pin used to carry a
+   dead `if (authSrc.includes("adapter:")) { …the same unconditional assertion
+   again… }`, which could never add a failure. It now asserts what the pin is
+   actually about — exactly ONE `adapter:` option in the file, matched at the
+   start of a line so prose cannot satisfy it, and both it and the strategy pin
+   inside the ONE `NextAuth({…})` config.)*
+
+**Gates unchanged, and the flag now bites.** 🔴 Providing `RESEND_API_KEY` on a
+real deployment and flipping `EMAIL_OTP_ENABLED=true` on a live box remain the
+owner's acts (§8). ⚠️ **What CHANGED with slice 2 is the consequence of those
+flips**: before it, either was a documented no-op; now the pair genuinely turns
+on a non-OAuth sign-in path. That is the point of the ticket, and it is why the
+rate limiter, not the code length, is what the review should be aimed at.
+
+**Deferred out of slice 2, deliberately** *(recorded so the next agent does not
+read them as omissions)*: a **reaper** for consumed/expired `auth_email_otp_token`
+rows (the table grows at three rows per address per hour at most, and a `DELETE`
+job is its own ticket with its own tenant-plane cadence question) · **resend-code
+UX** on `/signin/code` (the person returns to `/signin`; a "send another code"
+button would need its own view of the 3/hour budget) · **per-IP** limiting (the
+gateway sees the BFF's address, not the caller's, so an IP limiter here would
+throttle the deployment, not the attacker — it belongs at the reverse proxy) ·
+**TOTP/passkey step-up** and **SMS OTP**, unchanged anti-scope.
+
+**Gates** (🔴 OWNER-GATE): providing `RESEND_API_KEY` on a real deployment (a
+**secret**, §6(f)'s class) and flipping `EMAIL_OTP_ENABLED=true` on a live box
+(an **enforcement flip**) are the owner's acts; building the provider dark is
+agent-safe. ⚠️ *(Corrected 2026-08-23 — the sentence that stood here said either
+flip "before slice-2 is a no-op". **Slice 2 has landed**, so both flips now arm a
+live non-OAuth sign-in path. The adapter guard has done its job and is no longer
+what makes a flip safe; clause 11's rate limiter is.)*
+
+**Anti-scope.** **TOTP/passkey step-up** stays DEFERRED (its shape is unchanged:
+it rides the Auth.js session and is enforced at the gateway identity seam
+`deps.py`, never per-app, behind its own default-OFF flag with both positions
+fenced). **SMS OTP** is out (cost + SIM-swap surface) unless the owner asks by
+name. Neither slice flips a flag or deploys. *(Slice 1's anti-scope — "does NOT
+add a database adapter, does NOT build the code-entry page" — is retired: those
+are exactly what slice 2 built, clauses 6–16.)*
+
+**Sequencing.** **CP-0** → CP-1 → CP-2 → **CP-2a** → **CP-2b** → **CP-2c** → **CP-2e** → **CP-2f** → CP-3 → CP-4 →
 CP-5 → CP-6 → **CP-9** → CP-7 → CP-8, with **CP-4b** owed out of order: CP-6
 shipped before it, and it must land before the first Router caller, because
 every agent runtime streams. CP-4 is
@@ -5430,6 +6650,320 @@ the rejected alternative and the residual are recorded):
   `seat_admin` proxy (that proxy is the WRITE's transport, §9 residual 7). The
   surface slice is WS-30's; this item is the backend read + its data source.
 
+**(j) The MANUAL / bank-transfer activation — the OFFLINE twin of
+`payments.fulfil`** — ✅ **BUILT 2026-08-21 (WS-31, `cc-manual-activate`)**: one
+route, one request model, one new ledger reason, no migration. Platform staff
+activate a PAID plan for a customer that paid OUT OF BAND (bank transfer, cash,
+cheque) — there is no Razorpay order, and `payments.fulfil` (the checkout writer)
+is fenced to exactly its two capture/redemption call sites (done-when 9), so the
+offline path is a **sibling** that reuses the same store seams, never a third
+`fulfil` call site. `org_subscription.provider` is `CHECK (razorpay | manual)`
+(`001_customer_console.sql:163`) and `'manual'` had no writer until this — the
+schema pre-provisioned exactly this door.
+
+- **Route:** `POST /billing/subscriptions/activate`
+  (`main.py::activate_subscription_manual`).
+- **Auth:** the **`Operator`** door — a cross-org staff act that NAMES the org by
+  `org_slug`, exactly as `POST /billing/seats` does. **R11 does not bind a
+  named-org staff route** (the operator credential carries no tenant), but the org
+  is still resolved from the validated slug (`_org_id`, 404 if unknown), never
+  taken as a body identity. A customer `cc_live_` org key, a `cc_depl_`
+  deployment key and no-auth are each **401** — the same refusal every other
+  Operator route gives, and it is NOT reachable by any customer or deployment
+  credential.
+- **Behaviour (one transaction, the same seams `fulfil` uses, minus the order):**
+  `store.activate_subscription(provider='manual', …NULL provider ids…)` writes
+  `status='active'` with a real period (term from the request, default
+  `payments.SUBSCRIPTION_TERM_MONTHS`); `store.grant_seats(reason='manual')`
+  grants the plan's PAID seats; `store.add_credit(reason=LEDGER_REASON_MANUAL,
+  ref=<reference>)` runs only when the request carries `credits`. It does **not**
+  touch `organization.status` — same as `fulfil` (done-when 16). The response
+  surfaces the activated subscription plus the `_seat_grid` and credit balance the
+  reads already emit — never a recompute.
+- **Idempotency (the double-grant guard):** activating grants paid capacity and
+  `grant_seats`/`add_credit` are append-only INSERTs, so an org already holding an
+  **active** subscription is refused **409** (`already_active`) — the simpler safe
+  rule the ticket named. An operator adjusts a live term through the seat/credit
+  routes, never by re-activating; a `trial` (or any non-active) subscription, and
+  an org with no subscription row, activate. Because the 409 is a check-then-grant,
+  it is **serialised by an org-keyed advisory lock** —
+  `store.lock_org_activation(conn, org_id=…)`, the `lock_seat_capacity` /
+  `lock_discount_capacity` idiom (`pg_advisory_xact_lock(hashtext('activation:<org_id>'))`),
+  taken as the first statement of the transaction, before the status read, and
+  auto-released at txn end. Per-org key, so activations of different orgs never
+  serialise. `FOR UPDATE` alone would not do (a fresh org has no `org_subscription`
+  row to lock). So the guarantee — **exactly one seat grant, one ledger row, one
+  subscription row** — holds under **concurrency** (two simultaneous activations of
+  one fresh org), not merely a sequential repeat.
+- **Audit:** `_audit(action="subscription.activate_manual", actor="operator")`
+  with `reason='manual'`, the operator's free-text `reference`, the plan, seats
+  and term in the JSONB `detail` (`control_audit` has no `reason` column, so the
+  structured facts ride there, as every other audit does).
+- **The ledger reason:** `credits.LEDGER_REASONS` grew one member,
+  `LEDGER_REASON_MANUAL = "manual"` — the offline twin of `purchase`, its own word
+  so a term settled by bank transfer stays distinguishable from a processor
+  capture, and the same word `seat_grant.reason`, the audit row and
+  `org_subscription.provider` all carry for this activation. `credit_ledger.reason`
+  is bare TEXT with no CHECK (R6, `credits.py`), so the addition needs no
+  migration; the value-level fence is the vocabulary set and the `add_credit`
+  call-site scan, both green with `'manual'` in them.
+- **Fences (R7/R8), in
+  `tests/unit/test_customer_console_payments.py::TestTheManualActivation`**
+  (already on §7's list and pr-check's skip-guard), all against a real Postgres:
+  the happy path; credits-optional; `provider='manual'` not `'none'`; a custom
+  term; idempotency (409, no double-grant); **the concurrency proof** (two threads
+  activating one fresh org, released on a `threading.Barrier`, land exactly one
+  grant / credit / subscription and results `[200, 409]` — red-first without
+  `lock_org_activation`, ten iterations, the `test_a_concurrent_double_redeem`
+  idiom); unknown/inactive plan → 400 writing
+  nothing; unknown org → 404; **authz mutation-proved** (org key / deployment key
+  / no-auth → 401 and write nothing, the operator admitted; the 401 shown red
+  first by neutralising the guard via FastAPI `dependency_overrides` and
+  restoring it — no source edit); the provider CHECK and the ledger vocabulary
+  unweakened.
+- **Owner-gated, unchanged:** the Console deploys nowhere (ships DARK, no flag,
+  following the reads), the operator token is owner-held, and issuing a
+  `cc_depl_`/operator credential is §8's. This item is the route existing, not
+  running. *(R1: no migration is needed here; were one ever required, the next
+  free Customer-Console number is taken at build time by listing
+  `infra/customer_console/`, never written ahead.)*
+
+**CP-2h · Seat assignments — the whole experience, both personas — MINTED
+2026-08-24** (owner instruction, same day as proposed: “can you also get it done
+on the app itself so the customer itself can give access to seats, see the
+number of active seats and the number of seats available, as well as be able to
+release seats”). **D-SEAT-1…7 are thereby RECORDED as proposed below, plus
+D-SEAT-7 (new, the release-consequences ruling the owner asked for):** Written after the owner's live E2E hit the Settings →
+Organization → Seat assignments tab reading “not configured for this
+deployment”, and asked for the full flow — use cases and edge cases, customer
+and operator — to be ironed out. Decisions D-SEAT-1…6 below are the owner's;
+an agent builds none of this until a board row exists.
+
+**What is TRUE today (measured 2026-08-24 — re-verify anchors at dispatch):**
+
+1. The model is right and already fenced: membership ≠ seat; `seat_counts`
+   (purchased / assigned / available, clamped, plus the server-computed
+   `oversubscribed` flag) is computed once, Console-side (D32.5); the partial
+   unique index makes double-assignment impossible; “Unassigned is a state,
+   not an absence” (LS-7).
+2. `resolve_for_signin` AUTO-ALLOCATES a Core seat on a member's first admitted
+   sign-in — the seat cap is real because a person cannot become a user
+   without the Console allocating a seat (`console_resolve.py`).
+3. The gateway already carries the multi-tenant-correct seat-admin door:
+   `POST /seats/assign` + `/seats/release` proxy to the Console's deployment-key
+   `seat_admin` capability, org derived from the session, never from input
+   (`routes/seats.py`, fenced by `test_seat_admin_proxy_route.py`).
+4. The Settings tab's UI is BUILT (counts, Seated/Unassigned roster,
+   assign/release, the Console's own buy-more sentence on a cap 409, the
+   oversubscribed badge) — but its BFF (`api/billing/_console.ts`) calls the
+   Console DIRECTLY with `CUSTOMER_CONSOLE_URL` + a per-org
+   `CUSTOMER_CONSOLE_ORG_KEY` env var. On a shared multi-tenant box no single
+   org key is correct, the env is unset, and the tab fails closed to
+   “unconfigured” — which is the state the owner photographed. The surface is
+   dark for a STRUCTURAL reason, not a missing flag flip.
+
+**The one structural decision (D-SEAT-4, recommended first):** the customer
+seat surface must reach the Console THROUGH THE GATEWAY's deployment-key door
+— the seam that already exists for writes — with a matching gateway READ proxy
+for `seat_counts` + per-member seat state; the BFF→Console org-key path for
+seats is then retired (CLAUDE.md §5: no second way). A per-org env key on a
+shared deployment is the single-tenant assumption wearing a new hat.
+
+**The flow proposed, customer side:**
+
+- **Invite (D-SEAT-1).** Inviting NEVER blocks on seats — membership is free;
+  the seat is the paid thing. The invite surface shows availability inline
+  (“2 of 3 seats free”) and, at zero, says out loud: “No free seat — they'll
+  join as Unassigned and can't enter the workspace until one is free.”
+  Rationale: seat purchase is operator-mediated bank transfer today (H-14), so
+  coupling invite to purchase would block team setup on a payment round-trip.
+- **First sign-in (D-SEAT-2).** Keep auto-allocation when a seat is free
+  (today's behaviour — zero-friction for the ordinary case). When none is
+  free, ADMIT the member but hold them at a full-screen “waiting for a seat”
+  card — the org-less card's sibling: “<org> has no free seat for you. Your
+  admin can assign one from Settings → Organization.” Never a raw 409, never
+  a sign-in error. Their roster row reads **Awaiting seat**.
+- **The Seats tab.** Counts always on top, verbatim from the Console; roster
+  states: Seated · Unassigned · Awaiting seat (invited, not yet signed in);
+  Assign / Release per row; cap 409 renders the Console's buy-more sentence
+  (all built). Add: the count of people BLOCKED waiting is surfaced beside the
+  counts, because that number is the admin's to-do.
+- **Buy more.** Until Razorpay (H-14), “buy more seats” files a request the
+  operator sees (the Requests tab exists) rather than dead-ending.
+- **Release (D-SEAT-3).** Releasing frees the seat immediately; the released
+  member keeps membership and their roster row, and loses ENTRY at their next
+  resolve (the session-TTL window is stated in the UI copy, not hidden).
+- **Remove vs suspend (D-SEAT-5).** Removing a member auto-releases their
+  seat (a seat held by a non-member is a leak). Suspending KEEPS the seat —
+  suspend/unsuspend cycles must not churn seat history; releasing a suspended
+  member's seat is a separate, explicit act.
+- **The owner (D-SEAT-6).** The owner occupies a seat like anyone else — one
+  rule, no special case; the plan minimum of one seat is why an org of one
+  always works.
+
+**Operator side:** set seats-purchased at activation and adjust on payment
+(built); see per-org assigned/purchased and the oversubscribed flag in the
+customer detail; reducing purchased below assigned WARNS and sets the flag but
+NEVER auto-releases — divergence is reported, never auto-corrected, same
+doctrine as reconciliation (§6.2 of the delivery framework). Offboarding
+already releases seats via CP-2g's purge.
+
+**Edge cases the build must fence (R7):** concurrent assigns (the DB index
+wins, the loser gets the cap sentence); re-inviting a previously released
+member (roster row persists, assign re-mints); oversubscribed clamp
+(`available` never negative); the unseated member's experience on EVERY
+surface (API calls refuse cleanly, not just the shell); seat writes when the
+Console is down (fail closed, nothing changes, the tab says so — built).
+
+**D-SEAT-7 — what releasing a seat DOES and DOES NOT do (recorded
+2026-08-24, owner's direct question):**
+
+- **Console:** the `seat_assignment` row is stamped `released_at` and KEPT —
+  seat history is billing evidence, never deleted. Capacity frees instantly;
+  `seat_counts` reflects it on the next read.
+- **Data: NOTHING happens to it.** Seats gate ENTRY, not data. Every object the
+  person created or touched — tasks, chats, projects, documents, CRM records,
+  messages, their Personal-Center content — is ORGANIZATION data on the tenant
+  plane and stays exactly where it is, under the org's normal visibility rules
+  (private → Center → org, D12). Releasing a seat deletes nothing, hides
+  nothing, reassigns nothing.
+- **The person:** keeps their membership and their roster row (**Unassigned**).
+  An already-open session lives until its next resolve (the TTL window, stated
+  in UI copy). At that next resolve: a FREE seat re-seats them automatically —
+  **seats are capacity, not access control** — and no free seat holds them at
+  the gate (D-SEAT-2's waiting card).
+- **Therefore, loudly, in the UI:** *release is not removal.* To bar a person,
+  suspend or remove them on the Members tab (remove auto-releases their seat,
+  D-SEAT-5; their data STILL remains org property under the existing
+  member-removal doctrine). Releasing while a seat stays free is a no-op from
+  the person's point of view by design — the admin who wants both the seat back
+  AND the person out performs two acts, and the UI says so.
+
+**Done-when (sketch, to be narrowed at mint):** (1) the Seats tab works on the
+shared box with NO per-org env, through the gateway door; (2) an invite at
+zero seats lands a member who is visibly Awaiting seat and is held at the
+waiting card, and assigning a seat admits them on their next resolve; (3) the
+blocked-count is visible to the admin; (4) buy-more files a visible request;
+(5) remove releases the seat, suspend does not — each fenced.
+
+**Slice 1 — the D-SEAT-4 reroute — BUILT 2026-08-24, repaired (round 1) the same
+day.** Done-when **1** is met **for a SINGLE-membership admin who is `owner` or
+`admin` in the Console registry**, and that qualification is the whole of the
+slice's honesty:
+
+- **A multi-org actor gets a permanent 409.** `_admin_scheme_for_deployment`
+  refuses to guess between two admissible orgs (the chooser is a named non-goal),
+  so an email holding memberships in two organizations placed on this box has NO
+  seat surface at all. Repair round 1 made that state say so instead of reading
+  as an outage; it did not remove it.
+- **And it is reachable CROSS-TENANT by an unrelated org.**
+  `store.deployment_visible_orgs` (`store.py` ~:722) joins `org_membership`
+  **without consulting `status`** — deliberately, as CP-2b clause 4 words the
+  predicate, and already recorded there as a finding. Consequence, unrecorded
+  until now: an admin of org B who *invites* org A's owner's email creates an
+  `invited` row in B, which makes that email multi-org, which turns off **org A's
+  entire seat surface** — a switch org A neither owns nor can see, with no UI
+  anywhere explaining why. No data crosses; the damage is availability, and the
+  actor is outside the affected tenant.
+- **The tenant/registry org mismatch is the same root.** The org this read and
+  these writes resolve is the REGISTRY's (placement ∩ membership), never the
+  tenant org the caller is signed into. Where those differ, an actor reads and
+  writes the *wrong* org's seats from the right org's page (P2 — no unauthorized
+  disclosure of another tenant's data beyond its seat roster, but a wrong-tenant
+  WRITE). Nothing compares them today.
+
+**Slice 2 gains an item, and it goes FIRST — thread the caller's SESSION
+organization through, and VALIDATE it** *(added by repair round 1; it owns all
+three defects above, and it precedes the waiting card because until it lands the
+surface is simply wrong for a multi-org actor).* The gateway knows the tenant org
+of the
+authenticated session; it must carry that org to the Console, and the Console
+must check it against the caller's admissible set rather than deriving one by
+uniqueness. That turns "exactly one admissible org" from a precondition into a
+comparison — which is precisely the §4 idiom `api/billing/_console.ts`
+`requirePurchaser` already applies (*"the caller's organization must BE the
+key's"*, added 2026-08-19, after the same class of bug: capability answered *may
+they buy* while the credential decided *whose account*). R11 is preserved because
+the org still comes from the authenticated session and never from request input.
+Fixes, together: the multi-org 409, the cross-tenant switch-off above, and the
+registry-vs-tenant mismatch. *(Anchor, re-verify at dispatch:
+`acb_auth.roles.UserContext.organization_id` is where the gateway already holds
+it. The one thing slice 2 must SETTLE rather than assume is whether that id and
+the Console's `organization.id` are the same id space — if they are not, the
+comparison is on the slug, and asserting sameness without checking is how this
+class of bug got here in the first place.)*
+
+The rest of slices 2-5 remain, deliberately untouched here (no waiting card, no
+invite banner, no Awaiting-seat state, no blocked count, no buy-more request).
+What shipped, one layer per line:
+
+- **Console** — `POST /registry/seats/overview` beside the two `seat_admin`
+  writes, on the SAME capability and the SAME `_admin_scheme_context` role gate
+  (`owner|admin`): "may read the roster and the counts" is the same question as
+  "may move a seat", so a second, looser gate would be a policy nobody asked
+  for. It returns `SeatOverviewView` = `SeatsView`'s `_seat_grid` plus
+  `MembersView`'s `store.org_members` ⋈ `store.live_seats_by_email`, in ONE
+  transaction — **two existing models composed, no new SQL, no second seat
+  vocabulary (D32.5), no migration**. POST rather than GET so the actor travels
+  in the body exactly as the sibling writes send it; a GET would need a header or
+  a query string, i.e. a second way to say who is asking on the one axis where a
+  second way turns a derivation into an assertion. A `suspended` org can still
+  read (the §9.3(5) reasoning — it is the one deciding whether to buy); a
+  `deleted` one cannot.
+- **`acb_auth.console_resolve`** — `seat_overview_on_console`, the third arm on
+  the ONE Console client, sharing the extracted `_post_seat_call` transport with
+  the two writes so there is one bearer, one timeout and one verdict-vs-outage
+  policy. Non-allocating: it never touches `resolve_for_signin`, so the cap
+  cannot be farmed through it. `routes/seats.py` was already an allowed importer,
+  so the four-caller boundary did not widen.
+- **Gateway** — `GET /seats/overview`, session-derived actor, relaying the
+  Console's 403/409 as themselves. 503 on an unwired box via
+  `_unwired_read_refusal()` — the same status as the write arm, logged
+  `seats.read_unwired` at WARNING rather than the write's `seats.write_unwired`
+  ERROR, so an operator grepping for genuinely dark writes keeps finding writes.
+- **Workbench** — ONE new hop, `src/app/api/org/seats/route.ts`, on the
+  session-hop idiom (`proxyToGateway`), holding no Console URL and no key. *(The
+  first draft added `assign/route.ts` + `release/route.ts` beside it; they were
+  byte-identical to the ALREADY gateway-backed `api/billing/seats/{assign,
+  release}` and were deleted in repair round 1 — the seam is the gateway route,
+  and a second BFF file in front of it is a second way to say one thing,
+  CLAUDE.md §5. The `/api/billing/` NAME on those two is now only a name; both
+  hold no credential and reach the deployment-key door. Renaming them is a later
+  slice's cosmetic move, not a reason to keep two implementations.)* The org-KEY
+  path (`api/billing/_console.ts` and the billing pages) is **untouched** —
+  those are per-org surfaces by construction.
+- **UI** — `SeatsTab.tsx` reads `/api/org/seats` once for both halves and posts
+  to `/api/billing/seats/{assign,release}`. Every UX semantic is unchanged
+  except the read's outcome handling: the counts block, the buy-more sentence,
+  the oversubscribed badge and the roster join are as they were, and no restyle.
+  **Repair round 1 replaced the inline status branch with
+  `interpretOverviewRead(status, payload)` in `lib/seatRoster.ts`** — five
+  states, testable: 503 `unconfigured`, **403 `restricted`** (a calm
+  founder-only sentence, no red banner — the Console ANSWERED, and since no
+  Console door ever writes `role='admin'` (§6 CP-2f) this is every admin but the
+  founder), **409 `ambiguous`** (its own multi-org sentence; a 409 carrying the
+  write doors' `buy_more` degrades to `error` rather than telling a confident
+  lie), and only the remainder `error`. Before it, every non-2xx that was not
+  503 read "Could not read seats — the seat plane did not answer", so a refusal
+  drew as an outage and an operator got a fabricated incident.
+- **Fences (R7/R8)** — `tests/unit/test_customer_console_seat_overview.py` (R8,
+  real Postgres, 21 tests, 0 skipped: the read is byte-identical to
+  `GET /me/seats` + `GET /me/members`, org A never reads org B, a key placed on
+  another box resolves nobody, capability/role/R11/lifecycle gates, and the read
+  allocates nothing); `test_seat_admin_proxy_route.py` grew four classes for the
+  overview route and its client (36 tests); `seatRoster.test.ts` grew the payload
+  reader, `interpretOverviewRead`'s five outcomes (403 and the multi-org 409 are
+  NOT errors; a `buy_more` 409 is), and a source scan pinning the tab off the
+  org-KEY reads `GET /api/billing/seats` + `/api/billing/members` — deliberately
+  narrower than "no `/api/billing/` string", because forbidding the prefix
+  wholesale is what pushed the duplicate write pair into `/api/org/`.
+  `test_customer_console_resolve.py`'s route-table parametrisation picked the new
+  door up automatically and required its capability entry.
+
+**Still DARK.** No live deployment key holds `seat_admin` and no environment sets
+`CUSTOMER_CONSOLE_URL`/`_DEPLOYMENT_KEY`, so every layer refuses honestly today.
+Granting the capability and landing the key are OWNER-GATE (§8 gates 7/8).
+
 ## 7. Verification
 
 ```bash
@@ -5441,13 +6975,44 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_api.py tests/unit/test_customer_console_key_auth.py \
               tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
               tests/unit/test_customer_console_resolve.py \
-              tests/unit/test_customer_console_payments.py
-# ⚠️ The last line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR THAT
-# CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_seat_overview.py
+# ⚠️ The `_seat_overview.py` line is CP-2h slice 1's suite (the D-SEAT-4
+# deployment-key seat READ `POST /registry/seats/overview`), added 2026-08-24 IN
+# THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry (the hand-list
+# went 9 -> 10). It proves the read is byte-identical to `GET /me/seats` +
+# `GET /me/members` for the same org (the ONE seat vocabulary, D32.5), that org
+# A's actor can never read org B and that a key placed on another box resolves
+# nobody here, the `seat_admin` capability gate (a `cc_live_` org key is 401),
+# the role gate (an active plain `member` is 403), R11 (`org_slug` is 400, never
+# ignored), that a `deleted` org is refused while a `suspended` one can still
+# see what it holds, and that the read allocates nothing. It reads this file and
+# the workflow and fails if its own name is dropped from either.
+# ⚠️ The `_member_write.py` line is CP-2f's suite (the Console member-add door
+# `POST /registry/members` and D50.3's `invited -> active` promotion), added
+# 2026-08-24 IN THE PR THAT CREATED IT, with `pr-check.yml`'s skip-guard entry
+# (the hand-list went 8 -> 9). It proves the `member_admin` capability gate, the
+# R11 derivation (no `org_slug`, one byte-identical 403 across the three
+# negatives), that an invited member becomes visible to `GET /me/members` AND
+# seat-assignable where `_seat_admin_target` previously 404'd, that the invite
+# burns no Core seat, that the write is create-only, and that the promotion is
+# guarded to `invited` alone. It reads this file and the workflow and fails if
+# its own name is dropped from either.
+# ⚠️ The `_payments.py` line is CP-9 + SC-4g's suite, added 2026-08-18 IN THE PR
+# THAT CREATED IT, together with `pr-check.yml`'s skip-guard entry (the Console
 # hand-list went 6 -> 7). It needs no Razorpay account: the seam runs against
 # `payments.FakeProvider`, which signs with the REAL HMAC-SHA256 algorithm, so
 # only the network is fake. It reads this file and the workflow and fails if
 # its own name is dropped from either.
+# ⚠️ The `_operator_list.py` line is CP-8 slice 1's suite (the cross-org
+# customer list, `GET /orgs`), added 2026-08-22 IN THE PR THAT CREATED IT, with
+# `pr-check.yml`'s skip-guard entry (the hand-list went 7 -> 8). It proves the
+# read is Operator-only (a cc_live_ customer key is 401), that its seat grid is
+# byte-identical to `GET /billing/summary`'s (the ONE seat vocabulary), and that
+# MRR is paise and zero unless the subscription is active. It reads this file
+# and the workflow and fails if its own name is dropped from either.
 
 # CP-2b DEPLOYMENT half (added 2026-08-18 with the B3 answer, §6(i);
 # the VARIABLE NAME corrected the same day with the B-a answer).

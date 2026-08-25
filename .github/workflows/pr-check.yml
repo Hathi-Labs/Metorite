@@ -233,6 +233,24 @@ jobs:
       # fails if the entry is ever removed; that is the closest a hand-list
       # gets to defending itself).
       #
+      # ⚠️ WS-31 CP-2h slice 1 (2026-08-24) adds the TENTH Console suite,
+      # `test_customer_console_seat_overview.py` — the D-SEAT-4 deployment-key
+      # seat READ (`POST /registry/seats/overview`), added IN THE PR THAT
+      # CREATED IT and carrying the same self-defending pair of tests (it reads
+      # this file AND `customer_console.md` §7). It proves the read is byte-
+      # identical to `GET /me/seats` + `GET /me/members` (the ONE seat
+      # vocabulary), that org A's actor can never read org B, the `seat_admin`
+      # capability and role gates, and that a `deleted` org is refused while a
+      # `suspended` one can still see what it holds.
+      #
+      # ⚠️ WS-31 CP-2f (2026-08-24) adds the NINTH Console suite,
+      # `test_customer_console_member_write.py` — the member-add door and
+      # D50.3's `invited -> active` promotion — added IN THE PR THAT CREATED IT
+      # and carrying the same self-defending pair of tests (it reads this file
+      # AND `customer_console.md` §7). `test_invite_console_mirror.py` joins
+      # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
+      # it is named here so a DB gate leaking into it later disarms loudly.
+      #
       # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
       # -coded to the Console suites' skip string — so a suite gated on a
       # DIFFERENT variable could be added to the file list above, skip every
@@ -246,10 +264,14 @@ jobs:
             tests/unit/test_customer_console_router.py tests/unit/test_customer_console_lifecycle.py \
             tests/unit/test_customer_console_resolve.py \
             tests/unit/test_customer_console_payments.py \
+            tests/unit/test_customer_console_operator_list.py \
+            tests/unit/test_customer_console_member_write.py \
+            tests/unit/test_customer_console_seat_overview.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
             tests/unit/test_seat_admin_proxy_route.py \
+            tests/unit/test_invite_console_mirror.py \
             tests/unit/test_signup_provision_route.py \
             tests/unit/test_signup_reconciler.py \
             tests/unit/test_billing_purchase_capability.py \
@@ -257,6 +279,14 @@ jobs:
             tests/unit/test_org_provisioning.py \
             tests/unit/test_owner_bootstrap.py \
             tests/unit/test_credential_tenant_threading.py \
+            tests/unit/test_h3_rls_promotion_rehearsal.py \
+            tests/unit/test_h6_identity_shadow.py \
+            tests/unit/test_h6_rbac_rekey.py \
+            tests/unit/test_email_otp_token.py \
+            tests/unit/test_invited_member_promotion.py \
+            tests/unit/test_org_purge_console.py \
+            tests/unit/test_org_purge_tenant.py \
+            tests/unit/test_operator_door.py \
             -q -rs 2>&1 | tee /tmp/platform.txt
           if grep -q "CUSTOMER_CONSOLE_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::Customer Console suites skipped — R8 gate is disarmed."
@@ -288,6 +318,30 @@ jobs:
           # resolve to A and B's to B against the schema the ladder produces,
           # which no fake can answer for — a `count(*)` sub-select and a
           # composite ON CONFLICT arbiter are exactly slice 6's class of bug.
+          #
+          # WS-29 H3 adds the seventh, same string again:
+          # `test_h3_rls_promotion_rehearsal.py`. It builds a DEDICATED database
+          # (never the shared ladder DB), applies the four `generated/` phases by
+          # hand and connects as a non-privileged role to prove two-org RLS
+          # isolation + WITH-CHECK write refusal + the sign-in brick — none of
+          # which a fake can answer for. A skip here would mean the H3 gate is
+          # disarmed, which is exactly the state this whole step exists to catch.
+          #
+          # WS-29 H6 slice 1 adds the eighth, same string again:
+          # `test_h6_identity_shadow.py`. It proves against the real ladder that
+          # the identity-shadow dual-write lets one email hold membership in TWO
+          # orgs (create-only, never a move) and that the catch-up backfill
+          # (migration 182) reconciles and is idempotent — a two-org membership
+          # and a composite ON CONFLICT arbiter are exactly slice 6's class of
+          # bug, invisible to a fake.
+          #
+          # WS-29 H6 slice 4 (D48) adds the ninth, same string again:
+          # `test_h6_rbac_rekey.py`. It proves against the real ladder that
+          # migration 184 backfills every RBAC row's `user_identity_id` through
+          # the lower(email) bridge (NULL only where no identity), is idempotent,
+          # and that the dual-write on `set_roles` / the owner bootstrap populates
+          # both columns to the same identity — a lower(email) join and an
+          # IS DISTINCT FROM guard are exactly the class a fake cannot answer for.
           if grep -q "TENANT_LADDER_DATABASE_URL unset" /tmp/platform.txt; then
             echo "::error::A tenant-ladder suite skipped — the tenant R8 gate is disarmed."
             exit 1
@@ -442,6 +496,34 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: workbench/control_plane/package-lock.json
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Unit tests
+        run: npm test
+
+  # The operator console had tests but NO CI running them — a fence that never
+  # runs is advisory by accident (R7). Same shape as the workbench job; its
+  # suite carries CP-2g's purge-route ORDER pin (tenant before registry,
+  # authority check first), which is the only fence on that ordering.
+  frontend-operator:
+    name: "Operator console (typecheck + unit tests)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workbench/operator_console
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: workbench/operator_console/package-lock.json
 
       - name: Install deps
         run: npm ci --no-audit --no-fund

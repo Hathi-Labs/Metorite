@@ -1,0 +1,180 @@
+/**
+ * Fences for the numeric-code entry page (CP-2d slice 2, clause 14).
+ *
+ * Source-level, the measured reason `signin.test.ts:38-45` records: vitest here
+ * is node-env, so a page cannot be rendered and `import("@/auth")` dies inside
+ * next-auth. What CAN be pinned is the wire contract — which URL the typed code
+ * is submitted to, under which parameter names, and that the page is reachable
+ * by somebody who is not signed in. Every one of those is a silent failure when
+ * wrong: the form still renders, the button still clicks, and nothing verifies.
+ */
+import { readFileSync } from "node:fs";
+
+import { describe, expect, it } from "vitest";
+
+import { EMAIL_OTP_PROVIDER_ID, OTP_EMAIL_STORAGE_KEY } from "@/lib/emailOtp";
+
+const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf-8");
+const form = readFileSync(new URL("./CodeForm.tsx", import.meta.url), "utf-8");
+const proxy = readFileSync(
+  new URL("../../../proxy.ts", import.meta.url),
+  "utf-8",
+);
+const signInForm = readFileSync(
+  new URL("../SignInForm.tsx", import.meta.url),
+  "utf-8",
+);
+
+/**
+ * The file with its comments removed.
+ *
+ * ⚠️ Needed, not tidiness: the negative pins below ("nothing else binds
+ * `known`", "this component never canonicalises") are about CODE, and
+ * `CodeForm.tsx`'s docstring quotes the defective expression verbatim so the
+ * next reader knows what the bug looked like. Matching the raw text would fail
+ * on the explanation of the bug rather than on the bug — a fence that forbids
+ * describing what it forbids.
+ */
+function code(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
+describe("the code page submits to Auth.js's own callback", () => {
+  it("posts the typed code to /api/auth/callback/<provider> as a GET", () => {
+    // `@auth/core` verifies at
+    // `GET /api/auth/callback/<provider>?token=…&email=…` — byte-for-byte the
+    // URL `lib/actions/signin/send-token.js` puts in a magic link. A native GET
+    // form produces exactly that navigation, so the session cookie and the
+    // post-sign-in redirect are the browser's job rather than this page's.
+    expect(form).toContain(
+      "action={`/api/auth/callback/${EMAIL_OTP_PROVIDER_ID}`}",
+    );
+    expect(form).toContain('method="get"');
+    // The provider id is IMPORTED from the one seam, never transcribed — a
+    // literal here would keep passing after the provider was renamed.
+    expect(form).toContain('from "@/lib/emailOtp"');
+    expect(EMAIL_OTP_PROVIDER_ID).toBe("resend");
+  });
+
+  it("names the two parameters @auth/core actually reads", () => {
+    // `callback/index.js:132-133` reads `query.token` and `query.email`.
+    // Renaming either breaks verification with no visible symptom until
+    // somebody tries to sign in.
+    expect(form).toContain('name="token"');
+    expect(form).toContain('name="email"');
+  });
+
+  it("submits the CANONICAL address, and only that (P1a)", () => {
+    // ⚠️ The repair of review finding P1a, on the side that produced it. The
+    // send leg normalises through `@auth/core`'s `defaultNormalizer`, so the
+    // token is minted for `ada@customer.example`; this form used to submit
+    // `Ada@Customer.Example`. `callback/index.js:151-152` compares the two
+    // VERBATIM — but only AFTER `useVerificationToken` has consumed the row and
+    // charged an attempt. The person's code was spent and they were told it was
+    // wrong, and each retry cost another of their five attempts.
+    //
+    // The canonicalisation itself now lives in `codeEntryState` (P1, round 2 —
+    // see the next block) and is EXECUTED in `emailOtp.test.ts` over both arms;
+    // what is pinned here is that the submitted field is that helper's answer.
+    expect(form).toContain('<input type="hidden" name="email" value={submitEmail} />');
+    // Exactly ONE control named `email`. A second (the visible box, when the
+    // address is unknown) would submit the raw string beside the canonical one
+    // and `@auth/core` reads the first — which is how this comes back.
+    expect(form.match(/name="email"/g)?.length).toBe(1);
+    // And no raw state is ever what is submitted — neither the old `email` nor
+    // the current `typed`.
+    expect(form).not.toContain('name="email" value={email}');
+    expect(form).not.toContain('name="email" value={typed}');
+  });
+
+  it("takes `known` from the helper and NEVER from the input value (P1 round 2)", () => {
+    // ⚠️ The finding this block exists for. The component computed
+    // `known = canonicalOtpIdentifier(email) !== ""` over the LIVE input, and
+    // `"a"` canonicalises to `"a"` — so the first keystroke flipped `known`
+    // true and unmounted the very field being typed into. The fallback arm was
+    // unusable: a person with no stashed address could never finish entering
+    // one. There is no DOM renderer in this package (node-env vitest), so the
+    // decision was moved to a pure helper that CAN be executed
+    // (`emailOtp.test.ts` drives the whole typing sequence) and what is left
+    // here is the structural half: this component must only CONSUME it.
+    expect(form).toMatch(
+      /const \{ known, submitEmail \} = codeEntryState\(stash, typed\);/,
+    );
+    // …imported from the ONE seam, never transcribed here.
+    expect(form).toMatch(/import \{[\s\S]*?codeEntryState,[\s\S]*?\} from "@\/lib\/emailOtp";/);
+    // Nothing else in the file may bind `known` — a locally recomputed one is
+    // the defect returning under a different name. (Comments stripped: the
+    // docstring quotes the defective expression on purpose.)
+    expect(code(form).match(/\bknown\s*=/g)).toBeNull();
+    // The component does not canonicalise on its own either: one canonicaliser,
+    // inside the helper, or the two answers can disagree.
+    expect(code(form)).not.toContain("canonicalOtpIdentifier");
+    // `known` derives from the STASH, and the stash has exactly ONE writer —
+    // the mount-time storage read below. A `setStash` on the input's `onChange`
+    // would reintroduce the unmount-mid-typing bug through the back door.
+    expect(form.match(/setStash\(/g)?.length).toBe(1);
+    expect(form).toContain("if (stashed) setStash(stashed);");
+    // …and the visible box feeds `typed`, which only reaches `submitEmail`.
+    expect(form).toContain("onChange={(e) => setTyped(e.target.value)}");
+    expect(form).toContain("value={typed}");
+  });
+
+  it("reads no secret and asserts no identity of its own", () => {
+    // The address is user input here and that is fine — ownership is proven by
+    // the code round-trip and the session email is Auth.js's verified value
+    // (R11 is about what the SERVER trusts). What must never appear is a
+    // credential or a gateway call.
+    expect(form).not.toContain("process.env");
+    expect(form).not.toContain("RESEND_API_KEY");
+    expect(form).not.toContain("GATEWAY_INTERNAL_TOKEN");
+    expect(form).not.toContain("headersActingAs");
+  });
+});
+
+describe("the code page is reachable, and only while OTP is armed", () => {
+  it("is in proxy.ts's PUBLIC_PAGES", () => {
+    // Leaving it out does not fail safe, it fails BROKEN: a person asking for a
+    // sign-in code is by definition not signed in, so the proxy would bounce
+    // them back to /signin and the code could never be entered.
+    expect(proxy).toContain('"/signin/code"');
+  });
+
+  it("redirects to /signin when the feature is dark — not a 404", () => {
+    // The same ruling CP-2c slice 4 made for `/signup`: a redirect to the page
+    // that can actually sign you in, rather than a not-found on a route that
+    // demonstrably exists in the bundle.
+    expect(page).toContain("isEmailOtpProviderReady(process.env as EmailOtpEnv)");
+    expect(page).toContain('redirect("/signin")');
+    expect(page).not.toContain("notFound(");
+    // Read per request, never baked at build — the `signin/page.tsx` lesson.
+    expect(page).toContain('export const dynamic = "force-dynamic"');
+  });
+
+  it("the address is handed over by the sign-in form, through the one key", () => {
+    // Auth.js's verify-request redirect carries `provider` and `type` and NOT
+    // the address, so without this hand-off the page has nothing to prefill.
+    // Both sides import the key rather than spelling it, which is the only way
+    // a rename stays a rename.
+    expect(signInForm).toContain("OTP_EMAIL_STORAGE_KEY");
+    expect(form).toContain("OTP_EMAIL_STORAGE_KEY");
+    expect(OTP_EMAIL_STORAGE_KEY).toBe("cc-otp-email");
+    // …and it is read defensively: storage can be unavailable, and a missing
+    // value must cost a retype rather than a dead end.
+    expect(form).toContain("window.sessionStorage.getItem(");
+    expect(form).toMatch(/} catch \{/);
+  });
+
+  it("the hand-off is canonical at the WRITE site too (P1a)", () => {
+    // Both write sites, or neither. Canonicalising only at submit would still
+    // leave the prefill showing a form of the address the token was not minted
+    // for, and canonicalising only at the stash would leave a person who typed
+    // into the code page's own field submitting a raw one.
+    expect(signInForm).toContain("canonicalOtpIdentifier(email)");
+    expect(signInForm).toMatch(
+      /setItem\(\s*OTP_EMAIL_STORAGE_KEY,\s*canonical,?\s*\)/,
+    );
+    // The provider is also called with the canonical value, so the address the
+    // send leg normalises is already normal.
+    expect(signInForm).toMatch(/signIn\(p\.id,\s*\{\s*email:\s*canonical/);
+  });
+});

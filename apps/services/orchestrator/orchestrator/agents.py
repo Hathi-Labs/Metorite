@@ -19,7 +19,6 @@ import asyncio
 from typing import Any
 
 from acb_common import get_logger, get_settings
-from acb_graph import get_session
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 
@@ -101,8 +100,20 @@ Rules:
 
 async def retrieve_entity_context(query: str) -> str:
     """Search the entity graph for projects, tasks, deals, and people relevant to the query."""
+    # WS-29 acb_graph slice 7: resolve the run's tenant HERE, on the event-loop
+    # frame, BEFORE the asyncio.to_thread hop — _RUN_ORG is a plain dict and
+    # contextvars do not cross the hop, so the opener must be captured on this
+    # frame and closed over by _sync. flag OFF → the unbound get_session
+    # (byte-identical); flag ON + org → tenant_session(org) so the FORCE-RLS'd
+    # project/task/person/deal reads RETURN ROWS instead of 0; flag ON + no org →
+    # None → fail closed (the agent degrades to "no entities", never crashes).
+    from orchestrator.executor import _graph_session_opener_current
+    _open = _graph_session_opener_current()
+
     def _sync() -> str:
-        with get_session() as s:
+        if _open is None:
+            return "(no matching entities found)"
+        with _open() as s:
             hits = retrieve(s, query)
         return format_context(hits) if hits else "(no matching entities found)"
     return await asyncio.to_thread(_sync)
@@ -110,8 +121,17 @@ async def retrieve_entity_context(query: str) -> str:
 
 async def retrieve_sales_context(query: str) -> str:
     """Search the sales entity graph for customer 360 summaries and deal pipeline data."""
+    # Same before-the-hop tenant capture as retrieve_entity_context (WS-29
+    # acb_graph slice 7). sales_context() reads customer/deal/person through the
+    # session passed to it, so binding the opener here binds sales_views.py's
+    # reads transitively — no change is needed in that module.
+    from orchestrator.executor import _graph_session_opener_current
+    _open = _graph_session_opener_current()
+
     def _sync() -> str:
-        with get_session() as s:
+        if _open is None:
+            return "(no matching sales data found)"
+        with _open() as s:
             hits = _sales_context_fn(s, query)
         return format_context(hits) if hits else "(no matching sales data found)"
     return await asyncio.to_thread(_sync)

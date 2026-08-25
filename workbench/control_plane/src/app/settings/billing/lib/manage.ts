@@ -28,6 +28,17 @@ export interface Member {
   email: string;
   role: string;
   status: string;
+  /**
+   * Live seat plan slugs this member holds (D49 / `launch_surface.md` LS-7).
+   * **Empty means Unassigned.**
+   *
+   * Optional on this type, and only because a Console that predates LS-7 omits
+   * it — the field is non-null on the wire from a current Console. Consumers
+   * must treat `undefined` as "we do not know", never as "no seat": the two
+   * look identical in a `?? []` and only one of them is safe to render as
+   * Unassigned. `seatRoster.buildSeatRows` is where that distinction is kept.
+   */
+  seats?: string[];
 }
 
 /** The whole roster read: one row per membership (`MembersView`). */

@@ -176,7 +176,10 @@ class TestSeatResolution:
         detail = r.json()["detail"]
         assert detail["reason"] == "seat_cap_exceeded"
         assert detail["buy_more"]["additional_seats_required"] == 1
-        assert detail["buy_more"]["price_inr"] == "600.00"
+        # The Core seat's catalog price — ₹500 since D49 / migration 008, ₹600
+        # under D23's package ladder. The upsell must quote what the next seat
+        # actually costs, so this literal moving IS the repricing being visible.
+        assert detail["buy_more"]["price_inr"] == "500.00"
 
     def test_releasing_a_seat_lets_the_next_member_in(self, client, org):
         client.post("/registry/resolve", headers=AUTH,

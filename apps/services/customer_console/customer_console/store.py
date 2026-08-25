@@ -32,6 +32,7 @@ __all__ = [
     "count_redemptions",
     "create_order",
     "credit_deltas",
+    "cross_org_summary",
     "current_placement",
     "deployment_by_label",
     "deployment_visible_orgs",
@@ -756,6 +757,101 @@ def deployment_visible_orgs(
     ]
 
 
+def add_invited_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> tuple[bool, str]:
+    """Create an ``invited`` membership if the org has none for this identity.
+
+    CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
+    INSERT, and the reason an invited colleague can be seen by ``GET /me/members``
+    and given a seat before they have ever signed in.
+
+    Returns ``(created, status_now)``.
+
+    **Create-only, by construction.** ``ON CONFLICT DO NOTHING`` means an existing
+    row is left exactly as it is: an ``active`` member is never demoted back to
+    ``invited`` by a re-invite, and a ``removed`` one is never silently
+    resurrected — reinstating somebody is an ``admin:members:manage`` decision on
+    the tenant plane and must not ride in on the weaker invite door. The caller is
+    told which happened (``created``) and what the row says now (``status_now``),
+    so a re-invite is legible rather than a silent 200.
+
+    **``role`` is not a parameter and never will be one.** It takes the column
+    default ``member`` (``001_customer_console.sql:121-124``). ``org_membership.
+    role`` is registry/billing vocabulary (D12); the tenant's permission
+    vocabulary is ``org_role``, and mapping one onto the other here would mint the
+    second grant vocabulary root ``CLAUDE.md`` §5 forbids by name — as well as
+    letting a customer admin create registry admins through an invite.
+
+    ⚠️ **This writes no seat.** A membership row is not a seat: Core-seat burn
+    stays at first resolve (D19.3 / D32.5, ``main._allocate_core_seat``).
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO org_membership
+                (organization_id, user_identity_id, status)
+            VALUES (:org, :i, 'invited')
+            ON CONFLICT (organization_id, user_identity_id) DO NOTHING
+            RETURNING status
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    if row is not None:
+        return True, str(row[0])
+
+    # The conflict path. Re-read rather than assume: what the row says now is
+    # exactly the thing the caller could not know, and inventing 'invited' here
+    # would report a demotion that did not happen.
+    existing = conn.execute(
+        text(
+            "SELECT status FROM org_membership "
+            "WHERE organization_id = :org AND user_identity_id = :i"
+        ),
+        {"org": org_id, "i": identity_id},
+    ).scalar_one()
+    return False, str(existing)
+
+
+def activate_invited_member(
+    conn: Connection, *, org_id: str, identity_id: str
+) -> bool:
+    """Promote an ``invited`` membership to ``active``. Returns whether it moved.
+
+    D50.3 — *"first sign-in auto-activates an invited member"*, driven from the
+    DEPLOYMENT arm of ``POST /registry/resolve`` and from nowhere else.
+
+    ⚠️ **The guard is the ``AND status = 'invited'`` in this statement's own
+    ``WHERE``**, not an ``if`` beside the call. That is deliberate and it is the
+    whole safety argument: the natural implementation (*"anything that is not
+    active → activate"*) silently un-suspends people, which
+    ``colleague_onboarding.md`` §6 predicted in as many words before this existed.
+    Written as a predicate on the UPDATE, ``suspended``, ``removed`` and already-
+    ``active`` rows are untouched by construction, and a later edit that widens it
+    has to widen the SQL — which is where the fence is looking.
+
+    ``joined_at`` is stamped ``COALESCE(joined_at, now())``, the same rule the
+    tenant plane's activation uses, so a returning member keeps their first join
+    date.
+    """
+    row = conn.execute(
+        text(
+            """
+            UPDATE org_membership
+               SET status = 'active',
+                   joined_at = COALESCE(joined_at, now())
+             WHERE organization_id = :org
+               AND user_identity_id = :i
+               AND status = 'invited'
+            RETURNING user_identity_id
+            """
+        ),
+        {"org": org_id, "i": identity_id},
+    ).first()
+    return row is not None
+
+
 def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
     """Every membership row in one organization: ``email · role · status``.
 
@@ -793,6 +889,187 @@ def org_members(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
             {"org": org_id},
         )
     ]
+
+
+def live_seats_by_email(conn: Connection, *, org_id: str) -> dict[str, list[str]]:
+    """Every LIVE seat in one organization, keyed by the holder's email.
+
+    The read `org_members`'s docstring records as DEFERRED (§6 item (i)),
+    undeferred by **D49** — `launch_surface.md` LS-7 needs *Unassigned* to be a
+    first-class state on the seat surface, and a member with no row in
+    `seat_assignment` is exactly what that means. Without this, "who has no
+    seat" is unanswerable from the customer's own credential.
+
+    **One query for the whole org, folded in memory — never one per member.**
+    A roster of forty members would otherwise be forty round trips behind one
+    HTTP read, and the N+1 would arrive as a slow page long after the change
+    that caused it.
+
+    `released_at IS NULL` is the live predicate the whole seat vocabulary uses
+    (`has_live_seat`, `seat_rows`, `try_assign_seat`'s partial unique index).
+    Stated once here rather than left to the caller for the reason
+    :func:`active_plans` gives about `active`: a filter a caller may forget is a
+    filter that eventually reports released seats as held.
+
+    The key is the **email**, not the identity id: the caller is the customer's
+    own surface, an internal `user_identity` id is not theirs to hold
+    (`MemberView`'s stated absences), and email is what the roster is already
+    keyed by. `CITEXT` makes the join case-insensitive on the database side;
+    the returned key is whatever case the identity row stores, which is the same
+    string :func:`org_members` returns — so the two reads zip without
+    normalization.
+
+    Plans are ordered so the answer is stable for a caller comparing two
+    responses, the reason :func:`deployment_visible_orgs` orders by slug.
+    """
+    out: dict[str, list[str]] = {}
+    for email, plan_slug in conn.execute(
+        text(
+            """
+            SELECT ui.email, sa.plan_slug
+            FROM seat_assignment sa
+            JOIN user_identity ui ON ui.id = sa.user_identity_id
+            WHERE sa.organization_id = :org AND sa.released_at IS NULL
+            ORDER BY ui.email, sa.plan_slug
+            """
+        ),
+        {"org": org_id},
+    ):
+        out.setdefault(email, []).append(plan_slug)
+    return out
+
+
+# ── Operator Console: the cross-org read (§4.1a / CP-8) ─────────────────────
+
+def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
+    """Every organization with the numbers the Operator Console renders (§4.1a).
+
+    The ONE cross-org read behind CP-8's customer list: per company, its
+    lifecycle and subscription status, trial expiry, credit balance, and the raw
+    seat rows the surface folds through the ONE seat vocabulary. It is the
+    cross-org twin of :func:`billing_summary`'s per-org read — the Operator
+    door's *list* where ``billing_summary`` is its *detail* — and it decides
+    nothing: it returns rows for the caller (``main._org_list``) to fold through
+    :func:`customer_console.seats.seat_counts` and :func:`payments.paise`, so the
+    list's per-plan counts and money cannot drift from every other surface's.
+
+    ⚠️ **Cross-tenant BY DESIGN, and reachable only under the Operator scheme.**
+    This is the one read that spans organizations (``saas_multitenancy.md``
+    §0.9.2); it carries no ``organization_id`` filter because its whole job is to
+    answer "which customers exist and how are they doing" — the question no
+    single tenant deployment can answer and no customer credential may ask.
+
+    **Bounded queries, never N+1.** Four statements regardless of how many
+    organizations exist: the org/subscription/balance join, the effective seat
+    grants, the live assignment counts, and the active catalog. A per-org loop
+    that called :func:`billing_summary`'s helpers would issue O(orgs * plans)
+    round trips on a staff surface that lists every customer.
+
+    * ``credit_balance`` is ``SUM(delta)`` grouped by org — the SAME sum
+      :func:`credit_deltas` + :func:`customer_console.credits.balance_of`
+      compute one org at a time, never a cached balance column (which destroys
+      the audit trail §3.3 keeps). Orgs with no ledger row read ``0``.
+    * ``grants`` is the list of signed ``quantity_purchased`` whose
+      ``effective_from`` has passed — exactly :func:`seat_rows`' list, so a
+      future-dated grant is not counted and a reduction stays a negative row;
+      ``assigned`` is the live-assignment count. Both are handed to
+      :func:`seat_counts` by the caller, unfolded here, so ``available``'s
+      zero-clamp and ``oversubscribed`` remain that module's alone.
+    * a plan the org holds neither a grant nor a live assignment on is
+      **skipped**, not emitted as a zero row — the same rule :func:`_seat_grid`
+      makes, so "never bought" and "bought zero" are not made to look alike.
+
+    Two statuses ride together because they legitimately diverge:
+    ``status`` is ``organization.status`` (the §4.1d lifecycle the suspend/resume
+    act moves) and ``subscription_status`` is ``org_subscription.status`` (the
+    billing truth a manual activation sets without touching the lifecycle). MRR
+    is the caller's, computed from the seat rows against the active subscription.
+
+    ``ORDER BY o.created_at, o.slug`` so two reads of an unchanged database agree
+    and a fence can assert a list — ``created_at`` carries no UNIQUE constraint,
+    so the ``slug`` tie-break is not decoration (``active_plans`` makes the same
+    argument for its own ordering).
+    """
+    orgs = conn.execute(
+        text(
+            """
+            SELECT o.id, o.slug, o.name, o.status, o.export_until,
+                   o.created_at,
+                   s.status AS sub_status, s.trial_ends_at, s.provider,
+                   s.current_period_end,
+                   COALESCE(c.balance, 0) AS credit_balance
+            FROM organization o
+            LEFT JOIN org_subscription s ON s.organization_id = o.id
+            LEFT JOIN (
+                SELECT organization_id, SUM(delta) AS balance
+                FROM credit_ledger
+                GROUP BY organization_id
+            ) c ON c.organization_id = o.id
+            ORDER BY o.created_at, o.slug
+            """
+        )
+    ).mappings().all()
+
+    grants: dict[tuple[str, str], list[int]] = {}
+    for r in conn.execute(
+        text(
+            """
+            SELECT organization_id, plan_slug, quantity_purchased
+            FROM seat_grant
+            WHERE effective_from <= now()
+            """
+        )
+    ):
+        grants.setdefault((str(r[0]), r[1]), []).append(int(r[2]))
+
+    assigned: dict[tuple[str, str], int] = {}
+    for r in conn.execute(
+        text(
+            """
+            SELECT organization_id, plan_slug, count(*)
+            FROM seat_assignment
+            WHERE released_at IS NULL
+            GROUP BY organization_id, plan_slug
+            """
+        )
+    ):
+        assigned[(str(r[0]), r[1])] = int(r[2])
+
+    plans = active_plans(conn)  # the ONE active-catalog read, in catalog order
+
+    summary: list[dict[str, Any]] = []
+    for o in orgs:
+        org_id = str(o["id"])
+        seats = []
+        for plan in plans:
+            slug = plan["slug"]
+            g = grants.get((org_id, slug), [])
+            a = assigned.get((org_id, slug), 0)
+            if not g and not a:
+                continue  # never bought, never assigned — not worth a row
+            seats.append(
+                {
+                    "plan_slug": slug,
+                    "grants": g,
+                    "assigned": a,
+                    "price_inr": plan["price_inr"],
+                }
+            )
+        summary.append(
+            {
+                "slug": o["slug"],
+                "name": o["name"],
+                "status": o["status"],
+                "export_until": o["export_until"],
+                "subscription_status": o["sub_status"],
+                "provider": o["provider"],
+                "trial_ends_at": o["trial_ends_at"],
+                "current_period_end": o["current_period_end"],
+                "credit_balance": o["credit_balance"],
+                "seats": seats,
+            }
+        )
+    return summary
 
 
 # ── Orders, events and discounts (CP-9 · SC-4g) ─────────────────────────────
@@ -1078,6 +1355,39 @@ def set_order_status(
             "WHERE id = :i"
         ),
         {"s": status, "i": order_id, "terminal": terminal},
+    )
+
+
+def lock_org_activation(conn: Connection, *, org_id: str) -> None:
+    """Serialise the manual-activation double-grant guard for one organization.
+
+    The seat cap's idiom (:func:`lock_seat_capacity`) one plane along:
+    ``POST /billing/subscriptions/activate`` reads ``org_subscription.status``
+    and refuses ``active`` with a 409, then — for a ``trial``/no-row org —
+    appends paid seats and credits. At READ COMMITTED that check-then-append
+    does not hold: two concurrent activations of the SAME fresh org both read
+    status≠``active``, both pass the guard, and because ``grant_seats`` /
+    ``add_credit`` are conflict-free INSERTs, **both grant** — a 5-seat/250-credit
+    transfer mints 10 seats/500 credits. The 409 only protects the SEQUENTIAL
+    repeat, and ``FOR UPDATE`` cannot help because a fresh org has no
+    ``org_subscription`` row to lock — which is why this is an advisory lock.
+
+    Taken as the FIRST statement of the route's transaction, **before** the
+    status read: a lock acquired after the read protects nothing, because the
+    stale status is already in hand. Transaction-scoped (``_xact_``), so it is
+    released by COMMIT or ROLLBACK and there is no unlock to forget on the 409
+    path.
+
+    The key is PER-ORG (``activation:<org_id>``) so activations of *different*
+    orgs never serialise, and namespaced so it cannot collide with the seat
+    lock's ``<org>:<plan>`` space or the discount lock's ``discount:<id>`` space
+    in ``hashtext``'s single keyspace. A hash collision costs one needless
+    serialisation and is otherwise harmless — the failure mode is slowness,
+    never a double grant.
+    """
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"activation:{org_id}"},
     )
 
 

@@ -27,11 +27,17 @@ from acb_auth import (
     require_permission,
     validate_permission,
 )
+from acb_auth.access import (
+    mirror_identity_membership,
+    mirror_membership_status,
+    purge_identity_shadow,
+)
+from acb_auth.console_resolve import (
+    ConsoleMemberWriteUnavailable,
+    invite_member_on_console,
+)
 from acb_auth.permissions import matched_by
 from fastapi import Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import text
-
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
@@ -51,6 +57,8 @@ from gateway.routes.admin._common import (
     router,
     set_roles,
 )
+from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 VALID_STATUSES = ("invited", "active", "suspended", "removed")
 
@@ -148,10 +156,18 @@ async def invite_member(
 ) -> MemberEntry:
     """Create (or re-activate) a member row in the `invited` state.
 
-    No email is sent — sign-in is Entra ID SSO, so "inviting" means
-    provisioning the row that turns a directory identity into a member with
-    access. Until that row exists, an authenticated stranger resolves to no
-    access (``resolve_access`` returns inactive for an unknown email).
+    ⚠️ This docstring used to say *"No email is sent — sign-in is Entra ID SSO"*.
+    **Both halves are false** (corrected 2026-08-24, D50): sign-in is Google /
+    email OTP through Auth.js, and an invite notification email now exists —
+    ``subscription_console.md`` SC-2c, sent by the BFF hop
+    ``api/admin/members/invite`` AFTER this route answers 2xx, dark behind
+    ``MEMBER_INVITE_EMAIL_ENABLED``. **This route still sends nothing itself**,
+    and the mail carries **no token** (D50.1): identity is proven at sign-in, so
+    the mail is a notification and not an acceptance event.
+
+    "Inviting" means provisioning the row that turns a verified identity into a
+    member with access. Until that row exists, an authenticated stranger resolves
+    to no access (``resolve_access`` returns inactive for an unknown email).
 
     ⚠️ **This alone does not let anybody in.** `invited` is not `active`, and
     `is_active` is `status == "active"` exactly — the invited colleague sees
@@ -174,6 +190,82 @@ async def invite_member(
             status="invited",
         )
         roles = await roles_for_user(db, member["id"])
+
+    # H6 (WS-29, DARK, D48): mirror the identity shadow AFTER the authoritative
+    # `app_user` write is durably committed — the same post-commit posture
+    # `update_member`/`remove_member` already use. Moved OUT of `provision_member`
+    # (WS-29 H6 orphan-closure): mirroring inside the still-open caller txn meant
+    # a caller rollback left a committed shadow orphan. The existence mirror is
+    # create-only; the status mirror keeps `org_membership.status` current for the
+    # invited→active/reactivate cases. Best-effort, own session, moves no read,
+    # `app_user` byte-identical. See `acb_auth.access`.
+    await mirror_identity_membership(
+        email=member["email"],
+        display_name=member.get("display_name") or "",
+        org_id=org_id,
+        status=member["status"],
+    )
+    await mirror_membership_status(
+        email=member["email"], org_id=org_id, status=member["status"],
+    )
+
+    # CP-2f (WS-31, D50.2): mirror the member onto the CUSTOMER CONSOLE — a
+    # different plane and a different database from the H6 shadow two calls
+    # above, and the one that decides whether this person can ever join.
+    #
+    # ⚠️ **Why this matters more than it looks.** Until this existed, the
+    # Console's ONLY membership writer was `POST /orgs/provision`'s founder
+    # INSERT, so an invited colleague never reached the registry: invisible to
+    # `GET /me/members`, a 404 at the seat-assign door, and — with sign-in
+    # resolve ARMED — `store.deployment_visible_orgs` returned nothing for them,
+    # so their first sign-in answered "zero organizations" and the self-serve
+    # funnel offered to create them an org OF THEIR OWN. An invite, correctly
+    # performed, produced a second tenant.
+    #
+    # POST-COMMIT, best-effort, own session (an HTTP hop, not a transaction) —
+    # the same posture as the two mirrors above and for the same reason: the
+    # authoritative `app_user` write has already committed and must stay
+    # byte-identical, so a Console outage can never fail an invite that
+    # happened. It ships dark by reach: an unwired box raises before any hop, and
+    # no live deployment key carries the `member_admin` capability until the
+    # owner grants it by hand (customer_console.md §8 gate 8).
+    #
+    # ⚠️ It supplies `actor_email` = the AUTHENTICATED ADMIN (R11 — never a body
+    # field), names NO organization (the Console derives it from
+    # placement ∩ membership) and names NO role (the registry's role vocabulary
+    # is not the tenant's — D12). See `acb_auth.console_resolve`.
+    try:
+        cc_status, cc_body = await invite_member_on_console(
+            actor_email=admin.email or "",
+            member_email=member["email"],
+            display_name=member.get("display_name") or "",
+        )
+        if cc_status >= 400:
+            # The Console REFUSED the mirror — capability revoked, the actor's
+            # registry membership suspended, org suspended, a two-org 409, or
+            # field-name drift. Without this line a refusal is silent and the
+            # invited colleague quietly falls back into the `console-empty`
+            # signup funnel, which is the exact failure CP-2f exists to close.
+            # (`ConsoleMemberWriteUnavailable`'s docstring promises the two are
+            # distinguishable in a log line; this is the verdict half.)
+            _log.warning(
+                "member_invite_console_refused",
+                email=email, status=cc_status, body=str(cc_body)[:200],
+            )
+    except ConsoleMemberWriteUnavailable as exc:
+        # The box is unwired, or the Console gave no answer. Logged, never
+        # raised: the tenant-plane invite stands.
+        _log.warning("member_invite_console_unavailable",
+                     email=email, error=str(exc)[:200])
+    except Exception as exc:
+        # Belt and braces around a best-effort mirror on a shipped write path.
+        # `mirror_identity_membership` swallows internally; this client returns
+        # verdicts instead, so the swallow lives at the call site. No ruff
+        # suppression comment here on purpose: the broad-except rule is not
+        # enabled in this repo's config, so a directive would only add an
+        # unused-suppression finding.
+        _log.warning("member_invite_console_failed",
+                     email=email, error=str(exc)[:200])
 
     invalidate_for(email)
     _log.info("member_invited", email=email, by=admin.email, roles=roles)
@@ -240,6 +332,19 @@ async def update_member(
         member = await get_member(db, org_id, email)
         roles = await roles_for_user(db, member["id"])
 
+    # H6 slice 3a (WS-29, DARK, D48): keep the RLS-EXEMPT identity shadow's
+    # status CURRENT. A suspend / reactivate / activate here mutates
+    # `app_user.status`; the create-only slice-1 mirror never touches the
+    # existing `org_membership` row, so status would drift stale and the H6 read
+    # cutover could admit a suspended member from it. Best-effort, own session,
+    # after the authoritative commit — it moves no read and the `app_user` write
+    # stays byte-identical. Only on a status change; a display-name-only patch
+    # touches nothing. See `acb_auth.access.mirror_membership_status`.
+    if patch.status is not None:
+        await mirror_membership_status(
+            email=member["email"], org_id=org_id, status=member["status"],
+        )
+
     invalidate_for(member["email"])
     _log.info("member_updated", email=member["email"], by=admin.email,
               status=member["status"])
@@ -291,6 +396,16 @@ async def remove_member(
             ),
             {"uid": member["id"]},
         )
+
+    # H6 slice 3a (WS-29, DARK, D48): propagate the off-boarding into the
+    # RLS-EXEMPT shadow so `org_membership.status` is 'removed' too, or the H6
+    # read cutover admits an off-boarded member from a stale row. Best-effort,
+    # own session, after the authoritative commit — moves no read, the
+    # `app_user` write stays byte-identical. See
+    # `acb_auth.access.mirror_membership_status`.
+    await mirror_membership_status(
+        email=member["email"], org_id=org_id, status="removed",
+    )
 
     invalidate_for(member["email"])
     _log.info("member_removed", email=member["email"], by=admin.email)
@@ -621,6 +736,18 @@ async def purge_member(
         record_admin_change(admin.email, "org.member_purged", f"user:{addr}",
                             deleted=deleted, kept=kept)
 
+    # H6 (WS-29, DARK, D48) orphan-closure: the authoritative purge above deletes
+    # `app_user` but NOT the RLS-EXEMPT shadow, so without this a purged ACTIVE
+    # member left an active `org_membership` ORPHAN (no `app_user`) that reconcile
+    # 183 can never fix (it joins `app_user`) and the H6 read cutover would
+    # wrong-ADMIT. Deletes ONLY the org's `org_membership` row — the GLOBAL
+    # `user_identity` is NEVER touched (deleting it on the last membership was a
+    # check-then-cascade cross-tenant erasure race; a membership-less identity is
+    # harmless and re-used on re-join — see `purge_identity_shadow`). Best-effort,
+    # own session, AFTER the irreversible purge committed, so a failed shadow
+    # delete can never roll the purge back.
+    await purge_identity_shadow(email=addr, org_id=org_id)
+
     invalidate_for(member["email"])
     _log.info("member_purged", email=member["email"], by=admin.email,
               deleted=deleted, kept=kept)
@@ -902,9 +1029,15 @@ async def set_member_overrides(
         for perm, effect, reason in cleaned:
             await db.execute(
                 text(
+                    # H6 slice 4 (D48) DUAL-WRITE: shadow `user_identity_id` via
+                    # the lower(email) bridge so migration 184's column stays
+                    # current. app_user.id stays authoritative; READS user_identity.
                     "INSERT INTO user_permission_override "
-                    "  (user_id, permission, effect, reason, set_by) "
-                    "VALUES (CAST(:uid AS uuid), :perm, :effect, :reason, :by)"
+                    "  (user_id, permission, effect, reason, set_by, user_identity_id) "
+                    "VALUES (CAST(:uid AS uuid), :perm, :effect, :reason, :by, "
+                    "        (SELECT ui.id FROM user_identity ui "
+                    "           JOIN app_user au ON lower(au.email) = lower(ui.email) "
+                    "          WHERE au.id = CAST(:uid AS uuid)))"
                 ),
                 {"uid": member["id"], "perm": perm, "effect": effect,
                  "reason": reason, "by": admin.email},

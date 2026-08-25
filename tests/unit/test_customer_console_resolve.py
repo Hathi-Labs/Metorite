@@ -129,6 +129,14 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/orgs/provision": "provision",
     "/registry/seats": "seat_admin",
     "/registry/seats/release": "seat_admin",
+    # WS-31 CP-2h slice 1, 2026-08-24 — the D-SEAT-4 seat READ, on the SAME
+    # capability as the two writes above. Deliberately not a fifth capability:
+    # the Seats tab is an admin surface, so "may read the grid and the roster"
+    # is the same question as "may move a seat", and a looser gate here would
+    # hand an org's whole roster to any member.
+    "/registry/seats/overview": "seat_admin",
+    # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
+    "/registry/members": "member_admin",
 }
 
 
@@ -1109,7 +1117,11 @@ class TestSeatSemantics:
             "additional_seats_required", "price_inr",
         }
         assert detail["buy_more"]["additional_seats_required"] == 1
-        assert detail["buy_more"]["price_inr"] == "600.00"
+        # The Core seat's catalog price, so the upsell quotes what the next seat
+        # actually costs. ₹500 since D49 / migration 008 — it was ₹600 under
+        # D23's package ladder, and this literal is the anchor that made the
+        # repricing visible rather than silent.
+        assert detail["buy_more"]["price_inr"] == "500.00"
 
         # Refused means refused: nothing was written on the way out.
         with db.begin() as c:

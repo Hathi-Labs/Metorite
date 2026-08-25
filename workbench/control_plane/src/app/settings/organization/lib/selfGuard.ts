@@ -11,7 +11,7 @@
 // It exists because the roster had no idea who the viewer was, so it drew
 // **Suspend** on the owner's own row exactly as on anybody else's.
 
-import type { Member } from "./types";
+import type { Member } from "@/app/settings/members/types";
 
 /**
  * Whether `memberEmail` is the viewer's own address.

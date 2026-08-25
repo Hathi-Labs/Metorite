@@ -76,7 +76,13 @@ _ALLOWED_SYNC: dict[str, str] = {
     "packages/acb_graph/acb_graph/db.py":
         "the entity-graph sync engine — connection path 4 in "
         "saas_multitenancy.md §0.1; carries tenant data and MUST bind a tenant "
-        "under MT-1c",
+        "under MT-1c. It now HAS that seam: `tenant_session(organization_id)`, "
+        "the sync twin of `acb_common.db.tenant_session`, runs the identical "
+        "`set_config('app.tenant_id', :tenant, true)` and raises the shared "
+        "`TenantUnbound` (WS-29, seam added dark — no call site converted yet; "
+        "`get_session()` stays for RLS-exempt/discovery reads until later "
+        "slices convert specific callers). Fence: "
+        "tests/unit/test_acb_graph_tenant_seam.py",
     "apps/services/customer_console/customer_console/db.py":
         "WS-31 CP-1 — the CONTROL PLANE's own database, a DIFFERENT database on "
         "a different plane (saas_multitenancy.md §0.9.2), not the tenant one. "
@@ -394,7 +400,15 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: 166 → 111: routes/crm (28) + routes/people (4) + routes/admin (23)
 #: (2026-08-10); crm's 3 leaves are named in H2_EXEMPT_FILES and still
 #: count here.
-H2_BASELINE_ELSEWHERE = 111
+#: 111 → 108: WS-29 H4 tasks/calendar (2026-08-22) — the 5 scheduler + rollover
+#: background sites moved from unbound `get_db()` to `tenant_session(org)`
+#: (`_run_one_cycle`, `_read_interval`, `_rollover_one_user` bound single-org;
+#: `start_background_sync`/`_enabled_accounts_by_org` + `_run_rollover_sweep`
+#: became per-org sweeps that KEEP ONE unbound `get_db()` each for the
+#: RLS-EXEMPT `organization` enumeration). routes/tasks' remaining 3 unbound
+#: sites are those two exempt enumerations + broker_handlers.py (a separate PR,
+#: dormant unless ACTION_BROKER_ENFORCE).
+H2_BASELINE_ELSEWHERE = 108
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -630,3 +644,199 @@ def test_get_db_sites_elsewhere_only_ratchet_down() -> None:
             f"H2 progress: {total} sites remain — lower H2_BASELINE_ELSEWHERE "
             f"to {total} in this PR to bank it"
         )
+
+
+# ── H6 ratchet — direct `get_session_factory()` opens are reviewed ──────────
+#
+# The `get_db()` ratchet above matches only `await get_db()`. It is BLIND to a
+# session opened straight off the factory — `get_session_factory()()` /
+# `_get_session_factory()()`, or the two-statement `factory =
+# _get_session_factory(); async with factory() as s:` — which is the EXACT class
+# every unbound-RLS bug hid in: `acb_auth/access.py`'s resolve_access role leg
+# (slice 3b P0), its RBAC bridge (slice 4 round 2), and now
+# `resolve_session_access` + `ensure_owner_bootstrap` (this WS-29 H6 hardening),
+# plus `acb_common/provisioning.py`'s new-org writes. Each such site opens a
+# session with NO `app.tenant_id` bound, so it reads 0 rows / refuses writes once
+# the phase-4 RLS policies apply. This ratchet pins EVERY direct factory open in
+# `apps/`+`packages/` to a reviewed count, so a NEW unreviewed one goes RED —
+# stopping the whole bug class from recurring silently. Modelled on `_ALLOWED`
+# above, but pinned per-file by EXACT count (like the whatsapp/apps get_db
+# remainders) so a new open INSIDE an already-listed file is caught too.
+
+#: The AST names whose CALL opens (or IS) a pooled session.
+_FACTORY_GETTERS = frozenset({"get_session_factory", "_get_session_factory"})
+
+#: Every file that opens a session directly off the factory, file → (count,
+#: reason). To add/raise an entry you must have a reason that survives "why is
+#: this session unbound?" — it touches ONLY RLS-EXEMPT tables, it IS the seam, it
+#: is the tenant-DISCOVERY read that CANNOT be bound, or it is a reviewed
+#: conditional bind (the fix pattern: `tenant_session()` when a tenant is bound,
+#: raw session otherwise). An entry is a decision, not a grandfathering.
+_FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
+    "packages/acb_common/acb_common/db.py": (
+        2,
+        "THE seam — `get_db()` and `tenant_session()` open the pooled session "
+        "here; this file IS the one place a session is created, and "
+        "`tenant_session` is where the GUC bind happens.",
+    ),
+    "apps/services/gateway/gateway/routes/email/core.py": (
+        1,
+        "`email.core._get_db(request_id)` — the seam re-export wrapper that "
+        "keeps its historical request_id parameter; it resolves to the shared "
+        "pool (`test_route_packages_resolve_to_the_shared_factory`), not a "
+        "second engine.",
+    ),
+    "packages/acb_auth/acb_auth/access.py": (
+        11,
+        "reviewed access-resolution sites: `mirror_identity_membership` / "
+        "`mirror_membership_status` / `purge_identity_shadow` (write only the "
+        "RLS-EXEMPT shadow tables user_identity/org_membership — unbound by "
+        "design); ⚠️ `_record_signin_request` (INSERTs `access_request`, which "
+        "IS FORCE-RLS'd and NOT exempt — a best-effort, tenant-less write that "
+        "REFUSES under phase-4: an OWNER-DECISION brick, tracked in the §H6 "
+        "pre-flip checklist item (b) — allow-listed as a known-open brick, not "
+        "as benign); `resolve_access`'s role-leg unbound FALLBACK (bound via "
+        "`tenant_session()` when the cutover is on + a tenant is bound — slice "
+        "3b); `resolve_identity`'s tenant-DISCOVERY read (must be unbound — it "
+        "resolves WHICH tenant); `org_owner_of` / `membership_of` (EXEMPT "
+        "organization/shadow, UX-only reads); and the two H6-hardened sites — "
+        "`resolve_session_access` (reads via `tenant_session()` when a tenant is "
+        "bound, raw+fail-closed otherwise) and `ensure_owner_bootstrap` "
+        "(EXEMPT-`organization` probe, then `tenant_session(default_org)` for "
+        "the has-owner read + bootstrap INSERT). Raised 10→11 for WS-30 "
+        "D50.3's `promote_invited_member` (reads the EXEMPT `org_membership` "
+        "shadow to find `invited` rows — unbound by design; its WRITES go "
+        "through `tenant_session`); the entry was stale for a day because "
+        "this fence was red on the drift, which is exactly the state it "
+        "exists to prevent — measured by WS-36's verifier.",
+    ),
+    "packages/acb_auth/acb_auth/offboard.py": (
+        1,
+        "CP-2g's tenant-discovery read: `purge_tenant_organization` resolves "
+        "slug→org_id against the RLS-EXEMPT `organization` table — unbound by "
+        "design, the `resolve_identity` argument (it resolves WHICH tenant). "
+        "The destructive DELETE itself is bound via `tenant_session()`.",
+    ),
+    "packages/acb_auth/acb_auth/console_resolve.py": (
+        5,
+        "the control-plane sign-in resolver's five reads — RLS-EXEMPT tables "
+        "only (`user_identity` / `org_membership` / `organization`); the console "
+        "plane is cross-tenant by design (see `_ALLOWED_SYNC`'s customer_console "
+        "entry above for the same reasoning).",
+    ),
+    "packages/acb_auth/acb_auth/email_otp.py": (
+        1,
+        "WS-31 CP-2d slice 2 — the email-OTP verification token store. ONE "
+        "helper (`_session`) that all three acts open through, and it MUST be "
+        "unbound: `auth_email_otp_token` is RLS-EXEMPT "
+        "(`gen_tenant_migration.EXEMPT`, customer_console.md §CP-2d clause 7) "
+        "because the row is minted PRE-SESSION for an address that may belong "
+        "to no organization at all — the zero-org `console-empty` signup funnel "
+        "— so `tenant_session()` could only ever raise `TenantUnbound`. Unlike "
+        "the provisioning entry below this is NOT a known-open brick: proved "
+        "readable AND writable unbound, as the non-privileged role on a "
+        "phase-4-promoted catalog, by `test_h3_rls_promotion_rehearsal.py::"
+        "TestTheEmailOtpTokenIsReachableUnbound`.",
+    ),
+    "packages/acb_common/acb_common/provisioning.py": (
+        3,
+        "⚠️ OWNER-DECISION, deliberately NOT bound by the H6 RLS-bind hardening: "
+        "`provision_local_organization` / `persist_org_billing_profile` / "
+        "`mark_console_mirrored` write FORCE-RLS'd tables while CREATING an org "
+        "— there is no tenant to bind yet (the GUC would be the org that does "
+        "not exist). Un-bricking these needs a migration or a SECURITY DEFINER "
+        "callable (an owner act); tracked in `saas_multitenancy_handover.md` §H6 "
+        "PRE-FLIP RLS-BINDING CHECKLIST.",
+    ),
+}
+
+
+@cache
+def _factory_open_count(path: Path) -> int:
+    """Number of CALLS to (``_``)``get_session_factory`` in *path*.
+
+    Each such call fetches the factory that is then invoked to OPEN a session —
+    the unbound-session pattern every unbound-RLS bug hid in. Counts the getter
+    calls, not the trailing ``()``, because the one-liner ``get_session_factory()()``
+    and the two-statement ``factory = _get_session_factory(); async with
+    factory() as s:`` are the SAME open, and a regex for ``get_session_factory()(``
+    would see only the first. AST, not text, so a module that merely NAMES the
+    function in prose (as this one does) is never miscounted.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    n = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute)
+            else ""
+        )
+        if name in _FACTORY_GETTERS:
+            n += 1
+    return n
+
+
+def _factory_open_sites() -> dict[str, int]:
+    out: dict[str, int] = {}
+    for p in _python_files():
+        n = _factory_open_count(p)
+        if n:
+            out[str(p.relative_to(_REPO)).replace("\\", "/")] = n
+    return out
+
+
+def test_no_new_unbound_factory_opens() -> None:
+    """Every direct `get_session_factory()` open is a reviewed, pinned site.
+
+    Two failure modes, both caught by exact per-file equality: a NEW open (a new
+    file, or a new open inside an already-listed file) — the unbound-RLS bug
+    class re-entering silently — and a RETIRED open, which must lower its entry so
+    the headroom cannot become new-debt budget.
+    """
+    measured = _factory_open_sites()
+    expected = {f: n for f, (n, _reason) in _FACTORY_OPEN_ALLOW.items()}
+    assert measured == expected, (
+        "direct get_session_factory() opens drifted from the reviewed set.\n"
+        f"  measured: {measured}\n  pinned:   {expected}\n"
+        "A NEW open reads 0 rows / refuses writes under phase-4 RLS unless it "
+        "binds a tenant: route it through `tenant_session()` (bound), or — if it "
+        "legitimately must be unbound (EXEMPT tables only, the tenant-discovery "
+        "read, or the seam itself) — add/raise its entry in _FACTORY_OPEN_ALLOW "
+        "with the reason. A retired open must LOWER its entry."
+    )
+
+
+def test_factory_open_allowlist_has_no_stale_entries() -> None:
+    """A file that stopped opening sessions off the factory leaves the list."""
+    measured = _factory_open_sites()
+    stale = sorted(f for f in _FACTORY_OPEN_ALLOW if f not in measured)
+    assert stale == [], (
+        f"_FACTORY_OPEN_ALLOW entries that no longer open a factory session: "
+        f"{stale}"
+    )
+
+
+def test_the_factory_open_detector_is_not_vacuous(tmp_path) -> None:
+    """The ratchet's AST detector counts BOTH open spellings.
+
+    A fence that cannot see the thing it guards is worse than none. This plants
+    the two forms and asserts the detector sees both — so a new unbound-RLS site
+    genuinely goes RED, not silently green.
+    """
+    planted = tmp_path / "planted.py"
+    planted.write_text(
+        "async def a():\n"
+        "    return get_session_factory()()\n"
+        "async def b():\n"
+        "    factory = _get_session_factory()\n"
+        "    async with factory() as s:\n"
+        "        return s\n",
+        encoding="utf-8",
+    )
+    assert _factory_open_count(planted) == 2, (
+        "the AST detector missed a direct factory open — a new unbound-RLS "
+        "site would slip past this ratchet"
+    )

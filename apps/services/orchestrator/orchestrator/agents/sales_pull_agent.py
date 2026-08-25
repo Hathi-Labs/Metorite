@@ -14,7 +14,6 @@ top-level orchestrator delegates to based on the triage label
 from __future__ import annotations
 
 from acb_audit import AuditEvent, record
-from acb_graph import get_session
 from acb_llm import LLMTier, complete
 from acb_llm.guardrails import CitationError, repair_citations, require_citations
 
@@ -40,9 +39,20 @@ _SYSTEM_UNGROUNDED = (
 
 async def answer(query: str, *, user_email: str | None = None, trace_id: str | None = None) -> str:
     """Run the sales-focused Pull pipeline and return the answer string."""
-    with get_session() as s:
-        hits = sales_context(s, query)
-        context_block = format_context(hits)
+    # WS-29 acb_graph slice 7: bind the run's tenant so sales_context's
+    # customer/deal/person reads (all FORCE-RLS'd) RETURN ROWS instead of 0.
+    # Resolved on this (event-loop) frame. flag OFF → the unbound get_session
+    # (byte-identical); flag ON + no resolvable org → fail closed to no hits (the
+    # ungrounded path handles it), never an unbound read on a FORCE-RLS'd catalog.
+    from orchestrator.executor import _graph_session_opener_current
+    _open = _graph_session_opener_current()
+    if _open is None:
+        hits = []
+        context_block = ""
+    else:
+        with _open() as s:
+            hits = sales_context(s, query)
+            context_block = format_context(hits)
 
     record(
         AuditEvent(
