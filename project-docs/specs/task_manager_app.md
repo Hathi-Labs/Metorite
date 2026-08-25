@@ -1138,6 +1138,37 @@ NULL` ⇒ nobody promised, fall back to the task's own `due_at`, read live) must
 the move. It was a *shape* fix, not a storage fix, and re-deriving it is how it gets
 broken again.
 
+### 13.4a Where every `GtdItem` field lives now (S3a-server-2, migration 188)
+
+Settled 2026-08-25 as **D53.8**, and settled *before* the mapper rather than during
+it — a field with no home does not fail loudly at the cutover, it writes a 200 and
+disappears.
+
+| `GtdItem` field | Home | Why there |
+|---|---|---|
+| `disposition`, `nextAction`, `context`, `energy`, `timeEstimateMins`, `isTwoMinute`, `deferUntil` | `pm_task_personal` (147) | per-member triage |
+| `scheduledStart/End`, `flexible`, `isHardDate`, `actualStart/End` | `pm_task_personal` (187, D53.7) | each assignee blocks their own time |
+| `important`, `leveraged`, `deepWork`, `keptMine`, `sortKey` | `pm_task_personal` (188) | a judgement about the judge's own week |
+| `waitingOn`, `delegatedAt`, `expectedBy`, `lastNudgedAt` | `pm_task_personal` (188) | "I am waiting on Priya" is true for the delegator, false for the doer — of one row |
+| `clarifiedAt` | `pm_task_personal` (147) — **existed all along** | written on every triage since 147, projected by nothing until 188's slice |
+| `title`, `notes`, `dueAt`, `completedAt`, `projectId`, `parentItemId`, `archivedAt` | `pm_tasks` | facts about the WORK, shared by everyone assigned |
+| `assignee`, `assignees`, `isMine` | `pm_task_assignees` | — |
+| `workflowStage` | `pm_task_statuses` via `status_id` | the team's board column |
+| `provider`, `accountId`, `providerUrl`, `providerStatus`, `syncState` | **nothing — D52** | there is no connector; do not map these |
+| `origin` | ⚠️ **undecided**, per-task | `pm_tasks.source` is the nearest existing fact; settle before the mapper touches email-captured tasks |
+| `horizonId` | ⚠️ **WS-21 owns Horizons** | DO-NOT-DISPATCH stands |
+
+⚠️ **`important` is not `importance`.** `GtdItem.important` is the Eisenhower boolean
+on the overlay. `pm_tasks.importance` is an INTEGER the Projects UI labels
+**"Priority"**, shared across everyone assigned. They are different facts with
+confusable names, and mapping one onto the other publishes a member's private triage
+to the whole task. `urgent` has no column at all by design — it is derived from
+`dueAt` via `isUrgent()`, and always was.
+
+⚠️ **The explicit-promise rule of §13.4 survives this unchanged.** `expected_by IS
+NULL` still means nobody promised, still falls back to the task's own `due_at`, and is
+still read live. 188 moved where the column lives; it did not touch what a null means.
+
 ### 13.5 Acceptance — WS-39 S3a · AGENT-SAFE
 
 **Done when:**

@@ -238,7 +238,8 @@ single store (not two stores split by privacy), and Calendar is **personal-scope
 | **S1** | ✅ **BUILT 2026-08-24 · REPAIRED 2026-08-25 (r1).** **ClickUp excision** — delete the ingestion source, `skill-clickup-sync`, the `ClickUpProvider` arm, the poll scheduler, both importers, the frontend `ImportClickUp.tsx`, the catalog/OAuth/env entries, and the `scripts/clickup_sync.py` one-off. Columns STAY (D52.3); **so do the `task_accounts` ROWS**, which is what r1 had to answer for — the scheduler now skips them and the dead connect/sync UI is gone. | 🟢 AGENT-SAFE | Nothing else depends on it landing first, and it is the only slice that is pure deletion — so it is the one that can be verified by "does anything still import this". Doing it first stops the other four having to preserve a dead arm. |
 | **S2** | ✅ **BUILT 2026-08-24.** **The Calendar app** — the surface leaves `/tasks` for `/calendar`, a ninth `live` pane in Personal Center; `nav.test.ts` 8→9; `launch_surface.md` §2 updated. Still reading `gtd_items`. ⚠️ Two amendments measured in the build: there was **no `/tasks/calendar` route** (it was a `ViewKey`, so this is an extraction, not a rename), and the gate stays **`feature:tasks`** — a new slug ships the app dark to everyone (D54.1). | 🟢 AGENT-SAFE | Deliberately BEFORE the store move. It is a route + registry change with no data semantics, so it lands and is reviewable on its own; folding it into S3 would put a nav change and a store change in one diff. |
 | **S3a-server** | ✅ **BUILT 2026-08-24.** The store learns to hold a block — migration **187** puts `scheduled_start`/`_end`, `flexible`, `is_hard_date`, `actual_start`/`_end` on **`pm_task_personal`** (D53.7), plus `GET /projects/my/calendar` on a half-open window and merged-pair PATCH validation. | 🟢 AGENT-SAFE | Had to come first: the Calendar lens cannot leave `gtd_items` until `pm_*` can answer "when am I doing this". R8 caught **two real 500s** a hermetic suite could not see — the new instants missing from `TIMESTAMP_COLUMNS`, and the window params fed through a COLUMN-keyed coercer. |
-| **S3a-client** | **The UIs re-point** — `/tasks` and `/calendar` move from `/api/tasks/*` onto `/projects/my/*` + `/projects/tasks/*`; `gtd_*` writes stop. `tasks/lib/api.ts` is a thin adapter (`mapItem`), so the change concentrates there rather than in the 95 KB store. | 🟢 AGENT-SAFE | Expand half of R6: new readers, old tables intact, nothing dropped. |
+| **S3a-server-2** | ✅ **BUILT 2026-08-25.** The overlay learns the LAST per-member fields — migration **188** adds `important`, `leveraged`, `deep_work`, `kept_mine`, `sort_key` and the Waiting-For quartet `waiting_on`/`delegated_at`/`expected_by`/`last_nudged_at` to `pm_task_personal` (**D53.8**), wires them through `PersonalIn` / `_apply_overlay` / `_MY_TASKS_SQL`, and adds a merged-pair since-when check. | 🟢 AGENT-SAFE | **Had to come before S3a-client, not with it.** H-33 said so in terms: re-pointing the UI without these columns stops persisting the matrix flags, loses Waiting-For entirely and resets every manual drag order — silently, on a 200. R8 caught three more a hermetic suite could not see: `clarified_at` already existed (147) and was WRITTEN-but-never-projected; the fake's `ON CONFLICT DO UPDATE` dropped NULLs so "clear a field" passed while doing nothing, for **every** overlay column; and `_upsert_personal`'s hand-rolled binds refuse a bare dict on the table's first jsonb column. |
+| **S3a-client** | **The UIs re-point** — `/tasks` and `/calendar` move from `/api/tasks/*` onto `/projects/my/*` + `/projects/tasks/*`; `gtd_*` writes stop. `tasks/lib/api.ts` is a thin adapter (`mapItem`), so the change concentrates there rather than in the 95 KB store. **Unblocked by S3a-server-2** — every `GtdItem` field now has a `pm_*` home. | 🟢 AGENT-SAFE | Expand half of R6: new readers, old tables intact, nothing dropped. |
 | **S3b** | **Backfill** — surviving `gtd_items` rows move into their owners' personal `pm_project`s; overlay columns map 1:1 onto `pm_task_personal` (D53.2). | 🔴 **OWNER-GATE** | A data move against live customer data — the WS-29 cutover class. AGENT-SAFE to **build and R8-test against scratch databases**; running it is the owner's act. |
 | **S3c** | **Drop** — `gtd_items` + satellites dropped; the ClickUp columns D52.3 preserved go with them. `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` **survive** (D53.6). | 🔴 **OWNER-GATE** | Contract half of R6, a release later. We cannot roll back. |
 
@@ -744,6 +745,38 @@ by D15/D16) — read their banners before citing either.
     same as a member pinning it. The Ideal Week packer (WS-21) needs that
     difference: "never stated" is what it is allowed to fill in.
     Verified two-member on real Postgres — `tests/live/live_ws39_s3a.sql`, 8 checks.
+  - **D53.8 — the MATRIX, the RANK and WAITING-FOR are per-member too.**
+    *(Taken 2026-08-25 building S3a-server-2; migration **188**.)* `important`,
+    `leveraged`, `deep_work`, `kept_mine`, `sort_key`, `waiting_on`,
+    `delegated_at`, `expected_by` and `last_nudged_at` land on
+    **`pm_task_personal`**. Third application of D53.5's argument, unchanged:
+    each is a fact about how ONE PERSON is holding the task. "I am waiting on
+    Priya" is true for the delegator and false for the doer of the very same
+    row; `sort_key` is my drag order in my own list. This closes H-33's
+    prerequisite — **every `GtdItem` field now has a `pm_*` home**, so
+    S3a-client can be written without silent data loss.
+    ⚠️ **`important` is NOT `pm_tasks.importance`, and the names invite the
+    mistake.** `importance` is an INTEGER the Projects UI labels **"Priority"** —
+    shared, per-task, seen by everyone assigned. `GtdItem.important` is the
+    BOOLEAN axis of the Eisenhower matrix, paired with an `urgent` that is
+    DERIVED from `due_at` and never stored. Mapping one onto the other (say
+    `important = importance >= 3`) would invent a threshold no decision records,
+    publish one member's private triage to the whole task, and change what the
+    Projects Priority column means. Two facts, two homes; `importance` is left
+    alone.
+    ⚠️ **Waiting-For collapses to four columns rather than porting
+    `gtd_waiting`.** That table allows many rows per item with a `resolved`
+    flag — a delegation HISTORY — but **every reader in the tree filters
+    `resolved = false`** (measured: `routes/tasks/core.py:479` and
+    `routes/tasks/ai.py:1645`, the only two), and `GtdItem` exposes one of each
+    field rather than a list. So nothing displayed is lost. Resolved history is
+    deliberately **not** carried; "how many times have I chased this" would be a
+    new feature with a new home, not a restoration.
+    ⚠️ `clarified_at` is **not** in 188 — it has existed since 147. It was
+    WRITTEN on every triage and projected by nothing, so it had been collecting
+    a real value no caller could read. A wiring gap, fixed without a migration.
+    Verified on real Postgres — `tests/live/live_ws39_s3a_server2.sql`, 9 checks,
+    including the partial Waiting index being CHOSEN rather than merely present.
 
 - **D54 — Calendar is its own app under Personal Center.** *(owner call, 2026-08-24;
   owning spec `specs/calendar_focus_os.md`, board **WS-39**. Verbatim intent: "it
