@@ -6913,6 +6913,21 @@ including that the partial index is *chosen*) and `tests/live/live_ws39_s3a_bind
 
 ### 12.6 Acceptance — WS-39 S1 (ClickUp excision) · AGENT-SAFE
 
+**Status: ✅ BUILT 2026-08-24 · 🔧 REPAIRED 2026-08-25 (repair round 1, PR #91),
+NOT merged and NOT deployed.** The adversarial review returned MERGE-AFTER-FIXES on
+one finding that this acceptance list did not ask for and should have —
+**criterion 8, added below.**
+
+⚠️ **What r1 corrected, because the lesson generalises to every excision:**
+*deleting the code does not delete the rows, and it does not delete the UI pointing
+at them.* Criteria 1–7 were all met on 2026-08-24 and the integration was genuinely
+gone — yet a live `/tasks` would still have shown a permanent "Sync failed" badge
+(the scheduler launched a loop per `sync_enabled` `task_accounts` row with no
+provider filter, and every cycle 400'd on `build_provider`) and still offered a
+"Connect workspace…" button whose only possible outcome was that same 400. Both are
+fixed on the branch; the fixes and their fences are recorded in `work_plan.md` §2
+WS-39's repair-round paragraph.
+
 **Done when all of these hold:**
 
 1. No ClickUp **integration surface** survives: no connector, no receiver, no
@@ -6946,6 +6961,27 @@ including that the partial index is *chosen*) and `tests/live/live_ws39_s3a_bind
 7. `uv run pytest` over the affected suites is green with the ClickUp tests **deleted,
    not skipped**, and `npx tsc --noEmit && npx vitest run` is green in
    `workbench/control_plane`.
+8. 🆕 **Added 2026-08-25 by repair round 1 — the SURVIVING ROWS are inert and no
+   surface offers an action against them.** D52.3 keeps columns; nothing ever said
+   the `task_accounts` rows go, and they do not. So:
+   - **no background job selects a row whose provider has no connector.** The filter
+     lives at the SELECTION seam (`routes/tasks/scheduler.py::_known_providers`,
+     consumed by `_enabled_accounts_by_org` and `_read_interval`) and derives its set
+     from `providers._CONNECTORS` — the same registry `build_provider` consults, so
+     there is one vocabulary and no second list to drift. One structured warning per
+     skipped account per **boot**, never per cycle.
+   - **nothing writes `sync_status`/`sync_error` for such a row**, which is the
+     user-visible half: that pair IS the "Sync failed" badge.
+   - **no surface offers connect, sync or schema-refresh for a retired provider.**
+     Rows may still be LISTED read-only (they explain where imported items came from)
+     with one muted line saying sync is retired.
+   **Fence (R7):** `tests/unit/test_h3_rls_promotion_rehearsal.py::
+   TestSchedulerBindUnderForceRls::test_a_retired_provider_account_launches_no_loop`
+   — seeds a real `provider='clickup'` row on a phase-4-promoted catalog, asserts
+   zero loops AND that the badge columns are untouched, with a stub-connector sibling
+   row as the control so "zero" cannot be a broken sweep; plus
+   `test_the_known_provider_set_comes_from_the_registry`, which proves the vocabulary
+   by CHANGING the registry rather than comparing two literals.
 
 **Verification commands:** `uv run pytest tests/unit/test_projects_import_mapping.py
 tests/unit/test_projects_import_tasks.py tests/unit/test_clickup_ingestor.py

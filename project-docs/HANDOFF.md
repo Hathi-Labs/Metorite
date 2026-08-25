@@ -425,10 +425,17 @@ this file grows a graveyard and the graveyard is what goes stale.
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
 ### H-28 · WS-39: slice S3a-CLIENT still to build · [AGENT]
-- **Check:** `rg -l "/api/tasks/items" workbench/control_plane/src/app/tasks/`
+- **Check:** `rg -n "api/tasks" workbench/control_plane/src/app/tasks/lib/api.ts`
   → any hit means **S3a-client** unbuilt. *(S1, S2 and S3a-SERVER are done —
   `nav.ts` carries `/calendar`, and migration 187 + `GET /projects/my/calendar`
   are in.)*
+  ⚠️ **Corrected 2026-08-25 — the first spelling of this Check UNDER-REPORTED
+  and would have closed this entry while the work was untouched.** It grepped
+  `"/api/tasks/items"` across `app/tasks/`, which matches **nothing**: the
+  prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`,
+  `` fetch(`/api/tasks${path}`) ``) and every call site passes a bare
+  `` `/items…` ``. Same defect class as this file's ClickUp-credential entry
+  (H-32) — a Check that cannot see the thing it is asking about answers "done".
 - **Why:** S1, S2 and the SERVER half of S3a landed — `pm_task_personal` can now
   hold a scheduled block (migration 187, D53.7) and `GET /projects/my/calendar`
   serves a window. What remains is re-pointing the two UIs onto those endpoints
