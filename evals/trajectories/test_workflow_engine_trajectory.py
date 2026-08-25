@@ -197,10 +197,19 @@ async def test_resume_replays_without_repeating_side_effects(serialized: dict) -
 
     assert outcome.status == "succeeded"
     assert resumed.agent_calls == []  # replayed, not re-run
+    # ⚠️ These args must match the `write` node's config in `serialized`, with
+    # `{{clean.cleaned}}` resolved. The D52 re-cut moved that node from
+    # `clickup.create_task` to `http.request` and updated the fixture but not
+    # this assertion, which kept the old connector's `{list_id, name}` shape —
+    # so the branch's evals job was RED from the day of the excision.
     assert resumed.tool_calls == [
         (
             "http.request",
-            {"list_id": "LIST-1", "name": "pump order stuck at packing"},
+            {
+                "url": "https://example.invalid/tasks",
+                "method": "POST",
+                "body": {"name": "pump order stuck at packing"},
+            },
             "workflow",
         )
     ]
