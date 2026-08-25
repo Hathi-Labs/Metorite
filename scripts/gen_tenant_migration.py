@@ -87,6 +87,16 @@ EXEMPT: dict[str, str] = {
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",
+    # WS-39 S3b/S3c (migration 189). Sits beside `schema_migrations` because it
+    # is the same kind of thing: bookkeeping ABOUT the schema, not data IN it.
+    # One row means "a human authorised the gtd_* retirement on this database".
+    # `DROP TABLE` is database-wide and has no per-tenant form, so scoping this
+    # would create a column that can only ever be wrong — and worse, it would
+    # invite a per-tenant arming that the drop it guards cannot honour. It is
+    # read by migration 190's guard, which runs as the database owner outside
+    # RLS, so a policy here would not even be consulted. Holds an email, a
+    # timestamp and a note; no tenant data. See work_plan.md §6 (f), D53.5.
+    "gtd_retirement_arm":      "arms a database-wide DDL drop; no per-tenant form exists",
     # ── Already tenant-keyed by an earlier migration ───────────────────────
     "provider_keys":           "keyed (organization_id, provider) by MT-0d / 158",
     "model_config":            "keyed (organization_id, key) by MT-0d / 158",
