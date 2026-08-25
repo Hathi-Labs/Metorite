@@ -1077,13 +1077,29 @@ async def test_every_writable_overlay_field_can_be_read_back(
 async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
     db: FakeProjectsDB,
 ) -> None:
-    """Structural fence (R7) over the two readers that share `_apply_overlay`.
+    """Structural fence (R7) over the THREE readers that share `_project_task`.
 
     They had two hand-maintained copies of the same projection, and the drift
     is silent and one-sided: a field added to the inbox but not the calendar
     produces a calendar where that flag never arrives — no error, no 500. The
     hermetic fake cannot catch it either, since a missing alias answers `None`
     just as a genuinely unset column does.
+
+    ⚠️ **Tightened 2026-08-25 (WS-39 S3a-client) from "differ by exactly
+    `is_triaged`" to EXACT equality, across three readers rather than two.**
+    The old shape was defensible while `/my/inbox` was the only list: the
+    calendar has no inbox to be triaged out of, so the field had no meaning
+    there. It stopped being defensible when the client got ONE mapper. A single
+    `mapLensItem` is only safe if every route that claims to return "a task as
+    this member sees it" returns the same keys — otherwise the mapper silently
+    reads `undefined` from whichever reader is short, and the UI renders a task
+    with no stage on one surface and a stage on another. `GET /my/tasks/{id}`
+    made that concrete: it is read after every split write, so if its shape were
+    a third variant, every edit would round-trip a differently-shaped task into
+    the store than the list put there.
+
+    Exact equality is also the STRONGER form of what this test is named for. An
+    allowance for one difference is an allowance a later field can hide behind.
     """
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id)
@@ -1108,11 +1124,32 @@ async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
     )).rows
     assert inbox and window, "both reads must see the one scheduled task"
 
-    # `is_triaged` is the inbox's own addition and is deliberately not on the
-    # calendar — the window has no inbox to be triaged out of.
-    assert set(inbox[0]) - set(window[0]) == {"is_triaged"}
-    assert not set(window[0]) - set(inbox[0])
+    single = await pm_personal.my_task(str(task.id), user=ALICE)
+
+    assert set(inbox[0]) == set(window[0]) == set(single), (
+        "the three personal readers disagree about what a task looks like; "
+        "the client has one mapper, so the short one renders `undefined` "
+        "fields. Present in only one reader: "
+        f"inbox={sorted(set(inbox[0]) - set(window[0]) - set(single))} "
+        f"calendar={sorted(set(window[0]) - set(inbox[0]) - set(single))} "
+        f"single={sorted(set(single) - set(inbox[0]) - set(window[0]))}"
+    )
     for field in ("important", "deep_work", "scheduled_start", "clarified_at"):
-        assert inbox[0][field] == window[0][field], (
-            f"`{field}` disagrees between the two readers of one overlay"
+        assert inbox[0][field] == window[0][field] == single[field], (
+            f"`{field}` disagrees between the readers of one overlay"
         )
+
+    # The three facts S3a-client added, asserted by VALUE and not merely by
+    # presence — a key that is present and always None is the failure this
+    # slice exists to stop, and `set(...) == set(...)` above cannot see it.
+    assert single["is_mine"] is True, (
+        "is_mine was computed by the SQL and dropped by `row_to_dict`; the "
+        "client reads `raw.is_mine ?? true`, so a false negative here is "
+        "invisible and a false POSITIVE is somebody else's task shown as mine"
+    )
+    assert single["workflow_stage"] == todo.name, (
+        "workflow_stage must be the status NAME — the id was already on the "
+        "wire and no human reads a uuid off a board column"
+    )
+    assert single["subtask_count"] == 0
+    assert single["assignees"] == ["alice@fracktal.in"]

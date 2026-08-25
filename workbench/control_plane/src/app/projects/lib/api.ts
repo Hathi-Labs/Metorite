@@ -189,6 +189,16 @@ export class ProjectsApiError extends Error {
   }
 }
 
+/**
+ * The one request seam for `/api/projects/*`.
+ *
+ * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
+ * to the same proxy and must not grow a second wrapper: a parallel fetch
+ * helper is a parallel error type, a parallel place to forget the
+ * Content-Type, and a second answer to "what does a 404 from this API mean".
+ * Tasks reading the Projects client is not a layering breach — under D53 the
+ * Tasks app IS a lens over Projects.
+ */
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/projects/${path}`, {
     ...init,
@@ -210,6 +220,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return body as T;
 }
+
+export { call as projectsCall };
 
 export const projectsApi = {
   tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),

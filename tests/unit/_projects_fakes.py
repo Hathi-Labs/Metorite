@@ -1492,9 +1492,24 @@ class FakeProjectsDB:
         tenanted = "t.organization_id = CAST(:vis_org AS uuid)" in statement
         org = str(args.get("vis_org"))
 
+        # ⚠️ The archived predicate is a BIND now (WS-39 S3a-client), not a
+        # literal, because the Archive view needed a source. Mirrored the same
+        # way as everything else here — off the statement, then off the arg —
+        # so a route that drops the bind stops being filtered here too, and the
+        # test that notices is the one asserting the archive is empty.
+        binds_archived = "t.archived_at IS NULL OR CAST(:archived AS boolean)" in statement
+        with_archived = bool(args.get("archived")) if binds_archived else False
+        # The singular read (`GET /my/tasks/{id}`) is the same query plus one
+        # clause. Answering it through the same mirror is the point: a fake with
+        # its own single-task path could agree with itself while the two routes
+        # disagreed in Postgres.
+        only_task = str(args.get("tid")) if "AND t.id = CAST(:tid AS uuid)" in statement else None
+
         out: list[Any] = []
         for task in self.rows("pm_tasks"):
-            if task.get("archived_at") is not None:
+            if task.get("archived_at") is not None and not with_archived:
+                continue
+            if only_task is not None and str(task.get("id")) != only_task:
                 continue
             if tenanted and str(task.get("organization_id")) != org:
                 continue
@@ -1553,6 +1568,19 @@ class FakeProjectsDB:
                 p_expected_by=mine.get("expected_by"),
                 p_last_nudged_at=mine.get("last_nudged_at"),
                 p_clarified_at=mine.get("clarified_at"),
+                # The team's board column, by NAME (WS-39 S3a-client). Same
+                # warning as the aliases above: omitted, it answers None, and
+                # None is exactly what an un-staged task looks like.
+                workflow_stage=status.get("name"),
+                # Non-archived children only, mirroring the correlated
+                # subquery — a mirror that counted every child would disagree
+                # with Postgres precisely when somebody archives a subtask,
+                # which is the only time the number is interesting.
+                subtask_count=sum(
+                    1 for c in self.rows("pm_tasks")
+                    if str(c.get("parent_task_id") or "") == str(task["id"])
+                    and c.get("archived_at") is None
+                ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
             ))
