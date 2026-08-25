@@ -62,6 +62,14 @@ An agent may verify an OWNER entry's Check and report it; it may never do it.
 Ids are never reused. Delete the whole block — do not tick it off in place, or
 this file grows a graveyard and the graveyard is what goes stale.
 
+**Fence: `tests/unit/test_handoff_queue.py` (R7).** Mint the next id against
+**`origin/main`**, not against your branch — two branches in flight each pick
+"the next free id" from the base they were cut from, and whichever merges second
+carries an id `main` has since taken. That merge is CLEAN, so nothing surfaces
+it: it happened to H-27 and again to H-28 on 2026-08-25. If the fence fails,
+renumber the entry that merged **second** and note the move in its `Added:`
+line — never reclaim a number by deleting the other entry.
+
 ---
 
 # OPEN
@@ -436,7 +444,7 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
-### H-28 · WS-39: slice S3a-CLIENT still to build · [AGENT]
+### H-33 · WS-39: slice S3a-CLIENT still to build · [AGENT]
 - **Check:** `rg -n "api/tasks" workbench/control_plane/src/app/tasks/lib/api.ts`
   → any hit means **S3a-client** unbuilt. *(S1, S2 and S3a-SERVER are done —
   `nav.ts` carries `/calendar`, and migration 187 + `GET /projects/my/calendar`
@@ -470,7 +478,10 @@ this file grows a graveyard and the graveyard is what goes stale.
   is building a second one.
 - **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
   `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
-- **Added:** 2026-08-24 · WS-39 S1 session
+- **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25:
+  `main` took H-28 for the mypy entry via PR #46, which merged four hours before
+  PR #91; ids are never reused. Same collision as this file's H-27→H-32 move,
+  and the second in two days — `test_handoff_queue.py` now fences it.)*
 
 ### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
 - **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.
