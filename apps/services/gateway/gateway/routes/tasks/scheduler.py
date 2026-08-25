@@ -61,6 +61,31 @@ from sqlalchemy import text
 
 _log = get_logger("gateway.tasks.scheduler")
 
+
+def _known_providers() -> set[str]:
+    """Provider names a loop can actually sync — read from the SAME registry
+    :func:`providers.build_provider` consults, never a list written here.
+
+    ⚠️ **This is the D52 selection guard** (board WS-39 S1 repair round 1).
+    Deleting ``ClickUpProvider`` emptied ``providers._CONNECTORS`` but did not
+    delete the ``task_accounts`` ROWS that name it: every surviving
+    ``provider='clickup'`` row is still ``sync_enabled = true``, so the
+    enumeration below would launch a loop whose every cycle calls
+    ``build_provider('clickup')`` → ``HTTPException(400, "Unknown provider")``
+    → ``_sync_account`` records ``sync_status='error'`` → a permanent "Sync
+    failed" badge on a live ``/tasks``, re-earned every 300 s, forever.
+
+    One vocabulary, deliberately: the set is derived from the registry rather
+    than hardcoded, so a connector re-added under a future decision is synced
+    again with no second list to remember. Today it is EMPTY, which is the
+    correct answer — no account of any provider is syncable, because nothing
+    can be built to sync it (D52; ``tests/unit/test_no_task_provider_connectors.py``).
+    """
+    from gateway.routes.tasks.providers import connector_names
+
+    return set(connector_names())
+
+
 # Full provider-schema refresh cadence: every Nth sync cycle we re-fetch
 # projects/statuses/hierarchy (heavier than the task pull, and the task pull
 # already refreshes the member cache every run, so this can be less frequent).
@@ -214,7 +239,16 @@ async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
     ``tenant_session(org_id)`` — bound to the account's own tenant, threaded from
     the loop. Refuses (``TenantUnbound``) rather than reading on an unbound
     session (0 rows under phase-4 RLS → a spurious self-stop) or inheriting an
-    ambient tenant."""
+    ambient tenant.
+
+    ⚠️ **"Enabled" also means SYNCABLE** (D52): an account whose provider has no
+    connector in the registry answers ``False`` here, exactly as a disabled one
+    does. Same predicate, same vocabulary as :func:`_enabled_accounts_by_org` —
+    this is the second and last way a loop is launched (``refresh_account_sync``
+    after a connect / PATCH), and it is also what makes a loop started before
+    this guard existed **self-stop on its next cycle** rather than error forever.
+    Deliberately silent: this runs every cycle, and the boot-time warning is
+    where the one-per-account line is logged."""
     if not org_id:
         raise TenantUnbound(
             "tasks.scheduler._read_interval needs an explicit organization_id — "
@@ -223,7 +257,7 @@ async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
             "(saas_multitenancy_handover.md §H4)")
     async with _tenant_session(org_id) as db:
         row = (await db.execute(
-            text("""SELECT a.sync_interval_secs, a.sync_enabled,
+            text("""SELECT a.sync_interval_secs, a.sync_enabled, a.provider,
                            coalesce(s.background_sync, true) AS background_sync
                     FROM task_accounts a
                LEFT JOIN gtd_settings s ON s.user_id = a.user_id
@@ -234,7 +268,8 @@ async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
         return _DEFAULT_INTERVAL_SECS, False
     interval = max(row.sync_interval_secs or _DEFAULT_INTERVAL_SECS,
                    _MIN_INTERVAL_SECS)
-    return interval, bool(row.sync_enabled and row.background_sync)
+    syncable = str(row.provider or "") in _known_providers()
+    return interval, bool(row.sync_enabled and row.background_sync and syncable)
 
 
 # ── Lifecycle (start/stop/refresh/remove + status) ───────────────────────────
@@ -254,7 +289,17 @@ async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
     Deduped by ``account_id`` (first tenant wins): pre-phase-4 (RLS off, DARK)
     each per-org read is unscoped and returns every account, so the dedup keeps
     the launched set byte-identical to the old single unbound read; post-phase-4
-    the per-org reads are disjoint and the dedup is a no-op."""
+    the per-org reads are disjoint and the dedup is a no-op.
+
+    ⚠️ **An account whose provider is not in the registry is SKIPPED here, at
+    the selection seam** (:func:`_known_providers`, D52). This is the only place
+    the decision belongs: a loop launched for a retired provider cannot do
+    anything but fail, and it fails *loudly on the customer's screen* — the
+    error is written to ``task_accounts.sync_status``/``sync_error`` by
+    ``_sync_account`` and rendered as "Sync failed". One structured warning is
+    logged per skipped account per BOOT (this function runs once, from
+    :func:`start_background_sync`), never per cycle."""
+    known = _known_providers()
     resolver = await _get_db()
     try:
         org_rows = (await resolver.execute(
@@ -263,13 +308,17 @@ async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
         await resolver.close()
 
     out: dict[str, tuple[str, int]] = {}
+    # Deduped across orgs like `out` is, and for the same pre-phase-4 reason:
+    # each per-org read is unscoped while RLS is off, so a skipped account is
+    # seen once per organization and would otherwise log N identical lines.
+    skipped: set[str] = set()
     for org_row in org_rows:
         org_id = str(org_row.id)
         # Launch only for accounts whose owner hasn't turned background_sync off
         # (LEFT JOIN → users with no settings row default to on).
         async with _tenant_session(org_id) as db:
             rows = (await db.execute(
-                text("""SELECT a.id, a.sync_interval_secs
+                text("""SELECT a.id, a.provider, a.sync_interval_secs
                         FROM task_accounts a
                    LEFT JOIN gtd_settings s ON s.user_id = a.user_id
                        WHERE a.sync_enabled = true
@@ -279,6 +328,19 @@ async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
             account_id = str(row.id)
             if account_id in out:
                 continue  # first tenant that saw it wins (pre-phase-4 dedup)
+            provider = str(row.provider or "")
+            if provider not in known:
+                if account_id not in skipped:
+                    skipped.add(account_id)
+                    _log.warning(
+                        "tasks.scheduler.provider_retired_skipped",
+                        account_id=account_id[:12], provider=provider,
+                        known_providers=sorted(known),
+                        detail=("no loop launched — this provider has no "
+                                "connector in the registry (D52). The row and "
+                                "its mirrored items are untouched; nothing "
+                                "writes sync_status/sync_error for it."))
+                continue
             interval = max(row.sync_interval_secs or _DEFAULT_INTERVAL_SECS,
                            _MIN_INTERVAL_SECS)
             out[account_id] = (org_id, interval)

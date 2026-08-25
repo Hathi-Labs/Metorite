@@ -514,8 +514,9 @@ interface TaskState {
   quickCaptureMode: "single" | "sweep";
   /** the focused clarify overlay (keyboard-driven inbox processing). */
   clarifyModalOpen: boolean;
-  /** the PM-tool workspaces connect/manage modal. */
-  workspacesModalOpen: boolean;
+  // ⚠️ `workspacesModalOpen` / `openWorkspaces` / `closeWorkspaces` were
+  // removed 2026-08-25 with the modal they drove (D52, WS-39 S1 repair round 1)
+  // — the connect flow could only end in 400 "Unknown provider".
   /** count of items processed out of the inbox this session (momentum). */
   processedThisSession: number;
   /** one-level undo for the most recent dispose/clarify — the safety net that
@@ -813,8 +814,6 @@ interface TaskState {
       dueAt?: string;
     },
   ) => Promise<void>;
-  openWorkspaces: () => void;
-  closeWorkspaces: () => void;
 }
 
 /**
@@ -891,7 +890,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureOpen: false,
   quickCaptureMode: "single",
   clarifyModalOpen: false,
-  workspacesModalOpen: false,
   processedThisSession: 0,
   undoSnapshot: null,
   pendingDeleteIds: null,
@@ -1205,9 +1203,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // the authoritative server row.
     set((s) => ({ items: s.items.map((i) => (i.id === id ? server : i)) }));
   },
-
-  openWorkspaces: () => set({ workspacesModalOpen: true }),
-  closeWorkspaces: () => set({ workspacesModalOpen: false }),
 
   clarify: (id, decision, weight) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
@@ -2139,14 +2134,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         providers,
         people,
       });
-      // Settings load in parallel (defaults already render); the auto-sync
-      // below honours the user's toggle once they arrive.
+      // Settings load in parallel — defaults already render, so the panes are
+      // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);
       set({ settings });
-      // Background pull: refresh the provider mirror (incremental cursor
-      // makes this cheap) so Waiting/Next reflect the tool without a manual
-      // sync. Fire-and-forget — the UI is already usable on cached rows.
-      if (accounts.length > 0 && settings.autoSyncOnOpen) void get().syncNow();
+      // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
+      // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
+      // survived — which, after the retirement, is the ONLY state it could be
+      // in — and `POST /tasks/sync` builds a provider first, so it could do
+      // nothing but 400 and stamp `sync_status='error'`/`sync_error` on the
+      // row. That is the same "control that cannot succeed" as the deleted
+      // Connect/Sync buttons, except nobody pressed this one: it fired on every
+      // app open and re-earned the error the scheduler guard exists to prevent.
+      // `syncNow` itself is left in place for S3a to delete with the store.
     } catch {
       // Gateway absent/unreachable → demo mode on the bundled mocks (local
       // dev only). We seed the mocks HERE, not at init, so production (gateway

@@ -13,7 +13,11 @@ import { AssistantRail } from "./components/AssistantRail";
 import { InboxView } from "./components/InboxView";
 import { EngageView } from "./components/EngageView";
 import { QuickCapture } from "./components/QuickCapture";
-import { WorkspacesModal } from "./components/WorkspacesModal";
+// ⚠️ `WorkspacesModal` was deleted 2026-08-25 (D52, WS-39 S1 repair round 1).
+// It was the ClickUp connect flow — paste token → list workspaces → connect —
+// and every one of its calls ended in `build_provider` → 400 "Unknown
+// provider" once the registry emptied. Its only entry point was the sidebar's
+// "Connect workspace…" button, deleted with it.
 import { TaskSettingsModal } from "./components/TaskSettingsModal";
 import { TaskFocusModal } from "./components/TaskFocusModal";
 import { ReclarifyModal } from "./components/ReclarifyModal";
@@ -168,7 +172,6 @@ export default function TasksPage() {
           <ItemList />
         )}
         <QuickCapture />
-        <WorkspacesModal />
         <TaskSettingsModal />
         <TaskFocusModal />
         <ReclarifyModal />
@@ -278,7 +281,6 @@ export default function TasksPage() {
       </div>
 
       <QuickCapture />
-      <WorkspacesModal />
       <TaskSettingsModal />
       {/* Where a detail column is docked the overlay is CONTROLLED — it opens
           only from that pane's maximise. Everywhere else on desktop (Inbox,

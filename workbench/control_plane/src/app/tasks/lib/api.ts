@@ -802,40 +802,12 @@ export async function apiPurgeItem(id: string): Promise<void> {
   await gatewayFetch<void>(`/items/${id}/purge`, { method: "POST" });
 }
 
-export async function apiListWorkspaces(
-  provider: string,
-  apiToken: string
-): Promise<{ id: string; name: string; memberCount: number }[]> {
-  const res = await gatewayFetch<Raw>(`/providers/${provider}/workspaces`, {
-    method: "POST",
-    body: JSON.stringify({ api_token: apiToken }),
-  });
-  const list = (res.workspaces as Raw[]) ?? [];
-  return list.map((w) => ({
-    id: String(w.id ?? ""),
-    name: String(w.name ?? ""),
-    memberCount: Number(w.member_count ?? 0),
-  }));
-}
-
-export async function apiConnectWorkspace(req: {
-  provider: string;
-  apiToken: string;
-  workspaceId: string;
-  label?: string;
-}): Promise<TaskAccount> {
-  return mapAccount(
-    await gatewayFetch<Raw>(`/accounts`, {
-      method: "POST",
-      body: JSON.stringify({
-        provider: req.provider,
-        api_token: req.apiToken,
-        workspace_id: req.workspaceId,
-        label: req.label ?? "",
-      }),
-    })
-  );
-}
+// ⚠️ `apiListWorkspaces` (POST /providers/{provider}/workspaces) and
+// `apiConnectWorkspace` (POST /accounts) were deleted 2026-08-25 with their one
+// caller, `WorkspacesModal` (D52, WS-39 S1 repair round 1). Both endpoints
+// build a provider before doing anything, and the registry is empty — so each
+// was a request whose only possible answer was 400 "Unknown provider". The
+// gateway routes stay until S3a retires the GTD store that owns them.
 
 export async function apiDeleteAccount(id: string): Promise<void> {
   await gatewayFetch<void>(`/accounts/${id}`, { method: "DELETE" });

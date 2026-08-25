@@ -45,6 +45,7 @@ Run::
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -1525,22 +1526,79 @@ class TestSchedulerBindUnderForceRls:
     are FORCE-RLS'd, so a single unbound read returned 0 rows post-phase-4 and the
     scheduler launched nothing. The fix enumerates orgs from the EXEMPT
     `organization` table then binds `tenant_session(org)` per org.
+
+    ⚠️ **The rows outlive the connector (D52), so the green cases register a STUB
+    connector rather than seeding `provider='clickup'`.** Since WS-39 S1 the
+    provider registry is EMPTY, and the scheduler now skips any account whose
+    provider is absent from it — so a clickup-seeded "green" case would assert
+    the opposite of what it was written to assert, and would pass only because
+    the tenant bind and the provider guard cancelled out. The stub keeps the
+    tenancy claim (this class's subject) separable from the D52 claim
+    (`test_a_retired_provider_account_launches_no_loop`, below).
     """
+
+    #: A provider name that exists ONLY while a test registers it. Never
+    #: "clickup" — the whole point is that the registry, not a literal, decides.
+    _STUB_PROVIDER = "h4stub"
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _registered_connector(name: str):
+        """Put a connector in the REAL registry `build_provider` consults, for
+        the body of a test. Restores the dict exactly, so an aborted test cannot
+        leave a connector behind and turn `test_no_task_provider_connectors` red
+        for the next file in the session."""
+        from gateway.routes.tasks import providers as providers_mod
+
+        class _Stub(providers_mod.BaseTaskProvider):
+            provider = name
+
+            def __init__(self, *args, **kwargs):
+                """Never called — the scheduler guard only reads the NAME."""
+
+            async def verify(self):
+                return {}
+
+            async def list_workspaces(self):
+                return []
+
+            async def get_schema(self, workspace_id):
+                return {}
+
+            async def create_task(self, project_ref, payload):
+                return {}
+
+            async def list_members(self, workspace_id):
+                return []
+
+            async def create_project(self, workspace_id, name,
+                                     space_id, folder_id=None):
+                return {}
+
+            async def list_tasks(self, workspace_id, *, updated_since_ms=None):
+                return []
+
+        providers_mod._CONNECTORS[name] = _Stub
+        try:
+            yield
+        finally:
+            providers_mod._CONNECTORS.pop(name, None)
 
     @staticmethod
     def _app_dsn(promoted) -> str:
         return promoted.app_url.render_as_string(hide_password=False)
 
     @staticmethod
-    def _seed_account(admin_engine, *, org_id: str, user_id: str) -> str:
+    def _seed_account(admin_engine, *, org_id: str, user_id: str,
+                      provider: str = "h4stub") -> str:
         aid = str(uuid.uuid4())
         with admin_engine.begin() as conn:
             conn.execute(text(
                 "INSERT INTO task_accounts (id, user_id, provider, workspace_id, "
                 "credentials_encrypted, sync_enabled, sync_interval_secs, "
-                "organization_id) VALUES (:id, :u, 'clickup', 'ws-1', 'enc', "
+                "organization_id) VALUES (:id, :u, :p, 'ws-1', 'enc', "
                 "true, 300, :o)"),
-                {"id": aid, "u": user_id, "o": org_id})
+                {"id": aid, "u": user_id, "p": provider, "o": org_id})
         return aid
 
     @staticmethod
@@ -1565,7 +1623,8 @@ class TestSchedulerBindUnderForceRls:
             promoted.admin_engine, org_id=promoted.org_b, user_id=ub)
         async with tenant_engine_scope(self._app_dsn(promoted)):
             try:
-                by_org = await _enabled_accounts_by_org()
+                with self._registered_connector(self._STUB_PROVIDER):
+                    by_org = await _enabled_accounts_by_org()
                 assert aa in by_org, "org A's account was not enumerated"
                 assert ab in by_org, "org B's account was not enumerated"
                 assert by_org[aa][0] == promoted.org_a, (
@@ -1586,15 +1645,99 @@ class TestSchedulerBindUnderForceRls:
             promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
         async with tenant_engine_scope(self._app_dsn(promoted)):
             try:
-                interval, enabled = await _read_interval(aa, promoted.org_a)
-                assert enabled is True, "the account's own org could not read it"
-                assert interval == 300
-                _, enabled_b = await _read_interval(aa, promoted.org_b)
+                with self._registered_connector(self._STUB_PROVIDER):
+                    interval, enabled = await _read_interval(aa, promoted.org_a)
+                    assert enabled is True, (
+                        "the account's own org could not read it")
+                    assert interval == 300
+                    _, enabled_b = await _read_interval(aa, promoted.org_b)
                 assert enabled_b is False, (
                     "org B read org A's account row — task_accounts is not "
                     "FORCE-RLS'd or the bind leaked")
             finally:
                 self._cleanup(promoted.admin_engine, account_ids=[aa])
+
+    async def test_a_retired_provider_account_launches_no_loop(self, promoted):
+        """D52 FENCE — R7 name: ``tasks-scheduler-skips-retired-providers``.
+
+        A surviving `provider='clickup'`, `sync_enabled = true` row (D52 deleted
+        the connector, **not** the rows) is selected for ZERO loops, and nothing
+        writes its badge state. Without the guard the scheduler launches a loop
+        whose every cycle calls `build_provider('clickup')` → 400 "Unknown
+        provider" → `_sync_account` stamps `sync_status='error'` + `sync_error`,
+        which `/tasks` renders as a permanent "Sync failed" — re-earned every
+        300 s, forever.
+
+        Both halves are asserted because they fail independently: the SELECTION
+        (no loop) and the CONSEQUENCE (`sync_status`/`sync_error` untouched, so
+        the badge cannot appear). The stub-registered sibling row is the control
+        — it proves the enumeration is working in the same call, so "zero loops"
+        cannot be a green produced by a broken sweep.
+        """
+        from gateway.routes.tasks.scheduler import (
+            _enabled_accounts_by_org,
+            _read_interval,
+        )
+
+        ua = f"sched.cu.{uuid.uuid4().hex[:8]}@h4.test"
+        ub = f"sched.ok.{uuid.uuid4().hex[:8]}@h4.test"
+        retired = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ua,
+            provider="clickup")
+        control = self._seed_account(
+            promoted.admin_engine, org_id=promoted.org_a, user_id=ub,
+            provider=self._STUB_PROVIDER)
+        async with tenant_engine_scope(self._app_dsn(promoted)):
+            try:
+                with self._registered_connector(self._STUB_PROVIDER):
+                    by_org = await _enabled_accounts_by_org()
+                    # The second launch path (connect / PATCH sync_enabled)
+                    # answers the same way, and a loop started before the guard
+                    # existed reads this each cycle and self-stops.
+                    _, enabled = await _read_interval(retired, promoted.org_a)
+                assert retired not in by_org, (
+                    "the scheduler selected a loop for a retired-provider "
+                    "account — every cycle of it would 400 on build_provider "
+                    "and paint a permanent 'Sync failed' badge (D52)")
+                assert enabled is False, (
+                    "_read_interval reported a retired-provider account as "
+                    "enabled — refresh_account_sync would launch the loop the "
+                    "enumeration refused")
+                assert control in by_org, (
+                    "the control account was not enumerated either — this "
+                    "test's green would then be a broken sweep, not the guard")
+
+                # The consequence: no badge state was written for it.
+                with promoted.admin_engine.connect() as conn:
+                    row = conn.execute(text(
+                        "SELECT sync_status, sync_error, last_synced_at "
+                        "FROM task_accounts WHERE id = :id"),
+                        {"id": retired}).one()
+                assert row.sync_status == "idle", (
+                    f"sync_status is {row.sync_status!r} — something ran a "
+                    "cycle for a retired provider")
+                assert row.sync_error is None, (
+                    f"sync_error was written ({row.sync_error!r}) — this is "
+                    "exactly the 'Sync failed' badge the guard prevents")
+                assert row.last_synced_at is None
+            finally:
+                self._cleanup(
+                    promoted.admin_engine, account_ids=[retired, control])
+
+    async def test_the_known_provider_set_comes_from_the_registry(self, promoted):
+        """One vocabulary: the guard reads `providers.connector_names()`, so it
+        is not a second hardcoded list that can drift from `build_provider`.
+
+        Proven by CHANGING the registry and watching the answer follow — a test
+        comparing two literals would pass against a copied list."""
+        from gateway.routes.tasks.scheduler import _known_providers
+
+        assert _known_providers() == set(), (
+            "the registry is empty by decision (D52) — a name here means a "
+            "connector was registered, or the guard grew its own list")
+        with self._registered_connector(self._STUB_PROVIDER):
+            assert _known_providers() == {self._STUB_PROVIDER}
+        assert _known_providers() == set()
 
     async def test_the_unbound_account_read_returns_nothing_red(self, promoted):
         """RED (the brick): the sync-enabled account read the enumeration/loop
