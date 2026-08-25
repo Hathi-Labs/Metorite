@@ -1366,6 +1366,11 @@ class Version(BaseModel):
 
     sha: str | None
     env: str
+    #: Is this box serving the ONE task store (D53)? See the route's docstring
+    #: — it is here so a MISMATCH with the browser's build-time flag is
+    #: answerable with `curl`, which is the only thing that makes two flags
+    #: tolerable.
+    tasks_lens: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -1444,8 +1449,30 @@ async def version() -> Version:
     sounds — the bug that prompted this route was a frontend asset, and a
     version endpoint speaking only for the API would have reported "current"
     while stale icons were still being served.
+
+    ⚠️ **`tasks_lens` is here to make a two-flag design checkable** (WS-39
+    S3a-client slice 3). The Tasks/Calendar cutover needs the browser and the
+    gateway to agree about which task store is live, and they cannot share one
+    variable: the browser's is read by the Next.js BUILD
+    (`NEXT_PUBLIC_TASKS_LENS`), the gateway's by this process at call time
+    (`TASKS_LENS`). They live in the same `.env` and are meant to be flipped
+    together — but "meant to" is not a guarantee, and a disagreement is
+    otherwise SILENT: the UI reads one store while the assistant and the
+    nightly roll-over write the other. Reporting it here turns that into a
+    one-line check from a laptop. It reveals one bit of configuration, which is
+    the same trade `env` already makes on `/health`.
     """
-    return Version(sha=build_sha(), env=get_settings().acb_env)
+    # Imported HERE, not at module scope: `routes.tasks.calendar` pulls in the
+    # planner and, through it, half the projects package — and `main` is what
+    # every one of those modules is imported BY. The same reason
+    # `start_auto_rollover` is imported inside the lifespan below.
+    from gateway.routes.tasks.calendar import tasks_lens_enabled
+
+    return Version(
+        sha=build_sha(),
+        env=get_settings().acb_env,
+        tasks_lens=tasks_lens_enabled(),
+    )
 
 
 @app.get("/health/runtime", tags=["meta"])
@@ -1473,7 +1500,7 @@ async def embeddings(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     """OpenAI-compatible embeddings endpoint.
-    
+
     When OPENAI_API_KEY is available, proxies to the real OpenAI API.
     Otherwise returns a dummy embedding (zero-vector of 1536 dims) so
     Mem0's add() can complete — facts are stored without semantic search.

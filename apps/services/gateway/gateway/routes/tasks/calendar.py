@@ -1154,6 +1154,22 @@ class TaskSource:
         sample count. `(1.0, 0)` when there is not enough signal."""
         raise NotImplementedError
 
+    async def apply_blocks(
+        self, db: Any, uid: str,
+        place: list[tuple[str, datetime, datetime]], clear: list[str],
+    ) -> None:
+        """Commit a reviewed plan: set these blocks, clear those.
+
+        The only WRITE on this seam, and it was nearly missed. Slice 2 moved the
+        planner's five READS and stopped there, because the browser applies a
+        plan through the ordinary overlay PATCH — which slice 1 had already
+        routed. But two server-side callers apply plans WITHOUT a browser: the
+        agent's `apply=true` path, and the nightly roll-over sweep. Left on the
+        old store they would have gone on writing `gtd_items` after the cutover:
+        the sweep, unattended and per tenant, every night.
+        """
+        raise NotImplementedError
+
     def to_item(self, row: Any) -> Any:
         """Row to the object the packer carries. `gtd_items` rows go through
         `_row_to_item` because they arrive as `i.*` with connector columns
@@ -1201,6 +1217,20 @@ class _GtdSource(TaskSource):
             {"uid": uid, "win_start": win_start, "win_end": win_end},
         )).fetchall()
 
+    async def apply_blocks(self, db, uid, place, clear):
+        for task_id, start, end in place:
+            await db.execute(
+                text("UPDATE gtd_items SET scheduled_start = :s, "
+                     " scheduled_end = :e, updated_at = now()"
+                     " WHERE id = :id AND user_id = :uid"),
+                {"s": start, "e": end, "id": task_id, "uid": uid})
+        for task_id in clear:
+            await db.execute(
+                text("UPDATE gtd_items SET scheduled_start = NULL,"
+                     " scheduled_end = NULL, updated_at = now()"
+                     " WHERE id = :id AND user_id = :uid"),
+                {"id": task_id, "uid": uid})
+
     def to_item(self, row):
         return _row_to_item(row)
 
@@ -1211,7 +1241,70 @@ class _GtdSource(TaskSource):
         return ratio, n
 
 
+_TRUTHY = frozenset({"1", "on", "true", "yes"})
+
 GTD_SOURCE: TaskSource = _GtdSource(name="gtd_items")
+
+
+# ── Which store the SERVER-side surfaces plan (WS-39 S3a-client slice 3) ────
+#
+# Slice 2 gave the browser planner two routes and let the CLIENT pick, which is
+# why the cutover has only one flag. Three surfaces cannot do that, because none
+# of them has a browser:
+#
+#   * the agent planner (`/calendar/{plan,replan,rollover}-today`), called by the
+#     chat assistant;
+#   * `/calendar/day-summary`, which the assistant reads before answering;
+#   * the NIGHTLY ROLL-OVER SWEEP, which runs unattended, per tenant, and WRITES.
+#
+# So this is the second flag, and it is deliberate rather than reluctant. What
+# makes it safe is not that there is one of it — it is that a DISAGREEMENT with
+# the browser's flag is visible: `/version` reports this value, so "is the box on
+# the lens" is answerable with `curl`, from a laptop, without box access. An
+# invisible mismatch is the thing worth avoiding; a second variable in the same
+# `.env` file, checkable by evidence, is not.
+#
+# ⚠️ Both must be set together. `NEXT_PUBLIC_TASKS_LENS` is read by the Next.js
+# BUILD (which the deploy runs on the box, from the same `.env`), and
+# `TASKS_LENS` by this process at CALL time. Set one and not the other and the
+# UI and the assistant disagree about which store the member's day lives in.
+# `docs/TASKS_LENS.md` is the pair's write-up; `H-34` asks the owner to add them.
+
+TASKS_LENS_FLAG = "TASKS_LENS"
+
+
+def tasks_lens_enabled() -> bool:
+    """Is this deployment serving the ONE task store? Default **OFF**.
+
+    Read at CALL time rather than import time — the same idiom as
+    `projects/core.org_vocabularies_enabled` and `ACTION_BROKER_ENFORCE` — so a
+    flip is a restart rather than a release, and a test can set it around one
+    call.
+
+    ⚠️ Default OFF is load-bearing and not caution. `gtd_items` still holds every
+    task anybody has captured, and the S3b backfill is owner-gated and has not
+    run, so turning this on early does not degrade the assistant — it makes every
+    answer empty, on a 200.
+    """
+    import os
+
+    return (os.environ.get(TASKS_LENS_FLAG) or "").strip().lower() in _TRUTHY
+
+
+def agent_source() -> TaskSource:
+    """The store the server-side surfaces read and write.
+
+    The import is function-local ON PURPOSE, and it is the same reason
+    `_LensSource` does not live in this module: `routes/projects` imports this
+    file, so naming `planning` at module scope closes a cycle that fails only on
+    whichever package a given process happens to load first. At CALL time both
+    modules are fully loaded and the lookup is free.
+    """
+    if not tasks_lens_enabled():
+        return GTD_SOURCE
+    from gateway.routes.projects.planning import LENS_SOURCE
+
+    return LENS_SOURCE
 
 #: ⚠️ The lens source is NOT here, and its absence is structural rather than
 #: tidiness. It needs `MY_TASKS_FROM`, `derive_disposition` and
@@ -1374,25 +1467,24 @@ async def _build_agent_request(
 
 
 async def _apply_plan_blocks(db: Any, uid: str, plan: DayPlan) -> None:
-    """Write a proposed plan to the calendar: place the blocks (scheduled_start/
-    end) AND clear any EVICTED blocks (schedule → NULL, back to the unscheduled
-    list). Only reached via the apply path, which replays a reviewed plan.
-    Does NOT commit — the handler's `_tenant_session` block commits on clean
-    exit (H2), which also makes the whole apply atomic."""
+    """Write a proposed plan: place the blocks AND clear the EVICTED ones
+    (schedule → NULL, back to the unscheduled list). Only reached via the apply
+    path, which replays a plan the user reviewed. Does NOT commit — the
+    handler's `_tenant_session` block commits on clean exit (H2), which also
+    makes the whole apply atomic.
+
+    ⚠️ Routed through `agent_source()` (WS-39 S3a-client slice 3). This is the
+    agent's apply path and it has no browser, so it cannot pick a store by
+    picking a route the way the Calendar UI does.
+    """
+    place: list[tuple[str, datetime, datetime]] = []
     for b in plan.blocks:
         s, e = _parse_iso(b.start), _parse_iso(b.end)
         if not s or not e:
             continue
-        await db.execute(
-            text("UPDATE gtd_items SET scheduled_start = :s, scheduled_end = :e,"
-                 " updated_at = now() WHERE id = :id AND user_id = :uid"),
-            {"s": s, "e": e, "id": b.item_id, "uid": uid})
-    for ev in plan.evicted:
-        await db.execute(
-            text("UPDATE gtd_items SET scheduled_start = NULL,"
-                 " scheduled_end = NULL, updated_at = now()"
-                 " WHERE id = :id AND user_id = :uid"),
-            {"id": ev.item_id, "uid": uid})
+        place.append((b.item_id, s, e))
+    await agent_source().apply_blocks(
+        db, uid, place, [ev.item_id for ev in plan.evicted])
 
 
 # ── Reviewed-plan gate (R1/S1) ───────────────────────────────────────────────
@@ -1493,7 +1585,7 @@ async def plan_today(
         one = await _one_thing_for(db, uid, local_day)
         plan = await _replan_core(
             db, uid, win_start, win_end, pdr, now, one, include_new=True,
-            src=GTD_SOURCE)
+            src=agent_source())
         return await _resolve_agent_plan(
             db, uid, local_day, "plan", req.apply, plan, now)
 
@@ -1510,7 +1602,7 @@ async def replan_today(
     async with _tenant_session() as db:
         pdr, _ws, _we, _tz, local_day = await _build_agent_request(
             db, uid, req.date, None)
-        plan = await replan_day(pdr, user)
+        plan = await replan_day_for(pdr, user, agent_source())
         return await _resolve_agent_plan(
             db, uid, local_day, "replan", req.apply, plan, now)
 
@@ -1527,7 +1619,7 @@ async def rollover_today(
     async with _tenant_session() as db:
         pdr, _ws, _we, _tz, local_day = await _build_agent_request(
             db, uid, req.date, None)
-        plan = await rollover_day(pdr, user)
+        plan = await rollover_day_for(pdr, user, agent_source())
         return await _resolve_agent_plan(
             db, uid, local_day, "rollover", req.apply, plan, now)
 
@@ -1547,13 +1639,11 @@ async def day_summary(
         local_day = _parse_day(date) or now.astimezone(tz).date()
         win_start, win_end, _ews, capacity, _buf = _day_window(row, local_day, tz)
 
-        scheduled = (await db.execute(
-            text(ITEM_SELECT + _BUSY_WHERE),
-            {"uid": uid, "win_start": win_start, "win_end": win_end},
-        )).fetchall()
+        src = agent_source()
+        scheduled = await src.busy_window(db, uid, win_start, win_end)
         blocks = []
         for r in scheduled:
-            m = _row_to_item(r)
+            m = src.to_item(r)
             bs = _parse_iso(getattr(m, "scheduled_start", None))
             be = _parse_iso(getattr(m, "scheduled_end", None))
             blocks.append({
@@ -1563,27 +1653,30 @@ async def day_summary(
                 "done": m.disposition == "DONE",
                 "fixed": getattr(m, "flexible", True) is False,
             })
-        unsched = (await db.execute(
-            text(f"SELECT count(*) AS n FROM gtd_items i {_CANDIDATE_WHERE}"),
-            {"uid": uid})).first()
-        overdue = (await db.execute(
-            text(f"SELECT count(*) AS n FROM gtd_items i {_OVERDUE_WHERE}"),
-            {"uid": uid, "now": now})).first()
+        # Counted off the seam's own reads rather than through two more
+        # store-shaped COUNT queries. Two extra `TaskSource` methods would be
+        # two more places for the pair to disagree with the lists they claim to
+        # count — and these are a member's own tasks, not a table scan.
+        unscheduled_count = len(await src.candidates(db, uid))
+        overdue_count = len(await src.overdue(db, uid, now))
         one_id = await _one_thing_for(db, uid, local_day)
         one_title = None
         if one_id:
-            otr = (await db.execute(
-                text("SELECT title FROM gtd_items WHERE id = :id "
-                     "AND user_id = :uid"),
-                {"id": one_id, "uid": uid})).first()
-            one_title = otr.title if otr else None
-        ratio, samples = await GTD_SOURCE.estimate_ratio(db, uid)
+            # The ★ One Thing is an id on `gtd_day_state`, which SURVIVES the
+            # retirement (D53.6) — but the TITLE it names lives in whichever
+            # store is live. Read it off the day's own blocks and candidates
+            # rather than a third query against a hard-coded table.
+            for r in [*scheduled, *(await src.candidates(db, uid))]:
+                if str(getattr(r, "id", "")) == str(one_id):
+                    one_title = getattr(r, "title", None)
+                    break
+        ratio, samples = await src.estimate_ratio(db, uid)
         return {
             "day": local_day.isoformat(),
             "capacity_mins": capacity,
             "scheduled": blocks,
-            "unscheduled_count": int(unsched.n if unsched else 0),
-            "overdue_count": int(overdue.n if overdue else 0),
+            "unscheduled_count": unscheduled_count,
+            "overdue_count": overdue_count,
             "one_thing": ({"id": one_id, "title": one_title} if one_id else None),
             "estimate_over_pct": round((ratio - 1) * 100) if samples >= 5 else None,
         }
@@ -1675,18 +1768,18 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
     if row.last_rollover_date == local_today:
         return  # already handled this local day
 
+    # ⚠️ The store, for a job with NO REQUEST and no browser (WS-39
+    # S3a-client slice 3). This is the surface where getting it wrong is worst:
+    # it runs nightly, per tenant, unattended, and it WRITES. Left pinned to
+    # `gtd_items` it would have gone on releasing blocks in the retiring store
+    # after the cutover — every night, for every customer, with the members'
+    # real leftovers quietly never released at all.
+    src = agent_source()
     async with _tenant_session(org_id) as db:
-        over_rows = (await db.execute(
-            text(ITEM_SELECT + _OVERDUE_WHERE), {"uid": uid, "now": now},
-        )).fetchall()
-        overdue = [_row_to_item(r) for r in over_rows]
+        over_rows = await src.overdue(db, uid, now)
+        overdue = [src.to_item(r) for r in over_rows]
+        await src.apply_blocks(db, uid, [], [str(m.id) for m in overdue])
         for m in overdue:
-            await db.execute(
-                text("""UPDATE gtd_items
-                        SET scheduled_start = NULL, scheduled_end = NULL,
-                            updated_at = now()
-                        WHERE id = :id AND user_id = :uid"""),
-                {"id": m.id, "uid": uid})
             await db.execute(
                 text("""INSERT INTO gtd_rollover_log
                           (user_id, item_id, title, rolled_from, rolled_to)

@@ -949,9 +949,86 @@ carries a comment at the endpoints, and
 `test_calendar_task_source.py::test_the_agent_planner_is_still_on_the_old_store`
 fails the day somebody routes it without reading either.
 
-Until then, an agent asked to plan a day on a lens deployment plans the retiring
-store and reports an empty day.
+✅ **CLOSED 2026-08-25 by slice 3 — see §10.8.** The mechanism is decided
+(`TASKS_LENS`, an env flag consulted through `agent_source()`), and sizing it
+found two more browserless surfaces, both of which WRITE.
 
+### 10.8 The browserless surfaces, and the second flag (WS-39 S3a-client slice 3)
+
+**Built 2026-08-25.** §10.7 closed the browser planner and named one thing it
+left open: the agent's `-today` endpoints, which have no browser and so cannot
+pick a store by picking a route. Sizing that turned up **two more**, and both are
+worse than the one that was known.
+
+| Surface | Why it cannot use the client flag | |
+|---|---|---|
+| `/calendar/{plan,replan,rollover}-today` | called by the chat assistant | read |
+| `/calendar/day-summary` | the assistant reads it before answering | read |
+| the agent **apply** path (`_apply_plan_blocks`) | replays a reviewed plan server-side | **write** |
+| the **nightly roll-over sweep** | runs unattended, per tenant, on a timer | **write** |
+
+The sweep is the one that mattered. It runs every night for every customer, and
+left pinned to `gtd_items` it would have gone on releasing blocks in the retiring
+store after the cutover — while the members' real leftovers were never released
+at all. Nothing would have failed.
+
+⚠️ **It was missed by slice 2 for an instructive reason.** Slice 2 moved the
+planner's five READS and stopped, on the argument that the browser applies a
+plan through the ordinary overlay PATCH — which was true, and which is exactly
+why the two server-side writers did not come up. *"The client already does it"*
+is not the same claim as *"nothing else does it."*
+
+#### The decision
+
+**`TASKS_LENS`, an env flag on the gateway**, read at call time (the idiom
+`projects/core.org_vocabularies_enabled` already uses), consulted through one
+function — `agent_source()` — that every browserless surface calls. None of them
+names a store.
+
+That is a **second** flag, alongside the browser's build-time
+`NEXT_PUBLIC_TASKS_LENS`, and the alternatives were weighed and rejected:
+
+- *derive it from the data* (does this member have `pm_*` rows?) — magic, and
+  wrong for exactly the member who has none yet;
+- *have the browser tell the server* — the assistant has no browser to ask;
+- *serve the browser's flag from the gateway* — makes `lensEnabled()` async at
+  call sites that are synchronous, and fails OPEN to the old store if the fetch
+  has not landed, which is a silent wrong answer at the worst moment.
+
+**What makes two flags tolerable is not that there are only two. It is that a
+disagreement is observable.** `/version` now reports `tasks_lens`,
+unauthenticated, so "is this box on the lens?" is one `curl` from a laptop with
+no box access — the same standard CLAUDE.md §3.8 sets for the deployed SHA. An
+invisible mismatch is the thing worth refusing; a second variable in the same
+`.env`, checkable by evidence, is not. `docs/TASKS_LENS.md` is the pair's
+write-up and `H-34` asks the owner to add them (`.env*` is §6-gated).
+
+#### The write half of the seam
+
+`TaskSource` gained `apply_blocks(place, clear)`. The lens implementation is an
+**UPSERT, not an UPDATE**, and that is not a stylistic choice: a member can be
+handed a task they have never opened and have the assistant schedule it the same
+day, so there may be no `pm_task_personal` row yet. An UPDATE would report
+success and write nothing, and the plan would silently not apply. It goes through
+`_upsert_personal` rather than hand-rolled SQL so the agent's writes use the same
+binding and coercion path as the browser's PATCH — which is where migrations
+187/188's timestamp and jsonb handling lives.
+
+Ownership needs no `AND user_id = :uid` guard any more: the key `(task_id,
+member_email)` does that job, because the row **is** the member's. Verified live
+— clearing my block on a shared task leaves the other assignee's block standing
+(`live_ws39_s3a_client2.py` check 15).
+
+#### ⚠️ The fence that passed a regression before it was tightened
+
+`test_every_browserless_surface_asks_which_store` reads the module and requires
+each of the six surfaces to consult `agent_source()`. Its first draft also
+accepted the presence of a `src.` call — and pinning the nightly sweep back with
+`src = GTD_SOURCE` left every `src.` call in place, so the fence saw a source
+variable and approved. It was caught by mutating the code and watching the test
+*not* fail. **A fence that holds a bug still is worse than none**, and the second
+condition (no surface may name `GTD_SOURCE` or `LENS_SOURCE` directly) is there
+because of it.
 ---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
