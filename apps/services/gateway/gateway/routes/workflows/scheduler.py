@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -294,6 +295,17 @@ async def _scheduler_loop() -> None:
 
 async def start_workflow_scheduler() -> None:
     global _scheduler_task
+    # WS-29 launch-defang kill-switch (default ON). The cron scanner is out of
+    # launch scope and not yet tenant-bound (H4 slice 6c), so the RLS-cutover
+    # runbook sets WORKFLOW_SCHEDULER_ENABLED false to keep it from writing
+    # UNBOUND under FORCE ROW LEVEL SECURITY. One flag gates the whole workflow
+    # scheduling subsystem (this scanner AND reconcile_orphaned_runs); the gate
+    # lives INSIDE the start function, never as an `if` at the gateway call site.
+    if os.getenv("WORKFLOW_SCHEDULER_ENABLED", "").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        _log.info("workflows.scheduler_disabled")
+        return
     if _scheduler_task is not None and not _scheduler_task.done():
         return
     _scheduler_task = asyncio.get_running_loop().create_task(

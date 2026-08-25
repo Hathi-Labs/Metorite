@@ -25,6 +25,7 @@ __all__ = [
     "LEDGER_REASON_ADJUSTMENT",
     "LEDGER_REASON_DISCOUNT_REDEMPTION",
     "LEDGER_REASON_GRANT",
+    "LEDGER_REASON_MANUAL",
     "LEDGER_REASON_PURCHASE",
     "LEDGER_REASON_USAGE",
     "OverdraftPolicy",
@@ -66,6 +67,15 @@ LEDGER_REASON_DISCOUNT_REDEMPTION = "discount_redemption"
 LEDGER_REASON_ADJUSTMENT = "adjustment"
 #: `POST /credits/grant`, non-commercial grants — `ref` is operator-supplied.
 LEDGER_REASON_GRANT = "grant"
+#: Manual / bank-transfer activation — the OFFLINE twin of `purchase`. Written by
+#: the Operator-only `POST /billing/subscriptions/activate` (§6 item (j)) when a
+#: customer paid OUT OF BAND and there is no Razorpay order; `ref` is the
+#: operator-supplied bank-transfer reference. It carries its own word rather than
+#: `purchase` so a term settled by bank transfer stays distinguishable from a
+#: processor capture a year later — the same "one event, one word" reason
+#: `seat_grant.reason`, the `control_audit` row and `org_subscription.provider`
+#: all say `'manual'` for exactly this activation.
+LEDGER_REASON_MANUAL = "manual"
 
 #: Every reason a ledger row may carry. Fenced structurally by
 #: ``test_customer_console_payments.py`` over the CALL SITES of
@@ -80,6 +90,7 @@ LEDGER_REASONS: frozenset[str] = frozenset({
     LEDGER_REASON_DISCOUNT_REDEMPTION,
     LEDGER_REASON_ADJUSTMENT,
     LEDGER_REASON_GRANT,
+    LEDGER_REASON_MANUAL,
 })
 
 #: The smallest amount the ledger can represent: ``credit_ledger.delta`` and

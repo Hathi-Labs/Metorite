@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { configuredProviders, type AuthEnv } from "@/authPosture";
+import { currentIdentity } from "@/lib/gateway";
 
 import SignUpForm from "./SignUpForm";
 
@@ -24,7 +25,7 @@ import SignUpForm from "./SignUpForm";
 // Fence: `signup.test.ts`.
 export const dynamic = "force-dynamic";
 
-export default function SignUp() {
+export default async function SignUp() {
   // Ships dark. When `SELF_SERVE_SIGNUP_ENABLED` is not exactly `"true"` the
   // whole surface is unreachable — a REDIRECT to `/signin`, not a 404
   // (done-when 1, audit B4a). Read FIRST, before providers are derived or the
@@ -34,6 +35,36 @@ export default function SignUp() {
   // truthy-string reading would arm it instead. Flipping it live is OWNER-GATE
   // (§8 gate 8).
   if (process.env.SELF_SERVE_SIGNUP_ENABLED !== "true") redirect("/signin");
+
+  // ── done-when 8a (2026-08-24) · no session ⇒ /signin, not a dead form ──────
+  //
+  // Identity is IdP-attested BEFORE the form (CP-2c item 1): the owner of the
+  // new organization is the SESSION email, resolved server-side, and the
+  // `/api/signup` hop 401s without one.
+  //
+  // ⚠️ **This is DEFENCE IN DEPTH, not a repair of a reachable dead end**
+  // (corrected 2026-08-24 — the original comment here claimed signed-out
+  // visitors were being shown the form, and they were not). `/signup` is absent
+  // from `proxy.ts`'s `PUBLIC_PAGES`, so a signed-out page navigation is already
+  // redirected to `/signin` before this component runs. What the check buys is
+  // that the guarantee stops depending on a set in another file: add `/signup`
+  // to `PUBLIC_PAGES` — a one-line edit somebody will make the day the marketing
+  // CTA lands — and without this the form renders to a visitor who can only be
+  // 401'd at submit.
+  //
+  // `currentIdentity()` and not a second session read: it is the same seam the
+  // hop's `requireIdentity()` sits on, so "may this render" and "will the
+  // submit work" cannot drift — and it carries the laptop bypass, so an
+  // unconfigured dev box is unchanged.
+  //
+  // ⚠️ **Ordered flag-first, session-second, deliberately.** An un-opted-in
+  // deployment must not disclose that this surface exists behind a sign-in;
+  // both gates land on `/signin`, but only one of them may be reached by
+  // someone who has not signed in.
+  //
+  // `SignUpForm`'s own `needsSignIn` arm STAYS: it is the answer to a session
+  // that expired between render and submit, which this check cannot see.
+  if (!(await currentIdentity())) redirect("/signin");
 
   return <SignUpForm providers={configuredProviders(process.env as AuthEnv)} />;
 }

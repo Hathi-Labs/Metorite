@@ -1,8 +1,21 @@
-"""POST /seats/assign + /seats/release — the customer seat-admin WRITE proxy.
+"""The customer seat-admin proxy: ``POST /seats/{assign,release}`` + ``GET /seats/overview``.
 
 Spec: ``project-docs/specs/subscription_console.md`` SC-2a (the gateway-tier
 transport) · ``customer_console.md`` §6 item (h) / §9 residual 7 (RESOLVED
-2026-08-21 to the gateway tier) · ``user_management_contract.md`` R11.
+2026-08-21 to the gateway tier) / **§6 CP-2h slice 1, D-SEAT-4** (the READ) ·
+``user_management_contract.md`` R11.
+
+## The READ joined the writes here — CP-2h slice 1, D-SEAT-4 (2026-08-24)
+
+The customer Seats tab used to read its counts and its roster from the Console's
+ORGANIZATION-key doors (``GET /me/seats`` + ``GET /me/members``) through the
+workbench BFF, which held a per-org ``CUSTOMER_CONSOLE_ORG_KEY``. **On a shared
+multi-tenant deployment no single org key is correct**, the env is unset, and the
+tab fails closed to "not configured for this deployment" — a STRUCTURAL dark, not
+a missing flag flip. ``GET /seats/overview`` is the same picture under the
+credential a shared box CAN hold: the deployment key, org derived Console-side
+from placement ∩ membership. One plane, one door; the org-key path stays exactly
+as it is for the per-org billing pages.
 
 A browser "manage seats" action reaches the Customer Console's deployment-key
 ``seat_admin`` door THROUGH this gateway route, because the deployment key is
@@ -65,6 +78,7 @@ from acb_auth.console_resolve import (
     assign_seat_on_console,
     is_wired,
     release_seat_on_console,
+    seat_overview_on_console,
 )
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, Request
@@ -91,6 +105,35 @@ _DEFAULT_SOURCE = "alacarte"
 #: the Console. Deliberately says nothing about the customer — this is the
 #: deployment's own missing configuration, not their problem.
 _UNAVAILABLE = {"detail": "Seat management is temporarily unavailable."}
+
+
+def _unwired_read_refusal() -> JSONResponse:
+    """A READ on an unwired box refuses with 503 — the same status, a truer log.
+
+    503 rather than an empty 200 for the reason the write arm refuses: an empty
+    seat grid and an unreachable Console look identical on the surface, and only
+    one of them means the admin should stop and read. The BFF relays this status
+    and ``SeatsTab``'s ``PlaneState`` renders "not configured for this
+    deployment" — the one state that keeps meaning what it says only because
+    nothing else answers 503 here.
+
+    Deliberately **not** :func:`_unwired_refusal`, whose line is
+    ``seats.write_unwired`` at ERROR and says "a seat write reached this box". A
+    read reaching an unwired box is the ordinary ship-dark state (no deployment
+    has the Console wired yet), so it logs at WARNING under its own event name:
+    an operator grepping ``seats.write_unwired`` must keep finding writes alone,
+    and a level that cried wolf on every page load would train them to ignore it.
+    """
+    _log.warning(
+        "seats.read_unwired",
+        detail=(
+            "the seat overview was read on a box with no Console configured — "
+            "CUSTOMER_CONSOLE_URL and CUSTOMER_CONSOLE_DEPLOYMENT_KEY are not "
+            "both set on the gateway. Refusing with 503 so the surface says so "
+            "rather than drawing an empty grid (customer_console.md CP-2h)."
+        ),
+    )
+    return JSONResponse(status_code=503, content=dict(_UNAVAILABLE))
 
 
 def _unwired_refusal() -> JSONResponse:
@@ -137,6 +180,41 @@ async def _read_body(request: Request) -> JSONResponse | dict[str, Any]:
             },
         )
     return raw
+
+
+@router.get("/overview")
+async def seat_overview(
+    user: Annotated[UserContext, Depends(get_current_user)] = None,  # type: ignore[assignment]
+) -> Any:
+    """The caller's org seat counts + roster — CP-2h slice 1, **D-SEAT-4**.
+
+    The READ that makes the customer Seats tab work on a SHARED deployment. The
+    acting admin is the SESSION email — the identical derivation
+    :func:`assign_seat` makes, deliberately the same two lines rather than a
+    second way to learn who is asking — and the organization is derived
+    Console-side from ``deployment_visible_orgs(deployment_id, actor_email)``.
+    **Nothing on this route names a tenant**: it takes no body, no query
+    parameter and no path segment, so R11 holds by there being nothing to claim.
+
+    Refuses 503 on an unwired box (see :func:`_unwired_read_refusal`); otherwise
+    relays the Console's status + body verbatim, so a 403 (not an admin of this
+    org) and a 409 (a member of more than one org on this box, which the Console
+    will not guess between) reach the surface as themselves rather than as an
+    outage. The gateway makes NO authorization decision here either — the
+    "admin, not any member" gate is ``_admin_scheme_context``'s, Console-side.
+    """
+    if not is_wired():
+        return _unwired_read_refusal()
+
+    actor_email = (user.email or "") if user else ""
+    try:
+        status_code, payload = await seat_overview_on_console(
+            actor_email=actor_email,
+        )
+    except ConsoleSeatWriteUnavailable as exc:
+        _log.warning("seats.overview_unavailable", error=str(exc)[:200])
+        return JSONResponse(status_code=503, content=dict(_UNAVAILABLE))
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @router.post("/assign")

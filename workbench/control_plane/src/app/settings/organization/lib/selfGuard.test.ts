@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isSelf, rowActions } from "./selfGuard";
-import type { Member } from "./types";
+import type { Member } from "@/app/settings/members/types";
 
 function member(over: Partial<Member> = {}): Member {
   return {

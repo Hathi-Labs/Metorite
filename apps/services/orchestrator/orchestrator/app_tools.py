@@ -44,17 +44,30 @@ def _granted_live_apps(agent_name: str) -> list[tuple[str, dict[str, Any]]]:
     directly (``agent:<name>``) or via the ``agents:*`` wildcard.
 
     A best-effort SYNC Postgres lookup — mirrors ``executor.py``'s
-    ``_get_stored_session_id`` and this module's sibling
-    ``_inject_mcp_servers``, both already making a plain blocking
-    ``acb_graph.get_session()`` call from this same injection path.
-    ``_inject_agent_tools`` is a plain sync function called directly on the
-    event loop, so this must not be ``async``; any failure here must never
-    block tool injection for every other agent.
+    ``_get_stored_session_id``, both already making a plain blocking
+    ``acb_graph`` call from this same injection path. ``_inject_agent_tools``
+    is a plain sync function called directly on the event loop, so this must not
+    be ``async``; any failure here must never block tool injection for every
+    other agent.
+
+    WS-29 acb_graph slice 7: ``apps``/``app_grants``/``app_versions`` are all
+    FORCE-RLS'd after phase-4 promotion, so an UNBOUND ``get_session()`` read
+    returns ZERO rows and the agent silently loses every granted app. Behind
+    ``ACB_GRAPH_TENANT_BIND`` this binds the run's tenant so the join RETURNS
+    ROWS. The opener is resolved on the event-loop frame (this runs on the loop,
+    no worker-thread hop). flag OFF → the unbound ``get_session`` (byte-identical);
+    flag ON + no resolvable org → fail closed (no granted apps), never an unbound
+    read on a FORCE-RLS'd catalog.
     """
     try:
-        from acb_graph import get_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
-        with get_session() as s:
+
+        from orchestrator.executor import _graph_session_opener_current
+        _open = _graph_session_opener_current()
+        if _open is None:
+            _log.warning("app_tools.grant_lookup_skipped_no_org", agent=agent_name)
+            return []
+        with _open() as s:
             rows = s.execute(
                 text(
                     """SELECT DISTINCT a.slug, v.manifest

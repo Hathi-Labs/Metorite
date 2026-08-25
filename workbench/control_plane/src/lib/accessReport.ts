@@ -21,9 +21,17 @@
  */
 
 import type { Access } from "./access";
-import { NAV_SECTIONS } from "./nav";
+import { NAV_SECTIONS, previewAppsVisible, type LaunchStatus } from "./nav";
 
-export type PaneStatus = "granted" | "denied" | "signed-out";
+/**
+ * Why a pane is, or is not, on this viewer's sidebar.
+ *
+ * `not-launched` is the fifth cause, added with D49 (`launch_surface.md` LS-3),
+ * and it is the one that most needs naming: a `preview` pane is missing for a
+ * reason NO grant can fix, so reporting it as `denied` would send a customer
+ * admin hunting for a permission that would change nothing.
+ */
+export type PaneStatus = "granted" | "denied" | "signed-out" | "not-launched";
 
 export interface PaneReport {
   href: string;
@@ -37,13 +45,26 @@ export interface PaneReport {
   reason: string;
 }
 
-/** Every pane the navigation can show, flattened, in sidebar order. */
-export function allPanes(): Array<{ href: string; label: string; feature: string | null }> {
+/**
+ * Every pane the navigation can show, flattened, in sidebar order.
+ *
+ * Deliberately EVERY pane, `preview` ones included. This report's whole job is
+ * to answer "is it hidden, or does it not exist" — dropping the unlaunched
+ * panes here would make them indistinguishable from the second case, which is
+ * the confusion the module exists to remove.
+ */
+export function allPanes(): Array<{
+  href: string;
+  label: string;
+  feature: string | null;
+  launch: LaunchStatus;
+}> {
   return NAV_SECTIONS.flatMap((section) =>
     section.items.map((item) => ({
       href: item.href,
       label: item.label,
       feature: item.feature ?? null,
+      launch: item.launch,
     })),
   );
 }
@@ -62,7 +83,9 @@ export function paneReport(access: Access): PaneReport[] {
     access.features_denied.map((d) => [d.slug, d.permission]),
   );
 
-  return allPanes().map(({ href, label, feature }) => {
+  const previewVisible = previewAppsVisible();
+
+  return allPanes().map(({ href, label, feature, launch }) => {
     if (!access.authenticated) {
       return {
         href,
@@ -70,6 +93,19 @@ export function paneReport(access: Access): PaneReport[] {
         feature,
         status: "signed-out" as const,
         reason: "Not signed in — nothing is resolved yet.",
+      };
+    }
+    // Launch status is checked BEFORE the grant, because it is the stronger
+    // answer: no permission reveals a pane we are not offering yet (§3.4).
+    if (launch === "preview" && !previewVisible) {
+      return {
+        href,
+        label,
+        feature,
+        status: "not-launched" as const,
+        reason:
+          "Not available yet — this app is still being built, so it is not in " +
+          "the menu. A grant will not reveal it.",
       };
     }
     if (!feature) {
@@ -115,9 +151,15 @@ export function summarise(report: PaneReport[]): string {
   if (report.some((r) => r.status === "signed-out")) {
     return "Signed out — no access is resolved.";
   }
+  // Unlaunched panes are counted separately from denied ones and excluded from
+  // the denominator: "3 of 24 panes available" would read as a broken account
+  // when sixteen of those 24 are simply not being offered to anybody yet.
+  const unlaunched = report.filter((r) => r.status === "not-launched").length;
+  const offered = report.length - unlaunched;
   const denied = report.filter((r) => r.status === "denied").length;
-  if (denied === 0) return `All ${report.length} panes are available to you.`;
-  return `${report.length - denied} of ${report.length} panes available · ${denied} need a grant.`;
+  const tail = unlaunched > 0 ? ` · ${unlaunched} not available yet` : "";
+  if (denied === 0) return `All ${offered} available apps are open to you${tail || "."}`;
+  return `${offered - denied} of ${offered} apps available · ${denied} need a grant${tail}`;
 }
 
 /**
@@ -129,6 +171,10 @@ export function summarise(report: PaneReport[]): string {
  * again, as "the app doesn't have that".
  */
 export function unmappedFeatures(access: Access): string[] {
+  // `allPanes()` includes preview panes, which is what we want here: a slug
+  // whose pane exists but is not launched is MAPPED — it has a home to return
+  // to — and reporting it as unmapped would send someone looking for a nav
+  // entry to write that already exists.
   const navSlugs = new Set(
     allPanes()
       .map((p) => p.feature)

@@ -173,6 +173,7 @@ def ownerless(monkeypatch, replayed):
     fixture worked around by resetting ``acb_common.db``'s globals.
     """
     import acb_auth.access as access_mod
+    import acb_common.db as db_mod
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     _purge(replayed)
@@ -216,6 +217,17 @@ def ownerless(monkeypatch, replayed):
         return async_sessionmaker(built[0], expire_on_commit=False)
 
     monkeypatch.setattr(access_mod, "_get_session_factory", _ladder_session_factory)
+    # ⚠️ H6 RLS-bind hardening (WS-29): `ensure_owner_bootstrap` now runs the
+    # has-owner read + the bootstrap INSERT inside `tenant_session(default_org)`
+    # (both touch the FORCE-RLS'd `app_user`/`user_role`). `tenant_session` opens
+    # its session through `acb_common.db.get_session_factory` — the ORIGINAL
+    # module-global, NOT the `access_mod._get_session_factory` name substituted
+    # above (that alias is a separate binding). So the same lazy ladder factory
+    # must be pinned on the real seam too, or the bound statements would open
+    # against the default engine (`DATABASE_URL`) instead of the ladder DB and
+    # the bootstrap would silently no-op. Same lazy build, same cached engine,
+    # so still one engine, disposed in teardown.
+    monkeypatch.setattr(db_mod, "get_session_factory", _ladder_session_factory)
 
     yield replayed
 

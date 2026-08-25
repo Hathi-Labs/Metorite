@@ -369,12 +369,26 @@ const MAP = {
  * Suffixes tried against each candidate base name.
  *
  * Fluent's UI standard is the 20px regular grid, with 24px as the common
- * fallback. Material Symbols Rounded is the face Material 3 actually ships,
- * so rounded variants come first.
+ * fallback — `-regular` is Fluent's unfilled face.
+ *
+ * Material Symbols encodes TWO independent axes in one name: `outline` means
+ * FILL 0 (unfilled) and its absence means FILL 1 (solid); `-rounded`/`-sharp`
+ * pick the face, and a bare name is the default "Outlined" face. So
+ * `inbox-rounded` is the SOLID rounded glyph and `inbox-outline-rounded` is
+ * the unfilled one — a distinction easy to misread as face-only.
+ *
+ * Fill is ordered ahead of face here on purpose. A solid glyph paints its
+ * interior in `currentColor` instead of letting the surface show through, so
+ * on a light theme every sidebar icon reads as a black blob and no longer
+ * matches Fluent, Lucide or Material 3's own FILL 0 default. A face mismatch
+ * (rounded vs the default Outlined face) is invisible at 16–20px; a fill
+ * mismatch is the first thing you see. Only two glyphs — `smartphone` and
+ * `push-pin` — actually take the second rung; `checklist` and friends have no
+ * outline variant at all and fall through to `-rounded` unchanged.
  */
 const SUFFIXES = {
   fluent: ["-20-regular", "-24-regular", "-16-regular", "-28-regular", "-32-regular", "-48-regular"],
-  material: ["-rounded", "", "-outline-rounded", "-outline"],
+  material: ["-outline-rounded", "-outline", "-rounded", ""],
 };
 
 const COLLECTIONS = {

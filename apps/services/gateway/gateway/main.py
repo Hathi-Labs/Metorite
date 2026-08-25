@@ -28,6 +28,23 @@ except ImportError:
     _build_orchestrator_agent = None
 
 
+# ── Launch-defang kill-switches (WS-29) ────────────────────────────────────
+# Several always-on background loops are OUT of launch scope (Tasks, Calendar,
+# Projects, User-management + agent chat) and not yet tenant-bound, so they
+# would write UNBOUND and error under FORCE ROW LEVEL SECURITY after the RLS
+# cutover. Rather than bind them now (deferred: H4 slices 6b/6c), each loop's
+# STARTUP is gated behind a default-ON env flag so the cutover runbook can set
+# it false and the loop simply never starts. Default ON = byte-identical to
+# today (dark). The gate lives INSIDE each start function — never as an `if`
+# here — so the flag has exactly one reader (two places that both have to agree
+# about what the flag means is how a loop ends up running with the flag off).
+# `EMAIL_SYNC_ENABLED` gates `email_ingestion.scheduler.start_background_sync`;
+# `WORKFLOW_SCHEDULER_ENABLED` gates BOTH `start_workflow_scheduler` and its
+# sibling `reconcile_orphaned_runs` (one scheduling subsystem). The lifespan
+# below calls all three UNCONDITIONALLY, keeping each call's own error
+# isolation. R7: tests/unit/test_launch_defang_kill_switches.py.
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Force UTF-8 for all child processes spawned by the gateway (scripts, git, etc.).
@@ -224,19 +241,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.key_store_skipped", error=str(exc))
 
-    # Start background email sync scheduler. First wire the gateway's post-sync
+    # Background email sync scheduler. First wire the gateway's post-sync
     # callbacks (rules / categorize / classify / digest / follow-up) into the
     # scheduler's hook registry, so the scheduler runs them without importing up
-    # into the gateway (C2 layering inversion).
+    # into the gateway (C2 layering inversion). The hooks register
+    # UNCONDITIONALLY — manual sync and the Graph webhook share the same pipeline
+    # — while the always-on loop itself carries a default-ON launch-defang
+    # kill-switch (EMAIL_SYNC_ENABLED) INSIDE start_background_sync (WS-29).
     try:
-        from email_ingestion.scheduler import start_background_sync
-
         from gateway.routes.email.scheduler_hooks import (
             register_email_post_sync_hooks,
         )
         register_email_post_sync_hooks()
+        from email_ingestion.scheduler import start_background_sync
         await start_background_sync()
-        _log.info("gateway.email_sync_started")
     except Exception as exc:
         _log.warning("gateway.email_sync_skipped", error=str(exc))
 
@@ -285,6 +303,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.tasks_rollover_skipped", error=str(exc))
 
+    # Workflow scheduling subsystem — the orphan-run reconcile sweep and the
+    # cron schedule scanner. Both carry a default-ON launch-defang kill-switch
+    # (WORKFLOW_SCHEDULER_ENABLED) INSIDE their own functions (WS-29); one flag
+    # gates the whole subsystem. Each half keeps its own error isolation.
+    #
     # Workflow runs are in-process asyncio tasks (BO-20 pending): rows still
     # 'running' from a previous process can never finish — mark them failed
     # BEFORE the scheduler can start new runs. Paused runs survive restarts
@@ -294,7 +317,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await reconcile_orphaned_runs()
     except Exception as exc:
         _log.warning("gateway.workflow_reconcile_skipped", error=str(exc))
-
     # Start the workflow schedule scanner — cron triggers for published
     # workflows (routes/workflows/scheduler.py; spec workflows_app.md F8).
     try:
@@ -660,6 +682,22 @@ if _HAS_MAF:
             user_id: str = getattr(user, "email", "") or "anonymous"
             input_data = request_body.model_dump(exclude_none=True)
 
+            # ── Tenant for this run's writes (WS-29 acb_graph slice 6a — DARK) ──
+            # Stamp the org SERVER-SIDE from the authenticated identity
+            # (``user.organization_id``, filled by ``get_current_user`` /
+            # ``_with_resolved_access`` — the SAME provenance ``routes/agent.py``
+            # uses for the ``/agent/run/stream`` chat path in slice 2) and hand it
+            # to ``run_detached`` below. This chat runs the MAF orchestrator
+            # DIRECTLY (``protocol_runner.run``, not ``run_agent_stream``), so
+            # ``run_detached``'s tenant bind is what its async ``acb_graph`` reads,
+            # the ``on_complete`` persist hook, and any delegated sub-agent (which
+            # inherits the bound tenant) resolve when the flag is ON. It MUST NEVER
+            # come from ``input_data`` / ``request_body`` / the message list —
+            # those are client/agent-visible, so sourcing the tenant from them is a
+            # tenant-spoofing hole (R11, user_management_contract.md §0.9.3). DARK:
+            # consumed only when ``ACB_GRAPH_TENANT_BIND`` is ON.
+            _organization_id = getattr(user, "organization_id", None)
+
             # ── Set user context for memory tools (remember / save_memory / etc.) ──
             try:
                 from acb_skills.memory_tools import _set_memory_user_id
@@ -877,6 +915,11 @@ if _HAS_MAF:
                         on_complete=_obs_on_complete,
                         actor=(user_id if user_id != "anonymous" else None),
                         source="chat",
+                        # Server-side tenant only (see ``_organization_id`` above)
+                        # — never input_data/request_body. Binds the detached
+                        # drain task so the whole run + on_complete see the right
+                        # tenant (R11). WS-29 acb_graph slice 6a — DARK.
+                        organization_id=_organization_id,
                     ):
                         yield f"data: {_json.dumps(evt)}\n\n"
                 except SupersedeRefused:
@@ -1077,6 +1120,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # CP-2g — the operator door: tenant-plane organization purge, called only
+    # by the operator console's BFF. Ship-dark (503) until the owner sets
+    # GATEWAY_OPERATOR_TOKEN on the box.
+    from gateway.routes.operator import router as _operator_router
+
+    app.include_router(_operator_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # BO-1 / A2 — Action Broker approval inbox over the pending_actions queue.
     from gateway.routes.actions import router as _actions_router
 
@@ -1244,6 +1297,25 @@ try:
     from gateway.routes.signup import router as _signup_router
 
     app.include_router(_signup_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-31 CP-2d slice 2 — the email-OTP adapter's server half
+    # (customer_console.md §CP-2d clauses 6/11/12). Authenticated by the app-wide
+    # `require_authenticated` above and deliberately NOT in PUBLIC_ROUTES; the
+    # address being verified is the authenticated context's `X-User-Email`, never
+    # a body field (R11), exactly as `signin.py` takes the signing-in address.
+    #
+    # ⚠️ Mounted always, and with no flag of its own. The feature's switch is in
+    # the browser tier (`EMAIL_OTP_ENABLED` + `RESEND_API_KEY`, through
+    # `isEmailOtpProviderReady`): with it off no provider is registered, no
+    # adapter is passed, and nothing ever calls these routes. A second flag here
+    # would be a second thing to get out of step — CP-2b's finding F1 in
+    # miniature.
+    from gateway.routes.email_otp import router as _email_otp_router
+
+    app.include_router(_email_otp_router)
 except Exception:  # pragma: no cover
     pass
 

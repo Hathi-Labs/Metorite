@@ -669,7 +669,12 @@ describe("selects and file pickers go through the primitives", () => {
     "app/projects/components/TableView.tsx": 3,
     "app/projects/components/TagManager.tsx": 1,
     "app/settings/groups/page.tsx": 2,
-    "app/settings/members/page.tsx": 2,
+    // D49 moved the roster into Organisation (`launch_surface.md` §6.2), so the
+    // two bare <select>s moved with it — `app/settings/members/page.tsx` is now
+    // a redirect with no markup at all. RE-KEYED, not lowered: the debt is the
+    // same two selects in the same JSX, and dropping the entry would let the
+    // next edit add a third without CI noticing.
+    "app/settings/organization/OrganizationAdmin.tsx": 2,
     "app/tasks/components/EngageView.tsx": 2,
     "app/tasks/components/TaskSettingsModal.tsx": 2,
     "app/tasks/components/TaskToolbar.tsx": 3,

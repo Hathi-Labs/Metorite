@@ -30,8 +30,9 @@ import { useSession, signOut } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
-import { visibleSections } from "@/lib/nav";
+import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
+import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
@@ -75,12 +76,58 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
+  const { loading: accessLoading } = useAccess();
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
     setDrawerOpen(true);
   }, []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+
+  // ── Onboarding routes carry NO application chrome ────────────────────────
+  // Sign-in and sign-up are the doorway, not the house: the sidebar, docks
+  // and bottom nav all assert "you are inside a workspace", which is exactly
+  // what someone on these pages is not yet (owner directive 2026-08-24 — the
+  // signup form rendered beside the full sidebar). One bare main, both form
+  // factors.
+  if (isChromeless(pathname ?? "")) {
+    return (
+      <main className="h-screen overflow-auto bg-background">{children}</main>
+    );
+  }
+
+  // ── Hold the door until access resolves (LS-4 §8.1, whole-shell form) ────
+  // The nav already obeys "an unresolved viewer sees nothing, never
+  // everything" — but the SHELL didn't: during the resolve round-trip it
+  // painted the skeleton sidebar and the page body, so an org-less sign-in
+  // flashed a working-looking app before snapping to the org-less card
+  // (owner report, 2026-08-24). Until the first resolution lands, show a
+  // neutral holding state that asserts nothing about what this person can
+  // reach. `loading` is true only until the FIRST resolve (AccessProvider
+  // keeps it false across refresh()), so this never strobes afterwards.
+  if (accessLoading) {
+    // Owner feedback (2026-08-24, r2): the first cut was two faint pulsing
+    // blocks, which read as "nothing happening" — the opposite of what a hold
+    // screen owes the person waiting. Say it: spinner + sentence. Still
+    // neutral about WHAT loads (workspace, org-less card, denial) — the word
+    // "workspace" here means "your view of Metorite", not a resolved org.
+    return (
+      <div
+        className="flex h-screen flex-col items-center justify-center gap-3 bg-background"
+        aria-busy="true"
+        aria-live="polite"
+      >
+        <AppIcon
+          name="Loader2"
+          size={24}
+          className="animate-spin text-muted-foreground"
+        />
+        <p className="text-sm text-muted-foreground">
+          Loading your workspace…
+        </p>
+      </div>
+    );
+  }
 
   // ── Desktop layout ───────────────────────────────────────────────────────
   if (!isMobile) {
@@ -90,6 +137,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 min-w-0 overflow-auto">
           <AccessGate>{children}</AccessGate>
         </main>
+        <WelcomeDialog />
         <FocusSession />
         <RecordingDock />
         <LiveDock />
@@ -122,6 +170,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
           <AccessGate>{children}</AccessGate>
         </main>
+        <WelcomeDialog />
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
         <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe">
@@ -176,7 +225,8 @@ function MobileBottomNavInner({
   const activeRunIds = useActiveSessions();
   const activeCount = activeRunIds.size;
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
-  // pane hidden on desktop reappears in the phone drawer.
+  // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
+  // too: `null` yields nothing and the skeleton below holds the space.
   const { access, loading: accessLoading } = useAccess();
   const navSections = visibleSections(
     accessLoading ? null : access.features,
@@ -199,6 +249,19 @@ function MobileBottomNavInner({
         </button>
       </div>
       <nav className="flex flex-col overflow-y-auto">
+        {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
+            placeholders, never the full list. The drawer opens on tap, so a
+            list that rearranges under the thumb is worse here than on desktop. */}
+        {accessLoading ? (
+          <div className="px-2 py-3" aria-hidden data-testid="nav-skeleton">
+            {[0, 1, 2, 3, 4, 5].map((row) => (
+              <div key={row} className="mb-1 flex items-center gap-2.5 px-3 py-2.5">
+                <div className="h-7 w-7 shrink-0 animate-pulse rounded-lg bg-secondary" />
+                <div className="h-3 flex-1 animate-pulse rounded bg-secondary" />
+              </div>
+            ))}
+          </div>
+        ) : null}
         {navSections.map((section) => (
           <div key={section.id} className="px-2 pt-1 pb-1.5">
             <div

@@ -36,14 +36,15 @@ limitations). Do not add product specs to `docs/`.
 | `specs/saas_multitenancy.md` (+ `_implementation`, `_handover`) | WS-29 — hand the **handover** to the executing agent |
 | `specs/customer_console.md` | WS-31 — the central subscription/seat/AI-metering service (D32) |
 | `specs/customer_console_infrastructure.md` | WS-31 — **where** it runs; owner decision session (Supabase/Azure/VPS; Firebase disqualified in §3) |
-| `specs/subscription_console.md` | WS-30 |
+| `specs/subscription_console.md` | WS-30 — ⚠️ SC-1/SC-2's "Centers & add-ons panel" and "users × Centers seat grid" are superseded by D49: one flat plan, so the grid is one column. `specs/launch_surface.md` §6.2 owns the surface. |
 | `specs/organization_identity.md` | WS-32 — the customer's own mark inside the product (logo · display name · branding on invoices) |
 | `specs/marketing_site.md` | WS-33 — the public face on the apex (`metorite.com`): one static page whose CTA lands on CP-2c's signup flow (D46) |
+| `specs/launch_surface.md` | WS-34 — **the launch surface of record (D49)**: which apps go live, which stay `preview`, flat ₹500/user/month pricing, the seat lifecycle a customer admin drives, and the nav-resolution contract. ⚠️ Supersedes `saas_multitenancy.md` §2.4b as the **pricing shape of record** and withdraws the Centers surface (the code, features and group grants all stay). |
 | `specs/future_modules_roadmap.md` | D21 roadmap (no rows until specced) |
 | `specs/crm_app.md` | WS-26 |
 | `specs/project_management_app.md` | WS-27 |
 | `specs/people_center_app.md` | WS-28 |
-| `specs/department_centers.md` | WS-13 · WS-14 · WS-15 · WS-16 (+ §5 Center roster of record, D22) |
+| `specs/department_centers.md` | WS-13 · WS-14 · WS-15 · WS-16 — **all four PARKED by D49** (2026-08-24): the Centers *surface* is withdrawn, so nothing dispatches from this spec today. It stays ACTIVE as the **design record** and §5 remains the Center roster of record (D22) — `lib/centers.ts`, the `center.*` features and the `group:<slug>` slice grants are all still live. See `specs/launch_surface.md` §5. |
 | `specs/colleague_onboarding.md` | WS-24 |
 | `specs/deploy_delivery_path.md` | WS-25 |
 | `specs/email_app_master_plan.md` | WS-17 |
@@ -65,6 +66,7 @@ limitations). Do not add product specs to `docs/`.
 | Spec | Role |
 |---|---|
 | **`specs/saas_operations_doctrine.md`** | **HOW a SaaS platform is run (D33): the eight capability domains · the Indian GST/RBI-e-mandate/DPDP layer that changes product design, not just paperwork · the twelve-finding audit of what Metorite assumed as a personal brain · the gap table. §4's verdicts and §6's ordering BIND; §2 is advisory.** |
+| **`specs/development_and_delivery_framework.md`** | 🟠 **PROPOSED 2026-08-24 — binds nothing yet.** How we ship to live customers while still building: branching (trunk + two fast-forward promotion refs; **no long-lived `develop`**), the staging environment as a *nightly re-derivation* of production rather than a maintained copy (this is P-1), the **two delivery planes** (tenant ladder vs. the Customer Console's unwired one), what CI must gate, how the operator dashboard / seats / AI credits are proven, and what a second developer needs. **Amends `engineering_practice.md` §1's "no staging" on a premise change, and that amendment is the owner's to record (§9 D-A).** Proposes **WS-38** — not minted, so nothing dispatches from here yet. |
 | **`specs/engineering_practice.md`** | **HOW we build (D28): environments, deploy≠release + rings, expand/contract migrations, what a test is worth when an agent wrote it, agent work-partitioning, security once users are not colleagues, definition of done. Its binding rules are R6/R7/R8 in `work_plan.md` §1 — read those first if you read nothing else.** |
 | `specs/user_management_contract.md` | The rules every app must follow (identity, lifecycle, permissions) |
 | `specs/org_access_control.md` | The access model of record |

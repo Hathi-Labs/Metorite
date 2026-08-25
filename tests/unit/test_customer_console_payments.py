@@ -52,8 +52,10 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
+    SECOND_PLAN,
     apply_ladder,
     ensure_deployment,
+    ensure_second_plan,
     ladder,
     mint_deployment_key,
 )
@@ -192,14 +194,26 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _box():
-    """The deployment every org here is provisioned onto (MT-1j slice 4).
+    """The deployment every org here is provisioned onto, and the second plan.
 
     Autouse and per-test: ``_new_org`` is a plain function taking a ``client``,
     and this suite's subject is money, not placement.
+
+    ⚠️ **``ensure_second_plan`` must be per-test too, not module-scoped.** D49
+    left the catalog with one active plan, so this suite seeds its own second
+    one rather than borrowing a Center package (see
+    ``_customer_console_ladder.SECOND_PLAN`` for why that coupling was cut) — but
+    ``TestTheSchema::test_the_ladder_replays_cleanly_with_007`` replays the whole
+    ladder MID-SUITE and commits, and migration 008 deactivates every
+    ``center``-kind row. Seeding once per module therefore worked until that test
+    ran and left forty-four later tests failing on "not an active plan", in a
+    class whose subject is discount codes. One upsert per test is cheap and
+    cannot be reordered into a trap.
     """
     eng = create_engine(_URL, future=True)
     with eng.begin() as conn:
         ensure_deployment(conn)
+        ensure_second_plan(conn)
     eng.dispose()
 
 
@@ -247,7 +261,7 @@ def org(client):
             "key": _org_key(client, slug)}
 
 
-def _create_order(client, key: str, *, plan: str = "sales", quantity: int = 2):
+def _create_order(client, key: str, *, plan: str = SECOND_PLAN, quantity: int = 2):
     return client.post(
         "/billing/orders", headers=_headers(key),
         json={"lines": [{"plan_slug": plan, "quantity": quantity}]},
@@ -1110,7 +1124,7 @@ class TestTheLifecycleGate:
         r = client.post(
             "/billing/orders", headers={**_headers(org["key"]),
                                         "X-CC-Org": "somebody-else"},
-            json={"lines": [{"plan_slug": "sales", "quantity": 1}],
+            json={"lines": [{"plan_slug": SECOND_PLAN, "quantity": 1}],
                   "org_slug": "somebody-else"},
         )
         # `extra="forbid"` refuses the body field outright; the header is not
@@ -1206,7 +1220,7 @@ class TestTheWebhook:
         assert second.status_code == 200
         assert second.json() == {"recorded": False, "fulfilled": False}
         assert _events_for(db, order["id"]) == 1
-        assert _grants_for(db, org["id"], "sales") == 1
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 1
 
     def test_two_different_event_ids_for_one_order_fulfil_exactly_once(
         self, client, fake, db, org
@@ -1229,7 +1243,7 @@ class TestTheWebhook:
         assert first.json() == {"recorded": True, "fulfilled": True}
         assert second.json() == {"recorded": True, "fulfilled": False}
         assert _events_for(db, order["id"]) == 2, "both events are RECORDED"
-        assert _grants_for(db, org["id"], "sales") == 1, "exactly one fulfils"
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 1, "exactly one fulfils"
 
     def test_a_capture_whose_amount_disagrees_is_refused_and_alerted(
         self, client, fake, db, org, caplog
@@ -1242,7 +1256,7 @@ class TestTheWebhook:
         assert r.status_code == 409, r.text
         assert any(rec.message == "payments.amount_mismatch"
                    for rec in caplog.records), caplog.text
-        assert _grants_for(db, org["id"], "sales") == 0
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 0
         # The receipt rolls back with the refusal, so a corrected re-delivery
         # is evaluated afresh rather than deduped into silence.
         assert _events_for(db, order["id"]) == 0
@@ -1332,7 +1346,7 @@ class TestTheWebhook:
             "a failed attempt leaves the order OPEN for the next one"
         )
         assert _events_for(db, order["id"]) == 1, "the attempt IS recorded"
-        assert _grants_for(db, org["id"], "sales") == 0
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 0
         assert any(rec.message == "payments.attempt_failed"
                    for rec in caplog.records), caplog.text
 
@@ -1366,7 +1380,7 @@ class TestTheWebhook:
             "the retry that actually captured must fulfil"
         )
         assert _status(db, order["id"]) == "captured"
-        assert _grants_for(db, org["id"], "sales") == 1, "exactly one fulfil"
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 1, "exactly one fulfil"
         assert _events_for(db, order["id"]) == 2, "both receipts are kept"
 
     def test_a_capture_after_abandonment_alerts_at_error(
@@ -1411,7 +1425,7 @@ class TestTheWebhook:
         assert r.status_code == 200, r.text
         assert r.json() == {"recorded": True, "fulfilled": False}
         assert _events_for(db, order["id"]) == 1, "the receipt is KEPT"
-        assert _grants_for(db, org["id"], "sales") == 0
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 0
 
         assert [rec for rec in caplog.records
                 if rec.message == "payments.already_fulfilled"] == [], (
@@ -1690,9 +1704,14 @@ class TestTheCatalogRead:
         slugs = [p["slug"] for p in r.json()["plans"]]
 
         assert hidden not in slugs
-        assert "rnd" not in slugs and "support" not in slugs
+        # D49 retired every Center package, add-on and bundle (migration 008),
+        # which subsumes the original claim here — `rnd` and `support` were
+        # inactive because their Centers did not exist; now NONE of them is
+        # sellable, registered or not.
+        assert not ({"rnd", "support", "sales", "complete", "all_centers"} & set(slugs))
         # Non-vacuous: an empty catalog would satisfy every assertion above.
-        assert {"core", "sales", "complete"} <= set(slugs), slugs
+        # `core` is the one thing we sell; SECOND_PLAN is this suite's own row.
+        assert {"core", SECOND_PLAN} <= set(slugs), slugs
 
     def test_the_catalog_read_carries_no_per_org_state_and_paise_only(
         self, client, db
@@ -1751,7 +1770,11 @@ class TestTheCatalogRead:
             assert plan["price_paise"] == int(rupees[plan["slug"]] * 100)
         # An anchor a reader can check by eye: Core is Rs 600.00.
         core = next(p for p in plans if p["slug"] == "core")
-        assert core["price_paise"] == 60000
+        # D49's flat seat: ₹500/user/month, in paise. The anchor a reader can
+        # check by eye against migration 008 — the loop above already proves the
+        # whole catalog converts NUMERIC rupees to integer paise, so this pins
+        # WHICH rupees, i.e. that the wire carries the repriced seat.
+        assert core["price_paise"] == 50000
 
         # Deterministic, and it is the catalog's own order.
         assert [p["sort_order"] for p in plans] == sorted(
@@ -1768,6 +1791,124 @@ class TestTheCatalogRead:
         dead = client.get("/billing/catalog", headers=_headers(key))
         assert dead.status_code == 403, dead.text
         assert dead.json()["detail"] == "organization is deleted"
+
+
+class TestTheCatalogsOperatorArm:
+    """The catalog is read by TWO schemes — ``auth.customer_or_operator``.
+
+    Why this arm exists, measured 2026-08-23: the Operator Console's manual
+    activation form is a plan picker, it holds only the operator token, and the
+    customer-key door answered *"Invalid API key"*. ``page.tsx`` folded that
+    401 into ``plans: []`` and ``Actions.tsx`` disabled Activate on
+    ``!plan`` — so the staff surface could never activate ANY customer, and
+    said nothing about why.
+
+    Red-first evidence (run and reverted): reverting the route to
+    ``PayingCaller`` fails ``test_the_operator_token_reads_the_catalog`` with
+    *`assert 401 == 200`*; dropping the ``split_key`` shape check so the
+    operator arm is tried as a FALLBACK after the key arm fails passes that
+    test and fails ``test_a_key_shaped_operator_token_is_still_refused``.
+    """
+
+    def test_the_operator_token_reads_the_catalog(self, client):
+        """The bug, stated as the fence: staff get the ladder, not a 401."""
+        r = client.get("/billing/catalog", headers=OP)
+        assert r.status_code == 200, r.text
+        plans = r.json()["plans"]
+        # Non-vacuous: an empty list would satisfy a bare 200 assertion, and an
+        # empty list is EXACTLY the failure this ticket is about.
+        assert plans, "the seeded catalog is never empty"
+        assert "core" in {p["slug"] for p in plans}
+
+    def test_both_schemes_get_a_byte_identical_answer(self, client):
+        """The widening added an arm, not a second view of the catalog.
+
+        The catalog is per-org-invariant by construction (``active_plans``
+        takes no organization), which is the whole reason two schemes may
+        share this body. If the two answers ever diverge, that argument has
+        stopped being true and the widening has stopped being safe.
+        """
+        key = _org_key(client, _new_org(client, "cat-arm"))
+        customer = client.get("/billing/catalog", headers=_headers(key))
+        operator = client.get("/billing/catalog", headers=OP)
+        assert customer.status_code == operator.status_code == 200
+        assert customer.json() == operator.json()
+
+    def test_the_customer_arm_is_untouched(self, client):
+        """``can_pay`` still decides the customer arm — suspended in, deleted out.
+
+        The §9.3(5) property one route along: widening a door must not quietly
+        re-gate the arm that already worked.
+        """
+        slug = _new_org(client, "cat-keep")
+        key = _org_key(client, slug)
+
+        _lifecycle(client, slug, "suspended")
+        assert client.get(
+            "/billing/catalog", headers=_headers(key)
+        ).status_code == 200
+
+        _lifecycle(client, slug, "cancelled")
+        _lifecycle(client, slug, "deleted")
+        dead = client.get("/billing/catalog", headers=_headers(key))
+        assert dead.status_code == 403, dead.text
+        assert dead.json()["detail"] == "organization is deleted"
+
+    def test_no_bearer_and_a_garbage_bearer_are_both_refused(self, client):
+        """Widening is not opening. Neither arm admits an unknown caller."""
+        assert client.get("/billing/catalog").status_code == 401
+        assert client.get(
+            "/billing/catalog", headers=_headers("not-the-operator")
+        ).status_code == 401
+
+    def test_a_key_shaped_operator_token_is_still_refused(
+        self, client, monkeypatch
+    ):
+        """**The shape dispatches; it is NOT a fallback ladder.**
+
+        The same rule ``deployment_or_operator`` states and
+        ``test_a_key_shaped_operator_token_is_still_not_a_key`` already pins
+        for the organization key: a credential's scheme is decided by what it
+        IS, never by trying each comparison until one passes. A token that
+        parses as ``cc_<env>_<prefix>_<secret>`` goes to the customer arm and
+        is refused there or nowhere.
+
+        Without this, an attacker holding any well-formed-but-invalid key gets
+        a second guess against the operator token on every request.
+        """
+        shaped = "cc_live_deadbeefdeadbeef_totally-not-a-real-secret"
+        monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", shaped)
+        r = client.get("/billing/catalog", headers=_headers(shaped))
+        assert r.status_code == 401, r.text
+        # The CUSTOMER door's refusal, proving which arm it reached.
+        assert r.json()["detail"] == "Invalid API key"
+
+    def test_it_fails_closed_when_the_operator_token_is_unconfigured(
+        self, client, monkeypatch
+    ):
+        """503, not 200 — the property ``require_operator`` carries.
+
+        Widening a door must not make it the one surface that opens on a box
+        where the rest of the service fails closed.
+        """
+        monkeypatch.delenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", raising=False)
+        r = client.get("/billing/catalog", headers=OP)
+        assert r.status_code == 503, r.text
+
+    def test_the_new_door_is_registered_in_both_derived_registries(self):
+        """Neither fence may lose sight of this route because it grew an arm.
+
+        ``AUTHENTICATING_DEPENDENCIES`` — or the clause-1 fence reports
+        ``/billing/catalog`` as having joined ``/health`` in the open set.
+        ``ORGANIZATION_KEY_DEPENDENCIES`` — because a customer key STILL opens
+        it, so the transitive no-writer walk must keep covering it; the
+        operator arm is additional, not a replacement.
+        """
+        assert auth.customer_or_operator in auth.AUTHENTICATING_DEPENDENCIES
+        assert (
+            auth.customer_or_operator in auth.ORGANIZATION_KEY_DEPENDENCIES
+        )
+        assert "billing_catalog" in _org_key_routes()
 
 
 # ── §6 item (g) — the customer-key seats read ──────────────────────────────
@@ -1791,8 +1932,8 @@ class TestTheSeatsRead:
 
         Mutation evidence (run and reverted during the build): giving ``my_seats``
         an ``org_slug`` query param and reading ``_org_id(conn, org_slug)`` from it
-        makes A's request return B's ``sales`` row — this fence reddens on
-        ``"sales" not in slugs``.
+        makes A's request return B's second-plan row — this fence reddens on
+        ``SECOND_PLAN not in slugs``.
         """
         other_slug = _new_org(client, "seats-other")
         other_id = _org_id(client, other_slug)
@@ -1802,8 +1943,8 @@ class TestTheSeatsRead:
             c.execute(
                 text("INSERT INTO seat_grant (organization_id, plan_slug, "
                      "quantity_purchased, reason) "
-                     "VALUES (:o, 'sales', 5, 'seats-read-test')"),
-                {"o": other_id},
+                     "VALUES (:o, :plan, 5, 'seats-read-test')"),
+                {"o": other_id, "plan": SECOND_PLAN},
             )
 
         r = client.get(f"/me/seats?org_slug={other_slug}",
@@ -1813,7 +1954,7 @@ class TestTheSeatsRead:
         # A's own provisioned Core seats are present (non-vacuous: the read
         # returned rows), and B's plan never boards A's answer.
         assert "core" in slugs, slugs
-        assert "sales" not in slugs, slugs
+        assert SECOND_PLAN not in slugs, slugs
 
     def test_the_seats_read_carries_the_seat_vocabulary_and_nothing_else(
         self, client, db, org
@@ -1853,8 +1994,8 @@ class TestTheSeatsRead:
             c.execute(
                 text("INSERT INTO seat_grant (organization_id, plan_slug, "
                      "quantity_purchased, reason) "
-                     "VALUES (:o, 'sales', 1, 'seats-read-test')"),
-                {"o": org_id},
+                     "VALUES (:o, :plan, 1, 'seats-read-test')"),
+                {"o": org_id, "plan": SECOND_PLAN},
             )
             for _ in range(2):
                 ident = c.execute(
@@ -1865,8 +2006,8 @@ class TestTheSeatsRead:
                 c.execute(
                     text("INSERT INTO seat_assignment (organization_id, "
                          "plan_slug, user_identity_id, source) "
-                         "VALUES (:o, 'sales', :i, 'alacarte')"),
-                    {"o": org_id, "i": ident},
+                         "VALUES (:o, :plan, :i, 'alacarte')"),
+                    {"o": org_id, "i": ident, "plan": SECOND_PLAN},
                 )
 
         # 1 — the field set, on the MODEL.
@@ -1882,7 +2023,7 @@ class TestTheSeatsRead:
         assert r.status_code == 200, r.text
         plans = r.json()["plans"]
         by_slug = {p["plan_slug"]: p for p in plans}
-        assert set(by_slug) == {"core", "sales"}, by_slug
+        assert set(by_slug) == {"core", SECOND_PLAN}, by_slug
 
         # 1 — the field set, on the WIRE.
         assert all(set(p) == expected for p in plans), plans
@@ -1909,10 +2050,10 @@ class TestTheSeatsRead:
         }
 
         # 3 — the oversubscribed plan: clamped to 0, never negative, and flagged.
-        sales = by_slug["sales"]
-        assert sales["purchased"] == 1 and sales["assigned"] == 2
-        assert sales["available"] == 0, "the zero-clamp, not purchased - assigned"
-        assert sales["oversubscribed"] is True
+        second = by_slug[SECOND_PLAN]
+        assert second["purchased"] == 1 and second["assigned"] == 2
+        assert second["available"] == 0, "the zero-clamp, not purchased - assigned"
+        assert second["oversubscribed"] is True
 
         # 4 — the can_pay door. A suspended org still reads its seats...
         _lifecycle(client, org["slug"], "suspended")
@@ -2016,25 +2157,38 @@ class TestTheMembersRead:
     def test_the_members_read_carries_the_membership_triple_and_nothing_else(
         self, client, db, org
     ):
-        """The field set is exactly ``{email, role, status}``, and both doors (item (i)).
+        """The field set is exactly ``{email, role, status, seats}``, and both doors (item (i)).
 
         Four properties, one decision — *what a customer credential learns from
         its member list*:
 
-        1. the field set is **exactly** ``{email, role, status}``, structurally
-           over the ``MemberView`` model AND over the wire, so an
-           ``organization_id``, an ``identity_id`` or a ``seats`` field argues
-           with a red test;
-        2. the roster equals ``store.org_members`` for the same org — asserted by
-           re-deriving it, so a second SQL or a recompute is red;
+        1. the field set is **exactly** ``{email, role, status, seats}``,
+           structurally over the ``MemberView`` model AND over the wire, so an
+           ``organization_id`` or an ``identity_id`` argues with a red test;
+        2. the membership triple equals ``store.org_members`` for the same org —
+           asserted by re-deriving it, so a second SQL or a recompute is red;
         3. the door is ``can_pay``: a **suspended** org reads its members...
         4. ...and a **deleted** one is 403.
 
-        Mutation evidence (run and reverted): adding an ``organization_id``, an
-        ``identity_id`` or a ``seats`` field to ``MemberView`` fails property 1's
-        field-set equality; a second query that recomputes the roster (e.g. one
-        that drops the ``ORDER BY`` or the ``JOIN``) diverges from
-        ``store.org_members`` and fails property 2.
+        ⚠️ **``seats`` was previously forbidden here, deliberately, and D49
+        undefers it** (`launch_surface.md` LS-7). The old assertion swept for any
+        field name containing "seat" and the docstring called a per-member seat
+        summary "a second query this read is defined not to carry". That
+        deferral was right until *Unassigned* had to become an actionable state:
+        a member holding no seat is invisible to every other read, so a customer
+        admin could not see whom to reassign to. What the original rule was
+        actually protecting is kept and still asserted below: **no organization
+        id, no identity id, and no seat COUNTS** — the counts remain
+        ``GET /me/seats``'s one vocabulary (§3.3, D32.5), and a count appearing
+        here would be the second implementation that eventually disagrees.
+
+        Mutation evidence (run and reverted): adding an ``organization_id`` or an
+        ``identity_id`` field to ``MemberView`` fails property 1's field-set
+        equality; a second query that recomputes the roster (e.g. one that drops
+        the ``ORDER BY`` or the ``JOIN``) diverges from ``store.org_members`` and
+        fails property 2; dropping ``released_at IS NULL`` from
+        ``store.live_seats_by_email`` makes the released member below come back
+        seated and fails property 5.
         """
         from customer_console import store
         from customer_console.main import MemberView
@@ -2056,10 +2210,18 @@ class TestTheMembersRead:
             )
 
         # 1 — the field set, on the MODEL.
-        expected = {"email", "role", "status"}
+        expected = {"email", "role", "status", "seats"}
         assert set(MemberView.model_fields) == expected
+        # The half of the original sweep that still binds: the organization is
+        # the credential's and the identity id is not the customer's to hold.
         assert not any(
-            "org" in name or "identity" in name or "seat" in name
+            "org" in name or "identity" in name for name in MemberView.model_fields
+        )
+        # And the half D49 REPLACED the "seat" sweep with: slugs, never counts.
+        # A count here would be a second home for `seat_counts`' arithmetic.
+        assert not any(
+            name in {"purchased", "assigned", "available", "oversubscribed",
+                     "seat_count", "seats_assigned"}
             for name in MemberView.model_fields
         )
 
@@ -2070,22 +2232,59 @@ class TestTheMembersRead:
         # 1 — the field set, on the WIRE.
         assert all(set(m) == expected for m in members), members
 
-        # 2 — the roster equals store.org_members: the wire IS the fold, never a
-        # second SQL, and the ORDER BY email is the same stable order.
+        # 2 — the membership triple equals store.org_members: the wire IS the
+        # fold, never a second SQL, and the ORDER BY email is the same stable
+        # order. `seats` is zipped on top and compared separately in 5.
         with db.begin() as c:
             want = store.org_members(c, org_id=org_id)
-        assert members == want, (members, want)
+        triples = [{k: m[k] for k in ("email", "role", "status")} for m in members]
+        assert triples == want, (triples, want)
 
         # The anchor a reader can check by eye: founder owner/active plus the
         # added member/invited, exactly the two rows, ordered by email.
+        #
+        # The fixture already spans both seat states, which is the clearest
+        # possible anchor: provisioning allocates the founder a `core` seat
+        # (membership IS the Core seat, D19.3), and the member added above holds
+        # none. Before `seats`, those two rows were IDENTICAL on the wire apart
+        # from role/status — there was no way to ask which of them had a seat.
         by_email = {m["email"]: m for m in members}
         assert by_email[f"owner@{org['slug']}.test"] == {
             "email": f"owner@{org['slug']}.test", "role": "owner",
-            "status": "active",
+            "status": "active", "seats": ["core"],
         }
         assert by_email[member_email] == {
             "email": member_email, "role": "member", "status": "invited",
+            "seats": [],
         }
+
+        # 5 — seats: assigned shows the slug, RELEASED goes back to []. This is
+        # the whole of *Unassigned* (D49 / LS-7) — a released member must remain
+        # on the roster, distinguishable from a seated one, so the surface can
+        # offer to reassign them. Before this field, the two were identical on
+        # the wire and the question was unanswerable from a customer credential.
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO seat_grant (organization_id, plan_slug, "
+                     "quantity_purchased, effective_from) "
+                     "VALUES (:o, 'core', 5, now() - interval '1 day')"),
+                {"o": org_id},
+            )
+            assert store.try_assign_seat(
+                c, org_id=org_id, plan_slug="core", identity_id=ident,
+            )
+        seated = client.get("/me/members", headers=_headers(org["key"])).json()["members"]
+        assert {m["email"]: m["seats"] for m in seated}[member_email] == ["core"]
+
+        with db.begin() as c:
+            assert store.release_seat(
+                c, org_id=org_id, plan_slug="core", identity_id=ident,
+            )
+        freed = client.get("/me/members", headers=_headers(org["key"])).json()["members"]
+        assert {m["email"]: m["seats"] for m in freed}[member_email] == []
+        # ...and the member is STILL on the roster. Releasing a seat is not a
+        # removal, and a surface that dropped them here could never reassign one.
+        assert member_email in {m["email"] for m in freed}
 
         # 3 — the can_pay door: a suspended org still reads its members...
         _lifecycle(client, org["slug"], "suspended")
@@ -2203,7 +2402,7 @@ def _provision_on(client, prefix: str, label: str) -> str:
     return slug
 
 
-def _assign(client, key: str, *, actor: str, member: str, plan: str = "sales"):
+def _assign(client, key: str, *, actor: str, member: str, plan: str = SECOND_PLAN):
     return client.post(
         "/registry/seats", headers=_headers(key),
         json={"actor_email": actor, "member_email": member, "plan_slug": plan},
@@ -2217,39 +2416,39 @@ class TestTheSeatAdminWrite:
         """The happy path, end to end (§6 item (h), done-when).
 
         A `seat_admin` key placed for org A assigns an org-A member to an
-        available `sales` seat; the row exists and `GET /me/seats` for A shows
+        available second-plan seat; the row exists and `GET /me/seats` for A shows
         `assigned+1 / available-1` - the same `_seat_grid` the read renders.
 
         Mutation evidence (run and reverted during the build): commenting the
         `store.try_assign_seat` call in `assign_seat_admin` leaves the read
-        unchanged — `sales.assigned` stays 0 — so this fence reddens on
+        unchanged — the second plan's `assigned` stays 0 — so this fence reddens on
         `assigned == 1`.
         """
         slug = _new_org(client, "sa-assign")
         org_id = _org_id(client, slug)
         key = _org_key(client, slug)
         owner = f"owner@{slug}.test"          # provisioned owner: admin, active
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
 
         sa_key = _seat_admin_key(db, _default_box_id(db))
         r = _assign(client, sa_key, actor=owner, member=target)
         assert r.status_code == 200, r.text
-        assert r.json() == {"assigned": True, "plan_slug": "sales"}
+        assert r.json() == {"assigned": True, "plan_slug": SECOND_PLAN}
 
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 1
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 1
 
         seats = client.get("/me/seats", headers=_headers(key)).json()["plans"]
-        sales = next(p for p in seats if p["plan_slug"] == "sales")
-        assert sales["assigned"] == 1, sales
-        assert sales["available"] == 1, sales  # purchased 2 - assigned 1
+        second = next(p for p in seats if p["plan_slug"] == SECOND_PLAN)
+        assert second["assigned"] == 1, second
+        assert second["available"] == 1, second  # purchased 2 - assigned 1
 
     def test_a_seat_admin_assign_refuses_at_the_cap(self, client, db):
         """No self-serve oversubscription (done-when).
 
-        `sales` bought 1, already filled → `available == 0`; a fresh member is
+        the second plan bought 1, already filled → `available == 0`; a fresh member is
         refused **409 `buy_more`** and no row is written. Oversubscription stays
         the Operator-only escape hatch.
 
@@ -2260,11 +2459,11 @@ class TestTheSeatAdminWrite:
         slug = _new_org(client, "sa-cap")
         org_id = _org_id(client, slug)
         owner = f"owner@{slug}.test"
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=1)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=1)
         # Fill the one seat directly so available == 0.
         filler = _add_member(
             db, org_id=org_id, email=f"filler-{uuid.uuid4().hex[:8]}@{slug}.test")
-        _seat_directly(db, org_id=org_id, plan_slug="sales", identity_id=filler)
+        _seat_directly(db, org_id=org_id, plan_slug=SECOND_PLAN, identity_id=filler)
 
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
@@ -2274,9 +2473,9 @@ class TestTheSeatAdminWrite:
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert detail["reason"] == "seat_cap_exceeded"
-        assert detail["buy_more"]["plan_slug"] == "sales"
+        assert detail["buy_more"]["plan_slug"] == SECOND_PLAN
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 0
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 0
 
     def test_a_seat_admin_key_cannot_write_another_deployments_org(
         self, client, db
@@ -2300,7 +2499,7 @@ class TestTheSeatAdminWrite:
         slug_b = _provision_on(client, "sa-b", other_label)
         org_b = _org_id(client, slug_b)
         owner_b = f"owner@{slug_b}.test"       # admin of B, placed on other box
-        _grant(db, org_id=org_b, plan_slug="sales", quantity=3)
+        _grant(db, org_id=org_b, plan_slug=SECOND_PLAN, quantity=3)
         target_b = f"member-{uuid.uuid4().hex[:8]}@{slug_b}.test"
         _add_member(db, org_id=org_b, email=target_b)
 
@@ -2309,7 +2508,7 @@ class TestTheSeatAdminWrite:
         r = _assign(client, sa_key, actor=owner_b, member=target_b)
         assert r.status_code == 403, r.text
         assert _live_seat_count(
-            db, org_id=org_b, plan_slug="sales", email=target_b) == 0
+            db, org_id=org_b, plan_slug=SECOND_PLAN, email=target_b) == 0
 
     def test_a_non_admin_actor_is_refused(self, client, db):
         """The CONSOLE, not only Next, enforces admin-not-member (done-when).
@@ -2323,7 +2522,7 @@ class TestTheSeatAdminWrite:
         """
         slug = _new_org(client, "sa-member")
         org_id = _org_id(client, slug)
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         actor = f"plain-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=actor, role="member")
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
@@ -2333,7 +2532,7 @@ class TestTheSeatAdminWrite:
         r = _assign(client, sa_key, actor=actor, member=target)
         assert r.status_code == 403, r.text
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 0
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 0
 
     def test_an_unknown_or_cross_org_target_member_is_refused(self, client, db):
         """No `ensure_identity`-minting of an arbitrary email (done-when).
@@ -2345,7 +2544,7 @@ class TestTheSeatAdminWrite:
         slug = _new_org(client, "sa-target")
         org_id = _org_id(client, slug)
         owner = f"owner@{slug}.test"
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         unknown = f"nobody-{uuid.uuid4().hex[:8]}@ghost.test"
 
         sa_key = _seat_admin_key(db, _default_box_id(db))
@@ -2364,7 +2563,7 @@ class TestTheSeatAdminWrite:
         org_id = _org_id(client, slug)
         key = _org_key(client, slug)
         owner = f"owner@{slug}.test"
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
         sa_key = _seat_admin_key(db, _default_box_id(db))
@@ -2374,20 +2573,20 @@ class TestTheSeatAdminWrite:
         rel = client.post(
             "/registry/seats/release", headers=_headers(sa_key),
             json={"actor_email": owner, "member_email": target,
-                  "plan_slug": "sales"},
+                  "plan_slug": SECOND_PLAN},
         )
         assert rel.status_code == 200, rel.text
         assert rel.json() == {"released": True}
 
         seats = client.get("/me/seats", headers=_headers(key)).json()["plans"]
-        sales = next(p for p in seats if p["plan_slug"] == "sales")
-        assert sales["assigned"] == 0 and sales["available"] == 2, sales
+        second = next(p for p in seats if p["plan_slug"] == SECOND_PLAN)
+        assert second["assigned"] == 0 and second["available"] == 2, second
 
         # A second release of the now-unassigned member is a 200 no-op.
         again = client.post(
             "/registry/seats/release", headers=_headers(sa_key),
             json={"actor_email": owner, "member_email": target,
-                  "plan_slug": "sales"},
+                  "plan_slug": SECOND_PLAN},
         )
         assert again.status_code == 200, again.text
         assert again.json() == {"released": False}
@@ -2438,7 +2637,7 @@ class TestTheSeatAdminWrite:
         slug = _new_org(client, "sa-name-org")
         org_id = _org_id(client, slug)
         owner = f"owner@{slug}.test"          # provisioned owner: admin, active
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
 
@@ -2446,11 +2645,11 @@ class TestTheSeatAdminWrite:
         r = client.post(
             "/registry/seats", headers=_headers(sa_key),
             json={"actor_email": owner, "member_email": target,
-                  "plan_slug": "sales", "org_slug": slug},
+                  "plan_slug": SECOND_PLAN, "org_slug": slug},
         )
         assert r.status_code == 400, r.text
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 0
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 0
 
     def test_an_operator_seat_admin_may_not_name_an_actor(self, client, db):
         """R11 shape-guard: the operator arm has no actor (item (h)).
@@ -2469,7 +2668,7 @@ class TestTheSeatAdminWrite:
         slug = _new_org(client, "sa-op-actor")
         org_id = _org_id(client, slug)
         owner = f"owner@{slug}.test"
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
 
@@ -2478,11 +2677,11 @@ class TestTheSeatAdminWrite:
         r = client.post(
             "/registry/seats", headers=OP,
             json={"actor_email": owner, "member_email": target,
-                  "plan_slug": "sales", "org_slug": slug},
+                  "plan_slug": SECOND_PLAN, "org_slug": slug},
         )
         assert r.status_code == 400, r.text
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 0
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 0
 
     def test_a_deployment_seat_admin_requires_an_actor_email(self, client, db):
         """R11 shape-guard: the deployment arm REQUIRES `actor_email` (item (h)).
@@ -2501,18 +2700,290 @@ class TestTheSeatAdminWrite:
         """
         slug = _new_org(client, "sa-no-actor")
         org_id = _org_id(client, slug)
-        _grant(db, org_id=org_id, plan_slug="sales", quantity=2)
+        _grant(db, org_id=org_id, plan_slug=SECOND_PLAN, quantity=2)
         target = f"member-{uuid.uuid4().hex[:8]}@{slug}.test"
         _add_member(db, org_id=org_id, email=target)
 
         sa_key = _seat_admin_key(db, _default_box_id(db))
         r = client.post(
             "/registry/seats", headers=_headers(sa_key),
-            json={"member_email": target, "plan_slug": "sales"},
+            json={"member_email": target, "plan_slug": SECOND_PLAN},
         )
         assert r.status_code == 400, r.text
         assert _live_seat_count(
-            db, org_id=org_id, plan_slug="sales", email=target) == 0
+            db, org_id=org_id, plan_slug=SECOND_PLAN, email=target) == 0
+
+
+# ── §6 item (j) — the MANUAL / bank-transfer activation ────────────────────
+#
+# The offline twin of `payments.fulfil`: an Operator activates a PAID plan a
+# customer paid for OUT OF BAND, composing the SAME three store writers
+# (activate_subscription / grant_seats / add_credit) MINUS the Razorpay order.
+# `provider='manual'` is the value `001_customer_console.sql:163`'s CHECK
+# pre-provisioned and that nothing wrote until now. It takes the Operator token,
+# NOT an org key, so `test_no_org_key_route_writes_an_entitlement_or_ledger_row`
+# stays green and this grant never rides a customer credential.
+
+_ACTIVATE = "/billing/subscriptions/activate"
+
+
+def _subscription(db, org_id: str) -> dict:
+    with db.begin() as c:
+        row = c.execute(
+            text("SELECT status, provider, current_period_start, "
+                 "current_period_end FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id},
+        ).one()
+    return dict(row._mapping)
+
+
+def _subscription_count(db, org_id: str) -> int:
+    with db.begin() as c:
+        return int(c.execute(
+            text("SELECT count(*) FROM org_subscription "
+                 "WHERE organization_id = :i"),
+            {"i": org_id}).scalar_one())
+
+
+def _ledger_with_reason(db, org_id: str, reason: str) -> list[dict]:
+    return [r for r in _rows(db, "credit_ledger", org_id)
+            if r["reason"] == reason]
+
+
+def _audit_with_action(db, org_id: str, action: str) -> list[dict]:
+    return [r for r in _rows(db, "control_audit", org_id)
+            if r["action"] == action]
+
+
+class TestTheManualActivation:
+    """§6 item (j) — the offline twin of `payments.fulfil`, R8 against real PG."""
+
+    def test_a_fresh_trial_org_activates_a_paid_plan(self, client, db):
+        """Happy path: subscription active + provider='manual' + period set; the
+        paid seats granted; credits added; an audit row names the reference."""
+        slug = _new_org(client, "manual")
+        org_id = _org_id(client, slug)
+
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 5,
+            "credits": "250", "reference": "NEFT-ABC123",
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["subscription"]["status"] == "active"
+        assert body["subscription"]["provider"] == "manual"
+        assert body["subscription"]["current_period_start"]
+        assert body["subscription"]["current_period_end"]
+
+        sub = _subscription(db, org_id)
+        assert sub["status"] == "active"
+        assert sub["provider"] == "manual"
+        assert sub["current_period_start"] is not None
+        assert sub["current_period_end"] > sub["current_period_start"]
+
+        grants = [g for g in _rows(db, "seat_grant", org_id)
+                  if g["plan_slug"] == SECOND_PLAN]
+        assert len(grants) == 1
+        assert grants[0]["quantity_purchased"] == 5
+        assert grants[0]["reason"] == "manual"
+
+        ledger = _ledger_with_reason(db, org_id, "manual")
+        assert len(ledger) == 1
+        assert ledger[0]["delta"] == Decimal("250")
+        assert ledger[0]["ref"] == "NEFT-ABC123"
+
+        audit = _audit_with_action(db, org_id, "subscription.activate_manual")
+        assert len(audit) == 1
+        assert audit[0]["actor"] == "operator"
+        assert audit[0]["detail"]["reason"] == "manual"
+        assert audit[0]["detail"]["reference"] == "NEFT-ABC123"
+        assert audit[0]["detail"]["seats"] == 5
+
+    def test_activation_without_credits_writes_no_ledger_row(self, client, db):
+        """Credits are optional; omitting them adds no ledger row — the branch is
+        conditional, exactly as `fulfil`'s credit-pack branch is."""
+        slug = _new_org(client, "manual-nocred")
+        org_id = _org_id(client, slug)
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 2})
+        assert r.status_code == 200, r.text
+        assert _rows(db, "credit_ledger", org_id) == []
+        assert _grants_for(db, org_id, SECOND_PLAN) == 1
+
+    def test_the_provider_is_manual_not_none(self, client, db):
+        """`org_subscription.provider` is CHECK (razorpay|manual). The manual path
+        writes 'manual'; 'none' — legal only on `payment_order` — would 500."""
+        slug = _new_org(client, "manual-prov")
+        org_id = _org_id(client, slug)
+        assert client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 1,
+        }).status_code == 200
+        assert _subscription(db, org_id)["provider"] == "manual"
+
+    def test_a_custom_term_extends_the_period(self, client, db):
+        """`term_months` is honoured; absent, it defaults to
+        `payments.SUBSCRIPTION_TERM_MONTHS` (the checkout's one term)."""
+        slug = _new_org(client, "manual-term")
+        org_id = _org_id(client, slug)
+        assert client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 1,
+            "term_months": 12,
+        }).status_code == 200
+        sub = _subscription(db, org_id)
+        # 12 months out — comfortably beyond the 1-month default.
+        assert (sub["current_period_end"]
+                - sub["current_period_start"]).days >= 360
+
+    def test_a_repeat_activation_does_not_double_grant(self, client, db):
+        """Idempotency / the double-grant guard: a second activate on an org that
+        is ALREADY active is 409, and grants / credits / subscription stay at one
+        each. This is the safe rule the ticket asked for — refuse rather than key
+        on an idempotency token — proven by the counts after the repeat call."""
+        slug = _new_org(client, "manual-again")
+        org_id = _org_id(client, slug)
+        payload = {"org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 3,
+                   "credits": "100", "reference": "NEFT-1"}
+
+        first = client.post(_ACTIVATE, headers=OP, json=payload)
+        assert first.status_code == 200, first.text
+
+        second = client.post(_ACTIVATE, headers=OP, json=payload)
+        assert second.status_code == 409, second.text
+        assert second.json()["detail"]["reason"] == "already_active"
+
+        assert _grants_for(db, org_id, SECOND_PLAN) == 1, "seats not double-granted"
+        assert len(_ledger_with_reason(db, org_id, "manual")) == 1, (
+            "credits not double-added"
+        )
+        assert _subscription_count(db, org_id) == 1, "one subscription row"
+
+    def test_two_concurrent_activations_grant_exactly_once(self, client, db):
+        """The double-grant guard under CONCURRENCY — RACED, not reasoned about.
+
+        Two threads activate the SAME fresh org, released together on a barrier
+        so both read ``org_subscription.status`` before either commits. Without
+        ``store.lock_org_activation`` both pass the 409 (status≠'active') and,
+        because ``grant_seats``/``add_credit`` are conflict-free INSERTs, both
+        grant — a 5-seat/250-credit transfer mints 10 seats/500 credits, and the
+        two results are ``[200, 200]`` with two seat_grant + two credit_ledger
+        rows. The org-keyed advisory lock makes the second block, then read
+        'active' and 409 — so exactly one grant lands.
+
+        Confirmed red-first: reverting the ``lock_org_activation`` call in
+        ``activate_subscription_manual`` (scratch copy of ``main.py``, restored
+        byte-identical) reddens this on the FIRST iteration — results
+        ``[200, 200]`` and ``SECOND_PLAN`` grants == 2. Ten iterations, because a race
+        that reproduces once in five is still a race. The sibling
+        ``test_a_concurrent_double_redeem_yields_one_success_and_one_refusal``
+        (discount cap) is the idiom.
+        """
+        for _ in range(10):
+            slug = _new_org(client, "manual-race")
+            org_id = _org_id(client, slug)
+            payload = {"org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 5,
+                       "credits": "250", "reference": "NEFT-RACE"}
+            gate = threading.Barrier(2, timeout=30)
+
+            def _race(_slug=slug, _payload=payload, _gate=gate):
+                c = TestClient(app)
+                _gate.wait()
+                return c.post(_ACTIVATE, headers=OP, json=_payload)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [f.result() for f in
+                           [pool.submit(_race) for _ in range(2)]]
+
+            assert sorted(r.status_code for r in results) == [200, 409], (
+                [r.status_code for r in results]
+            )
+            refused = next(r for r in results if r.status_code == 409)
+            assert refused.json()["detail"]["reason"] == "already_active"
+
+            assert _grants_for(db, org_id, SECOND_PLAN) == 1, (
+                "seats double-granted under the race"
+            )
+            assert len(_ledger_with_reason(db, org_id, "manual")) == 1, (
+                "credits double-added under the race"
+            )
+            assert _subscription_count(db, org_id) == 1, "one subscription row"
+
+    @pytest.mark.parametrize("plan", ["no_such_plan", "rnd", "support"])
+    def test_an_unknown_or_inactive_plan_is_refused_and_writes_nothing(
+        self, client, db, plan
+    ):
+        """`rnd`/`support` are seeded INACTIVE — a manual activation, like the
+        checkout, grants only on priced active rows. 400, and nothing written."""
+        slug = _new_org(client, "manual-badplan")
+        org_id = _org_id(client, slug)
+        before = _snapshot(db, org_id)
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": slug, "plan_slug": plan, "seats": 2})
+        assert r.status_code == 400, r.text
+        assert _snapshot(db, org_id) == before
+
+    def test_an_unknown_org_is_404(self, client):
+        r = client.post(_ACTIVATE, headers=OP, json={
+            "org_slug": "no-such-org", "plan_slug": SECOND_PLAN, "seats": 1})
+        assert r.status_code == 404, r.text
+
+    def test_only_the_operator_may_activate(self, client, db):
+        """Authz, mutation-proved. A customer org key, a deployment key (a valid
+        credential) and no auth are each refused 401 and write nothing; the
+        operator is admitted, which is what proves the 401s are the guard
+        refusing non-operators rather than the route being broken.
+
+        Red-first evidence (run and reverted in a scratch copy of `main.py`):
+        dropping the `_: Operator` dependency from `activate_subscription_manual`
+        lets the org-key and no-auth calls reach the body — they answer 200 and
+        WRITE the grant — so the assertions below redden the moment the guard is
+        gone. Reverted byte-identical."""
+        slug = _new_org(client, "manual-authz")
+        org_id = _org_id(client, slug)
+        org_key = _org_key(client, slug)
+        dep_key = _resolve_only_key(db, _default_box_id(db))
+        payload = {"org_slug": slug, "plan_slug": SECOND_PLAN, "seats": 2}
+
+        before = _snapshot(db, org_id)
+        assert client.post(_ACTIVATE, headers=_headers(org_key),
+                           json=payload).status_code == 401
+        assert client.post(_ACTIVATE, headers=_headers(dep_key),
+                           json=payload).status_code == 401
+        assert client.post(_ACTIVATE, json=payload).status_code == 401
+        assert _snapshot(db, org_id) == before, "no refused caller wrote a row"
+
+        # The door is not simply always-401: the operator IS admitted and the
+        # activation lands. That is what makes the 401s above a guard, not a bug.
+        assert client.post(_ACTIVATE, headers=OP,
+                           json=payload).status_code == 200
+
+    def test_the_provider_check_constraint_is_not_weakened(self, db, org):
+        """The provider fence stays green: 'manual' is a legal
+        `org_subscription.provider`, and a bogus value is still refused by the
+        CHECK this slice relies on — unchanged."""
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO org_subscription (organization_id, status, "
+                     "provider) VALUES (:o, 'active', 'manual') "
+                     "ON CONFLICT (organization_id) DO UPDATE "
+                     "SET provider = 'manual'"),
+                {"o": org["id"]},
+            )
+        with pytest.raises((IntegrityError, DBAPIError)), db.begin() as c:
+            c.execute(
+                text("INSERT INTO org_subscription (organization_id, status, "
+                     "provider) VALUES (:o, 'active', 'bogus') "
+                     "ON CONFLICT (organization_id) DO UPDATE "
+                     "SET provider = 'bogus'"),
+                {"o": org["id"]},
+            )
+
+    def test_the_ledger_reason_fence_is_not_weakened(self):
+        """The vocabulary grew by exactly one legal reason and the add_credit call
+        site uses the constant — both ledger fences stay green with 'manual' in
+        them (`…passes_a_named_reason` and the vocabulary set), never weakened."""
+        assert credits.LEDGER_REASON_MANUAL == "manual"
+        assert "manual" in credits.LEDGER_REASONS
 
 
 # ── SC-4g — discount codes, the refusal partition, and the Rs 0 path ───────
@@ -2652,7 +3123,7 @@ class TestDiscountCodes:
         assert (redemption[0]["gross_paise"], redemption[0]["discount_paise"],
                 redemption[0]["net_paise"]) == (120000, 120000, 0)
         # …and the ENTITLEMENT actually landed.
-        assert _grants_for(db, org["id"], "sales") == 1
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 1
         assert _rows(db, "org_subscription", org["id"])[0]["status"] == (
             "active"
         )
@@ -2681,10 +3152,10 @@ class TestDiscountCodes:
         assert fake.created[-1]["amount"] == 70800
 
         # Nothing granted yet: fulfilment is on CAPTURE.
-        assert _grants_for(db, org["id"], "sales") == 0
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 0
         fresh = {**order, "total_paise": 70800}
         assert _capture(client, fake, db, fresh).json()["fulfilled"] is True
-        assert _grants_for(db, org["id"], "sales") == 1
+        assert _grants_for(db, org["id"], SECOND_PLAN) == 1
 
     def test_a_fixed_code_larger_than_the_gross_is_clamped(self, client, org):
         """Never negative: a negative order total is a refund path (SC-4g (iii))."""
@@ -3028,7 +3499,7 @@ class TestTheFreePathAndThePaidPathAreOneProduct:
         order = _order(client, _org_key(client, slug))
         _capture(client, fake, db, order)
         grant = next(g for g in _rows(db, "seat_grant", org_id)
-                     if g["plan_slug"] == "sales")
+                     if g["plan_slug"] == SECOND_PLAN)
         reason, ref = grant["reason"].split(":", 1)
         assert reason == credits.LEDGER_REASON_PURCHASE
         assert ref == f"order:{order['id']}"
@@ -3146,9 +3617,14 @@ class TestTheLedgerVocabulary:
             "reason": "adjustment", "ref": "note-1"})
         assert ok.status_code == 200, ok.text
 
-    def test_the_vocabulary_is_the_five_named_reasons(self):
+    def test_the_vocabulary_is_the_six_named_reasons(self):
+        """Six since §6 item (j)'s manual activation: `'manual'` is the offline
+        twin of `'purchase'` — a paid term settled by bank transfer, written by
+        `POST /billing/subscriptions/activate`, kept its own word so a manual
+        settlement stays distinguishable from a processor capture a year later."""
         assert {
             "usage", "purchase", "discount_redemption", "adjustment", "grant",
+            "manual",
         } == credits.LEDGER_REASONS
 
     def test_the_launch_subscription_path_writes_no_ledger_rows(

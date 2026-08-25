@@ -1,8 +1,9 @@
-"""WS-30 SC-2a — ``POST /seats/assign`` + ``/seats/release``: the gateway seat proxy.
+"""The gateway seat proxy: ``POST /seats/{assign,release}`` + ``GET /seats/overview``.
 
 Spec: ``project-docs/specs/subscription_console.md`` SC-2a (the gateway-tier
 transport, done-whens 1/4/5) · ``customer_console.md`` §6 item (h) / §9 residual
-7 · ``user_management_contract.md`` R11.
+7 / **§6 CP-2h slice 1, D-SEAT-4** (the READ) · ``user_management_contract.md``
+R11.
 
 The middle hop of **browser → Next hop → gateway → Console**. This suite is the
 gateway-side R7 fence for the transport, and it mirrors two established files:
@@ -468,5 +469,279 @@ class TestTheSeatWriteClient:
                     actor_email="a@x.example", member_email="m@x.example",
                     plan_slug="center-ops", source="alacarte",
                 )
+        finally:
+            get_settings.cache_clear()
+
+
+# ══ CP-2h slice 1 · GET /seats/overview — the D-SEAT-4 READ ═══════════════════
+#
+# The reroute this whole slice is: the customer Seats tab used to read
+# `GET /me/seats` + `GET /me/members` through the workbench's per-org
+# `CUSTOMER_CONSOLE_ORG_KEY`, which cannot be correct on a SHARED box (a
+# `cc_live_` key IS one organization). The read now travels the same
+# browser → Next hop → gateway → Console path the WRITES already take, on the
+# per-BOX deployment key. This section is the gateway-tier half of that fence.
+
+class TestTheOverviewPosture:
+    def test_an_anonymous_caller_never_reaches_the_handler(self, wired, monkeypatch):
+        """Authenticated by construction, and NOT in ``PUBLIC_ROUTES``.
+
+        A read is not "harmless": this one returns an organization's whole
+        roster, so an anonymous caller reaching the handler would be a
+        cross-tenant disclosure, not a cosmetic bug.
+        """
+        spy = Spy(result=(200, {"plans": [], "members": []}))
+        monkeypatch.setattr(route, "seat_overview_on_console", spy)
+
+        r = _client(ANON).get("/seats/overview")
+
+        assert r.status_code == 401
+        assert spy.calls == []
+
+    def test_an_unwired_box_refuses_before_the_hop(self, unwired, monkeypatch):
+        """503, and the Console client is never consulted.
+
+        503 rather than an empty 200 is what the surface's "not configured for
+        this deployment" state keys on — an empty grid and an unreachable
+        Console look identical otherwise, and only one of them means the admin
+        should stop and read.
+
+        Mutation: dropping the ``is_wired()`` guard reaches the client on a box
+        configured for no Console (``spy.calls`` non-empty).
+        """
+        spy = Spy(result=(200, {"plans": [], "members": []}))
+        monkeypatch.setattr(route, "seat_overview_on_console", spy)
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 503
+        assert spy.calls == [], "the route called a Console it cannot reach"
+        assert "temporarily unavailable" in json.dumps(r.json())
+
+    def test_the_unwired_read_logs_under_its_OWN_event_at_warning(
+        self, unwired, monkeypatch
+    ):
+        """The read's dark refusal is the ordinary ship-dark state, not the F5
+        write alarm — so it logs ``seats.read_unwired`` at WARNING and leaves
+        ``seats.write_unwired`` meaning writes alone.
+
+        Mutation: reusing ``_unwired_refusal`` here makes every page load emit
+        the ERROR line an operator greps for real dark writes.
+        """
+        recorder = Recorder()
+        monkeypatch.setattr(route, "_log", recorder)
+        monkeypatch.setattr(
+            route, "seat_overview_on_console",
+            Spy(result=(200, {"plans": [], "members": []})),
+        )
+
+        _client().get("/seats/overview")
+
+        assert recorder.names() == ["seats.read_unwired"]
+        level, _, fields = recorder.events[0]
+        assert level == "warning"
+        assert fields, "the line carries no detail an operator could act on"
+
+
+class TestTheOverviewOutboundWire:
+    """The deployment-key ``seat_admin`` READ arm, driven through MockTransport."""
+
+    def test_it_forwards_the_deployment_key_and_the_SESSION_actor_only(
+        self, wired, monkeypatch
+    ):
+        """R11: bearer = the deployment key, ``actor_email`` = the SESSION email,
+        and the wire names NO organization and NO member.
+
+        Mutation: sourcing the actor from anywhere but the authenticated context
+        — a header, a query parameter — fails the actor assert; attaching an
+        ``org_slug`` fails the R11 asserts (and the Console would 400 it).
+        """
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("authorization")
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"plans": [], "members": []})
+
+        _mock_console(monkeypatch, handler)
+
+        r = _client(PERSON).get("/seats/overview")
+
+        assert r.status_code == 200
+        assert seen["url"].endswith("/registry/seats/overview")
+        assert seen["auth"] == f"Bearer {DEPLOYMENT_KEY}"
+        assert seen["body"] == {"actor_email": "admin@customer.example"}
+        # R11 — the org is derived Console-side; the wire never names one.
+        assert "org_slug" not in seen["body"]
+        assert "org" not in seen["body"]
+
+    def test_a_caller_cannot_name_a_tenant_in_the_query_string(
+        self, wired, monkeypatch
+    ):
+        """A GET has no body, so the tempting place to smuggle a tenant is the
+        query string. The route reads none, so an ``?org_slug=`` is inert: the
+        outbound wire is byte-identical to the plain call.
+
+        This is R11 held by CONSTRUCTION — there is nothing to ignore — which is
+        why the assertion is about the outbound request rather than a 400.
+        """
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"plans": [], "members": []})
+
+        _mock_console(monkeypatch, handler)
+
+        r = _client(PERSON).get(
+            "/seats/overview?org_slug=victim&actor_email=someone@else.example"
+        )
+
+        assert r.status_code == 200
+        assert seen["body"] == {"actor_email": "admin@customer.example"}
+
+
+class TestTheOverviewRelay:
+    def _console(self, monkeypatch, status, body):
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, json=body)
+        _mock_console(monkeypatch, handler)
+
+    def test_a_happy_read_relays_the_grid_and_the_roster_verbatim(
+        self, wired, monkeypatch
+    ):
+        """The ONE seat vocabulary crosses this hop untouched: the gateway
+        recomputes nothing and reshapes nothing."""
+        payload = {
+            "plans": [{
+                "plan_slug": "core", "purchased": 3, "assigned": 1,
+                "available": 2, "oversubscribed": False,
+            }],
+            "members": [{
+                "email": "priya@customer.example", "role": "member",
+                "status": "active", "seats": ["core"],
+            }],
+        }
+        self._console(monkeypatch, 200, payload)
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 200
+        assert r.json() == payload
+
+    def test_a_non_admin_403_surfaces_as_a_refusal(self, wired, monkeypatch):
+        """The Console's role gate 403s a plain member and the gateway relays it
+        rather than turning it into an empty 200 — which would render as "your
+        organization has no seats" to somebody who simply may not look."""
+        self._console(
+            monkeypatch, 403,
+            {"detail": "the acting member is not an active admin of this organization"},
+        )
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 403
+        assert "not an active admin" in json.dumps(r.json())
+
+    def test_a_multi_org_409_surfaces_as_itself(self, wired, monkeypatch):
+        """A member of two orgs on one box: the Console will not guess, and the
+        gateway must not flatten that into an outage."""
+        self._console(
+            monkeypatch, 409,
+            {"detail": "the acting member belongs to more than one organization"},
+        )
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 409
+        assert "more than one organization" in json.dumps(r.json())
+
+    def test_a_console_5xx_becomes_a_503_not_a_leak(self, wired, monkeypatch):
+        """A 5xx proves no answer — it degrades to a service-unavailable that
+        names nothing about the customer or the upstream."""
+        self._console(monkeypatch, 502, {"detail": "bad gateway from nginx"})
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 503
+        assert "nginx" not in json.dumps(r.json())
+
+    def test_a_network_error_becomes_a_503(self, wired, monkeypatch):
+        def handler(_req):
+            raise httpx.ConnectError("refused")
+        _mock_console(monkeypatch, handler)
+
+        r = _client().get("/seats/overview")
+
+        assert r.status_code == 503
+
+
+class TestTheSeatOverviewClient:
+    """``console_resolve.seat_overview_on_console`` — the request it BUILDS."""
+
+    async def test_it_posts_the_actor_alone_and_no_org(self, wired, monkeypatch):
+        from acb_auth.console_resolve import seat_overview_on_console
+
+        seen: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("authorization")
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"plans": [], "members": []})
+
+        _mock_console(monkeypatch, handler)
+
+        status, body = await seat_overview_on_console(
+            actor_email="admin@customer.example",
+        )
+
+        assert (status, body) == (200, {"plans": [], "members": []})
+        assert seen["url"].endswith("/registry/seats/overview")
+        assert seen["auth"] == f"Bearer {DEPLOYMENT_KEY}"
+        assert seen["body"] == {"actor_email": "admin@customer.example"}
+
+    async def test_a_403_is_RETURNED_not_raised(self, wired, monkeypatch):
+        """A verdict is relayed; only a no-answer status raises — the same line
+        the two write arms draw, from the same ``_post_seat_call``."""
+        from acb_auth.console_resolve import seat_overview_on_console
+
+        _mock_console(
+            monkeypatch, lambda req: httpx.Response(403, json={"detail": "no"}),
+        )
+
+        status, _body = await seat_overview_on_console(
+            actor_email="a@x.example",
+        )
+        assert status == 403
+
+    async def test_a_5xx_becomes_ConsoleSeatWriteUnavailable(
+        self, wired, monkeypatch
+    ):
+        from acb_auth.console_resolve import seat_overview_on_console
+
+        _mock_console(monkeypatch, lambda req: httpx.Response(503))
+        with pytest.raises(ConsoleSeatWriteUnavailable):
+            await seat_overview_on_console(actor_email="a@x.example")
+
+    async def test_an_unwired_box_raises_without_a_hop(self, monkeypatch):
+        """Ship-dark one layer below the route, so a future caller that forgets
+        the ``is_wired()`` guard still cannot reach a Console it has no key for.
+        """
+        from acb_auth.console_resolve import seat_overview_on_console
+        from acb_common.settings import get_settings
+
+        monkeypatch.delenv("CUSTOMER_CONSOLE_URL", raising=False)
+        monkeypatch.delenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", raising=False)
+        get_settings.cache_clear()
+
+        def _boom():
+            raise AssertionError("no client should be built when unwired")
+        monkeypatch.setattr("acb_auth.console_resolve._new_http_client", _boom)
+        try:
+            with pytest.raises(ConsoleSeatWriteUnavailable):
+                await seat_overview_on_console(actor_email="a@x.example")
         finally:
             get_settings.cache_clear()

@@ -1,24 +1,54 @@
+"use client";
+
 import Link from "next/link";
-import { NAV_SECTIONS } from "@/lib/nav";
+import { visibleSections } from "@/lib/nav";
+import { useAccess } from "@/components/AccessProvider";
 import ThemedIcon from "@/components/Icon";
 
-// The landing page mirrors the sidebar: every pane comes from NAV_SECTIONS,
-// so adding an app or a Center there surfaces it here too. Primary sections
-// (Personal Center, Centers) render as card grids; sub sections (Studio,
-// Admin) as compact rows.
+// The landing page mirrors the sidebar, and it mirrors it through the SAME
+// filter (`launch_surface.md` LS-2). It used to map `NAV_SECTIONS` directly,
+// with no access filter at all — so every member's home page listed every app
+// in the platform regardless of grants, while the sidebar beside it showed the
+// filtered set. Two answers to one question is the CLAUDE.md §5 defect, and
+// this was the version that told a plain member about panes they could not open.
+//
+// Primary sections (Personal Center, Apps) render as card grids; sub sections
+// (AI Studio, Admin) as compact rows.
 
 export default function Home() {
-  const primary = NAV_SECTIONS.filter((s) => !s.sub);
-  const secondary = NAV_SECTIONS.filter((s) => s.sub);
+  const { access, loading } = useAccess();
+  const sections = visibleSections(
+    loading ? null : access.features,
+    access.is_admin,
+  );
+  const primary = sections.filter((s) => !s.sub);
+  const secondary = sections.filter((s) => s.sub);
 
   return (
     <div className="p-6 sm:p-10 max-w-5xl">
       <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Welcome back</h1>
       <p className="mt-2 text-muted-foreground">
-        Your personal apps, your team&apos;s Centers, and the agents doing the work.
+        Your personal apps, your team&apos;s work, and the agents doing it.
       </p>
 
-      {/* ── Personal Center / Centers ────────────────────────────────────── */}
+      {/* Unresolved access renders placeholders, never a guess — the same rule
+          the sidebar follows (§8.1). Showing the full grid here and then
+          removing most of it is the flash this change exists to end. */}
+      {loading ? (
+        <div
+          className="mt-11 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+          aria-hidden
+        >
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-[104px] animate-pulse rounded-xl border border-border bg-card/30"
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {/* ── Personal Center / Apps ───────────────────────────────────────── */}
       {primary.map((section) => (
         <section key={section.id}>
           <div className="mt-8 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -44,7 +74,7 @@ export default function Home() {
         </section>
       ))}
 
-      {/* ── Studio / Admin ───────────────────────────────────────────────── */}
+      {/* ── AI Studio / Admin ────────────────────────────────────────────── */}
       {secondary.map((section) => (
         <section key={section.id}>
           <div className="mt-8 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -72,9 +102,23 @@ export default function Home() {
         </section>
       ))}
 
-      <div className="mt-12 rounded-lg border border-border bg-card/30 p-4 text-sm text-muted-foreground">
-        <b>Phase 1:</b> Self-Mutation Loop. Sign in with your Microsoft 365 account via the sidebar.
-      </div>
+      {/* A signed-in member with no grants at all still lands somewhere that
+          explains itself, rather than on an empty page. */}
+      {!loading && sections.length === 0 ? (
+        <div className="mt-10 rounded-xl border border-border bg-card/40 p-6">
+          <div className="text-sm font-semibold text-foreground">
+            Nothing is enabled for your account yet
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            An organization admin grants access from Organisation → Members &amp;
+            roles.{" "}
+            <Link href="/access" className="text-primary hover:underline">
+              See exactly what you can reach, and why
+            </Link>
+            .
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -27,12 +27,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import TenantUnbound
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
     ITEM_SELECT,
-    # `_get_db` is used ONLY by the auto-rollover background job at the bottom
-    # of this file (H4 — see the comment there); every request handler in this
-    # module uses `_tenant_session`.
+    # `_get_db` is used ONLY by the auto-rollover sweep's org enumeration at the
+    # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
+    # comment there); every request handler AND per-user rollover uses
+    # `_tenant_session`.
     _get_db,
     _log,
     _row_to_item,
@@ -1425,14 +1427,20 @@ async def rollover_log(
 # only place scheduling changes are written server-side, without the client).
 # Server-side geometry needs the user's timezone + prefs, all stored (mig 77/78).
 #
-# ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): everything below
-# runs from `asyncio.create_task`, long after any request (and its tenant
-# binding) is gone — and the sweep itself is CROSS-tenant by construction (it
-# reads every user's gtd_settings row). The runbook's rule for background
-# consumers is "do not let a job inherit an ambient tenant", so these two sites
-# stay on the unbound `get_db()` until H4 threads an EXPLICIT per-user tenant
-# into `tenant_session(org_id)` inside the per-user loop. Sequencing is safe:
-# RLS phase 4 (which would starve these reads) is gated on H2+H4 both complete.
+# ✅ H4 DONE for the rollover sweep (WS-29 MT-1d, `saas_multitenancy_handover.md`
+# §H4). Everything below runs from `asyncio.create_task`, long after any request
+# (and its tenant binding) is gone, so the runbook forbids inheriting an ambient
+# tenant — and the sweep is CROSS-tenant by construction. `gtd_settings`/
+# `gtd_items`/`gtd_rollover_log` are FORCE-RLS'd, so a single unbound read returns
+# ZERO rows under phase 4 (rollover silently stops for every customer). The H4
+# shape (exemplars: `crm/auto_lead` + `projects/run_lifecycle_sweep`): the sweep
+# enumerates organizations from the RLS-EXEMPT `organization` table on an unbound
+# session (the "which tenants exist" decision), then binds `tenant_session(org)`
+# per org for the settings read AND threads that org into each per-user rollover,
+# which does ALL its reads/writes inside `tenant_session(org)`; a rollover with no
+# resolvable org REFUSES (`TenantUnbound`, never defaults). DARK (pre-phase-4, RLS
+# off): additive bind-wrapping, no schema change; per-org reads are unscoped and
+# deduped back to a byte-identical set.
 
 _rollover_task: asyncio.Task | None = None
 _ROLLOVER_TICK_SECS = 900  # 15 min — catches each local day boundary promptly.
@@ -1445,11 +1453,23 @@ def _local_dt(d: date, hour: int, tz: ZoneInfo) -> datetime:
     return datetime.combine(d, time(max(0, min(hour, 23))), tzinfo=tz)
 
 
-async def _rollover_one_user(row: Any) -> None:
+async def _rollover_one_user(row: Any, org_id: str) -> None:
     """Once per local day, RELEASE a user's overdue-incomplete flexible blocks
     back to their unscheduled list (clear the schedule) so they can re-plan them,
     instead of auto-cramming them onto today. Logs + marks last_rollover_date so
-    it won't re-run until tomorrow."""
+    it won't re-run until tomorrow.
+
+    ⚠️ **H4 (MT-1d):** ``org_id`` is this settings row's tenant, threaded from
+    the sweep — never inherited from an ambient binding, never defaulted. All
+    reads/writes run in one ``tenant_session(org_id)`` transaction that commits
+    on clean exit; a rollover with no resolvable org REFUSES rather than acting
+    unbound (0 rows read / WITH-CHECK-refused writes under phase-4 RLS)."""
+    if not org_id:
+        raise TenantUnbound(
+            "tasks.calendar._rollover_one_user needs an explicit organization_id "
+            "— the nightly rollover must bind the user's own tenant, never "
+            "inherit an ambient one or default (saas_multitenancy_handover.md "
+            "§H4)")
     uid = row.user_id
     try:
         tz = ZoneInfo(row.timezone or "UTC")
@@ -1460,8 +1480,7 @@ async def _rollover_one_user(row: Any) -> None:
     if row.last_rollover_date == local_today:
         return  # already handled this local day
 
-    db = await _get_db()
-    try:
+    async with _tenant_session(org_id) as db:
         over_rows = (await db.execute(
             text(ITEM_SELECT + _OVERDUE_WHERE), {"uid": uid, "now": now},
         )).fetchall()
@@ -1483,30 +1502,52 @@ async def _rollover_one_user(row: Any) -> None:
             text("UPDATE gtd_settings SET last_rollover_date = :d "
                  "WHERE user_id = :uid"),
             {"d": local_today, "uid": uid})
-        await db.commit()
-        if overdue:
-            _log.info("tasks.calendar.released_overdue",
-                      user=str(uid)[:12], count=len(overdue))
-    finally:
-        await db.close()
+    # `_tenant_session` commits on clean exit (H2: a mid-block commit would drop
+    # the tenant GUC), so this logs AFTER the transaction lands.
+    if overdue:
+        _log.info("tasks.calendar.released_overdue",
+                  user=str(uid)[:12], count=len(overdue))
 
 
 async def _run_rollover_sweep() -> None:
-    """One pass over every auto-rollover user."""
-    db = await _get_db()
+    """One pass over every auto-rollover user, per tenant (H4 cross-tenant sweep).
+
+    ``gtd_settings`` is FORCE-RLS'd, so a single unbound read returns ZERO rows
+    under phase-4 RLS (rollover silently stops for every customer). So enumerate
+    organizations from the RLS-EXEMPT ``organization`` table on an unbound
+    session (the tenant-less "which tenants exist" read), then bind
+    ``tenant_session(org)`` per org and read that org's auto-rollover users,
+    threading the org into each per-user rollover. Deduped by ``user_id`` (first
+    tenant wins) so pre-phase-4 (RLS off, DARK) the unscoped per-org reads
+    collapse to a byte-identical set; post-phase-4 they are disjoint."""
+    resolver = await _get_db()
     try:
-        rows = (await db.execute(
-            text("""SELECT user_id, timezone, auto_rollover, last_rollover_date,
-                           day_start_hour, day_end_hour, daily_capacity_mins,
-                           buffer_mins, energy_windows
-                    FROM gtd_settings
-                    WHERE coalesce(auto_rollover, true) = true"""),
-        )).fetchall()
+        org_rows = (await resolver.execute(
+            text("SELECT id FROM organization"))).fetchall()
     finally:
-        await db.close()
-    for row in rows:
+        await resolver.close()
+
+    seen: set[str] = set()
+    pending: list[tuple[Any, str]] = []
+    for org_row in org_rows:
+        org_id = str(org_row.id)
+        async with _tenant_session(org_id) as db:
+            rows = (await db.execute(
+                text("""SELECT user_id, timezone, auto_rollover,
+                               last_rollover_date, day_start_hour, day_end_hour,
+                               daily_capacity_mins, buffer_mins, energy_windows
+                        FROM gtd_settings
+                        WHERE coalesce(auto_rollover, true) = true"""),
+            )).fetchall()
+        for row in rows:
+            if row.user_id in seen:
+                continue  # first tenant that saw it wins (pre-phase-4 dedup)
+            seen.add(row.user_id)
+            pending.append((row, org_id))
+
+    for row, org_id in pending:
         try:
-            await _rollover_one_user(row)
+            await _rollover_one_user(row, org_id)
         except Exception as exc:  # never let one user break the sweep
             _log.warning("tasks.calendar.rollover_user_failed",
                          error=str(exc)[:160])

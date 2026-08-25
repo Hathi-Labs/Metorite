@@ -34,7 +34,16 @@ def _fake_acb_graph(workspace_path: str | None) -> types.ModuleType:
     def get_session():
         yield _Session()
 
+    @contextmanager
+    def tenant_session(_organization_id=None):
+        yield _Session()
+
     mod.get_session = get_session  # type: ignore[attr-defined]
+    # WS-29 acb_graph slice 3: the executor now reads the tenant-bind flag and
+    # (when ON) the tenant_session seam through acb_graph, so this stub must
+    # mirror that grown API. Default OFF → the override reads via get_session.
+    mod.tenant_bind_enabled = lambda: False  # type: ignore[attr-defined]
+    mod.tenant_session = tenant_session  # type: ignore[attr-defined]
     return mod
 
 

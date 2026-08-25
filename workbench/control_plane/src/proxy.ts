@@ -33,8 +33,18 @@ import { auth, isAuthEnabled, isAuthConfigured } from "@/auth";
 /** NextAuth's own endpoints, which must stay reachable to sign anybody in. */
 const AUTH_ROUTES = "/api/auth";
 
-/** Unauthenticated page routes. */
-const PUBLIC_PAGES = new Set(["/signin", "/favicon.ico"]);
+/**
+ * Unauthenticated page routes.
+ *
+ * ⚠️ `/signin/code` (CP-2d slice 2) is here for the same reason `/signin` is,
+ * and leaving it out does not fail safe — it fails *broken*: Auth.js redirects a
+ * person who has just asked for an email code to that page, and a person asking
+ * for a sign-in code is by definition not signed in, so the redirect below would
+ * bounce them straight back to `/signin` and the code could never be entered.
+ * The page reads no secret and holds no session; the authorization that matters
+ * is `@auth/core`'s own callback, which the typed code is submitted to.
+ */
+const PUBLIC_PAGES = new Set(["/signin", "/signin/code", "/favicon.ico"]);
 
 export async function proxy(req: NextRequest) {
   // The laptop case, and ONLY the laptop case, runs open. This used to be
@@ -63,6 +73,16 @@ export async function proxy(req: NextRequest) {
   if (pathname.startsWith(AUTH_ROUTES) || pathname.startsWith("/_next")) {
     return NextResponse.next();
   }
+
+  // ── Per-tenant workspace hostnames: WITHDRAWN (D51, 2026-08-24) ───────────
+  // MT-1f slice 1's host-parse branch lived here for one day. The owner
+  // withdrew subdomain workspaces entirely — one door (`app.<domain>`), the
+  // organization made explicit in the UI, and the multi-org workspace CHOICE
+  // to be carried as a session claim when MT-1g builds it (never the Host
+  // header: a request hostname is request input, R11). The reserved-slug
+  // protection that shipped with the slice STAYS — `lib/subdomain.ts` still
+  // owns RESERVED_LABELS/SLUG_RE and the signup gate enforces them.
+
   if (PUBLIC_PAGES.has(pathname)) return NextResponse.next();
 
   if (await auth()) return NextResponse.next();

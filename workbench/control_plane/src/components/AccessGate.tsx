@@ -16,11 +16,11 @@ import Icon from "@/components/Icon";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
-import { canSeePath } from "@/lib/access";
+import { canSeePath, isOrgless } from "@/lib/access";
 
 export default function AccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
-  const { access, loading } = useAccess();
+  const { access, loading, refresh } = useAccess();
 
   // Don't flash "no access" before the first resolution lands.
   if (loading) return <>{children}</>;
@@ -28,6 +28,82 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
   // An unauthenticated viewer is middleware's problem (sign-in redirect), not
   // ours — showing them "access denied" would misdescribe the situation.
   if (!access.authenticated) return <>{children}</>;
+
+  // ── The ORG-LESS arm (D51 / WS-35) — checked BEFORE `canSeePath` ──────────
+  //
+  // Before 2026-08-24 this sat AFTER the canSeePath pass, which made it
+  // unreachable on exactly the pages that matter: the home page and the floor
+  // panes are visible to every authenticated member, so an org-less sign-in
+  // fell straight through onto a working-looking dashboard (the owner's live
+  // report). Org-less now takes over every in-shell route — /signin and
+  // /signup stay reachable because AppShell's chromeless branch returns
+  // before this gate mounts.
+  //
+  // The fork below is where the owner's stray-duplicate-org worry lives: an
+  // uninvited-but-legitimate employee, or a founder about to set up their
+  // company, must be told which of the two they are and what each path looks
+  // like. (An INVITED colleague never lands here — their first admitted
+  // sign-in activates them on both planes, D50.3.)
+  if (isOrgless(access)) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="max-w-lg rounded-xl border border-border bg-card p-8">
+          <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-muted">
+            <Icon name="Building2" size={20} className="text-muted-foreground" />
+          </div>
+          {/* Lead with the FACT, not the session state (owner feedback
+              2026-08-24): the reader's question is "why am I not in my
+              company's workspace?", and the answer is that no organization has
+              this address as a member. Saying it post-authentication is what
+              keeps it from being an enumeration oracle — only someone who
+              PROVED the mailbox gets told what it is linked to. */}
+          <h1 className="text-center text-base font-semibold text-foreground">
+            No organization is linked to this email
+          </h1>
+          <p className="mt-2 text-center text-sm text-muted-foreground">
+            You&apos;re signed in as{" "}
+            <span className="font-medium text-foreground">{access.email}</span>,
+            but that address isn&apos;t a member of any organization on Metorite
+            yet.
+          </p>
+          <div className="mt-6 space-y-3">
+            <div className="rounded-lg border border-border bg-secondary p-4">
+              <p className="text-sm font-medium text-foreground">
+                My company already uses Metorite
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Don&apos;t create a duplicate — ask your organization&apos;s
+                admin to invite{" "}
+                <span className="font-medium">{access.email}</span>. The moment
+                they have, sign-in just works.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="mt-3 inline-flex items-center rounded-lg border border-border px-3 py-1.5 text-sm text-foreground tech-transition hover:bg-muted"
+              >
+                I&apos;ve been invited — check again
+              </button>
+            </div>
+            <div className="rounded-lg border border-border bg-secondary p-4">
+              <p className="text-sm font-medium text-foreground">
+                Set up Metorite for my company
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Creates a brand-new organization with you as its owner.
+              </p>
+              <Link
+                href="/signup"
+                className="mt-3 inline-flex items-center rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground tech-transition hover:opacity-90"
+              >
+                Create a new organization
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (canSeePath(access, pathname)) return <>{children}</>;
 
@@ -45,7 +121,7 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
         <p className="mt-2 text-sm text-muted-foreground">
           {suspended
             ? "Your membership is suspended or pending. An organization admin can reactivate it."
-            : "This part of Metorite isn't enabled for your account. An organization admin can grant access from Settings → Members."}
+            : "This part of Metorite isn't enabled for your account. An organization admin can grant access from Organisation → Members & roles."}
         </p>
         <Link
           href="/chat"
