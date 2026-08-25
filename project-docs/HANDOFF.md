@@ -66,23 +66,6 @@ this file grows a graveyard and the graveyard is what goes stale.
 
 # OPEN
 
-### H-26 · Decide D-SEAT-1…6 and mint CP-2h (seat-assignment UX) · [OWNER]
-- **Check:** `rg -n "CP-2h" project-docs/work_plan.md` → no hit means no board
-  row exists and the six decisions in `specs/customer_console.md` §6 CP-2h are
-  still owed.
-- **Why:** The owner's live E2E (2026-08-24) hit Settings → Organization →
-  Seat assignments reading "not configured for this deployment" and asked for
-  the whole seat flow to be ironed out. The proposal is written (CP-2h,
-  PROPOSED): the load-bearing item is **D-SEAT-4** — the customer seat surface
-  must reach the Console through the GATEWAY's existing deployment-key
-  `seat_admin` door instead of the BFF's per-org `CUSTOMER_CONSOLE_ORG_KEY`
-  env, which no shared multi-tenant box can carry (why the tab is dark).
-  D-SEAT-1…3/5/6 fix invite-at-zero-seats, the waiting-for-a-seat card,
-  release/remove/suspend semantics and the owner-takes-a-seat rule. Until
-  minted, the working seat path is the OPERATOR console only.
-- **Authority:** `specs/customer_console.md` §6 CP-2h · `routes/seats.py` ·
-  `api/billing/_console.ts` · CLAUDE.md §5 (no second seam)
-- **Added:** 2026-08-24 · onboarding E2E session
 
 ### H-22 · Decide the development & delivery framework (D-A…D-G) and mint WS-38 · [OWNER]
 - **Check:** `rg -n "WS-38" project-docs/work_plan.md` → no hit means the board
@@ -418,10 +401,19 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
-### H-27 · Revoke the ClickUp tokens at ClickUp · [OWNER]
-- **Check:** `SELECT count(*) FROM integration_credentials WHERE service = 'clickup';`
-  on the box, **and** whether the token still authenticates against
-  `https://api.clickup.com/api/v2/user`. Either one alive → still pending.
+### H-32 · Revoke the ClickUp tokens at ClickUp · [OWNER]
+- **Check:** on the box, **both** credential homes plus the vendor:
+  `SELECT count(*) FROM provider_keys WHERE credential_type = 'integration' AND service = 'clickup';`
+  **and** `SELECT count(*) FROM task_accounts WHERE provider = 'clickup';` —
+  that second table's `credentials_encrypted` is where the real per-workspace
+  ClickUp tokens live (`48_task_manager_gtd.sql:24-44`), so a check that asks
+  only `provider_keys` can read `0` while live tokens remain. Then whether the
+  token still authenticates against `https://api.clickup.com/api/v2/user`. Any
+  one alive → still pending.
+  ⚠️ There is no `integration_credentials` table — migration
+  `11_integration_credentials.sql` **adds columns to `provider_keys`**
+  (`credential_type`, `service`). An earlier draft of this entry queried the
+  non-existent table and would have errored rather than answered.
   ⚠️ A repo-side grep cannot answer this and never could: WS-39 S1 deleted every
   *reader* of the token, which is not the same as the token being dead. A
   credential nobody reads is still a live credential at the vendor.
@@ -429,7 +421,8 @@ this file grows a graveyard and the graveyard is what goes stale.
   credential act, so an agent must refuse it by name. Also drop the `CLICKUP_*`
   values from the box `.env` while you are there (env-write, gated).
 - **Authority:** `work_plan.md` §6 WS-27 (c-1) · D52.1
-- **Added:** 2026-08-24 · WS-39 S1 session
+- **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
+  `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
 ### H-28 · WS-39: slice S3a-CLIENT still to build · [AGENT]
 - **Check:** `rg -l "/api/tasks/items" workbench/control_plane/src/app/tasks/`
@@ -504,6 +497,29 @@ this file grows a graveyard and the graveyard is what goes stale.
   they are the Calendar app's per-member state and survive (D53.6).
 - **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8
 - **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
+- **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
+  CI still never runs the browser suite. Separately, `rg -n "127.0.0.1" workbench/
+  control_plane/playwright.config.ts` → a hit means the hydration trap is back.
+- **Why:** D-PM-21 makes a real browser the **only** fence for UI behaviour here —
+  `vitest.config.ts` is `environment: "node"` and does not even collect `.tsx`, and
+  jsdom is refused by decision. That fence was **completely dead** and nothing said
+  so: `playwright.config.ts` addressed the dev server as `127.0.0.1`, Next 16 blocks
+  `/_next/*` as cross-origin from the IP, so the server-rendered shell arrived, the
+  client bundle did not, hydration never completed, **no fetch was ever issued**, and
+  every spec timed out against a page reading "Loading …". Measured 2026-08-21 with
+  hostname as the only variable; fixed on `ws-27bg-project-rename` by pointing the
+  config at `localhost`. ⚠️ **The failure mode is the point**: a page that renders
+  its whole shell looks alive, so this reads as a backend fault and cost most of a
+  session to isolate. The specs' own as-builts record them running green, so the rot
+  set in after they were written and **no job would ever have reported it** — the
+  suite is absent from `pr-check.yml` entirely. Wanted: either e2e in CI (it needs a
+  browser image and ~13 s per spec), or an explicit board decision that it stays a
+  local-only gate, recorded so the next person does not assume CI has their back.
+- **Authority:** `specs/project_management_app.md` §8 D-PM-21 · CLAUDE.md §3.8
+  (verify by evidence, never by a green job)
+- **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
 
 ---
 

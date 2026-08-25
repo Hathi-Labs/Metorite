@@ -514,6 +514,38 @@ function ProjectsWorkspace() {
           }
         );
       },
+      onRename: (project, name) => {
+        void toast.promise(
+          projectsApi.patchProject(project.id, { name }).then((res) => {
+            setTreeKey((k) => k + 1);
+            // `selected` is a SNAPSHOT, and the resync effect below only checks
+            // that its id is still present — it never refreshes the object. The
+            // tree redraws from `roots` and looks right, while `selected.name`
+            // keeps the old value in the quick-add placeholder and the two
+            // `projectName={selected.name}` panels until you click away and
+            // back. Unreachable before this ticket, because a project's name
+            // could not change; reachable now, so it is fixed here.
+            //
+            // MERGED, not replaced: the PATCH response is a bare project row
+            // with no `children`, and `selected` is read for its subtree
+            // elsewhere. Taking only the field that changed keeps the rest.
+            setSelected((prev) =>
+              prev && prev.id === project.id ? { ...prev, name: res.name } : prev
+            );
+            return res;
+          }),
+          {
+            key: `project-rename:${project.id}`,
+            loading: `Renaming ${project.name}…`,
+            // The name is read back off the RESPONSE, not echoed from the
+            // field: the server owns what it stored, and a toast that reports
+            // the request rather than the result is how a silently-trimmed or
+            // truncated value gets confirmed as something it is not.
+            success: (res) => `Renamed to “${res.name}”`,
+            error: "Couldn't rename the project",
+          }
+        );
+      },
     }),
     [toast]
   );

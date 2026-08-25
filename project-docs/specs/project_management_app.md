@@ -12,7 +12,14 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-11**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-08-25**
+> 🟢 **WS-27bg SLICE 2 REMAINDER — RENAME — BUILT 2026-08-21 on `ws-27bg-project-rename`
+> (PR #47), NOT merged and NOT deployed** (§11.36's narrowed list, corrected) — a project can
+> be renamed for the first time: inline on the tree row, frontend only, **no migration and no
+> API change** (`PATCH /projects/nodes/{id}` already accepted `name`). This closes the
+> "no project-editing UI at all" finding in §9.8.1's measurement table. ⚠️ Fenced by 5 unit
+> cases and 8 Playwright cases, and **nothing in CI runs `e2e/`** — H-27. ·
+> **Previously updated 2026-08-11**
 > (**WS-27be built — §11.33, migration 170**; **WS-27ak's narrowed slice built — §11.31**;
 > **WS-27bc's one dispatchable slice built — §11.34**;
 > **WS-27am's — §11.29**; **WS-27bd's — §11.30**;
@@ -3530,7 +3537,7 @@ Measured against `efd843a`, 2026-08-13:
 | `ProjectTree.tsx` | Contains the string `status` **zero times**. Nothing renders it, nothing filters on it, no control writes it. |
 | `pm_projects.archived_at` | Exists since 146. **Never written by anything.** |
 | Project archive endpoint | **Does not exist.** The only removal path is `DELETE /nodes/{project_id}` (`tree.py:389`) — an unrecoverable cascade over subtree + tasks + grants. |
-| Project-editing UI | **Does not exist.** `patchProject` has one call site (`LifecyclePolicy.tsx:47`), `createProject` one (`page.tsx:1052`). A project cannot be renamed in this app. |
+| Project-editing UI | **Does not exist.** `patchProject` has one call site (`LifecyclePolicy.tsx:47`), `createProject` one (`page.tsx:1052`). A project cannot be renamed in this app. **✅ CLOSED 2026-08-25** — the measurement stands as taken against `efd843a`; slice 2 added the menu and the slice-2 remainder (`ws-27bg-project-rename`, PR #47) added rename. |
 
 ⚠️ **This is the second instance of a failure this repo has already recorded once.**
 `src/lib/statusAccent.ts`'s own header documents `pm_task_statuses.color` as *"stored since
@@ -6699,8 +6706,15 @@ Frontend only — **no migration, no API change**; slice 1's endpoints are the o
   tasks. That is a modal, a bulk call and a count shown before agreement — a slice, not a menu
   item, and smuggling it in as a side effect of a state change is the exact shape D-PM-26
   forbids.
-* **Rename is still owed.** A project still cannot be renamed in this app. It was not in
-  §9.8.4's done-when and is not built here; recorded so it does not read as done.
+* **Rename was still owed here — ✅ SHIPPED 2026-08-25 in the slice-2 remainder.** It was not in
+  §9.8.4's done-when and is **not built in this slice**; `ws-27bg-project-rename` (**PR #47**,
+  built 2026-08-21) adds it: inline on the tree row rather than in a dialog, matching
+  TagManager's rename idiom (§9.11). Frontend only — no migration, no API change, because
+  `PATCH /projects/nodes/{id}` already accepted `name` and already listed it in
+  `_TRACKED_PROJECT_FIELDS`, so the rename lands on the project timeline unaided. Fenced by
+  5 cases in `projectMenu.test.ts` and 8 browser cases in `e2e/project-rename.spec.ts`.
+  ⚠️ **The browser suite is not CI-wired** — nothing runs `e2e/` at all (H-27), which is the
+  same gap this section's four-theme sweep depends on.
 
 #### Verification
 

@@ -595,6 +595,30 @@ class MembersView(BaseModel):
     members: list[MemberView]
 
 
+class SeatOverviewView(BaseModel):
+    """The seat surface's whole answer, under the DEPLOYMENT-key door (CP-2h).
+
+    ⚠️ **Two existing views, composed — never a third shape.** ``plans`` is
+    exactly :class:`SeatsView`'s list (``_seat_grid`` → ``seat_counts``, the ONE
+    seat vocabulary, §3.3 / D32.5) and ``members`` is exactly
+    :class:`MembersView`'s (``store.org_members`` zipped with
+    ``store.live_seats_by_email``). Nothing here adds a field, renames one, or
+    computes a count: an admin reading this and an admin reading
+    ``GET /me/seats`` + ``GET /me/members`` must never be shown two answers, and
+    the way to guarantee that is to hand back the same two models.
+
+    It exists because the two customer-key reads it mirrors are unreachable on a
+    SHARED deployment (**D-SEAT-4**): a ``cc_live_`` organization key is
+    per-organization, so a box hosting N tenants has no single correct one, and
+    the seat surface fails closed to "not configured". The deployment key is the
+    one customer credential that resolves a MEMBER, so it is the door that works
+    for every tenant on the box. See :func:`seat_overview_admin`.
+    """
+
+    plans: list[SeatPlanView]
+    members: list[MemberView]
+
+
 class OrgSummaryView(BaseModel):
     """One organization's line on the Operator Console customer list (§4.1a, CP-8).
 
@@ -2428,6 +2452,76 @@ def release_seat_admin(
                 "released": released}, actor=actor)
 
     return {"released": released}
+
+
+# ── CP-2h · the customer-authenticated seat READ (D-SEAT-4) ─────────────────
+#
+# The read-side twin of the two writes above, on the SAME `seat_admin`
+# capability: one door per plane. `GET /me/seats` + `GET /me/members` remain the
+# ORGANIZATION-key reads for the per-org billing pages; this is the same picture
+# under the credential a SHARED deployment can actually hold.
+
+@app.post("/registry/seats/overview")
+def seat_overview_admin(
+    req: AdminSchemeRequest, caller: SeatAdminCaller
+) -> SeatOverviewView:
+    """The seat surface's READ under the customer's own admin credential (CP-2h).
+
+    **The door split this closes — D-SEAT-4** (``customer_console.md`` §6 CP-2h).
+    Until now the ``seat_admin`` capability opened two WRITES and no read, so the
+    customer's Seats tab had to compose its own picture from the two
+    ORGANIZATION-KEY reads ``GET /me/seats`` + ``GET /me/members``. That works on
+    a box dedicated to one tenant and cannot work on a shared one: a ``cc_live_``
+    key **is** an organization (CP-3), so a deployment hosting N tenants has no
+    single correct key to hold, the per-org env var is unset, and the tab fails
+    closed to "not configured for this deployment" — the state the owner
+    photographed on 2026-08-24. **One plane, one door:** the writes already reach
+    this service through the gateway's deployment-key hop, and after this so does
+    the read. The org-key reads stay exactly as they are for the billing pages,
+    which are per-org surfaces by construction.
+
+    **Why POST for a read.** The actor travels in the body precisely as the two
+    sibling writes send it (:class:`AdminSchemeRequest`), so R11's derivation is
+    the SAME code on all three doors — ``_admin_scheme_context`` with
+    ``_SEAT_ADMIN_ROLES``. A GET would have to carry the acting member in a query
+    string or a header, i.e. a second way to say who is asking, on the one axis
+    where a second way is how a derivation quietly becomes an assertion. Nothing
+    here writes: no ledger row, no seat, no membership, no audit line.
+
+    **Same gate as the writes, deliberately.** The Seats tab is an admin surface —
+    it exists to move seats — so "may read the roster and the counts" is the same
+    question as "may move a seat", and answering it with a second, looser role set
+    would mint a policy nobody asked for. A non-admin member is refused here for
+    the same reason they are refused at the write: 403, byte-identical, from the
+    one shared derivation.
+
+    **The org is the ANSWER, never the request** (R11): it comes from
+    ``deployment_visible_orgs(deployment_id, actor_email)`` — placement ∩
+    membership — so org A's admin cannot name org B, and a ``deleted``
+    organization is inadmissible (``capabilities_of(...).can_sign_in``) exactly as
+    it is at the writes. A ``suspended`` organization CAN read: it is the one
+    deciding whether to buy more seats, so it must be able to see them — the
+    ``my_seats`` / ``billing_catalog`` reasoning (§9.3(5)), and the reason no
+    ``can_write_seats`` gate appears on a read.
+
+    Both queries plus the grid run in ONE transaction, so the counts and the
+    roster are a consistent snapshot — ``my_members``'s argument, extended to the
+    grid: a seat released between two connections would otherwise surface as a
+    member holding a seat the counts no longer show.
+    """
+    with get_engine().begin() as conn:
+        org_id, _actor = _admin_scheme_context(
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+        )
+        rows = store.org_members(conn, org_id=org_id)
+        seats = store.live_seats_by_email(conn, org_id=org_id)
+        return SeatOverviewView(
+            plans=_seat_grid(conn, org_id),
+            members=[
+                MemberView(**row, seats=seats.get(row["email"], []))
+                for row in rows
+            ],
+        )
 
 
 # ── CP-2f · the member-write door ───────────────────────────────────────────

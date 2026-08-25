@@ -129,6 +129,12 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/orgs/provision": "provision",
     "/registry/seats": "seat_admin",
     "/registry/seats/release": "seat_admin",
+    # WS-31 CP-2h slice 1, 2026-08-24 — the D-SEAT-4 seat READ, on the SAME
+    # capability as the two writes above. Deliberately not a fifth capability:
+    # the Seats tab is an admin surface, so "may read the grid and the roster"
+    # is the same question as "may move a seat", and a looser gate here would
+    # hand an org's whole roster to any member.
+    "/registry/seats/overview": "seat_admin",
     # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
     "/registry/members": "member_admin",
 }
