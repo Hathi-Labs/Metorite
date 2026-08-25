@@ -3,6 +3,23 @@
 The orchestrator's workflow tool trio runs against monkeypatched service
 helpers (no Postgres); the gate tests exercise the validator context that
 publish/validate/copilot all pass.
+
+🔧 **RE-CUT 2026-08-25 (D52 repair round 1, board WS-39 S1).**
+`test_destructive_registry_names_clickup_write` asserted
+``"clickup.create_task" in destructive_action_names()``. D52 deleted that
+`WorkflowToolSpec` — it was the registry's ONLY `destructive=True` entry — so
+the case had been RED on this branch since the excision. It is replaced by a
+test of the helper's DERIVATION (does it read `spec.destructive`?), which is
+what actually needs fencing and which outlives any particular tool. The claim
+about the registry's current CONTENTS lives in
+`tests/unit/test_no_task_provider_connectors.py::
+test_the_workflow_registry_has_no_destructive_tool` — a tripwire, expected to
+go red when the next destructive tool lands.
+
+⚠️ The three gate tests below were never affected: `validate_graph` takes
+`destructive_actions` as an ARGUMENT, so their action name is an arbitrary
+string the validator never resolves. It has been renamed off the retired tool
+so the file stops implying that tool exists.
 """
 
 from __future__ import annotations
@@ -33,7 +50,7 @@ def _edge(src: str, tgt: str) -> dict:
 def _write_graph(with_approval: bool) -> dict:
     nodes = [
         _node("start", "trigger"),
-        _node("write", "tool", {"action": "clickup.create_task", "args": {}}),
+        _node("write", "tool", {"action": "demo.write", "args": {}}),
     ]
     edges = [_edge("start", "write")]
     if with_approval:
@@ -42,15 +59,40 @@ def _write_graph(with_approval: bool) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def test_destructive_registry_names_clickup_write() -> None:
-    assert "clickup.create_task" in destructive_action_names()
-    assert "notify.activity" not in destructive_action_names()
+def test_destructive_names_are_derived_from_the_specs_own_flag() -> None:
+    """`destructive_action_names()` reads `spec.destructive`, not a hand-kept
+    list — proven by REGISTERING one of each and watching the answer follow.
+
+    That derivation is what the publish gate's refusal set depends on. Asserting
+    a particular tool's presence (as this case did for `clickup.create_task`
+    until D52 deleted it) fences the catalog, not the helper — and goes red the
+    day the catalog legitimately changes.
+    """
+    from gateway.routes.workflows import tools as wf_tools
+
+    before = destructive_action_names()
+    added = []
+    for action, destructive in (("demo.write", True), ("demo.read", False)):
+        wf_tools.register_tool(wf_tools.WorkflowToolSpec(
+            action=action, label=action, description="", integration=None,
+            read_only=not destructive, destructive=destructive,
+            open_world=False,
+        ))
+        added.append(action)
+    try:
+        names = destructive_action_names()
+        assert "demo.write" in names
+        assert "demo.read" not in names
+    finally:
+        for action in added:
+            wf_tools._TOOL_REGISTRY.pop(action, None)
+    assert destructive_action_names() == before
 
 
 def test_write_without_approval_blocks() -> None:
     issues = validate_graph(
         _write_graph(with_approval=False),
-        destructive_actions={"clickup.create_task"},
+        destructive_actions={"demo.write"},
     )
     assert any(i.code == "write_without_approval" and i.node_id == "write" for i in issues)
 
@@ -58,7 +100,7 @@ def test_write_without_approval_blocks() -> None:
 def test_write_with_approval_upstream_passes() -> None:
     issues = validate_graph(
         _write_graph(with_approval=True),
-        destructive_actions={"clickup.create_task"},
+        destructive_actions={"demo.write"},
     )
     assert not any(i.code == "write_without_approval" for i in issues)
 
