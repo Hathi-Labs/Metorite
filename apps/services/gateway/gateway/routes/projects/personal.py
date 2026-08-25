@@ -39,11 +39,14 @@ from gateway.routes.projects.core import (
     ListResponse,
     Page,
     TaskModel,
+    _bindable,
+    _placeholder,
     _tenant_session,
     actor,
     clean_payload,
     coerce_write_values,
     emit,
+    from_jsonb,
     insert_row,
     load_default_status,
     load_visible_task,
@@ -100,6 +103,33 @@ class PersonalIn(BaseModel):
     is_hard_date: bool | None = None
     actual_start: str | None = None
     actual_end: str | None = None
+
+    # ── the prioritisation matrix (migration 188) ───────────────────────────
+    #: The Eisenhower IMPORTANT axis. ⚠️ Not `pm_tasks.importance`, which is the
+    #: shared per-task Priority integer the Projects table edits — see 188's
+    #: header. `urgent` is the other axis and is deliberately absent: it is
+    #: DERIVED from `due_at`, never stored, so accepting it here would create a
+    #: second answer to a question the deadline already answers.
+    important: bool | None = None
+    leveraged: bool | None = None
+    deep_work: bool | None = None
+    kept_mine: bool | None = None
+
+    #: Manual drag rank in this member's own list. Float so a drop between two
+    #: neighbours takes the midpoint instead of renumbering everything after it.
+    sort_key: float | None = None
+
+    # ── Waiting-For (migration 188) ─────────────────────────────────────────
+    #: {name, email} of whoever the work is with, or null to clear.
+    #: ⚠️ 188 CHECKs that `waiting_on IS NULL OR delegated_at IS NOT NULL` — a
+    #: chase with no since-when renders with no age — so `set_personal`
+    #: validates the MERGED pair before writing, exactly as the block does.
+    waiting_on: dict | None = None
+    delegated_at: str | None = None
+    expected_by: str | None = None
+    #: Set by the nudge SENDER, which is owner-gated and unbuilt. Accepted here
+    #: so the field is not forgotten when it ships; nothing writes it today.
+    last_nudged_at: str | None = None
 
 
 class CaptureIn(BaseModel):
@@ -300,20 +330,28 @@ async def _upsert_personal(
     columns = ["task_id", "member_email", *values]
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in values)
     # `pm_task_personal` has a COMPOSITE key, so the shared `update_row` helper
-    # — which keys on `id` — cannot serve it; this upsert is written out. The
-    # values still go through the shared coercion so an ISO `defer_until`
-    # becomes a real instant.
-    bound = coerce_write_values(values)
+    # — which keys on `id` — cannot serve it; this upsert is written out.
+    #
+    # ⚠️ The placeholders and the binds go through the SHARED helpers rather
+    # than being spelled inline, and migration 188 is why. This function used to
+    # emit a bare `:{column}` for every value and bind through
+    # `coerce_write_values`, which is correct for exactly as long as the overlay
+    # holds no jsonb. `waiting_on` is jsonb, and it needs BOTH halves that the
+    # inline form skips: `_placeholder` adds the `CAST(... AS jsonb)` without
+    # which Postgres refuses to bind text to jsonb, and `_bindable` runs the
+    # `json.dumps` without which a bare dict reaches asyncpg, which has no codec
+    # for it. Using the seam means the next jsonb column on this table needs no
+    # change here at all — which is the point of there being one seam.
     return (await db.execute(
         text(
             f"INSERT INTO pm_task_personal ({', '.join(columns)}) "
             f"VALUES (CAST(:task_id AS uuid), :member_email, "
-            f"{', '.join(f':{c}' for c in values)}) "
+            f"{', '.join(_placeholder(c) for c in values)}) "
             f"ON CONFLICT (task_id, member_email) DO UPDATE "
             f"SET {assignments}, updated_at = now() "
             f"RETURNING *"
         ),
-        {"task_id": task_id, "member_email": email, **bound},
+        {"task_id": task_id, "member_email": email, **_bindable(values)},
     )).fetchone()
 
 
@@ -381,6 +419,51 @@ async def _reject_impossible_block(
         )
 
 
+async def _reject_waiting_without_since(
+    db: Any, task_id: str, email: str, values: dict[str, Any],
+) -> None:
+    """422 when the overlay would say "waiting on somebody" since never.
+
+    Mirrors migration 188's `pm_task_personal_waiting_since_check` over the
+    MERGED row, for the same reason `_reject_impossible_block` does: a PATCH is
+    partial, so whether `{"waiting_on": {...}}` alone is legal depends on
+    whether a `delegated_at` is ALREADY STORED. Judged on the payload alone it
+    would reach the constraint and surface as a 500 — the API blaming itself for
+    the caller's omission.
+
+    The rule is not bookkeeping. The Waiting-For view's whole job is
+    who / what / **since when** (`task_manager_app.md` §6), and a row without
+    the since-when renders as a chase with no age — which is precisely the
+    column a person scans to decide whether to nudge.
+    """
+    keys = ("waiting_on", "delegated_at")
+    if not any(k in values for k in keys):
+        return
+    stored = (await db.execute(
+        text(
+            "SELECT waiting_on, delegated_at FROM pm_task_personal "
+            "WHERE task_id = CAST(:task_id AS uuid) AND lower(member_email) = :who"
+        ),
+        {"task_id": task_id, "who": email},
+    )).fetchone()
+
+    merged = coerce_write_values({k: values[k] for k in keys if k in values})
+    who = merged.get("waiting_on", getattr(stored, "waiting_on", None))
+    since = merged.get("delegated_at", getattr(stored, "delegated_at", None))
+
+    # Clearing `waiting_on` is always legal — that is how a delegation resolves,
+    # and it must not be blocked by the absence of a date it is removing.
+    if who is not None and since is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "delegated_at is required when waiting_on is set — the "
+                "Waiting-For list is who / what / since-when, and a row with "
+                "no since-when has no age to scan."
+            ),
+        )
+
+
 @router.patch("/tasks/{task_id}/personal")
 async def set_personal(
     task_id: str, payload: PersonalIn,
@@ -426,6 +509,7 @@ async def set_personal(
         # So the merged pair is what is checked. One extra read on a write path,
         # in exchange for the API telling the truth about whose fault it is.
         await _reject_impossible_block(db, task_id, email, values)
+        await _reject_waiting_without_since(db, task_id, email, values)
 
         # Triage is recorded even when nothing changed: "when did I last look at
         # this" is the Weekly Review's question, and a no-op PATCH is still a
@@ -462,7 +546,78 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         "is_hard_date": getattr(row, "is_hard_date", None),
         "actual_start": _iso(row, "actual_start"),
         "actual_end": _iso(row, "actual_end"),
+        # ── The matrix + rank (188). Same tri-state rule as `flexible` above:
+        # never `bool()`-ed, because "has not triaged" and "decided: not
+        # important" are different answers and only one of them should be
+        # nudged.
+        "important": getattr(row, "important", None),
+        "leveraged": getattr(row, "leveraged", None),
+        "deep_work": getattr(row, "deep_work", None),
+        "kept_mine": getattr(row, "kept_mine", None),
+        "sort_key": getattr(row, "sort_key", None),
+        # ── Waiting-For (188). `waiting_on` goes through `from_jsonb` because
+        # bare `text()` over asyncpg hands jsonb back as a STRING — there is no
+        # declared column type to decode against — and a client typed `dict`
+        # would otherwise receive '{"email": "..."}' as text.
+        "waiting_on": from_jsonb(getattr(row, "waiting_on", None)),
+        "delegated_at": _iso(row, "delegated_at"),
+        "expected_by": _iso(row, "expected_by"),
+        "last_nudged_at": _iso(row, "last_nudged_at"),
+        # Written since 147 (on every triage), projected since now. It was
+        # collecting a real value that no caller could read — the Weekly
+        # Review's "when did I last look at this" had no way to ask.
+        "clarified_at": _iso(row, "clarified_at"),
     }
+
+
+#: Overlay columns that are passed through EXACTLY as stored — tri-state, never
+#: coerced. NULL means "this member has never stated it", which is a different
+#: answer from `false`/`0` and is the one the triage nudge looks for.
+_OVERLAY_PASSTHROUGH = (
+    "next_action", "context", "energy", "time_estimate_mins",
+    "flexible", "is_hard_date",
+    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+)
+
+#: Overlay instants. Rendered ISO-8601, or None.
+_OVERLAY_INSTANTS = (
+    "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+    "defer_until", "delegated_at", "expected_by", "last_nudged_at",
+    "clarified_at",
+)
+
+
+def _apply_overlay(task: dict[str, Any], row: Any) -> None:
+    """Copy THIS member's overlay off a `_MY_TASKS_SQL` row onto the task dict.
+
+    Written as one function because `my_inbox` and `my_calendar` had grown two
+    copies of the same fifteen lines, and the failure mode of that duplication
+    is not hypothetical: it is silent, and it is one-sided. A field added to the
+    list projection but not the calendar projection produces a calendar where
+    that field is simply absent — no error, no 500, just a flag that never
+    arrives — and the hermetic fake agrees, because a fake answers `None` for a
+    column nobody selected. Migration 188 adds nine at once, which is nine
+    chances to make that mistake twice.
+
+    Both callers project the SAME overlay on purpose. The two surfaces disagree
+    about which rows they want — a window versus an inbox — never about what a
+    task looks like once chosen, and one shape means the client needs one mapper
+    rather than two that drift.
+    """
+    for field in _OVERLAY_PASSTHROUGH:
+        task[field] = getattr(row, f"p_{field}", None)
+    for field in _OVERLAY_INSTANTS:
+        value = getattr(row, f"p_{field}", None)
+        task[field] = value.isoformat() if value is not None else None
+    # `is_two_minute` is the one deliberate exception to the tri-state rule: it
+    # is a "did the 2-minute rule fire" marker with no meaningful unset state,
+    # and it read as a plain bool before 188. Kept that way rather than widened
+    # in passing — a wire-shape change is not a free rider on a column add.
+    task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+    # jsonb over bare `text()` arrives as a STRING (no declared column type to
+    # decode against), so a client typed `dict` would otherwise be handed
+    # '{"email": "..."}' as text.
+    task["waiting_on"] = from_jsonb(getattr(row, "p_waiting_on", None))
 
 
 # ── The inbox ───────────────────────────────────────────────────────────────
@@ -494,6 +649,16 @@ SELECT t.*,
        p.is_hard_date       AS p_is_hard_date,
        p.actual_start       AS p_actual_start,
        p.actual_end         AS p_actual_end,
+       p.important          AS p_important,
+       p.leveraged          AS p_leveraged,
+       p.deep_work          AS p_deep_work,
+       p.kept_mine          AS p_kept_mine,
+       p.sort_key           AS p_sort_key,
+       p.waiting_on         AS p_waiting_on,
+       p.delegated_at       AS p_delegated_at,
+       p.expected_by        AS p_expected_by,
+       p.last_nudged_at     AS p_last_nudged_at,
+       p.clarified_at       AS p_clarified_at,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -573,19 +738,7 @@ async def my_inbox(
         # Whether the member has actually triaged it — the Weekly Review reads
         # this, and it is the distinction a stored default would have destroyed.
         task["is_triaged"] = getattr(row, "p_disposition", None) is not None
-        task["next_action"] = getattr(row, "p_next_action", None)
-        task["context"] = getattr(row, "p_context", None)
-        task["energy"] = getattr(row, "p_energy", None)
-        task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
-        # The block, so one read serves both the list and the calendar rather
-        # than the calendar needing a second round trip per task.
-        for field in (
-            "scheduled_start", "scheduled_end", "actual_start", "actual_end",
-        ):
-            value = getattr(row, f"p_{field}", None)
-            task[field] = value.isoformat() if value is not None else None
-        task["flexible"] = getattr(row, "p_flexible", None)
-        task["is_hard_date"] = getattr(row, "p_is_hard_date", None)
+        _apply_overlay(task, row)
         items.append(task)
 
     total = len(items)
@@ -681,17 +834,7 @@ async def my_calendar(
             continue
         task = row_to_dict(row, TaskModel)
         task["disposition"] = effective
-        task["next_action"] = getattr(row, "p_next_action", None)
-        task["context"] = getattr(row, "p_context", None)
-        task["energy"] = getattr(row, "p_energy", None)
-        task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
-        for field in (
-            "scheduled_start", "scheduled_end", "actual_start", "actual_end",
-        ):
-            value = getattr(row, f"p_{field}", None)
-            task[field] = value.isoformat() if value is not None else None
-        task["flexible"] = getattr(row, "p_flexible", None)
-        task["is_hard_date"] = getattr(row, "p_is_hard_date", None)
+        _apply_overlay(task, row)
         items.append(task)
 
     items.sort(key=lambda t: t["scheduled_start"] or "")

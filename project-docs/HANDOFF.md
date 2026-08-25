@@ -478,11 +478,23 @@ line — never reclaim a number by deleting the other entry.
   📌 **The shape of that work, measured:** `tasks/lib/api.ts` is a THIN ADAPTER —
   `mapItem` maps a wire row to `GtdItem` and the 95 KB store above it speaks
   `GtdItem` throughout. So the change concentrates in that mapper, not in the
-  store. Fields with no `pm_*` home yet: `waiting_on`/`expected_by`/
-  `last_nudged_at` (Waiting-For — per-member too, so the overlay is its likely
-  home; WS-18 owns the semantics) and the `leveraged`/`deep_work`/`kept_mine`
-  focus flags. Decide those BEFORE writing the mapper, or they become silent
-  data loss at the cutover.
+  store.
+  ✅ **The blocking prerequisite is DISCHARGED (2026-08-25, migration 188,
+  D53.8).** This entry used to end "fields with no `pm_*` home yet ... decide
+  those BEFORE writing the mapper, or they become silent data loss at the
+  cutover". They are decided: `important`, `leveraged`, `deep_work`,
+  `kept_mine`, `sort_key` and the Waiting-For quartet are all on
+  `pm_task_personal`, and `clarified_at` (which existed all along) is now
+  projected. **Every `GtdItem` field has a `pm_*` home** — write the mapper
+  against `_apply_overlay`'s shape, which `my_inbox` and `my_calendar` both
+  emit. ⚠️ Two names that do NOT map to each other: `GtdItem.important` is the
+  overlay boolean, `pm_tasks.importance` is the shared "Priority" integer
+  (D53.8). Mapping one to the other publishes private triage to the whole task.
+  ⚠️ Still genuinely homeless, and both are per-TASK rather than per-member, so
+  neither is an overlay column: `origin` (the capture's provenance —
+  `pm_tasks.source` is the nearest existing fact) and `horizon_id`
+  (**WS-21 owns Horizons**; DO-NOT-DISPATCH stands). Decide `origin` before the
+  mapper touches email-captured tasks.
   📌 **Two findings S2 recorded for S3a to settle:** `CalendarView` hand-filters
   `s.items` while `itemsForView("calendar")` — the canonical selector — has no
   caller; and the shared task store should be promoted out of `app/tasks/lib/`
