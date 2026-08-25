@@ -187,33 +187,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-34 build session
 
 
-### H-1 · Deploy: `main` is many migrations ahead of every box · [OWNER]
-- **Check:** compare `ls infra/postgres/[0-9]*.sql | sort -V | tail -1` against
-  `SELECT max(filename) FROM schema_migrations;` on a box. A gap means still
-  pending. ⚠️ From a clean checkout with no box access an agent can only get the
-  first half — report the gap as unverified rather than closing this.
-  ⚠️ The `[0-9]*` glob and `sort -V` are both load-bearing: a bare `*.sql | tail
-  -1` answers `schema.generated.sql`, which sorts after every numbered migration
-  and is not one. That is what the first draft of this Check did.
-  ✅ **The CODE half is now checkable without box access (2026-08-25):**
-  `curl -s https://api.metorite.com/version` returns the commit the box is
-  running; compare with `git rev-parse origin/main`. That does **not** close
-  this entry — it answers which code is running, never whether the schema moved
-  with it, and those come apart precisely when a migration fails and the
-  services restart anyway. But it converts "unverified" into "the box is N
-  commits behind", which is the difference between a guess and a number.
-  ⚠️ `sha: null` means the box could not determine its own version, NOT that it
-  is up to date.
-- **Why:** #437 merged 2026-08-13 and was never deployed; everything since has
-  stacked behind it, and the pile grows every day. **We cannot roll back** (R6),
-  so the longer the gap the more lands at once. Deploy applies migrations before
-  restarting services, so the ORDER is safe — the risk is volume.
-  ⚠️ Deliberately does not name a migration range: a range here would be state,
-  which this file must never restate. It was written as "171–175" for one hour
-  and 176 landed inside it.
-- **Authority:** `work_plan.md` §2 WS-27 row · §6 (deploy is owner-gated)
-- **Added:** 2026-08-14
-
 ### H-2 · Count archived projects on prod BEFORE migration 171 applies · [OWNER]
 - **Check:** `SELECT count(*) FROM pm_projects WHERE status = 'archived';` on
   prod. If 171 has already applied, this number is no longer recoverable this
@@ -322,40 +295,6 @@ line — never reclaim a number by deleting the other entry.
   WS-27 row (the R1-collision record) · R1
 - **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
   push trigger (PR #46); re-pointed at T-6
-
-### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
-- **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
-  `gh workflow list --all` shows the three workflows an agent disabled on
-  2026-08-17 re-enabled (GitHub-side state; re-derive with that command, never
-  from this file). Any one missing → still pending.
-- **Why:** The rest of the original entry was DONE 2026-08-19 and its clauses
-  are deleted rather than ticked (this file's rule): DNS (`app.` · `api.` ·
-  wildcard) resolves, the box serves TLS on a **new** VPS (D44, in flight on
-  the governance branch — the old VPS keeps CommandCenter for demos, so
-  D41.4's "wipe" clause is superseded), both Supabase planes are bootstrapped,
-  the box `.env` carries `ACB_MASTER_KEY`, and Google OAuth signs in. The
-  Entra clause is **suspended by owner direction 2026-08-19** ("leave
-  Microsoft Entra for now") — restore it when an M365 customer needs it, per
-  D41.2's registration shape. Until the secrets + workflows land, every deploy
-  is a hand-run of `deploy/hostinger/deploy.sh` over SSH.
-  ⚠️ **Measured 2026-08-25 — `release` no longer means what `vps_pull.sh` reads
-  it to mean.** `origin/release` sits exactly on `origin/main`, but
-  `gh run list --workflow deploy.yml` is **empty** — the workflow has never run,
-  so `publish-release` did not put it there. Someone fast-forwarded the ref by
-  hand. That is the whole safety argument of pull-based delivery
-  (`specs/deploy_delivery_path.md`): the box applies `release` and NOT `main`
-  precisely so a commit whose tests failed can never reach it, and the box has
-  no GitHub credential with which to check for itself. A hand-pushed `release`
-  is indistinguishable on the box from a CI-gated one. Harmless on this
-  occasion — `main`'s checks are green — but the guarantee is not currently
-  being *produced* by the mechanism that is supposed to produce it, and the
-  failure mode is silent. Re-enabling `deploy` restores it; until then, treat
-  every `release` push as un-gated.
-- **Authority:** `work_plan.md` §6 · D40 · D41 · D44 (in flight) ·
-  `specs/deploy_delivery_path.md` §"Why it polls `release` and NOT `main`"
-- **Added:** 2026-08-16 · updated 2026-08-17, 2026-08-18 · trimmed 2026-08-19
-  (VPS bring-up session: done clauses deleted, Entra suspended) · updated
-  2026-08-25 (the hand-pushed `release` ref)
 
 ### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
 - **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
@@ -468,56 +407,52 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
-### H-33 · WS-39: slice S3a-CLIENT still to build · [AGENT]
-- **Check:** `rg -n "api/tasks" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → any hit means **S3a-client** unbuilt. *(S1, S2 and S3a-SERVER are done —
-  `nav.ts` carries `/calendar`, and migration 187 + `GET /projects/my/calendar`
-  are in.)*
-  ⚠️ **Corrected 2026-08-25 — the first spelling of this Check UNDER-REPORTED
-  and would have closed this entry while the work was untouched.** It grepped
-  `"/api/tasks/items"` across `app/tasks/`, which matches **nothing**: the
-  prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`,
-  `` fetch(`/api/tasks${path}`) ``) and every call site passes a bare
-  `` `/items…` ``. Same defect class as this file's ClickUp-credential entry
-  (H-32) — a Check that cannot see the thing it is asking about answers "done".
-- **Why:** S1, S2 and the SERVER half of S3a landed — `pm_task_personal` can now
-  hold a scheduled block (migration 187, D53.7) and `GET /projects/my/calendar`
-  serves a window. What remains is re-pointing the two UIs onto those endpoints
-  so `gtd_*` writes stop.
-  📌 **The shape of that work, measured:** `tasks/lib/api.ts` is a THIN ADAPTER —
-  `mapItem` maps a wire row to `GtdItem` and the 95 KB store above it speaks
-  `GtdItem` throughout. So the change concentrates in that mapper, not in the
-  store.
-  ✅ **The blocking prerequisite is DISCHARGED (2026-08-25, migration 188,
-  D53.8).** This entry used to end "fields with no `pm_*` home yet ... decide
-  those BEFORE writing the mapper, or they become silent data loss at the
-  cutover". They are decided: `important`, `leveraged`, `deep_work`,
-  `kept_mine`, `sort_key` and the Waiting-For quartet are all on
-  `pm_task_personal`, and `clarified_at` (which existed all along) is now
-  projected. **Every `GtdItem` field has a `pm_*` home** — write the mapper
-  against `_apply_overlay`'s shape, which `my_inbox` and `my_calendar` both
-  emit. ⚠️ Two names that do NOT map to each other: `GtdItem.important` is the
-  overlay boolean, `pm_tasks.importance` is the shared "Priority" integer
-  (D53.8). Mapping one to the other publishes private triage to the whole task.
-  ⚠️ Still genuinely homeless, and both are per-TASK rather than per-member, so
-  neither is an overlay column: `origin` (the capture's provenance —
-  `pm_tasks.source` is the nearest existing fact) and `horizon_id`
-  (**WS-21 owns Horizons**; DO-NOT-DISPATCH stands). Decide `origin` before the
-  mapper touches email-captured tasks.
-  📌 **Two findings S2 recorded for S3a to settle:** `CalendarView` hand-filters
-  `s.items` while `itemsForView("calendar")` — the canonical selector — has no
-  caller; and the shared task store should be promoted out of `app/tasks/lib/`
-  once it is rewritten, so both apps import it from a neutral home rather than
-  Calendar reaching into Tasks' directory.
-  ⚠️ **Read `routes/projects/personal.py` before designing anything** — S3a's server
-  side shipped in 2026-08-06 under D-PM-6, and an agent who starts writing endpoints
-  is building a second one.
+### H-33 · WS-39 S3a-CLIENT slice 2: the tail the lens has not moved · [AGENT]
+- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
+  → **8** means slice 1 only, and slice 2 is unbuilt. When slice 2 lands the
+  count rises and §13.5's own fence — the whole-tree grep for
+  `/api/tasks/items` — exists as a test rather than as this sentence.
+  ⚠️ Do NOT grep for `api/tasks` in `lib/api.ts` and conclude anything: the
+  prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`) and every call
+  site passes a bare `` `/items…` ``. That spelling under-reported once already
+  and would have closed this entry while the work was untouched.
+- **Why:** **Slice 1 landed 2026-08-25** — the flag (`NEXT_PUBLIC_TASKS_LENS`,
+  default OFF), `app/tasks/lib/lens.ts`, and eight spine functions branching to
+  it: `fetchItems`, `apiCapture`, `apiPatchItem`, `apiArchiveItem`,
+  `apiDeleteItem`, `apiRestoreItem`, `apiPurgeItem`, `apiDelegateItem`. The
+  server side gained `GET /projects/my/tasks/{id}`, an `include_archived`
+  window, and the three facts the projection had been dropping on the floor
+  (`is_mine`, `workflow_stage`, `subtask_count`).
+  **What is left is the tail**, and every one of these still writes `gtd_items`
+  when the flag is on — which is exactly why the flag is not flippable yet:
+  `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`, `apiBulkDispose`/
+  `apiBulkArchive`, `apiMergeInto`/`apiFileUnder`, `apiAtomize`,
+  `apiClarifyPropose`, `apiEnrichItem`, `apiSuggestTitle`,
+  `apiBackfillContext`, `apiPlanProject`/`apiApplyPlan`, `apiItemDetail`,
+  `apiItemStageOptions`, `fetchProjects`, `fetchTaskSettings`,
+  `fetchStatusCatalog`, and the `/accounts` · `/spaces` · `/folders` ·
+  `/hierarchy` · `/local-projects` family — which D52 leaves with no
+  destination at all, so decide whether those are **deleted**, not ported.
+  📌 **Three decisions slice 1 deliberately did not take:**
+  (1) `workflow_stage` writes need a status name → `status_id` lookup against
+  the task's own project; `splitPatch` THROWS on it today rather than dropping
+  it, so the to-do fails loudly instead of hiding.
+  (2) `origin` is still homeless and still per-TASK — `pm_tasks.source` is the
+  nearest existing fact. Settle it before the lens touches email-captured
+  tasks, or their provenance is lost at the cutover rather than at a review.
+  (3) `horizonId`: **WS-21 owns Horizons**, DO-NOT-DISPATCH stands.
+  ⚠️ **One behaviour change slice 1 made on purpose, for a reviewer to
+  confirm:** archiving from `/tasks` now inherits the projects guard — an OPEN
+  task cannot be archived (P-3, "the work disappears while still owed"). It
+  could before, because the row was personal. It is not personal any more.
+  ⚠️ **Read `routes/projects/personal.py` before designing anything.** S3a's
+  server side shipped 2026-08-06 under D-PM-6; an agent who reads "make Tasks a
+  lens over Projects" and starts writing endpoints is building a second one.
 - **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
   `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
-- **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25:
-  `main` took H-28 for the mypy entry via PR #46, which merged four hours before
-  PR #91; ids are never reused. Same collision as this file's H-27→H-32 move,
-  and the second in two days — `test_handoff_queue.py` now fences it.)*
+- **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25;
+  ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut
+  2026-08-25 to slice 2, after slice 1 landed.)*
 
 ### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
 - **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.

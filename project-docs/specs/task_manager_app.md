@@ -1188,6 +1188,59 @@ still read live. 188 moved where the column lives; it did not touch what a null 
 `/api/tasks/items` and fails on any hit. Structural, not exemplary — the failure mode
 this defends is *one component left behind*, which an example test cannot see.
 
+### 13.5a S3a-client ships in two slices, and the first one is dark
+
+**Recorded 2026-08-25, after the audit measured the surface.** §13.5's criteria
+are the acceptance for S3a *as a whole* and are unchanged. What changed is the
+delivery: `tasks/lib/api.ts` reaches **more than thirty `/items*` endpoints**,
+so "the UIs re-point" is not one reviewable diff.
+
+| | Slice 1 — **BUILT 2026-08-25** | Slice 2 — H-33 |
+|---|---|---|
+| **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchTaskSettings`, `fetchStatusCatalog` |
+| **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate | organize · bulk · merge/file-under · subtasks · the AI routes · plan/apply |
+| **Retired, not ported** | — | `/accounts` · `/spaces` · `/folders` · `/hierarchy` · `/local-projects` (D52 leaves them with no destination) |
+
+**Slice 1 is behind `NEXT_PUBLIC_TASKS_LENS`, default OFF, and the flag is not
+a nicety.** `gtd_items` still holds every task anybody has captured and the
+backfill that moves them (S3b) is owner-gated and has not run. Flipping the flag
+early would not *break* the app — it would **empty** it, silently and on a 200,
+because the new store answers correctly that it holds none of those rows. So the
+flip is sequenced **with or after S3b**, never before, and it is the owner's act.
+
+⚠️ **Three semantic decisions slice 1 took, each a real change from the app as
+built.** They are recorded here because they are the kind that get "fixed" back
+by somebody who reads only the code:
+
+1. **`disposition: "DONE"` completes the TASK, not just my view of it.** The
+   store marks a task done by patching the disposition. Under one store that
+   would set my lens to done and leave the work open on the company board —
+   which §13.5 criterion 4 forbids in terms. So the lens lifts DONE out of the
+   overlay patch and routes it through `POST /projects/tasks/{id}/complete`,
+   which moves the shared status into the project's done lane.
+2. **The Tasks soft-delete is the TRASH disposition, not `DELETE
+   /projects/tasks/{id}`.** That route is a hard delete that promotes subtasks;
+   mapping a reversible delete onto it would make Undo a button that cannot
+   work. `apiPurgeItem` is the one that reaches it. TRASH being per-member is
+   the right scope: trashing a task assigned to me and to somebody else removes
+   it from **my** list, and theirs is their call.
+3. **Archiving inherits the projects guard.** An OPEN task can no longer be
+   archived from `/tasks` (P-3: the work disappears while still owed). It could
+   before, because `gtd_items.archived_at` was a personal row. It is not
+   personal any more — archiving now hides the task from the company board too —
+   so the guard that protects the board applies to this surface as well.
+
+**Server addendum, in the same slice.** Four things `/projects/my/*` did not
+answer and the lens cannot derive: `assignees` (via the existing
+`attach_assignees` seam), `workflow_stage` (the status NAME — the *id* was
+already on the wire, and no human reads a uuid off a board column),
+`subtask_count`, and `is_mine` — which `_MY_TASKS_SQL` had computed since WS-27e
+and `row_to_dict` had been discarding, because `TaskModel` has no such field.
+The client reads `raw.is_mine ?? true`, so **every task another member owned
+would have rendered as the caller's own.** Plus `GET /projects/my/tasks/{id}`
+(one task in the list's exact shape, read back after a split write) and
+`CaptureIn.notes`.
+
 ### 13.6 Sequencing — and the one ordering mistake to avoid
 
 S3a is the **expand** half of R6: new readers, old tables untouched, nothing dropped.

@@ -6,6 +6,32 @@
 import { GtdItem, GtdProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestResult, Source, ProviderKind, Disposition, TaskAttachment, WorkspaceHierarchySpace } from "./types";
 import type { ClarifyProposal, ClarifyDisposition, Confidence } from "./clarify";
 import type { ConnectedProvider } from "./mockData";
+import {
+  lensArchiveItem,
+  lensCapture,
+  lensDelegateItem,
+  lensEnabled,
+  lensFetchItems,
+  lensPatchItem,
+  lensPurgeItem,
+  lensRestoreItem,
+  lensTrashItem,
+} from "./lens";
+
+// ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
+//
+// Under D53 there is ONE task store and this app is a lens over it. The
+// functions below keep their names and their signatures and simply answer from
+// `pm_*` instead of `gtd_items` once `NEXT_PUBLIC_TASKS_LENS` is on — so the
+// 95 KB store above this file, and its thirty-odd callers, do not change.
+//
+// The branch lives HERE rather than at each call site on purpose: a call site
+// that forgets the branch is a write to the retired store, which succeeds. One
+// seam is checkable; thirty are a search-and-hope.
+//
+// Default OFF. The flag cannot be flipped before the S3b backfill — the new
+// store answers correctly that it holds none of the old rows, so an early flip
+// empties the app rather than breaking it, which is worse.
 
 async function gatewayFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/tasks${path}`, {
@@ -203,6 +229,9 @@ export async function fetchItems(
   view = "all",
   source: "" | "local" | "synced" = "",
 ): Promise<GtdItem[]> {
+  // `source` is not forwarded to the lens: it split LOCAL from SYNCED rows,
+  // and D52 retired the second kind. Every task is ours.
+  if (lensEnabled()) return lensFetchItems(view);
   const qs = source ? `?view=${view}&source=${source}` : `?view=${view}`;
   const rows = await gatewayFetch<Raw[]>(`/items${qs}`);
   return rows.map(mapItem);
@@ -424,6 +453,7 @@ export async function apiCapture(
   attachments?: TaskAttachment[],
   dates?: CaptureDates
 ): Promise<GtdItem> {
+  if (lensEnabled()) return lensCapture(title, notes, attachments, dates);
   return mapItem(
     await gatewayFetch<Raw>(`/items`, {
       method: "POST",
@@ -491,6 +521,7 @@ export async function apiPatchItem(
     expected_by?: string;
   }
 ): Promise<GtdItem> {
+  if (lensEnabled()) return lensPatchItem(id, patch as Record<string, unknown>);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}`, {
       method: "PATCH",
@@ -704,6 +735,7 @@ export async function apiArchiveItem(
   id: string,
   archived: boolean,
 ): Promise<GtdItem> {
+  if (lensEnabled()) return lensArchiveItem(id, archived);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/archive`, {
       method: "POST",
@@ -786,11 +818,13 @@ export async function apiPushItem(id: string): Promise<GtdItem> {
  *  for a lossless undo. Call apiPurgeItem after the undo window to finalize
  *  (and propagate the deletion to ClickUp for synced tasks). */
 export async function apiDeleteItem(id: string): Promise<void> {
+  if (lensEnabled()) return lensTrashItem(id);
   await gatewayFetch<void>(`/items/${id}`, { method: "DELETE" });
 }
 
 /** Undo a soft delete — returns the restored task, exactly as it was. */
 export async function apiRestoreItem(id: string): Promise<GtdItem> {
+  if (lensEnabled()) return lensRestoreItem(id);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/restore`, { method: "POST" })
   );
@@ -799,6 +833,7 @@ export async function apiRestoreItem(id: string): Promise<GtdItem> {
 /** Finalize a soft delete: remove the row and (for a synced task) propagate the
  *  deletion to ClickUp. Idempotent — a row that's already gone is a no-op. */
 export async function apiPurgeItem(id: string): Promise<void> {
+  if (lensEnabled()) return lensPurgeItem(id);
   await gatewayFetch<void>(`/items/${id}/purge`, { method: "POST" });
 }
 
@@ -1569,6 +1604,10 @@ export async function apiDelegateItem(
     due_at?: string;
   },
 ): Promise<GtdItem> {
+  // `account_id` / `project_id` are the connector's parameters (D52) and the
+  // lens has no use for them: delegating is now three writes against one store
+  // — the assignee, my WAITING disposition, and the since-when.
+  if (lensEnabled()) return lensDelegateItem(id, body);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/delegate`, {
       method: "POST",

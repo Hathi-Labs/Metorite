@@ -4,6 +4,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
 **D-PM-6 (revised 2026-08-06)** · ticket WS-27e.
 
     GET   /projects/my/inbox                     → my work, with my overlay
+    GET   /projects/my/tasks/{task_id}           → one of them, same shape
     GET   /projects/my/project                   → my personal project
     POST  /projects/my/project                   → …creating it if absent
     POST  /projects/my/tasks                     → quick capture into it
@@ -59,6 +60,7 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
 )
+from gateway.routes.projects.filters import attach_assignees
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -137,6 +139,13 @@ class CaptureIn(BaseModel):
     next_action: str | None = None
     context: str | None = None
     due_at: str | None = None
+    #: The body of the thought, not just its headline. `pm_tasks.description`
+    #: is where it lands — a fact about the WORK, shared by everyone assigned,
+    #: which is why it is here and not on the overlay. Added for the Tasks
+    #: lens (WS-39 S3a-client): the app has captured notes since it shipped,
+    #: and a capture route that silently dropped them would have lost the
+    #: contents of every emailed-in task on the first page load after cutover.
+    notes: str | None = None
 
 
 # ── The derived disposition ─────────────────────────────────────────────────
@@ -292,6 +301,7 @@ async def capture(
             "task_number": await next_task_number(db, project_id),
             "status_id": str(status.id),
             "title": title,
+            "description": payload.notes,
             "due_at": payload.due_at,
             "created_by": email,
             "source": "manual",
@@ -628,6 +638,16 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
 #: to see; without it, clearing my own name off a private todo would make it
 #: vanish from the only place it exists.
 #:
+#: ⚠️ **``:archived`` is a REQUIRED bind, deliberately.** The archived filter used
+#: to be a literal here, which meant the Archive view had no source at all. It
+#: could have been made optional by defaulting to "active only" — but a caller
+#: who forgets an optional filter leaks archived rows into a live list SILENTLY,
+#: and this SQL is the one place in the app where "everything assigned to me"
+#: is computed. Left as a bind with no default, SQLAlchemy raises
+#: ``StatementError: A value is required for bind parameter 'archived'`` on the
+#: first request — loud, at the seam, before any row is returned. That is the
+#: fence (R7): there is no test to forget, because the query cannot run.
+#:
 #: ⚠️ ``t.organization_id = :vis_org`` is composed ABOVE both arms (WS-29b), for
 #: the same reason as ``me.assigned_to_me``: the first arm reaches tasks by
 #: matching a bare, unvalidated email, so without it another organization can
@@ -659,6 +679,10 @@ SELECT t.*,
        p.expected_by        AS p_expected_by,
        p.last_nudged_at     AS p_last_nudged_at,
        p.clarified_at       AS p_clarified_at,
+       s.name               AS workflow_stage,
+       (SELECT count(*) FROM pm_tasks c
+         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL)
+                            AS subtask_count,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -669,7 +693,7 @@ JOIN pm_task_statuses s ON s.id = t.status_id
 LEFT JOIN pm_task_personal p
        ON p.task_id = t.id AND lower(p.member_email) = :who
 LEFT JOIN pm_projects proj ON proj.id = t.project_id
-WHERE t.archived_at IS NULL
+WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
   AND t.organization_id = CAST(:vis_org AS uuid)
   AND (
         EXISTS (SELECT 1 FROM pm_task_assignees a
@@ -679,6 +703,48 @@ WHERE t.archived_at IS NULL
 """
 
 
+def _project_task(row: Any) -> tuple[dict[str, Any], str]:
+    """One ``_MY_TASKS_SQL`` row → the wire task, plus its EFFECTIVE disposition.
+
+    Extracted for the reason `_apply_overlay` was: there were two copies of
+    this loop body, WS-39 S3a-client needed a third (the single-task read), and
+    the failure mode of the duplication is silent and one-sided — a fact added
+    to the list projection but not the calendar's produces a calendar where
+    that fact is simply absent. No error, no 500, and the hermetic fake agrees,
+    because a fake answers ``None`` for a column nobody selected.
+
+    Three of the four facts set here are NEW to the wire in this slice, and each
+    one was measured absent rather than assumed:
+
+    * ``is_mine`` — computed by the SQL since WS-27e and then dropped on the
+      floor, because ``TaskModel`` has no such field and ``row_to_dict`` copies
+      only model fields. The Tasks client reads ``raw.is_mine ?? true``, so
+      every task another member owns would have rendered as the caller's own.
+    * ``workflow_stage`` — the team's board column (§13.4a). The status *id* was
+      on the wire; the NAME, which is the only part a human reads, was not.
+    * ``subtask_count`` — the roll-up badge. Counted over non-archived children
+      so archiving a subtask decrements it, which is what the badge claims.
+
+    ``is_triaged`` was already on the inbox's wire and is now on all three, for
+    the one-shape reason above.
+    """
+    effective = getattr(row, "p_disposition", None) or derive_disposition(
+        status_category=str(getattr(row, "status_category", "") or ""),
+        is_mine=bool(getattr(row, "is_mine", False)),
+        has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
+    )
+    task = row_to_dict(row, TaskModel)
+    task["disposition"] = effective
+    # Whether the member has actually triaged it — the Weekly Review reads this,
+    # and it is the distinction a stored default would have destroyed.
+    task["is_triaged"] = getattr(row, "p_disposition", None) is not None
+    task["is_mine"] = bool(getattr(row, "is_mine", False))
+    task["workflow_stage"] = getattr(row, "workflow_stage", None)
+    task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
+    _apply_overlay(task, row)
+    return task, effective
+
+
 @router.get("/my/inbox")
 async def my_inbox(
     user: UserContext = Depends(get_current_user),
@@ -686,6 +752,7 @@ async def my_inbox(
     context: str | None = None,
     include_deferred: bool = False,
     include_done: bool = False,
+    include_archived: bool = False,
     page: Page = Depends(),
 ) -> ListResponse:
     """My work — the org's tasks and my own, as one list, with my overlay.
@@ -709,7 +776,7 @@ async def my_inbox(
 
     email = actor(user).lower()
     clauses: list[str] = []
-    params: dict[str, Any] = {"who": email}
+    params: dict[str, Any] = {"who": email, "archived": include_archived}
     if not include_deferred:
         # The tickler: a deferred task is not in the inbox until its date.
         clauses.append("(p.defer_until IS NULL OR p.defer_until <= now())")
@@ -718,32 +785,73 @@ async def my_inbox(
         params["context"] = context.strip().lower()
 
     sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses))
+    items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
         params["vis_org"] = await resolve_organization_id(db, email)
         rows = (await db.execute(text(sql), params)).fetchall()
-
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        effective = getattr(row, "p_disposition", None) or derive_disposition(
-            status_category=str(getattr(row, "status_category", "") or ""),
-            is_mine=bool(getattr(row, "is_mine", False)),
-            has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
-        )
-        if not include_done and effective in ("DONE", "TRASH"):
-            continue
-        if disposition is not None and effective != disposition:
-            continue
-        task = row_to_dict(row, TaskModel)
-        task["disposition"] = effective
-        # Whether the member has actually triaged it — the Weekly Review reads
-        # this, and it is the distinction a stored default would have destroyed.
-        task["is_triaged"] = getattr(row, "p_disposition", None) is not None
-        _apply_overlay(task, row)
-        items.append(task)
+        for row in rows:
+            task, effective = _project_task(row)
+            if not include_done and effective in ("DONE", "TRASH"):
+                continue
+            if disposition is not None and effective != disposition:
+                continue
+            items.append(task)
+        # After the filters, not before: the board draws a face on every card,
+        # so this is one extra query for the page rather than N for the rows —
+        # and paying it for rows the filters just dropped is waste.
+        await attach_assignees(db, items)
 
     total = len(items)
     window = items[page.offset : page.offset + page.limit]
     return ListResponse(rows=window, total=total)
+
+
+@router.get("/my/tasks/{task_id}")
+async def my_task(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """One task, in exactly the shape ``/my/inbox`` gives it.
+
+    Spec: ``task_manager_app.md`` §13.5 · **D53** · ticket WS-39 S3a-client.
+
+    **Why this exists.** A `GtdItem` edit is not one write any more. Changing a
+    title touches ``pm_tasks``; changing a disposition touches
+    ``pm_task_personal``; both at once is two requests to two routes that each
+    answer with their own half. The client needs the WHOLE task back — that is
+    what its store holds — and the three ways of getting it are: have the client
+    stitch two partial responses together, widen one of the write routes to
+    return the merge, or read the task back through the projection that already
+    defines what a task looks like to this member. Only the third leaves one
+    definition of the shape.
+
+    ``GET /projects/tasks/{id}`` is NOT that route and must not be mistaken for
+    it: it answers with the task as the PROJECT sees it — no overlay, so no
+    disposition, no context, no block. A member reading their own task through
+    it would find their triage missing and, worse, would find it MISSING rather
+    than refused.
+
+    404 when the task exists but is not mine, which is the same answer as when
+    it does not exist — deliberately. ``_MY_TASKS_SQL`` decides membership, and
+    it is the same clause the list uses, so a task cannot be readable singly and
+    invisible in the list.
+    """
+    email = actor(user).lower()
+    sql = _MY_TASKS_SQL + " AND t.id = CAST(:tid AS uuid)"
+    async with _tenant_session() as db:
+        row = (await db.execute(text(sql), {
+            "who": email,
+            "vis_org": await resolve_organization_id(db, email),
+            # Reachable when archived: the client reads a task back after
+            # archiving it, and a 404 there would look like the task was
+            # destroyed rather than filed.
+            "archived": True,
+            "tid": task_id,
+        })).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such task")
+        task, _ = _project_task(row)
+        await attach_assignees(db, [task])
+        return task
 
 
 @router.get("/my/calendar")
@@ -815,27 +923,25 @@ async def my_calendar(
     sql = _MY_TASKS_SQL + (
         " AND p.scheduled_start >= :start AND p.scheduled_start < :end"
     )
+    items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
         params: dict[str, Any] = {
             "who": email,
             "vis_org": await resolve_organization_id(db, email),
+            # A week never shows archived work. There is no `include_archived`
+            # here on purpose: "show me the archive" is a list question, and a
+            # calendar that could answer it would draw archived tasks over live
+            # ones in the same hour.
+            "archived": False,
             **window,
         }
         rows = (await db.execute(text(sql), params)).fetchall()
-
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        effective = getattr(row, "p_disposition", None) or derive_disposition(
-            status_category=str(getattr(row, "status_category", "") or ""),
-            is_mine=bool(getattr(row, "is_mine", False)),
-            has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
-        )
-        if not include_done and effective in ("DONE", "TRASH"):
-            continue
-        task = row_to_dict(row, TaskModel)
-        task["disposition"] = effective
-        _apply_overlay(task, row)
-        items.append(task)
+        for row in rows:
+            task, effective = _project_task(row)
+            if not include_done and effective in ("DONE", "TRASH"):
+                continue
+            items.append(task)
+        await attach_assignees(db, items)
 
     items.sort(key=lambda t: t["scheduled_start"] or "")
     # Deliberately unpaged: a window is already the bound, and a paged calendar
