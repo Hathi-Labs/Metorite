@@ -14,7 +14,6 @@ import {
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
 import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
-import type { TaskAccount } from "../lib/api";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
@@ -108,10 +107,6 @@ export function ClarifyPanel({
   const people = useTaskStore((s) => s.people);
   const projects = useTaskStore((s) => s.projects);
   const providers = useTaskStore((s) => s.providers);
-  const accounts = useTaskStore((s) => s.accounts);
-  const refreshAccountMembers = useTaskStore((s) => s.refreshAccountMembers);
-  const createWorkspaceProject = useTaskStore((s) => s.createWorkspaceProject);
-  const createWorkspaceFolder = useTaskStore((s) => s.createWorkspaceFolder);
   const localHierarchy = useTaskStore((s) => s.localHierarchy);
   const loadPeople = useTaskStore((s) => s.loadPeople);
   const loadLocalHierarchy = useTaskStore((s) => s.loadLocalHierarchy);
@@ -338,59 +333,25 @@ export function ClarifyPanel({
     ? projects.find((p) => p.id === projectId)
     : undefined;
   const statusesForDest = useMemo(() => providerStatuses(dest, providers), [dest, providers]);
-  const destAccount: TaskAccount | undefined = useMemo(
-    () => (dest.source === "SYNCED"
-      ? accounts.find((a) => a.id === (dest.accountId ?? destEntry(dest, providers)?.id))
-      : undefined),
-    [dest, accounts, providers],
-  );
-
-  // Folder creation follows the destination: a ClickUp dest gets a real
-  // provider folder (space → folder → list), local gets a gtd_folders row.
-  // Shared by both Where picker modes.
+  // ⚠️ `destAccount` is GONE (D52, WS-39 S3a-client slice 4). Every branch
+  // below used to fork on it: a SYNCED destination created a real provider
+  // folder and list, offered the workspace's members as delegates, and cleared
+  // an assignee who had been removed in the tool. There is no tool, so all
+  // three arms were unreachable — and each one carried a `createWorkspace*`
+  // call whose only possible outcome was a 400.
   const createFolderForDest = useCallback(
     async (spaceId: string, name: string) => {
-      if (dest.source === "SYNCED" && destAccount) {
-        await createWorkspaceFolder(destAccount.id, spaceId, name);
-      } else {
-        await createLocalFolder(spaceId, name);
-      }
+      await createLocalFolder(spaceId, name);
     },
-    [dest.source, destAccount, createWorkspaceFolder, createLocalFolder],
+    [createLocalFolder],
   );
 
-  // ── LIVE delegate list ────────────────────────────────────────────────
-  const refreshedAccountsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const aid = destAccount?.id;
-    if (!aid || refreshedAccountsRef.current.has(aid)) return;
-    refreshedAccountsRef.current.add(aid);
-    void refreshAccountMembers(aid);
-  }, [destAccount?.id, refreshAccountMembers]);
-
-  const peopleForDelegate: Person[] = useMemo(() => {
-    if (!destAccount) return people;
-    return destAccount.members.map((m) => {
-      const org = people.find(
-        (op) =>
-          (m.providerUserId && op.providerUserId === m.providerUserId) ||
-          (m.email && op.email && op.email.toLowerCase() === m.email.toLowerCase()) ||
-          op.name.toLowerCase() === m.name.toLowerCase(),
-      );
-      return org ?? m;
-    });
-  }, [destAccount, people]);
-
-  // A picked assignee who is no longer a member (removed in the tool) is
-  // cleared — reset-during-render, keeps the set-state-in-effect lint happy.
-  if (destAccount && assignee) {
-    const still = peopleForDelegate.some(
-      (m) =>
-        (assignee.providerUserId && m.providerUserId === assignee.providerUserId) ||
-        m.name.toLowerCase() === assignee.name.toLowerCase(),
-    );
-    if (!still) setAssignee(null);
-  }
+  // The delegate roster is the DIRECTORY, full stop. It used to be the
+  // destination workspace's member list when there was one, reconciled
+  // against the directory by provider id / email / name — forty lines of
+  // matching that existed only because two systems held two rosters. One
+  // store, one roster.
+  const peopleForDelegate: Person[] = people;
 
   const projectsForDest = useMemo(
     () =>
@@ -494,21 +455,7 @@ export function ClarifyPanel({
     // create the new list/local-project under that space/folder first.
     if (sort === "actionable" && size === "project" && !projectId) {
       const name = newListName.trim() || nextAction.trim() || item.title;
-      if (dest.source === "SYNCED" && targetSpaceId && destAccount) {
-        setCreatingTarget(true);
-        setCreateTargetError(null);
-        try {
-          const created = await createWorkspaceProject(destAccount.id, {
-            name, spaceId: targetSpaceId, folderId: targetFolderId,
-          });
-          setProjectId(created.projectId);
-        } catch (err) {
-          setCreateTargetError(err instanceof Error ? err.message : "Could not create the project");
-          setCreatingTarget(false);
-          return;
-        }
-        setCreatingTarget(false);
-      } else if (dest.source === "LOCAL" && (targetSpaceId || targetFolderId)) {
+      if (targetSpaceId || targetFolderId) {
         setCreatingTarget(true);
         setCreateTargetError(null);
         try {
@@ -534,8 +481,8 @@ export function ClarifyPanel({
       );
       onDone?.();
     }
-  }, [sort, size, projectId, newListName, nextAction, item.id, item.title, dest,
-      targetSpaceId, targetFolderId, destAccount, createWorkspaceProject,
+  }, [sort, size, projectId, newListName, nextAction, item.id, item.title,
+      targetSpaceId, targetFolderId,
       createLocalProject, buildDecision, clarify, onDone, important, leveraged,
       deepWork]);
 
@@ -1227,7 +1174,6 @@ export function ClarifyPanel({
                       {size === "project" ? (
                         <ProjectTargetTree
                           dest={dest}
-                          destAccount={destAccount}
                           localHierarchy={localHierarchy}
                           value={{ spaceId: targetSpaceId, folderId: targetFolderId }}
                           onChange={(v) => { setTargetSpaceId(v.spaceId); setTargetFolderId(v.folderId); }}
@@ -1241,19 +1187,13 @@ export function ClarifyPanel({
                       ) : (
                         <ProjectListTree
                           dest={dest}
-                          destAccount={destAccount}
                           localHierarchy={localHierarchy}
                           projectsForDest={projectsForDest}
                           suggestedId={proposal.projectInferred ? proposal.projectId : undefined}
                           value={projectId}
                           onChange={setProjectId}
                           onCreate={async (spaceId, folderId, name) => {
-                            if (dest.source === "SYNCED" && destAccount) {
-                              const created = await createWorkspaceProject(destAccount.id, { name, spaceId, folderId });
-                              setProjectId(created.projectId);
-                            } else {
-                              await createLocalProject({ outcome: name, spaceId, folderId });
-                            }
+                            await createLocalProject({ outcome: name, spaceId, folderId });
                           }}
                           onCreateFolder={createFolderForDest}
                         />
@@ -1297,9 +1237,8 @@ export function ClarifyPanel({
             {needsProjectForDelegate && (
               <p className="inline-flex items-center gap-1 text-[11px] font-medium text-warning">
                 <AppIcon name="AlertTriangle" className="h-3 w-3 shrink-0" />
-                Pick a {destAccount?.provider === "clickup" ? "ClickUp list" : "list"}{" "}
-                to delegate into — {assignee?.name.split(/\s+/)[0]} needs it in the
-                tool to see it.
+                Pick a project to delegate into — {assignee?.name.split(/\s+/)[0]}{" "}
+                needs to be able to find it.
               </p>
             )}
           </div>
@@ -1717,31 +1656,18 @@ interface TNode {
 
 /** Build one normalized tree from either a ClickUp account's hierarchy or the
  *  LOCAL space/folder/project tables — so both picker modes share one render. */
+// The Where picker's tree.
+//
+// ⚠️ The SYNCED arm was DELETED here (D52, WS-39 S3a-client slice 4). It
+// built the tree out of `destAccount.hierarchy` — the workspace's own
+// space/folder/list shape, cached on `task_accounts.schema_cache` — and
+// reconciled it against local projects by `providerRef`. With no accounts
+// it returned `[]` on every call, so the picker rendered an empty tree for
+// a destination that could not be chosen in the first place.
 function buildTree(
-  dest: Target,
-  destAccount: TaskAccount | undefined,
   localHierarchy: import("../lib/api").LocalHierarchy | null,
   projectsForDest: GtdProject[],
 ): TNode[] {
-  if (dest.source === "SYNCED") {
-    if (!destAccount || !destAccount.hierarchy.length) return [];
-    const byRef = new Map<string, GtdProject>();
-    for (const p of projectsForDest) if (p.providerRef) byRef.set(p.providerRef, p);
-    return destAccount.hierarchy.map((sp) => ({
-      id: sp.id, type: "space" as const, name: sp.name,
-      children: [
-        ...sp.lists.map((l) => ({
-          id: l.id, type: "list" as const, name: l.name, projectId: byRef.get(l.id)?.id,
-        })),
-        ...sp.folders.map((f) => ({
-          id: f.id, type: "folder" as const, name: f.name,
-          children: f.lists.map((l) => ({
-            id: l.id, type: "list" as const, name: l.name, projectId: byRef.get(l.id)?.id,
-          })),
-        })),
-      ],
-    }));
-  }
   if (!localHierarchy) return [];
   const foldersBySpace = new Map<string, typeof localHierarchy.folders>();
   for (const f of localHierarchy.folders) {
@@ -1782,7 +1708,6 @@ const selId = (n: TNode): string | undefined => (n.type === "list" ? n.projectId
  *  (leaf) — the task is created INTO it. Mirrors ClickUp's own navigation. */
 function ProjectListTree({
   dest,
-  destAccount,
   localHierarchy,
   projectsForDest,
   suggestedId,
@@ -1792,7 +1717,6 @@ function ProjectListTree({
   onCreateFolder,
 }: {
   dest: Target;
-  destAccount: TaskAccount | undefined;
   localHierarchy: import("../lib/api").LocalHierarchy | null;
   projectsForDest: GtdProject[];
   suggestedId?: string;
@@ -1802,8 +1726,8 @@ function ProjectListTree({
   onCreateFolder: (spaceId: string, name: string) => Promise<void>;
 }) {
   const tree = useMemo(
-    () => buildTree(dest, destAccount, localHierarchy, projectsForDest),
-    [dest, destAccount, localHierarchy, projectsForDest],
+    () => buildTree(localHierarchy, projectsForDest),
+    [localHierarchy, projectsForDest],
   );
   return (
     <TreePicker
@@ -1824,7 +1748,6 @@ function ProjectListTree({
  *  FOLDER (either is valid) — the new list/local project is created under it. */
 function ProjectTargetTree({
   dest,
-  destAccount,
   localHierarchy,
   value,
   onChange,
@@ -1833,7 +1756,6 @@ function ProjectTargetTree({
   onCreateFolder,
 }: {
   dest: Target;
-  destAccount: TaskAccount | undefined;
   localHierarchy: import("../lib/api").LocalHierarchy | null;
   value: { spaceId?: string; folderId?: string };
   onChange: (v: { spaceId?: string; folderId?: string }) => void;
@@ -1843,8 +1765,8 @@ function ProjectTargetTree({
   onCreateFolder: (spaceId: string, name: string) => Promise<void>;
 }) {
   const tree = useMemo(
-    () => buildTree(dest, destAccount, localHierarchy, []),
-    [dest, destAccount, localHierarchy],
+    () => buildTree(localHierarchy, []),
+    [localHierarchy],
   );
   const selectedId = value.folderId ?? value.spaceId;
   return (

@@ -1195,11 +1195,12 @@ are the acceptance for S3a *as a whole* and are unchanged. What changed is the
 delivery: `tasks/lib/api.ts` reaches **more than thirty `/items*` endpoints**,
 so "the UIs re-point" is not one reviewable diff.
 
-| | Slices 1–3 — **BUILT 2026-08-25** | Slice 4 — H-33 |
+| | Slices 1–4 — **BUILT 2026-08-25** | Slice 5 — H-33 |
 |---|---|---|
 | **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) · **slice 2:** the day planner's four reads, via `/projects/my/calendar/*` | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchStatusCatalog` — **not** `fetchTaskSettings`, whose `gtd_settings` survives (D53.6) |
 | **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate · **slice 3:** the agent apply path and the nightly roll-over sweep, via `TaskSource.apply_blocks` | organize · bulk · merge/file-under · subtasks · the AI routes · `createLocalProject` (writes `gtd_projects`, should write `pm_projects`) |
-| **Retired, not ported** | — | `/accounts` · `/spaces` · `/folders` · `/hierarchy` · `/local-projects` (D52 leaves them with no destination) |
+| **Retired, not ported** | **slice 4:** `/accounts*`, `POST /tasks/sync`, `POST /items/{id}/push`, the workspace/folder/list writes, and `apiCalendarRange` (no callers at all) | — |
+| ⚠️ **NOT retired** | | `/hierarchy` · `/spaces` · `/folders` · `/local-projects` are the **LOCAL** Space→Folder→Project tree, not a connector surface (`routes/tasks/hierarchy.py`: *"SYNCED projects are NOT here"*). They write `gtd_projects`; their destination is `pm_projects`, which nests via `parent_task_id`’s sibling `parent_project_id`. A **port**, and H-33 said otherwise for a day. |
 
 **The lens is behind TWO flags, both default OFF, and they are not a nicety.**
 `NEXT_PUBLIC_TASKS_LENS` is the browser's (build-time); `TASKS_LENS` is the

@@ -15,11 +15,10 @@ import {
   relativeTime,
 } from "../lib/utils";
 import { Disposition, Energy, GtdItem, Person } from "../lib/types";
-import { canPush, hasUpstreamTask, syncBadge } from "../lib/syncState";
+import { syncBadge } from "../lib/syncState";
 import { TaskMeta } from "@/components/TaskMeta";
 import {
   apiItemDetail,
-  apiItemStageOptions,
   type ProviderTaskDetail,
   type TaskComment,
   type TaskSubtask,
@@ -80,7 +79,6 @@ export function ItemDetail({
 } = {}) {
   const items = useTaskStore((s) => s.items);
   const backend = useTaskStore((s) => s.backend);
-  const pushItem = useTaskStore((s) => s.pushItem);
   const selectedItemId = useTaskStore((s) => s.selectedItemId);
 
   const item = selectedItemId
@@ -121,7 +119,6 @@ export function ItemDetail({
         key={item.id}
         item={item}
         backend={backend}
-        pushItem={pushItem}
         onMaximize={onMaximize}
         onClose={onClose}
       />
@@ -150,14 +147,12 @@ function ItemDetailEmpty() {
 export function TaskDetail({
   item,
   backend,
-  pushItem,
   focused,
   onMaximize,
   onClose,
 }: {
   item: GtdItem;
   backend: string;
-  pushItem: (id: string) => Promise<void>;
   /** true when rendered inside the full-page focus overlay (hides the
    *  expand button; wider content handled by the modal wrapper). */
   focused?: boolean;
@@ -171,7 +166,6 @@ export function TaskDetail({
   const projects = useTaskStore((s) => s.projects);
   const contexts = useTaskStore((s) => s.contexts);
   const people = useTaskStore((s) => s.people);
-  const accounts = useTaskStore((s) => s.accounts);
   const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   const updateItem = useTaskStore((s) => s.updateItem);
   const quickDispose = useTaskStore((s) => s.quickDispose);
@@ -197,12 +191,12 @@ export function TaskDetail({
     : undefined;
   const overdue = isOverdue(item);
   const isSynced = item.source === "SYNCED";
-  const account = item.accountId
-    ? accounts.find((a) => a.id === item.accountId)
-    : undefined;
-  // Delegate/assignee options + stage options for a synced task.
-  const memberPeople: Person[] = account?.members?.length ? account.members : people;
-  const stageOptions: string[] = account?.statuses ?? [];
+  // ⚠️ `account` is gone with the connectors (D52, WS-39 S3a-client slice 4),
+  // and with it the two things it fed: the delegate picker's workspace-member
+  // list, and a synced task's stage options. People now come from the
+  // directory alone — which is the correct answer under one store, and worth
+  // saying rather than leaving as an unexplained simplification.
+  const memberPeople: Person[] = people;
   // The local Kanban stage (the workflow-stage axis of My Next Actions). Used to
   // show/change a LOCAL task's stage in the detail — synced tasks show their raw
   // ClickUp status instead (below). setStage handles done/reopen like the card.
@@ -211,27 +205,12 @@ export function TaskDetail({
   const assigneeList: Person[] =
     item.assignees ?? (item.assignee ? [item.assignee] : []);
 
-  // A synced task's stage options are THIS task's own list statuses (a project
-  // usually uses only a few of the workspace's many). Loaded on open; until then
-  // (or if unresolved) we fall back to the account-wide set so the picker still
-  // works. Keyed by item.id at the call site → remounts per task, so no reset.
-  const [taskStages, setTaskStages] = useState<string[] | null>(null);
-  useEffect(() => {
-    // No provider round trip while the task exists only here: staged (`pending`)
-    // or held at the Action Broker (`awaiting_approval`) both mean there is no
-    // upstream task whose list statuses could be read.
-    if (backend !== "live" || !isSynced || !hasUpstreamTask(item.syncState)) return;
-    let live = true;
-    apiItemStageOptions(item.id)
-      .then((s) => { if (live) setTaskStages(s); })
-      .catch(() => { /* keep the fallback */ });
-    return () => { live = false; };
-  }, [item.id, isSynced, item.syncState, backend]);
-  const syncedStageOptions =
-    taskStages && taskStages.length ? taskStages : stageOptions;
-
-  // The sync-lifecycle decisions, all three from the one table (lib/syncState).
-  const pushable = canPush(item.syncState);
+  // The read-only half of the sync lifecycle. `canPush` is deliberately NOT
+  // consulted any more: there is nothing to push to (D52), so the affordance it
+  // gated was a button whose only possible outcome was a 400 — the same class
+  // as S1's deleted Connect and Sync controls. The BADGE stays, because a row
+  // imported before the retirement really is a frozen mirror and saying so is
+  // information, not a control.
   const sync = syncBadge(item.syncState);
 
   const dueValue = item.dueAt ? item.dueAt.slice(0, 10) : "";
@@ -469,22 +448,17 @@ export function TaskDetail({
                 column). Local tasks always show one now, so their stage is
                 visible/changeable here too, not just on the board. */}
             {isSynced ? (
-              syncedStageOptions.length > 0 && (
+              /* A frozen mirror keeps its last known status, READ-ONLY: the
+                 picker's options came from the workspace and there is no
+                 workspace (D52), so offering a change would write a value
+                 nothing can honour. */
+              item.providerStatus ? (
                 <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
-                  display={item.providerStatus
-                    ? <span>{formatStatus(item.providerStatus)}</span>
-                    : null}
+                  display={<span>{formatStatus(item.providerStatus)}</span>}
                 >
-                  {(close) => (
-                    <ChipMenu
-                      options={syncedStageOptions}
-                      active={item.providerStatus}
-                      format={formatStatus}
-                      onPick={(v) => { updateItem(item.id, { providerStatus: v ?? "" }); close(); }}
-                    />
-                  )}
+                  {() => null}
                 </MetaEdit>
-              )
+              ) : null
             ) : (
               stageActions.stages.length > 0 && (
                 <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
@@ -740,43 +714,18 @@ export function TaskDetail({
           </section>
         )}
 
-        {/* Queued at the Action Broker: the push already happened, the outward
-            write is waiting on a human in /actions. Deliberately NO Push button
-            — pushing again would enqueue a second proposal for the same task. */}
-        {sync && !pushable && backend === "live" && (
+        {/* The sync badge a row imported before the retirement still carries.
+            ⚠️ The `!pushable` guard is gone with the push path (D52, WS-39
+            S3a-client slice 4) — nothing is queued at the Action Broker for a
+            connector that no longer exists, so the wording below no longer
+            promises a write that will never happen. */}
+        {sync && backend === "live" && (
           <section className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
             <TaskMeta chips={[sync]} className="text-xs" />
             <p className="mt-1 text-[10px] text-muted-foreground">
-              Queued for approval — it does not exist in{" "}
-              {item.provider ?? "the tool"} yet.
+              Imported from {item.provider ?? "a connected tool"} before
+              workspace sync was retired. Edits stay here.
             </p>
-          </section>
-        )}
-
-        {/* Pending push affordance */}
-        {pushable && backend === "live" && (
-          <section className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-warning">
-                <AppIcon name="Clock" className="h-3.5 w-3.5" />
-                Not yet pushed to {item.provider ?? "the tool"}
-              </span>
-              <Button size="none" radius="keep" layout="inline-flex items-center" type="button" disabled={pushState === "busy"} onClick={async () => {
-                  setPushState("busy");
-                  try {
-                    await pushItem(item.id);
-                    setPushState("idle");
-                  } catch (e) {
-                    setPushState(e instanceof Error ? e.message : "Push failed");
-                  }
-                }} className="gap-1 rounded-md px-2.5 py-1.5 text-[11px]">
-                <AppIcon name="UploadCloud" className="h-3.5 w-3.5" />
-                {pushState === "busy" ? "Pushing…" : "Push now"}
-              </Button>
-            </div>
-            {pushState !== "idle" && pushState !== "busy" && (
-              <p className="mt-1 text-[10px] text-destructive">{pushState}</p>
-            )}
           </section>
         )}
 

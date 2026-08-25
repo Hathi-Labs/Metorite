@@ -2,16 +2,35 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import type { GtdItem, Person } from "../lib/types";
 import { initials } from "../lib/utils";
 
-// Delegating a LOCAL task to a teammate can't stay local — the teammate lives
-// in the PM tool. This dialog picks the destination (workspace + project) and
-// (optionally) re-phrases the ask, then promotes the task to a ClickUp task
-// assigned to that person (store.delegateLocalToClickUp → POST /items/{id}/
-// delegate). Opened when a LOCAL task's assignee is set to someone.
+// Hand a task to a teammate and start the clock on it.
+//
+// ⚠️ **Re-cut 2026-08-25 (D52, WS-39 S3a-client slice 4).** This dialog used to
+// say "delegating a LOCAL task to a teammate can't stay local — the teammate
+// lives in the PM tool", and it asked for a workspace and a ClickUp list before
+// it would submit. Both premises are gone: Metorite IS the PM system of record
+// (D52), and there is one task store, so a teammate can be assigned a task
+// exactly where it already is.
+//
+// That mattered more than a stale comment. With the connectors retired,
+// `accounts` was always empty, so the dialog rendered "Connect a workspace
+// first to delegate tasks" and `canSubmit` could never become true — the
+// Waiting-For flow, which migration 188 exists to hold, had no working entry
+// point at all.
+//
+// What survives is the part that was always the product: WHO has it, WHAT you
+// asked for, and SINCE WHEN. The since-when is written server-side
+// (`delegated_at`), because 188 CHECKs that a chase has an age.
+//
+// ⚠️ `expected_by` is deliberately NOT collected here. It means an EXPLICIT
+// human promise (settled 2026-08-02); left null the overdue line falls back to
+// the task's own `due_at`, read live. A field that quietly defaulted to the due
+// date would invent a promise nobody made and then let it go stale — the exact
+// bug that fix closed at four insert sites.
 export function DelegateDialog({
   item,
   assignee,
@@ -21,35 +40,15 @@ export function DelegateDialog({
   assignee: Person;
   onClose: () => void;
 }) {
-  const accounts = useTaskStore((s) => s.accounts);
-  const projects = useTaskStore((s) => s.projects);
-  const delegate = useTaskStore((s) => s.delegateLocalToClickUp);
+  const delegate = useTaskStore((s) => s.delegateToPerson);
 
-  const [accountId, setAccountId] = useState<string>(
-    accounts[0]?.id ?? "",
-  );
-  const [projectId, setProjectId] = useState<string>("");
   const [nextAction, setNextAction] = useState<string>(
     item.nextAction || item.title,
   );
-  const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const account = accounts.find((a) => a.id === accountId);
-  const projectsForAccount = useMemo(
-    () =>
-      projects.filter(
-        (p) =>
-          p.status === "ACTIVE" &&
-          p.source === "SYNCED" &&
-          p.accountId === accountId &&
-          (!q.trim() || p.outcome.toLowerCase().includes(q.trim().toLowerCase())),
-      ),
-    [projects, accountId, q],
-  );
-
-  const canSubmit = !!accountId && !!projectId && !busy;
+  const canSubmit = !busy;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -58,10 +57,7 @@ export function DelegateDialog({
     try {
       await delegate(item.id, {
         assignee,
-        accountId,
-        projectId,
         nextAction: nextAction.trim() || undefined,
-        status: account?.statuses?.[0],
       });
       onClose();
     } catch (e) {
@@ -93,110 +89,26 @@ export function DelegateDialog({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <p className="mb-3 flex items-start gap-1.5 text-[11px] text-muted-foreground">
-            <Icon name="Cloud" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary/70" />
+            <Icon name="UserCheck" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary/70" />
             <span>
-              A delegated task lives in the PM tool so {assignee.name.split(" ")[0]}{" "}
-              can see it. Pick where it should go.
+              {assignee.name.split(" ")[0]} becomes the owner and this moves to
+              your Waiting-For list. The task itself does not move.
             </span>
           </p>
 
-          {accounts.length === 0 ? (
-            <p className="rounded-md border border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground">
-              Connect a workspace first to delegate tasks.
+          <div>
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              The ask
             </p>
-          ) : (
-            <>
-              {/* Workspace */}
-              {accounts.length > 1 && (
-                <div className="mb-3">
-                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Workspace
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {accounts.map((a) => (
-                      <button
-                        key={a.id}
-                        type="button"
-                        onClick={() => {
-                          setAccountId(a.id);
-                          setProjectId("");
-                        }}
-                        className={[
-                          "tech-transition inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
-                          accountId === a.id
-                            ? "border-primary bg-primary/10 text-primary"
-                            : "border-border text-muted-foreground hover:bg-secondary",
-                        ].join(" ")}
-                      >
-                        <Icon name="Cloud" className="h-3.5 w-3.5" />
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <input
+              value={nextAction}
+              onChange={(e) => setNextAction(e.target.value)}
+              placeholder="What you need them to do…"
+              className="w-full rounded-md border border-border bg-background/60 px-3 py-2 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
+            />
+          </div>
 
-              {/* Project */}
-              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Project
-              </p>
-              {projects.filter((p) => p.accountId === accountId).length > 5 && (
-                <div className="relative mb-1.5">
-                  <Icon name="Search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                    placeholder="Search projects…"
-                    className="w-full rounded-md border border-border bg-background/60 py-1.5 pl-8 pr-3 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-                  />
-                </div>
-              )}
-              <div className="flex max-h-44 flex-col gap-1 overflow-y-auto">
-                {projectsForAccount.length === 0 ? (
-                  <p className="px-1 py-2 text-[11px] text-muted-foreground">
-                    No matching projects in this workspace.
-                  </p>
-                ) : (
-                  projectsForAccount.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setProjectId(p.id)}
-                      className={[
-                        "tech-transition flex w-full items-center gap-2 rounded-md border px-3 py-1.5 text-left text-sm",
-                        projectId === p.id
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border text-foreground hover:bg-secondary",
-                      ].join(" ")}
-                    >
-                      <Icon name="FolderKanban" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{p.outcome}</span>
-                      {projectId === p.id && (
-                        <Icon name="Check" className="h-3.5 w-3.5 shrink-0" />
-                      )}
-                    </button>
-                  ))
-                )}
-              </div>
-
-              {/* The delegated ask */}
-              <div className="mt-3">
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  The ask
-                </p>
-                <input
-                  value={nextAction}
-                  onChange={(e) => setNextAction(e.target.value)}
-                  placeholder="What you need them to do…"
-                  className="w-full rounded-md border border-border bg-background/60 px-3 py-2 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-                />
-              </div>
-
-              {error && (
-                <p className="mt-2 text-[11px] text-destructive">{error}</p>
-              )}
-            </>
-          )}
+          {error && <p className="mt-2 text-[11px] text-destructive">{error}</p>}
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
@@ -211,7 +123,7 @@ export function DelegateDialog({
                 {initials(assignee.name)}
               </span>
             )}
-            Delegate &amp; create in ClickUp
+            Delegate
           </Button>
         </div>
       </div>

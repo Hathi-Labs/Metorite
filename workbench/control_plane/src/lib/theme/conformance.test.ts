@@ -324,7 +324,12 @@ describe("solid controls go through the Button primitive", () => {
    * stating is "this number goes down". New files are covered separately and
    * absolutely below — which is the half that governs work we have not done yet.
    */
-  const SOLID_BUTTON_DEBT = 29;
+  // 29 → 28 on 2026-08-25: WS-39 S3a-client slice 4 deleted the connector
+  // excision's last hand-rolled solid control (DelegateDialog's ClickUp
+  // workspace/project pickers). Lowering the number is part of the change —
+  // this ratchet only holds if a file that got better cannot keep its old
+  // budget for the next regression to spend.
+  const SOLID_BUTTON_DEBT = 28;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};

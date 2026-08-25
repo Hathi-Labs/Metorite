@@ -180,51 +180,6 @@ function mapProject(raw: Raw): GtdProject {
   };
 }
 
-export interface TaskAccount {
-  id: string;
-  provider: string;
-  hierarchy: WorkspaceHierarchySpace[];
-  workspaceId: string;
-  label: string;
-  syncEnabled: boolean;
-  syncStatus: string;
-  syncError?: string;
-  lastSyncedAt?: string;
-  statuses: string[];
-  members: Person[];
-  projectCount: number;
-}
-
-function mapAccount(raw: Raw): TaskAccount {
-  return {
-    hierarchy: Array.isArray(raw.hierarchy) ? (raw.hierarchy as WorkspaceHierarchySpace[]) : [],
-    id: String(raw.id ?? ""),
-    provider: String(raw.provider ?? ""),
-    workspaceId: String(raw.workspace_id ?? ""),
-    label: String(raw.label ?? ""),
-    syncEnabled: Boolean(raw.sync_enabled ?? true),
-    syncStatus: String(raw.sync_status ?? "idle"),
-    syncError: raw.sync_error ? String(raw.sync_error) : undefined,
-    lastSyncedAt: raw.last_synced_at ? String(raw.last_synced_at) : undefined,
-    statuses: Array.isArray(raw.statuses) ? raw.statuses.map(String) : [],
-    members: Array.isArray(raw.members)
-      ? (raw.members.map(asPerson).filter(Boolean) as Person[])
-      : [],
-    projectCount: Number(raw.project_count ?? 0),
-  };
-}
-
-/** Live accounts → the destination entries the Clarify UI renders. */
-export function accountToProviderEntry(a: TaskAccount): ConnectedProvider {
-  return {
-    id: a.id,
-    label: a.label || a.provider,
-    provider: a.provider as ProviderKind,
-    source: "SYNCED",
-    statuses: a.statuses,
-  };
-}
-
 // ── Calls ────────────────────────────────────────────────────────────────────
 
 export async function fetchItems(
@@ -310,12 +265,6 @@ export async function fetchProjects(): Promise<GtdProject[]> {
   return rows.map(mapProject);
 }
 
-export async function fetchAccounts(): Promise<TaskAccount[]> {
-  const rows = await gatewayFetch<Raw[]>(`/accounts`);
-  return rows.map(mapAccount);
-}
-
-/** The org's people (roles/skills/capacity — §6.1), mapped to picker Persons. */
 export async function fetchPeople(): Promise<Person[]> {
   const rows = await gatewayFetch<Raw[]>(`/people`);
   return rows
@@ -544,16 +493,6 @@ export async function apiItemStageOptions(id: string): Promise<string[]> {
 
 /** Items to render on the calendar grid for the window [fromIso, toIso):
  *  scheduled time-blocks + deadline items. See calendar_timeboxing.md. */
-export async function apiCalendarRange(
-  fromIso: string,
-  toIso: string,
-): Promise<GtdItem[]> {
-  const qs = `?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
-  const rows = await gatewayFetch<Raw[]>(`/calendar${qs}`);
-  return rows.map(mapItem);
-}
-
-// ── AI day-planner (Plan my day) ─────────────────────────────────────────────
 export interface PlanDayBlock {
   itemId: string;
   title: string;
@@ -817,10 +756,6 @@ export async function apiAddSubtasks(
   return rows.map(mapItem);
 }
 
-export async function apiPushItem(id: string): Promise<GtdItem> {
-  return mapItem(await gatewayFetch<Raw>(`/items/${id}/push`, { method: "POST" }));
-}
-
 /** Soft-delete: the task vanishes from every view but stays intact server-side
  *  for a lossless undo. Call apiPurgeItem after the undo window to finalize
  *  (and propagate the deletion to ClickUp for synced tasks). */
@@ -850,45 +785,6 @@ export async function apiPurgeItem(id: string): Promise<void> {
 // build a provider before doing anything, and the registry is empty — so each
 // was a request whose only possible answer was 400 "Unknown provider". The
 // gateway routes stay until S3a retires the GTD store that owns them.
-
-export async function apiDeleteAccount(id: string): Promise<void> {
-  await gatewayFetch<void>(`/accounts/${id}`, { method: "DELETE" });
-}
-
-export async function apiRefreshSchema(id: string): Promise<TaskAccount> {
-  return mapAccount(
-    await gatewayFetch<Raw>(`/accounts/${id}/schema/refresh`, { method: "POST" })
-  );
-}
-
-/** LIVE workspace-member pull — the delegate picker's freshness call.
- *  People removed in the tool disappear from the returned account. */
-export async function apiRefreshMembers(id: string): Promise<TaskAccount> {
-  return mapAccount(
-    await gatewayFetch<Raw>(`/accounts/${id}/members/refresh`, { method: "POST" })
-  );
-}
-
-/** Create a NEW project (ClickUp list) under a space/folder — an explicit
- *  user-approved provider write from the picker's "create project" action. */
-export async function apiCreateAccountProject(
-  accountId: string,
-  req: { name: string; spaceId: string; folderId?: string }
-): Promise<{ projectId: string; providerRef: string; name: string }> {
-  const r = await gatewayFetch<Raw>(`/accounts/${accountId}/projects`, {
-    method: "POST",
-    body: JSON.stringify({
-      name: req.name,
-      space_id: req.spaceId,
-      folder_id: req.folderId ?? null,
-    }),
-  });
-  return {
-    projectId: String(r.project_id ?? ""),
-    providerRef: String(r.provider_ref ?? ""),
-    name: String(r.name ?? req.name),
-  };
-}
 
 // ── Local hierarchy (Spaces → Folders → Projects) ───────────────────────────
 
@@ -943,21 +839,6 @@ export async function fetchLocalHierarchy(): Promise<LocalHierarchy> {
 /** Create a NEW provider folder (ClickUp: space → folder → list) under a
  *  space — an explicit user-approved provider write from the picker's
  *  "new folder" action. */
-export async function apiCreateAccountFolder(
-  accountId: string,
-  req: { name: string; spaceId: string }
-): Promise<{ folderId: string; spaceId: string; name: string }> {
-  const r = await gatewayFetch<Raw>(`/accounts/${accountId}/folders`, {
-    method: "POST",
-    body: JSON.stringify({ name: req.name, space_id: req.spaceId }),
-  });
-  return {
-    folderId: String(r.folder_id ?? ""),
-    spaceId: String(r.space_id ?? req.spaceId),
-    name: String(r.name ?? req.name),
-  };
-}
-
 export async function apiCreateSpace(name: string): Promise<LocalSpace> {
   const r = await gatewayFetch<Raw>(`/spaces`, {
     method: "POST",
@@ -1228,45 +1109,6 @@ export async function fetchStatusCatalog(): Promise<StatusCatalog> {
   };
 }
 
-export interface SyncResult {
-  accountId: string;
-  label: string;
-  pulled: number;
-  created: number;
-  updated: number;
-  completed: number;
-  skipped: number;
-  error?: string;
-}
-
-/** Pull existing provider tasks into the GTD mirror (one account, or all). */
-export async function apiSyncTasks(opts?: {
-  accountId?: string;
-  full?: boolean;
-}): Promise<SyncResult[]> {
-  const res = await gatewayFetch<Raw[]>(`/sync`, {
-    method: "POST",
-    body: JSON.stringify({
-      account_id: opts?.accountId ?? null,
-      full: opts?.full ?? false,
-    }),
-  });
-  return (res ?? []).map((r) => ({
-    accountId: String(r.account_id ?? ""),
-    label: String(r.label ?? ""),
-    pulled: Number(r.pulled ?? 0),
-    created: Number(r.created ?? 0),
-    updated: Number(r.updated ?? 0),
-    completed: Number(r.completed ?? 0),
-    skipped: Number(r.skipped ?? 0),
-    error: r.error ? String(r.error) : undefined,
-  }));
-}
-
-/** Server-side AI clarify proposal for one inbox item (§2.2 agent seam).
- *  Richer than the local heuristic: org-knowledge capability matching
- *  (people skills + availability), server project auto-match, and the
- *  destination/stage defaults. Same shape as lib/clarify.ts's proposal. */
 export interface AtomizedItem {
   title: string;
   verdict: "new" | "similar" | "duplicate";
@@ -1600,25 +1442,38 @@ export async function apiBackfillContext(): Promise<{
 
 /** Promote a LOCAL task to a ClickUp task delegated to a teammate — re-homes it
  *  onto the chosen workspace/project and pushes it upstream in one call. */
+/**
+ * Hand a task to a teammate: they own it, it moves to MY Waiting-For, and the
+ * server stamps the since-when.
+ *
+ * ⚠️ The connector parameters are GONE (D52, WS-39 S3a-client slice 4). They
+ * were `account_id`, `project_id`, `status` and the assignee's
+ * `provider_user_id` — a delegation used to mean "promote this into ClickUp
+ * under a list the teammate can see", and there is no ClickUp.
+ *
+ * ⚠️ **The OLD-store branch is a PATCH now, not `POST /items/{id}/delegate`.**
+ * That endpoint builds a provider before it does anything, so with the registry
+ * empty it could only 400 — which nobody had noticed, because the dialog in
+ * front of it required an account and could therefore never submit. Fixing the
+ * dialog would have turned an unreachable endpoint into a reachable failure.
+ * Patching the assignee and disposition does what a delegation actually is on
+ * the retiring store, and keeps the flag-off path working until S3c.
+ */
 export async function apiDelegateItem(
   id: string,
   body: {
-    assignee: { name: string; email?: string; provider_user_id?: string };
-    account_id: string;
-    project_id: string;
+    assignee: { name: string; email?: string };
     next_action?: string;
-    status?: string;
     due_at?: string;
+    expected_by?: string;
   },
 ): Promise<GtdItem> {
-  // `account_id` / `project_id` are the connector's parameters (D52) and the
-  // lens has no use for them: delegating is now three writes against one store
-  // — the assignee, my WAITING disposition, and the since-when.
   if (lensEnabled()) return lensDelegateItem(id, body);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/delegate`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  );
+  return apiPatchItem(id, {
+    assignee: body.assignee,
+    disposition: "WAITING",
+    ...(body.next_action ? { next_action: body.next_action } : {}),
+    ...(body.due_at ? { due_at: body.due_at } : {}),
+    ...(body.expected_by ? { expected_by: body.expected_by } : {}),
+  });
 }
