@@ -193,6 +193,16 @@ class TestTheUnloweredIdiomIsGone:
             ), f"{label} no longer targets (lower(email))"
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """SQL with `--` line comments removed.
+
+    A migration's header is where the WHY lives, so prose in one file routinely
+    names objects another file owns. Matching on raw text conflates "creates
+    this" with "talks about this".
+    """
+    return "\n".join(re.sub(r"--.*$", "", line) for line in sql.splitlines())
+
+
 class TestTheMigrationThatCausedIt:
     def test_the_functional_index_and_the_drop_ship_in_one_migration(self):
         """Found BY CONTENT, never by number (R1).
@@ -202,11 +212,23 @@ class TestTheMigrationThatCausedIt:
         index is also the one dropping the byte-exact constraint — the pair is
         the reason ``(email)`` stopped resolving.
         """
+        # ⚠️ Comments are STRIPPED before matching, and the reason is that this
+        # test failed once on a file that only MENTIONED the index. Migration
+        # 189 (the WS-39 backfill) explains in prose that
+        # `app_user_email_lower_key` is what makes an email resolve to one
+        # person in one organization — which is exactly the kind of note a
+        # later reader needs, and which the un-stripped match read as a second
+        # CREATE. The docstring above already said "the file CREATING the
+        # functional index"; the implementation just did not agree with it.
+        # Banning the NAME would push the next author to explain the invariant
+        # without naming it, which is worse than not explaining it.
         matches = [
             path
             for path in sorted((_ROOT / "infra" / "postgres").glob("*.sql"))
             if re.match(r"^\d+_", path.name)
-            and "app_user_email_lower_key" in path.read_text(encoding="utf-8")
+            and "app_user_email_lower_key" in _strip_sql_comments(
+                path.read_text(encoding="utf-8")
+            )
         ]
         assert len(matches) == 1, (
             f"expected exactly one migration creating app_user_email_lower_key, "
