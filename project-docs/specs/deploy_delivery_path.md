@@ -264,6 +264,52 @@ curl -s -o /dev/null -w '%{http_code}\n' https://app.metorite.com
 gh run list --workflow deploy.yml --limit 10
 ```
 
+### 7.1 `GET /version` — the deployed SHA, from outside the box
+
+**Built 2026-08-25.** This discharges the "SHA-in-`/health`" item the board
+record below has carried since 2026-08-09, as a **separate route** rather than
+inside `/health`: a liveness probe that grows fields is a liveness probe that
+monitoring starts parsing, and `/health` is deliberately minimal.
+
+```bash
+curl -s https://api.metorite.com/version
+# {"sha":"5b1cdcca…","env":"prod"}
+```
+
+Compare against `git rev-parse origin/main` and the answer is one line instead
+of an inference. **Unauthenticated**, matching `/health` — the moment the answer
+is wanted is mid-deploy or mid-incident, often from a machine holding no
+session, and an endpoint that needs a credential then is one that does not get
+used. What it discloses is a hash of a private repository against which there is
+no public changelog.
+
+⚠️ **`sha` is `null`, never a placeholder**, when it cannot be determined.
+"Cannot report a version" and "running a commit called unknown" are different
+facts, and the person reading this output is verifying a deploy.
+
+**Why this route exists at all, recorded because the gap was invisible until it
+bit:** CLAUDE.md §3.8 requires delivery to be verified by evidence and names
+*the deployed SHA* as one of three. That evidence was not obtainable. On
+2026-08-25 the question "is production on the latest code?" was answerable only
+by recognising a known icon bug in a screenshot of the running app — the box
+was serving pre-`3b6d3b42` assets and nothing it exposed could say so. Route
+probing could not substitute: middleware redirects every unauthenticated path to
+`/signin`, so a route that does not exist is indistinguishable from one that
+does.
+
+**It speaks for the frontend too.** The deploy builds the gateway and the
+workbench from one checkout, so one SHA covers both — which is the case that
+matters, since the bug that prompted this was a static asset. A version endpoint
+answering only for the API would have reported "current" while stale icons were
+still being served.
+
+⚠️ **Still missing, and it is the other half of §3.8's evidence:** the migration
+ledger is not exposed anywhere. `SELECT max(filename) FROM schema_migrations` on
+the box remains the only way to confirm migrations actually applied, and it needs
+box access. `/version` proves which code is running; it says nothing about
+whether the schema moved with it. Worth closing before the next large batch —
+there are 19 migrations newer than 170 on `main` as of 2026-08-25.
+
 ---
 
 ## 8. Option A as built

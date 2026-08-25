@@ -12,6 +12,7 @@ from acb_common.db import clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from gateway.build_info import build_sha
 from pydantic import BaseModel
 
 _log = get_logger("gateway")
@@ -518,6 +519,21 @@ async def _prewarm_prompt_cache() -> None:
 PUBLIC_ROUTES: frozenset[str] = frozenset({
     # Liveness. Deliberately says nothing beyond status + env name.
     "/health",
+
+    # Build identity — the commit this box is running. Public for the same
+    # reason /health is, and the reason is the use case rather than the payload:
+    # the moment you need this answer is mid-deploy or mid-incident, often from
+    # a laptop or a CI step holding no credential, and an endpoint you cannot
+    # reach then does not do its job. CLAUDE.md §3.8 requires delivery to be
+    # verified by "the deployed SHA"; a gated endpoint makes that verification
+    # need a session, which is how it stops happening.
+    #
+    # What it discloses is a 40-character hash of a PRIVATE repository. It names
+    # no path, dependency, version number or configuration, and there is no
+    # public changelog to look it up against — so it does not support the
+    # version-fingerprinting attack this kind of endpoint is usually gated to
+    # prevent. Weighed and accepted 2026-08-25.
+    "/version",
 
     # Provider webhook receivers — each verifies its own signature in
     # ingestion/sources/*/webhook.py.
@@ -1339,6 +1355,19 @@ class Health(BaseModel):
     env: str
 
 
+class Version(BaseModel):
+    """The build identity of the running process.
+
+    `sha` is nullable on purpose — see the `/version` route's docstring. It is
+    the commit of the checkout the services were started from, and it speaks
+    for the workbench as well as the gateway because the deploy builds both
+    from that one checkout.
+    """
+
+    sha: str | None
+    env: str
+
+
 def _runtime_checks() -> dict[str, dict]:
     """Validate the GitHub Copilot SDK (Tier 1.5) sandbox prerequisites.
 
@@ -1384,6 +1413,39 @@ def _runtime_checks() -> dict[str, dict]:
 @app.get("/health", response_model=Health, tags=["meta"])
 async def health() -> Health:
     return Health(status="ok", env=get_settings().acb_env)
+
+
+@app.get("/version", response_model=Version, tags=["meta"])
+async def version() -> Version:
+    """What code is this box running?
+
+    CLAUDE.md §3.8 requires delivery to be verified by evidence, and names "the
+    deployed SHA" as one of the three. Until this route existed that evidence
+    was **not obtainable from outside the box**: `/health` reports only status
+    and env, and no other route carried a build identity. On 2026-08-25 the
+    question "is production on the latest code?" had to be answered by
+    recognising a known CSS bug in a screenshot.
+
+    Unauthenticated, matching `/health`, and that is a deliberate call rather
+    than an oversight. A commit SHA is not a secret — the repository is private,
+    so the hash reveals nothing a reader cannot already see, and it names no
+    path, dependency or configuration. Weighed against that: the one moment you
+    need this answer is mid-incident, from a machine that may hold no
+    credentials, and an endpoint you cannot reach then is an endpoint that does
+    not do its job. `/health` made the same trade for the same reason.
+
+    ⚠️ `sha` is **null**, never a placeholder, when it cannot be determined.
+    "This box cannot report its version" and "this box is running a commit
+    called unknown" are different facts and a caller must be able to tell them
+    apart — which a string like "unknown" quietly prevents.
+
+    Covers the frontend too: the deploy builds the gateway and the workbench
+    from one checkout, so this SHA speaks for both. That matters more than it
+    sounds — the bug that prompted this route was a frontend asset, and a
+    version endpoint speaking only for the API would have reported "current"
+    while stale icons were still being served.
+    """
+    return Version(sha=build_sha(), env=get_settings().acb_env)
 
 
 @app.get("/health/runtime", tags=["meta"])
