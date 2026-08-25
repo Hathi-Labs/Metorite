@@ -114,7 +114,8 @@ EXPECTED_SCOPED = {
     "pm_tasks", "pm_view_task_positions", "pm_views",
 }
 
-#: ⚠️ FROZEN at 114 (113 + the mig-163 mailbox cursor). Every table predating the multi-tenant decision that is
+#: ⚠️ FROZEN at 115 (113 + the mig-163 mailbox cursor + the mig-189 retirement arm, the
+#: only entry here that is a DEPLOYMENT fact rather than pre-tenancy debt). Every table predating the multi-tenant decision that is
 #: neither exempt (a deliberate cross-tenant table — see the generator's
 #: `EXEMPT`) nor blocked (a name collision — see `HOMONYM_BLOCKED`).
 #:
@@ -179,6 +180,16 @@ BASELINE_UNSCOPED = {
     "gtd_horizons", "gtd_items", "gtd_people", "gtd_person_resumes",
     "gtd_projects", "gtd_reviews", "gtd_rollover_log", "gtd_settings",
     "gtd_spaces", "gtd_waiting",
+    # gtd_retirement_arm (migration 189) is UNSCOPED ON PURPOSE, and it is not
+    # the usual pre-tenancy debt the rest of this block records. It holds one
+    # row meaning "a human authorised the gtd_* schema retirement on THIS
+    # database" — a DDL fact, not a tenant fact. `DROP TABLE` is database-wide;
+    # there is no world in which gtd_items is dropped for one organization and
+    # kept for another, so an organization_id on it would be a column that can
+    # only ever be wrong: it would invite a per-tenant arming that the thing it
+    # guards cannot honour. Read by migration 190's guard, which runs as the
+    # database owner outside RLS. See work_plan.md §6 (f) and D53.5.
+    "gtd_retirement_arm",
 # live_*
     "live_session",
 # meeting_*
@@ -405,6 +416,14 @@ def test_the_expected_scoped_set_is_real_not_aspirational() -> None:
 
 
 def test_the_frozen_count_matches_the_baseline() -> None:
-    """The docstring quotes 114. A baseline whose stated size and real size
-    disagree is a baseline nobody trusts."""
-    assert len(BASELINE_UNSCOPED) == 114
+    """The docstring quotes 115. A baseline whose stated size and real size
+    disagree is a baseline nobody trusts.
+
+    ⚠️ This number going UP is normally a regression — it means somebody added
+    an unscoped table. It moved 114 → 115 for `gtd_retirement_arm` (mig 189),
+    which is the one entry here that is not pre-tenancy debt: it records a
+    human authorising a schema DROP on this database, and `DROP TABLE` has no
+    per-tenant form. Raising it for an ordinary new table is not the same act
+    and should be refused.
+    """
+    assert len(BASELINE_UNSCOPED) == 115
