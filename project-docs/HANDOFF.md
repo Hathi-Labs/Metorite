@@ -401,7 +401,7 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
-### H-20 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
+### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
 - **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
   CI still never runs the browser suite. Separately, `rg -n "127.0.0.1" workbench/
   control_plane/playwright.config.ts` → a hit means the hydration trap is back.
