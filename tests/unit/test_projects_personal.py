@@ -836,3 +836,283 @@ async def test_the_calendar_read_is_scoped_to_the_caller(
     assert "_MY_TASKS_SQL" in src
     assert "actor(user)" in src
     assert "resolve_organization_id" in src
+
+
+# ── The overlay's remaining per-member fields (migration 188, S3a-server-2) ──
+
+
+async def test_two_assignees_hold_different_matrix_flags(
+    db: FakeProjectsDB,
+) -> None:
+    """Migration 188's whole argument, and the third time it is the same one.
+
+    Alice thinks this task is her highest-leverage work of the week. Bob, also
+    assigned, has decided it is neither important nor deep — he is reviewing it
+    for ten minutes. Both are correct, because the matrix is a judgement about
+    the judge's own time, not a property of the work. A column on `pm_tasks`
+    would make one of them overwrite the other with no notice, which is exactly
+    what D53.7 was recorded to prevent for the block.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in", "bob@fracktal.in")
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(important=True, leveraged=True, deep_work=True),
+        user=ALICE,
+    )
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(important=False, leveraged=False, deep_work=False),
+        user=BOB,
+    )
+
+    alice = await pm_personal.my_inbox(user=ALICE, page=page())
+    bob = await pm_personal.my_inbox(user=BOB, page=page())
+
+    assert alice.rows[0]["important"] is True
+    assert alice.rows[0]["deep_work"] is True
+    assert bob.rows[0]["important"] is False
+    assert bob.rows[0]["deep_work"] is False
+    # One task, two overlays, no third row anywhere.
+    assert len(db.rows("pm_tasks")) == 1
+    assert len(db.rows("pm_task_personal")) == 2
+
+
+async def test_matrix_flags_are_tri_state_not_booleans(
+    db: FakeProjectsDB,
+) -> None:
+    """`None` is not `False`, and the difference is the whole triage nudge.
+
+    A member who has never opened the matrix and a member who looked and said
+    "not important" are different states. Only the first should be asked. If
+    the reader coerced with `bool()` — which 187's own comment warns about —
+    the two would be indistinguishable on the wire and the nudge would either
+    chase everybody forever or nobody at all.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    # Triaged, but the matrix was never touched.
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=ALICE,
+    )
+    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
+    assert rows[0]["important"] is None, "never stated must not read as False"
+    assert rows[0]["leveraged"] is None
+    assert rows[0]["kept_mine"] is None
+
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(important=False), user=ALICE,
+    )
+    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
+    assert rows[0]["important"] is False, "an explicit no must survive as False"
+
+
+async def test_waiting_for_round_trips_through_the_overlay(
+    db: FakeProjectsDB,
+) -> None:
+    """Who / what / since-when, on one row, with no second table.
+
+    `gtd_waiting` held this as a child table with a `resolved` flag. Every
+    reader in the tree filtered `resolved = false`, so the open record is all
+    that was ever displayed — which is why 188 collapses it onto the overlay.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    result = await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            disposition="WAITING",
+            waiting_on={"name": "Priya", "email": "priya@fracktal.in"},
+            delegated_at="2026-09-01T09:00:00+00:00",
+            expected_by="2026-09-08T17:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+
+    # A dict on the way out, never the '{"email": ...}' STRING that bare
+    # `text()` over asyncpg hands back for a jsonb column.
+    assert result["waiting_on"] == {"name": "Priya", "email": "priya@fracktal.in"}
+    assert result["delegated_at"].startswith("2026-09-01")
+    assert result["expected_by"].startswith("2026-09-08")
+    # Not yet chased — and that is readable, which is what stops a double-chase.
+    assert result["last_nudged_at"] is None
+
+    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
+    assert rows[0]["waiting_on"]["email"] == "priya@fracktal.in"
+
+
+async def test_waiting_on_without_a_since_when_is_refused(
+    db: FakeProjectsDB,
+) -> None:
+    """422, not 500 — the caller's omission, reported as the caller's.
+
+    Migration 188 CHECKs the pair. Without the route-level merge check the
+    request would reach the constraint and surface as a server fault on an
+    ordinary interaction, which is the same defect `_reject_impossible_block`
+    exists to prevent one field over.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.set_personal(
+            str(task.id),
+            pm_personal.PersonalIn(waiting_on={"email": "priya@fracktal.in"}),
+            user=ALICE,
+        )
+    assert caught.value.status_code == 422
+    assert "delegated_at" in str(caught.value.detail)
+
+
+async def test_a_partial_patch_is_judged_on_the_merged_row(
+    db: FakeProjectsDB,
+) -> None:
+    """The reason the check reads storage instead of only the payload.
+
+    Alice already recorded a `delegated_at`. Re-pointing the delegation at
+    somebody else sends `waiting_on` ALONE — legal, because the since-when is
+    already there. Judged on the payload in isolation it would be a 422, and
+    the member would be told to supply a date the row already has.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            waiting_on={"email": "priya@fracktal.in"},
+            delegated_at="2026-09-01T09:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+    result = await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(waiting_on={"email": "sam@fracktal.in"}),
+        user=ALICE,
+    )
+    assert result["waiting_on"]["email"] == "sam@fracktal.in"
+    assert result["delegated_at"].startswith("2026-09-01")
+
+
+async def test_clearing_waiting_on_is_always_legal(
+    db: FakeProjectsDB,
+) -> None:
+    """A delegation resolving must never be blocked by the date it removes."""
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            waiting_on={"email": "priya@fracktal.in"},
+            delegated_at="2026-09-01T09:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+    result = await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(waiting_on=None), user=ALICE,
+    )
+    assert result["waiting_on"] is None
+
+
+async def test_clarified_at_reaches_the_client(
+    db: FakeProjectsDB,
+) -> None:
+    """It has been WRITTEN since migration 147 and read by nobody.
+
+    `set_personal` stamps it on every triage — "when did I last look at this"
+    is the Weekly Review's question — but it was in neither `_personal_to_dict`
+    nor the inbox projection, so the value accumulated where no caller could
+    reach it. No migration was needed to fix that, which is why 188 does not
+    add the column: it already exists.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    result = await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=ALICE,
+    )
+    assert result["clarified_at"] is not None
+
+    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
+    assert rows[0]["clarified_at"] is not None
+
+
+async def test_every_writable_overlay_field_can_be_read_back(
+    db: FakeProjectsDB,
+) -> None:
+    """Structural fence (R7): the write model and the read model agree.
+
+    The failure this defends is adding a column to `PersonalIn` and forgetting
+    `_personal_to_dict` — a write that succeeds, returns 200, and vanishes. No
+    example test sees it, because an example only asserts the fields its author
+    remembered. This one derives the list from the model itself, so the next
+    field is covered before anybody writes a test for it.
+    """
+    writable = set(pm_personal.PersonalIn.model_fields)
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+
+    result = await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=ALICE,
+    )
+    missing = writable - set(result)
+    assert not missing, (
+        f"PersonalIn accepts {sorted(missing)} but the response cannot report "
+        "them back — a write that succeeds and disappears"
+    )
+
+
+async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
+    db: FakeProjectsDB,
+) -> None:
+    """Structural fence (R7) over the two readers that share `_apply_overlay`.
+
+    They had two hand-maintained copies of the same projection, and the drift
+    is silent and one-sided: a field added to the inbox but not the calendar
+    produces a calendar where that flag never arrives — no error, no 500. The
+    hermetic fake cannot catch it either, since a missing alias answers `None`
+    just as a genuinely unset column does.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            disposition="NEXT",
+            important=True,
+            deep_work=True,
+            scheduled_start="2026-09-01T09:00:00+00:00",
+            scheduled_end="2026-09-01T11:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+
+    inbox = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
+    window = (await pm_personal.my_calendar(
+        start="2026-09-01T00:00:00+00:00",
+        end="2026-09-02T00:00:00+00:00",
+        user=ALICE,
+    )).rows
+    assert inbox and window, "both reads must see the one scheduled task"
+
+    # `is_triaged` is the inbox's own addition and is deliberately not on the
+    # calendar — the window has no inbox to be triaged out of.
+    assert set(inbox[0]) - set(window[0]) == {"is_triaged"}
+    assert not set(window[0]) - set(inbox[0])
+    for field in ("important", "deep_work", "scheduled_start", "clarified_at"):
+        assert inbox[0][field] == window[0][field], (
+            f"`{field}` disagrees between the two readers of one overlay"
+        )

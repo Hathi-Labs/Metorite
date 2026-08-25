@@ -491,6 +491,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset({
     # WS-27l. Same rule, same reason — a bare dict has no asyncpg codec,
     # so it is serialized here and cast in the statement.
     "custom_fields",
+    # The personal overlay's Waiting-For subject, {name, email} (188, WS-39
+    # S3a-server-2). Genuinely nullable — "I am not waiting on anyone" is the
+    # normal state — so it stays OUT of JSONB_OBJECT_COLUMNS below, where an
+    # absent value would read as `{}` and put every task on the Waiting list.
+    "waiting_on",
 })
 
 #: JSONB columns declared ``NOT NULL DEFAULT '{}'``, where absent means an
@@ -519,6 +524,12 @@ TIMESTAMP_COLUMNS: frozenset[str] = frozenset({
     # function's docstring describes — and the hermetic fake would keep agreeing,
     # because a fake stores whatever it is handed (R8).
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+    # The personal overlay's WAITING-FOR instants (188, WS-39 S3a-server-2).
+    # Three more, and the same trap one slice later: `expected_by` is the date
+    # somebody PROMISED the work by, so it is the one the overdue badge and the
+    # nudge scheduler both compare against `now()`. Bound as TEXT it would
+    # neither store nor compare.
+    "delegated_at", "expected_by", "last_nudged_at",
 })
 DATE_COLUMNS: frozenset[str] = frozenset({"start_date"})
 

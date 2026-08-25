@@ -1191,7 +1191,26 @@ class FakeProjectsDB:
                 if all(str(row.get(k)) == str(values.get(k)) for k in keys):
                     updated = "DO UPDATE" in statement.upper()
                     if updated:
-                        row.update({k: v for k, v in values.items() if v is not None})
+                        # ⚠️ Every NAMED column is applied, INCLUDING None.
+                        #
+                        # This filtered `if v is not None` until 2026-08-25, and
+                        # that made the fake disagree with Postgres about the
+                        # one operation nothing else can express: CLEARING a
+                        # field. `SET col = EXCLUDED.col` with a NULL excluded
+                        # value writes NULL; the fake kept the old value and
+                        # returned 200, so "unset my defer date", "cancel this
+                        # block" and "the delegation resolved" all passed their
+                        # tests while doing nothing.
+                        #
+                        # It also contradicted this function's own INSERT path
+                        # thirty lines up, which already documents the rule —
+                        # a named column takes its bound value even when that
+                        # value is None, because Postgres applies a DEFAULT only
+                        # to an OMITTED column. `clean_payload` is built on that
+                        # distinction (`exclude_unset`, deliberately not
+                        # `exclude_none`), so a fake that erases it cannot see
+                        # the difference between "leave it alone" and "clear it".
+                        row.update(values)
                     # DO NOTHING affects nothing, so `rowcount` is 0 — the number
                     # `tags.register` reports as "created".
                     return _Result(
@@ -1518,6 +1537,22 @@ class FakeProjectsDB:
                 p_is_hard_date=mine.get("is_hard_date"),
                 p_actual_start=mine.get("actual_start"),
                 p_actual_end=mine.get("actual_end"),
+                # The matrix, the rank, Waiting-For and the clarified instant
+                # (188, WS-39 S3a-server-2). Same warning as the block above,
+                # and it now covers nine more columns: an omitted alias is not a
+                # missing test, it is a PASSING one — `getattr(row, "p_x", None)`
+                # answers None just as happily for "the member never set it" as
+                # for "this fake has never heard of it".
+                p_important=mine.get("important"),
+                p_leveraged=mine.get("leveraged"),
+                p_deep_work=mine.get("deep_work"),
+                p_kept_mine=mine.get("kept_mine"),
+                p_sort_key=mine.get("sort_key"),
+                p_waiting_on=mine.get("waiting_on"),
+                p_delegated_at=mine.get("delegated_at"),
+                p_expected_by=mine.get("expected_by"),
+                p_last_nudged_at=mine.get("last_nudged_at"),
+                p_clarified_at=mine.get("clarified_at"),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
             ))
