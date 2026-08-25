@@ -1,5 +1,16 @@
 # Task Manager App — Project Plan (GTD philosophy)
 
+> 🔴 **READ §13 FIRST — 2026-08-24, D53/D54 re-cut this spec's premise.**
+> Tasks is **the personal lens over Projects**, not an app with a store of its own.
+> `pm_tasks` + `pm_task_personal` are the store of record; **`gtd_items` and its
+> satellites are retired** (D53). Everything below written against `gtd_*` schema
+> describes the app **as built up to 2026-08-24**, and is the record of what the lens
+> must still be able to do — it is **not** a schema to build against.
+> The **calendar leaves this app** for its own `/calendar` pane (D54); §-references to
+> calendar behaviour now point at `calendar_focus_os.md`.
+> Board row **WS-39**. The ClickUp provider arm is **deleted** (D52) — any phase below
+> that mentions sync, write-back or a connected workspace is superseded.
+
 > **Product:** Metorite · **Feature:** Task Manager App (Getting Things Done) · **Updated:** 2026-08-02 · **Version:** 0.2 (planning — reviewed)
 > **Status:** 🔄 build in progress on `main` — frontend slices 1–2.5 (Shell/Browse, Clarify, Inbox depth) **plus the capture/clarify backend**: migration `48_task_manager_gtd.sql`, the provider interface layer with the **ClickUp connector** (multi-workspace `task_accounts`), the **gateway `/tasks` API**, **`skill-task-gtd` + the rewritten `task-manager` agent**, and the frontend wired live (mock fallback when the gateway is absent). ~~Resume point: Slice 3 — Engage "Now" (F4) · sync-pull of existing provider tasks.~~ **Update 2026-08-01 (doc-truth pass):** that resume point is long past — `POST /tasks/sync` shipped 2026-07-03 (live in `apps/services/gateway/gateway/routes/tasks/sync.py`), `EngageView.tsx` exists, and the AssistantRail went live 2026-07-03. **§9.3 (dev runbook + "Next in line") is the authoritative status section of this doc**; work after it (prioritization matrix, calendar/timeboxing, HR epic, card actions) lives in its own specs.
 > **Update 2026-08-02 (WS-18, Waiting-For surfacing):** §9.1 slice 5 **Waiting-For** is now 🔄 — the *surfacing* half shipped: `ITEM_SELECT` projects `gtd_waiting.expected_by` / `last_nudged_at` (mig-48 columns that five INSERT sites wrote and nothing read), `GtdItemModel` carries them, and the `/tasks` **Waiting For** view is a dedicated surface grouped by WHO, each row rendering who / what / since-when with overdue (past `expected_by`, §6 line 540) and stale (>5 days, the same rule as `GET /tasks/insights`) flags. Predicates live in pure `workbench/control_plane/src/app/tasks/lib/waiting.ts`. The Waiting-For rows drop the flat list's per-row `TaskCard` context menu (Schedule / Change stage / Mark as Done / Eliminate) and its chips in exchange for the who/what/since-when grouping; the focus pane still has the full editor, and Sort is hidden on this view because the grouping re-derives its own order. **No migration** — the substrate has existed since mig 48. Still open in §6 and NOT built: follow-up nudge drafting/sending (owner-gated: real sends) and delegation write-back (blocked on the Action Broker, BO-1). Slices 4 (Weekly Review) and 6 (Plan / Horizons) are unchanged and remain under-specified — `gtd_reviews.summary` is untyped JSONB and `gtd_horizons` has no link column, so both need spec work before dispatch.
@@ -1073,6 +1084,91 @@ wall-clock budget). Also this session: `web_search` is now SerpAPI-first
 - [ ] **Delegate & Monitor**: delegate a task to a teammate, see it on Waiting For, get an overdue flag, and get an agent-drafted follow-up nudge.
 - [ ] Assistant answers "what's my next action?", "what am I waiting on?", and "what's overdue across the team?" with citations to the PM tool.
 ```
+
+## 13. The 2026-08-24 re-cut — Tasks is a lens, not a store (D53 · D54)
+
+**Status:** owner directive 2026-08-24, recorded as **D53** and **D54** in
+`work_plan.md` §3. Board row **WS-39**. Where this section disagrees with anything
+above it, **this section wins**.
+
+### 13.1 What Tasks is now
+
+> *"The tasks app is just the personal view of the company-wide projects. And in
+> addition, the tasks app has personal tasks that are not configured in the projects
+> app because they are specific only to the person."*
+
+Two sentences, two capabilities, **one store**:
+
+1. **My view of company work** — every `pm_task` assigned to me, seen through *my*
+   overlay row in `pm_task_personal`. Not a copy of the project's task. The task.
+2. **My own work, kept to myself** — tasks in my personal `pm_project`, written
+   `visibility = private`. They never appear on a company board unless I move them
+   there, and moving them is a `PATCH`, not an export.
+
+### 13.2 The thing to internalise before touching this app
+
+**Tasks does not own tasks.** It owns a *lens*: disposition, next action, context,
+energy, estimate, defer-until, clarified-at — the GTD practice — and that lens is
+`pm_task_personal`, keyed `(task_id, member_email)`.
+
+Two people assigned one task hold **different** overlays: the doer says `NEXT`, the
+delegator says `WAITING`. That is why the overlay is a table and not a column, and it
+is the single fact that makes "one store" work at all.
+
+### 13.3 What is superseded above
+
+| Above | Fate under D53/D54 |
+|---|---|
+| **§4 / §5 data model** — `gtd_items`, `gtd_projects`, `gtd_spaces`, `gtd_people`, `gtd_waiting`, `gtd_item_assignees`, `gtd_item_subtasks` | **Superseded as a build target.** Kept as the description of the app as built, and as the checklist of behaviour the lens must preserve. |
+| **§6 provider abstraction / ClickUp sync / delegation write-back** | **Deleted** (D52). No provider, no `task_accounts`, no `schema_cache`, no status→stage map. |
+| **§8 `routes/tasks/` endpoints** | **Superseded for task CRUD** — those move to `/projects/my/*` and `/projects/tasks/*`. ⚠️ **NOT superseded for calendar**: `routes/tasks/calendar.py` is real, live, and moves to the Calendar app under D54 rather than being deleted. |
+| **§9 phases** referencing sync, write-back or a connected workspace | Superseded. |
+| **Calendar** anywhere in this spec | Moves to `calendar_focus_os.md` §10 (D54). |
+
+### 13.4 What is NOT superseded, and is the reason this spec survives
+
+The GTD *semantics* — capture → clarify → organise → reflect → engage, the two-minute
+rule, contexts, the Waiting-For explicit-promise rule settled 2026-08-02, the
+disposition vocabulary, Weekly Review — are the product. They are why Tasks exists as
+a distinct surface rather than a saved filter on `/projects`. **None of it changes.**
+It simply reads a different table.
+
+⚠️ In particular the **explicit-promise semantics** closed 2026-08-02 (`expected_by IS
+NULL` ⇒ nobody promised, fall back to the task's own `due_at`, read live) must survive
+the move. It was a *shape* fix, not a storage fix, and re-deriving it is how it gets
+broken again.
+
+### 13.5 Acceptance — WS-39 S3a · AGENT-SAFE
+
+**Done when:**
+
+1. The `/tasks` app issues **no** request to `/api/tasks/items*`. Reads and writes go
+   to `/projects/my/*` and `/projects/tasks/*`.
+2. Nothing in the tree writes `gtd_items`.
+3. A task captured in `/tasks` appears in `/projects` under the caller's personal
+   project **in the same page load** — no sync, no job, no delay.
+4. A task assigned to me in `/projects` appears in my `/tasks` inbox, and completing
+   it in either surface completes it in both, because it is one row.
+5. Two members assigned one task can hold **different** dispositions simultaneously,
+   and neither overwrites the other.
+6. `npx tsc --noEmit && npx vitest run` green in `workbench/control_plane`.
+
+**Fence (R7):** a structural test that greps the `/tasks` app tree for
+`/api/tasks/items` and fails on any hit. Structural, not exemplary — the failure mode
+this defends is *one component left behind*, which an example test cannot see.
+
+### 13.6 Sequencing — and the one ordering mistake to avoid
+
+S3a is the **expand** half of R6: new readers, old tables untouched, nothing dropped.
+The backfill (S3b) and the drop (S3c) are separate releases and both are
+🔴 **OWNER-GATE** (`work_plan.md` §6 (f)).
+
+⚠️ **Do not drop `gtd_settings`, `gtd_day_state` or `gtd_rollover_log` with the rest.**
+They are per-member **calendar** state, they belong to D54's app, and they survive the
+retirement (D53.6). A sweep that deletes everything matching `gtd_*` takes the
+calendar's preferences, day state and roll-over log with it.
+
+---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

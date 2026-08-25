@@ -160,12 +160,43 @@ def test_the_drift_detector_actually_detects_drift() -> None:
     assert _args_read_by(_handler) == {"declared", "sneaky"}
 
 
-def test_a_broker_write_declares_its_target_field() -> None:
+def test_every_broker_write_declares_its_target_field() -> None:
     """`_broker_write` addresses the proposal by one named argument; if that
     argument is not declared, the maker cannot supply it and every proposal
-    would be filed against the action name instead of a real target."""
-    spec = _spec("clickup.create_task")
-    assert "list_id" in spec.args_schema
+    would be filed against the action name instead of a real target.
+
+    ⚠️ **Re-cut 2026-08-24 by D52 (board WS-39 S1).** This asserted the rule
+    against `clickup.create_task`, the only `_broker_write` tool that ever
+    existed, and it went `StopIteration` when D52 deleted it. Rather than pin a
+    second example that does not exist, the check is now **structural**: it
+    walks every registered spec, recovers `target_field` from the handler's
+    closure, and holds each one to its own schema.
+
+    **It is vacuous today, and it says so out loud below** rather than passing
+    quietly — `_broker_write` currently has ZERO callers. The count assertion is
+    what makes the vacuum visible: add a broker-write tool and this test starts
+    doing real work on it automatically, and the reminder stops being true.
+    """
+    checked = 0
+    for spec in ALL_SPECS:
+        cells = getattr(spec.handler, "__closure__", None) or ()
+        names = getattr(spec.handler, "__code__", None)
+        free = getattr(names, "co_freevars", ()) if names else ()
+        bound = dict(zip(free, (c.cell_contents for c in cells)))
+        if "target_field" not in bound:
+            continue
+        checked += 1
+        assert bound["target_field"] in spec.args_schema, (
+            f"{spec.action}: _broker_write targets {bound['target_field']!r} "
+            "but the args_schema does not declare it, so a maker cannot supply "
+            "it and every proposal would be filed against the action name."
+        )
+
+    assert checked == 0, (
+        f"{checked} _broker_write tool(s) are registered — good, the rule above "
+        "now has real subjects. Delete this reminder assertion; it exists only "
+        "to make the post-D52 vacuum visible instead of silently green."
+    )
 
 
 # ── The gate: what check_args accepts and rejects ───────────────────────────

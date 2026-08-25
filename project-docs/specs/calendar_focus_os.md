@@ -1,5 +1,18 @@
 # Calendar → Focus OS — evaluation & redesign brainstorm
 
+> 🔴 **READ §10 FIRST — 2026-08-24, D54 gives Calendar its own app.**
+> The calendar stops being a view inside `/tasks` and becomes **`/calendar`**, a
+> top-level `live` pane in the **Personal Center** section. Board row **WS-39**.
+>
+> 🔴 **AND A CORRECTION THIS SPEC'S FAMILY HAS BEEN CARRYING:** measured
+> 2026-08-24, **`gtd_time_blocks` does not exist and `calendar_accounts` does not
+> exist** — there is no `CREATE TABLE` for either anywhere in `infra/postgres/`.
+> `calendar_timeboxing.md` §13 P4 and `work_plan.md`'s WS-21 row both cite them as
+> if built. What the calendar actually persists to is **`gtd_items` directly**
+> (scheduling is fields on the task row) plus `gtd_settings`, `gtd_day_state` and
+> `gtd_rollover_log`. Any plan that begins "move the calendar's tables" is built on
+> a table that was never created. See §10.3.
+
 Status: **F0 + F1 BUILT** (2026-07-22, branch
 `claude/calendar-productivity-redesign-rdh50k`) — **verified against code on
 2026-08-03**: leverage lens + One Thing +
@@ -725,6 +738,142 @@ filter); `test_email_calendar_context.py` = the email-side calendar context;
   between focus_os and timeboxing is clean (§5 here is canonical for
   `gtd_time_blocks`; `calendar_timeboxing.md` §13 is canonical for P4); the other
   two docs are unregistered.
+
+## 10. Calendar becomes its own app (D54) — 2026-08-24
+
+**Status:** owner directive 2026-08-24, recorded as **D54** in `work_plan.md` §3.
+Board row **WS-39**, slice **S2**. This section owns *where the calendar lives*;
+everything above it still owns *what the calendar does*.
+
+### 10.1 What the owner asked for
+
+> *"It might make sense to also remove calendar from the tasks app and make it into
+> an app by itself under personal center."*
+
+### 10.2 The change, precisely
+
+| | Before | After |
+|---|---|---|
+| Route | ⚠️ **none** — a `ViewKey` inside `/tasks` | **`/calendar`**, a real route |
+| Nav | a row in the Tasks sidebar | a pane in **Personal Center** (`src/lib/nav.ts`) |
+| Gate | `feature:tasks` | **`feature:tasks`** — unchanged, see below |
+| Launch status | live by inheritance | **`live`**, explicitly |
+| Owner of behaviour | WS-21 | **still WS-21** |
+
+⚠️ **Correction, measured while building S2:** this section first said the route
+was `/tasks/calendar`. **There was no such route.** The calendar was a *view
+mode* — `selectedView === "calendar"`, a `ViewKey` in the shared task store,
+rendered full-width by `tasks/page.tsx`. That is why the move is a genuine
+extraction rather than a rename, and why `ViewKey` still carries a `"calendar"`
+member that nothing can select (its `itemsForView` and `viewQuickAdd` rules are
+still real; the member is annotated in `tasks/lib/types.ts`).
+
+🔴 **The gate stays `feature:tasks`, and this reverses what D54.1 first said.**
+A new `feature:calendar` slug is **a grant nobody holds**. Minting one would
+ship this app **dark to every existing member**, and un-darkening it is an
+owner-gated role write (`work_plan.md` §6, the WS-24 (d) class) *on top of* a
+migration that has to reach a box first — and H-1 records that `main` is many
+migrations ahead of every box. Riding the grant that already covers this
+surface keeps reachability exactly as it is today: the calendar lived inside
+Tasks, so everyone holding `feature:tasks` already had it. Minting
+`feature:calendar` is a later, deliberate act that must ship **with** its grant
+migration, not before it.
+
+**It ships `live`, and the count fence moves with it.** `launch_surface.md` §2's live
+set goes **8 → 9** and `nav.test.ts`'s assertion is updated in the same PR. That fence
+exists so a pane cannot be added without someone deciding its launch status — so this
+is a deliberate edit, not a test that broke. Shipping it `preview` was considered and
+rejected: the calendar is reachable today inside a live app, so `preview` would
+*withdraw* a capability customers already have.
+
+**"Personal Center" is D49's section label**, not a Center projection. D49 withdrew
+the Centers surface; `lib/centers.ts`, the `center.*` features and the `group:<slug>`
+vocabulary are untouched.
+
+### 10.3 ⚠️ The measurement that changes the plan
+
+`routes/tasks/calendar.py` (68 KB, live) reads and writes:
+
+| Table | Role | Fate |
+|---|---|---|
+| `gtd_items` | **the tasks themselves** — scheduling is fields on the task row | ⚠️ **re-points to `pm_tasks`** when D53's S3a lands |
+| `gtd_settings` | per-member calendar preferences (migrations 77, 78) | **survives** D53's retirement (D53.6) |
+| `gtd_day_state` | per-member day state | **survives** |
+| `gtd_rollover_log` | roll-over audit (migration 78) | **survives** |
+
+So the calendar is a **third lens on the same rows** — Projects is the company board,
+Tasks is my list, Calendar is my time — and not a separate system with a store to
+move. Its own three tables do not move at all.
+
+**This is why S2 is sequenced before S3a and does not touch the store.** Extracting
+the surface is a route + registry change with no data semantics; re-pointing the task
+reads is a store change. Landing them in one diff would put a nav edit and a store
+migration in the same review.
+
+### 10.4 Scope — personal, and deliberately so
+
+**In:** my time blocks, my scheduled work, my day plan / roll-over / shutdown ritual,
+my connected external calendars (when the OAuth gate below is opened).
+
+**Out, explicitly:** Center-wide and company calendars. They require a model for whose
+blocks are legible to whom, which is a new owner decision and not an extension of D54.
+Naming them out here so the next agent does not read "Calendar app" as "all calendars".
+
+### 10.5 What does NOT change
+
+F0/F1 as built, the leverage lens, One Thing, Gap Filler, the Startup and Shutdown
+rituals, Focus Mode, the packer and its breaks, P3 roll-over, ideal week — all of it
+is behaviour, all of it stays, and **WS-21 keeps owning it** (D54.6). Horizons remains
+WS-21's per `work_plan.md` §4 and remains DO-NOT-DISPATCH: it still has no acceptance.
+
+**External sync stays 🔴 OWNER-GATE** — Google Calendar / Microsoft Graph OAuth client
+credentials provisioned on the box and registered in the Integration Registry. D54
+does not touch that gate, and giving the calendar its own front door does not open it.
+
+### 10.6 Acceptance — WS-39 S2 · AGENT-SAFE
+
+**Done when:** ✅ **ALL MET — BUILT 2026-08-24.**
+
+1. ✅ `/calendar` renders the calendar surface as a real route (`next build`
+   emits `○ /calendar`), and the surface is **no longer reachable inside
+   `/tasks`** — `tasks/page.tsx` contains no `CalendarView` and no
+   `selectedView === "calendar"` branch. *(Amended: there was never a
+   `/tasks/calendar` route to retire — see §10.2's correction. Nothing to
+   redirect.)*
+2. ✅ `src/lib/nav.ts` carries a Personal Center pane for `/calendar` with
+   `launch: "live"`. *(Amended: gate is `feature:tasks`, per §10.2 — a new slug
+   would ship the app dark.)*
+3. ✅ `nav.test.ts` asserts the live set is exactly **nine** `(section, href)`
+   pairs, and `launch_surface.md` §2's table lists the ninth row.
+4. ✅ **The dependency runs one way.** Tasks imports nothing from
+   `app/calendar/`; Calendar imports Tasks' shared **lib and store** plus
+   exactly the four store-driven overlays it raises.
+   ⚠️ **This clause was CORRECTED during the build.** It first read "the
+   calendar components no longer import from `src/app/tasks/`", which was
+   written before the coupling was measured and is **wrong**: satisfying it
+   would mean either duplicating a 95 KB store — the CLAUDE.md §5 defect, and
+   the re-introduction of exactly the sync D53 removes — or promoting it days
+   before S3a rewrites it. Sharing the store is the *point* of D53; what must
+   not happen is the dependency pointing back. The asymmetric rule is what is
+   fenced.
+   *(One real violation was found and fixed: `FocusMode`, which `AppShell`
+   mounts **globally**, imported `fmtClock` from the calendar's `shared.ts`.
+   `fmtClock` was promoted to `app/tasks/lib/utils.ts` and re-exported, so the
+   five calendar call sites kept their path and no second definition exists.)*
+5. ~~`feature:calendar` exists as a grantable feature and `/access` reports
+   it.~~ **STRUCK** — §10.2: no new slug is minted, so there is nothing for
+   `/access` to report that it does not already report for `feature:tasks`.
+6. ✅ `npx tsc --noEmit` clean · `npx vitest run` **2553/2553** · `next build`
+   succeeds.
+
+**Fence (R7):** `nav.test.ts`'s count assertion (structural — it fails on *any*
+undeclared pane) plus `src/app/calendar/calendarBoundary.test.ts`, which walks
+every file under both app directories and asserts (a) Tasks imports nothing from
+Calendar, (b) Calendar reaches only Tasks' lib/store and the four allowed
+overlays, and (c) the calendar surface is gone from `tasks/page.tsx` — the
+half-move where a new route is added while the old entry point still works.
+
+---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

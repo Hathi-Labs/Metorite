@@ -2,7 +2,7 @@
 
 The orchestrator is the central routing agent for Metorite.  It:
 - Routes user requests to the appropriate specialist agent via MAF tools
-- Retrieves company data (ClickUp, Zoho, Odoo) through retrieval tools
+- Retrieves company data (Zoho, Odoo, the native task store) through retrieval tools
 - Spawns Copilot SDK agents for creation/improvement tasks
 - Maintains cross-session memory via Mem0 + Graphiti
 

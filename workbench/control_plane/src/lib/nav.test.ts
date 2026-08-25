@@ -34,6 +34,13 @@ import {
  */
 const LIVE_SET: ReadonlyArray<[string, string]> = [
   ["personal", "/tasks"],
+  // Added 2026-08-24 by D54 (board WS-39 S2), taking the live set from eight to
+  // NINE. Calendar was lifted out of `/tasks`, where it was a view mode; it is
+  // `live` rather than `preview` because it ships today inside a live app, so
+  // holding it back would withdraw a capability customers already have.
+  // This edit is the fence doing its job — the pane could not land without
+  // somebody deliberately changing this line AND `launch_surface.md` §2.
+  ["personal", "/calendar"],
   ["personal", "/people/me"],
   ["personal", "/access"],
   ["apps", "/projects"],
@@ -78,7 +85,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the eight panes launch_surface.md §2 names", () => {
+  it("ships exactly the nine panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);

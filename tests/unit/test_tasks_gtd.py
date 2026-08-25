@@ -1,17 +1,31 @@
 """Unit tests for the /tasks GTD backend (offline — no DB, no HTTP).
 
 Covers the pure logic layers:
-  - provider registry: build_provider validation + connector contract
-  - ClickUp connector: payload shaping for create_task (mocked HTTP)
+  - provider registry: `build_provider` refuses a name it cannot resolve
   - ai.propose: the clarify heuristic (disposition branches, project
     auto-match, GTD→stage default mapping)
   - items: view map completeness + timestamp parsing
+  - the push path's contract with the broker gate (BO-1b)
+
+🔧 **RE-CUT 2026-08-25 (D52 repair round 1, board WS-39 S1).** Sixteen cases
+here instantiated `ClickUpProvider` — payload shaping, pagination, schema
+hierarchy, live membership, folder/list creation, the delete gate. D52 deleted
+that class, so this module raised `ImportError` at COLLECTION and, with
+`pytest -x`, took the entire `tests/unit` run with it. They are deleted, not
+skipped (§12.6 criterion 7): they asserted the wire shape of one vendor's API,
+which is not a contract that outlives the vendor.
+
+What survives is everything that was never ClickUp's — the clarify heuristic,
+the view map, soft delete/restore/purge, the stage mapping, and the BO-1b push
+rules. `_queueing_provider` was re-cut onto a local `BaseTaskProvider` stub
+(the same move `test_provider_broker_gate.py` made), because the rule it locks
+— *a queued write reports `awaiting_approval`, never `synced`* — belongs to the
+gate, not to a connector.
 """
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -23,192 +37,24 @@ from gateway.routes.tasks.items import (
     _build_item_update,
     _parse_ts,
 )
-from gateway.routes.tasks.providers import (
-    ClickUpProvider,
-    build_provider,
-    connector_names,
-)
+from gateway.routes.tasks.providers import build_provider
 
 # ---------------------------------------------------------------------------
 # Provider registry
 # ---------------------------------------------------------------------------
 
-def test_connector_registry_has_clickup():
-    assert "clickup" in connector_names()
-
-
 def test_build_provider_unknown_provider_raises_400():
+    """An unresolvable name is a 400, never a None the caller then dereferences.
+
+    ⚠️ Since D52 the registry is EMPTY, so this is true of every name — the
+    whole-registry claim lives in `tests/unit/test_no_task_provider_connectors.py`
+    (the D52 fence). What is asserted HERE is the factory's own behaviour on a
+    miss, which is the same before and after the retirement.
+    """
     with pytest.raises(HTTPException) as exc:
         build_provider("asana", {"api_token": "x"})
     assert exc.value.status_code == 400
 
-
-def test_build_provider_missing_token_raises_400():
-    with pytest.raises(HTTPException) as exc:
-        build_provider("clickup", {})
-    assert exc.value.status_code == 400
-
-
-def test_build_provider_returns_clickup_connector():
-    p = build_provider("clickup", {"api_token": "pk_123"}, "team-9")
-    assert isinstance(p, ClickUpProvider)
-    assert p.provider == "clickup"
-
-
-# ---------------------------------------------------------------------------
-# ClickUp connector — create_task payload shaping (HTTP mocked)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_clickup_create_task_payload_and_result():
-    provider = ClickUpProvider("pk_123", "team-9")
-    fake_resp = SimpleNamespace(
-        status_code=200,
-        json=lambda: {
-            "id": "86abc",
-            "url": "https://app.clickup.com/t/86abc",
-            "status": {"status": "to do"},
-        },
-        text="",
-    )
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.post = AsyncMock(return_value=fake_resp)
-        out = await provider.create_task("list-1", {
-            "title": "Call the vendor",
-            "description": "about the anodizing samples",
-            "status": "To-do",
-            "due_at_ms": 1751328000000,
-            "assignee_id": "42",
-        })
-        args, kwargs = http.post.call_args
-        assert args[0].endswith("/list/list-1/task")
-        body = kwargs["json"]
-        assert body["name"] == "Call the vendor"
-        assert body["status"] == "To-do"
-        # A date-only due (midnight ms) is nudged to 18:00 with due_date_time set
-        # so the task lands end-of-day, not start (adopted ClickUp API rule).
-        assert body["due_date"] == 1751328000000 + 18 * 3_600_000
-        assert body["due_date_time"] is True
-        assert body["assignees"] == [42]
-    assert out["provider_task_id"] == "86abc"
-    assert out["provider_status"] == "to do"
-
-
-@pytest.mark.asyncio
-async def test_clickup_create_task_with_parent_is_a_subtask():
-    """A subtask create sends ClickUp's `parent` id and still POSTs to the
-    parent's list, so children live under the same list as the parent."""
-    provider = ClickUpProvider("pk_123", "team-9")
-    fake_resp = SimpleNamespace(
-        status_code=200,
-        json=lambda: {"id": "86sub", "url": "https://app.clickup.com/t/86sub",
-                      "status": {"status": "to do"}},
-        text="",
-    )
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.post = AsyncMock(return_value=fake_resp)
-        out = await provider.create_task("list-1", {
-            "title": "Draft the spec",
-            "parent": "86abc",
-        })
-        args, kwargs = http.post.call_args
-        assert args[0].endswith("/list/list-1/task")
-        assert kwargs["json"]["parent"] == "86abc"
-    assert out["provider_task_id"] == "86sub"
-
-
-@pytest.mark.asyncio
-async def test_clickup_update_task_backsync_fields_and_assignee_delta():
-    """A back-synced edit PUTs only the changed fields, and models an assignee
-    change as ClickUp's add/rem delta (reassign from 7 → 42)."""
-    provider = ClickUpProvider("pk_123", "team-9")
-    fake_resp = SimpleNamespace(
-        status_code=200,
-        json=lambda: {"id": "86abc",
-                      "url": "https://app.clickup.com/t/86abc",
-                      "status": {"status": "in progress"}},
-        text="",
-    )
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.put = AsyncMock(return_value=fake_resp)
-        out = await provider.update_task("86abc", {
-            "title": "Renamed",
-            "status": "In progress",
-            "assignee_id": "42",
-            "prev_assignee_id": "7",
-        })
-        args, kwargs = http.put.call_args
-        assert args[0].endswith("/task/86abc")
-        body = kwargs["json"]
-        assert body["name"] == "Renamed"
-        assert body["status"] == "In progress"
-        assert body["assignees"] == {"add": [42], "rem": [7]}
-    assert out["provider_status"] == "in progress"
-
-
-@pytest.mark.asyncio
-async def test_clickup_update_task_clear_assignee_removes_prev():
-    provider = ClickUpProvider("pk_123", "team-9")
-    fake_resp = SimpleNamespace(status_code=200, json=lambda: {"id": "86abc"}, text="")
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.put = AsyncMock(return_value=fake_resp)
-        await provider.update_task("86abc",
-                                   {"clear_assignee": True, "prev_assignee_id": "7"})
-        body = http.put.call_args.kwargs["json"]
-        assert body["assignees"] == {"rem": [7]}
-
-
-@pytest.mark.asyncio
-async def test_clickup_update_task_noop_when_nothing_writable():
-    """A local-only field edit (no ClickUp-writable change) makes no HTTP call."""
-    provider = ClickUpProvider("pk_123", "team-9")
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.put = AsyncMock()
-        out = await provider.update_task("86abc", {})
-        http.put.assert_not_called()
-    assert out["provider_task_id"] == "86abc"
-
-
-@pytest.mark.asyncio
-async def test_clickup_get_task_detail_normalizes_comments_subtasks_attachments():
-    provider = ClickUpProvider("pk_123", "team-9")
-
-    async def fake_get(path, params=None):
-        if path.endswith("/comment"):
-            return {"comments": [
-                {"id": 5, "user": {"username": "Ana"},
-                 "comment_text": "Looks good", "date": "1751000000000"},
-            ]}
-        return {  # GET /task/{id}
-            "id": "86abc",
-            "attachments": [
-                {"id": 9, "title": "spec.pdf",
-                 "url": "https://x/spec.pdf", "mimetype": "application/pdf",
-                 "size": 1234},
-                {"id": 10, "title": "no-url"},  # dropped: no url
-            ],
-            "subtasks": [
-                {"id": "sub1", "name": "Draft it",
-                 "status": {"status": "to do", "type": "open"},
-                 "url": "https://x/sub1",
-                 "assignees": [{"id": 7, "username": "Bo"}]},
-            ],
-        }
-
-    provider._get = fake_get  # type: ignore[assignment]
-    out = await provider.get_task_detail("86abc")
-    assert [a["name"] for a in out["attachments"]] == ["spec.pdf"]  # url-less dropped
-    assert out["attachments"][0]["size"] == 1234
-    assert out["subtasks"][0]["title"] == "Draft it"
-    assert out["subtasks"][0]["status"] == "to do"
-    assert out["subtasks"][0]["assignees"][0]["name"] == "Bo"
-    assert out["comments"][0]["author"] == "Ana"
-    assert out["comments"][0]["text"] == "Looks good"
 
 
 # ---------------------------------------------------------------------------
@@ -546,22 +392,6 @@ def test_purge_removes_row_and_archives_clickup_counterpart():
     assert "except Exception" in up
 
 
-def test_clickup_delete_task_goes_through_the_broker_gate():
-    """The ClickUp deletion is an irreversible outward write → it must route
-    through the broker gate like every other mutation, and a 404 counts as
-    success (already gone)."""
-    import inspect
-
-    from gateway.routes.tasks import providers
-
-    dt = inspect.getsource(providers.ClickUpProvider.delete_task)
-    assert "_broker_gate" in dt
-    assert "clickup.delete_task" in dt
-    raw = inspect.getsource(providers.ClickUpProvider._raw_delete_task)
-    # The raw method performs the DELETE via the shared _clickup_send helper
-    # (which adds 429 back-off); verify it issues a DELETE, not the literal call.
-    assert "_clickup_send" in raw and '"DELETE"' in raw
-    assert "404" in raw   # idempotent: already-gone is success
 
 
 def test_base_provider_delete_task_defaults_to_unsupported():
@@ -969,28 +799,6 @@ def test_llm_propose_parses_where_match(monkeypatch):
     core2 = asyncio.run(tasks_ai._llm_propose(
         _item("Draft proposal"), [], [], {}, "tier-fast"))
     assert core2 is not None and "llm_place" not in core2
-
-
-# ---------------------------------------------------------------------------
-# ClickUp connector — create_folder (space → folder → list)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_clickup_create_folder_posts_to_space():
-    provider = ClickUpProvider("pk_123", "team-9")
-    fake_resp = SimpleNamespace(
-        status_code=200,
-        json=lambda: {"id": "fold-1", "name": "Proposals"},
-        text="",
-    )
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient") as client_cls:
-        http = client_cls.return_value.__aenter__.return_value
-        http.post = AsyncMock(return_value=fake_resp)
-        out = await provider.create_folder("team-9", "space-1", "Proposals")
-        args, kwargs = http.post.call_args
-        assert args[0].endswith("/space/space-1/folder")
-        assert kwargs["json"] == {"name": "Proposals"}
-    assert out == {"id": "fold-1", "name": "Proposals", "space_id": "space-1"}
 
 
 def test_seed_status_stage_map_keeps_user_choices():
@@ -1548,61 +1356,8 @@ def test_is_mine_never_matches_on_blank_or_missing_id():
     assert m2["is_mine"] is False
 
 
-def test_clickup_identity_derives_provider_user_id_from_clickup_id():
-    """The 'me' id used for is_mine comes from ClickUp's own user id via
-    verify()/get_schema — the authoritative owner of the connected token."""
-    import inspect
-
-    from gateway.routes.tasks import providers
-
-    verify = inspect.getsource(providers.ClickUpProvider.verify)
-    assert '"provider_user_id": str(u.get("id"' in verify
-    # The sync run compares against identity.user.provider_user_id.
-    from gateway.routes.tasks import sync as sync_mod
-    run = inspect.getsource(sync_mod._sync_account)
-    assert 'identity.get("user")' in run and "provider_user_id" in run
 
 
-@pytest.mark.asyncio
-async def test_clickup_list_tasks_paginates_and_normalizes():
-    p = ClickUpProvider("pk_x", "9001")
-    pages = [
-        {"tasks": [{
-            "id": "abc", "name": "Ship it",
-            "text_content": "notes",
-            "status": {"status": "To-do", "type": "custom"},
-            "assignees": [{"id": 42, "username": "v", "email": "v@x.in"}],
-            "due_date": "1719000000000", "date_created": "1718000000000",
-            "date_updated": "1718500000000", "date_closed": None,
-            "url": "https://app.clickup.com/t/abc",
-            "list": {"id": "L1", "name": "Sprint"},
-        }], "last_page": False},
-        {"tasks": [{
-            "id": "def", "name": "Done one",
-            "status": {"status": "Complete", "type": "closed"},
-            "assignees": [], "date_closed": "1718600000000",
-            "list": {"id": "L1"},
-        }], "last_page": True},
-    ]
-    with patch.object(p, "_get", AsyncMock(side_effect=pages)) as mocked:
-        tasks = await p.list_tasks("9001", updated_since_ms=1718000000000)
-    assert len(tasks) == 2
-    t = tasks[0]
-    assert t["provider_task_id"] == "abc"
-    assert t["title"] == "Ship it"
-    assert t["description"] == "notes"
-    assert t["status"] == "To-do" and t["status_type"] == "custom"
-    assert t["assignees"] == [{"name": "v", "email": "v@x.in",
-                               "provider_user_id": "42"}]
-    assert t["due_at_ms"] == 1719000000000
-    assert t["project_ref"] == "L1"
-    assert tasks[1]["closed_at_ms"] == 1718600000000
-    # incremental cursor forwarded; closed tasks included; paginated
-    first_call = mocked.await_args_list[0]
-    assert first_call.args[0] == "/team/9001/task"
-    assert first_call.args[1]["date_updated_gt"] == 1718000000000
-    assert first_call.args[1]["include_closed"] == "true"
-    assert mocked.await_args_list[1].args[1]["page"] == 1
 
 
 def test_sync_upsert_preserves_user_overlay_and_owns_completion():
@@ -1789,7 +1544,7 @@ def _patch_push_harness(monkeypatch, provider, row=None):
         return item_row
 
     async def _owner(db, account_id, uid):
-        return SimpleNamespace(id=account_id, provider="clickup",
+        return SimpleNamespace(id=account_id, provider="stub",
                                workspace_id="ws1", credentials_encrypted=b"x")
 
     monkeypatch.setattr(tasks_items, "_fetch_item", _fetch)
@@ -1803,26 +1558,46 @@ def _patch_push_harness(monkeypatch, provider, row=None):
 
 
 def _queueing_provider(monkeypatch):
-    """A REAL ClickUpProvider with enforcement on and the broker's enqueue
-    stubbed — so `create_task` returns the genuine pending marker and any HTTP
-    attempt would blow up rather than silently 'work'."""
+    """A provider whose `create_task` goes through the REAL `_broker_gate`, with
+    enforcement on and the broker's enqueue stubbed — so it returns the genuine
+    pending marker and the underlying write is proven never to run.
+
+    ⚠️ **Re-cut 2026-08-25 (D52 repair round 1).** This used to build a real
+    `ClickUpProvider` and booby-trap its `httpx` client. That class is deleted,
+    and the contract under test was never its: it is
+    `BaseTaskProvider._broker_gate`'s, which survives. So the concrete class is
+    a local stub — the same move `tests/unit/test_provider_broker_gate.py` made
+    — and the booby trap moved INTO `do_write`, where it is stricter than the
+    HTTP one ever was: it fires on any attempt to perform the write at all,
+    with no transport to route around.
+    """
     import acb_graph
     import action_broker
-    import gateway.routes.tasks.providers as prov
+    from gateway.routes.tasks.providers import BaseTaskProvider
 
     monkeypatch.setenv("ACTION_BROKER_ENFORCE", "all")
 
     def _no_session():
         raise ConnectionError("no db in test")
 
-    def _explode(*a, **k):
-        raise AssertionError("a queued write must never reach the provider HTTP")
-
     monkeypatch.setattr(acb_graph, "get_session", _no_session)
     monkeypatch.setattr(action_broker, "enqueue", lambda p: "act-9")
-    monkeypatch.setattr(prov.httpx, "AsyncClient", _explode)
-    return prov.ClickUpProvider(token="tok", workspace_id="ws1",
-                                account_id="acc-1")
+
+    class _GatedStub(BaseTaskProvider):
+        provider = "stub"
+
+        async def create_task(self, project_ref, payload):
+            async def _do_write():
+                raise AssertionError(
+                    "a queued write must never perform the provider write")
+
+            return await self._broker_gate(
+                "stub.create_task", f"list:{project_ref}",
+                {"title": payload.get("title")}, _do_write,
+            )
+
+    _GatedStub.__abstractmethods__ = frozenset()
+    return _GatedStub()
 
 
 def test_a_queued_push_writes_awaiting_approval_and_no_provider_task_id(monkeypatch):
@@ -2059,73 +1834,10 @@ def test_settings_update_is_partial():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_clickup_get_schema_builds_navigable_hierarchy():
-    p = ClickUpProvider("pk_x", "9001")
-    responses = {
-        "/team": {"teams": [{"id": "9001", "members": [
-            {"user": {"id": 42, "username": "vijay", "email": "v@x.in"}}]}]},
-        "/team/9001/space": {"spaces": [{
-            "id": "S1", "name": "Engineering",
-            "statuses": [{"status": "To-do"}, {"status": "Done"}]}]},
-        "/space/S1/list": {"lists": [{"id": "L1", "name": "Firmware"}]},
-        "/space/S1/folder": {"folders": [{
-            "id": "F1", "name": "Printers",
-            "lists": [{"id": "L2", "name": "F1 Launch"}]}]},
-    }
-
-    async def fake_get(path, params=None):
-        return responses[path]
-
-    with patch.object(p, "_get", AsyncMock(side_effect=fake_get)):
-        schema = await p.get_schema("9001")
-    # Flat projects carry structured space/folder ids (create + grouping).
-    by_id = {pr["id"]: pr for pr in schema["projects"]}
-    assert by_id["L1"]["space_id"] == "S1" and by_id["L1"]["folder_id"] is None
-    assert by_id["L2"]["folder_id"] == "F1"
-    # The accordion tree mirrors ClickUp: space → folder → list.
-    h = schema["hierarchy"]
-    assert h[0]["name"] == "Engineering"
-    assert h[0]["lists"][0]["id"] == "L1"
-    assert h[0]["folders"][0]["lists"][0]["id"] == "L2"
 
 
-@pytest.mark.asyncio
-async def test_clickup_list_members_is_live_membership():
-    p = ClickUpProvider("pk_x", "9001")
-    with patch.object(p, "_get", AsyncMock(return_value={"teams": [{
-        "id": "9001",
-        "members": [{"user": {"id": 7, "username": "rahul", "email": "r@x.in"}}],
-    }]})):
-        members = await p.list_members("9001")
-    assert members == [{"name": "rahul", "email": "r@x.in",
-                        "provider_user_id": "7"}]
 
 
-@pytest.mark.asyncio
-async def test_clickup_create_project_targets_folder_or_space():
-    p = ClickUpProvider("pk_x", "9001")
-    calls: list[str] = []
-
-    class _Resp:
-        status_code = 200
-        def json(self):
-            return {"id": "L9", "name": "New List"}
-
-    class _Client:
-        def __init__(self, *a, **k): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, url, headers=None, json=None):
-            calls.append(url)
-            return _Resp()
-
-    with patch("gateway.routes.tasks.providers.httpx.AsyncClient", _Client):
-        in_folder = await p.create_project("9001", "New List", "S1", "F1")
-        in_space = await p.create_project("9001", "New List", "S1")
-    assert in_folder["id"] == "L9" and in_space["id"] == "L9"
-    assert calls[0].endswith("/folder/F1/list")
-    assert calls[1].endswith("/space/S1/list")
 
 
 def test_sync_refreshes_members_and_create_project_is_owner_checked():

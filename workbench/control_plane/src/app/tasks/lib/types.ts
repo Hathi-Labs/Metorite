@@ -250,6 +250,27 @@ export type ViewKey =
   | "next"
   | "priority"
   | "waiting"
+  /**
+   * ⚠️ **No longer selectable from the Tasks sidebar** — D54 (2026-08-24, board
+   * WS-39 S2) moved the calendar to its own app at `/calendar`.
+   *
+   * The member survives on purpose: `ViewKey` is the store's **filter**
+   * vocabulary, not only the sidebar's destination list, and two rules keyed on
+   * it are still real — `itemsForView("calendar")` is the canonical
+   * "what is on the calendar" selector, and `viewQuickAdd("calendar")` returns
+   * null because the calendar offers a per-DAY capture box instead of a
+   * per-view one.
+   *
+   * 📌 **Finding for S3a, not a change to make here** (CLAUDE.md §5):
+   * `CalendarView` hand-filters `s.items` rather than calling
+   * `itemsForView("calendar")`, so the canonical selector currently has no
+   * caller. Reconcile the two when S3a re-points this store at `pm_tasks`;
+   * doing it now would be a behaviour change inside a move.
+   *
+   * Not to be confused with the GTD **disposition** `kind: "calendar"`
+   * (a date-specific action — "Scheduled"), which is a different vocabulary in
+   * the same file and is untouched.
+   */
   | "calendar"
   | "someday"
   | "reference"

@@ -1,6 +1,6 @@
 """Custom Apps · tools — the ``cc.tools`` integration proxy (RFC §4.4/§4.7).
 
-Lets a sandboxed app frontend call a platform integration (ClickUp first)
+Lets a sandboxed app frontend call a platform integration
 through a scope-checked, human-confirmed, fully-audited bridge, reusing the
 existing Action Broker end-to-end (``apps/services/action_broker``) — the same
 propose/decide_disposition/submit machinery every other outward write goes
@@ -12,19 +12,25 @@ Vocabulary:
 * A manifest **scope** is ``tool:<tool>[?param=value&...]`` — the Windmill
   pattern (§4.1): the query string freezes constraints (e.g. ``list=123``)
   that the runtime call can never override, no matter what the app sends.
-* A **tool** (``clickup.create_task``) is a small local registry entry
+* A **tool** (``<service>.<verb>``) is a small local registry entry
   (:class:`ToolSpec`) naming its Integration Registry service, its risk
   shape (mirroring ``acb_skills.tool_annotations``'s four-bool vocabulary,
   minus ``idempotent`` — not needed here), and the one async function that
   performs it.
-* A **broker action** is the namespaced name (``app.clickup_create_task``)
+* A **broker action** is the namespaced name (``app.<service>_<verb>``)
   registered with ``action_broker`` — namespaced because
-  ``action_broker._HANDLERS`` is one flat dict for the whole process and the
-  Task Manager already owns the bare ``clickup.create_task`` action name
-  (``gateway.routes.tasks.broker_handlers``, its own per-account credential
-  resolution keyed off ``task_accounts``). Everything scope-facing (manifest
-  scopes, the route path, audit rows) keeps the plain tool name; only the
-  broker registration/propose call uses the namespaced one.
+  ``action_broker._HANDLERS`` is one flat dict for the whole process and
+  another package may already own the bare action name. Everything
+  scope-facing (manifest scopes, the route path, audit rows) keeps the plain
+  tool name; only the broker registration/propose call uses the namespaced one.
+
+🔴 **``_TOOL_REGISTRY`` IS EMPTY SINCE D52 (2026-08-24, board WS-39 S1).** Its
+only entry was ``clickup.create_task``, and ClickUp is retired outright —
+Metorite is the project-management system of record. The bridge (scope parsing,
+constraint freezing, broker wiring, audit) is intact and is the reusable part;
+what is gone is the one integration that had been wired through it. An app
+manifest declaring ``tool:clickup.create_task`` now fails scope resolution
+rather than silently doing nothing, which is the correct answer.
 
 Scopes are checked against the app's LIVE (published) manifest, never the
 draft workspace's — tool scopes are reviewed at publish time (§4.8,
@@ -65,13 +71,8 @@ from gateway.routes.apps._common import (
     require_app_user,
     router,
 )
-from gateway.routes.tasks.providers import _clickup_send
 from pydantic import BaseModel
 from sqlalchemy import text
-
-CLICKUP_BASE = "https://api.clickup.com/api/v2"  # duplicated, not cross-imported
-# (`gateway.routes.tasks.providers._CLICKUP` is private to that module — this
-# package only reuses its exported ``_clickup_send`` rate-limit helper).
 
 BROKER_ACTION_PREFIX = "app."
 
@@ -91,7 +92,7 @@ class ToolExecutionError(RuntimeError):
 # ── Scope parsing (pure, testable) ───────────────────────────────────────────
 
 def parse_tool_scope(scope: str) -> tuple[str, dict[str, str]] | None:
-    """``'tool:clickup.create_task?list=Procurement'`` → ``('clickup.create_task',
+    """``'tool:acme.create_task?list=Procurement'`` → ``('acme.create_task',
     {'list': 'Procurement'})``. The ``?`` section is ``urllib.parse.parse_qsl``'d
     (last value wins per key). ``None`` when *scope* doesn't start with
     ``'tool:'`` or names an empty tool."""
@@ -138,80 +139,16 @@ class ToolSpec:
     handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
-async def _clickup_create_task(args: dict[str, Any]) -> dict[str, Any]:
-    """clickup.create_task's ONE execution path.
-
-    Invoked by the Action Broker's registered handler below, whether that
-    runs synchronously (auto-apply, inside the request) or minutes later
-    (an operator approves a queued proposal) — there is exactly one place
-    the ClickUp write happens. Resolves its own credentials each time so it
-    behaves identically either way.
-    """
-    settings = get_settings()
-    resolved, unavailable = build_integrations(["clickup"], [], settings)
-    creds = resolved.get("clickup")
-    if not creds:
-        raise ToolExecutionError(
-            unavailable.get("clickup") or "clickup integration unavailable"
-        )
-    list_id = str(args.get("list") or "").strip()
-    if not list_id:
-        raise ToolExecutionError("clickup.create_task requires a 'list' arg")
-    body: dict[str, Any] = {"name": str(args.get("title") or "Untitled")}
-    if args.get("description"):
-        body["description"] = str(args["description"])
-    if args.get("status"):
-        body["status"] = str(args["status"])
-    headers = {
-        "Authorization": creds["api_token"], "Content-Type": "application/json",
-    }
-    resp = await _clickup_send(
-        "POST", f"{CLICKUP_BASE}/list/{list_id}/task",
-        headers=headers, json=body,
-    )
-    if resp.status_code >= 400:
-        raise ToolExecutionError(
-            f"clickup create task → {resp.status_code}: {resp.text[:200]}"
-        )
-    t = resp.json()
-    return {
-        "provider_task_id": str(t.get("id", "")),
-        "provider_url": t.get("url"),
-        "provider_status": (t.get("status") or {}).get("status"),
-    }
-
-
-_TOOL_REGISTRY: dict[str, ToolSpec] = {
-    "clickup.create_task": ToolSpec(
-        integration="clickup",
-        read_only=False,
-        destructive=True,
-        open_world=True,
-        handler=_clickup_create_task,
-    ),
-}
+#: Deliberately EMPTY — see the module docstring. D52 retired the only entry.
+_TOOL_REGISTRY: dict[str, ToolSpec] = {}
 
 
 # ── Action Broker wiring (module import time — not per-request) ─────────────
 
 def _broker_action_name(tool: str) -> str:
     """Namespace *tool* for the shared ``action_broker._HANDLERS`` registry
-    (see module docstring — the Task Manager already owns the bare
-    ``clickup.create_task`` action name)."""
+    (see module docstring — another package may own the bare action name)."""
     return f"{BROKER_ACTION_PREFIX}{tool.replace('.', '_')}"
-
-
-async def _execute_clickup_create_task(proposal: ActionProposal) -> dict[str, Any]:
-    """The registered broker handler for clickup.create_task — reads the
-    already merged+constrained args off the proposal and calls the same
-    function the app-facing tool spec calls. Single source of truth."""
-    args = (proposal.payload or {}).get("args") or {}
-    return await _clickup_create_task(args)
-
-
-register_action_handler(
-    _broker_action_name("clickup.create_task"), _execute_clickup_create_task,
-)
 
 
 async def _apply_publish_review(proposal: ActionProposal) -> dict[str, Any]:
@@ -472,7 +409,7 @@ async def call_app_tool(
         )
 
     # The pre-check only needs to know availability, not the creds — the
-    # handler re-resolves its own credentials (see _clickup_create_task).
+    # handler re-resolves its own credentials (per ToolSpec.handler).
     _resolved, unavailable = build_integrations(
         [spec.integration], [], get_settings(),
     )

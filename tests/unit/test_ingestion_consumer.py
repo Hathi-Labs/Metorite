@@ -4,8 +4,8 @@ Offline: no Redis, no DB, no network, no VPS.
 
 What is faked, and what deliberately is NOT
 -------------------------------------------
-  - **Redis** is faked twice, both at the module's own accessor (the
-    ``test_clickup_ingestor.py:158-181`` pattern): ``queue._client`` for the
+  - **Redis** is faked twice, both at the module's own accessor (the pattern
+    the retired ``test_clickup_ingestor.py`` established): ``queue._client`` for the
     producer side and ``consumer._get_client`` for the consumer side. The real
     ``queue.enqueue`` therefore produces the entry the consumer is fed, so
     "the shape ``queue.enqueue`` writes" is a fact of this test rather than a
@@ -17,8 +17,14 @@ What is faked, and what deliberately is NOT
     registered via ``register_event_sink``; teardown restores the snapshot so
     this file cannot leave a later test looking at an empty registry.
   - **``acb_audit.record``** is faked for the Gmail/Zoho receivers (it opens a
-    real ``acb_graph`` session), and ``_normalise_task`` for ClickUp. Neither
-    carries an assertion here.
+    real ``acb_graph`` session). It carries no assertion here.
+
+⚠️ **Re-cut 2026-08-24 by D52 (board WS-39 S1).** ClickUp was this file's
+primary worked example — first stream, first payload, first receiver. Its
+receiver is deleted, so Zoho took that role throughout. The *shapes* under test
+are unchanged; only the source name is. Two assertions that named three streams
+now name two, and that is the fixture of record: ``STREAM_SOURCES`` in
+``ingestion/consumer.py`` has two entries.
 
 Interim ack semantics are deliberate: BO-20a acks after dispatch regardless of
 outcome. Honest XACK + retry + DLQ is BO-20b and is not pre-built here.
@@ -42,21 +48,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from ingestion import consumer, event_hooks, queue
 from ingestion.event_hooks import clear_event_sinks, register_event_sink
-from ingestion.sources.clickup import webhook as clickup_webhook
 from ingestion.sources.gmail import webhook as gmail_webhook
 from ingestion.sources.zoho import webhook as zoho_webhook
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-CLICKUP_SECRET = "clickup-webhook-secret"
 GMAIL_TOKEN = "gmail-pubsub-token"
 ZOHO_SECRET = "zoho-shared-secret"
 
-CLICKUP_PAYLOAD: dict[str, Any] = {
-    "event": "taskUpdated",
-    "task_id": "abc123",
-    "history_items": [{"field": "status", "after": {"status": "done"}}],
-}
 GMAIL_NOTIFICATION: dict[str, Any] = {"emailAddress": "ops@fracktal.in", "historyId": 9182734}
 ZOHO_PAYLOAD: dict[str, Any] = {"event": "Deals.update", "module": "Deals"}
 
@@ -234,14 +233,9 @@ async def _drain(fake: FakeRedis, timeout: float = 3.0) -> None:
 
 @pytest.fixture(autouse=True)
 def _receiver_edges(monkeypatch):
-    """Keep the receivers' non-assertion edges off the DB / ClickUp API."""
+    """Keep the receivers' non-assertion edges off the DB / provider APIs."""
     monkeypatch.setattr(gmail_webhook, "record", MagicMock())
     monkeypatch.setattr(zoho_webhook, "record", MagicMock())
-    monkeypatch.setattr(clickup_webhook, "_normalise_task", AsyncMock())
-    monkeypatch.setattr(
-        "ingestion.sources.clickup.webhook.get_settings",
-        lambda: MagicMock(clickup_webhook_secret=CLICKUP_SECRET),
-    )
     monkeypatch.setattr(
         "ingestion.sources.gmail.webhook.get_settings",
         lambda: MagicMock(gmail_pubsub_token=GMAIL_TOKEN),
@@ -256,14 +250,6 @@ def _client_for(router) -> TestClient:
     app = FastAPI()
     app.include_router(router)
     return TestClient(app, raise_server_exceptions=False)
-
-
-def _post_clickup() -> Any:
-    body = json.dumps(CLICKUP_PAYLOAD).encode()
-    sig = hmac.new(CLICKUP_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    return _client_for(clickup_webhook.router).post(
-        "/webhooks/clickup", content=body, headers={"X-Signature": sig}
-    )
 
 
 def _post_gmail() -> Any:
@@ -281,7 +267,6 @@ def _post_zoho() -> Any:
 
 
 _RECEIVERS = {
-    "clickup": (_post_clickup, queue.STREAM_CLICKUP, "clickup"),
     "gmail": (_post_gmail, queue.STREAM_GMAIL, "gmail"),
     "zoho": (_post_zoho, queue.STREAM_ZOHO, "zoho"),
 }
@@ -296,25 +281,25 @@ async def test_entry_is_delivered_to_the_sink_and_acked_once(
 ):
     """The producer's own entry shape → sink → exactly one XACK, in that order."""
     fake_redis.batches = [
-        _entry(queue.STREAM_CLICKUP, "taskUpdated", CLICKUP_PAYLOAD, "1719123456789-0")
+        _entry(queue.STREAM_ZOHO, "Contacts.edit", ZOHO_PAYLOAD, "1719123456789-0")
     ]
 
     await _drain(fake_redis)
 
-    assert sink_calls == [("clickup", "taskUpdated", CLICKUP_PAYLOAD)]
+    assert sink_calls == [("zoho", "Contacts.edit", ZOHO_PAYLOAD)]
     # The sink must receive a decoded dict — never the JSON string on the wire.
     payload = sink_calls[0][2]
     assert isinstance(payload, dict)
     assert payload == json.loads(
-        _producer_fields(queue.STREAM_CLICKUP, "taskUpdated", CLICKUP_PAYLOAD)["data"]
+        _producer_fields(queue.STREAM_ZOHO, "taskUpdated", ZOHO_PAYLOAD)["data"]
     )
-    assert fake_redis.xack_calls == [(queue.STREAM_CLICKUP, "cc-ingest", "1719123456789-0")]
+    assert fake_redis.xack_calls == [(queue.STREAM_ZOHO, "cc-ingest", "1719123456789-0")]
     # ORDER, on one shared timeline: dispatch strictly precedes the ack. Two
     # separate lists would pass just as happily with the XACK hoisted above
     # emit_event — which is the line BO-20b edits.
     assert timeline == [
-        ("sink", "clickup", "taskUpdated"),
-        ("ack", queue.STREAM_CLICKUP, "1719123456789-0"),
+        ("sink", "zoho", "Contacts.edit"),
+        ("ack", queue.STREAM_ZOHO, "1719123456789-0"),
     ]
 
 
@@ -325,7 +310,6 @@ async def test_read_uses_the_prescribed_group_and_constants(flag_on, fake_redis,
     assert read["count"] == 8
     assert read["block"] == 5_000
     assert read["streams"] == {
-        queue.STREAM_CLICKUP: ">",
         queue.STREAM_ZOHO: ">",
         queue.STREAM_GMAIL: ">",
     }
@@ -345,7 +329,7 @@ async def test_group_created_on_every_stream_at_the_tail(flag_on, fake_redis, si
     await _drain(fake_redis)
 
     by_stream = {call["stream"]: call for call in fake_redis.xgroup_calls}
-    assert set(by_stream) == {queue.STREAM_CLICKUP, queue.STREAM_ZOHO, queue.STREAM_GMAIL}
+    assert set(by_stream) == {queue.STREAM_ZOHO, queue.STREAM_GMAIL}
     for stream, call in by_stream.items():
         assert call["group"] == "cc-ingest", stream
         assert call["id"] == "$", f"{stream}: id must be '$' (tail), not a replay id"
@@ -358,7 +342,6 @@ async def test_ensure_groups_called_directly_pins_the_same_contract(fake_redis):
     assert [
         (c["stream"], c["group"], c["id"], c["mkstream"]) for c in fake_redis.xgroup_calls
     ] == [
-        (queue.STREAM_CLICKUP, "cc-ingest", "$", True),
         (queue.STREAM_ZOHO, "cc-ingest", "$", True),
         (queue.STREAM_GMAIL, "cc-ingest", "$", True),
     ]
@@ -480,7 +463,6 @@ def test_receiver_does_not_emit_when_flag_on(name, flag_on, mock_redis, sink_cal
 # ---------------------------------------------------------------------------
 
 _WEBHOOK_MODULES = {
-    "clickup": clickup_webhook,
     "gmail": gmail_webhook,
     "zoho": zoho_webhook,
 }
@@ -535,18 +517,18 @@ async def test_a_raising_sink_does_not_kill_the_loop(flag_on, fake_redis, sink_c
 
     register_event_sink(_boom)
     fake_redis.batches = [
-        _entry(queue.STREAM_CLICKUP, "taskUpdated", CLICKUP_PAYLOAD, "1-0"),
+        _entry(queue.STREAM_ZOHO, "Contacts.edit", ZOHO_PAYLOAD, "1-0"),
         _entry(queue.STREAM_GMAIL, "historyUpdated", GMAIL_NOTIFICATION, "2-0"),
     ]
 
     await _drain(fake_redis)
 
     assert sink_calls == [
-        ("clickup", "taskUpdated", CLICKUP_PAYLOAD),
+        ("zoho", "Contacts.edit", ZOHO_PAYLOAD),
         ("gmail", "historyUpdated", GMAIL_NOTIFICATION),
     ]
     assert fake_redis.xack_calls == [
-        (queue.STREAM_CLICKUP, "cc-ingest", "1-0"),
+        (queue.STREAM_ZOHO, "cc-ingest", "1-0"),
         (queue.STREAM_GMAIL, "cc-ingest", "2-0"),
     ]
 
@@ -614,16 +596,16 @@ async def test_a_hung_sink_times_out_and_the_bus_keeps_draining(
 
     register_event_sink(_hang)
     fake_redis.batches = [
-        _entry(queue.STREAM_CLICKUP, "taskUpdated", CLICKUP_PAYLOAD, "1-0"),
+        _entry(queue.STREAM_ZOHO, "Contacts.edit", ZOHO_PAYLOAD, "1-0"),
         _entry(queue.STREAM_GMAIL, "historyUpdated", GMAIL_NOTIFICATION, "2-0"),
     ]
 
     await _drain(fake_redis)
 
     # The stream after the hung one still drains, and both entries still ack.
-    assert [c[0] for c in sink_calls] == ["clickup", "gmail"]
+    assert [c[0] for c in sink_calls] == ["zoho", "gmail"]
     assert fake_redis.xack_calls == [
-        (queue.STREAM_CLICKUP, "cc-ingest", "1-0"),
+        (queue.STREAM_ZOHO, "cc-ingest", "1-0"),
         (queue.STREAM_GMAIL, "cc-ingest", "2-0"),
     ]
     # And it is LOUD — the failure mode this replaces had no log line at all.
@@ -754,7 +736,7 @@ async def test_strict_emit_propagates_the_first_sink_error_and_skips_the_rest(tw
 
     with pytest.raises(RuntimeError) as excinfo:
         await event_hooks.emit_event(
-            "clickup", "taskUpdated", CLICKUP_PAYLOAD, raise_on_error=True
+            "zoho", "Contacts.edit", ZOHO_PAYLOAD, raise_on_error=True
         )
 
     assert excinfo.value is boom, "the sink's own exception, not a wrapper"
@@ -769,10 +751,10 @@ async def test_default_emit_still_swallows_logs_and_continues(two_sinks, monkeyp
     log = MagicMock()
     monkeypatch.setattr(event_hooks, "_log", log)
 
-    result = await event_hooks.emit_event("clickup", "taskUpdated", CLICKUP_PAYLOAD)
+    result = await event_hooks.emit_event("zoho", "Contacts.edit", ZOHO_PAYLOAD)
 
     assert result is None
-    assert second_calls == [("clickup", "taskUpdated", CLICKUP_PAYLOAD)]
+    assert second_calls == [("zoho", "Contacts.edit", ZOHO_PAYLOAD)]
     keys = [call.args[0] for call in log.warning.call_args_list]
     assert keys == ["event_hooks.sink_failed"], keys
 

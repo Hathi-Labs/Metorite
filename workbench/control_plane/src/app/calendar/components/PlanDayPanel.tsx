@@ -8,9 +8,9 @@ import {
   apiReplan,
   type EnergyWindow,
   type DayPlanResult,
-} from "../../lib/api";
+} from "@/app/tasks/lib/api";
 import { energyWindowsPayload, fmtClock } from "./shared";
-import { useTaskStore } from "../../lib/taskStore";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
 
 
 // ── AI "Plan my day" review panel ────────────────────────────────────────────

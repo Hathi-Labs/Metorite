@@ -27,7 +27,15 @@ from gateway.routes.workflows.tools import tool_arg_schemas
 
 KNOWN_AGENTS = {"summarizer"}
 KNOWN_MODULES = {"mod-clean"}
-DESTRUCTIVE = {"clickup.create_task"}
+# ⚠️ Re-cut 2026-08-24 by D52 (board WS-39 S1). This suite's destructive node
+# was `clickup.create_task`, whose WorkflowToolSpec is deleted with the
+# connector — and after that removal the registry holds NO destructive tool at
+# all. The approval-gate behaviour under test is the engine's, not any one
+# tool's, and `DESTRUCTIVE` is supplied by the CALLER rather than read from the
+# registry, so `http.request` (a real, registered tool) is declared destructive
+# here to keep the gate exercised. Losing the coverage would have been the
+# expensive way to notice D52.
+DESTRUCTIVE = {"http.request"}
 
 MODULE_CODE = 'def run(inputs):\n    return {"cleaned": inputs["text"].strip().lower()}\n'
 
@@ -56,7 +64,7 @@ def _graph() -> dict:
             _node("check", "condition", {"left": "{{trigger.priority}}", "op": "equals", "right": "high"}),
             _node("clean", "module", {"module_id": "mod-clean", "inputs": {"text": "{{summarize.result}}"}}),
             _node("gate", "approval", {"message": "Approve task creation"}),
-            _node("write", "tool", {"action": "clickup.create_task", "args": {"list_id": "LIST-1", "name": "{{clean.cleaned}}"}}),
+            _node("write", "tool", {"action": "http.request", "args": {"url": "https://example.invalid/tasks", "method": "POST", "body": {"name": "{{clean.cleaned}}"}}}),
             _node("out_hi", "output", {"value": "{{write.task_id}}"}),
             _node("out_lo", "output", {"value": "low priority — no task"}),
         ],
@@ -189,10 +197,19 @@ async def test_resume_replays_without_repeating_side_effects(serialized: dict) -
 
     assert outcome.status == "succeeded"
     assert resumed.agent_calls == []  # replayed, not re-run
+    # ⚠️ These args must match the `write` node's config in `serialized`, with
+    # `{{clean.cleaned}}` resolved. The D52 re-cut moved that node from
+    # `clickup.create_task` to `http.request` and updated the fixture but not
+    # this assertion, which kept the old connector's `{list_id, name}` shape —
+    # so the branch's evals job was RED from the day of the excision.
     assert resumed.tool_calls == [
         (
-            "clickup.create_task",
-            {"list_id": "LIST-1", "name": "pump order stuck at packing"},
+            "http.request",
+            {
+                "url": "https://example.invalid/tasks",
+                "method": "POST",
+                "body": {"name": "pump order stuck at packing"},
+            },
             "workflow",
         )
     ]
@@ -224,7 +241,7 @@ async def test_low_priority_takes_the_false_branch(serialized: dict) -> None:
 async def test_tool_failure_surfaces_the_node_and_skips_downstream(serialized: dict) -> None:
     """A failing tool ends the run 'failed' with the node named in the error
     (the run console's contract) — downstream output never yields."""
-    trace = _Trace(tool_error="ClickUp rejected the task")
+    trace = _Trace(tool_error="the endpoint rejected the request")
     outcome = await execute_workflow(
         serialized,
         {"subject": "Pump order stuck", "priority": "high"},
@@ -235,7 +252,7 @@ async def test_tool_failure_surfaces_the_node_and_skips_downstream(serialized: d
 
     assert outcome.status == "failed"
     assert outcome.error is not None
-    assert "write" in outcome.error and "ClickUp rejected the task" in outcome.error
+    assert "write" in outcome.error and "the endpoint rejected the request" in outcome.error
     assert outcome.outputs == []
     assert outcome.node_results["write"]["status"] == "error"
     assert outcome.node_results["out_hi"] == {"status": "skipped"}

@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 // Shown when the gateway is down so the picker still renders.
 const STATIC_FALLBACK: AgentEntry[] = [
-  { name: "task-manager",  description: "ClickUp task management",              tags: ["tasks"],    status: "live", agent_runtime: "maf" },
+  { name: "task-manager",  description: "Task management (GTD)",              tags: ["tasks"],    status: "live", agent_runtime: "maf" },
   { name: "sales",         description: "Zoho CRM sales pipeline",              tags: ["sales"],    status: "live", agent_runtime: "maf" },
   { name: "triage",        description: "Email / WhatsApp triage + routing",    tags: ["triage"],   status: "live", agent_runtime: "maf" },
   { name: "delivery",      description: "Project delivery monitoring",          tags: ["delivery"], status: "live", agent_runtime: "maf" },

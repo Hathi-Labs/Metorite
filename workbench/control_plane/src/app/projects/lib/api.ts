@@ -24,6 +24,9 @@ export interface ProjectRow {
   parent_project_id?: string | null;
   status?: string | null;
   lead?: string | null;
+  // ⚠️ Provenance of rows imported BEFORE the 2026-08-24 retirement (D52).
+  // Nothing writes these any more; the columns survive under R6 (D52.3) and
+  // are dropped in a later, owner-gated release. Do not read them in new code.
   clickup_id?: string | null;
   clickup_kind?: string | null;
   /**
@@ -642,24 +645,11 @@ export const watchersApi = {
     }),
 };
 
-export interface TaskAccountRow {
-  id: string;
-  provider: string;
-  workspace_id: string;
-  label?: string;
-}
-
 /**
- * The ClickUp import (WS-27b's endpoints, finally reachable).
- *
- * `plan` and a `dry_run` import both write NOTHING — they are what answers
- * "what is actually in ClickUp" before anything touches this database. Only
- * `run({dry_run:false})` writes, and the UI never calls it without an explicit
- * click on a button that says so.
- *
- * Accounts come from the tasks API because that is where the ClickUp
- * connection already lives; a second place to connect ClickUp would be a
- * second thing to retire at WS-27g.
+ * ⚠️ `importApi` was REMOVED 2026-08-24 (D52, board WS-39 S1) along with both
+ * gateway endpoints. Metorite is the project-management system of record, so
+ * there is nothing to import from. Do not re-add a client here — the
+ * `gtd_*` → `pm_*` move D53 still needs is a backfill migration, not an API.
  */
 /**
  * Intake — the front door (WS-27u).
@@ -723,49 +713,3 @@ export const intakeApi = {
     ),
 };
 
-export const importApi = {
-  accounts: async (): Promise<TaskAccountRow[]> => {
-    const res = await fetch("/api/tasks/accounts");
-    if (!res.ok) throw new ProjectsApiError("Couldn't list accounts", res.status);
-    return (await res.json()) as TaskAccountRow[];
-  },
-
-  plan: (accountId: string, useLlm: boolean) =>
-    call<unknown>("import/clickup/plan", {
-      method: "POST",
-      body: JSON.stringify({ account_id: accountId, use_llm: useLlm }),
-    }),
-
-  /**
-   * The fast path: project the ClickUp mirror the Tasks app ALREADY holds into
-   * one department. No ClickUp call, no token, no mapping decision — it reads
-   * `gtd_projects`/`gtd_items` locally, so it works when the connector is
-   * stale and is quick enough to run in front of an audience.
-   */
-  fromTasks: (department: string, dryRun: boolean) =>
-    call<{
-      dry_run: boolean;
-      department: string;
-      projects: { created: number; already_present: number };
-      tasks: { created: number; already_present: number };
-      lanes_created: number;
-      tasks_without_a_list: number;
-    }>("import/from-tasks", {
-      method: "POST",
-      body: JSON.stringify({ department, dry_run: dryRun }),
-    }),
-
-  run: (
-    accountId: string,
-    mappings: Array<{ space_id: string; center: string | null }>,
-    dryRun: boolean
-  ) =>
-    call<unknown>("import/clickup", {
-      method: "POST",
-      body: JSON.stringify({
-        account_id: accountId,
-        mappings,
-        dry_run: dryRun,
-      }),
-    }),
-};

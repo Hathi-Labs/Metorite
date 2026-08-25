@@ -26,14 +26,14 @@ import acb_skills.integrations as integrations
 def test_credentials_do_not_accumulate_across_runs(monkeypatch):
     """Simulate a sequence of runs and assert no secret outlives its own run."""
     for v in (
-        "CLICKUP_API_TOKEN", "CLICKUP_WORKSPACE_ID",
+        "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET",
         "APIFY_API_TOKEN", "INSTANTLY_API_KEY",
     ):
         monkeypatch.delenv(v, raising=False)
 
     runs = [
-        ({"clickup": {"api_token": "A-clk", "workspace_id": "A-ws"}},
-         ["CLICKUP_API_TOKEN", "CLICKUP_WORKSPACE_ID"]),
+        ({"zoho-crm": {"client_id": "A-id", "client_secret": "A-sec"}},
+         ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET"]),
         ({"apify": {"api_token": "B-apify"}}, ["APIFY_API_TOKEN"]),
         ({"instantly": {"api_key": "C-inst"}}, ["INSTANTLY_API_KEY"]),
     ]
@@ -66,17 +66,17 @@ def test_credentials_do_not_accumulate_across_runs(monkeypatch):
 
 def test_operator_env_survives_the_run_lifecycle(monkeypatch):
     """A gateway-.env-provided secret wins over, and outlives, any run binding."""
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "operator-value")
-    monkeypatch.delenv("CLICKUP_WORKSPACE_ID", raising=False)
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "operator-value")
+    monkeypatch.delenv("ZOHO_CLIENT_SECRET", raising=False)
 
     token = integrations.bind_run_credentials(
-        {"clickup": {"api_token": "run-value", "workspace_id": "ws"}}
+        {"zoho-crm": {"client_id": "run-value", "client_secret": "sec"}}
     )
     # Operator's value wins throughout; the run-only var reads from the binding.
-    assert integrations.credential("CLICKUP_API_TOKEN") == "operator-value"
-    assert integrations.credential("CLICKUP_WORKSPACE_ID") == "ws"
+    assert integrations.credential("ZOHO_CLIENT_ID") == "operator-value"
+    assert integrations.credential("ZOHO_CLIENT_SECRET") == "sec"
 
     integrations.release_run_credentials(token)
     # ...and still stands after teardown; only the run-scoped var is gone.
-    assert integrations.credential("CLICKUP_API_TOKEN") == "operator-value"
-    assert integrations.credential("CLICKUP_WORKSPACE_ID") == ""
+    assert integrations.credential("ZOHO_CLIENT_ID") == "operator-value"
+    assert integrations.credential("ZOHO_CLIENT_SECRET") == ""

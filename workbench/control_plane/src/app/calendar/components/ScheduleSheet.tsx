@@ -3,13 +3,13 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useMemo, useState } from "react";
-import { GtdItem } from "../../lib/types";
-import { durationLabel } from "../../lib/utils";
-import { priorityRank } from "../../lib/priority";
+import { GtdItem } from "@/app/tasks/lib/types";
+import { durationLabel } from "@/app/tasks/lib/utils";
+import { priorityRank } from "@/app/tasks/lib/priority";
 import {
   DEFAULT_BLOCK_MINS,
   blocksForDay,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   fmtClock,
 } from "./shared";

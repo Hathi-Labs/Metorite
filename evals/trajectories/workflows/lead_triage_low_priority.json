@@ -1,13 +1,13 @@
 {
   "name": "lead-triage — low priority branch",
-  "description": "Same graph, the other way through the condition. Pins that the untaken branch runs NOTHING: no agent beyond triage, no module, and above all no write to ClickUp.",
+  "description": "Same graph, the other way through the condition. Pins that the untaken branch runs NOTHING: no agent beyond triage, no module, and above all no outward write.",
   "catalog": {
     "agents": ["triage"],
     "modules": {"mod-clean": "def run(inputs):\n    return {'clean_name': inputs['name'].strip().title(), 'dropped': 0}\n"}
   },
   "stubs": {"agents": {"triage": "low"}, "tools": {}},
   "trigger": {"name": "tim", "email": "tim@example.com", "priority": "low"},
-  "variables": {"list_id": "LIST-7"},
+  "variables": {"endpoint": "https://example.invalid/tasks"},
   "graph": {
     "nodes": [
       {"id": "start", "type": "trigger", "position": {"x": 0, "y": 0}, "data": {"label": "Webhook", "config": {"kind": "webhook"}}},
@@ -15,7 +15,7 @@
       {"id": "check", "type": "condition", "position": {"x": 0, "y": 2}, "data": {"label": "High?", "config": {"left": "{{triage.result}}", "op": "equals", "right": "high"}}},
       {"id": "clean", "type": "module", "position": {"x": 0, "y": 3}, "data": {"label": "Normalize", "config": {"module_id": "mod-clean", "inputs": {"name": "{{trigger.name}}"}}}},
       {"id": "gate", "type": "approval", "position": {"x": 0, "y": 4}, "data": {"label": "Approve", "config": {"message": "Create task?"}}},
-      {"id": "task", "type": "tool", "position": {"x": 0, "y": 5}, "data": {"label": "ClickUp", "config": {"action": "clickup.create_task", "args": {"list_id": "{{vars.list_id}}", "name": "{{clean.clean_name}}"}}}},
+      {"id": "task", "type": "tool", "position": {"x": 0, "y": 5}, "data": {"label": "HTTP", "config": {"action": "http.request", "args": {"url": "{{vars.endpoint}}", "method": "POST", "body": {"name": "{{clean.clean_name}}"}}}}},
       {"id": "done", "type": "output", "position": {"x": 0, "y": 6}, "data": {"label": "Done", "config": {"value": "{{task.task_id}}"}}},
       {"id": "skipped", "type": "output", "position": {"x": 1, "y": 3}, "data": {"label": "Not now", "config": {"value": "low priority"}}}
     ],

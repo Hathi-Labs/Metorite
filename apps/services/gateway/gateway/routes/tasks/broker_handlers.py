@@ -1,14 +1,27 @@
 """Persistent Action Broker handlers for task-provider writes (audit BO-1 / A2).
 
 Registered at gateway startup (see ``main.py``). When ``ACTION_BROKER_ENFORCE``
-queues a ClickUp write, approving it in the ``/actions`` inbox calls
-``action_broker.execute()``, which dispatches here. We **re-resolve the account's
-token** from the ``account_id`` stored in the queued proposal (the token itself
-is NEVER persisted) and run the raw provider write — completing the
+queues a provider write, approving it in the ``/actions`` inbox calls
+``action_broker.execute()``, which dispatches here. The account's token is
+**re-resolved** from the ``account_id`` stored in the queued proposal (the token
+itself is NEVER persisted) and the raw provider write runs — completing the
 enqueue → approve → execute loop end-to-end.
 
-Dormant unless enforcement is on: with the kill-switch off (default) nothing is
-queued, so these handlers never run.
+🔴 **``_WRITERS`` IS EMPTY SINCE D52 (2026-08-24, board WS-39 S1), and that is
+the decision.** Its six entries were all ``clickup.*`` and their ``_raw_*``
+targets lived on ``ClickUpProvider``, which is deleted — Metorite is the
+project-management system of record, so there is no outward task write to gate.
+
+⚠️ **What this means for a stale queued row.** A ``pending_actions`` row
+enqueued before the retirement is still approvable (``work_plan.md`` §6). With
+no entry here, approving one falls into ``broker.execute()``'s no-handler branch
+and the row is marked ``failed`` — which is the correct outcome: the write
+cannot be performed, and failing loudly beats reporting a success that reached
+nothing. Check with ``SELECT action, status FROM pending_actions`` before
+flipping anything.
+
+This module goes with the provider layer in WS-39 **S3a**; it is kept now so the
+registration call in ``main.py`` stays a no-op rather than an import error.
 """
 from __future__ import annotations
 
@@ -25,20 +38,17 @@ _log = get_logger("gateway.tasks.broker_handlers")
 # here, or approving that queued write falls into `broker.execute()`'s no-handler
 # branch and the `pending_actions` row is marked `failed` (BO-1a). The keys of an
 # entry must match the `args` dict the gate's `audit_payload` carries at that
-# call site — the handler reads them positionally. Both directions are fenced by
-# `tests/unit/test_task_broker_handlers.py`.
-_WRITERS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "clickup.create_task": ("_raw_create_task", ("project_ref", "body")),
-    "clickup.update_task": ("_raw_update_task", ("provider_task_id", "body")),
-    "clickup.delete_task": ("_raw_delete_task", ("provider_task_id",)),
-    "clickup.archive_task": (
-        "_raw_archive_task", ("provider_task_id", "archived"),
-    ),
-    "clickup.create_project": (
-        "_raw_create_project", ("name", "space_id", "folder_id"),
-    ),
-    "clickup.create_folder": ("_raw_create_folder", ("name", "space_id")),
-}
+# call site — the handler reads them positionally.
+#
+# ⚠️ **ADVISORY, not fenced (R7).** The test that checked both directions,
+# `tests/unit/test_task_broker_handlers.py`, was DELETED by D52 with the
+# connector it covered; it asserted a correspondence between two now-empty sets
+# and its own blind-walk guard (`assert gated`) is what D52 makes false. The
+# surviving fence is the emptiness —
+# `tests/unit/test_no_task_provider_connectors.py::test_the_broker_writer_map_is_empty`
+# — which is a different claim. Re-fence the correspondence with the next
+# gated writer; do not cite the deleted file.
+_WRITERS: dict[str, tuple[str, tuple[str, ...]]] = {}
 
 
 async def _resolve_provider(account_id: str):

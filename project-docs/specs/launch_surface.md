@@ -1,8 +1,18 @@
 # Launch Surface — what a customer sees on day one
 
 **Status: ACTIVE · owning spec of WS-34 · written 2026-08-24 · verified against
-code on 2026-08-24** (anchors below were read from the tree that day; re-verify
-every path at dispatch, R4/§1.4).
+code on 2026-08-24 · §2's `/calendar` GATE CORRECTED 2026-08-25** (anchors below
+were read from the tree that day; re-verify every path at dispatch, R4/§1.4).
+
+⚠️ **Correction, 2026-08-25 (WS-39 PR #91 repair round 1).** §2's `/calendar` row
+claimed the gate `feature:calendar`. **It is `feature:tasks`** — D54.1, and the
+code has always said so (`nav.ts`, `access.ts`'s `["/calendar", "tasks"]`, and
+`nav.test.ts`, which is §9 LS-1's fence). This table declares itself "the
+authority", so the error was live: acting on it means minting a slug nobody
+holds and shipping a live app dark to every existing Tasks holder. The stale
+"lifted out of `/tasks/calendar`" phrase is corrected in the same pass — D54.5
+measured that no such route ever existed; the calendar was a *view* inside
+`/tasks`, which makes D54 an extraction rather than a rename.
 
 **BUILT 2026-08-24 on `claude/app-visibility-seat-management-jlvnhl`:**
 LS-1 · LS-2 · LS-3 · LS-4 · LS-5 · LS-6 · LS-7 · LS-8 · LS-9 · LS-10.
@@ -88,7 +98,8 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 
 | Section | App | Route | Gate | Note |
 |---|---|---|---|---|
-| **Personal Center** | Tasks | `/tasks` | `feature:tasks` | |
+| **Personal Center** | Tasks | `/tasks` | `feature:tasks` | The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
+| **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
@@ -97,7 +108,9 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-Eight entries, four sections, in that order. **"Personal Center" survives as a
+**Nine** entries, four sections, in that order *(eight until 2026-08-24; D54 added
+Calendar — `nav.test.ts`'s count fence moved 8 → 9 in the same PR that added the pane,
+which is exactly what the fence is for)*. **"Personal Center" survives as a
 section label and nothing else** — it is a category of apps mapped one-to-one to
 the signed-in person, not a projection of a department, and the directive keeps
 it by name.
@@ -126,9 +139,11 @@ answer rather than a diff:
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the eight rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **nine** rows
 above are `live` — so adding a pane without deciding its launch status fails,
-and promoting one is a deliberate one-line edit with a test to update.
+and promoting one is a deliberate one-line edit with a test to update. *(It worked:
+D54's Calendar pane could not land without this table and that assertion both being
+edited on purpose.)*
 
 ---
 

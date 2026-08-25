@@ -1,129 +1,38 @@
-"""Archive-instead-of-delete back-propagation to ClickUp.
+"""Archive-instead-of-delete back-propagation to a connected workspace.
 
-A delete in the app removes the task locally but ARCHIVES its ClickUp
+A delete in the app removes the task locally but ARCHIVES its upstream
 counterpart (recoverable there) rather than hard-deleting it; an explicit
-Archive/Restore mirrors the same archived flag upstream. These tests lock:
+Archive/Restore mirrors the same archived flag upstream.
 
-  * ClickUpProvider.archive_task routes through the broker gate and PUTs
-    {archived: bool}; a 404 is treated as success (already gone);
-  * items._delete_upstream archives upstream (does NOT call delete_task);
-  * items._archive_upstream mirrors the flag for SYNCED rows only, best-effort
-    (a provider error never raises), and reuses one provider per account.
+🔧 **RE-CUT 2026-08-25 (D52 repair round 1, board WS-39 S1).** The first four
+cases in this file exercised ``ClickUpProvider.archive_task`` directly —
+constructing it, stubbing its ``httpx`` client, asserting the
+``clickup.archive_task`` broker action id. That class was DELETED by D52, so
+this module raised ``ImportError`` at COLLECTION and took the whole
+``tests/unit`` run down with it (``pytest -x`` on CI reported nothing else).
+They are deleted, not skipped, per §12.6 criterion 7 — there is no connector to
+assert against and no honest way to write one.
+
+What SURVIVES is the half that never belonged to ClickUp: ``items``' own
+contract with whatever provider it is handed.
+
+  * ``items._delete_upstream`` archives upstream and does **not** call
+    ``delete_task`` — the recoverability rule, which is the app's decision, not
+    the vendor's;
+  * ``items._archive_upstream`` mirrors the flag for SYNCED rows only,
+    best-effort (a provider error never raises), reusing one provider per
+    account.
+
+Both reach a recording stub through a patched ``build_provider``, so they never
+needed a real connector and do not need one now. ⚠️ This plumbing is
+**unreachable in production** — the registry is empty, so nothing can build a
+provider — and WS-39 **S3a** deletes it with the ``gtd_*`` store it serves.
+These tests go with it then.
 """
 from __future__ import annotations
 
 import asyncio
 import types
-
-import pytest
-
-from gateway.routes.tasks.providers import ClickUpProvider
-
-
-def _provider() -> ClickUpProvider:
-    return ClickUpProvider(token="tok", workspace_id="ws1")
-
-
-class _FakeResp:
-    def __init__(self, status_code: int):
-        self.status_code = status_code
-        self.text = ""
-
-
-class _FakeHttp:
-    """A stand-in async httpx.AsyncClient recording the PUT it receives."""
-
-    def __init__(self, status_code: int, sink: list):
-        self._status = status_code
-        self._sink = sink
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def put(self, url, headers=None, json=None):
-        self._sink.append({"url": url, "json": json})
-        return _FakeResp(self._status)
-
-
-def _patch_http(monkeypatch, status_code: int, sink: list):
-    import gateway.routes.tasks.providers as prov
-
-    monkeypatch.setattr(
-        prov.httpx, "AsyncClient",
-        lambda *a, **k: _FakeHttp(status_code, sink),
-    )
-
-
-def _no_db(monkeypatch):
-    """Keep the broker's audit off a real DB (record() catches the error)."""
-    import acb_graph
-
-    def _raise():
-        raise ConnectionError("no db in test")
-
-    monkeypatch.setattr(acb_graph, "get_session", _raise)
-
-
-def test_archive_task_puts_archived_true(monkeypatch):
-    monkeypatch.delenv("ACTION_BROKER_ENFORCE", raising=False)
-    _no_db(monkeypatch)
-    sink: list = []
-    _patch_http(monkeypatch, 200, sink)
-
-    asyncio.run(_provider().archive_task("T7", True))
-
-    assert len(sink) == 1
-    assert sink[0]["url"].endswith("/task/T7")
-    assert sink[0]["json"] == {"archived": True}
-
-
-def test_archive_task_can_unarchive(monkeypatch):
-    monkeypatch.delenv("ACTION_BROKER_ENFORCE", raising=False)
-    _no_db(monkeypatch)
-    sink: list = []
-    _patch_http(monkeypatch, 200, sink)
-
-    asyncio.run(_provider().archive_task("T7", False))
-
-    assert sink[0]["json"] == {"archived": False}
-
-
-def test_archive_task_404_is_success(monkeypatch):
-    """A gone task is already 'archived' — 404 must not raise."""
-    monkeypatch.delenv("ACTION_BROKER_ENFORCE", raising=False)
-    _no_db(monkeypatch)
-    sink: list = []
-    _patch_http(monkeypatch, 404, sink)
-
-    # Should complete without raising.
-    asyncio.run(_provider()._raw_archive_task("gone", True))
-
-
-def test_archive_task_routes_through_broker(monkeypatch):
-    """archive_task is an outward write → it goes through _broker_gate with the
-    'clickup.archive_task' action id (so the broker can gate/audit it)."""
-    seen: dict = {}
-
-    async def _fake_gate(self, action, ref, payload, do_write):
-        seen["action"] = action
-        seen["ref"] = ref
-        return await do_write()
-
-    monkeypatch.delenv("ACTION_BROKER_ENFORCE", raising=False)
-    _no_db(monkeypatch)
-    sink: list = []
-    _patch_http(monkeypatch, 200, sink)
-    monkeypatch.setattr(ClickUpProvider, "_broker_gate", _fake_gate)
-
-    asyncio.run(_provider().archive_task("T9", True))
-
-    assert seen["action"] == "clickup.archive_task"
-    assert seen["ref"] == "task:T9"
-    assert len(sink) == 1  # the underlying write still happened
-
 
 # ── items._delete_upstream / _archive_upstream ──────────────────────────────
 
@@ -148,12 +57,17 @@ class _RecordingProvider:
 
 def _patch_provider_build(monkeypatch, provider):
     """Stub out account lookup + credential decrypt + provider construction so
-    _delete_upstream/_archive_upstream reach a recording provider with no DB."""
+    _delete_upstream/_archive_upstream reach a recording provider with no DB.
+
+    ``build_provider`` is patched rather than exercised: since D52 the real one
+    refuses every name (the registry is empty), and what these cases are about
+    is what ``items`` DOES with a provider — not which provider it gets.
+    """
     import gateway.routes.tasks.items as items
 
     async def _fake_owner(db, acc_id, uid):
         return types.SimpleNamespace(
-            id=acc_id, provider="clickup", workspace_id="ws1",
+            id=acc_id, provider="stub", workspace_id="ws1",
             credentials_encrypted=b"x")
 
     monkeypatch.setattr(items, "_assert_account_owner", _fake_owner)
@@ -174,7 +88,7 @@ def test_delete_upstream_archives_not_deletes(monkeypatch):
     asyncio.run(items._delete_upstream(None, _row(), "u1"))
 
     assert prov.archived == [("T1", True)]
-    assert prov.deleted == []  # the ClickUp DELETE is never used
+    assert prov.deleted == []  # the upstream DELETE is never used
 
 
 def test_archive_upstream_skips_local_and_mirrors_synced(monkeypatch):
@@ -201,7 +115,7 @@ def test_archive_upstream_is_best_effort(monkeypatch):
     class _Flaky(_RecordingProvider):
         async def archive_task(self, tid, archived=True):
             if tid == "T1":
-                raise RuntimeError("clickup down")
+                raise RuntimeError("provider down")
             await super().archive_task(tid, archived)
 
     prov = _Flaky()

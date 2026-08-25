@@ -7,7 +7,7 @@ import {
   type TaskSettings,
   type EnergyWindow,
   type DayTemplate,
-} from "../../lib/api";
+} from "@/app/tasks/lib/api";
 import { DEFAULT_PLANNING_PROMPT, hourLabel } from "./shared";
 
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"]; // 0=Sun … 6=Sat

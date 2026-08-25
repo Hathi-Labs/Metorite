@@ -14,6 +14,14 @@ import type { TriggerSpec } from "../lib/types";
 const inputCls =
   "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring";
 
+/**
+ * The event sources the picker OFFERS. A stored workflow may name one that is
+ * not here — `clickup` on any workflow saved before D52 retired it — and that
+ * value must still be rendered rather than silently dropped; see the retired
+ * option below the list.
+ */
+const KNOWN_EVENT_SOURCES = ["zoho", "gmail", "custom"];
+
 /** Suggestions only — the field accepts any IANA zone the server can resolve. */
 const COMMON_TIMEZONES = [
   "UTC",
@@ -243,7 +251,7 @@ export default function TriggerPanel({
                 e.target.checked
                   ? upsert("event", {
                       enabled: true,
-                      config: { source: String(event?.config.source ?? "clickup") },
+                      config: { source: String(event?.config.source ?? "zoho") },
                     })
                   : remove("event")
               }
@@ -253,7 +261,7 @@ export default function TriggerPanel({
             <div className="mt-1.5 space-y-1">
               <div className="flex gap-1.5">
                 <select
-                  value={String(event.config.source ?? "clickup")}
+                  value={String(event.config.source ?? "zoho")}
                   onChange={(e) =>
                     upsert("event", {
                       config: { ...event.config, source: e.target.value },
@@ -261,10 +269,27 @@ export default function TriggerPanel({
                   }
                   className={inputCls}
                 >
-                  <option value="clickup">clickup</option>
                   <option value="zoho">zoho</option>
                   <option value="gmail">gmail</option>
                   <option value="custom">custom</option>
+                  {/* A stored source no longer on the list — `clickup` after
+                      D52 — must still RENDER. A <select> whose value matches no
+                      option shows BLANK, so an existing workflow looked
+                      unconfigured, and the first save silently rewrote its
+                      trigger to whichever option the browser had selected.
+                      Shown, named as retired, and `disabled` so it cannot be
+                      chosen again: the row keeps telling the truth about what
+                      it is bound to until somebody deliberately re-points it. */}
+                  {!KNOWN_EVENT_SOURCES.includes(
+                    String(event.config.source ?? "zoho"),
+                  ) && (
+                    <option
+                      value={String(event.config.source ?? "")}
+                      disabled
+                    >
+                      (retired) {String(event.config.source ?? "")}
+                    </option>
+                  )}
                 </select>
                 <input
                   placeholder="event type (blank = all)"
@@ -278,8 +303,8 @@ export default function TriggerPanel({
                 />
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Fires on provider events (e.g. ClickUp{" "}
-                <code className="bg-secondary px-1 rounded">taskUpdated</code>)
+                Fires on provider events (e.g. Zoho{" "}
+                <code className="bg-secondary px-1 rounded">Contacts.edit</code>)
                 and on signed posts to{" "}
                 <code className="bg-secondary px-1 rounded">
                   /agent/webhook/&#123;source&#125;

@@ -10,10 +10,10 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useMemo, useState } from "react";
-import { GtdItem } from "../lib/types";
-import { priorityRank } from "../lib/priority";
-import { durationLabel } from "../lib/utils";
-import { DEFAULT_BLOCK_MINS } from "../lib/scheduling";
+import { GtdItem } from "@/app/tasks/lib/types";
+import { priorityRank } from "@/app/tasks/lib/priority";
+import { durationLabel } from "@/app/tasks/lib/utils";
+import { DEFAULT_BLOCK_MINS } from "@/app/tasks/lib/scheduling";
 import {
   completeStartup,
   loadFocusPrefs,
@@ -22,7 +22,7 @@ import {
   dayKey,
   toggleOneThing,
   oneThingIdFor,
-} from "../lib/focusPrefs";
+} from "@/app/tasks/lib/focusPrefs";
 
 const BREATHE_SECS = 60;
 

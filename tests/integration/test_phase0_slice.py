@@ -47,31 +47,8 @@ def test_audit_event_persists_to_db() -> None:
     assert row.payload == {"k": 1}
 
 
-def test_clickup_normaliser_upserts() -> None:
-    from acb_graph import get_session
-    from acb_graph.models import Task
-    from ingestion.sources.clickup.normaliser import normalise_tasks
-    from sqlalchemy import select
-
-    sample = [
-        {
-            "id": "test-task-9001",
-            "name": "Calibrate end-effector",
-            "list": {"id": "test-list-9001", "name": "Test List"},
-            "space": {"name": "Test Space"},
-            "status": {"status": "in_progress"},
-            "date_updated": "1700000000000",
-            "assignees": [
-                {"id": 42, "username": "Test User", "email": "test@fracktal.in"}
-            ],
-        }
-    ]
-
-    with get_session() as s:
-        counts = normalise_tasks(s, sample)
-    assert counts == {"project": 1, "person": 1, "task": 1}
-
-    with get_session() as s:
-        row = s.execute(select(Task).where(Task.clickup_id == "test-task-9001")).scalar_one()
-    assert row.title == "Calibrate end-effector"
-    assert row.stage == "in_progress"
+# ⚠️ `test_clickup_normaliser_upserts` was DELETED 2026-08-24 by D52 (board
+# WS-39 S1) along with `ingestion/sources/clickup/`. Metorite is the
+# project-management system of record, so there is no PM normaliser to test.
+# The `Task.clickup_id` COLUMN survives on purpose (D52.3, R6 expand/contract)
+# — it is dropped in a later release, not by whoever notices it next.

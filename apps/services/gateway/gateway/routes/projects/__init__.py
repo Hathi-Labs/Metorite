@@ -25,8 +25,14 @@ that calls its route function directly still passes. That trap is documented in
 ``department_centers.md`` C1 and it is why ``tests/unit/test_projects_routes.py``
 asserts the mounted path set rather than only calling the functions.
 
-``sync.py`` is WS-27c (the two-way coexistence sync) and is deliberately absent;
-it is blocked on WS-1's BO-1a and BO-1b, which the spec names as prerequisites.
+⚠️ **There is no ``sync.py``, no ``import_clickup.py``, no ``import_tasks.py`` and
+no ``mapping.py``, and their absence is a DECISION rather than a backlog.**
+**D52** (2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the
+project-management system of record, so there is no external system to import
+from, sync with or map onto. WS-27c is cancelled, not deferred. Do not re-add an
+importer here — the ``gtd_*`` → ``pm_*`` move that D53 still needs is a **backfill
+migration**, not an HTTP endpoint, precisely so this package keeps exactly one
+write path into ``pm_tasks``.
 """
 
 from gateway.routes.projects import activities as _activities  # noqa: F401
@@ -38,8 +44,6 @@ from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
-from gateway.routes.projects import import_clickup as _import_clickup  # noqa: F401
-from gateway.routes.projects import import_tasks as _import_tasks  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
 from gateway.routes.projects import me as _me  # noqa: F401
 from gateway.routes.projects import notifications as _notifications  # noqa: F401

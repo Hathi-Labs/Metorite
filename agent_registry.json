@@ -1,23 +1,28 @@
 [
   {
     "name": "task-manager",
-    "description": "ClickUp task management — status, progress, and workload questions with citations.",
-    "tags": ["tasks", "clickup", "project-management"],
+    "description": "Task management (GTD) — status, progress, and workload questions with citations.",
+    "tags": [
+      "tasks",
+      "gtd",
+      "project-management"
+    ],
     "status": "live",
     "agent_runtime": "maf",
     "local_path": "apps/agents/agent-task-manager",
-    "integrations": ["clickup"],
-    "optional_integrations": [],
-    "webhook_routes": [
-      {"source": "clickup", "event_type": "taskCreated"},
-      {"source": "clickup", "event_type": "taskUpdated"},
-      {"source": "clickup", "event_type": "taskDeleted"}
-    ]
+    "integrations": [],
+    "optional_integrations": []
   },
   {
     "name": "crm-assistant",
     "description": "CRM Assistant — works the native CRM: finds leads, deals, contacts and organizations, reads the deal pipeline by stage, opens a record, and reads its history; and creates a lead, moves a deal between stages, logs a note/call/meeting/task and converts a lead into a deal. Every write asks the acting user to approve it first and does nothing if nobody is there to ask. It cannot delete a CRM record.",
-    "tags": ["crm", "sales", "pipeline", "leads", "deals"],
+    "tags": [
+      "crm",
+      "sales",
+      "pipeline",
+      "leads",
+      "deals"
+    ],
     "status": "live",
     "agent_runtime": "maf",
     "local_path": "apps/agents/agent-crm",
@@ -27,52 +32,79 @@
   {
     "name": "sales",
     "description": "Zoho CRM sales pipeline + deal follow-ups",
-    "tags": ["sales", "zoho"],
+    "tags": [
+      "sales",
+      "zoho"
+    ],
     "status": "live",
     "agent_runtime": "maf",
-    "integrations": ["zoho-crm"],
-    "optional_integrations": ["gmail-send"]
+    "integrations": [
+      "zoho-crm"
+    ],
+    "optional_integrations": [
+      "gmail-send"
+    ]
   },
   {
     "name": "delivery",
     "description": "Project delivery monitoring + push notifications",
-    "tags": ["delivery"],
+    "tags": [
+      "delivery"
+    ],
     "status": "live",
     "agent_runtime": "maf",
-    "integrations": ["clickup"],
+    "integrations": [],
     "optional_integrations": []
   },
   {
     "name": "triage",
     "description": "Email / WhatsApp / meeting triage + routing",
-    "tags": ["triage", "email"],
+    "tags": [
+      "triage",
+      "email"
+    ],
     "status": "live",
     "agent_runtime": "maf",
-    "integrations": ["gmail", "zoho-crm"],
-    "optional_integrations": ["clickup"]
+    "integrations": [
+      "gmail",
+      "zoho-crm"
+    ],
+    "optional_integrations": []
   },
   {
     "name": "reconciler",
     "description": "Nightly source-of-truth diff + escalation",
-    "tags": ["ops"],
+    "tags": [
+      "ops"
+    ],
     "status": "live",
     "agent_runtime": "maf",
-    "integrations": ["clickup", "zoho-crm"],
+    "integrations": [
+      "zoho-crm"
+    ],
     "optional_integrations": []
   },
   {
     "name": "billing",
     "description": "Billing & invoice workflows",
-    "tags": ["billing"],
+    "tags": [
+      "billing"
+    ],
     "status": "live",
     "agent_runtime": "maf",
-    "integrations": ["zoho-crm"],
-    "optional_integrations": ["smtp"]
+    "integrations": [
+      "zoho-crm"
+    ],
+    "optional_integrations": [
+      "smtp"
+    ]
   },
   {
     "name": "strategy",
     "description": "Weekly digest + planning synthesis",
-    "tags": ["strategy"],
+    "tags": [
+      "strategy"
+    ],
     "status": "live",
     "agent_runtime": "maf",
     "integrations": [],

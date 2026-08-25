@@ -1507,6 +1507,17 @@ class FakeProjectsDB:
                 p_time_estimate_mins=mine.get("time_estimate_mins"),
                 p_is_two_minute=bool(mine.get("is_two_minute", False)),
                 p_defer_until=mine.get("defer_until"),
+                # The scheduled block (187, WS-39 S3a). ⚠️ Projected here
+                # because the route reads `p_*` aliases: a fake that omits an
+                # alias answers None, which reads as "no block" rather than as
+                # "the fake does not know", and that is a green test for a
+                # feature that does not work.
+                p_scheduled_start=mine.get("scheduled_start"),
+                p_scheduled_end=mine.get("scheduled_end"),
+                p_flexible=mine.get("flexible"),
+                p_is_hard_date=mine.get("is_hard_date"),
+                p_actual_start=mine.get("actual_start"),
+                p_actual_end=mine.get("actual_end"),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
             ))

@@ -3,7 +3,7 @@
 /**
  * /approvals — Action Broker approval inbox (BO-1 / A2).
  *
- * The human-review queue for outward writes (ClickUp / email / CRM) an agent
+ * The human-review queue for outward writes (email / CRM) an agent
  * proposed while ACTION_BROKER_ENFORCE is on. Approving runs the broker's
  * registered handler — it executes the real write. Rejecting refuses it; it is
  * never performed. Data:

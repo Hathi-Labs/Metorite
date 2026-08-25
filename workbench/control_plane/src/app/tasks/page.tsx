@@ -12,9 +12,12 @@ import { ItemDetail } from "./components/ItemDetail";
 import { AssistantRail } from "./components/AssistantRail";
 import { InboxView } from "./components/InboxView";
 import { EngageView } from "./components/EngageView";
-import { CalendarView } from "./components/CalendarView";
 import { QuickCapture } from "./components/QuickCapture";
-import { WorkspacesModal } from "./components/WorkspacesModal";
+// ⚠️ `WorkspacesModal` was deleted 2026-08-25 (D52, WS-39 S1 repair round 1).
+// It was the ClickUp connect flow — paste token → list workspaces → connect —
+// and every one of its calls ended in `build_provider` → 400 "Unknown
+// provider" once the registry emptied. Its only entry point was the sidebar's
+// "Connect workspace…" button, deleted with it.
 import { TaskSettingsModal } from "./components/TaskSettingsModal";
 import { TaskFocusModal } from "./components/TaskFocusModal";
 import { ReclarifyModal } from "./components/ReclarifyModal";
@@ -53,21 +56,22 @@ export default function TasksPage() {
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
   const isInbox = selectedView === "inbox";
   const isEngage = selectedView === "engage";
-  const isCalendar = selectedView === "calendar";
 
   // The list/board surface is the only one with a docked detail column: Inbox
-  // clarifies in place (its own ClarifyModal), Engage and Calendar are
-  // full-width by design, and the Assistant replaces the panes entirely.
-  const paneDocked =
-    !isMobile && !assistantOpen && !isInbox && !isEngage && !isCalendar;
+  // clarifies in place (its own ClarifyModal), Engage is full-width by design,
+  // and the Assistant replaces the panes entirely. (Calendar was a fourth
+  // exception here until D54 moved it to its own app — WS-39 S2.)
+  const paneDocked = !isMobile && !assistantOpen && !isInbox && !isEngage;
 
   // On the docked surface the pane IS the detail view, so a row that calls the
   // app-wide `openFocus` verb (TaskCard, TaskBoard, WaitingForView, the grouped
   // list) must select into the pane rather than raise the overlay. `openFocus`
   // sets `selectedItemId` as well as `focusedItemId`, so dropping the focus
   // half is the whole change — and it has to be dropped rather than ignored, or
-  // a stale id would pop the overlay open the moment the user switched to
-  // Calendar, which reads the same store field.
+  // a stale id would pop the overlay open the moment the user switched to a
+  // full-width surface, which reads the same store field. ⚠️ Still true across
+  // apps since D54: `/calendar` reads this same store and mounts its own
+  // `TaskFocusModal`, so a focus id left set here follows the user there.
   useEffect(() => {
     if (paneDocked && focusedItemId) closeFocus();
   }, [paneDocked, focusedItemId, closeFocus]);
@@ -164,13 +168,10 @@ export default function TasksPage() {
           <InboxView />
         ) : isEngage ? (
           <EngageView />
-        ) : isCalendar ? (
-          <CalendarView />
         ) : (
           <ItemList />
         )}
         <QuickCapture />
-        <WorkspacesModal />
         <TaskSettingsModal />
         <TaskFocusModal />
         <ReclarifyModal />
@@ -250,12 +251,6 @@ export default function TasksPage() {
           <div className="min-w-0 flex-1 overflow-hidden border-r border-border">
             <EngageView />
           </div>
-        ) : isCalendar ? (
-          /* Calendar: the timeboxing surface — full-width day/week/month grid
-             (spec: calendar_timeboxing.md), no list/detail split. */
-          <div className="min-w-0 flex-1 overflow-hidden border-r border-border">
-            <CalendarView />
-          </div>
         ) : (
           /* Task views (Next/Waiting/Someday/…): list/board plus the docked
              detail column — the house layout (DESIGN_SYSTEM §6: content, then
@@ -286,11 +281,11 @@ export default function TasksPage() {
       </div>
 
       <QuickCapture />
-      <WorkspacesModal />
       <TaskSettingsModal />
       {/* Where a detail column is docked the overlay is CONTROLLED — it opens
           only from that pane's maximise. Everywhere else on desktop (Inbox,
-          Engage, Calendar, Assistant) it stays store-driven, because those
+          Engage, Assistant, and the /calendar app) it stays store-driven,
+          because those
           surfaces call `openFocus` and have nowhere else to show a task. */}
       {paneDocked ? (
         <TaskFocusModal itemId={maximisedId} onClose={closeMaximised} />

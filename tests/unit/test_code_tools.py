@@ -259,36 +259,36 @@ def test_code_task_failure_still_sweeps(ws, mirrored, monkeypatch):
 def test_script_env_grants_declared_integration_vars(ws, monkeypatch):
     """A script gets exactly its agent's DECLARED integrations' env vars —
     the undeclared ones stay scrubbed even though they match registry names."""
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["clickup"])
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_declared")
-    monkeypatch.setenv("CLICKUP_WORKSPACE_ID", "ws1")
+    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_declared")
+    monkeypatch.setenv("ZOHO_CLIENT_SECRET", "ws1")
     monkeypatch.setenv("APOLLO_API_KEY", "sk_undeclared")  # not declared
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "sk-platform")  # never
     env = ct._script_env()
-    assert env.get("CLICKUP_API_TOKEN") == "pk_declared"
-    assert env.get("CLICKUP_WORKSPACE_ID") == "ws1"
+    assert env.get("ZOHO_CLIENT_ID") == "pk_declared"
+    assert env.get("ZOHO_CLIENT_SECRET") == "ws1"
     assert "APOLLO_API_KEY" not in env
     assert "GATEWAY_INTERNAL_TOKEN" not in env
 
 
 def test_script_env_no_declared_integrations_stays_fully_scrubbed(ws, monkeypatch):
     monkeypatch.delitem(_WRITE_ARTIFACT_CONTEXT, "integrations", raising=False)
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_x")
-    assert "CLICKUP_API_TOKEN" not in ct._script_env()
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_x")
+    assert "ZOHO_CLIENT_ID" not in ct._script_env()
 
 
 def test_run_script_subprocess_sees_declared_integration(ws, mirrored, monkeypatch):
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["clickup"])
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_live_test")
+    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_live_test")
     monkeypatch.setenv("SERPAPI_API_KEY", "sk_not_declared")
     p = ws / "agent-data" / "scripts" / "integ.py"
     p.write_text(
         "import os\n"
-        "print('clickup:', 'yes' if os.getenv('CLICKUP_API_TOKEN') else 'no')\n"
+        "print('zoho:', 'yes' if os.getenv('ZOHO_CLIENT_ID') else 'no')\n"
         "print('serpapi:', 'yes' if os.getenv('SERPAPI_API_KEY') else 'no')\n"
     )
     out = asyncio.run(ct.run_script("agent-data/scripts/integ.py"))
-    assert "clickup: yes" in out
+    assert "zoho: yes" in out
     assert "serpapi: no" in out
 
 
@@ -301,8 +301,9 @@ def test_field_to_env_matches_every_registered_service():
 
 def test_env_var_names_helper():
     from acb_skills.integrations import env_var_names
-    assert env_var_names(["clickup"]) == {
-        "CLICKUP_API_TOKEN", "CLICKUP_WORKSPACE_ID",
+    assert env_var_names(["zoho-crm"]) == {
+        "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN",
+        "ZOHO_API_DOMAIN", "ZOHO_ACCOUNTS_URL", "ZOHO_REGION",
     }
     assert env_var_names(["nope"]) == set()
     assert env_var_names([]) == set()
@@ -310,14 +311,14 @@ def test_env_var_names_helper():
 
 def test_list_integrations_reports_names_never_values(monkeypatch):
     from acb_skills.integration_tools import list_integrations
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["clickup"])
+    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
     monkeypatch.setitem(
         _WRITE_ARTIFACT_CONTEXT, "integration_warnings",
         {"apollo": "apollo: APOLLO_API_KEY is required."},
     )
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_secret_value")
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_secret_value")
     out = asyncio.run(list_integrations())
-    assert "clickup" in out and "CLICKUP_API_TOKEN" in out
+    assert "zoho-crm" in out and "ZOHO_CLIENT_ID" in out
     assert "pk_secret_value" not in out  # names only, never values
     assert "apollo" in out and "UNAVAILABLE" in out
 
@@ -337,8 +338,8 @@ def test_code_task_session_prompt_names_integration_env_vars(ws, mirrored, monke
     prompt never carries credential values."""
     import orchestrator.code_session as cs
 
-    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["clickup"])
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_secret_value")
+    monkeypatch.setitem(_WRITE_ARTIFACT_CONTEXT, "integrations", ["zoho-crm"])
+    monkeypatch.setenv("ZOHO_CLIENT_ID", "pk_secret_value")
     seen: dict[str, str] = {}
 
     async def _capture(*, task, workspace, **kw):
@@ -346,8 +347,8 @@ def test_code_task_session_prompt_names_integration_env_vars(ws, mirrored, monke
         return "ok"
 
     monkeypatch.setattr(cs, "run_copilot_code_session", _capture)
-    asyncio.run(ct.code_task("pull my clickup tasks"))
-    assert "CLICKUP_API_TOKEN" in seen["task"]
+    asyncio.run(ct.code_task("pull my zoho leads"))
+    assert "ZOHO_CLIENT_ID" in seen["task"]
     assert "pk_secret_value" not in seen["task"]
 
 

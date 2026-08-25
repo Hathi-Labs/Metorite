@@ -5,15 +5,15 @@ import { useRef, useState } from "react";
 import {
   type EnergyWindow,
   type DayTemplate,
-} from "../../lib/api";
-import { GtdItem } from "../../lib/types";
+} from "@/app/tasks/lib/api";
+import { GtdItem } from "@/app/tasks/lib/types";
 import {
   sameDay,
   blocksForDay,
   type Block,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
-} from "../../lib/focusPrefs";
+} from "@/app/tasks/lib/focusPrefs";
 import {
   HOUR_PX,
   DOW,
@@ -29,7 +29,7 @@ import {
   type DragPayload,
   type OutcomeById,
 } from "./shared";
-import { ContextMenu, type CtxItem } from "../ContextMenu";
+import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 
 
 // ── Day / Week hour grid ─────────────────────────────────────────────────────

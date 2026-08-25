@@ -1,7 +1,7 @@
 """The Workflow Copilot — chat-to-build inside the editor (spec F12→F14).
 
 ``POST /workflows/{id}/copilot`` takes a maker's instruction ("when a lead
-webhook fires, classify it, clean the contacts, and make a ClickUp task"),
+webhook fires, classify it, clean the contacts, and make a task"),
 shortlists relevant capabilities through the SAME semantic search the palette
 uses, and asks the LLM to emit a full edit-model graph plus any **new modules
 the graph needs that don't exist yet**. New modules are validated (the Module

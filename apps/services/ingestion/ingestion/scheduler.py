@@ -1,15 +1,19 @@
-"""Nightly scheduler — wraps the three Phase-0 jobs with APScheduler.
+"""Nightly scheduler — wraps the Phase-0 jobs with APScheduler.
 
 Run as a foreground process; long-lived. In production deploy as a systemd
 service or `docker compose` worker. Times are local-server time.
 
     uv run python -m ingestion.scheduler          # default schedule (below)
-    uv run python -m ingestion.scheduler --once   # run all three jobs immediately and exit
+    uv run python -m ingestion.scheduler --once   # run every job immediately and exit
 
 Default schedule (Asia/Kolkata):
-    02:30  clickup_sync
     02:50  zoho_sync
     03:10  reconciler.run()
+
+⚠️ The 02:30 ``clickup_sync`` job was REMOVED 2026-08-24 by **D52** (board WS-39
+S1), which retired ClickUp outright — there is no connector to poll. Do not
+re-add a job here for a project-management source: Metorite is the PM system of
+record (root ``AGENTS.md`` constraint 8, amended).
 """
 from __future__ import annotations
 
@@ -24,25 +28,6 @@ from apscheduler.triggers.cron import CronTrigger
 from acb_audit import AuditEvent, record
 
 _log = structlog.get_logger(__name__)
-
-
-async def _run_clickup() -> None:
-    from scripts import clickup_sync  # lazy import to keep startup cheap
-
-    _log.info("scheduler.clickup_sync.start")
-    try:
-        await clickup_sync.main()
-        record(AuditEvent(actor="job:scheduler", action="run_ok", target="job:clickup_sync", payload={}))
-    except Exception as exc:
-        _log.exception("scheduler.clickup_sync.failed")
-        record(
-            AuditEvent(
-                actor="job:scheduler",
-                action="run_failed",
-                target="job:clickup_sync",
-                payload={"error": str(exc)[:500]},
-            )
-        )
 
 
 async def _run_zoho() -> None:
@@ -93,14 +78,12 @@ async def _run_reconciler() -> None:
 
 
 async def _run_once() -> None:
-    await _run_clickup()
     await _run_zoho()
     await _run_reconciler()
 
 
 def build_scheduler(*, tz: str = "Asia/Kolkata") -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone=tz)
-    sched.add_job(_run_clickup, CronTrigger(hour=2, minute=30, timezone=tz), id="clickup_sync")
     sched.add_job(_run_zoho, CronTrigger(hour=2, minute=50, timezone=tz), id="zoho_sync")
     sched.add_job(_run_reconciler, CronTrigger(hour=3, minute=10, timezone=tz), id="reconciler")
     return sched

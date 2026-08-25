@@ -11,7 +11,7 @@
  * entirely on THIS side of the postMessage channel: every `cc.*` call the
  * app makes is answered synchronously against an in-memory store seeded
  * from `scenario.seed`, instead of being brokered to
- * `/api/apps/{slug}/…`. No real ClickUp task, no real AI spend, no real
+ * `/api/apps/{slug}/…`. No real outward write, no real AI spend, no real
  * `app_data` row is ever touched — which is what makes it safe to run
  * automatically and often (every builder turn), not just when someone
  * remembers to click "test."

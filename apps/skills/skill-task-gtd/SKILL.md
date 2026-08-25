@@ -3,7 +3,7 @@
 Provider-agnostic GTD tools for `agent-task-manager`. Every tool operates on
 the canonical GTD store through the gateway `/tasks` API (internal token +
 `X-User-Email`) — never on a PM tool's REST API directly; the gateway's
-provider interface layer resolves the connector (ClickUp first).
+provider interface layer resolves the connector (the registry is empty — D52).
 
 | Tool | What it does |
 |---|---|

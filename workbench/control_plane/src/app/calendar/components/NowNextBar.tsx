@@ -2,11 +2,11 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { GtdItem } from "../../lib/types";
+import { GtdItem } from "@/app/tasks/lib/types";
 import {
   startOfDay,
   blocksForDay,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   fmtClock,
   fmtLeft,

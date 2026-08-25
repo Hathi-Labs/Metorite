@@ -79,7 +79,7 @@ const TRIGGER_KIND_HINTS = [
   { kind: "manual" as const, hint: "Run button / POST /workflows/{id}/run" },
   { kind: "webhook" as const, hint: "per-workflow tokened URL (+ optional HMAC)" },
   { kind: "schedule" as const, hint: "cron expression, UTC" },
-  { kind: "event" as const, hint: "platform events (ClickUp/Zoho/Gmail changes)" },
+  { kind: "event" as const, hint: "platform events (Zoho/Gmail changes)" },
 ];
 
 /** Edit-model graph → React Flow state (used on load and on copilot apply). */

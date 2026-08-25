@@ -397,7 +397,7 @@ def _validate_trigger_specs(triggers: list[TriggerSpec]) -> None:
         if trig.kind == "event" and not str(trig.config.get("source") or "").strip():
             raise HTTPException(
                 status_code=422,
-                detail="Event triggers need a source (e.g. clickup)",
+                detail="Event triggers need a source (e.g. zoho)",
             )
 
 

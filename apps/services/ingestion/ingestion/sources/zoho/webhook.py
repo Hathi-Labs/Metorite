@@ -49,7 +49,7 @@ async def receive(
 ) -> dict[str, str]:
     """Receive a Zoho CRM notification. Verifies a shared secret, audit-logs it,
     enqueues it onto ``ingestion:zoho`` and fans it out to the event-sink
-    registry (workflow event triggers) — ClickUp's shape, per §BO-20 BO-20f."""
+    registry (workflow event triggers) — the shape BO-20f settled on, per §BO-20."""
     if not _verify(token or x_zoho_token):
         raise HTTPException(status_code=401, detail="invalid token")
     payload: dict[str, Any] = await request.json()
@@ -68,8 +68,8 @@ async def receive(
     event = str(payload.get("event") or payload.get("operation") or "unknown")
     # NB: the key must NOT be `event=` — that is structlog's own message
     # parameter, and passing it raised TypeError on every authenticated push
-    # (the receiver 500'd before this ticket added any code). ClickUp already
-    # sidesteps it with `clickup_event=`; mirror that.
+    # (the receiver 500'd before this ticket added any code). The retired
+    # ClickUp receiver sidestepped it with a `<source>_event=` kwarg; mirror that.
     _log.info("zoho.webhook", zoho_event=event, module=module)
     record(
         AuditEvent(

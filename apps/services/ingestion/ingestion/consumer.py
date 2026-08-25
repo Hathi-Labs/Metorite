@@ -86,7 +86,7 @@ import redis.asyncio as aioredis
 from acb_common import get_logger, get_settings
 from redis.exceptions import ResponseError
 
-from ingestion.queue import STREAM_CLICKUP, STREAM_GMAIL, STREAM_ZOHO
+from ingestion.queue import STREAM_GMAIL, STREAM_ZOHO
 
 _log = get_logger("ingestion.consumer")
 
@@ -108,7 +108,7 @@ _READ_COUNT = 8
 _ERROR_BACKOFF_SECS = 1.0
 
 #: Ceiling on ONE entry's whole sink fan-out. Bounded because this loop drains
-#: all three streams serially: an unbounded ``await emit_event`` turns a single
+#: every stream serially: an unbounded ``await emit_event`` turns a single
 #: hung sink into a bus-wide stall (see "Dispatch timeout" above). 30s is far
 #: above any legitimate sink — the registered one, ``workflows.dispatch_event``,
 #: is DB-bound (it inserts the run row and ``create_task``s ``_execute_run``; it
@@ -121,7 +121,6 @@ _ENABLED_ENV = "INGESTION_CONSUMER"
 #: the receivers emit inline today, so a workflow event trigger matches
 #: identically on either side of the cutover.
 STREAM_SOURCES: dict[str, str] = {
-    STREAM_CLICKUP: "clickup",
     STREAM_ZOHO: "zoho",
     STREAM_GMAIL: "gmail",
 }

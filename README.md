@@ -6,7 +6,7 @@
 
 ## What is Metorite?
 
-Metorite is the operating system for Fracktal Works. It coordinates a fleet of specialist AI agents (sales, triage, delivery, billing, reconciler, strategy, task‑manager, email‑assistant) over company data in ClickUp, Zoho CRM, Odoo ERP, Gmail/IMAP, and meetings — with human‑in‑the‑loop approval for outward writes.
+Metorite is the operating system for Fracktal Works. It coordinates a fleet of specialist AI agents (sales, triage, delivery, billing, reconciler, strategy, task‑manager, email‑assistant) over company data in its own project-management store, Zoho CRM, Odoo ERP, Gmail/IMAP, and meetings — with human‑in‑the‑loop approval for outward writes.
 
 **Architecture in one sentence:** A FastAPI gateway receives chat / webhook / cron events, dynamically clones the target `agent-<name>` repository and its declared `skill-<name>` dependencies, imports the agent's `agents.py` at runtime via `importlib`, and runs it on the MAF runtime — either as a native MAF `ChatAgent` (routed through the gateway's own OpenAI‑compatible `/v1` endpoint via the LiteLLM SDK) or, for Copilot‑SDK‑backed agents, via `agent_framework_github_copilot`.
 
@@ -20,7 +20,7 @@ Metorite is the operating system for Fracktal Works. It coordinates a fleet of s
 
 ```
 Hathi-Labs/Metorite          ← This repo: Core engine + infra
-FracktalWorks/agent-task-manager     ← Agent: ClickUp task management
+FracktalWorks/agent-task-manager     ← Agent: task management (GTD)
 FracktalWorks/agent-sales            ← Agent: Zoho CRM sales workflows
 FracktalWorks/agent-delivery         ← Agent: project delivery + push
 FracktalWorks/agent-triage           ← Agent: email/WhatsApp/meeting triage
@@ -68,7 +68,7 @@ Each **skill repo** is a Python package — pip‑installable, well‑typed entr
 ```
 
 **Key principles:**
-- **Source of truth = ClickUp / Zoho / Odoo.** The Core is a read‑mostly mirror; outward writes are approval‑gated.
+- **Source of truth = Zoho / Odoo** for CRM and ERP; the Core is a read‑mostly mirror of those and outward writes are approval‑gated. ⚠️ **Metorite itself is the source of truth for PROJECT MANAGEMENT** — ClickUp was retired outright on 2026-08-24 (D52); `pm_tasks`/`pm_task_personal` are the one task store and there is nothing upstream to mirror.
 - **Decoupled repositories.** Each agent and skill is an independent GitHub repo, versioned and tested independently.
 - **Dynamic loading.** Core adopts new agent logic on the next event — repos are cloned/pulled at event time (no redeploy).
 - **Self‑mutation with a human gate.** A structurally broken repo gets an auto‑proposed fix; a human approves before it is pushed.
@@ -90,7 +90,7 @@ project-docs/        # Planning docs — start with AGENTS.md
 apps/                    # Deployable services / app modules
   gateway/               # FastAPI: events, /v1 LLM proxy, approvals, email + tasks routes
   orchestrator/          # MAF executor, dynamic agent loader, self-mutation
-  ingestion/             # ClickUp / Zoho / Gmail webhook receivers + queue
+  ingestion/             # Zoho / Gmail webhook receivers + queue
   email_ingestion/       # Email sync workers (Gmail / Outlook / IMAP)
   reconciler/            # Nightly diff + escalation
   action_broker/         # Approval-gated source-of-truth write executor (see AGENTS.md)

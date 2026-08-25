@@ -79,6 +79,19 @@ const HREF_FEATURES: ReadonlyArray<[string, string]> = [
   ["/whatsapp", "whatsapp"],
   ["/memory", "memory"],
   ["/tasks", "tasks"],
+  // Calendar — D54 (2026-08-24, board WS-39 S2). Gated on `tasks`, NOT a slug
+  // of its own: the calendar lived inside `/tasks` until this move, so every
+  // holder of `feature:tasks` already had it, and minting `feature:calendar`
+  // would ship the app dark to all of them (see `calendar_focus_os.md` §10.2).
+  //
+  // ⚠️ This entry is load-bearing and easy to forget, because it is a SECOND
+  // map: `nav.ts` carries a `feature` per pane and this file carries a
+  // route→feature list, and only this one is consulted by `canSeePath`. Adding
+  // the pane without adding this line leaves the route reachable by anyone —
+  // `featureForPath` returns null when nothing matches, and null means
+  // unguarded. `navAccessAgreement.test.ts` is the fence that makes the two
+  // maps agree.
+  ["/calendar", "tasks"],
   ["/notes", "notes"],
   // The Sales Center's pipeline module. Gated on its own slug, not on
   // `center.sales`: a Center is a projection, and its modules carry their own

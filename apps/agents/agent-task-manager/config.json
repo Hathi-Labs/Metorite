@@ -1,6 +1,6 @@
 {
   "name": "task-manager",
-  "description": "GTD task manager \u2014 captures thoughts, clarifies the inbox, organizes to Local or a connected PM workspace (ClickUp), and answers status/progress/workload questions with citations.",
+  "description": "GTD task manager \u2014 captures thoughts, clarifies the inbox, organizes the inbox, and answers status/progress/workload questions with citations.",
   "version": "0.2.0",
   "runtime": "maf",
   "sharing": {
@@ -17,7 +17,6 @@
   "tags": [
     "tasks",
     "gtd",
-    "clickup",
     "project-management"
   ],
   "integrations": [],

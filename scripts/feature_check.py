@@ -188,66 +188,16 @@ async def check_debug_api(_: argparse.Namespace) -> CheckResult:
         return CheckResult("debug_api", False, detail=f"error: {exc}")
 
 
-async def check_tasks_clickup(_: argparse.Namespace) -> CheckResult:
-    """Is the task-manager actually intelligent right now? Reports whether a
-    ClickUp workspace is connected, the background sync loop is running and
-    fresh, and how much project/people context the agent can see. OK when at
-    least one workspace is connected and not overdue; a bare 'no workspace
-    connected' is reported as not-ok so the operator knows to connect one."""
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            s = await c.get(f"{GATEWAY_URL}/tasks/sync/status",
-                            headers=_headers())
-            ppl = await c.get(f"{GATEWAY_URL}/tasks/people",
-                              headers=_headers())
-        if s.status_code != 200:
-            return CheckResult(
-                "tasks_clickup", False,
-                detail=f"/tasks/sync/status HTTP {s.status_code}: {s.text[:160]}")
-        data = s.json()
-        accounts = data.get("accounts") or []
-        connected = len(accounts)
-        running = sum(1 for a in accounts if a.get("loop_running"))
-        overdue = sum(1 for a in accounts if a.get("overdue"))
-        errored = [a for a in accounts if a.get("sync_error")]
-
-        people = ppl.json() if ppl.status_code == 200 else []
-        n_people = len(people) if isinstance(people, list) else 0
-        with_domain = sum(
-            1 for p in (people if isinstance(people, list) else [])
-            if (p.get("domain") or "").strip()
-            and p["domain"].strip().lower() != "unknown")
-        with_resume = sum(
-            1 for p in (people if isinstance(people, list) else [])
-            if (p.get("resume_summary") or "").strip())
-
-        # Verdict: connected + scheduler up + nothing overdue/errored.
-        ok = (connected > 0 and bool(data.get("scheduler_running"))
-              and overdue == 0 and not errored)
-        if connected == 0:
-            detail = ("no ClickUp workspace connected — connect one in "
-                      "Tasks → connect workspace (agent has LOCAL-only context)")
-        else:
-            labels = ", ".join(
-                f"{a.get('label') or a.get('provider')}"
-                f"{' ⚠error' if a.get('sync_error') else ''}"
-                f"{' ⚠overdue' if a.get('overdue') else ''}"
-                for a in accounts)
-            detail = (
-                f"{connected} workspace(s) [{labels}]; sync loops "
-                f"{running}/{connected} running, {overdue} overdue; "
-                f"people {n_people} ({with_domain} w/ domain, "
-                f"{with_resume} w/ résumé depth)")
-        return CheckResult(
-            "tasks_clickup", ok, detail=detail,
-            extra={"connected": connected, "loops_running": running,
-                   "overdue": overdue, "errored": len(errored),
-                   "scheduler_running": bool(data.get("scheduler_running")),
-                   "people": n_people, "people_with_domain": with_domain,
-                   "people_with_resume": with_resume})
-    except Exception as exc:
-        return CheckResult("tasks_clickup", False, detail=f"error: {exc}")
-
+# ⚠️ `check_tasks_clickup` was REMOVED 2026-08-24 (D52, board WS-39 S1).
+# Its verdict was `connected > 0 and scheduler_running and not overdue` over
+# connected ClickUp workspaces. With the connector retired that verdict is
+# permanently FALSE, and a check that can only ever report red is worse than
+# no check: it trains an operator to ignore the report it lives in.
+#
+# The half worth keeping was the people-context readout (directory size,
+# domain and résumé depth). It is NOT re-homed here on purpose — that belongs
+# with the People surface, and inventing a home for it inside a deletion slice
+# is how a second status doc gets born (CLAUDE.md §5).
 
 async def _enrich_with_trace(results: list[CheckResult]) -> None:
     """For checks that produced a run_id, look up its durable trace status."""
@@ -270,7 +220,6 @@ _CHECKS: dict[str, Any] = {
     "debug_api": check_debug_api,
     "chat_maf": check_chat_maf,
     "chat_copilot": check_chat_copilot,
-    "tasks_clickup": check_tasks_clickup,
 }
 
 

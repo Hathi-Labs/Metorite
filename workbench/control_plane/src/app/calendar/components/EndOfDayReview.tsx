@@ -7,18 +7,18 @@ import {
   apiEstimateStats,
   apiSetDayState,
   type EstimateStats,
-} from "../../lib/api";
-import { GtdItem } from "../../lib/types";
-import { priorityRank } from "../../lib/priority";
+} from "@/app/tasks/lib/api";
+import { GtdItem } from "@/app/tasks/lib/types";
+import { priorityRank } from "@/app/tasks/lib/priority";
 import {
   startOfDay,
   addDays,
   blocksForDay,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   dayKey,
   saveFocusPrefs,
-} from "../../lib/focusPrefs";
+} from "@/app/tasks/lib/focusPrefs";
 import {
   fmtClock,
   fmtLeft,

@@ -513,6 +513,12 @@ TIMESTAMP_COLUMNS: frozenset[str] = frozenset({
     "defer_until", "clarified_at",
     # The intake wrapper's reappearance instant (164, WS-27u).
     "snoozed_until",
+    # The personal overlay's SCHEDULED BLOCK (187, WS-39 S3a). Four more
+    # instants, same rule. ⚠️ Omitting them is not a cosmetic slip: the block
+    # would be bound as TEXT to a timestamptz, which is the precise failure this
+    # function's docstring describes — and the hermetic fake would keep agreeing,
+    # because a fake stores whatever it is handed (R8).
+    "scheduled_start", "scheduled_end", "actual_start", "actual_end",
 })
 DATE_COLUMNS: frozenset[str] = frozenset({"start_date"})
 

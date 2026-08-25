@@ -78,7 +78,7 @@ export interface CommandActions {
   showMyWork(mine: boolean): void;
   clearFilters(): void;
   toggleRail(): void;
-  manage(what: "fields" | "tags" | "lifecycle" | "import"): void;
+  manage(what: "fields" | "tags" | "lifecycle"): void;
   showShortcuts(): void;
 }
 
@@ -242,14 +242,6 @@ const PROJECT_COMMANDS: Command[] = [
     // subtree inherits, so offering it on a subproject would offer a refusal.
     when: (ctx) => ctx.hasProject && ctx.isRoot && !ctx.mine,
     run: (actions) => actions.manage("lifecycle"),
-  },
-  {
-    id: "project.import",
-    label: "Import from ClickUp",
-    section: "Project",
-    keywords: ["clickup", "migrate", "sync"],
-    icon: "Download",
-    run: (actions) => actions.manage("import"),
   },
 ];
 

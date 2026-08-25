@@ -413,6 +413,110 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
+### H-32 · Revoke the ClickUp tokens at ClickUp · [OWNER]
+- **Check:** on the box, **both** credential homes plus the vendor:
+  `SELECT count(*) FROM provider_keys WHERE credential_type = 'integration' AND service = 'clickup';`
+  **and** `SELECT count(*) FROM task_accounts WHERE provider = 'clickup';` —
+  that second table's `credentials_encrypted` is where the real per-workspace
+  ClickUp tokens live (`48_task_manager_gtd.sql:24-44`), so a check that asks
+  only `provider_keys` can read `0` while live tokens remain. Then whether the
+  token still authenticates against `https://api.clickup.com/api/v2/user`. Any
+  one alive → still pending.
+  ⚠️ There is no `integration_credentials` table — migration
+  `11_integration_credentials.sql` **adds columns to `provider_keys`**
+  (`credential_type`, `service`). An earlier draft of this entry queried the
+  non-existent table and would have errored rather than answered.
+  ⚠️ A repo-side grep cannot answer this and never could: WS-39 S1 deleted every
+  *reader* of the token, which is not the same as the token being dead. A
+  credential nobody reads is still a live credential at the vendor.
+- **Why:** D52 retires ClickUp outright. `work_plan.md` §6 WS-27 **(c-1)** — a
+  credential act, so an agent must refuse it by name. Also drop the `CLICKUP_*`
+  values from the box `.env` while you are there (env-write, gated).
+- **Authority:** `work_plan.md` §6 WS-27 (c-1) · D52.1
+- **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
+  `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
+
+### H-28 · WS-39: slice S3a-CLIENT still to build · [AGENT]
+- **Check:** `rg -n "api/tasks" workbench/control_plane/src/app/tasks/lib/api.ts`
+  → any hit means **S3a-client** unbuilt. *(S1, S2 and S3a-SERVER are done —
+  `nav.ts` carries `/calendar`, and migration 187 + `GET /projects/my/calendar`
+  are in.)*
+  ⚠️ **Corrected 2026-08-25 — the first spelling of this Check UNDER-REPORTED
+  and would have closed this entry while the work was untouched.** It grepped
+  `"/api/tasks/items"` across `app/tasks/`, which matches **nothing**: the
+  prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`,
+  `` fetch(`/api/tasks${path}`) ``) and every call site passes a bare
+  `` `/items…` ``. Same defect class as this file's ClickUp-credential entry
+  (H-32) — a Check that cannot see the thing it is asking about answers "done".
+- **Why:** S1, S2 and the SERVER half of S3a landed — `pm_task_personal` can now
+  hold a scheduled block (migration 187, D53.7) and `GET /projects/my/calendar`
+  serves a window. What remains is re-pointing the two UIs onto those endpoints
+  so `gtd_*` writes stop.
+  📌 **The shape of that work, measured:** `tasks/lib/api.ts` is a THIN ADAPTER —
+  `mapItem` maps a wire row to `GtdItem` and the 95 KB store above it speaks
+  `GtdItem` throughout. So the change concentrates in that mapper, not in the
+  store. Fields with no `pm_*` home yet: `waiting_on`/`expected_by`/
+  `last_nudged_at` (Waiting-For — per-member too, so the overlay is its likely
+  home; WS-18 owns the semantics) and the `leveraged`/`deep_work`/`kept_mine`
+  focus flags. Decide those BEFORE writing the mapper, or they become silent
+  data loss at the cutover.
+  📌 **Two findings S2 recorded for S3a to settle:** `CalendarView` hand-filters
+  `s.items` while `itemsForView("calendar")` — the canonical selector — has no
+  caller; and the shared task store should be promoted out of `app/tasks/lib/`
+  once it is rewritten, so both apps import it from a neutral home rather than
+  Calendar reaching into Tasks' directory.
+  ⚠️ **Read `routes/projects/personal.py` before designing anything** — S3a's server
+  side shipped in 2026-08-06 under D-PM-6, and an agent who starts writing endpoints
+  is building a second one.
+- **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
+  `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
+- **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.
+- **Why:** D52 deleted every reader of these vars; the example file still offers
+  `CLICKUP_API_TOKEN`, `CLICKUP_WORKSPACE_ID`, `CLICKUP_WEBHOOK_SECRET` (lines
+  68–70) and mentions `AGENT_WEBHOOK_SECRET_CLICKUP` (line 193), so a fresh box
+  is still told to configure a retired integration. **`.env*` writes are an
+  agent refusal** (`work_plan.md` §6, the H-13 precedent), which is why this is
+  a handover and not a commit. ⚠️ Measured 2026-08-24: `plan-guard.mjs` on
+  `main` did **not** actually block a `sed -i` against `.env.example` — the
+  refusal was honoured by the agent, not enforced by the hook. That is a
+  **fence gap worth closing** (R7) and it is the more useful half of this entry.
+  The D45 branch's plan-guard may already cover it; check there first.
+- **Ready-made patch:** delete lines 68–70 and the `AGENT_WEBHOOK_SECRET_CLICKUP`
+  clause on line 193.
+- **Authority:** `work_plan.md` §6 · D52 · H-13 precedent
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
+- **Check:** `rg -n "clickup_event|zoho_event" tests/` → no test asserting the
+  rule means it is still advisory.
+- **Why:** Passing `event=` to a structlog logger raises `TypeError` at call
+  time, so receivers must use `<source>_event=`. The AST guard that enforced
+  this lived in `tests/unit/test_clickup_normalise_dlq.py`, **deleted by D52
+  with the receiver it covered**. `apps/AGENTS.md` still states the rule, and
+  under R7 a rule with no fence is advisory — it now says so, but the honest
+  fix is to re-home the guard over the surviving Gmail/Zoho receivers.
+- **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
+- **Added:** 2026-08-24 · WS-39 S1 session
+
+### H-29 · WS-39 S3b/S3c: the `gtd_*` backfill and drop · [OWNER]
+- **Check:** `psql -c "\dt gtd_items"` on the box → table present means S3c is still
+  pending. For S3b, `SELECT count(*) FROM gtd_items WHERE deleted_at IS NULL;` → a
+  non-zero count after S3a shipped means rows are still stranded in the old store.
+- **Why:** D53.5 retires `gtd_*` in three releases; (2) the backfill into members'
+  personal `pm_project`s and (3) the drop are **data moves against live customer
+  data** — the WS-29 cutover class, on a ladder that cannot roll back (R6). Building
+  and R8-testing them against scratch databases is agent-safe; running them is not.
+  ⚠️ **Prove the mapping two-org on real Postgres first.** The failure mode is not
+  lost data — it is a mis-mapped `member_email` publishing one member's *private*
+  task into somebody else's lens.
+  ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
+  they are the Calendar app's per-member state and survive (D53.6).
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8
+- **Added:** 2026-08-24 · WS-39 S1 session
+
 ### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
 - **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
   CI still never runs the browser suite. Separately, `rg -n "127.0.0.1" workbench/

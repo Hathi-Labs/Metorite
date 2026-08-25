@@ -281,9 +281,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.whatsapp_enrichment_skipped", error=str(exc))
 
-    # Start background Tasks (GTD) provider-sync scheduler — one loop per
-    # sync-enabled ClickUp/PM workspace keeps the agent's project/task/people
-    # picture fresh between visits (routes/tasks/scheduler.py).
+    # Start background Tasks (GTD) provider-sync scheduler.
+    # ⚠️ Since D52 (2026-08-24) the connector registry is EMPTY, so this loop has
+    # nothing to poll and no account can be sync-enabled. It is started for
+    # symmetry and goes with the provider layer in WS-39 S3a
+    # (routes/tasks/scheduler.py).
     try:
         from gateway.routes.tasks.scheduler import (
             start_background_sync as start_tasks_sync,
@@ -326,7 +328,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.workflow_scheduler_skipped", error=str(exc))
 
-    # Start the ingestion event-bus consumer — drains ingestion:{clickup,zoho,
+    # Start the ingestion event-bus consumer — drains ingestion:{zoho,
     # gmail} through the same event-sink registry the receivers emit to
     # (FOUNDATION_BUILDOUT_CHECKLIST.md §BO-20, BO-20a; §BO-20.0 Option A: the
     # loop lives in the ingestion package, the gateway starts it). Gated OFF by
@@ -519,7 +521,10 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
 
     # Provider webhook receivers — each verifies its own signature in
     # ingestion/sources/*/webhook.py.
-    "/webhooks/clickup",
+    # NOTE: "/webhooks/clickup" was REMOVED 2026-08-24 (D52) with the receiver.
+    # A PUBLIC_ROUTES entry with no router behind it is an unauthenticated 404
+    # that reads like a live surface, which is exactly what this list must not
+    # contain.
     "/webhooks/gmail",
     "/webhooks/zoho",
 
@@ -983,13 +988,8 @@ if _HAS_MAF:
         _log.warning("gateway.ag_ui_failed", error=str(_exc))
 
 # Webhook routers (Phase 1 ingestion entry points)
-try:
-    from ingestion.sources.clickup.webhook import router as _clickup_router
-
-    app.include_router(_clickup_router)
-except Exception:  # pragma: no cover - keep gateway bootable even if optional dep missing
-    pass
-
+# ⚠️ The ClickUp receiver was DELETED 2026-08-24 (D52, board WS-39 S1) — Metorite
+# is the project-management system of record, so there is no inbound PM webhook.
 try:
     from ingestion.sources.zoho.webhook import router as _zoho_router
 
@@ -1149,8 +1149,9 @@ except Exception:  # pragma: no cover
 try:
     # D-CRM-8 — every Zoho sync push routes through the Action-Broker gate, so
     # the three `crm.zoho_*` actions need handlers that really execute when a
-    # queued push is approved. Unlike the ClickUp set (BO-1a: six gated, four
-    # registered), ALL THREE gated CRM actions are registered here.
+    # queued push is approved. ALL THREE gated CRM actions are registered here
+    # (the retired ClickUp set was the counter-example: six gated, four
+    # registered — see BO-1a).
     from gateway.routes.crm.broker_handlers import register_crm_broker_handlers
 
     register_crm_broker_handlers()

@@ -16,9 +16,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   apiGetDayState,
   apiSetDayState,
-} from "../lib/api";
-import { useTaskStore } from "../lib/taskStore";
-import { GtdItem } from "../lib/types";
+} from "@/app/tasks/lib/api";
+import { useTaskStore } from "@/app/tasks/lib/taskStore";
+import { GtdItem } from "@/app/tasks/lib/types";
 import {
   DEFAULT_BLOCK_MINS,
   startOfDay,
@@ -27,14 +27,14 @@ import {
   blocksForDay,
   firstFreeSlot,
   type Block,
-} from "../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   dayKey,
   loadFocusPrefs,
   oneThingIdFor,
   saveFocusPrefs,
   toggleOneThing,
-} from "../lib/focusPrefs";
+} from "@/app/tasks/lib/focusPrefs";
 import {
   DAY_START_HOUR,
   DAY_END_HOUR,
@@ -46,16 +46,16 @@ import {
   useNow,
   type Mode,
   type OutcomeById,
-} from "./calendar/shared";
-import { StartupRitual } from "./StartupRitual";
-import { NowNextBar } from "./calendar/NowNextBar";
-import { EndOfDayReview } from "./calendar/EndOfDayReview";
-import { ScheduleSheet } from "./calendar/ScheduleSheet";
-import { PlanDayPanel } from "./calendar/PlanDayPanel";
-import { CalendarSettings } from "./calendar/CalendarSettings";
-import { TimeGrid } from "./calendar/TimeGrid";
-import { MonthGrid } from "./calendar/MonthGrid";
-import { UnscheduledRail } from "./calendar/UnscheduledRail";
+} from "./components/shared";
+import { StartupRitual } from "./components/StartupRitual";
+import { NowNextBar } from "./components/NowNextBar";
+import { EndOfDayReview } from "./components/EndOfDayReview";
+import { ScheduleSheet } from "./components/ScheduleSheet";
+import { PlanDayPanel } from "./components/PlanDayPanel";
+import { CalendarSettings } from "./components/CalendarSettings";
+import { TimeGrid } from "./components/TimeGrid";
+import { MonthGrid } from "./components/MonthGrid";
+import { UnscheduledRail } from "./components/UnscheduledRail";
 
 export function CalendarView() {
   const items = useTaskStore((s) => s.items);

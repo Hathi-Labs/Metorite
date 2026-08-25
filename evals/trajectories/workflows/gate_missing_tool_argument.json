@@ -1,12 +1,12 @@
 {
   "name": "gate — a tool node missing a required argument",
-  "description": "The new argument gate. Before it, a ClickUp node with no list_id published happily and failed only when a real run reached the API. Two problems on one node prove the validator reports the whole fix list rather than the first.",
+  "description": "The new argument gate. Before it, a tool node with a misspelled required argument published happily and failed only when a real run reached the API. Two problems on one node prove the validator reports the whole fix list rather than the first.",
   "catalog": {"agents": ["triage"], "modules": {}},
   "graph": {
     "nodes": [
       {"id": "start", "type": "trigger", "position": {"x": 0, "y": 0}, "data": {"label": "Manual", "config": {"kind": "manual"}}},
       {"id": "gate", "type": "approval", "position": {"x": 0, "y": 1}, "data": {"label": "Approve", "config": {"message": "ok?"}}},
-      {"id": "task", "type": "tool", "position": {"x": 0, "y": 2}, "data": {"label": "ClickUp", "config": {"action": "clickup.create_task", "args": {"name": "New lead", "listId": "LIST-7"}}}},
+      {"id": "task", "type": "tool", "position": {"x": 0, "y": 2}, "data": {"label": "HTTP", "config": {"action": "http.request", "args": {"method": "POST", "urlx": "https://example.invalid"}}}},
       {"id": "done", "type": "output", "position": {"x": 0, "y": 3}, "data": {"label": "Done", "config": {"value": "{{task.task_id}}"}}}
     ],
     "edges": [

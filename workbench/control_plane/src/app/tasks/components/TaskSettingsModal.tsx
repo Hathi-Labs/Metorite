@@ -15,8 +15,9 @@ import {
 } from "../lib/columns";
 
 // Task Manager settings (mirror of the email app's AI Settings): pick the
-// model tier per AI function + behaviour toggles. Same gate pattern as
-// WorkspacesModal: mounts fresh each open so local state starts clean.
+// model tier per AI function + behaviour toggles. The gate pattern is the
+// house one: the wrapper reads the store flag and the panel mounts fresh on
+// each open, so local state starts clean.
 export function TaskSettingsModal() {
   const open = useTaskStore((s) => s.settingsModalOpen);
   if (!open) return null;

@@ -1,1 +1,1 @@
-"""Capture surfaces: ClickUp, Zoho, Gmail, WhatsApp, meetings."""
+"""Capture surfaces: Zoho, Gmail, WhatsApp, meetings."""

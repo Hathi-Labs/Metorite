@@ -1,11 +1,11 @@
 "use client";
 
-import { GtdItem } from "../../lib/types";
+import { GtdItem } from "@/app/tasks/lib/types";
 import {
   addDays,
   sameDay,
   blocksForDay,
-} from "../../lib/scheduling";
+} from "@/app/tasks/lib/scheduling";
 import {
   DOW,
   startOfMonthGrid,
