@@ -1168,8 +1168,9 @@ function InviteDialog({
       if (seatToo) {
         try {
           // `core` is the one sellable plan under D49; the Seats tab reads the
-          // slug from `GET /me/seats` for the same reason, and both would follow
-          // a second plan if one ever returned.
+          // slug from the seat grid that `/api/org/seats` returns (CP-2h slice
+          // 1 — it read the org-key `GET /me/seats` until 2026-08-24) for the
+          // same reason, and both would follow a second plan if one returned.
           const r = await fetch("/api/billing/seats/assign", {
             method: "POST",
             headers: { "content-type": "application/json" },

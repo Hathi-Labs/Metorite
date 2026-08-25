@@ -183,6 +183,7 @@ __all__ = [
     "reconcile",
     "release_seat_on_console",
     "resolve_for_signin",
+    "seat_overview_on_console",
 ]
 
 #: Auth.js v5's vocabulary is FIXED — returning `false` from the `signIn`
@@ -560,11 +561,12 @@ async def provision_org_on_console(
     return await _post_provision(slug, name, owner_email, gstin, billing_state)
 
 
-# ── The seat-admin WRITE client (WS-30 SC-2a / customer_console.md §6 item (h)) ─
+# ── The seat-admin client (WS-30 SC-2a / customer_console.md §6 item (h), CP-2h) ─
 #
-# ⚠️ **Still the ONE Console httpx client** (the note above): these two functions
+# ⚠️ **Still the ONE Console httpx client** (the note above): these three functions
 # are the gateway's path to the Console's deployment-key `seat_admin` door
-# (`POST /registry/seats` + `/registry/seats/release`), and they live HERE —
+# (`POST /registry/seats`, `/registry/seats/release` and — since CP-2h slice 1,
+# D-SEAT-4 — the READ `/registry/seats/overview`), and they live HERE —
 # beside `_post_provision`/`_post_resolve`, reusing `_new_http_client` /
 # `is_wired` / the settings reads — because a second Console client anywhere is
 # root `CLAUDE.md` §5's defect by name. The gateway route
@@ -582,7 +584,7 @@ async def provision_org_on_console(
 
 
 class ConsoleSeatWriteUnavailable(Exception):
-    """The Customer Console produced no seat-write answer we could relay.
+    """The Customer Console produced no seat-door answer we could relay.
 
     Transport-only, the line `_post_resolve` draws: the box is not wired, the
     network failed, or the Console answered with a status proving no ANSWER was
@@ -591,36 +593,35 @@ class ConsoleSeatWriteUnavailable(Exception):
     issues — is NOT this: it is returned as ``(status_code, body)`` for the
     gateway route to relay, so a member's "not an admin" (403) or "at the cap"
     (409) reaches the surface as itself, never as an outage.
+
+    ⚠️ **The name says WRITE and it now also covers the CP-2h READ**
+    (``seat_overview_on_console``), deliberately: there is ONE `seat_admin`
+    transport with ONE no-answer policy, and a second exception type would be a
+    second vocabulary for the identical fact — the caller's only question is
+    "verdict or outage", and it is answered the same way for all three arms.
+    Renaming it would touch the gateway route and its fence for no behaviour.
     """
 
 
-async def _post_seat_write(
-    endpoint: str,
-    *,
-    actor_email: str,
-    member_email: str,
-    plan_slug: str,
-    source: str | None,
+async def _post_seat_call(
+    endpoint: str, payload: dict[str, Any]
 ) -> tuple[int, dict[str, Any]]:
-    """Present the deployment key to a ``seat_admin`` write arm and read the answer.
+    """Present the deployment key to a ``seat_admin`` arm and read the answer.
 
-    ⚠️ ``actor_email`` is the acting admin (the authenticated SESSION email) and
-    the body names NO ``org_slug`` — the org is derived Console-side (R11, the
-    deployment-key arm shape). A 5xx / 401 / 408 / 429 proves no answer was
-    produced and raises :class:`ConsoleSeatWriteUnavailable`; every other status
-    is a verdict and is returned for the route to relay.
+    The ONE transport for all three arms (assign · release · overview): one
+    bearer, one timeout, one verdict-vs-outage policy. A 5xx / 401 / 408 / 429
+    proves no answer was produced and raises
+    :class:`ConsoleSeatWriteUnavailable`; every other status is a verdict and is
+    returned for the route to relay.
+
+    ⚠️ Callers build the payload; this function never adds a field. In particular
+    it never adds an ``org_slug`` — the org is derived Console-side from
+    ``deployment_visible_orgs(deployment_id, actor_email)`` (R11), and the Console
+    400s a deployment key that names one.
     """
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
     key = settings.customer_console_deployment_key.strip()
-
-    payload: dict[str, Any] = {
-        "member_email": member_email,
-        "plan_slug": plan_slug,
-        "actor_email": actor_email,
-    }
-    if source is not None:
-        payload["source"] = source
 
     try:
         client = _new_http_client()
@@ -650,6 +651,24 @@ async def _post_seat_write(
     return response.status_code, body
 
 
+def _seat_payload(
+    *,
+    actor_email: str,
+    member_email: str,
+    plan_slug: str,
+    source: str | None,
+) -> dict[str, Any]:
+    """The seat WRITE body: the target, the plan, the acting admin — no org (R11)."""
+    payload: dict[str, Any] = {
+        "member_email": member_email,
+        "plan_slug": plan_slug,
+        "actor_email": actor_email,
+    }
+    if source is not None:
+        payload["source"] = source
+    return payload
+
+
 async def assign_seat_on_console(
     *,
     actor_email: str,
@@ -661,19 +680,21 @@ async def assign_seat_on_console(
 
     Returns the Console's ``(status_code, body)`` verbatim for the gateway route
     to relay. Raises :class:`ConsoleSeatWriteUnavailable` when the box is unwired
-    or the Console produced no answer (see :func:`_post_seat_write`).
+    or the Console produced no answer (see :func:`_post_seat_call`).
     """
     if not is_wired():
         # Ship-dark: an unwired box has no Console to write to. The gateway route
         # also guards this itself (F5) and refuses before calling; this is the
         # same guarantee one layer down.
         raise ConsoleSeatWriteUnavailable("unwired")
-    return await _post_seat_write(
+    return await _post_seat_call(
         "/registry/seats",
-        actor_email=actor_email,
-        member_email=member_email,
-        plan_slug=plan_slug,
-        source=source,
+        _seat_payload(
+            actor_email=actor_email,
+            member_email=member_email,
+            plan_slug=plan_slug,
+            source=source,
+        ),
     )
 
 
@@ -691,12 +712,48 @@ async def release_seat_on_console(
     """
     if not is_wired():
         raise ConsoleSeatWriteUnavailable("unwired")
-    return await _post_seat_write(
+    return await _post_seat_call(
         "/registry/seats/release",
-        actor_email=actor_email,
-        member_email=member_email,
-        plan_slug=plan_slug,
-        source=None,
+        _seat_payload(
+            actor_email=actor_email,
+            member_email=member_email,
+            plan_slug=plan_slug,
+            source=None,
+        ),
+    )
+
+
+async def seat_overview_on_console(
+    *, actor_email: str
+) -> tuple[int, dict[str, Any]]:
+    """Read the acting admin's seat grid + roster (CP-2h slice 1, **D-SEAT-4**).
+
+    The READ arm of the same ``seat_admin`` door the two writes above use, and
+    the reason it exists: the customer Seats tab used to compose its picture from
+    the Console's ORGANIZATION-key reads (``GET /me/seats`` + ``GET /me/members``)
+    through a per-org ``CUSTOMER_CONSOLE_ORG_KEY``. On a SHARED multi-tenant box
+    no single org key is correct, so the surface failed closed to "not configured
+    for this deployment". The deployment key is per-BOX, so this arm works for
+    every tenant on it.
+
+    ⚠️ **Non-allocating, exactly like its two siblings.** It drives the
+    admin-gated ``seat_admin`` door and never touches ``resolve_for_signin``, so
+    it allocates no seat and the cap cannot be farmed through it — which is the
+    condition on `console_resolve` having importers at all
+    (``test_console_dependency_boundary.py``).
+
+    The body carries ``actor_email`` alone: the org is DERIVED Console-side from
+    ``deployment_visible_orgs(deployment_id, actor_email)`` (R11), so the caller
+    makes no tenant claim, and the "admin, not any member" decision stays
+    Console-side too. Returns the Console's ``(status_code, body)`` verbatim —
+    a 403 (not an admin) or a 409 (member of more than one org on this box) is a
+    verdict to relay, never an outage. Raises
+    :class:`ConsoleSeatWriteUnavailable` on an unwired box or a no-answer status.
+    """
+    if not is_wired():
+        raise ConsoleSeatWriteUnavailable("unwired")
+    return await _post_seat_call(
+        "/registry/seats/overview", {"actor_email": actor_email}
     )
 
 
