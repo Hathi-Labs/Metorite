@@ -335,7 +335,13 @@ silently**: Delete is deliberately NOT added (it is an unrecoverable cascade tha
 a control, so "archive is the default affordance and delete is harder to reach" is satisfied
 most strongly by leaving it unreachable); the bulk-close-on-Stop offer is deferred to its own
 slice because a modal + bulk call + a count shown before agreement is not a menu item; **rename
-is still owed** — a project still cannot be renamed. ✅ `tsc` 0 · `next build` 0 · vitest **89
+was still owed at this point and is now BUILT** — `ws-27bg-project-rename` (**PR #47**, built
+2026-08-21, rebased 2026-08-25, **not merged and not deployed**) adds inline rename on the tree
+row; frontend only, no migration and no API change, because `PATCH /projects/nodes/{id}` already
+accepted `name` and already tracked it, so the rename lands on the project timeline. ⚠️ Its
+8 browser cases (`e2e/project-rename.spec.ts`) are **not CI-wired** — H-27. Re-verified on the
+rebase 2026-08-25: `tsc` **0** · vitest **122 files / 2589 tests** green.
+✅ `tsc` 0 · `next build` 0 · vitest **89
 files / 2007 tests** (baseline 1983) · conformance green with **no new baseline entries**.
 🔴 **THE FOUR-THEME SWEEP IS NOW A TEST, NOT A PROMISE** — `e2e/project-state.spec.ts`, **10
 cases green**, drives a routed tree in real Chromium under **Fluent + Material + Graphite** and

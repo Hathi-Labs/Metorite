@@ -64,6 +64,22 @@ export interface ProjectMenuHandlers {
   onSetState: (project: ProjectRow, state: string) => void;
   onArchive: (project: ProjectRow) => void;
   onUnarchive: (project: ProjectRow) => void;
+  /** Commit a new name. The surface owns the write, the toast and the refetch. */
+  onRename: (project: ProjectRow, name: string) => void;
+}
+
+/**
+ * View state the menu can raise, as opposed to writes it can perform.
+ *
+ * Kept as a SECOND parameter rather than folded into `ProjectMenuHandlers`
+ * because the two have different owners: the handlers come from the page (they
+ * PATCH, toast and refetch), while "put this row into its rename field" is the
+ * tree's own local state and belongs nowhere near the page. Merging them would
+ * force the page to hold a `beginRename` it cannot implement.
+ */
+export interface ProjectMenuUi {
+  /** Swap the row's label for its inline rename field. */
+  onBeginRename: () => void;
 }
 
 /**
@@ -81,12 +97,31 @@ export interface ProjectMenuHandlers {
  */
 export function projectMenuItems(
   project: ProjectRow,
-  handlers: ProjectMenuHandlers
+  handlers: ProjectMenuHandlers,
+  ui?: ProjectMenuUi
 ): ProjectMenuItem[] {
   const current = ownState(project);
   const archived = Boolean(project.archived_at);
 
-  const items: ProjectMenuItem[] = [{ kind: "label", label: "Run state" }];
+  const items: ProjectMenuItem[] = [];
+
+  // Rename leads, because it is the only entry here that edits the project
+  // rather than filing or pausing it — and because until WS-27bg slice 2's
+  // remainder there was NO project-editing affordance in the product at all
+  // (one `patchProject` call site, and it wrote `status`). Offered on an
+  // archived project too: filing a project does not make its name wrong, and
+  // the endpoint has never refused the write.
+  if (ui) {
+    items.push({
+      kind: "item",
+      label: "Rename",
+      icon: "PenLine",
+      onSelect: ui.onBeginRename,
+    });
+    items.push({ kind: "sep" });
+  }
+
+  items.push({ kind: "label", label: "Run state" });
 
   for (const state of PROJECT_STATE_ORDER) {
     const visual = PROJECT_STATES[state];

@@ -401,6 +401,29 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
+### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
+- **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
+  CI still never runs the browser suite. Separately, `rg -n "127.0.0.1" workbench/
+  control_plane/playwright.config.ts` → a hit means the hydration trap is back.
+- **Why:** D-PM-21 makes a real browser the **only** fence for UI behaviour here —
+  `vitest.config.ts` is `environment: "node"` and does not even collect `.tsx`, and
+  jsdom is refused by decision. That fence was **completely dead** and nothing said
+  so: `playwright.config.ts` addressed the dev server as `127.0.0.1`, Next 16 blocks
+  `/_next/*` as cross-origin from the IP, so the server-rendered shell arrived, the
+  client bundle did not, hydration never completed, **no fetch was ever issued**, and
+  every spec timed out against a page reading "Loading …". Measured 2026-08-21 with
+  hostname as the only variable; fixed on `ws-27bg-project-rename` by pointing the
+  config at `localhost`. ⚠️ **The failure mode is the point**: a page that renders
+  its whole shell looks alive, so this reads as a backend fault and cost most of a
+  session to isolate. The specs' own as-builts record them running green, so the rot
+  set in after they were written and **no job would ever have reported it** — the
+  suite is absent from `pr-check.yml` entirely. Wanted: either e2e in CI (it needs a
+  browser image and ~13 s per spec), or an explicit board decision that it stays a
+  local-only gate, recorded so the next person does not assume CI has their back.
+- **Authority:** `specs/project_management_app.md` §8 D-PM-21 · CLAUDE.md §3.8
+  (verify by evidence, never by a green job)
+- **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
+
 ---
 
 # DONE — deleted, not archived
