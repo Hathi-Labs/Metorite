@@ -125,3 +125,95 @@ TASKS_LENS=0
 | `/version` still reports the flag, so a mismatch stays observable | `::test_the_mismatch_is_reportable` |
 | the browser flag defaults off | `src/app/tasks/lib/lens.test.ts` → "lensEnabled" |
 | the client's spine all consults it | `lens.test.ts` → "the cutover seam is complete for this slice" |
+
+---
+
+## The cutover runbook (S3b → flip → S3c)
+
+**Added 2026-08-26 with migrations 189 and 190.** Everything below is the
+owner's act: `work_plan.md` §6 (f) gates *running* the move against a real
+database, and building it — which is what landed — is the half that was
+agent-safe. The migrations ship **inert**: applying them adds a column, an empty
+table, a view and two functions, and moves nothing.
+
+### Order, and why it is this order
+
+```
+   slice 5 lands            (the CRUD + AI tail stops writing gtd_items)
+      ↓
+1. deploy 189 + 190         inert — nothing moves, nothing drops
+      ↓
+2. SELECT * FROM gtd_backfill_plan;          ← read this before anything
+      ↓
+3. SELECT * FROM gtd_backfill_to_pm(false);  ← dry run, writes nothing
+      ↓
+4. SELECT * FROM gtd_backfill_to_pm(true);   ← the move
+      ↓
+5. flip BOTH flags to 1, restart, rebuild    ← reads switch to pm_*
+      ↓
+6. SELECT * FROM gtd_backfill_to_pm(true);   ← sweep anything written in step 5's window
+      ↓
+   ... let it run. Days, not minutes ...
+      ↓
+7. INSERT INTO gtd_retirement_arm …          ← arm the drop, by hand
+      ↓
+8. next deploy applies 190, which drops gtd_items + gtd_waiting
+```
+
+**Step 6 is not optional and it is why the backfill is re-runnable.** Between
+the move and the flag flip the app is still writing `gtd_items`; those rows
+carry no `migrated_task_id`, so a second pass picks up exactly them and nothing
+else. Proven by `live_ws39_s3b.sql` checks 9a/9b.
+
+**Steps 4 and 8 are separated by days on purpose.** R6: we cannot roll back.
+The gap is the only window in which a mis-mapped row can be noticed while the
+source data still exists.
+
+### What the backfill refuses
+
+A row whose `user_id` matches no `app_user` is **not moved, not deleted, and not
+assigned to anybody** — it is reported as `unmappable`. That includes the
+literal `'anonymous'`, which `routes/tasks/core.py::_uid` writes for an
+unauthenticated capture. §12.8 names the failure this avoids: a mis-mapped
+`member_email` does not lose a task, it publishes one person's private task into
+somebody else's lens.
+
+Those rows then **block step 8**, by design — `gtd_backfill_plan` must return
+zero rows before the drop will proceed. Resolve each one deliberately (give the
+address an `app_user`, or delete the row) rather than widening the guard.
+
+### What S3c does *not* drop
+
+`gtd_settings` · `gtd_day_state` · `gtd_rollover_log` (D53.6 — the Calendar's),
+the five `gtd_people*` tables (the People directory), `gtd_horizons` (WS-21
+owns it), `gtd_reviews` (WS-18), and `gtd_projects` · `gtd_spaces` ·
+`gtd_folders` · `gtd_contexts` · `gtd_attachments` (the LOCAL project tree —
+these wait on slice 5's port to `pm_projects`). Pinned by
+`tests/unit/test_gtd_backfill.py::test_190_does_not_drop_the_tables_that_survive`.
+
+### Fences for the move itself
+
+| Claim | Test |
+|---|---|
+| 189 defines the backfill and never calls it (the gate stays intact) | `test_gtd_backfill.py::test_189_defines_the_backfill_but_never_calls_it` |
+| tenant comes from `app_user`, explicitly — a migration has no RLS | `::test_189_resolves_the_tenant_from_the_directory` |
+| an unresolvable owner is refused, not guessed | `::test_189_refuses_rather_than_guesses_an_owner` |
+| 190 is inert until armed **and** every row is accounted for | `::test_190_is_inert_until_two_independent_conditions_hold` |
+| 190 drops exactly the two tables S3b replaced, without CASCADE | `::test_190_drops_exactly_the_two_tables_s3b_replaced`, `::test_190_drops_without_cascade` |
+| two orgs: one member's private task never enters another's lens | `tests/live/live_ws39_s3b.sql` checks 4a–4g (**real Postgres**, R8) |
+| nothing is lost in the move (disposition, matrix, Waiting-For quartet) | `live_ws39_s3b.sql` checks 5a–5f |
+| re-running moves nothing and duplicates nothing | `live_ws39_s3b.sql` checks 8a–9b |
+| every S3c refusal path actually refuses | `tests/live/live_ws39_s3c.sql` checks 1a–4a |
+
+Run the live pair against scratch Postgres, never against a real database:
+
+```bash
+docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+  -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3b.sql
+docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+  -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3c.sql
+```
+
+`live_ws39_s3c.sql` exercises a real `DROP TABLE` inside a transaction it then
+rolls back — Postgres DDL is transactional, so the scratch database is left as
+it was found.

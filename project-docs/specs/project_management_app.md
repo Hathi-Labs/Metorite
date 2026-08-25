@@ -7009,6 +7009,40 @@ proven **two-org on real Postgres** before it is offered, and the specific thing
 prove is that a mis-mapped `member_email` cannot publish one member's private task
 into another member's lens.
 
+🆕 **MET 2026-08-26 — migrations 189 (backfill) and 190 (drop).**
+
+| Criterion | Where it is proven |
+|---|---|
+| two-org, on real Postgres | `tests/live/live_ws39_s3b.sql` — 37 checks against the `tenant-scratch` container |
+| a mis-mapped `member_email` cannot cross tenants | checks **4a–4g**, including the lens query itself (`MY_TASKS_FROM`'s ownership arm) run as each member |
+| ...and the check can actually fail | verified RED by two mutations: cross-tenant org resolution trips **4b**, a wrong `member_email` on the overlay trips **4c** |
+| nothing is lost in the move | checks **5a–5i** — disposition, context/energy/estimate, `due_at` on the task (D53.7), the Waiting-For quartet on the overlay (D53.8), `completed_at` |
+| the move is re-runnable | checks **8a–9b** — a second pass duplicates nothing, and sweeps a row written between the move and the flag flip |
+| every S3c refusal path refuses | `tests/live/live_ws39_s3c.sql` — 22 checks, all four states in one rolled-back transaction |
+| building it did not execute the gate | `tests/unit/test_gtd_backfill.py` — 24 structural fences, verified red |
+
+**The acceptance the spec did not ask for, and should have.** Three defects
+surfaced that no criterion above names:
+
+* **`gtd_items.deleted_at` is a soft delete**, undoable and hidden from every
+  view. Carried over naively it would have **resurrected every task each member
+  had deleted**, irreversibly (R6). It maps to `pm_tasks.archived_at`: hidden,
+  not destroyed, and still satisfying S3c's "every row accounted for".
+* **S3b's own preview view blocked S3c's `DROP TABLE`.** Found by running it,
+  not by reading it — and it would otherwise have surfaced while armed and
+  mid-cutover.
+* **The S3b suite's "self-cleaning" claim was false** until a mutation run
+  exposed it: the teardown pattern could not reach the literal `'anonymous'`.
+
+Each is the same shape — a fact about the OLD store that the mapping had to
+honour, invisible from the `pm_*` side. A future store retirement should start
+by enumerating the source table's soft-delete, its dependents and its magic
+values, before designing the target rows.
+
+⚠️ **Still owner-gated, unchanged.** Running either against a real database is
+the owner's act. `docs/TASKS_LENS.md` carries the runbook; `H-29` is the queue
+entry.
+
 ---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2

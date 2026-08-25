@@ -524,21 +524,40 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
-### H-29 · WS-39 S3b/S3c: the `gtd_*` backfill and drop · [OWNER]
-- **Check:** `psql -c "\dt gtd_items"` on the box → table present means S3c is still
-  pending. For S3b, `SELECT count(*) FROM gtd_items WHERE deleted_at IS NULL;` → a
-  non-zero count after S3a shipped means rows are still stranded in the old store.
-- **Why:** D53.5 retires `gtd_*` in three releases; (2) the backfill into members'
-  personal `pm_project`s and (3) the drop are **data moves against live customer
-  data** — the WS-29 cutover class, on a ladder that cannot roll back (R6). Building
-  and R8-testing them against scratch databases is agent-safe; running them is not.
-  ⚠️ **Prove the mapping two-org on real Postgres first.** The failure mode is not
-  lost data — it is a mis-mapped `member_email` publishing one member's *private*
-  task into somebody else's lens.
+### H-29 · WS-39 S3b/S3c: RUN the `gtd_*` backfill, then the drop · [OWNER]
+- **Check:** `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;` on the
+  box → non-zero means S3b has not run (or has stragglers). `\dt gtd_items` → still
+  present means S3c has not run. ⚠️ Both columns exist only once migration **189** has
+  applied; if `migrated_task_id` is missing, the deploy has not carried 189 yet and
+  that is the real finding.
+- **Why:** ✅ **BUILT 2026-08-26 — the code half is DONE.** Migrations **189**
+  (backfill) and **190** (drop) are merged and R8-verified two-org on real Postgres
+  (`tests/live/live_ws39_s3b.sql`, 37 checks; `live_ws39_s3c.sql`, 22). What remains
+  is exactly the part §6 (f) reserves: **running them.**
+  📌 **They ship INERT.** 189 defines `gtd_backfill_to_pm()` and never calls it;
+  190 refuses unless armed AND every row carries `migrated_task_id`. Deploying them
+  moves nothing and drops nothing, so there is no rush and no hazard in them sitting
+  applied.
+  **The order, in full, is `docs/TASKS_LENS.md` → "The cutover runbook".** Short form:
+  slice 5 lands → `SELECT * FROM gtd_backfill_plan;` → `gtd_backfill_to_pm(false)`
+  → `gtd_backfill_to_pm(true)` → flip BOTH flags → **re-run** `gtd_backfill_to_pm(true)`
+  to sweep the window → wait days → `INSERT INTO gtd_retirement_arm` → next deploy drops.
+  ⚠️ **Do not arm until slice 5 has landed.** SQL cannot see an env var or an
+  unported route; arming is your assertion that both flags are on and nothing still
+  writes `gtd_items`. `routes/tasks/ai.py` alone names `gtd_*` 33 times today.
+  ⚠️ **Rows reading `unmappable` block the drop, on purpose.** They have no
+  resolvable owner (including the literal `'anonymous'` that `_uid` writes for an
+  unauthenticated capture). Decide each deliberately — give the address an `app_user`,
+  or delete the row — rather than widening the guard. The failure being avoided is
+  not lost data; it is one member's private task published into another's lens.
   ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
-  they are the Calendar app's per-member state and survive (D53.6).
-- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8
-- **Added:** 2026-08-24 · WS-39 S1 session
+  Calendar state, they survive (D53.6). Nor are the five `gtd_people*` tables, nor
+  `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
+  (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8 ·
+  `docs/TASKS_LENS.md`
+- **Added:** 2026-08-24 · WS-39 S1 session *(re-cut 2026-08-26 when 189/190 landed:
+  this is now a RUN entry, not a BUILD one.)*
 
 ### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
 - **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
