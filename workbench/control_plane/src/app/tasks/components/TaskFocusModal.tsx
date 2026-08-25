@@ -35,7 +35,6 @@ export function TaskFocusModal({
   const focusedItemId = useTaskStore((s) => s.focusedItemId);
   const items = useTaskStore((s) => s.items);
   const backend = useTaskStore((s) => s.backend);
-  const pushItem = useTaskStore((s) => s.pushItem);
   const closeFocus = useTaskStore((s) => s.closeFocus);
 
   const controlled = itemId !== undefined;
@@ -88,7 +87,6 @@ export function TaskFocusModal({
             key={item.id}
             item={item}
             backend={backend}
-            pushItem={pushItem}
             focused
           />
         </div>

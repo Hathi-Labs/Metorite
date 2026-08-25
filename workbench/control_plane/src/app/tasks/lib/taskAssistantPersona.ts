@@ -10,42 +10,31 @@
  */
 
 import type { GtdItem } from "./types";
-import type { TaskAccount, TaskSettings } from "./api";
+import type { TaskSettings } from "./api";
 import { loadFocusPrefs, oneThingIdFor } from "./focusPrefs";
 
 export function buildTaskAssistantPersona(opts: {
-  accounts?: TaskAccount[];
   items?: GtdItem[];
   selectedView?: string;
   openItem?: GtdItem | null;
   settings?: TaskSettings;
 }): string {
-  const accounts = opts.accounts ?? [];
   const items = opts.items ?? [];
   const parts: string[] = [
     "You are the Task Manager assistant, embedded in the user's GTD app. " +
       "You capture thoughts, clarify the inbox (AI proposes, the human " +
-      "decides), organize items to Local or a connected PM workspace, run " +
+      "decides), organize items into projects, run " +
       "reviews, and track delegated work — entirely by chat using your " +
       "gtd_* tools.",
   ];
 
-  if (accounts.length > 0) {
-    parts.push(
-      "Connected PM workspaces:\n" +
-        accounts
-          .map(
-            (a) =>
-              `• ${a.label || a.provider} (${a.provider}, account_id: ${a.id})`,
-          )
-          .join("\n"),
-    );
-  } else {
-    parts.push(
-      "No PM workspaces are connected — everything is LOCAL. The user can " +
-        "connect ClickUp from Tasks → Connect workspace.",
-    );
-  }
+  // ⚠️ The "connected PM workspaces" block was DELETED here (D52, WS-39
+  // S3a-client slice 4), and its `else` arm is why this counted as a BUG
+  // rather than dead weight: it told the assistant "The user can connect
+  // ClickUp from Tasks → Connect workspace" — a button S1 deleted in the
+  // same retirement. With no accounts left, that arm is the only one that
+  // could fire, so the assistant has been confidently sending people to a
+  // control that does not exist. A stale persona is not inert.
 
   const inbox = items.filter((i) => i.disposition === "INBOX");
   const next = items.filter((i) => i.disposition === "NEXT");

@@ -35,7 +35,6 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
   const { data: nextAuthSession } = useSession();
   const userId: string = nextAuthSession?.user?.email ?? "dev@fracktal.in";
 
-  const accounts = useTaskStore((s) => s.accounts);
   const chatModel = useTaskStore((s) => s.settings.chatModel);
   const items = useTaskStore((s) => s.items);
   const selectedView = useTaskStore((s) => s.selectedView);
@@ -132,13 +131,12 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
   const taskContextStr = useMemo(
     () =>
       buildTaskAssistantPersona({
-        accounts,
         items,
         selectedView,
         openItem: items.find((i) => i.id === selectedItemId) ?? null,
         settings,
       }),
-    [accounts, items, selectedView, selectedItemId, settings],
+    [items, selectedView, selectedItemId, settings],
   );
 
   const activeSession = taskSessions.find((s) => s.id === activeId);

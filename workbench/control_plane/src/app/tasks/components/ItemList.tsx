@@ -65,7 +65,14 @@ export function ItemList() {
   const sourceFilter = useTaskStore((s) => s.sourceFilter);
   const filters = useTaskStore((s) => s.filters);
   const sort = useTaskStore((s) => s.sort);
-  const hasSynced = useTaskStore((s) => s.accounts.length > 0);
+  // ⚠️ Was `accounts.length > 0`. With the connectors retired (D52) no new
+  // task can be SYNCED, but rows imported BEFORE the retirement still are —
+  // so the source filter is offered when the loaded items actually contain
+  // one, rather than when a workspace is connected. Same question, asked of
+  // the data instead of a table that no longer has rows to answer with.
+  const hasSynced = useTaskStore((s) =>
+    s.items.some((i) => i.source === "SYNCED"),
+  );
   const bulkArchive = useTaskStore((s) => s.bulkArchive);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const groupByChoice = useTaskStore((s) => s.groupBy);

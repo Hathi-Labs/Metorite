@@ -38,7 +38,6 @@ import {
   type TaskSort,
 } from "./ordering";
 import {
-  accountToProviderEntry,
   apiBulkDispose,
   apiBulkArchive,
   apiArchiveItem,
@@ -46,7 +45,6 @@ import {
   apiListSubtasks,
   apiCapture,
   apiCaptureBatch,
-  apiDeleteAccount,
   apiDeleteItem,
   apiRestoreItem,
   apiPurgeItem,
@@ -54,12 +52,6 @@ import {
   apiMergeInto,
   apiFileUnder,
   apiPatchItem,
-  apiPushItem,
-  apiRefreshSchema,
-  apiRefreshMembers,
-  apiCreateAccountProject,
-  apiCreateAccountFolder,
-  apiSyncTasks,
   apiAtomize,
   apiEnrichItem,
   apiBackfillContext,
@@ -67,7 +59,6 @@ import {
   fetchTaskSettings,
   updateTaskSettings,
   type TaskSettings,
-  fetchAccounts,
   fetchItems,
   fetchPeople,
   fetchOrgPeople,
@@ -81,7 +72,6 @@ import {
   apiCreateLocalProject,
   type LocalHierarchy,
   type OrganizeBody,
-  type TaskAccount,
 } from "./api";
 
 /** Fire-and-forget a live-backend sync; the optimistic local update already
@@ -440,15 +430,16 @@ interface TaskState {
   /** True until the first hydrate() resolves — the UI shows a spinner instead
    *  of the (empty) initial state, so production never flashes mock data. */
   loading: boolean;
-  /** Destination entries for Clarify — Local + each connected workspace.
-   *  In live mode entry ids are task_account UUIDs. */
+  /** Destination entries for Clarify.
+   *
+   *  ⚠️ Always exactly ONE entry, "Local", since D52 retired the connectors
+   *  (WS-39 S3a-client slice 4). Kept as a list rather than collapsed away
+   *  because the Clarify UI's destination picker still renders it, and
+   *  deleting a picker is a product decision this slice did not take — see
+   *  H-33. `accounts` and `providerStatuses` are GONE: both were derived from
+   *  `task_accounts`, both could only ever be empty, and an always-empty field
+   *  is one the next reader spends an afternoon proving is empty. */
   providers: ConnectedProvider[];
-  /** Connected PM-tool workspaces (live mode). */
-  accounts: TaskAccount[];
-  /** Every connected tool's statuses, de-duplicated + ordered — the ClickUp
-   *  half of the status-column axis (see statusColumns). Recomputed whenever
-   *  accounts are (re)fetched; empty when nothing is connected. */
-  providerStatuses: string[];
 
   selectedView: ViewKey;
   /** when drilled into a single @context under Next Actions */
@@ -470,8 +461,7 @@ interface TaskState {
   openEliminate: (id: string) => void;
   closeEliminate: () => void;
   /** A task the "Delegate" affordance is handing off (the nudge pill / column) —
-   *  drives the global DelegatePopup (eligible people only; a LOCAL task routes
-   *  on to the promote-to-ClickUp dialog). null = closed. */
+   *  drives the global DelegatePopup (eligible people only). null = closed. */
   delegateItemId: string | null;
   openDelegate: (id: string) => void;
   closeDelegate: () => void;
@@ -728,26 +718,6 @@ interface TaskState {
     spaceId?: string;
     folderId?: string;
   }) => Promise<void>;
-  /** Re-fetch connected workspaces (after connect/refresh in the modal). */
-  refreshAccounts: () => Promise<void>;
-  /** Disconnect a workspace account. */
-  disconnectAccount: (id: string) => Promise<void>;
-  /** Refresh one account's provider schema (projects/members/statuses). */
-  refreshAccountSchema: (id: string) => Promise<void>;
-  /** LIVE member pull for one workspace — people removed in the tool
-   *  disappear from the delegate picker. */
-  refreshAccountMembers: (accountId: string) => Promise<void>;
-  /** Create a NEW provider project (ClickUp list) under a space/folder. */
-  createWorkspaceProject: (
-    accountId: string,
-    req: { name: string; spaceId: string; folderId?: string },
-  ) => Promise<{ projectId: string; providerRef: string; name: string }>;
-  /** Create a NEW provider folder (ClickUp: space → folder) under a space. */
-  createWorkspaceFolder: (
-    accountId: string,
-    spaceId: string,
-    name: string,
-  ) => Promise<void>;
   /** Duplicate-capture notice: the AI found the just-captured item is the
    *  same as (verdict "duplicate" — auto-skipped, undoable) or similar to
    *  (verdict "similar" — the user decides) an existing open item. */
@@ -778,13 +748,6 @@ interface TaskState {
   settingsModalOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
-  /** True while a provider pull (POST /tasks/sync) is in flight. */
-  syncing: boolean;
-  /** Pull existing provider tasks into the mirror (one account, or all),
-   *  then re-fetch items so Waiting/Next fill from the connected tool. */
-  syncNow: (accountId?: string) => Promise<void>;
-  /** Explicit user-approved push of a pending item to its workspace. */
-  pushItem: (id: string) => Promise<void>;
   openQuickCapture: (mode: "single" | "sweep") => void;
   closeQuickCapture: () => void;
   /** Open/close the clarify overlay for an item. */
@@ -801,18 +764,15 @@ interface TaskState {
   enrichItem: (id: string) => Promise<import("./api").EnrichFields>;
   /** Auto-assign @context to actionable tasks that have none; re-hydrates. */
   backfillContext: () => Promise<{ scanned: number; updated: number }>;
-  /** Delegate a LOCAL task to a teammate → promote it to a ClickUp task under
-   *  the chosen project. No-op for already-synced tasks (PATCH the assignee). */
-  delegateLocalToClickUp: (
+  /** Hand a task to a teammate: they become the owner, it moves to MY
+   *  Waiting-For, and the server stamps the since-when (`delegated_at`, which
+   *  migration 188 CHECKs). Renamed from `delegateLocalToClickUp` and stripped
+   *  of `accountId`/`projectId`/`status` (D52, WS-39 S3a-client slice 4) —
+   *  there is one store, so a teammate is assigned where the task already is
+   *  rather than promoted into a second system. */
+  delegateToPerson: (
     id: string,
-    req: {
-      assignee: Person;
-      accountId: string;
-      projectId: string;
-      nextAction?: string;
-      status?: string;
-      dueAt?: string;
-    },
+    req: { assignee: Person; nextAction?: string; dueAt?: string },
   ) => Promise<void>;
 }
 
@@ -849,8 +809,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   backend: "demo",
   loading: true,
   providers: CONNECTED_PROVIDERS,
-  accounts: [],
-  providerStatuses: [],
   localHierarchy: null,
 
   selectedView: "inbox",
@@ -1185,22 +1143,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     return res;
   },
 
-  delegateLocalToClickUp: async (id, req) => {
+  delegateToPerson: async (id, req) => {
     if (get().backend !== "live") return;
     const server = await apiDelegateItem(id, {
-      assignee: {
-        name: req.assignee.name,
-        email: req.assignee.email,
-        provider_user_id: req.assignee.providerUserId,
-      },
-      account_id: req.accountId,
-      project_id: req.projectId,
+      assignee: { name: req.assignee.name, email: req.assignee.email },
       next_action: req.nextAction,
-      status: req.status,
       due_at: req.dueAt,
     });
-    // The row is now SYNCED + WAITING (no longer in My Next Actions). Swap in
-    // the authoritative server row.
+    // The row is now WAITING (no longer in My Next Actions). Swap in the
+    // authoritative server row rather than patching locally: the server is
+    // what stamped `delegated_at`, and a local guess at it would be the one
+    // field the Waiting-For list sorts and ages by.
     set((s) => ({ items: s.items.map((i) => (i.id === id ? server : i)) }));
   },
 
@@ -1333,21 +1286,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             set((s) => ({
               items: s.items.map((i) => (i.id === id ? server : i)),
             }));
-            // Default-sync posture: an accepted decision that targeted a
-            // workspace (the accept UI showed the destination) pushes
-            // immediately when the tool has everything it needs (a real
-            // provider project). Otherwise it stays staged with the manual
-            // Push affordance — never lost, never silently failing.
-            if (canPush(server.syncState) && server.projectId) {
-              try {
-                const pushed = await apiPushItem(server.id);
-                set((s) => ({
-                  items: s.items.map((i) => (i.id === pushed.id ? pushed : i)),
-                }));
-              } catch {
-                /* stays pending — the Push button remains */
-              }
-            }
+            // ⚠️ The push-on-accept arm was DELETED here (D52, WS-39
+            // S3a-client slice 4). It pushed an accepted decision to the
+            // connected tool when `syncState` said it was stageable — and
+            // there is no connected tool, so `POST /tasks/items/{id}/push`
+            // could do nothing but 400 and leave the item marked pending
+            // behind a Push button that had also been deleted. Same class as
+            // S1's auto-sync-on-open: a control that cannot succeed, firing
+            // where nobody asked it to.
           }),
         );
       }
@@ -1355,46 +1301,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
-  refreshAccountMembers: async (accountId: string) => {
-    if (get().backend !== "live") return;
-    try {
-      const fresh = await apiRefreshMembers(accountId);
-      set((s) => ({
-        accounts: s.accounts.map((a) => (a.id === accountId ? fresh : a)),
-      }));
-    } catch {
-      /* keep cached members */
-    }
-  },
-
-  /** Create a NEW provider project (ClickUp list) under a space/folder and
-   *  refresh the mirrored project list so pickers see it immediately. */
-  createWorkspaceProject: async (accountId, req) => {
-    const created = await apiCreateAccountProject(accountId, req);
-    try {
-      const [projects, accounts] = await Promise.all([
-        fetchProjects(),
-        fetchAccounts(),
-      ]);
-      set({ projects, accounts });
-    } catch {
-      /* next hydrate reconciles */
-    }
-    return created;
-  },
-
-  /** Create a NEW provider folder under a space and refresh the account so
-   *  the picker's hierarchy shows it immediately (empty, ready for lists). */
-  createWorkspaceFolder: async (accountId, spaceId, name) => {
-    if (!name.trim()) return;
-    await apiCreateAccountFolder(accountId, { name: name.trim(), spaceId });
-    try {
-      set({ accounts: await fetchAccounts() });
-    } catch {
-      /* next hydrate reconciles */
-    }
-  },
-
   skipToNextInbox: () =>
     set((s) => {
       const inbox = s.items
@@ -2106,32 +2012,24 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   hydrate: async () => {
     try {
-      const [items, projects, accounts, orgPeople] = await Promise.all([
+      const [items, projects, orgPeople] = await Promise.all([
         fetchItems("all"),
         fetchProjects(),
-        fetchAccounts(),
         fetchPeople().catch(() => [] as Person[]),
       ]);
-      const providers: ConnectedProvider[] = [
-        { id: "local", label: "Local", provider: "local", source: "LOCAL", statuses: [] },
-        ...accounts.map(accountToProviderEntry),
-      ];
-      // People priority: the org-knowledge layer (roles/skills, §6.1) →
-      // provider workspace members → bundled mocks.
-      const members = accounts.flatMap((a) => a.members);
-      const people = orgPeople.length
-        ? orgPeople
-        : members.length
-          ? members
-          : MOCK_PEOPLE;
+      // People: the org-knowledge layer (roles/skills, §6.1), or the bundled
+      // mocks in demo mode. ⚠️ The middle rung — "provider workspace
+      // members" — is GONE with the connectors (D52). It mattered: it was how
+      // the delegate picker learned names for people who were in a ClickUp
+      // workspace but not in the directory. Those people now have to be in
+      // the directory, which is the correct answer under one store and is
+      // worth saying out loud rather than discovering.
+      const people = orgPeople.length ? orgPeople : MOCK_PEOPLE;
       set({
         backend: "live",
         loading: false,
         items,
         projects,
-        accounts,
-        providerStatuses: providerStatusesFrom(accounts),
-        providers,
         people,
       });
       // Settings load in parallel — defaults already render, so the panes are
@@ -2146,7 +2044,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // row. That is the same "control that cannot succeed" as the deleted
       // Connect/Sync buttons, except nobody pressed this one: it fired on every
       // app open and re-earned the error the scheduler guard exists to prevent.
-      // `syncNow` itself is left in place for S3a to delete with the store.
+      // ✅ `syncNow` itself is now DELETED too (slice 4), with `pushItem`,
+      // the accounts family and every store field derived from them.
     } catch {
       // Gateway absent/unreachable → demo mode on the bundled mocks (local
       // dev only). We seed the mocks HERE, not at init, so production (gateway
@@ -2159,49 +2058,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         people: MOCK_PEOPLE,
       });
     }
-  },
-
-  refreshAccounts: async () => {
-    if (get().backend !== "live") return;
-    try {
-      const accounts = await fetchAccounts();
-      const providers: ConnectedProvider[] = [
-        { id: "local", label: "Local", provider: "local", source: "LOCAL", statuses: [] },
-        ...accounts.map(accountToProviderEntry),
-      ];
-      const members = accounts.flatMap((a) => a.members);
-      const orgPeople = await fetchPeople().catch(() => [] as Person[]);
-      const projects = await fetchProjects();
-      set({
-        accounts,
-        providerStatuses: providerStatusesFrom(accounts),
-        providers,
-        projects,
-        people: orgPeople.length
-          ? orgPeople
-          : members.length
-            ? members
-            : MOCK_PEOPLE,
-      });
-    } catch {
-      /* keep current state */
-    }
-  },
-
-  disconnectAccount: async (id) => {
-    await apiDeleteAccount(id);
-    await get().refreshAccounts();
-    // Mirrored items cascade server-side; re-pull the item list too.
-    try {
-      set({ items: await fetchItems("all") });
-    } catch {
-      /* next hydrate reconciles */
-    }
-  },
-
-  refreshAccountSchema: async (id) => {
-    await apiRefreshSchema(id);
-    await get().refreshAccounts();
   },
 
   settings: {
@@ -2247,31 +2103,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   settingsModalOpen: false,
   openSettings: () => set({ settingsModalOpen: true }),
   closeSettings: () => set({ settingsModalOpen: false }),
-
-  syncing: false,
-
-  syncNow: async (accountId) => {
-    if (get().backend !== "live" || get().syncing) return;
-    set({ syncing: true });
-    try {
-      await apiSyncTasks(accountId ? { accountId } : undefined);
-      // Re-pull items + account sync status so the views fill immediately.
-      const [items] = await Promise.all([
-        fetchItems("all"),
-        get().refreshAccounts(),
-      ]);
-      set({ items });
-    } catch {
-      /* account rows carry sync_error; next hydrate reconciles */
-    } finally {
-      set({ syncing: false });
-    }
-  },
-
-  pushItem: async (id) => {
-    const pushed = await apiPushItem(id);
-    set((s) => ({ items: s.items.map((i) => (i.id === id ? pushed : i)) }));
-  },
 }));
 
 // ── Derived selectors (pure; keep view logic in one place) ──────────────────
@@ -2385,24 +2216,6 @@ export function viewCounts(
     if (isCalendarItem(i)) c.calendar++;
   }
   return c;
-}
-
-/** Flatten every connected account's statuses into one ordered, de-duplicated
- *  list (case-insensitive), preserving each tool's own workflow order. This is
- *  the ClickUp half of the board/list status axis (unioned with the local
- *  workflow stages by statusColumns). */
-export function providerStatusesFrom(accounts: TaskAccount[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const a of accounts) {
-    for (const s of a.statuses ?? []) {
-      const key = s.trim().toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(s);
-    }
-  }
-  return out;
 }
 
 /** Count of MY NEXT items per context (for the expandable @context sub-list).

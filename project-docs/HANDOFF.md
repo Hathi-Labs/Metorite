@@ -407,63 +407,63 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
-### H-33 · WS-39 S3a-CLIENT slice 4: the CRUD and AI tail · [AGENT]
+### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → **12** means slices 1–3 only, and slice 4 is unbuilt.
+  → **12** means slices 1–4 only, and slice 5 is unbuilt.
   ⚠️ Do NOT grep for `api/tasks` in `lib/api.ts` and conclude anything: the
   prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`) and every call
   site passes a bare `` `/items…` ``. That spelling under-reported once already
   and would have closed this entry while the work was untouched.
-- **Why:** **Slices 1–3 landed 2026-08-25.** Slice 1 the spine, slice 2 the
-  browser day-planner, slice 3 every **browserless** surface (the agent planner,
-  `day-summary`, the agent apply path and the nightly roll-over sweep) plus the
-  gateway flag `TASKS_LENS` and its `/version` report. `docs/TASKS_LENS.md` is
-  the pair's write-up.
-  What is left still writes `gtd_items` when the flag is on:
+- **Why:** **Slices 1–4 landed 2026-08-25.** Spine, browser day-planner, every
+  browserless surface (+ the `TASKS_LENS` gateway flag), and the client-side
+  **connector excision**. What is left still writes `gtd_items` when the flag
+  is on:
   **(a) CRUD** — `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`,
   `apiBulkDispose`/`apiBulkArchive`, `apiMergeInto`/`apiFileUnder`,
   `apiItemDetail`, `apiItemStageOptions`, `fetchProjects`,
-  `fetchStatusCatalog`, `apiCaptureBatch`, `apiUploadAttachment`,
-  `createLocalProject` (which writes `gtd_projects` and should write
-  `pm_projects`).
-  **(b) AI** — `apiAtomize`, `apiClarifyPropose`, `apiEnrichItem`,
+  `fetchStatusCatalog`, `apiCaptureBatch`, `apiUploadAttachment`.
+  **(b) The LOCAL project tree** — `/hierarchy` · `/spaces` · `/folders` ·
+  `/local-projects` (`routes/tasks/hierarchy.py`) and the store actions over
+  them (`loadLocalHierarchy`, `createLocalSpace`, `createLocalFolder`,
+  `createLocalProject`).
+  🔴 **CORRECTION, 2026-08-25.** An earlier spelling of this entry filed that
+  family under "DELETION, not porting — D52 leaves them with no destination."
+  **That is wrong and acting on it would have deleted a live feature.** They are
+  the LOCAL Space→Folder→Project tree, not a connector surface: the module's own
+  header says "SYNCED projects are NOT here". They write `gtd_spaces` /
+  `gtd_folders` / `gtd_projects`, and under D53 their destination is
+  `pm_projects`, which already nests via `parent_project_id` (`tree.py`). It is
+  a PORT. The Clarify "Where" picker is their one consumer.
+  **(c) AI** — `apiAtomize`, `apiClarifyPropose`, `apiEnrichItem`,
   `apiSuggestTitle`, `apiBackfillContext`, `apiPlanProject`/`apiApplyPlan`.
   ⚠️ These need GATEWAY work, not just client wiring: `routes/tasks/ai.py`
-  names `gtd_items` **12 times**. Size it before dispatching; it is probably its
-  own slice.
-  **(c) DELETION, not porting** — the `/accounts` · `/spaces` · `/folders` ·
-  `/hierarchy` · `/local-projects` family, plus `apiSyncTasks`, `apiPushItem`,
-  `apiDeleteAccount`, `apiRefreshSchema`, `apiRefreshMembers`,
-  `apiCreateAccountProject`, `apiCreateAccountFolder`, `accountToProviderEntry`.
-  D52 leaves them with no destination. **Measured 2026-08-25: every one is
-  reachable only from `taskStore.ts`**, and `syncNow`, `refreshSchema`,
-  `refreshMembers`, `createAccountProject`, `createAccountFolder`,
-  `createSpace`, `createFolder` and `loadHierarchy` have **no UI caller at all**
-  — S1's repair round already deleted their buttons. `pushItem` still has two
-  (`ItemDetail.tsx`, `TaskFocusModal.tsx`) and should go with them. The store
-  even says so: `taskStore.ts` carries "`syncNow` itself is left in place for
-  S3a to delete with the store."
-  📌 **Also measured:** `apiCalendarRange` has **no callers** (the Calendar
-  reads the shared store, not a range endpoint) — delete it.
-  `fetchTaskSettings` needs **no** work: `gtd_settings`/`gtd_day_state`/
-  `gtd_rollover_log` SURVIVE the retirement (D53.6).
-  📌 **Two decisions still open:**
+  names `gtd_items` **12 times**. Probably its own slice.
+  📌 **Measured and still true:** `fetchTaskSettings` needs **no** work —
+  `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` SURVIVE (D53.6).
+  📌 **Three decisions still open:**
   (1) `workflow_stage` writes need a status name → `status_id` lookup against
   the task's own project; `splitPatch` THROWS on it today rather than dropping
-  it, so the to-do fails loudly instead of hiding.
+  it, so the to-do fails loudly instead of hiding. `apiItemStageOptions` is the
+  read half and is the natural place to start.
   (2) `origin` is still homeless and still per-TASK — `pm_tasks.source` is the
   nearest existing fact. Settle it before the lens touches email-captured tasks.
   (3) `horizonId`: **WS-21 owns Horizons**, DO-NOT-DISPATCH stands.
+  📌 **Left standing on purpose by slice 4, for a later UI pass:** the Clarify
+  destination picker still renders, with exactly one option ("Local"), and
+  `GtdItem.source` / `syncState` / `providerUrl` still display for rows imported
+  BEFORE the retirement. Deleting a picker is a product decision slice 4 did not
+  take; the frozen rows' provenance is deliberately kept read-only, which is the
+  same line S1's repair round drew.
   ⚠️ **Read `routes/projects/personal.py` and `routes/projects/planning.py`
   before designing anything.** The server side has shipped in five slices since
   2026-08-06; an agent who reads "make Tasks a lens over Projects" and starts
   writing endpoints is building a second one.
 - **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
-  `task_manager_app.md` §13.5a · `calendar_focus_os.md` §10.7 ·
+  `task_manager_app.md` §13.5a · `calendar_focus_os.md` §10.7-10.8 ·
   `docs/TASKS_LENS.md`
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25;
   ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut to
-  slice 2, 3 and 4 as each landed.)*
+  slices 2, 3, 4 and 5 as each landed.)*
 
 ### H-34 · Add the two Tasks-lens vars to `.env.example` (and the box) · [OWNER]
 - **Check:** `rg -c "TASKS_LENS" .env.example` → `0` means still pending.

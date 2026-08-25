@@ -45,7 +45,6 @@ function DelegateBody({
   onClose: () => void;
 }) {
   const people = useTaskStore((s) => s.people);
-  const accounts = useTaskStore((s) => s.accounts);
   const updateItem = useTaskStore((s) => s.updateItem);
   const loadPeople = useTaskStore((s) => s.loadPeople);
 
@@ -57,16 +56,13 @@ function DelegateBody({
     if (people.length === 0) void loadPeople();
   }, [people.length, loadPeople]);
 
-  const isSynced = item.source === "SYNCED";
-  const account = item.accountId
-    ? accounts.find((a) => a.id === item.accountId)
-    : undefined;
-  // Eligible delegates only: a synced task's workspace members (they must be
-  // able to see it in the tool); the org roster for a local task.
-  const eligible: Person[] = useMemo(
-    () => (isSynced && account?.members?.length ? account.members : people),
-    [isSynced, account, people],
-  );
+  // Everyone in the directory. ⚠️ There used to be a narrower arm here: a
+  // SYNCED task offered only its workspace's MEMBERS, because a delegate who
+  // could not see the task in the tool could not act on it. That constraint
+  // died with the tool (D52, WS-39 S3a-client slice 4) — there is one store,
+  // and who can see a task is decided by the project's grants, not by somebody
+  // else's seat list.
+  const eligible: Person[] = people;
 
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Person[]>(
@@ -96,7 +92,7 @@ function DelegateBody({
     onClose();
   };
 
-  if (promoteTo && !isSynced) {
+  if (promoteTo) {
     return (
       <DelegateDialog
         item={item}
@@ -139,12 +135,10 @@ function DelegateBody({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          {!isSynced && (
-            <p className="mb-2 text-[11px] text-muted-foreground">
-              This task is private to you — picking someone promotes it to
-              ClickUp so they can see it.
-            </p>
-          )}
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            Picking someone makes them the owner and moves this to your
+            Waiting-For list.
+          </p>
           {eligible.length > 8 && (
             <div className="relative mb-2">
               <Icon name="Search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -165,13 +159,13 @@ function DelegateBody({
           ) : (
             <div className="flex flex-col gap-1">
               {visible.map((p) => {
-                const on = isSynced && selected.some((a) => samePerson(a, p));
+                const on = selected.some((a) => samePerson(a, p));
                 return (
                   <button
                     key={p.providerUserId || p.name}
                     type="button"
                     aria-pressed={on}
-                    onClick={() => (isSynced ? toggle(p) : setPromoteTo(p))}
+                    onClick={() => setPromoteTo(p)}
                     className={[
                       "tech-transition flex w-full items-center gap-2.5 rounded-md border px-3 py-2 text-left text-sm",
                       on
@@ -191,34 +185,16 @@ function DelegateBody({
           )}
         </div>
 
-        {/* Synced: apply the (multi-)selection in one write. A local task
-            applies through the promote dialog instead, so no footer there. */}
-        {isSynced && (
-          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border px-4 py-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="tech-transition rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={apply}
-              className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
-            >
-              {busy ? (
-                <Icon name="Loader2" className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Icon name="Check" className="h-3.5 w-3.5" />
-              )}
-              {selected.length === 0
-                ? "Unassign"
-                : `Delegate to ${selected.length}`}
-            </button>
-          </div>
-        )}
+        {/* ⚠️ The multi-select owner footer was DELETED here (WS-39
+            S3a-client slice 4). It was the SYNCED arm: pick several people,
+            apply in one write. Under one store that is a fine thing to want
+            — but it is ASSIGNMENT, and this component is Delegate. Picking
+            someone here now always means "they own it, I am waiting on
+            them", which is the GTD semantic the Waiting-For list and
+            migration 188 exist for, and it is the same for every task
+            instead of depending on where the task was imported from.
+            Multi-owner editing is unaffected: the task detail's assignee
+            field still does it, and so does /projects. */}
       </div>
     </div>
   );
