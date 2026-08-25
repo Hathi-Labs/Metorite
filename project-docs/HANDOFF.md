@@ -278,21 +278,33 @@ this file grows a graveyard and the graveyard is what goes stale.
   §9.9
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-10 · A conflicted PR runs NO checks — the R1 guard's blind window · [AGENT]
-- **Check:** `rg -n "pull_request" .github/workflows/pr-check.yml` → if the
-  migration-prefix guard still runs only on `pull_request` (which checks out
-  `refs/pull/N/merge`, a ref GitHub does not compute while a PR is conflicted),
-  the window is still open. A `merge_group`/`push`-on-branch trigger, or a job
-  that checks out the head ref and merges the base itself, would close it.
-- **Why:** ⚠️ Measured, not guessed. `test_migration_prefixes.py` DOES catch two
-  migrations at one number — verified by putting the duplicate back. It was
-  simply never run: #439 sat `dirty` and reported `check_runs: 0`, **no jobs at
-  all**. So the window in which a cross-branch collision is most likely is
-  exactly the window in which nothing is watching, and the collision surfaces
-  only when somebody hand-resolves the conflict — i.e. while editing the very
-  tree that hides it.
-- **Authority:** `work_plan.md` §2 WS-27 row (the R1-collision record)
-- **Added:** 2026-08-14 · session that built WS-27bj
+### H-10 · HALF the R1 blind window is still open — the cross-branch collision · [AGENT]
+- **Check:** `rg -n "merge_group|merge-base origin/main" .github/workflows/pr-check.yml`
+  → only the secret-scan's `merge-base` hit (no `merge_group:` trigger, and no job
+  that checks out the head ref and merges the base before running the fence) means
+  the remaining half is still open.
+- **Why:** ⚠️ **This entry is NOT closed by the `push` trigger — it is halved, and
+  the surviving half is the one that actually bites.** What `push` fixed: a
+  CONFLICTED PR used to run zero jobs, because `pull_request` builds check out
+  `refs/pull/N/merge` and GitHub does not compute that ref while a PR is dirty
+  (#439 sat `dirty` at `check_runs: 0`). A `push` build has no merge ref to
+  compute, so the branch is now checked whatever its mergeability.
+  **What remains:** `test_migration_prefixes.py` globs the **working tree**, so it
+  only ever sees one branch's migrations. Two branches that each add `172_*.sql`
+  are individually valid and both go green; the duplicate exists **only in the
+  merge result**, which no build in this repo ever materialises. The fence cannot
+  see the collision it exists to catch. Closing it needs a `merge_group:` trigger
+  (checks the queued merge commit) or a job that checks out the head and merges
+  the base itself before running the fence — **which is exactly ticket T-6**, whose
+  acceptance is the right proof: open a deliberately conflicted PR carrying a
+  duplicate migration number and watch it go **red**.
+  ⚠️ Do not delete this entry on the strength of the `push` trigger. Delete it when
+  T-6's acceptance has been demonstrated.
+- **Authority:** `specs/development_and_delivery_framework.md` §5 and §8 **T-6**
+  (🟢 AGENT-SAFE; sequenced with T-3 as a cheap measured hole) · `work_plan.md` §2
+  WS-27 row (the R1-collision record) · R1
+- **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
+  push trigger (PR #46); re-pointed at T-6
 
 ### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
 - **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
@@ -423,6 +435,29 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `specs/project_management_app.md` §8 D-PM-21 · CLAUDE.md §3.8
   (verify by evidence, never by a green job)
 - **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
+
+### H-28 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
+- **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
+  false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
+  Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
+  module, package, files, or command."*
+- **Why:** `pass_filenames: false` tells pre-commit not to append the staged paths,
+  and nothing supplies targets in their place, so the hook fails on **every** commit
+  that touches Python — it has never been able to pass. The comment above it says it
+  is "diff-scoped", which is the opposite of what `pass_filenames: false` does; the
+  intent and the setting disagree and only the setting runs. ⚠️ The fix is not
+  simply `args: [apps, packages]`: that type-checks the whole tree on every commit,
+  which is slow and would surface the existing strict-mode backlog as a block on
+  unrelated work. Wanted: the diff-scoped behaviour the comment describes, which
+  probably means dropping `pass_filenames: false` and letting the staged paths
+  through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
+  landed with `SKIP=mypy` (every other hook ran and passed).
+  ⚠️ This hook failing on every Python commit is *why* `SKIP=mypy` gets typed by
+  habit, which is the second-order cost: a skip nobody questions is not a gate.
+- **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
+  CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
+  smuggled into an unrelated PR)
+- **Added:** 2026-08-21 · session that halved H-10 (PR #46)
 
 ---
 

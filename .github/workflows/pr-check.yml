@@ -14,6 +14,51 @@ on:
     paths-ignore:
       - "**.md"
       - "project-docs/**"
+  # ── Why `push` as well, when `pull_request` already covers the PR ──────────
+  #
+  # `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute
+  # that ref while a PR is CONFLICTED. So a conflicted PR runs no jobs at all —
+  # measured on #439, which sat `dirty` and reported `check_runs: 0`. GitHub
+  # renders "no checks" identically to "nothing failing", which is the same
+  # misreading the `pull_request` comment above already records once.
+  #
+  # That matters most for the R1 migration-prefix guard: the window in which a
+  # cross-branch number collision is most likely is exactly the window in which
+  # nothing was watching, and the collision then surfaces only while somebody
+  # hand-resolves the conflict — i.e. while editing the very tree that hides it.
+  # `test_migration_prefixes.py` DOES catch two migrations at one number (proven
+  # by re-introducing a duplicate); it was simply never run.
+  #
+  # A `push` build has no merge ref to compute, so it runs whatever the branch
+  # actually contains, conflicted or not. ⚠️ The cost is stated rather than
+  # hidden: a branch with an open PR now builds twice per push. That is the
+  # price of the window being closed, and it is cheaper than one silent
+  # migration collision (three in two weeks — see work_plan.md §2 WS-27).
+  push:
+    # Ignore ONLY the refs that are already covered elsewhere or are machine-
+    # written. Everything else — every feature branch, named or not — runs, which
+    # is the point of an ignore-list over an allow-list.
+    #
+    #   main     — covered by deploy.yml; running here would be a third copy of
+    #              the same jobs on every merge.
+    #   release  — a PUBLISHED ref, not a development one: deploy.yml's
+    #              `publish-release` job fast-forwards it to a SHA that has
+    #              already been checked on `main` (`git push origin
+    #              ${GITHUB_SHA}:refs/heads/release`). Re-checking the same tree
+    #              under a second name buys nothing and doubles every deploy.
+    #   staging  — the same shape, one rung down; T-7 adds the ref and the
+    #              `staging-promote` fast-forward. Listed BEFORE it exists so the
+    #              ref cannot arrive and quietly start duplicating every promote.
+    #
+    # ⚠️ Adding a name here removes a fence from that ref. Only add one that is
+    # provably checked upstream of the push — that is the whole criterion.
+    branches-ignore:
+      - main
+      - release
+      - staging
+    paths-ignore:
+      - "**.md"
+      - "project-docs/**"
 
 permissions:
   contents: read
@@ -562,7 +607,20 @@ jobs:
 
       - name: Scan PR commits for secrets
         run: |
-          RANGE="${{ github.event.pull_request.base.sha }}..HEAD"
+          # `github.event.pull_request.base.sha` exists ONLY on a pull_request
+          # event. Under the `push` trigger added above it expands to the empty
+          # string, leaving RANGE="..HEAD" — which git reads as "from the empty
+          # tree", i.e. the whole history, which is exactly the historical leak
+          # (BO-8) this scan is scoped to avoid tripping on. So derive the base
+          # from the merge point on a push instead.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            # fetch-depth: 0 above gives us origin/main to measure against. If
+            # it is somehow absent, scan the last commit rather than the world.
+            BASE="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1)"
+          fi
+          RANGE="${BASE}..HEAD"
           gitleaks detect \
             --source . \
             --config .gitleaks.toml \
