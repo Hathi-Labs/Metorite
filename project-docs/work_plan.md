@@ -297,11 +297,35 @@ which is what needs a fence and what outlives any tool; the claim about current
 CONTENTS is the new tripwire's. Its three sibling gate tests were never affected —
 `validate_graph` takes `destructive_actions` as an ARGUMENT, so their action name
 is a string the validator never resolves (renamed off the retired tool anyway).
+**Fixing the collection error then exposed THREE more reds that `-x` had been
+hiding behind it**, each fixed and pushed in turn:
+**(3)** `test_workflows_as_tool.py::test_destructive_registry_names_clickup_write`
+asserted `"clickup.create_task" in destructive_action_names()` — the very claim
+D52 falsified. Re-cut to fence the helper's DERIVATION (register one of each, watch
+the answer follow) rather than the catalog's contents.
+**(4)** `test_workflow_fixtures.py[lead_triage_high_priority]` still expected the
+old `{list_id, name, description}` args — **and its `variables` block still
+supplied a dead `list_id` while the re-cut node reads `{{vars.endpoint}}`, which
+nothing defined.** The engine leaves an unresolvable template LITERAL, so the run
+was posting to the string `{{vars.endpoint}}` and the fixture would have pinned
+that as correct the moment its args were merely updated. Both halves fixed.
+**(5)** `test_projects_calendar.py::test_the_week_layout_did_not_grow_its_own_endpoint`
+is an EXACT-LIST assertion over calendar routes and has been red since
+**S3a-server** added `GET /projects/my/calendar` on 2026-08-24 — nobody saw it,
+because collection died several files earlier. Re-cut to allow the deliberate
+personal lens (a different question over a different store) while keeping what it
+actually guards: no LAYOUT-specific `/week` endpoint re-deriving the team window,
+and the list stays exact so a third route must argue for itself.
+⚠️ **This one also caught the LOCAL verification out**: CLAUDE.md's hazard note
+says never run `pytest tests/unit -k calendar`, so the repair round's own full-suite
+runs deselected `calendar` — and deselected the failure with it. Naming the file
+(`pytest tests/unit/test_projects_calendar.py`) completes fine and reproduces it.
 ⚠️ **The lesson is about the EVIDENCE, not the code:** S1's commit message reported
 "580 passed" over hand-picked suites, and a green *subset* said nothing about a
-suite that could not be collected at all. `-x` then hid the second failure behind
-the first. Non-negotiable 8 — verify by evidence, never by a green job — has a
-mirror image: **a job you did not look at is not evidence either.**
+suite that could not be collected at all. `-x` then hid three more failures behind
+the first, and a `-k` filter hid the fourth. Non-negotiable 8 — verify by evidence,
+never by a green job — has a mirror image: **a job you did not look at, and a test
+your filter deselected, are not evidence either.**
 
 P2s in the same round: the runtime `_AGENT_REGISTRY` and `_WEBHOOK_ROUTES` clickup
 entries removed (the catalog JSON was cleaned in S1, the runtime copy was not, so the

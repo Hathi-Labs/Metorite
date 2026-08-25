@@ -322,11 +322,34 @@ async def test_the_boards_filters_survive_at_every_window_width(
 def test_the_week_layout_did_not_grow_its_own_endpoint() -> None:
     """⚠️ WS-27ac's whole point, on the server side: one window read, two
     renderings of it (three, counting the timeline — §11.17). A second path
-    would get its own filter set, its own triage default and its own bugs."""
+    would get its own filter set, its own triage default and its own bugs.
+
+    ⚠️ **Re-cut 2026-08-25 (WS-39 S1 repair round 1).** WS-39 S3a-server added
+    `GET /projects/my/calendar` (D54 · D53.7, migration 187) and this
+    exact-list assertion went red — unseen, because at the time `tests/unit`
+    could not be COLLECTED at all (two modules imported the class D52 deleted)
+    and CI's `-x` run died several files earlier.
+
+    That second route is DELIBERATE and is not what this test guards against.
+    The rule is *one TEAM-calendar window read, several renderings of it*.
+    `/projects/my/calendar` answers a different question from a different
+    store — MY blocks, out of `pm_task_personal`, scoped to the session with no
+    `?member=` — so it is a sibling lens, not a second rendering path over the
+    same rows. What must stay refused is a LAYOUT-specific endpoint: a `/week`
+    that re-derives the same team window and then drifts from
+    `/projects/calendar` one filter at a time. That half is unchanged, and the
+    list stays EXACT, so a third calendar route still has to argue for itself
+    here.
+    """
     from gateway.routes.projects import router
 
-    windows = [r for r in router.routes if "calendar" in r.path]
-    assert [r.path for r in windows] == ["/projects/calendar"]
+    windows = sorted(r.path for r in router.routes if "calendar" in r.path)
+    assert windows == ["/projects/calendar", "/projects/my/calendar"], (
+        f"unexpected calendar route set: {windows}. One team window read "
+        "(`/projects/calendar`) plus the personal lens "
+        "(`/projects/my/calendar`, WS-39 S3a). A new entry needs a reason in "
+        "this docstring."
+    )
     assert not any("week" in r.path for r in router.routes)
 
 
