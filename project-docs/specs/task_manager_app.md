@@ -1188,17 +1188,17 @@ still read live. 188 moved where the column lives; it did not touch what a null 
 `/api/tasks/items` and fails on any hit. Structural, not exemplary — the failure mode
 this defends is *one component left behind*, which an example test cannot see.
 
-### 13.5a S3a-client ships in two slices, and the first one is dark
+### 13.5a S3a-client ships in slices, and they are all dark until S3b
 
 **Recorded 2026-08-25, after the audit measured the surface.** §13.5's criteria
 are the acceptance for S3a *as a whole* and are unchanged. What changed is the
 delivery: `tasks/lib/api.ts` reaches **more than thirty `/items*` endpoints**,
 so "the UIs re-point" is not one reviewable diff.
 
-| | Slice 1 — **BUILT 2026-08-25** | Slice 2 — H-33 |
+| | Slices 1+2 — **BUILT 2026-08-25** | Slice 3 — H-33 |
 |---|---|---|
-| **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchTaskSettings`, `fetchStatusCatalog` |
-| **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate | organize · bulk · merge/file-under · subtasks · the AI routes · plan/apply |
+| **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) · **slice 2:** the day planner's four reads, via `/projects/my/calendar/*` | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchStatusCatalog` — **not** `fetchTaskSettings`, whose `gtd_settings` survives (D53.6) |
+| **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate. *(The planner writes nothing — it proposes, and the client applies through `apiPatchItem`.)* | organize · bulk · merge/file-under · subtasks · the AI routes · plan/apply · 🔴 the AGENT planner, which needs a mechanism decision first |
 | **Retired, not ported** | — | `/accounts` · `/spaces` · `/folders` · `/hierarchy` · `/local-projects` (D52 leaves them with no destination) |
 
 **Slice 1 is behind `NEXT_PUBLIC_TASKS_LENS`, default OFF, and the flag is not

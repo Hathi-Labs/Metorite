@@ -553,3 +553,44 @@ export async function lensDelegateItem(
   });
   return lensGetItem(id);
 }
+
+// ── The day planner ──────────────────────────────────────────────────
+//
+// `/calendar` reads its tasks from the shared task store, so the grid, the
+// unscheduled rail and every schedule edit followed the lens the moment slice 1
+// landed — with one exception, and it was the dangerous one. "Plan my day" is a
+// SERVER-side computation over whichever store the endpoint reads, and it read
+// the retiring one. Under the flag the UI would have shown `pm_*` tasks while
+// the planner ranked and packed `gtd_items`, and the plan would have come back
+// empty. A 200, no error, nothing in a log.
+//
+// The four below are the fix, and they are all PROPOSALS — none writes. The
+// client applies an accepted plan through `apiPatchItem`, which slice 1 already
+// routed, which is why there is no `apply` here to port.
+//
+// ⚠️ `apiAgentPlanToday` is deliberately NOT in this list. The agent surface
+// has no browser and so no flag to read, and giving it a server-side one would
+// mean two flags that must agree. Slice 3 (H-33). Until then an agent asked to
+// plan a day on a lens deployment plans the wrong store.
+
+/** The planner proposals, one store. Same request shape, different route. */
+const PLANNER: Readonly<Record<string, string>> = {
+  plan: "my/calendar/plan",
+  replan: "my/calendar/replan",
+  rollover: "my/calendar/rollover",
+};
+
+export async function lensPlan(
+  kind: "plan" | "replan" | "rollover",
+  req: unknown,
+): Promise<Raw> {
+  return projectsCall<Raw>(PLANNER[kind], {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+/** How long my work actually takes against what I planned. */
+export async function lensEstimateStats(): Promise<Raw> {
+  return projectsCall<Raw>("my/calendar/estimate-stats");
+}

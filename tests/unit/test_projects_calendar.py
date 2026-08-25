@@ -340,16 +340,50 @@ def test_the_week_layout_did_not_grow_its_own_endpoint() -> None:
     `/projects/calendar` one filter at a time. That half is unchanged, and the
     list stays EXACT, so a third calendar route still has to argue for itself
     here.
+
+    ⚠️ **Argued 2026-08-25 (WS-39 S3a-client slice 2).** Four more entries,
+    all under `/my/calendar/`: `plan`, `replan`, `rollover`, `estimate-stats`.
+    They are ACTIONS on my own day, not window READS — none of them takes a
+    `start`/`end` pair, none returns tasks, and each answers with a `DayPlan`
+    PROPOSAL that writes nothing. So the rule this test exists for is untouched:
+    there is still exactly one team-calendar window read, and still exactly one
+    personal one.
+
+    They are here rather than left on `/tasks/calendar/*` because the STORE is
+    chosen by which route the client calls. That is the whole reason the cutover
+    needs only one flag: a server-side flag would be a second one, and two flags
+    that must agree are a mismatch waiting to be found by a user whose day plans
+    itself out of the wrong table.
+
+    The `week` assertion below is the part that actually guards the rule, and it
+    is deliberately left checking the WHOLE router rather than this list.
     """
     from gateway.routes.projects import router
 
     windows = sorted(r.path for r in router.routes if "calendar" in r.path)
-    assert windows == ["/projects/calendar", "/projects/my/calendar"], (
+    assert windows == [
+        "/projects/calendar",
+        "/projects/my/calendar",
+        "/projects/my/calendar/estimate-stats",
+        "/projects/my/calendar/plan",
+        "/projects/my/calendar/replan",
+        "/projects/my/calendar/rollover",
+    ], (
         f"unexpected calendar route set: {windows}. One team window read "
-        "(`/projects/calendar`) plus the personal lens "
-        "(`/projects/my/calendar`, WS-39 S3a). A new entry needs a reason in "
-        "this docstring."
+        "(`/projects/calendar`), one personal window read "
+        "(`/projects/my/calendar`, WS-39 S3a) and the four personal planner "
+        "ACTIONS (slice 2). A new entry needs a reason in this docstring."
     )
+
+    # The window reads stay two, whatever the action surface grows to. This is
+    # the assertion the docstring is about; the list above is its inventory.
+    reads = [r for r in router.routes
+             if "calendar" in r.path and "GET" in getattr(r, "methods", set())]
+    assert sorted(r.path for r in reads) == [
+        "/projects/calendar",
+        "/projects/my/calendar",
+        "/projects/my/calendar/estimate-stats",
+    ], "a second team-calendar window read appeared"
     assert not any("week" in r.path for r in router.routes)
 
 
