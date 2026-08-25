@@ -195,6 +195,15 @@ line — never reclaim a number by deleting the other entry.
   ⚠️ The `[0-9]*` glob and `sort -V` are both load-bearing: a bare `*.sql | tail
   -1` answers `schema.generated.sql`, which sorts after every numbered migration
   and is not one. That is what the first draft of this Check did.
+  ✅ **The CODE half is now checkable without box access (2026-08-25):**
+  `curl -s https://api.metorite.com/version` returns the commit the box is
+  running; compare with `git rev-parse origin/main`. That does **not** close
+  this entry — it answers which code is running, never whether the schema moved
+  with it, and those come apart precisely when a migration fails and the
+  services restart anyway. But it converts "unverified" into "the box is N
+  commits behind", which is the difference between a guess and a number.
+  ⚠️ `sha: null` means the box could not determine its own version, NOT that it
+  is up to date.
 - **Why:** #437 merged 2026-08-13 and was never deployed; everything since has
   stacked behind it, and the pile grows every day. **We cannot roll back** (R6),
   so the longer the gap the more lands at once. Deploy applies migrations before
