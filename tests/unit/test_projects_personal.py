@@ -683,6 +683,131 @@ async def test_flexible_keeps_three_states(db: FakeProjectsDB) -> None:
     assert pinned["flexible"] is False
 
 
+async def test_a_datetime_local_edge_drag_is_not_a_500(
+    db: FakeProjectsDB,
+) -> None:
+    """The failing input, measured: `<input type="datetime-local">` sends
+    `2026-09-01T12:00` with **no offset**.
+
+    `coerce_write_values` parses that to a NAIVE datetime while the stored
+    `scheduled_start` read back for the merge is AWARE, so the merged-pair check
+    compared the two and raised
+    `TypeError: can't compare offset-naive and offset-aware datetimes` — a 500
+    on the calendar's most ordinary interaction, one line below the fix that
+    exists to stop exactly that. `_as_utc` reads a naive instant as UTC (this
+    package's convention: `filters.py::_instant`, `delta.py`, `custom_fields.py`,
+    `recurrence.py`), so the comparison happens in one frame.
+
+    Both directions are asserted, because a fix that merely stopped raising
+    could still refuse a legal drag: the widening edge SUCCEEDS, the inverted
+    one is a 422.
+    """
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            scheduled_start="2026-09-01T09:00:00+00:00",
+            scheduled_end="2026-09-01T10:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+
+    # Drag the bottom edge down — the browser's own spelling, no offset.
+    out = await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(scheduled_end="2026-09-01T12:00"),
+        user=ALICE,
+    )
+    assert out["scheduled_end"].startswith("2026-09-01T12:00")
+
+    # And the same spelling still cannot invert the block.
+    with pytest.raises(HTTPException) as exc:
+        await pm_personal.set_personal(
+            str(task.id),
+            pm_personal.PersonalIn(scheduled_end="2026-09-01T08:00"),
+            user=ALICE,
+        )
+    assert exc.value.status_code == 422, (
+        "an offset-less end BEFORE the stored start must be a 422 — if this is "
+        "a 500 the comparison is still crossing frames"
+    )
+
+
+async def test_a_mixed_offset_calendar_window_is_not_a_500(
+    db: FakeProjectsDB,
+) -> None:
+    """The same defect on the read: one bound with an offset, one without.
+
+    `end <= start` on a naive/aware pair raises `TypeError` → 500. Normalizing
+    both ends makes it answer the question that was asked, and a genuinely
+    inverted window is still a 422.
+    """
+    rows = await pm_personal.my_calendar(
+        start="2026-09-01T00:00", end="2026-09-08T00:00:00+00:00", user=ALICE,
+    )
+    assert rows.total == 0
+
+    with pytest.raises(HTTPException) as exc:
+        await pm_personal.my_calendar(
+            start="2026-09-08T00:00:00+00:00", end="2026-09-01T00:00",
+            user=ALICE,
+        )
+    assert exc.value.status_code == 422
+
+
+async def test_a_trashed_task_does_not_occupy_the_calendar(
+    db: FakeProjectsDB,
+) -> None:
+    """A calendar is a claim on hours, so a task the member trashed must not
+    hold one.
+
+    `/my/inbox` has excluded DONE/TRASH since it was written; `/my/calendar`
+    reused its SQL but not its filter, so a trashed task kept its block and its
+    slot in the week. Same rule, same `include_done` parameter name, same
+    EFFECTIVE-disposition derivation — one vocabulary, not a second one.
+    """
+    project, todo, _ = _team_project(db)
+    kept = db.seed_task(project.id, todo.id, title="Keep")
+    trashed = db.seed_task(project.id, todo.id, title="Bin")
+    _assign(db, kept.id, "alice@fracktal.in")
+    _assign(db, trashed.id, "alice@fracktal.in")
+
+    for task in (kept, trashed):
+        await pm_personal.set_personal(
+            str(task.id),
+            pm_personal.PersonalIn(
+                scheduled_start="2026-09-01T09:00:00+00:00",
+                scheduled_end="2026-09-01T10:00:00+00:00",
+            ),
+            user=ALICE,
+        )
+    await pm_personal.set_personal(
+        str(trashed.id), pm_personal.PersonalIn(disposition="TRASH"), user=ALICE,
+    )
+
+    week = await pm_personal.my_calendar(
+        start="2026-09-01T00:00:00+00:00", end="2026-09-08T00:00:00+00:00",
+        user=ALICE,
+    )
+    titles = [r["title"] for r in week.rows]
+    assert "Bin" not in titles, (
+        "a trashed task still occupies an hour of the member's week"
+    )
+    assert "Keep" in titles, (
+        "the control is missing — this test's green would then be an empty "
+        "read, not the filter"
+    )
+
+    # The same escape hatch the inbox has, and it is the inbox's own name.
+    everything = await pm_personal.my_calendar(
+        start="2026-09-01T00:00:00+00:00", end="2026-09-08T00:00:00+00:00",
+        include_done=True, user=ALICE,
+    )
+    assert "Bin" in [r["title"] for r in everything.rows]
+
+
 async def test_the_calendar_window_is_half_open(db: FakeProjectsDB) -> None:
     """`[start, end)`, so consecutive weeks tile instead of overlapping.
 

@@ -29,7 +29,7 @@ so no request can be made to read or write somebody else's practice.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -317,6 +317,30 @@ async def _upsert_personal(
     )).fetchone()
 
 
+def _as_utc(value: Any) -> Any:
+    """A naive instant is read as UTC; anything else is returned untouched.
+
+    ⚠️ **This is what keeps a `datetime-local` input out of a 500.** The browser's
+    `<input type="datetime-local">` submits `2026-08-25T10:00` — **no offset** —
+    and `coerce_write_values` parses that to a NAIVE `datetime`, while the value
+    read back from a `timestamptz` column is AWARE. Comparing the two raises
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``, which
+    surfaces as a 500 on the calendar's most ordinary interaction — exactly the
+    "client error reported as a server fault" that `_reject_impossible_block`
+    exists to prevent, reintroduced one line below the fix.
+
+    UTC is this package's existing convention for a naive instant, not a new
+    rule: `filters.py::_instant`, `delta.py:414`, `custom_fields.py:194` and
+    `recurrence.py:215` all say ``parsed if parsed.tzinfo else
+    parsed.replace(tzinfo=UTC)``. Postgres would apply the SESSION TimeZone to a
+    naive bind, so leaving it unstated makes the stored instant depend on a
+    connection setting.
+    """
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 async def _reject_impossible_block(
     db: Any, task_id: str, email: str, values: dict[str, Any],
 ) -> None:
@@ -340,8 +364,10 @@ async def _reject_impossible_block(
     )).fetchone()
 
     merged = coerce_write_values({k: values[k] for k in keys if k in values})
-    start = merged.get("scheduled_start", getattr(stored, "scheduled_start", None))
-    end = merged.get("scheduled_end", getattr(stored, "scheduled_end", None))
+    start = _as_utc(merged.get("scheduled_start",
+                               getattr(stored, "scheduled_start", None)))
+    end = _as_utc(merged.get("scheduled_end",
+                             getattr(stored, "scheduled_end", None)))
 
     # Half-open is legal on purpose: a block with a start and no end is an
     # open-ended one, which the calendar renders as "started, still going".
@@ -571,6 +597,7 @@ async def my_inbox(
 async def my_calendar(
     start: str,
     end: str,
+    include_done: bool = False,
     user: UserContext = Depends(get_current_user),
 ) -> ListResponse:
     """My scheduled blocks in a window — the Calendar app's one read.
@@ -597,16 +624,31 @@ async def my_calendar(
 
     ⚠️ Returns tasks with **my block attached**, not bare blocks: the calendar
     draws a task, and a payload of blocks would send it back for every title.
+
+    **DONE and TRASH are excluded unless ``include_done``** — the same rule, the
+    same parameter name and the same effective-disposition derivation
+    ``/my/inbox`` applies, because they are two lenses on one list and a task
+    the member trashed must not keep occupying an hour of their week. The
+    disposition is EFFECTIVE (stated where triaged, derived otherwise), so a
+    task closed on the team's board leaves the calendar without anyone having
+    triaged it personally.
     """
     # ⚠️ Parsed explicitly, NOT through `coerce_write_values`. That helper keys
     # off an allow-list of COLUMN names, and these two are bind parameters — so
     # it would pass them through as strings and bind text to a timestamptz
     # comparison. The same trap as the columns themselves; different reason, so
     # naming it here rather than widening the column list with two non-columns.
+    #
+    # ⚠️ Both ends go through `_as_utc`, for the reason written there: a caller
+    # may send one bound with an offset and the other without (a
+    # `datetime-local` picker on one end of the week and an ISO instant on the
+    # other), and comparing those two raises `TypeError` → 500 on the line
+    # below. It also stops a naive bound being resolved by the CONNECTION's
+    # TimeZone in the SQL comparison, which would silently shift the week.
     try:
         window = {
-            "start": datetime.fromisoformat(start),
-            "end": datetime.fromisoformat(end),
+            "start": _as_utc(datetime.fromisoformat(start)),
+            "end": _as_utc(datetime.fromisoformat(end)),
         }
     except (TypeError, ValueError) as exc:
         raise HTTPException(
@@ -630,12 +672,15 @@ async def my_calendar(
 
     items: list[dict[str, Any]] = []
     for row in rows:
-        task = row_to_dict(row, TaskModel)
-        task["disposition"] = getattr(row, "p_disposition", None) or derive_disposition(
+        effective = getattr(row, "p_disposition", None) or derive_disposition(
             status_category=str(getattr(row, "status_category", "") or ""),
             is_mine=bool(getattr(row, "is_mine", False)),
             has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
         )
+        if not include_done and effective in ("DONE", "TRASH"):
+            continue
+        task = row_to_dict(row, TaskModel)
+        task["disposition"] = effective
         task["next_action"] = getattr(row, "p_next_action", None)
         task["context"] = getattr(row, "p_context", None)
         task["energy"] = getattr(row, "p_energy", None)

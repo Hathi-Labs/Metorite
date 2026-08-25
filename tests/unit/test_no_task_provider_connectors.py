@@ -104,6 +104,39 @@ def test_the_broker_writer_map_is_empty() -> None:
     )
 
 
+def test_the_workflow_registry_has_no_destructive_tool() -> None:
+    """The TRIPWIRE the S1 cleanup commit promised, and did not write.
+
+    ⚠️ **This is a tripwire, not an invariant: it is EXPECTED to go red one
+    day, and going red is the whole service it performs.**
+
+    `clickup.create_task` was the only `destructive=True` `WorkflowToolSpec`, so
+    D52 left the workflow registry with none — and the graph validator reads its
+    refusal set from the LIVE registry (`destructive_action_names()`). With that
+    set empty, "a destructive node needs an approval gate upstream" **cannot
+    fire**, and the eval fixture that exercised it (`gate_write_without_approval
+    .json`) was deleted because a fixture that cannot fail is worse than none.
+
+    So when the next destructive tool is registered, this test fails — and its
+    message is the instruction: **restore that fixture**, because from that
+    moment the approval-gate rule is live again and nothing else is checking it.
+
+    Reads the registry through the module's own accessor rather than the dict,
+    so a spec registered by any path is seen.
+    """
+    from gateway.routes.workflows import tools as wf_tools
+
+    destructive = wf_tools.destructive_action_names()
+    assert destructive == set(), (
+        f"a destructive workflow tool is registered again: {sorted(destructive)}. "
+        "The graph validator's approval-gate rule is therefore LIVE again, and "
+        "nothing exercises it: restore `evals/trajectories/` fixture "
+        "`gate_write_without_approval.json` (deleted by D52 because it could "
+        "not fail against an empty registry) and re-point it at this tool. "
+        "Then delete this tripwire — it has done its job."
+    )
+
+
 def test_no_module_imports_the_deleted_clickup_packages() -> None:
     """The deleted packages are not imported anywhere in the tree.
 

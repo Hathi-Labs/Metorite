@@ -53,8 +53,17 @@ def _broker_enforced(action: str) -> bool:
     to queue specific ones. This is the kill-switch — flip it without a redeploy
     (env var + service restart). Persistent handlers ARE registered at startup
     (``tasks/broker_handlers.py``), so an approved queued write really executes:
-    since BO-1a **every** action name gated here has a ``_WRITERS`` entry, fenced
-    by ``tests/unit/test_task_broker_handlers.py``.
+    since BO-1a **every** action name gated here has a ``_WRITERS`` entry.
+
+    ⚠️ **That correspondence is ADVISORY today (R7), not fenced.** Its fence was
+    ``tests/unit/test_task_broker_handlers.py``, which D52 DELETED with the
+    connector it covered: it asserted a relation between two sets that are now
+    both EMPTY and it carried ``assert gated, "the AST walk went blind"``, which
+    is precisely what D52 makes false. What survives is the emptiness —
+    ``tests/unit/test_no_task_provider_connectors.py`` (``_CONNECTORS`` empty,
+    ``build_provider`` refuses every name, ``_WRITERS`` empty) — which is a
+    different claim. Re-fence the correspondence with the next gated writer;
+    do not cite the deleted file.
 
     ⚠️ **DO NOT FLIP THIS ON. BO-1a and BO-1b did not make the flip safe** —
     they cleared the handler-ROUTING blocker (an approved queued write executes)

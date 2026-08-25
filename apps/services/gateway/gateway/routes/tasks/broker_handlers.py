@@ -38,8 +38,16 @@ _log = get_logger("gateway.tasks.broker_handlers")
 # here, or approving that queued write falls into `broker.execute()`'s no-handler
 # branch and the `pending_actions` row is marked `failed` (BO-1a). The keys of an
 # entry must match the `args` dict the gate's `audit_payload` carries at that
-# call site — the handler reads them positionally. Both directions are fenced by
-# `tests/unit/test_task_broker_handlers.py`.
+# call site — the handler reads them positionally.
+#
+# ⚠️ **ADVISORY, not fenced (R7).** The test that checked both directions,
+# `tests/unit/test_task_broker_handlers.py`, was DELETED by D52 with the
+# connector it covered; it asserted a correspondence between two now-empty sets
+# and its own blind-walk guard (`assert gated`) is what D52 makes false. The
+# surviving fence is the emptiness —
+# `tests/unit/test_no_task_provider_connectors.py::test_the_broker_writer_map_is_empty`
+# — which is a different claim. Re-fence the correspondence with the next
+# gated writer; do not cite the deleted file.
 _WRITERS: dict[str, tuple[str, tuple[str, ...]]] = {}
 
 

@@ -416,19 +416,22 @@ _KNOWN_AGENTS: frozenset[str] = frozenset(
 _AGENT_REGISTRY: list[dict] = [
     {
         "name": "task-manager",
-        "description": "GTD task manager — capture, clarify, organize (Local or a connected PM workspace), and status/workload Q&A with citations.",
-        "tags": ["tasks", "clickup", "project-management"],
+        "description": "GTD task manager — capture, clarify, organize, and status/workload Q&A with citations.",
+        # ⚠️ ClickUp removed 2026-08-25 (D52, WS-39 S1 repair round 1). The
+        # catalog JSON was cleaned in the S1 sweep and this runtime copy was
+        # not, so the picker still rendered the tile with a ClickUp integration
+        # — and `/integrations/status` reads `integrations` to decide whether an
+        # agent is "configured", i.e. the tile advertised a connection to a
+        # product that no longer exists. The three `webhook_routes` went with
+        # it: their receiver (`/webhooks/clickup`) was deleted in S1.
+        "tags": ["tasks", "project-management"],
         "status": "live",
         # Runs through MAF (MetoriteCopilotAgent wrapper) with BYOK model support.
         "agent_runtime": "github-copilot",
         "local_path": "apps/agents/agent-task-manager",
-        "integrations": ["clickup"],
+        "integrations": [],
         "optional_integrations": [],
-        "webhook_routes": [
-            {"source": "clickup", "event_type": "taskCreated"},
-            {"source": "clickup", "event_type": "taskUpdated"},
-            {"source": "clickup", "event_type": "taskDeleted"},
-        ],
+        "webhook_routes": [],
     },
     {
         "name": "apis-config",
@@ -1047,11 +1050,14 @@ def _resolve_agent_for_run(agent: str | None, thread_id: str | None) -> str:
 # Phase 2: driven by each agent's config.json; here it is hard-coded for Phase 0.
 # ---------------------------------------------------------------------------
 
-_WEBHOOK_ROUTES: dict[tuple[str, str], str] = {
-    ("clickup", "taskUpdated"): "task-manager",
-    ("clickup", "taskCreated"): "task-manager",
-    ("clickup", "taskDeleted"): "task-manager",
-}
+#
+# 🔴 **EMPTY SINCE 2026-08-25 (D52, WS-39 S1 repair round 1), and that is the
+# decision.** Its three entries were all `("clickup", …)`; D52 deleted the
+# ClickUp receiver, so they routed events nothing could send. An unmatched
+# `(source, event_type)` is answered by `_route_webhook`'s no-route branch (it
+# reports `known_routes`), which is the correct outcome — the alternative was a
+# table promising a route into an integration that no longer exists.
+_WEBHOOK_ROUTES: dict[tuple[str, str], str] = {}
 
 
 # ---------------------------------------------------------------------------
