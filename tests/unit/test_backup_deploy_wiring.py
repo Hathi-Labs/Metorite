@@ -128,6 +128,30 @@ def test_the_pg_seam_actually_reaches_docker_in_docker_mode() -> None:
         assert "STUB exec -i testc echo two" in out, f"{script}: pgi missed -i"
 
 
+def test_no_deploy_script_redirects_into_shared_tmp() -> None:
+    """`fs.protected_regular=2` (Ubuntu default) forbids opening an existing
+    file in a sticky world-writable dir owned by another user -- ROOT TOO. A
+    fixed /tmp path therefore works until the first time the OTHER user runs
+    the script, then fails forever. This has now bitten three times: the
+    nightly backup's verify log (recorded in backup_db.sh), and on 2026-08-25
+    BOTH of apply_migrations.sh's fixed paths in one deploy -- the lock probe
+    read as "prelude REJECTED" and the apply loop died "Permission denied"
+    at the redirect, holding a live migration at the gate. Per-run mktemp is
+    the rule; this pins it for every deploy-path script.
+    """
+    for script in (
+        "scripts/apply_migrations.sh",
+        "scripts/backup_db.sh",
+        "scripts/restore_db.sh",
+        "scripts/vps_apply.sh",
+    ):
+        for ln in _executable_lines(_ROOT / script):
+            assert ">/tmp/" not in ln.replace("> /tmp/", ">/tmp/"), (
+                f"{script}: fixed /tmp redirect target: {ln.strip()!r} -- "
+                "use a per-run mktemp file instead"
+            )
+
+
 def test_the_app_database_is_derived_from_env_and_never_excluded() -> None:
     """2026-08-25, live: a box provisioned Supabase-style names the app
     database `postgres` (POSTGRES_DB=postgres), and backup_db.sh's

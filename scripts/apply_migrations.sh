@@ -126,12 +126,21 @@ fi
 #      spells it differently — say so LOUDLY and fall back to running without
 #      it. Degrading to the previous behaviour is survivable; making the box
 #      undeployable is not.
+# Per-run error capture. NOT /tmp/migrate_err: `fs.protected_regular=2`
+# (Ubuntu default) forbids opening an existing file in a sticky world-writable
+# dir owned by another user — root included — so one manual run as `acb` left
+# a file that made every later root-run apply die with "Permission denied" at
+# the redirect (live, 2026-08-25, while deploying migration 187). Same trap,
+# same fix as backup_db.sh's verify_restore.log.
+MIGRATE_ERR="$(mktemp)"
+trap 'rm -f "$MIGRATE_ERR"' EXIT
+
 LOCK_PRELUDE="SET lock_timeout = '$MIGRATION_LOCK_TIMEOUT';"
 if ! printf '%s\n' "$LOCK_PRELUDE" \
      | pgi psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" -q \
-         >/dev/null 2>/tmp/lock_probe_err; then
+         >/dev/null 2>"$MIGRATE_ERR"; then
   echo "  !! lock_timeout prelude REJECTED by this server:" >&2
-  sed 's/^/     /' /tmp/lock_probe_err >&2
+  sed 's/^/     /' "$MIGRATE_ERR" >&2
   echo "  !! MIGRATION_LOCK_TIMEOUT='$MIGRATION_LOCK_TIMEOUT' is not a value it" >&2
   echo "     accepts. Applying migrations WITHOUT a lock timeout — a stale" >&2
   echo "     reader can once again freeze a table for every later query." >&2
@@ -254,7 +263,7 @@ for f in $migration_files; do
     # did before this guard existed.
     if { [ -n "$LOCK_PRELUDE" ] && printf '%s\n' "$LOCK_PRELUDE"; cat "$f"; } \
          | pgi psql -v ON_ERROR_STOP=1 -U "$PG_USER" -d "$PG_DB" -q \
-             >/dev/null 2>/tmp/migrate_err; then
+             >/dev/null 2>"$MIGRATE_ERR"; then
       echo "ok"
       applied=$((applied + 1))
       # Recorded AFTER success, never before: a row for a migration that failed
@@ -273,7 +282,7 @@ SQL
     fi
     # Only a LOCK timeout is retryable. Any other psql error is a real migration
     # failure and must not be papered over by trying it four more times.
-    if grep -qi 'lock timeout' /tmp/migrate_err \
+    if grep -qi 'lock timeout' "$MIGRATE_ERR" \
        && [ "$attempt" -lt "$MIGRATION_LOCK_RETRIES" ]; then
       printf "lock busy, retry %d/%d ... " "$attempt" "$MIGRATION_LOCK_RETRIES"
       sleep $((attempt * 5))
@@ -281,7 +290,7 @@ SQL
       continue
     fi
     echo "FAILED"
-    if grep -qi 'lock timeout' /tmp/migrate_err; then
+    if grep -qi 'lock timeout' "$MIGRATE_ERR"; then
       echo "      Could not acquire a lock on this table after $MIGRATION_LOCK_RETRIES tries." >&2
       echo "      Something is holding it. Find the holder before re-running:" >&2
       echo "        SELECT pid, state, now()-state_change AS dur, query" >&2
@@ -292,7 +301,7 @@ SQL
       echo "      handler; pg_terminate_backend(<pid>) releases it." >&2
     fi
     echo "      ----- psql error -----" >&2
-    sed 's/^/      /' /tmp/migrate_err >&2
+    sed 's/^/      /' "$MIGRATE_ERR" >&2
     exit 1
   done
 done
