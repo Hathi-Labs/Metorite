@@ -35,10 +35,27 @@ on:
   # price of the window being closed, and it is cheaper than one silent
   # migration collision (three in two weeks — see work_plan.md §2 WS-27).
   push:
-    # `main` is covered by deploy.yml; running this there would be a third copy
-    # of the same jobs on every merge.
+    # Ignore ONLY the refs that are already covered elsewhere or are machine-
+    # written. Everything else — every feature branch, named or not — runs, which
+    # is the point of an ignore-list over an allow-list.
+    #
+    #   main     — covered by deploy.yml; running here would be a third copy of
+    #              the same jobs on every merge.
+    #   release  — a PUBLISHED ref, not a development one: deploy.yml's
+    #              `publish-release` job fast-forwards it to a SHA that has
+    #              already been checked on `main` (`git push origin
+    #              ${GITHUB_SHA}:refs/heads/release`). Re-checking the same tree
+    #              under a second name buys nothing and doubles every deploy.
+    #   staging  — the same shape, one rung down; T-7 adds the ref and the
+    #              `staging-promote` fast-forward. Listed BEFORE it exists so the
+    #              ref cannot arrive and quietly start duplicating every promote.
+    #
+    # ⚠️ Adding a name here removes a fence from that ref. Only add one that is
+    # provably checked upstream of the push — that is the whole criterion.
     branches-ignore:
       - main
+      - release
+      - staging
     paths-ignore:
       - "**.md"
       - "project-docs/**"

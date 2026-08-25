@@ -278,6 +278,33 @@ this file grows a graveyard and the graveyard is what goes stale.
   §9.9
 - **Added:** 2026-08-14 · session that built WS-27bj
 
+### H-10 · HALF the R1 blind window is still open — the cross-branch collision · [AGENT]
+- **Check:** `rg -n "merge_group|merge-base origin/main" .github/workflows/pr-check.yml`
+  → only the secret-scan's `merge-base` hit (no `merge_group:` trigger, and no job
+  that checks out the head ref and merges the base before running the fence) means
+  the remaining half is still open.
+- **Why:** ⚠️ **This entry is NOT closed by the `push` trigger — it is halved, and
+  the surviving half is the one that actually bites.** What `push` fixed: a
+  CONFLICTED PR used to run zero jobs, because `pull_request` builds check out
+  `refs/pull/N/merge` and GitHub does not compute that ref while a PR is dirty
+  (#439 sat `dirty` at `check_runs: 0`). A `push` build has no merge ref to
+  compute, so the branch is now checked whatever its mergeability.
+  **What remains:** `test_migration_prefixes.py` globs the **working tree**, so it
+  only ever sees one branch's migrations. Two branches that each add `172_*.sql`
+  are individually valid and both go green; the duplicate exists **only in the
+  merge result**, which no build in this repo ever materialises. The fence cannot
+  see the collision it exists to catch. Closing it needs a `merge_group:` trigger
+  (checks the queued merge commit) or a job that checks out the head and merges
+  the base itself before running the fence — **which is exactly ticket T-6**, whose
+  acceptance is the right proof: open a deliberately conflicted PR carrying a
+  duplicate migration number and watch it go **red**.
+  ⚠️ Do not delete this entry on the strength of the `push` trigger. Delete it when
+  T-6's acceptance has been demonstrated.
+- **Authority:** `specs/development_and_delivery_framework.md` §5 and §8 **T-6**
+  (🟢 AGENT-SAFE; sequenced with T-3 as a cheap measured hole) · `work_plan.md` §2
+  WS-27 row (the R1-collision record) · R1
+- **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
+  push trigger (PR #46); re-pointed at T-6
 
 ### H-11 · Finish production enablement: GitHub deploy secrets + re-enable workflows · [OWNER]
 - **Check:** ALL of: Actions secrets in `Hathi-Labs/Metorite` show `HOSTINGER_*` ·
@@ -386,7 +413,7 @@ this file grows a graveyard and the graveyard is what goes stale.
 - **Authority:** `work_plan.md` §2 WS-31 row (CP-2b) · CLAUDE.md §3.8
 - **Added:** 2026-08-19 · VPS bring-up session
 
-### H-19 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
+### H-28 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
 - **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
   false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
   Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
@@ -402,10 +429,12 @@ this file grows a graveyard and the graveyard is what goes stale.
   probably means dropping `pass_filenames: false` and letting the staged paths
   through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
   landed with `SKIP=mypy` (every other hook ran and passed).
+  ⚠️ This hook failing on every Python commit is *why* `SKIP=mypy` gets typed by
+  habit, which is the second-order cost: a skip nobody questions is not a gate.
 - **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
   CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
   smuggled into an unrelated PR)
-- **Added:** 2026-08-21 · session that closed H-10
+- **Added:** 2026-08-21 · session that halved H-10 (PR #46)
 
 ---
 

@@ -41,19 +41,27 @@ def test_pr_check_runs_on_push_as_well_as_pull_request() -> None:
 
 
 def test_the_push_trigger_is_not_narrowed_back_to_nothing() -> None:
-    """`branches-ignore: [main]` is the only narrowing allowed.
+    """`branches-ignore` is the only narrowing allowed, and only for published refs.
 
     A `branches:` allow-list would reintroduce the bug for every branch somebody
     forgot to name — which is how the `pull_request` trigger acquired its own
     "deliberately NOT restricted" comment after stacked PRs ran no checks.
+
+    The ignore-list is pinned exactly rather than merely checked for `main`: each
+    name on it is a ref where this workflow does NOT run, so an addition is a
+    fence removed. The three allowed are the ones already checked upstream of the
+    push — `main` by deploy.yml, `release` because deploy.yml's `publish-release`
+    only ever fast-forwards it to a SHA that has been on `main`, and `staging`
+    for the same reason once T-6/T-7 land the ladder.
     """
     push = _triggers()["push"]
     assert "branches" not in push, (
         "an allow-list silently excludes every branch not named in it; "
         "use branches-ignore so new branches are covered by default"
     )
-    assert push.get("branches-ignore") == ["main"], (
-        "main is covered by deploy.yml; everything else must run"
+    assert push.get("branches-ignore") == ["main", "release", "staging"], (
+        "main is covered by deploy.yml and release/staging are published refs "
+        "fast-forwarded to already-checked SHAs; every other branch must run"
     )
 
 
