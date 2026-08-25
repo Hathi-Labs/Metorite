@@ -873,6 +873,85 @@ Calendar, (b) Calendar reaches only Tasks' lib/store and the four allowed
 overlays, and (c) the calendar surface is gone from `tasks/page.tsx` — the
 half-move where a new route is added while the old entry point still works.
 
+### 10.7 The day planner plans the ONE store (WS-39 S3a-client slice 2)
+
+**Built 2026-08-25.** §10.5 said the Calendar's *behaviour* does not change under
+D54, and that is still true — but it turned out to be hiding something, and the
+audit that found it is worth recording because the symptom would have been
+invisible.
+
+**The Calendar reads its tasks from the shared task store.** `CalendarView` takes
+`items`, `projects`, `applySchedule`, `updateItem` and the rest off
+`useTaskStore`, not off a list endpoint of its own. So the grid, the unscheduled
+rail, every drag and every schedule edit followed the lens the moment slice 1
+landed — for free, with no work in `app/calendar/` at all.
+
+⚠️ **Except "Plan my day", and that one was the dangerous one.** The planner is a
+SERVER-side computation, and `routes/tasks/calendar.py` read and ranked
+`gtd_items`. Under the flag the UI would have shown `pm_*` tasks while the
+planner packed rows from the retiring store: the plan comes back with blocks for
+tasks the UI has never heard of, or — far more likely, since the backfill has not
+run — **with no blocks at all.** A 200, an empty day, no error and no log line.
+
+#### The shape of the fix
+
+The planner is not duplicated and is not branched on a flag. It reads through a
+**`TaskSource`** — an object answering the six reads it performs
+(`scheduled_today`, `carry_forward`, `candidates`, `overdue`, `busy_window`,
+`estimate_ratio`). `GTD_SOURCE` is the retiring store, moved behind the seam with
+its WHERE clauses character-for-character unchanged; `LENS_SOURCE` is
+`pm_tasks` + `pm_task_personal`. **The packer, the LLM ranker, the horizon
+parser, the capacity arithmetic and the eviction rules do not change at all** —
+that code is where this feature's behaviour lives, and a second copy of it would
+diverge on the first bug fix only one of them received.
+
+**The store is chosen by which ROUTE the client calls.** `POST
+/projects/my/calendar/{plan,replan,rollover}` and `GET
+/projects/my/calendar/estimate-stats` serve the lens; `/tasks/calendar/*` stays
+on the old store until S3c. That is deliberate and it is the reason the whole
+cutover needs exactly **one** flag: a server-side flag would be a second one, and
+two flags that must agree are a mismatch waiting to be found by a user whose day
+planned itself out of the wrong table.
+
+None of the four writes anything. Each returns a `DayPlan` **proposal** the
+client reviews and applies through the ordinary overlay PATCH — which is why the
+apply path needed no work: slice 1 already routed it.
+
+#### ⚠️ The semantic that nearly broke it, and the rule it produced
+
+`gtd_items.disposition` is a stored, `NOT NULL` column. `pm_task_personal` has no
+row at all until a member triages a task, so the disposition is **derived** from
+the task's status and assignment (`derive_disposition`): an assigned, open,
+non-backlog task is `NEXT`.
+
+A planner that filtered on the stored column would therefore have found **nothing
+to plan for any member whose company board is untriaged — which is every member,
+on day one.** Again: a 200 with an empty plan.
+
+So the lens queries **prune with the stated disposition and decide with the
+effective one**. `(p.disposition IS NULL OR p.disposition = 'NEXT')` keeps
+untriaged rows in the result set for Python to rule on; `derive_disposition` is
+then *called*, never restated in SQL. A SQL copy of that function would be a
+mirror, and mirrors go stale and then lie.
+
+The prune can only be wrong in one direction — dropping a row it should have kept
+— so `live_ws39_s3a_client2.py` drives it from both sides: an untriaged assigned
+task IS a candidate (check 1), and a backlog task the member filed as `NEXT` is
+too (check 3). **12/12 against PostgreSQL 16.**
+
+#### What is still on the old store, on purpose
+
+The **agent** planner (`/tasks/calendar/{plan,replan,rollover}-today` and
+`/calendar/day-summary`). The agent surface has no browser and therefore no
+client flag to read; choosing a store there needs a server-side answer, which is
+the second flag this design exists to avoid. Slice 3 — H-33 carries it, the code
+carries a comment at the endpoints, and
+`test_calendar_task_source.py::test_the_agent_planner_is_still_on_the_old_store`
+fails the day somebody routes it without reading either.
+
+Until then, an agent asked to plan a day on a lens deployment plans the retiring
+store and reports an empty day.
+
 ---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2

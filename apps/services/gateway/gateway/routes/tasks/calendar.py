@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -502,13 +503,16 @@ async def _llm_rank_day(
     return ordered, notes, None
 
 
-async def _estimate_ratio(db: Any, uid: str) -> tuple[float, int]:
-    """Median actual/planned duration ratio over the user's recent completed,
-    TIMED blocks — the "you take 1.3x your estimate" fudge factor that drives the
-    end-of-day review and the planner's estimate padding (calendar_ux_review §4).
-    planned = the scheduled block length, falling back to the raw estimate.
-    Returns (ratio, sample_count); (1.0, 0) when there isn't enough signal."""
-    row = (await db.execute(text("""
+#: The learned-estimate signal over `gtd_items`: the median actual/planned ratio
+#: across the member's recent completed, TIMED blocks — the "you take 1.3x your
+#: estimate" factor behind the end-of-day review and the planner's padding
+#: (`calendar_ux_review` §4). `planned` is the scheduled block length, falling
+#: back to the raw estimate.
+#:
+#: Lifted out of a function into a constant by WS-39 S3a-client slice 2, so that
+#: each `TaskSource` owns its own version rather than the function branching on
+#: which store it is looking at.
+_GTD_RATIO_SQL = """
         SELECT count(*) AS n,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY r) AS median_ratio
           FROM (
@@ -529,16 +533,15 @@ async def _estimate_ratio(db: Any, uid: str) -> tuple[float, int]:
               ) s
              WHERE planned > 0
           ) t
-    """), {"uid": uid})).first()
-    n = int(row.n or 0) if row else 0
-    ratio = float(row.median_ratio) if row and row.median_ratio else 1.0
-    return ratio, n
+"""
 
 
-async def _estimate_pad(db: Any, uid: str) -> tuple[float, str | None]:
+async def _estimate_pad(
+    db: Any, uid: str, src: TaskSource,
+) -> tuple[float, str | None]:
     """The learned-estimate multiplier for the planner + a human note. Clamped so
     one odd week can't distort the plan; (1.0, None) without enough signal."""
-    ratio, n = await _estimate_ratio(db, uid)
+    ratio, n = await src.estimate_ratio(db, uid)
     if n < 5:
         return 1.0, None
     pad = max(0.8, min(1.75, ratio))
@@ -555,18 +558,27 @@ def _join_notes(*parts: str | None) -> str | None:
     return joined or None
 
 
-@router.get("/calendar/estimate-stats")
-async def estimate_stats(user: UserContext = Depends(get_current_user)):
+async def estimate_stats_for(user: Any, src: TaskSource) -> dict:
     """Planned-vs-actual accuracy over recent timed blocks — the learned-estimate
-    signal shown in the end-of-day review (and used to pad the planner). §3 P3."""
+    signal shown in the end-of-day review (and used to pad the planner). §3 P3.
+
+    Store-agnostic (WS-39 S3a-client slice 2): the lens route in
+    `routes/projects/planning.py` calls this with `LENS_SOURCE`.
+    """
     uid = _uid(user)
     async with _tenant_session() as db:
-        ratio, n = await _estimate_ratio(db, uid)
+        ratio, n = await src.estimate_ratio(db, uid)
         return {
             "samples": n,
             "ratio": round(ratio, 2),
             "over_pct": round((ratio - 1) * 100),
         }
+
+
+@router.get("/calendar/estimate-stats")
+async def estimate_stats(user: UserContext = Depends(get_current_user)):
+    """The retiring store's accuracy signal. See `estimate_stats_for`."""
+    return await estimate_stats_for(user, GTD_SOURCE)
 
 
 _CANDIDATE_WHERE = (
@@ -799,7 +811,7 @@ def _horizon_from_note(
 async def _replan_core(
     db: Any, uid: str, win_start: datetime, win_end: datetime,
     req: PlanDayRequest, now: datetime, one_thing_id: str | None,
-    include_new: bool,
+    include_new: bool, src: TaskSource,
 ) -> DayPlan:
     """The unified day (re)planner behind both "Rebuild my day" and "Fit what's
     left". It reshuffles today's not-done FLEXIBLE blocks (past + future) into
@@ -813,7 +825,7 @@ async def _replan_core(
     include_new=True  → Rebuild my day (reshuffle + trim + add new).
     include_new=False → Fit what's left (reshuffle + trim, no new work)."""
     prefs = await _planning_prefs(db, uid)
-    pad, pad_note = await _estimate_pad(db, uid)
+    pad, pad_note = await _estimate_pad(db, uid, src)
     # Horizon override — a "for 2 more hours" / "until 2am" phrase in the plan
     # note (or the "Plan through" control routing through it) overrides the
     # working-hours end so the planner can pack any part of the 24h day, incl.
@@ -830,9 +842,7 @@ async def _replan_core(
     # One query for the whole local day, partitioned here. flexible is read from
     # the RAW ROW with coalesce semantics (NULL = flexible) — _row_to_item
     # coerces NULL→False, which would wrongly treat unflagged blocks as fixed.
-    sched_rows = (await db.execute(
-        text(ITEM_SELECT + _TODAY_SCHEDULED_WHERE),
-        {"uid": uid, "day0": day0, "day1": day1})).fetchall()
+    sched_rows = await src.scheduled_today(db, uid, day0, day1)
     movable: list[Any] = []
     busy: list[tuple[datetime, datetime]] = []
     done_mins = 0
@@ -853,18 +863,16 @@ async def _replan_core(
             if bs and be and be > bs and bs < win_end and be > win_start:
                 busy.append((bs, be))
         elif is_mine:
-            movable.append(_row_to_item(r))
+            movable.append(src.to_item(r))
     # Carry-forward (Rebuild only): unfinished movable tasks stranded on a prior
     # day get swept into today alongside today's own movable blocks. They're
     # treated exactly like today's movables — re-placed, or evicted back to the
     # unscheduled list if they no longer fit — so nothing rots on a dead day.
     carried_ids: set[str] = set()
     if include_new:
-        carry_rows = (await db.execute(
-            text(ITEM_SELECT + _OVERDUE_CARRY_WHERE),
-            {"uid": uid, "day0": day0})).fetchall()
+        carry_rows = await src.carry_forward(db, uid, day0)
         for r in carry_rows:
-            movable.append(_row_to_item(r))
+            movable.append(src.to_item(r))
             carried_ids.add(str(getattr(r, "id", "")))
     movable_ids = {m.id for m in movable}
 
@@ -897,10 +905,9 @@ async def _replan_core(
             b["estimate_mins"] = max(5, int((be - bs).total_seconds() / 60))
         cands.append(b)
     if include_new:
-        new_rows = (await db.execute(
-            text(ITEM_SELECT + _CANDIDATE_WHERE), {"uid": uid})).fetchall()
+        new_rows = await src.candidates(db, uid)
         for r in new_rows:
-            b = _candidate_brief(_row_to_item(r), now)
+            b = _candidate_brief(src.to_item(r), now)
             b["estimate_mins"] = max(5, round(b["estimate_mins"] * pad))
             cands.append(b)
 
@@ -1009,26 +1016,56 @@ async def _replan_core(
         rank_note=(rank_note if ranked_by == "priority" else None))
 
 
-@router.post("/calendar/plan", response_model=DayPlan)
-async def plan_day(
-    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
-):
+async def _plan_window(
+    req: PlanDayRequest, user: Any, src: TaskSource,
+    win_start: datetime, win_end: datetime, *, include_new: bool,
+) -> DayPlan:
+    """Open a session, resolve the day's One Thing, and run the planner.
+
+    The three lines both planner endpoints had in common, and now the two lens
+    routes as well. Extracted so a store cannot be threaded into one of the four
+    and forgotten in another — which is a mistake with no symptom, because the
+    wrong store answers 200 with an empty plan.
+    """
+    uid = _uid(user)
+    now = datetime.now(UTC)
+    async with _tenant_session() as db:
+        one = await _one_thing_for(db, uid, win_start.date())
+        return await _replan_core(
+            db, uid, win_start, win_end, req, now, one,
+            include_new=include_new, src=src)
+
+
+def _window_of(req: PlanDayRequest) -> tuple[datetime, datetime]:
+    """The client-sent day geometry, validated. The browser knows the user's
+    timezone and the server deliberately assumes none."""
+    win_start, win_end = _parse_iso(req.day_start), _parse_iso(req.day_end)
+    if not win_start or not win_end or win_end <= win_start:
+        raise HTTPException(
+            status_code=400, detail="Valid day_start/day_end (ISO) required.")
+    return win_start, win_end
+
+
+async def plan_day_for(
+    req: PlanDayRequest, user: Any, src: TaskSource,
+) -> DayPlan:
     """"Rebuild my day": reshuffle today's not-done flexible blocks into the time
     left, trim overflow back to the unscheduled list, AND fill any remaining room
     with unscheduled Next Actions — priority/energy/deadline aware, within
     capacity, around fixed/done blocks and protected windows. NO writes: the
     client reviews then applies (set the placed blocks, clear the evicted ones).
     See calendar_timeboxing.md §6."""
-    win_start, win_end = _parse_iso(req.day_start), _parse_iso(req.day_end)
-    if not win_start or not win_end or win_end <= win_start:
-        raise HTTPException(
-            status_code=400, detail="Valid day_start/day_end (ISO) required.")
-    uid = _uid(user)
-    now = datetime.now(UTC)
-    async with _tenant_session() as db:
-        one = await _one_thing_for(db, uid, win_start.date())
-        return await _replan_core(
-            db, uid, win_start, win_end, req, now, one, include_new=True)
+    win_start, win_end = _window_of(req)
+    return await _plan_window(req, user, src, win_start, win_end,
+                              include_new=True)
+
+
+@router.post("/calendar/plan", response_model=DayPlan)
+async def plan_day(
+    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
+):
+    """The retiring store's planner. See `plan_day_for`."""
+    return await plan_day_for(req, user, GTD_SOURCE)
 
 
 # ── Roll-over = RETURN unfinished tasks to the unscheduled list ──────────────
@@ -1044,25 +1081,161 @@ _OVERDUE_WHERE = (
 )
 
 
-@router.post("/calendar/rollover", response_model=DayPlan)
-async def rollover_day(
-    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
-):
+# ── Where the planner's rows come from (WS-39 S3a-client slice 2) ───────────
+#
+# D53 gives the product ONE task store, and the day planner was the last thing
+# still reading only the old one. Left alone it would have become the worst kind
+# of bug at the flip: the Tasks UI would show `pm_*` tasks, "Plan my day" would
+# read and schedule `gtd_items`, and the blocks would simply never appear — no
+# error, no 500, a 200 with an empty plan.
+#
+# The two stores are NOT modelled as a flag inside every query. They are modelled
+# as a SOURCE: an object that answers the six reads this planner performs. The
+# packer, the LLM ranker, the horizon parser, the capacity arithmetic and the
+# eviction rules are all downstream of those six reads and do not change at all —
+# which is the point, because that code is where the behaviour lives and
+# re-deriving it against a second store is how the two would drift.
+#
+# ⚠️ `gtd_settings`, `gtd_day_state` and `gtd_rollover_log` are NOT part of this.
+# They SURVIVE the retirement (D53.6) — they are per-member calendar state, not
+# tasks — so `_planning_prefs`, `_day_templates`, `_one_thing_for` and the
+# rollover log are shared by both sources and are deliberately absent below.
+
+
+@dataclass(frozen=True)
+class TaskSource:
+    """One store, as the day planner needs to see it.
+
+    Every method returns rows carrying the attribute names the planner already
+    reads — `id` (str), `title`, `disposition`, `flexible`, `is_mine`,
+    `scheduled_start`, `scheduled_end`, `due_at`, `time_estimate_mins`,
+    `energy`, `context`, `important`, `leveraged`, `deep_work`. A source that
+    renamed one of those would break the packer silently, so the parity is
+    asserted in `test_calendar_task_source.py` rather than trusted.
+
+    ⚠️ **`disposition` is the EFFECTIVE one.** On `gtd_items` it is a stored,
+    NOT NULL column and the two are the same thing. On `pm_*` a member who has
+    never triaged a task has no overlay row at all, and the disposition is
+    DERIVED from the task's status and assignment (`derive_disposition`). A
+    planner that filtered on the stored column would see NOTHING for a member
+    whose company board is untriaged — which is every member on day one.
+    """
+
+    #: For error messages and the parity test. Never branched on.
+    name: str
+
+    async def scheduled_today(
+        self, db: Any, uid: str, day0: datetime, day1: datetime,
+    ) -> list[Any]:
+        """Every block on the member's local day. Partitioned by the caller into
+        movable work, obstacles (fixed or done) and finished minutes."""
+        raise NotImplementedError
+
+    async def carry_forward(self, db: Any, uid: str, day0: datetime) -> list[Any]:
+        """Unfinished, movable blocks stranded on a PRIOR day."""
+        raise NotImplementedError
+
+    async def candidates(self, db: Any, uid: str) -> list[Any]:
+        """Unscheduled next actions that are mine to do."""
+        raise NotImplementedError
+
+    async def overdue(self, db: Any, uid: str, now: datetime) -> list[Any]:
+        """Movable blocks whose time has passed unfinished."""
+        raise NotImplementedError
+
+    async def busy_window(
+        self, db: Any, uid: str, win_start: datetime, win_end: datetime,
+    ) -> list[Any]:
+        """Blocks overlapping an arbitrary window (the agent's day summary)."""
+        raise NotImplementedError
+
+    async def estimate_ratio(self, db: Any, uid: str) -> tuple[float, int]:
+        """Median actual/planned over recent completed timed blocks, and the
+        sample count. `(1.0, 0)` when there is not enough signal."""
+        raise NotImplementedError
+
+    def to_item(self, row: Any) -> Any:
+        """Row to the object the packer carries. `gtd_items` rows go through
+        `_row_to_item` because they arrive as `i.*` with connector columns
+        attached; `pm_*` rows are already shaped by `_pm_row` and pass straight
+        through, since a `GtdItemModel` built from them would need `source`,
+        `account_id` and `provider_task_id` — three fields D52 retired."""
+        raise NotImplementedError
+
+
+# ── The retiring store ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _GtdSource(TaskSource):
+    """`gtd_items` — unchanged behaviour, moved behind the seam verbatim.
+
+    Every WHERE below is the one that was inline before this refactor, character
+    for character. That is deliberate: a slice that re-points a planner should
+    not also be the slice that quietly re-tunes what it selects, and the way to
+    prove it did not is for the strings to be the same strings.
+    """
+
+    async def scheduled_today(self, db, uid, day0, day1):
+        return (await db.execute(
+            text(ITEM_SELECT + _TODAY_SCHEDULED_WHERE),
+            {"uid": uid, "day0": day0, "day1": day1})).fetchall()
+
+    async def carry_forward(self, db, uid, day0):
+        return (await db.execute(
+            text(ITEM_SELECT + _OVERDUE_CARRY_WHERE),
+            {"uid": uid, "day0": day0})).fetchall()
+
+    async def candidates(self, db, uid):
+        return (await db.execute(
+            text(ITEM_SELECT + _CANDIDATE_WHERE), {"uid": uid})).fetchall()
+
+    async def overdue(self, db, uid, now):
+        return (await db.execute(
+            text(ITEM_SELECT + _OVERDUE_WHERE), {"uid": uid, "now": now},
+        )).fetchall()
+
+    async def busy_window(self, db, uid, win_start, win_end):
+        return (await db.execute(
+            text(ITEM_SELECT + _BUSY_WHERE),
+            {"uid": uid, "win_start": win_start, "win_end": win_end},
+        )).fetchall()
+
+    def to_item(self, row):
+        return _row_to_item(row)
+
+    async def estimate_ratio(self, db, uid):
+        row = (await db.execute(text(_GTD_RATIO_SQL), {"uid": uid})).first()
+        n = int(row.n or 0) if row else 0
+        ratio = float(row.median_ratio) if row and row.median_ratio else 1.0
+        return ratio, n
+
+
+GTD_SOURCE: TaskSource = _GtdSource(name="gtd_items")
+
+#: ⚠️ The lens source is NOT here, and its absence is structural rather than
+#: tidiness. It needs `MY_TASKS_FROM`, `derive_disposition` and
+#: `resolve_organization_id` from `routes/projects/*`, and this module is
+#: imported BY that package — so defining it here would close an import cycle
+#: that fails only on whichever package a given process happens to load
+#: first. It lives in `routes/projects/planning.py`, which also mounts the
+#: `/projects/my/calendar/*` routes, and the dependency runs one way:
+#: projects knows about the planner, the planner knows nothing about projects.
+
+
+async def rollover_day_for(
+    req: PlanDayRequest, user: Any, src: TaskSource,
+) -> DayPlan:
     """Return INCOMPLETE past time-blocks to the unscheduled list, so the user
     can re-plan them (rather than auto-cramming them onto a day). The overdue
     tasks come back as `evicted` — apply clears their schedule and they land in
     the unscheduled rail. NO writes here: it's a proposal the client applies."""
-    win_start, win_end = _parse_iso(req.day_start), _parse_iso(req.day_end)
-    if not win_start or not win_end or win_end <= win_start:
-        raise HTTPException(
-            status_code=400, detail="Valid day_start/day_end (ISO) required.")
+    _window_of(req)
     uid = _uid(user)
     now = datetime.now(UTC)
     async with _tenant_session() as db:
-        over_rows = (await db.execute(
-            text(ITEM_SELECT + _OVERDUE_WHERE), {"uid": uid, "now": now},
-        )).fetchall()
-        overdue = [_row_to_item(r) for r in over_rows]
+        over_rows = await src.overdue(db, uid, now)
+        overdue = [src.to_item(r) for r in over_rows]
         evicted = [
             PlanUnplaced(item_id=m.id, title=m.title,
                         reason="Unfinished — back on your list to re-plan")
@@ -1075,10 +1248,17 @@ async def rollover_day(
             used_mins=0, capacity_mins=req.capacity_mins)
 
 
-@router.post("/calendar/replan", response_model=DayPlan)
-async def replan_day(
+@router.post("/calendar/rollover", response_model=DayPlan)
+async def rollover_day(
     req: PlanDayRequest, user: UserContext = Depends(get_current_user),
 ):
+    """The retiring store's roll-over. See `rollover_day_for`."""
+    return await rollover_day_for(req, user, GTD_SOURCE)
+
+
+async def replan_day_for(
+    req: PlanDayRequest, user: Any, src: TaskSource,
+) -> DayPlan:
     """"Fit what's left": take today's not-yet-done FLEXIBLE blocks (including any
     that already slipped past earlier today) and repack them into the time that's
     actually left, around fixed meetings and what's already done — trimming
@@ -1086,17 +1266,31 @@ async def replan_day(
     day" it adds NO new work; unlike roll-over (which pulls PREVIOUS days' overdue
     forward) it only touches today. NO writes: returns a proposal the client
     applies (set the placed blocks, clear the evicted ones)."""
-    win_start, win_end = _parse_iso(req.day_start), _parse_iso(req.day_end)
-    if not win_start or not win_end or win_end <= win_start:
-        raise HTTPException(
-            status_code=400, detail="Valid day_start/day_end (ISO) required.")
-    uid = _uid(user)
-    now = datetime.now(UTC)
-    async with _tenant_session() as db:
-        one = await _one_thing_for(db, uid, win_start.date())
-        return await _replan_core(
-            db, uid, win_start, win_end, req, now, one, include_new=False)
+    win_start, win_end = _window_of(req)
+    return await _plan_window(req, user, src, win_start, win_end,
+                              include_new=False)
 
+
+@router.post("/calendar/replan", response_model=DayPlan)
+async def replan_day(
+    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
+):
+    """The retiring store's repacker. See `replan_day_for`."""
+    return await replan_day_for(req, user, GTD_SOURCE)
+
+
+# ⚠️ **EVERYTHING BELOW STILL PLANS `gtd_items` ONLY — deliberately, and it is
+# the slice-3 job H-33 names.** The agent surface has no browser and therefore no
+# client flag to read, so choosing a store here needs a SERVER-side answer to
+# "which store is this deployment on" that slice 2 does not introduce: one flag
+# is flippable, two flags that must agree are a mismatch waiting to be
+# discovered by a user. The browser planner needs no such flag because the
+# client picks the ROUTE (`/projects/my/calendar/*` vs `/tasks/calendar/*`), and
+# the route picks the store.
+#
+# Until that lands, an agent asked to plan a day on a lens deployment plans the
+# retiring store and reports an empty day. That is worse than an error and it is
+# why this comment is here rather than in a ticket alone.
 
 # ── Agent-facing planner (no client geometry) ────────────────────────────────
 # The browser endpoints above need the client to send exact day-window + energy
@@ -1298,7 +1492,8 @@ async def plan_today(
             db, uid, req.date, req.energy_note)
         one = await _one_thing_for(db, uid, local_day)
         plan = await _replan_core(
-            db, uid, win_start, win_end, pdr, now, one, include_new=True)
+            db, uid, win_start, win_end, pdr, now, one, include_new=True,
+            src=GTD_SOURCE)
         return await _resolve_agent_plan(
             db, uid, local_day, "plan", req.apply, plan, now)
 
@@ -1382,7 +1577,7 @@ async def day_summary(
                      "AND user_id = :uid"),
                 {"id": one_id, "uid": uid})).first()
             one_title = otr.title if otr else None
-        ratio, samples = await _estimate_ratio(db, uid)
+        ratio, samples = await GTD_SOURCE.estimate_ratio(db, uid)
         return {
             "day": local_day.isoformat(),
             "capacity_mins": capacity,

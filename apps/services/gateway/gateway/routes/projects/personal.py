@@ -632,6 +632,40 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
 
 # ── The inbox ───────────────────────────────────────────────────────────────
 
+#: **The membership + tenancy skeleton, defined once.**
+#:
+#: Split out of ``_MY_TASKS_SQL`` for WS-39 S3a-client slice 2, when the day
+#: planner became a second reader of "which tasks are this member's". It is the
+#: FROM/JOIN/WHERE half only, so a caller supplies its own SELECT list and gets
+#: the same answer to the only question that must never have two answers.
+#:
+#: ⚠️ Two clauses here are load-bearing and neither is obvious:
+#:
+#: * ``t.organization_id = :vis_org`` sits ABOVE both arms (WS-29b). The first
+#:   arm reaches tasks by matching a bare, unvalidated email, so without it
+#:   another organization can place a row in this member's list by typing their
+#:   address. The GRANT clause is deliberately absent — the tenant is not.
+#: * the personal-project arm keeps a task I captured and then unassigned. Drop
+#:   it and clearing my own name off a private todo makes it vanish from the
+#:   only place it exists.
+#:
+#: Binds: ``:who`` (lower-cased email), ``:vis_org``, ``:archived``.
+MY_TASKS_FROM = """
+FROM pm_tasks t
+JOIN pm_task_statuses s ON s.id = t.status_id
+LEFT JOIN pm_task_personal p
+       ON p.task_id = t.id AND lower(p.member_email) = :who
+LEFT JOIN pm_projects proj ON proj.id = t.project_id
+WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
+  AND t.organization_id = CAST(:vis_org AS uuid)
+  AND (
+        EXISTS (SELECT 1 FROM pm_task_assignees a
+                WHERE a.task_id = t.id AND lower(a.assignee) = :who)
+     OR lower(proj.personal_owner) = :who
+  )
+"""
+
+
 #: My work: everything assigned to me, plus everything in my personal project.
 #:
 #: The second arm matters — a task I captured and then unassigned is still mine
@@ -688,19 +722,7 @@ SELECT t.*,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
                WHERE a3.task_id = t.id AND lower(a3.assignee) = :who)
                             AS is_mine
-FROM pm_tasks t
-JOIN pm_task_statuses s ON s.id = t.status_id
-LEFT JOIN pm_task_personal p
-       ON p.task_id = t.id AND lower(p.member_email) = :who
-LEFT JOIN pm_projects proj ON proj.id = t.project_id
-WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
-  AND t.organization_id = CAST(:vis_org AS uuid)
-  AND (
-        EXISTS (SELECT 1 FROM pm_task_assignees a
-                WHERE a.task_id = t.id AND lower(a.assignee) = :who)
-     OR lower(proj.personal_owner) = :who
-  )
-"""
+""" + MY_TASKS_FROM
 
 
 def _project_task(row: Any) -> tuple[dict[str, Any], str]:

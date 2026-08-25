@@ -407,33 +407,43 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
-### H-33 · WS-39 S3a-CLIENT slice 2: the tail the lens has not moved · [AGENT]
+### H-33 · WS-39 S3a-CLIENT slice 3: the tail, and the agent planner · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → **8** means slice 1 only, and slice 2 is unbuilt. When slice 2 lands the
-  count rises and §13.5's own fence — the whole-tree grep for
-  `/api/tasks/items` — exists as a test rather than as this sentence.
+  → **12** means slices 1+2 only, and slice 3 is unbuilt. Second half:
+  `rg -n "LENS_SOURCE" apps/services/gateway/gateway/routes/tasks/calendar.py`
+  → no hit means the AGENT planner is still on `gtd_items`.
   ⚠️ Do NOT grep for `api/tasks` in `lib/api.ts` and conclude anything: the
   prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`) and every call
   site passes a bare `` `/items…` ``. That spelling under-reported once already
   and would have closed this entry while the work was untouched.
-- **Why:** **Slice 1 landed 2026-08-25** — the flag (`NEXT_PUBLIC_TASKS_LENS`,
-  default OFF), `app/tasks/lib/lens.ts`, and eight spine functions branching to
-  it: `fetchItems`, `apiCapture`, `apiPatchItem`, `apiArchiveItem`,
-  `apiDeleteItem`, `apiRestoreItem`, `apiPurgeItem`, `apiDelegateItem`. The
-  server side gained `GET /projects/my/tasks/{id}`, an `include_archived`
-  window, and the three facts the projection had been dropping on the floor
-  (`is_mine`, `workflow_stage`, `subtask_count`).
-  **What is left is the tail**, and every one of these still writes `gtd_items`
-  when the flag is on — which is exactly why the flag is not flippable yet:
+- **Why:** **Slice 1 (spine) and slice 2 (day planner) landed 2026-08-25.**
+  Twelve functions branch on the flag; the planner reads through a `TaskSource`
+  with `/projects/my/calendar/{plan,replan,rollover,estimate-stats}` serving the
+  lens. What is left, all of which still writes `gtd_items` when the flag is on:
   `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`, `apiBulkDispose`/
   `apiBulkArchive`, `apiMergeInto`/`apiFileUnder`, `apiAtomize`,
   `apiClarifyPropose`, `apiEnrichItem`, `apiSuggestTitle`,
   `apiBackfillContext`, `apiPlanProject`/`apiApplyPlan`, `apiItemDetail`,
-  `apiItemStageOptions`, `fetchProjects`, `fetchTaskSettings`,
-  `fetchStatusCatalog`, and the `/accounts` · `/spaces` · `/folders` ·
-  `/hierarchy` · `/local-projects` family — which D52 leaves with no
-  destination at all, so decide whether those are **deleted**, not ported.
-  📌 **Three decisions slice 1 deliberately did not take:**
+  `apiItemStageOptions`, `fetchProjects`, `fetchStatusCatalog`.
+  🔴 **And the AGENT planner** — `/tasks/calendar/{plan,replan,rollover}-today`
+  and `/calendar/day-summary`. That one is not a port, it is a DECISION: the
+  agent surface has no browser and so no client flag, and giving it a
+  server-side one creates a second flag that must agree with the first. Two
+  flags that must agree are a mismatch waiting to be found by a user whose day
+  planned itself out of the wrong table. Settle the mechanism before writing
+  code. `test_calendar_task_source.py::test_the_agent_planner_is_still_on_the_old_store`
+  fails the moment somebody routes it, which is the intended way to be sent
+  here.
+  📌 **Measured, and cheap wins for whoever takes this:**
+  `apiCalendarRange` has **no callers** (the Calendar reads the shared store,
+  not a range endpoint) — delete it. `fetchTaskSettings` needs **no** work:
+  `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` SURVIVE the retirement
+  (D53.6), so the planner's prefs, day state and roll-over log are already
+  shared by both stores. The `/accounts` · `/spaces` · `/folders` ·
+  `/hierarchy` · `/local-projects` family has **no destination at all** under
+  D52 — decide DELETE, not port; every one of them is reachable only from
+  `taskStore.ts`, so the excision is bounded.
+  📌 **Two decisions slices 1–2 deliberately did not take:**
   (1) `workflow_stage` writes need a status name → `status_id` lookup against
   the task's own project; `splitPatch` THROWS on it today rather than dropping
   it, so the to-do fails loudly instead of hiding.
@@ -441,18 +451,15 @@ line — never reclaim a number by deleting the other entry.
   nearest existing fact. Settle it before the lens touches email-captured
   tasks, or their provenance is lost at the cutover rather than at a review.
   (3) `horizonId`: **WS-21 owns Horizons**, DO-NOT-DISPATCH stands.
-  ⚠️ **One behaviour change slice 1 made on purpose, for a reviewer to
-  confirm:** archiving from `/tasks` now inherits the projects guard — an OPEN
-  task cannot be archived (P-3, "the work disappears while still owed"). It
-  could before, because the row was personal. It is not personal any more.
-  ⚠️ **Read `routes/projects/personal.py` before designing anything.** S3a's
-  server side shipped 2026-08-06 under D-PM-6; an agent who reads "make Tasks a
+  ⚠️ **Read `routes/projects/personal.py` and `routes/projects/planning.py`
+  before designing anything.** The server side of this workstream has shipped
+  in four separate slices since 2026-08-06; an agent who reads "make Tasks a
   lens over Projects" and starts writing endpoints is building a second one.
 - **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
-  `task_manager_app.md` §13.5 · `calendar_focus_os.md` §10.6
+  `task_manager_app.md` §13.5a · `calendar_focus_os.md` §10.7
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25;
-  ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut
-  2026-08-25 to slice 2, after slice 1 landed.)*
+  ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut to
+  slice 2 and again to slice 3 as each landed.)*
 
 ### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
 - **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.

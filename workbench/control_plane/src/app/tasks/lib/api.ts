@@ -11,7 +11,9 @@ import {
   lensCapture,
   lensDelegateItem,
   lensEnabled,
+  lensEstimateStats,
   lensFetchItems,
+  lensPlan,
   lensPatchItem,
   lensPurgeItem,
   lensRestoreItem,
@@ -628,6 +630,7 @@ function mapDayPlan(r: Raw): DayPlanResult {
 /** Ask the AI planner for a timeboxed day (priority/energy/capacity/deadline
  *  aware). Returns a proposal — the caller applies accepted blocks via PATCH. */
 export async function apiPlanDay(req: PlanDayRequest): Promise<DayPlanResult> {
+  if (lensEnabled()) return mapDayPlan(await lensPlan("plan", req));
   return mapDayPlan(
     await gatewayFetch<Raw>(`/calendar/plan`, {
       method: "POST",
@@ -639,6 +642,7 @@ export async function apiPlanDay(req: PlanDayRequest): Promise<DayPlanResult> {
 /** Roll incomplete PAST time-blocks forward into the target day's open slots
  *  (deadline-aware). Returns a proposal — the caller applies it. */
 export async function apiRollover(req: PlanDayRequest): Promise<DayPlanResult> {
+  if (lensEnabled()) return mapDayPlan(await lensPlan("rollover", req));
   return mapDayPlan(
     await gatewayFetch<Raw>(`/calendar/rollover`, {
       method: "POST",
@@ -651,6 +655,7 @@ export async function apiRollover(req: PlanDayRequest): Promise<DayPlanResult> {
  *  from now, around fixed/done blocks. The "I fell behind — fix my day" op.
  *  Returns a proposal — the caller applies it. */
 export async function apiReplan(req: PlanDayRequest): Promise<DayPlanResult> {
+  if (lensEnabled()) return mapDayPlan(await lensPlan("replan", req));
   return mapDayPlan(
     await gatewayFetch<Raw>(`/calendar/replan`, {
       method: "POST",
@@ -685,7 +690,9 @@ export interface EstimateStats {
   overPct: number;
 }
 export async function apiEstimateStats(): Promise<EstimateStats> {
-  const r = await gatewayFetch<Raw>(`/calendar/estimate-stats`);
+  const r = lensEnabled()
+    ? await lensEstimateStats()
+    : await gatewayFetch<Raw>(`/calendar/estimate-stats`);
   return {
     samples: Number(r.samples ?? 0),
     ratio: Number(r.ratio ?? 1),

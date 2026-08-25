@@ -30,8 +30,10 @@ import {
   lensCapture,
   lensDelegateItem,
   lensEnabled,
+  lensEstimateStats,
   lensFetchItems,
   lensPatchItem,
+  lensPlan,
   mapLensItem,
   splitPatch,
 } from "./lens";
@@ -415,6 +417,15 @@ describe("the cutover seam is complete for this slice", () => {
     "apiRestoreItem",
     "apiPurgeItem",
     "apiDelegateItem",
+    // slice 2 — the day planner. `/calendar` gets its TASKS from the shared
+    // store and so followed the lens for free, but "Plan my day" is computed
+    // SERVER-side over whichever store the endpoint reads. Left behind, the UI
+    // would show `pm_*` tasks while the planner packed `gtd_items`, and the
+    // plan would come back empty on a 200.
+    "apiPlanDay",
+    "apiRollover",
+    "apiReplan",
+    "apiEstimateStats",
   ];
 
   it("branches to the lens in every function this slice moved", () => {
@@ -438,6 +449,21 @@ describe("the cutover seam is complete for this slice", () => {
     ).toEqual([]);
   });
 
+  it("leaves the AGENT planner on the old store, knowingly", () => {
+    // Not an oversight and not a TODO nobody wrote down. The agent surface has
+    // no browser, so it cannot read the client flag; giving it a server-side
+    // one would mean two flags that must agree, and two flags that must agree
+    // are a mismatch waiting to be found by a user whose day planned itself
+    // out of the wrong table. Slice 3 (H-33) settles it.
+    //
+    // The test exists so that the day somebody DOES route it, this line fails
+    // and they have to come and read the paragraph above.
+    const start = apiSrc.indexOf("export async function apiAgentPlanToday(");
+    expect(start).toBeGreaterThan(-1);
+    const after = apiSrc.indexOf("\nexport ", start + 1);
+    expect(apiSrc.slice(start, after)).not.toContain("lensEnabled()");
+  });
+
   it("keeps the lens off /api/tasks entirely", () => {
     const lensSrc = readFileSync(
       fileURLToPath(new URL("./lens.ts", import.meta.url)),
@@ -448,7 +474,37 @@ describe("the cutover seam is complete for this slice", () => {
   });
 });
 
-// ── 6. The flag ─────────────────────────────────────────────────────────────
+describe("the planner proposals", () => {
+  it("go to the projects routes, and write nothing", async () => {
+    for (const [kind, path] of [
+      ["plan", "my/calendar/plan"],
+      ["replan", "my/calendar/replan"],
+      ["rollover", "my/calendar/rollover"],
+    ] as const) {
+      const { calls, restore } = stub([{ blocks: [], evicted: [] }]);
+      try {
+        await lensPlan(kind, { day_start: "x", day_end: "y" });
+        expect(calls[0].url).toBe(`/api/projects/${path}`);
+        expect(calls[0].method).toBe("POST");
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("reads the estimate signal from the overlay's route", async () => {
+    const { calls, restore } = stub([{ samples: 3, ratio: 1.3, over_pct: 30 }]);
+    try {
+      await lensEstimateStats();
+      expect(calls[0].url).toBe("/api/projects/my/calendar/estimate-stats");
+      expect(calls[0].method).toBe("GET");
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ── 7. The flag ─────────────────────────────────────────────────────────────
 
 describe("lensEnabled", () => {
   it("is off unless explicitly turned on", () => {
