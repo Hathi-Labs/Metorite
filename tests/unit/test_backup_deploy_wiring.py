@@ -128,6 +128,64 @@ def test_the_pg_seam_actually_reaches_docker_in_docker_mode() -> None:
         assert "STUB exec -i testc echo two" in out, f"{script}: pgi missed -i"
 
 
+def test_the_app_database_is_derived_from_env_and_never_excluded() -> None:
+    """2026-08-25, live: a box provisioned Supabase-style names the app
+    database `postgres` (POSTGRES_DB=postgres), and backup_db.sh's
+    enumeration -- which excludes `postgres` as "the maintenance database" --
+    dumped NOTHING there; the pre-migration gate then fail-closed a real
+    deploy carrying migration 187. Two halves, both pinned:
+
+    (a) the pg_database query keeps the `or datname = '$APP_DB'` clause, so
+        the app database is enumerated even when it is named `postgres`;
+    (b) APP_DB is derived by EXECUTING the script's real derivation block --
+        DATABASE_URL's path component with the query string stripped, falling
+        back to `acb` when the var is absent.
+    """
+    import subprocess
+
+    text = (_ROOT / "scripts/backup_db.sh").read_text(encoding="utf-8")
+    assert (
+        "or datname = '$APP_DB'" in text
+    ), "backup_db.sh's enumeration lost the app-DB inclusion clause"
+
+    lines = text.splitlines()
+    i = lines.index('APP_DB="acb"')
+    j = next(
+        k for k in range(i, len(lines)) if lines[k].startswith("# ── How we reach")
+    )
+    block = "\n".join(lines[i:j])
+
+    # The env file is created INSIDE the bash program: a python-made Windows
+    # path does not survive into every bash on PATH (WSL wants /mnt/c, MSYS
+    # wants C:/), and a path that silently fails [ -f ] makes every case pass
+    # by fallback -- which is exactly how the first cut of this test lied.
+    for dsn, expected in (
+        ("postgresql+psycopg://u:p@h:6543/postgres?sslmode=require", "postgres"),
+        ("postgresql+psycopg://acb:pw@localhost:5432/acb", "acb"),
+        (None, "acb"),
+    ):
+        write = (
+            ""
+            if dsn is None
+            else 'printf \'DATABASE_URL=%s\\n\' "' + dsn + '" > "$ENV_FILE"\n'
+        )
+        prog = (
+            "set -u\n"
+            'ENV_FILE="$(mktemp)"\n'
+            + write
+            + block
+            + "\n"
+            + 'printf "APP_DB=%s\\n" "$APP_DB"\n'
+            + 'rm -f "$ENV_FILE"\n'
+        )
+        run = subprocess.run(
+            ["bash"], input=prog.encode(), capture_output=True, timeout=10
+        )
+        out = run.stdout.decode(errors="replace")
+        assert run.returncode == 0, run.stderr.decode(errors="replace")[:300]
+        assert f"APP_DB={expected}" in out, f"{dsn!r} -> {out!r}"
+
+
 def test_the_manual_runbook_and_the_live_path_carry_the_same_loop() -> None:
     """deploy/hostinger/deploy.sh is the hand-run runbook and keeps its copy of
     the loop; this asserts BOTH copies stay functionally present so an edit

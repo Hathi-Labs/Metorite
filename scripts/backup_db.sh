@@ -58,6 +58,23 @@ if [ -f "$ENV_FILE" ]; then
   PG_USER="${PG_USER:-acb}"
 fi
 
+# The APPLICATION database, from the same seam — the path component of
+# DATABASE_URL. ⚠️ This exists because "the app database is named acb" stopped
+# being true: a box provisioned Supabase-style names it `postgres`
+# (POSTGRES_DB=postgres), and on 2026-08-25 the enumeration below — which
+# excludes `postgres` as "the maintenance database" — therefore dumped NOTHING
+# and the pre-migration gate fail-closed on a live deploy. The app database is
+# a fact of the environment, never of this script.
+APP_DB="acb"
+if [ -f "$ENV_FILE" ]; then
+  _dburl="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$_dburl" ]; then
+    _dbname="${_dburl##*/}"
+    _dbname="${_dbname%%\?*}"
+    APP_DB="${_dbname:-acb}"
+  fi
+fi
+
 # ── How we reach Postgres ────────────────────────────────────────────────────
 #
 # On the VPS the cluster lives in a container, so every command goes through
@@ -111,9 +128,12 @@ pg pg_dumpall -U "$PG_USER" --globals-only > "$DEST/globals.sql"
 # --- Every non-template database --------------------------------------------
 # Enumerated rather than hardcoded: `litellm_proxy` holds API keys and spend
 # records and would have been silently missed by an acb-only backup, and any
-# database added later is picked up without editing this script.
+# database added later is picked up without editing this script. The
+# maintenance database `postgres` is excluded — UNLESS it IS the app database
+# (see APP_DB above; the exclusion once dumped nothing on a Supabase-named box
+# and the migration gate refused a live deploy, 2026-08-25).
 DBS="$(pg psql -U "$PG_USER" -d postgres -tAc \
-  "select datname from pg_database where datistemplate = false and datname <> 'postgres' order by datname")"
+  "select datname from pg_database where datistemplate = false and (datname <> 'postgres' or datname = '$APP_DB') order by datname")"
 
 for db in $DBS; do
   printf "    - %-16s ... " "$db"
@@ -146,6 +166,7 @@ say "Manifest"
   echo "pg_version:       $(pg psql -U "$PG_USER" -d postgres -tAc 'show server_version' | tr -d ' ')"
   echo "app_commit:       $(git -C "$APP_DIR" -c safe.directory="$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "migration_files:  $(ls "$APP_DIR"/infra/postgres/[0-9][0-9]*_*.sql 2>/dev/null | wc -l)"
+  echo "app_db:           $APP_DB"
   echo "databases:        $(echo "$DBS" | tr '\n' ' ')"
   echo ""
   echo "# anchor row counts (a restore that does not reproduce these is wrong)"
@@ -157,12 +178,12 @@ say "Manifest"
   # worse than no anchor: it occupies the slot where the check should be.
   # So an unresolvable name is now reported as MISSING, loudly.
   for t in app_user email_messages gtd_items meeting agent_run; do
-    if ! pg psql -U "$PG_USER" -d acb -tAc \
+    if ! pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
          "select to_regclass('public.$t')" 2>/dev/null | grep -q .; then
       printf "%-20s %s\n" "$t:" "MISSING — anchor names a table that does not exist"
       continue
     fi
-    n="$(pg psql -U "$PG_USER" -d acb -tAc \
+    n="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
          "select count(*) from $t" 2>/dev/null || echo "QUERY FAILED")"
     printf "%-20s %s\n" "$t:" "$n"
   done
@@ -176,7 +197,7 @@ cat "$DEST/MANIFEST.txt" | sed 's/^/    /'
 # The cheap check proves the file is READABLE. This proves it is RESTORABLE,
 # which is a different claim — and the one everybody assumes without testing.
 if [ "$VERIFY_RESTORE" = "1" ]; then
-  say "Deep verify — restoring acb.dump into a scratch database"
+  say "Deep verify — restoring $APP_DB.dump into a scratch database"
   SCRATCH="acb_verify_$(date -u +%s)"
   pg createdb -U "$PG_USER" "$SCRATCH"
   # Trap so a failure part-way through cannot leave a stray multi-hundred-MB
@@ -191,8 +212,8 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
   # evidence for a backup travels with that backup instead of being overwritten
   # by the next run.
   if pgi pg_restore -U "$PG_USER" -d "$SCRATCH" --no-owner --no-acl \
-       < "$DEST/acb.dump" > "$DEST/verify_restore.log" 2>&1; then
-    live="$(pg psql -U "$PG_USER" -d acb -tAc \
+       < "$DEST/$APP_DB.dump" > "$DEST/verify_restore.log" 2>&1; then
+    live="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
             "select count(*) from information_schema.tables where table_schema='public'")"
     rest="$(pg psql -U "$PG_USER" -d "$SCRATCH" -tAc \
             "select count(*) from information_schema.tables where table_schema='public'")"
