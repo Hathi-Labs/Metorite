@@ -38,7 +38,11 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.projects.core import resolve_organization_id, router
-from gateway.routes.projects.personal import MY_TASKS_FROM, derive_disposition
+from gateway.routes.projects.personal import (
+    MY_TASKS_FROM,
+    _upsert_personal,
+    derive_disposition,
+)
 from gateway.routes.tasks.calendar import (
     DayPlan,
     PlanDayRequest,
@@ -218,6 +222,35 @@ class _LensSource(TaskSource):
             db, uid, _PM_BUSY_WHERE,
             {"win_start": win_start, "win_end": win_end},
             lambda d: d not in ("DONE", "TRASH"))
+
+    async def apply_blocks(self, db, uid, place, clear):
+        """Commit a reviewed plan onto MY overlay rows.
+
+        Two differences from the `gtd_items` version, both consequences of the
+        block being per-member (D53.7) rather than a column on the task:
+
+        * it is an UPSERT, not an UPDATE. A member can be handed a task they
+          have never opened and have the assistant schedule it the same day, so
+          there may be no overlay row yet — an UPDATE would silently write
+          nothing and the plan would apply to an empty set.
+        * ownership needs no `AND user_id = :uid` guard, because the row IS the
+          member's: `_upsert_personal` keys on `(task_id, member_email)` and
+          writes nobody else's. The old clause was doing that job on a shared
+          row; here the key does it.
+
+        `_upsert_personal` is imported rather than re-implemented so that the
+        agent's writes go through the same binding and coercion path as the
+        browser's PATCH — which is where migration 187/188's timestamp and
+        jsonb handling lives, and where getting it wrong is a 500 nobody sees
+        until the assistant tries it.
+        """
+        email = uid.lower()
+        for task_id, start, end in place:
+            await _upsert_personal(db, task_id, email, {
+                "scheduled_start": start, "scheduled_end": end})
+        for task_id in clear:
+            await _upsert_personal(db, task_id, email, {
+                "scheduled_start": None, "scheduled_end": None})
 
     def to_item(self, row):
         return row

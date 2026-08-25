@@ -206,18 +206,114 @@ def test_the_lens_composes_the_shared_membership_clause() -> None:
     )
 
 
-def test_the_agent_planner_is_still_on_the_old_store() -> None:
-    """Recorded, not accidental — slice 3 (H-33).
+# ── The second flag, and why it is allowed to exist ──────────────────────
 
-    The agent surface has no browser and so no flag to read. Giving it a
-    server-side one would create a second flag that must agree with the client's,
-    and two flags that must agree are a mismatch waiting to be found by a user.
-    This test fails the day somebody routes it, so they have to come and read
-    the paragraph above the agent endpoints.
+def test_the_flag_is_off_unless_a_deployment_says_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default OFF is load-bearing, not caution.
+
+    `gtd_items` still holds every task anybody has captured and the S3b backfill
+    is owner-gated and unrun, so turning this on early does not degrade the
+    assistant — it makes every answer empty, on a 200.
     """
-    agent = CALENDAR_SRC[CALENDAR_SRC.index('"/calendar/plan-today"'):]
-    assert "LENS_SOURCE" not in agent
-    assert "src=GTD_SOURCE" in agent, (
-        "the agent planner no longer names its store explicitly; it must, "
-        "because the default is the one that will be wrong after the cutover"
+    monkeypatch.delenv(cal.TASKS_LENS_FLAG, raising=False)
+    assert cal.tasks_lens_enabled() is False
+    for off in ("", "0", "false", "no", "off"):
+        monkeypatch.setenv(cal.TASKS_LENS_FLAG, off)
+        assert cal.tasks_lens_enabled() is False, off
+    for on in ("1", "true", "yes", "on", " ON "):
+        monkeypatch.setenv(cal.TASKS_LENS_FLAG, on)
+        assert cal.tasks_lens_enabled() is True, on
+
+
+def test_the_flag_is_read_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flip is a RESTART, never a release — and never a re-import.
+
+    Read at import time this would be frozen at whatever the environment said
+    when the first module touched it, which in a test process is "whatever ran
+    first" and on a box is "before the operator edited `.env`".
+    """
+    monkeypatch.delenv(cal.TASKS_LENS_FLAG, raising=False)
+    assert cal.agent_source() is cal.GTD_SOURCE
+    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "1")
+    assert cal.agent_source() is LENS_SOURCE
+    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "0")
+    assert cal.agent_source() is cal.GTD_SOURCE
+
+
+def test_every_browserless_surface_asks_which_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ **Re-cut 2026-08-25 (slice 3).** This test used to assert the agent
+    planner was still PINNED to `gtd_items`, which was the honest thing to say
+    while the mechanism was undecided. It is decided, so the invariant flips:
+    every server-side surface that touches a member's tasks must now go through
+    `agent_source()`, and none may name a store directly.
+
+    The list is the surfaces that have **no browser**, so they cannot pick a
+    store by picking a route the way the Calendar UI does. Two of them WRITE,
+    and the nightly sweep writes unattended, per tenant, every night — which is
+    why "we will get to it" was not an acceptable answer for long.
+    """
+    surfaces = {
+        "plan_today": '"/calendar/plan-today"',
+        "replan_today": '"/calendar/replan-today"',
+        "rollover_today": '"/calendar/rollover-today"',
+        "day_summary": '"/calendar/day-summary"',
+        "_apply_plan_blocks": "async def _apply_plan_blocks(",
+        "_rollover_one_user": "async def _rollover_one_user(",
+    }
+    pinned = []
+    for name, anchor in surfaces.items():
+        start = CALENDAR_SRC.index(anchor)
+        # The next TOP-LEVEL thing after this surface. A decorator is
+        # followed immediately by its own `def` with no blank line, so
+        # bounding on "\n\n" is what tells a route's body apart
+        # from the decorator line that introduces it. Getting this wrong
+        # gives every route an EMPTY body and the fence passes on nothing.
+        ends = [
+            CALENDAR_SRC.find("\n@router", start + 1),
+            CALENDAR_SRC.find("\n\nasync def ", start + 1),
+            CALENDAR_SRC.find("\n\ndef ", start + 1),
+        ]
+        end = min([e for e in ends if e > start] or [len(CALENDAR_SRC)])
+        body = CALENDAR_SRC[start:end]
+        # ⚠️ Two conditions, and the second exists because the first draft of
+        # this fence PASSED a deliberate regression. It read `if
+        # "agent_source()" not in body and "src." not in body`, and pinning the
+        # nightly sweep back with `src = GTD_SOURCE` left every `src.` call in
+        # place — so the fence saw a source variable and approved. A fence that
+        # holds a bug still is worse than none.
+        asks = "agent_source()" in body
+        names_a_store = "GTD_SOURCE" in body or "LENS_SOURCE" in body
+        if not asks or names_a_store:
+            pinned.append(name)
+    assert not pinned, (
+        f"{pinned} name a store directly instead of asking `agent_source()`. "
+        "These surfaces have no browser, so a hard-coded store is one nobody "
+        "can change without a code release — and the nightly sweep would go on "
+        "writing the retiring store after the cutover, every night, for every "
+        "customer."
     )
+
+
+def test_the_mismatch_is_reportable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole justification for allowing a SECOND flag.
+
+    The browser's flag is read by the Next.js build; the gateway's by this
+    process. They cannot be one variable, so they must at least be one
+    QUESTION — and `/version` is where it is answered, unauthenticated, from a
+    laptop, mid-incident. Without this the two disagreeing is silent: the UI
+    reads one store while the assistant and the roll-over write the other.
+    """
+    from gateway.main import Version, version
+
+    src = inspect.getsource(version)
+    assert "tasks_lens_enabled()" in src, (
+        "/version no longer reports the store flag; a mismatch between the "
+        "browser build and the gateway becomes unobservable again"
+    )
+    assert "tasks_lens" in Version.model_fields

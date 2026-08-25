@@ -221,6 +221,64 @@ async def main() -> None:
         check("11 id is a string, not a uuid",
               isinstance(one.id, str), f"got {type(one.id).__name__}")
 
+        # ── 13-15. the WRITE path: apply a reviewed plan ────────────────
+        #
+        # `_LensSource.apply_blocks` is an UPSERT, not an UPDATE, and this is
+        # where that matters: "Untriaged assigned" has NO overlay row, because
+        # the member has never opened it. An UPDATE would report success and
+        # write nothing, and the assistant's plan would silently not apply.
+        target = (await db.execute(text(
+            "SELECT id FROM pm_tasks WHERE title = 'Untriaged assigned' "
+            "  AND project_id = :p"), {"p": proj})).scalar_one()
+        before = (await db.execute(text(
+            "SELECT count(*) FROM pm_task_personal WHERE task_id = :t"),
+            {"t": target})).scalar_one()
+
+        slot = (DAY0 + timedelta(hours=15), DAY0 + timedelta(hours=16))
+        await LENS_SOURCE.apply_blocks(
+            db, WHO, [(str(target), slot[0], slot[1])], [])
+        row = (await db.execute(text(
+            "SELECT scheduled_start, scheduled_end FROM pm_task_personal "
+            " WHERE task_id = :t AND lower(member_email) = :w"),
+            {"t": target, "w": WHO})).first()
+        check("13 apply_blocks CREATES the overlay row it needs",
+              before == 0 and row is not None
+              and row.scheduled_start == slot[0]
+              and row.scheduled_end == slot[1],
+              f"before={before} row={row}")
+
+        # …and clearing puts it back on the unscheduled list.
+        await LENS_SOURCE.apply_blocks(db, WHO, [], [str(target)])
+        cleared = (await db.execute(text(
+            "SELECT scheduled_start, scheduled_end FROM pm_task_personal "
+            " WHERE task_id = :t AND lower(member_email) = :w"),
+            {"t": target, "w": WHO})).first()
+        check("14 apply_blocks CLEARS a block back to the list",
+              cleared is not None and cleared.scheduled_start is None
+              and cleared.scheduled_end is None, f"got {cleared}")
+
+        # And it is MY overlay, never anybody else's — the property that makes
+        # a shared task safe to schedule twice, differently, by two people.
+        shared = (await db.execute(text(
+            "SELECT id FROM pm_tasks WHERE title = 'A parent' "
+            "  AND project_id = :p"), {"p": proj})).scalar_one()
+        await db.execute(text(
+            "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+            "VALUES (:t, :a, :a)"), {"t": shared, "a": OTHER})
+        await db.execute(text(
+            "INSERT INTO pm_task_personal (task_id, member_email, "
+            " scheduled_start, scheduled_end) VALUES (:t, :w, :s, :e)"),
+            {"t": shared, "w": OTHER,
+             "s": DAY0 + timedelta(hours=9), "e": DAY0 + timedelta(hours=10)})
+        await LENS_SOURCE.apply_blocks(db, WHO, [], [str(shared)])
+        theirs = (await db.execute(text(
+            "SELECT scheduled_start FROM pm_task_personal "
+            " WHERE task_id = :t AND lower(member_email) = :w"),
+            {"t": shared, "w": OTHER})).first()
+        check("15 clearing MY block leaves THEIRS alone",
+              theirs is not None and theirs.scheduled_start is not None,
+              f"got {theirs}")
+
         # ── 12. another tenant sees none of it ─────────────────────────────
         other_org = (await db.execute(text(
             "INSERT INTO organization (slug, display_name) "

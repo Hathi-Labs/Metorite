@@ -407,59 +407,93 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
-### H-33 · WS-39 S3a-CLIENT slice 3: the tail, and the agent planner · [AGENT]
+### H-33 · WS-39 S3a-CLIENT slice 4: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → **12** means slices 1+2 only, and slice 3 is unbuilt. Second half:
-  `rg -n "LENS_SOURCE" apps/services/gateway/gateway/routes/tasks/calendar.py`
-  → no hit means the AGENT planner is still on `gtd_items`.
+  → **12** means slices 1–3 only, and slice 4 is unbuilt.
   ⚠️ Do NOT grep for `api/tasks` in `lib/api.ts` and conclude anything: the
   prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`) and every call
   site passes a bare `` `/items…` ``. That spelling under-reported once already
   and would have closed this entry while the work was untouched.
-- **Why:** **Slice 1 (spine) and slice 2 (day planner) landed 2026-08-25.**
-  Twelve functions branch on the flag; the planner reads through a `TaskSource`
-  with `/projects/my/calendar/{plan,replan,rollover,estimate-stats}` serving the
-  lens. What is left, all of which still writes `gtd_items` when the flag is on:
-  `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`, `apiBulkDispose`/
-  `apiBulkArchive`, `apiMergeInto`/`apiFileUnder`, `apiAtomize`,
-  `apiClarifyPropose`, `apiEnrichItem`, `apiSuggestTitle`,
-  `apiBackfillContext`, `apiPlanProject`/`apiApplyPlan`, `apiItemDetail`,
-  `apiItemStageOptions`, `fetchProjects`, `fetchStatusCatalog`.
-  🔴 **And the AGENT planner** — `/tasks/calendar/{plan,replan,rollover}-today`
-  and `/calendar/day-summary`. That one is not a port, it is a DECISION: the
-  agent surface has no browser and so no client flag, and giving it a
-  server-side one creates a second flag that must agree with the first. Two
-  flags that must agree are a mismatch waiting to be found by a user whose day
-  planned itself out of the wrong table. Settle the mechanism before writing
-  code. `test_calendar_task_source.py::test_the_agent_planner_is_still_on_the_old_store`
-  fails the moment somebody routes it, which is the intended way to be sent
-  here.
-  📌 **Measured, and cheap wins for whoever takes this:**
-  `apiCalendarRange` has **no callers** (the Calendar reads the shared store,
-  not a range endpoint) — delete it. `fetchTaskSettings` needs **no** work:
-  `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` SURVIVE the retirement
-  (D53.6), so the planner's prefs, day state and roll-over log are already
-  shared by both stores. The `/accounts` · `/spaces` · `/folders` ·
-  `/hierarchy` · `/local-projects` family has **no destination at all** under
-  D52 — decide DELETE, not port; every one of them is reachable only from
-  `taskStore.ts`, so the excision is bounded.
-  📌 **Two decisions slices 1–2 deliberately did not take:**
+- **Why:** **Slices 1–3 landed 2026-08-25.** Slice 1 the spine, slice 2 the
+  browser day-planner, slice 3 every **browserless** surface (the agent planner,
+  `day-summary`, the agent apply path and the nightly roll-over sweep) plus the
+  gateway flag `TASKS_LENS` and its `/version` report. `docs/TASKS_LENS.md` is
+  the pair's write-up.
+  What is left still writes `gtd_items` when the flag is on:
+  **(a) CRUD** — `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`,
+  `apiBulkDispose`/`apiBulkArchive`, `apiMergeInto`/`apiFileUnder`,
+  `apiItemDetail`, `apiItemStageOptions`, `fetchProjects`,
+  `fetchStatusCatalog`, `apiCaptureBatch`, `apiUploadAttachment`,
+  `createLocalProject` (which writes `gtd_projects` and should write
+  `pm_projects`).
+  **(b) AI** — `apiAtomize`, `apiClarifyPropose`, `apiEnrichItem`,
+  `apiSuggestTitle`, `apiBackfillContext`, `apiPlanProject`/`apiApplyPlan`.
+  ⚠️ These need GATEWAY work, not just client wiring: `routes/tasks/ai.py`
+  names `gtd_items` **12 times**. Size it before dispatching; it is probably its
+  own slice.
+  **(c) DELETION, not porting** — the `/accounts` · `/spaces` · `/folders` ·
+  `/hierarchy` · `/local-projects` family, plus `apiSyncTasks`, `apiPushItem`,
+  `apiDeleteAccount`, `apiRefreshSchema`, `apiRefreshMembers`,
+  `apiCreateAccountProject`, `apiCreateAccountFolder`, `accountToProviderEntry`.
+  D52 leaves them with no destination. **Measured 2026-08-25: every one is
+  reachable only from `taskStore.ts`**, and `syncNow`, `refreshSchema`,
+  `refreshMembers`, `createAccountProject`, `createAccountFolder`,
+  `createSpace`, `createFolder` and `loadHierarchy` have **no UI caller at all**
+  — S1's repair round already deleted their buttons. `pushItem` still has two
+  (`ItemDetail.tsx`, `TaskFocusModal.tsx`) and should go with them. The store
+  even says so: `taskStore.ts` carries "`syncNow` itself is left in place for
+  S3a to delete with the store."
+  📌 **Also measured:** `apiCalendarRange` has **no callers** (the Calendar
+  reads the shared store, not a range endpoint) — delete it.
+  `fetchTaskSettings` needs **no** work: `gtd_settings`/`gtd_day_state`/
+  `gtd_rollover_log` SURVIVE the retirement (D53.6).
+  📌 **Two decisions still open:**
   (1) `workflow_stage` writes need a status name → `status_id` lookup against
   the task's own project; `splitPatch` THROWS on it today rather than dropping
   it, so the to-do fails loudly instead of hiding.
   (2) `origin` is still homeless and still per-TASK — `pm_tasks.source` is the
-  nearest existing fact. Settle it before the lens touches email-captured
-  tasks, or their provenance is lost at the cutover rather than at a review.
+  nearest existing fact. Settle it before the lens touches email-captured tasks.
   (3) `horizonId`: **WS-21 owns Horizons**, DO-NOT-DISPATCH stands.
   ⚠️ **Read `routes/projects/personal.py` and `routes/projects/planning.py`
-  before designing anything.** The server side of this workstream has shipped
-  in four separate slices since 2026-08-06; an agent who reads "make Tasks a
-  lens over Projects" and starts writing endpoints is building a second one.
+  before designing anything.** The server side has shipped in five slices since
+  2026-08-06; an agent who reads "make Tasks a lens over Projects" and starts
+  writing endpoints is building a second one.
 - **Authority:** `work_plan.md` §2 WS-39 row · `project_management_app.md` §12.7 ·
-  `task_manager_app.md` §13.5a · `calendar_focus_os.md` §10.7
+  `task_manager_app.md` §13.5a · `calendar_focus_os.md` §10.7 ·
+  `docs/TASKS_LENS.md`
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-28→H-33 on 2026-08-25;
   ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut to
-  slice 2 and again to slice 3 as each landed.)*
+  slice 2, 3 and 4 as each landed.)*
+
+### H-34 · Add the two Tasks-lens vars to `.env.example` (and the box) · [OWNER]
+- **Check:** `rg -c "TASKS_LENS" .env.example` → `0` means still pending.
+  Both `NEXT_PUBLIC_TASKS_LENS` and `TASKS_LENS` must appear, adjacent, with the
+  comment that they are a pair.
+- **Why:** WS-39 S3a-client slice 3 introduced the gateway half of the cutover
+  switch. The pair is documented in **`docs/TASKS_LENS.md`**; what is missing is
+  the entry in `.env.example`, and `.env*` is an owner-gated path
+  (`work_plan.md` §6 `secrets`) — plan-guard refuses it by name, so an agent
+  cannot add it.
+  ```dotenv
+  # The Tasks/Calendar store cutover (WS-39, D53). BOTH or NEITHER — see
+  # docs/TASKS_LENS.md. Do not enable before the S3b backfill has run.
+  NEXT_PUBLIC_TASKS_LENS=0
+  TASKS_LENS=0
+  ```
+  ⚠️ **Adding them as `0` is the whole ask — do NOT turn them on.** `gtd_items`
+  still holds every existing task and the S3b backfill is owner-gated and has
+  not run, so enabling them early does not break the app, it **empties** it, on
+  a 200, with no error to notice.
+  📌 Worth doing anyway rather than waiting for the flip: a variable that exists
+  and reads `0` is a variable somebody can find. One that appears for the first
+  time on the day of a cutover is one that gets set on the gateway and forgotten
+  in the workbench build — which is the exact mismatch `/version`'s `tasks_lens`
+  field was added to make visible.
+  *(H-30 is the other pending `.env.example` edit — the three dead `CLICKUP_*`
+  vars. Same file, same gate; doing them in one pass costs nothing extra.)*
+- **Authority:** `work_plan.md` §2 WS-39 row · §6 (`secrets`) ·
+  `docs/TASKS_LENS.md` · `task_manager_app.md` §13.5a
+- **Added:** 2026-08-25 · WS-39 S3a-client slice 3
 
 ### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
 - **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.

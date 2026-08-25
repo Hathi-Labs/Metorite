@@ -1195,14 +1195,17 @@ are the acceptance for S3a *as a whole* and are unchanged. What changed is the
 delivery: `tasks/lib/api.ts` reaches **more than thirty `/items*` endpoints**,
 so "the UIs re-point" is not one reviewable diff.
 
-| | Slices 1+2 — **BUILT 2026-08-25** | Slice 3 — H-33 |
+| | Slices 1–3 — **BUILT 2026-08-25** | Slice 4 — H-33 |
 |---|---|---|
 | **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) · **slice 2:** the day planner's four reads, via `/projects/my/calendar/*` | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchStatusCatalog` — **not** `fetchTaskSettings`, whose `gtd_settings` survives (D53.6) |
-| **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate. *(The planner writes nothing — it proposes, and the client applies through `apiPatchItem`.)* | organize · bulk · merge/file-under · subtasks · the AI routes · plan/apply · 🔴 the AGENT planner, which needs a mechanism decision first |
+| **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate · **slice 3:** the agent apply path and the nightly roll-over sweep, via `TaskSource.apply_blocks` | organize · bulk · merge/file-under · subtasks · the AI routes · `createLocalProject` (writes `gtd_projects`, should write `pm_projects`) |
 | **Retired, not ported** | — | `/accounts` · `/spaces` · `/folders` · `/hierarchy` · `/local-projects` (D52 leaves them with no destination) |
 
-**Slice 1 is behind `NEXT_PUBLIC_TASKS_LENS`, default OFF, and the flag is not
-a nicety.** `gtd_items` still holds every task anybody has captured and the
+**The lens is behind TWO flags, both default OFF, and they are not a nicety.**
+`NEXT_PUBLIC_TASKS_LENS` is the browser's (build-time); `TASKS_LENS` is the
+gateway's, for the surfaces with no browser (slice 3). They live in one
+`.env`, must be flipped together, and a disagreement is reported on
+`/version` — see `docs/TASKS_LENS.md`. `gtd_items` still holds every task anybody has captured and the
 backfill that moves them (S3b) is owner-gated and has not run. Flipping the flag
 early would not *break* the app — it would **empty** it, silently and on a 200,
 because the new store answers correctly that it holds none of those rows. So the
