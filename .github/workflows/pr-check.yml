@@ -327,6 +327,7 @@ jobs:
             tests/unit/test_customer_console_member_write.py \
             tests/unit/test_customer_console_seat_overview.py \
             tests/unit/test_operator_identity.py \
+            tests/unit/test_operator_session.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \

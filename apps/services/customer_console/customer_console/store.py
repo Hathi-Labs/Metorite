@@ -49,6 +49,11 @@ __all__ = [
     "operator_by_email",
     "operator_count",
     "operator_insert",
+    "operator_session_by_prefix",
+    "operator_session_insert",
+    "operator_session_revoke",
+    "operator_session_touch",
+    "operator_sessions_revoke_all",
     "operator_set_directory_subject",
     "order_by_provider_id",
     "order_for_update",
@@ -1828,3 +1833,118 @@ def operator_set_directory_subject(
         ),
         {"id": operator_id, "subject": subject},
     )
+
+
+# ── Operator sessions (CP-12b) ──────────────────────────────────────────────
+
+
+def operator_session_insert(
+    conn: Connection,
+    *,
+    operator_id: str,
+    prefix: str,
+    key_hash: str,
+    expires_at: datetime,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> str:
+    """Store a freshly minted session. Only the HASH is passed here."""
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator_session
+                (operator_id, prefix, key_hash, expires_at, ip, user_agent)
+            VALUES (CAST(:op AS UUID), :prefix, :hash, :expires,
+                    CAST(:ip AS INET), :ua)
+            RETURNING id
+            """
+        ),
+        {"op": operator_id, "prefix": prefix, "hash": key_hash,
+         "expires": expires_at, "ip": ip, "ua": user_agent},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def operator_session_by_prefix(
+    conn: Connection, prefix: str
+) -> dict[str, Any] | None:
+    """The session AND the operator behind it, in one read.
+
+    ⚠️ The JOIN is the point. A session is only as good as the person, so
+    ``status`` and ``role`` come back on every request rather than being
+    trusted from sign-in time. That is what lets a deactivation take effect
+    at once instead of whenever the session happened to expire.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT s.id, s.operator_id, s.key_hash, s.expires_at,
+                   s.last_seen_at, s.revoked_at,
+                   o.email, o.role, o.status
+              FROM operator_session s
+              JOIN operator o ON o.id = s.operator_id
+             WHERE s.prefix = :prefix
+            """
+        ),
+        {"prefix": prefix},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_session_touch(conn: Connection, session_id: str) -> None:
+    """Push the idle clock forward. Called once a request is admitted.
+
+    ⚠️ Deliberately NOT called on a rejected request. Touching on refusal
+    would let an attacker holding a revoked or expired token keep the row
+    warm, which is the opposite of what the idle clock is for.
+
+    ⚠️ **Two things protect this, and only one of them is obvious.** The
+    ordering in ``auth._staff_session`` is the first. The second is that
+    the refusal raises out of a ``get_engine().begin()`` block, so a touch
+    written into the ``except`` arm would be ROLLED BACK and never land.
+    Measured while mutation-testing CP-12b: a mutation that added the touch
+    inside the ``except`` survived for exactly that reason, and only a
+    version that opened its OWN transaction was caught. Do not read the
+    surviving mutation as a missing fence — read it as a second guard.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator_session SET last_seen_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": session_id},
+    )
+
+
+def operator_session_revoke(conn: Connection, session_id: str) -> None:
+    """Sign out one session.
+
+    ``WHERE revoked_at IS NULL`` so a second sign-out cannot move the
+    timestamp — when a session was revoked is an audit fact.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator_session SET revoked_at = now() "
+            "WHERE id = CAST(:id AS UUID) AND revoked_at IS NULL"
+        ),
+        {"id": session_id},
+    )
+
+
+def operator_sessions_revoke_all(conn: Connection, operator_id: str) -> int:
+    """Revoke EVERY live session for one operator. Returns how many.
+
+    This is the fix for spec §2's F5 — *"removing one person means changing
+    the secret for everybody"*. The caller runs it in the SAME transaction
+    that suspends or deactivates the operator, so there is no window in
+    which the row says `deactivated` and a session still works.
+    """
+    result = conn.execute(
+        text(
+            "UPDATE operator_session SET revoked_at = now() "
+            "WHERE operator_id = CAST(:op AS UUID) AND revoked_at IS NULL"
+        ),
+        {"op": operator_id},
+    )
+    return int(result.rowcount or 0)
