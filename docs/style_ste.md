@@ -205,7 +205,7 @@ Measured on 2026-08-26, before any rewrite:
 
 | Files we own | Errors | Warnings |
 |---|---|---|
-| 191 | 19792 | 9293 |
+| 196 | 19094 | 8612 |
 
 Read the current number with `--baseline`. Do not open a pull request that
 rewrites a file only to lower it. A doc gets rewritten when the work touches it.

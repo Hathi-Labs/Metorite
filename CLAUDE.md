@@ -33,8 +33,9 @@ answer comes first. STE sets the **language**.
 
 **The fence:** `.claude/hooks/ste-lint.mjs` runs on every markdown write
 (PostToolUse) and on every commit (pre-commit, added lines only). Tests:
-`node .claude/hooks/ste-lint.test.mjs`. The ~104 docs that predate the rule are
-grandfathered. Do not open a pull request that only lowers the count.
+`node .claude/hooks/ste-lint.test.mjs`. The 196 markdown files measured on
+2026-08-26 carry 19094 errors, and every one of them is grandfathered. Do not
+open a pull request that only lowers the count.
 
 ---
 

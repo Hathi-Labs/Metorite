@@ -15,10 +15,10 @@
  * ⚠️ DIFF-SCOPED BY DEFAULT, which is the only reason it is survivable.
  * `.pre-commit-config.yaml` already states the house philosophy: grandfather and
  * ratchet, new and edited work must pass, legacy is paid down when it is next
- * touched. ~104 markdown files predate this rule. If editing one line of
- * `work_plan.md` (583 KB) failed on that file's whole backlog, the hook would be
- * removed within a week. So `--staged` reads ADDED LINES ONLY. Whole-file
- * checking is opt-in (`<file>` or `--baseline`).
+ * touched. Measured 2026-08-26: 196 markdown files we own carry 19094 errors.
+ * If editing one line of `work_plan.md` (583 KB) failed on that file's whole
+ * backlog, the hook would be removed within a week. So `--staged` reads ADDED
+ * LINES ONLY. Whole-file checking is opt-in (`<file>` or `--baseline`).
  *
  * TWO TIERS (owner decision, 2026-08-26):
  *   STRICT   — anything that tells a human or an agent what to DO. Full word

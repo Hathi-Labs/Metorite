@@ -57,7 +57,7 @@ repos:
   # --- STE: Simplified Technical English, on the lines you ADDED ---
   # Contract: docs/style_ste.md. Word list: .claude/hooks/ste-words.json.
   # The same grandfather-and-ratchet rule as everything above, and here it is
-  # load-bearing: 191 markdown files predate this rule and carry ~19.8k findings.
+  # load-bearing: measured 2026-08-26, 196 markdown files carry 19094 errors.
   # A whole-file gate would fail every edit to work_plan.md and be deleted within
   # a week, so --staged reads ADDED LINES ONLY.
   # Fence for the fence: node .claude/hooks/ste-lint.test.mjs
