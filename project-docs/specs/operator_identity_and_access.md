@@ -19,10 +19,26 @@ routes that now name the PERSON in `control_audit.actor`.
 
 **19 tests, 0 skipped. 550 passed across every Console suite, so the changed
 `Operator` dependency broke nothing.** Eight mutations killed. ⚠️ One known
-gap is pinned rather than hidden: `/orgs/provision` is a dual-arm door, so
-its operator arm still records the shared actor. CP-12c closes it.
+gap was pinned rather than hidden: `/orgs/provision` is a dual-arm door, so
+its operator arm recorded the shared actor. **CP-12c closed it.**
 
-CP-12c to CP-12g are unbuilt.
+**◐ CP-12c BUILT 2026-08-26** (`ws31-cp12c-role-matrix`) — the §5 matrix,
+enforced at the door and **failing closed** on any operator route it does not
+name. 49 tests. **618 passed** across every Console suite. Seven mutations
+killed, one of which fails with `{403, 404} == {403}` — the oracle leak stated
+as an assertion. Two spec corrections are recorded in §5 and §8.1.
+
+**◐ CP-12d BUILT 2026-08-27** (`ws31-cp12d-operator-admin`) — an admin adds,
+re-roles and deactivates an operator. Four routes, four guards, 24 tests, and
+**676 passed** across every Console suite. Eight mutations killed.
+
+⚠️ **Three of these tests proved nothing until mutation testing said so.**
+Guard 2 (no self-write) answers 409 before guard 1 (last admin) can. So no
+OPERATOR caller can isolate guard 1. Only the break-glass token reaches it,
+because that token holds no operator id. It is now a written test rather than
+a lesson somebody learns twice.
+
+CP-12e to CP-12g are unbuilt.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -367,7 +383,7 @@ out of a live console.
 | **CP-12a** | ◐ **BUILT 2026-08-26 (substrate half).** The three checks of §4.1, the `operator` registry and the one-time bootstrap — migration 009, `operators.py`, five `store.py` functions, 28 R8 tests, 6 mutations killed. ⚠️ **Deferred to CP-12b:** the Supabase sign-in exchange itself. `admit()` takes a *verified* `(tid, email)` and nothing verifies one yet, so the module is reachable by no route | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
 | **CP-12b** | ◐ **BUILT 2026-08-26.** The fifth auth scheme (`cc_sess_`), `operator_sessions.py`, absolute **and** idle expiry, server-side revocation, and nine operator routes whose audit rows now name the person — 19 R8 tests, 8 mutations killed. ⚠️ **Known gap, pinned by a test:** `/orgs/provision` is a dual-arm door and its operator arm still records the shared actor. CP-12c closes it | CP-12a | 🟢 **AGENT-SAFE** |
 | **CP-12c** | ◐ **BUILT 2026-08-26.** `operator_roles.py` holds the §5 matrix, enforced in `auth.require_operator` BEFORE the route body runs — so a refusal cannot reveal whether a company exists. Fails CLOSED on an unnamed route. 49 R8 tests, 7 mutations killed. Also closes CP-12b's provision-actor gap | CP-12b | 🟢 **AGENT-SAFE** |
-| **CP-12d** | **Operator administration.** The three routes of §6.1, the four guards, and the console surface that drives them | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
+| **CP-12d** | ◐ **BUILT 2026-08-27.** FOUR routes (`GET`/`POST` `/operators`, `PATCH`/`DELETE` `/operators/{id}`) and the four guards of §6.1. `GET` is `viewer` — who holds power over our customers is what the team should see without asking. 24 R8 tests, 8 mutations killed. ⚠️ Deferred: the console SURFACE that drives them, which lands with CP-12f | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
 | **CP-12e** | **Elevation and break-glass.** `operator_elevation`. The window. The alert. The `actor='breakglass'` row | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | **The Activity surface.** A cross-org read of `control_audit` with a filter for actor, action and company. Every role reads it | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7** | all | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
@@ -477,6 +493,7 @@ An agent must **refuse these by name** and say so. They belong in
 uv run pytest tests/unit/test_operator_identity.py -q
 uv run pytest tests/unit/test_operator_session.py -q
 uv run pytest tests/unit/test_operator_roles.py -q
+uv run pytest tests/unit/test_operator_admin.py -q
 uv run pytest tests/unit/test_operator_elevation.py -q
 
 # The seam ratchets must stay green.

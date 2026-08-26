@@ -41,11 +41,16 @@ __all__ = [
     "ROLES",
     "STATUSES",
     "VIEWER",
+    "AdminRefused",
     "Operator",
     "OperatorForbidden",
     "OperatorUnconfigured",
     "admit",
     "bootstrap_email",
+    "guard_known_role",
+    "guard_known_status",
+    "guard_last_admin",
+    "guard_not_self",
     "normalise_email",
     "staff_domains",
     "staff_tenant_id",
@@ -304,3 +309,87 @@ def bootstrap(conn: Any, *, env: dict[str, str] | None = None) -> str | None:
     )
     _log.info("operator.bootstrapped", extra={"operator_email": email})
     return operator_id
+
+
+# ── Operator administration — the four guards (CP-12d) ──────────────────────
+#
+# Spec: operator_identity_and_access.md §6.1 · §8.1 done-whens 16-19.
+#
+# Each guard below has a test named beside it (R7). They are POLICY, so they
+# live here rather than in a route body: two routes already change a role or a
+# status, and a guard written at one call site is a guard the other forgets.
+
+
+class AdminRefused(Exception):
+    """A registry write that must not happen. Callers map this to **409**.
+
+    ⚠️ **409, not 403.** These are not authorization failures — the caller IS
+    an admin and IS allowed here. They are refusals of a specific CHANGE that
+    would break the registry, and telling the two apart matters to whoever
+    reads the response. A 403 would send them hunting for a missing role.
+    """
+
+
+def guard_not_self(actor_id: str, target_id: str) -> None:
+    """Guard 2 — nobody edits their own role or status.
+
+    An admin who could promote themselves holds no role at all, and an admin
+    who could suspend themselves has invented a new way to lock the team out.
+    Both directions are refused by the same rule.
+
+    Fence: ``test_operator_admin.py::test_an_operator_cannot_change_their_own_role``.
+    """
+    if actor_id == target_id:
+        raise AdminRefused(
+            "an operator cannot change their own role or status"
+        )
+
+
+def guard_last_admin(
+    *,
+    active_admins: int,
+    target_role: str,
+    target_status: str,
+    new_role: str | None = None,
+    new_status: str | None = None,
+) -> None:
+    """Guard 1 — the last ACTIVE admin cannot be demoted or switched off.
+
+    Without this, one careless change locks the whole team out of a live
+    console, and the only way back is the break-glass token.
+
+    The arithmetic is deliberately explicit rather than clever: work out
+    whether the target is an active admin TODAY, and whether they would still
+    be one after the change. Refuse only when that flips the last one off.
+
+    Fence: ``test_operator_admin.py::test_the_last_active_admin_cannot_be_demoted``.
+    """
+    was_active_admin = target_role == ADMIN and target_status == "active"
+    if not was_active_admin:
+        return
+
+    role_after = new_role if new_role is not None else target_role
+    status_after = new_status if new_status is not None else target_status
+    still_active_admin = role_after == ADMIN and status_after == "active"
+
+    if not still_active_admin and active_admins <= 1:
+        raise AdminRefused(
+            "this is the last active admin — promote somebody else first"
+        )
+
+
+def guard_known_role(role: str) -> None:
+    """A role the product does not have never reaches the table.
+
+    The CHECK constraint in migration 009 would refuse it too. This turns a
+    database error into a 400 an operator can read, and it keeps the
+    vocabulary in one place rather than two.
+    """
+    if role not in ROLES:
+        raise AdminRefused(f"unknown role: {role!r}")
+
+
+def guard_known_status(status: str) -> None:
+    """The same, for status."""
+    if status not in STATUSES:
+        raise AdminRefused(f"unknown status: {status!r}")

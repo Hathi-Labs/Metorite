@@ -58,7 +58,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
-from customer_console import operator_roles, payments, store
+from customer_console import operator_roles, operators, payments, store
 from customer_console.auth import (
     Caller,
     CatalogCaller,
@@ -954,6 +954,152 @@ def _rate_completion(conn, *, model: str, usage: ExtractedUsage) -> Decimal:
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
+
+# ── Operator administration (CP-12d) ────────────────────────────────────────
+#
+# Spec: operator_identity_and_access.md §6.1 · D64.3. The role matrix (§5)
+# gates these at the door: reading is `viewer`, writing is `admin`.
+#
+# ⚠️ These routes administer PLATFORM STAFF, not a customer's members. The
+# customer's own member admin is `POST /registry/members` and they are not the
+# same surface, the same audience or the same table. Do not merge them.
+
+
+class OperatorAddRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: str = Field(default="viewer")
+
+
+class OperatorPatchRequest(BaseModel):
+    role: str | None = None
+    status: str | None = None
+
+
+def _admin_refusal(exc: Exception) -> HTTPException:
+    """`AdminRefused` is a 409, never a 403 — see its docstring."""
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/operators")
+def list_operators(staff: Operator) -> dict[str, Any]:
+    """Every platform operator, with role, status and live session count.
+
+    Readable by a `viewer` on purpose. Who holds power over our customers is
+    exactly the thing the team should be able to see without asking.
+    """
+    with get_engine().begin() as conn:
+        rows = store.operator_list(conn)
+    return {
+        "operators": [
+            {
+                "id": str(r["id"]),
+                "email": r["email"],
+                "role": r["role"],
+                "status": r["status"],
+                "has_signed_in": bool(r["has_signed_in"]),
+                "live_sessions": int(r["live_sessions"]),
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/operators")
+def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
+    """Add a platform operator. Idempotent on the email.
+
+    The person becomes real on their FIRST successful directory sign-in —
+    this only records that they may. An email is the one identifier a human
+    knows before that has ever happened, which is why the registry is keyed
+    on it rather than on a directory subject.
+    """
+    email = operators.normalise_email(req.email)
+    try:
+        operators.guard_known_role(req.role)
+    except operators.AdminRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    with get_engine().begin() as conn:
+        operator_id = store.operator_insert(
+            conn, email=email, role=req.role,
+            added_by=staff.operator_id,
+        )
+        _audit(conn, None, "operator.add",
+               {"email": email, "role": req.role}, actor=staff.actor)
+    return {"id": operator_id, "email": email, "role": req.role}
+
+
+@app.patch("/operators/{operator_id}")
+def patch_operator(
+    operator_id: str, req: OperatorPatchRequest, staff: Operator
+) -> dict[str, Any]:
+    """Change an operator's role, their status, or both.
+
+    ⚠️ **One transaction.** The status change and the session revocation that
+    must follow it are the same act. Two transactions would leave a window in
+    which the row reads `deactivated` and a session still works.
+    """
+    if req.role is None and req.status is None:
+        raise HTTPException(status_code=400, detail="nothing to change")
+
+    with get_engine().begin() as conn:
+        target = store.operator_by_id(conn, operator_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="no such operator")
+
+        try:
+            if staff.operator_id is not None:
+                operators.guard_not_self(staff.operator_id, str(target["id"]))
+            if req.role is not None:
+                operators.guard_known_role(req.role)
+            if req.status is not None:
+                operators.guard_known_status(req.status)
+            operators.guard_last_admin(
+                active_admins=store.operator_active_admin_count(conn),
+                target_role=str(target["role"]),
+                target_status=str(target["status"]),
+                new_role=req.role,
+                new_status=req.status,
+            )
+        except operators.AdminRefused as exc:
+            raise _admin_refusal(exc) from None
+
+        if req.role is not None:
+            store.operator_set_role(conn, operator_id=operator_id,
+                                    role=req.role)
+        revoked = 0
+        if req.status is not None:
+            store.operator_set_status(conn, operator_id=operator_id,
+                                      status=req.status)
+            if req.status != "active":
+                # The same transaction. This is the fix for spec §2's F5.
+                revoked = store.operator_sessions_revoke_all(
+                    conn, operator_id
+                )
+
+        _audit(conn, None, "operator.update",
+               {"email": target["email"], "role": req.role,
+                "status": req.status, "sessions_revoked": revoked},
+               actor=staff.actor)
+
+    return {"id": operator_id, "sessions_revoked": revoked}
+
+
+@app.delete("/operators/{operator_id}")
+def deactivate_operator(operator_id: str, staff: Operator) -> dict[str, Any]:
+    """Deactivate an operator. **It never deletes the row.**
+
+    D63 — deactivation SEALS. The row stays so the person's `control_audit`
+    history stays readable, and a `DELETE` that removed it would orphan the
+    audit trail that naming them was for.
+
+    The HTTP verb is `DELETE` because that is what an operator means by it.
+    What it does is written here so nobody has to guess.
+    """
+    return patch_operator(
+        operator_id, OperatorPatchRequest(status="deactivated"), staff
+    )
+
 
 @app.get("/health")
 def health() -> dict[str, str]:

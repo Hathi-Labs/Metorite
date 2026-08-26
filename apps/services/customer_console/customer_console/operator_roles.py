@@ -117,6 +117,14 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/keys/revoke"): _R(ADMIN, elevated=True),
     ("POST", "/discounts"): _R(ADMIN, elevated=True),
     ("POST", "/orgs/purge"): _R(ADMIN, elevated=True),
+    # Operator administration — admin only (D64.3), and NOT `elevated`.
+    # Adding a colleague is ordinary work an admin does often, and a
+    # window on it would train people to keep one open. The four guards
+    # in `operators.py` are what make it safe, not a time box.
+    ("GET", "/operators"): _R(VIEWER),
+    ("POST", "/operators"): _R(ADMIN),
+    ("PATCH", "/operators/{operator_id}"): _R(ADMIN),
+    ("DELETE", "/operators/{operator_id}"): _R(ADMIN),
 }
 
 
