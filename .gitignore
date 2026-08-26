@@ -101,7 +101,15 @@ workbench/control_plane/test-results/
 # local observation logs
 .claude/skill-observations/
 # third-party skill bundles (tooling a developer installs, not project doctrine)
-.claude/skills/
+# ⚠️ `*`, not a trailing slash. Git does not descend into an ignored DIRECTORY,
+# so a negation below would never be reached and the exception would look like a
+# typo rather than failing loudly.
+.claude/skills/*
+# ...except the skills that ARE project doctrine and must travel with the repo,
+# the same reason .claude/agents and .claude/commands are tracked (D29). Claude
+# Code discovers skills HERE and not in .github/skills, so a doctrine skill kept
+# out of this directory is a skill nobody loads.
+!.claude/skills/ste/
 skill-observations/
 
 # Runtime caches / secrets / junk that must never be committed (foundation audit F2).
