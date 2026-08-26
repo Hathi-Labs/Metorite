@@ -1201,11 +1201,12 @@ line — never reclaim a number by deleting the other entry.
   2. **Every dropdown in the row becomes a button.** At the default value, draw a
      two-headed arrow in place of the single down arrow.
   3. **The search field collapses to an icon** at the left of the row. Remove the
-     placeholder text. A click opens the real field, with a transition.
-  ⚠️ **Direction 3 asks for a transition, and this tree has no motion contract.**
-  A `MOTION.md` was committed here on 2026-08-26 and the owner removed it the
-  same day. Ask the owner what governs motion before you write one. Do not
-  invent a duration and an easing curve at the call site.
+     placeholder text. A click opens the real field.
+  ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
+  a transition, and that half is withdrawn. A `MOTION.md` landed here the same
+  day and the owner removed it. Build the collapse as a state change with no
+  animation. Do not add a duration or an easing curve to this row, and do not
+  re-open the question. Ask the owner if you believe motion is needed.
 - **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
   `src/components/ui/Modal.tsx` is the only file that may import it. A button
   that opens a list is a popover. Do not hand-roll one, and do not import a
