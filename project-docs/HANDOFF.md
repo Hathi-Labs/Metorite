@@ -1180,6 +1180,30 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** CLAUDE.md §5 · `project-docs/INDEX.md` header · `work_plan.md`
   §1 R7
 - **Added:** 2026-08-26 · operator-identity spec session
+### H-65 · plan-guard cannot see a write made by an interpreter reading a heredoc · [AGENT]
+- **Check:** read `.claude/hooks/plan-guard.mjs` near the `scanned` constant.
+  A regex still strips every heredoc body before the protected-path scan, and
+  `plan-guard.test.mjs` names no interpreter case. Both mean still open.
+- **What I did, by accident, on 2026-08-27.** I edited
+  `deploy/hostinger/customer_console.env.example` with `python - <<'PY'`. The
+  path is protected by the `deploy-write` gate. The guard did not fire.
+- **Why it does not fire.** The guard strips heredoc bodies on purpose, and
+  the reason is sound: a body is usually FILE CONTENT, and content that
+  mentions `.env` must not block an ordinary commit. The comment argues that a
+  real write still blocks, because in `cat > .env <<'EOF'` the `> .env` sits
+  in the command half.
+- **⚠️ That argument holds for `cat`. It does not hold for an INTERPRETER.**
+  In `python - <<'PY'` the body is a PROGRAM, and the program does the write.
+  The path never appears in the command half at all. The same is true of
+  `node -e`, `perl`, `ruby` and `sh` reading from a heredoc.
+- **Suggested fence:** when the command runs an interpreter that reads its
+  program from stdin or from `-e`, scan the body as COMMAND instead of
+  stripping it. Add a case to `plan-guard.test.mjs` first, and show it red.
+- **⚠️ Do not treat this as licence.** The gate is the rule. A gap in the
+  enforcement does not widen it.
+- **Authority:** `work_plan.md` §6 · D45 · `.claude/hooks/plan-guard.mjs`
+- **Added:** 2026-08-27 · WS-31 CP-12g session
+
 ### H-64 · Apply Customer Console migration 009 on the box · [OWNER]
 - **Check:** on the box, `\dt operator*` against the Console database → no
   `operator` table means still pending. From the repo alone:
