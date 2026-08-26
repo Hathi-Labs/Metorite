@@ -527,32 +527,56 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
-### H-50 · A deploy runner was IP-blocked by the box — check fail2ban · [OWNER]
-- **Check:** on the box, `sudo fail2ban-client status sshd` (and `status` for other
-  jails) → a populated ban list containing GitHub runner ranges confirms it. Also
-  `gh run view <deploy run id> --log-failed | grep -c "workbench=000000"` on any
-  failed deploy: 24 straight means that runner could not reach the box at all.
-- **Why:** 🔴 **Measured 2026-08-26, run `32937837653` (deploy of `ad9cbb7a`).** All
-  three rounds reported `Connection timed out` from ssh, and `verify()` logged
-  `gateway_ok=0 workbench=000000` for 24 consecutive polls — the runner could reach
-  neither port 22 nor 443. **The box was fine throughout**: it served the public
-  internet normally, and `vps-health.yml` — probing from a DIFFERENT runner — passed
-  at 07:11 during the same window. A block that follows the CLIENT rather than the
-  server is an IP ban, and the likeliest cause is fail2ban reacting to the SSH storm
-  that two CONCURRENT deploys produced (#105 and #104 merged three minutes apart,
-  both running `vps_apply.sh`, each retrying up to 3 rounds).
-  📌 **The concurrency group added in #107 should stop it recurring** by removing the
-  storm — but that is a hypothesis about the cause, not a verified fix, and it does
-  nothing about a ban already in place.
-  ⚠️ **What an agent cannot do:** reading or clearing a fail2ban jail needs box
-  access (§6 VPS reach). If runner ranges are banned, decide deliberately between
-  unbanning, raising `maxretry` for the deploy user, or whitelisting — a permanent
-  whitelist of GitHub's ranges is a real attack-surface decision, not a config tweak.
-  📌 If it is NOT fail2ban, the next suspect is Hostinger-side DDoS protection, which
-  is a support ticket rather than a box change.
-- **Authority:** `work_plan.md` §6 (VPS/deploy reach) · `.github/workflows/deploy.yml`
-  (the `-k` comment records this) · `vps-health.yml` (the outside prober that
-  disproved "the box is down")
+### H-50 · Install the pull-delivery timer — the box is 2 releases stale · [OWNER]
+- **Check:** `git ls-remote origin refs/heads/release` vs
+  `curl -s https://api.metorite.com/version` → different SHAs means the box is not
+  self-updating. On the box: `systemctl status acb-pull.timer` → "could not be
+  found" means the unit was never installed.
+- **Why:** 🔴 **Measured 2026-08-26.** `release` = `00fb8db0`, box = `c325f619`.
+  CI's half works — `publish-release` fast-forwards the ref correctly. The BOX's
+  half was never shipped: `scripts/vps_pull.sh` exists (WS-25) but **no systemd
+  unit runs it**, and `deploy/hostinger/` contains units for gateway, workbench,
+  backup, health-watchdog and whatsapp-bridge — nothing for pull.
+  ⚠️ **CORRECTION — an earlier version of this entry blamed fail2ban. That was
+  a guess and it was wrong.** The push path fails because GitHub's runners cannot
+  reach the VPS *inbound*, which is a **known upstream routing fault** already
+  documented in `deploy/hostinger/UPSTREAM-CONNECTIVITY-EVIDENCE.md` (2026-07-28,
+  Airtel/Hostinger) and re-measured by WS-25 on 2026-08-05 with this exact
+  signature — `Connection timed out` **and** `workbench=000000` while the box
+  answers the operator in ~240ms. Its own words: *"the VPS is not at fault and
+  cannot be fixed from inside."* So there is nothing to unban, and no firewall
+  change will help.
+  📌 **Pull-based delivery is the designed answer and it is already built.** The
+  box reaches GitHub outbound in ~29ms; only inbound is broken. `vps_pull.sh`
+  polls `release` (never `main`, so CI gating survives the inversion), holds a
+  `flock` so ticks cannot overlap, and needs no GitHub credential.
+  🟢 **What is missing is two unit files and four commands** — see H-51.
+  📌 Once pull delivery runs, the push path becomes redundant rather than broken.
+  Decide separately whether to keep it as a fast path or retire it; do not treat
+  its failures as incidents in the meantime.
+- **Authority:** WS-25 · `scripts/vps_pull.sh` · `deploy/hostinger/UPSTREAM-CONNECTIVITY-EVIDENCE.md`
+- **Added:** 2026-08-26 · WS-39 / CI session *(re-cut the same session: the
+  fail2ban hypothesis was disproved by the repo's own evidence pack.)*
+
+### H-51 · Create `acb-pull.service` + `.timer` (plan-guard blocks the agent) · [OWNER]
+- **Check:** `ls deploy/hostinger/acb-pull.*` → missing means unbuilt.
+- **Why:** the two files that make H-50's fix real. **An agent cannot write them:**
+  `plan-guard.mjs` PROTECTED_PATHS blocks every write under `deploy/`, and that
+  refusal is correct — these run against prod.
+  🟢 **Two ways to unblock it, and the first is the point of D45:**
+  1. add `ALLOW 2026-08-26 deploy-write — pull unit for WS-25` to
+     `.claude/OWNER_GRANTS.md` (by hand — an agent cannot write that file either)
+     and an agent will author both units against the existing
+     `acb-health-watchdog.*` conventions; or
+  2. create them directly from the content in the session write-up.
+  📌 `TimeoutStartSec=1800` is not arbitrary: `deploy.yml` already says its ssh
+  timeout is *"matched to the pull unit's TimeoutStartSec"*, because the
+  pre-migration backup alone takes ~11 minutes on the 4GB box. The unit was
+  designed and never shipped.
+  ⚠️ **Probe read-only first:** `scripts/vps_pull.sh --check` changes nothing and
+  exits 10 when behind. Run that before enabling the timer, so the first real
+  apply is a decision rather than a surprise.
+- **Authority:** `work_plan.md` §6 (deploy) · D45 (OWNER_GRANTS) · WS-25
 - **Added:** 2026-08-26 · WS-39 / CI session
 
 ### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
