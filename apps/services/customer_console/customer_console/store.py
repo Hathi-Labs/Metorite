@@ -45,6 +45,11 @@ __all__ = [
     "issue_discount_code",
     "lock_discount_capacity",
     "lock_seat_capacity",
+    "operator_active_admin_count",
+    "operator_by_email",
+    "operator_count",
+    "operator_insert",
+    "operator_set_directory_subject",
     "order_by_provider_id",
     "order_for_update",
     "order_lines",
@@ -1712,3 +1717,114 @@ def resolve_key(conn: Connection, *, prefix: str
         {"prefix": prefix},
     ).first()
     return (str(row[0]), row[1], row[2]) if row else None
+
+
+# ── Operator registry (CP-12a) ──────────────────────────────────────────────
+#
+# Spec: operator_identity_and_access.md §4 · §6.1 · D64.
+#
+# SQL only. Whether a row means "admitted" is decided in
+# `customer_console.operators`, which holds no queries for the same reason
+# this module holds no policy.
+
+
+def operator_by_email(conn: Connection, email: str) -> dict[str, Any] | None:
+    """The registry row for *email*, or ``None``.
+
+    ``lower(email) = :email`` with a lower-cased parameter, because the
+    directory's casing is a display choice and an operator must not be
+    locked out by it. ⚠️ R8 is why this is not a hermetic test: a fake once
+    matched ``lower(col) = :param`` against NULL and shipped green.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT id, email, role, status, directory_subject
+              FROM operator
+             WHERE lower(email) = :email
+            """
+        ),
+        {"email": (email or "").strip().lower()},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_count(conn: Connection) -> int:
+    """How many operators exist, in ANY status.
+
+    Any status, not just ``active`` — this is the predicate the one-time
+    bootstrap turns on, and counting only the active ones would let a
+    registry whose single admin was deactivated be bootstrapped a second
+    time. That is the back door the bootstrap must not become.
+    """
+    row = conn.execute(text("SELECT count(*) FROM operator")).first()
+    return int(row[0]) if row else 0
+
+
+def operator_active_admin_count(conn: Connection) -> int:
+    """How many ``active`` admins exist — the last-admin guard's input."""
+    row = conn.execute(
+        text(
+            "SELECT count(*) FROM operator "
+            "WHERE role = 'admin' AND status = 'active'"
+        )
+    ).first()
+    return int(row[0]) if row else 0
+
+
+def operator_insert(
+    conn: Connection,
+    *,
+    email: str,
+    role: str,
+    added_by: str | None = None,
+) -> str:
+    """Add one operator. Returns the new id.
+
+    ``ON CONFLICT DO NOTHING`` plus a re-read, so adding somebody who is
+    already there is not an error and not a duplicate. The caller that
+    cares about which one happened compares the returned id.
+    """
+    normalised = (email or "").strip().lower()
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator (email, role, added_by)
+            VALUES (:email, :role, CAST(:added_by AS UUID))
+            ON CONFLICT (email) DO NOTHING
+            RETURNING id
+            """
+        ),
+        {"email": normalised, "role": role, "added_by": added_by},
+    ).first()
+    if row is not None:
+        return str(row[0])
+    existing = conn.execute(
+        text("SELECT id FROM operator WHERE lower(email) = :email"),
+        {"email": normalised},
+    ).first()
+    assert existing is not None  # DO NOTHING fired, so the row is there
+    return str(existing[0])
+
+
+def operator_set_directory_subject(
+    conn: Connection, *, operator_id: str, subject: str
+) -> None:
+    """Record the Entra object id learned on a successful sign-in.
+
+    ``WHERE directory_subject IS NULL`` so the FIRST sign-in writes it and
+    later ones do not. A subject that silently changed would mean a
+    different directory principal now answers to this row, and that is a
+    thing to notice rather than to overwrite.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE operator
+               SET directory_subject = :subject, updated_at = now()
+             WHERE id = CAST(:id AS UUID)
+               AND directory_subject IS NULL
+            """
+        ),
+        {"id": operator_id, "subject": subject},
+    )

@@ -2,6 +2,16 @@
 
 **Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-08-26.**
 
+**◐ CP-12a BUILT 2026-08-26** (`ws31-cp12a-staff-identity`) — the substrate
+half. Migration 009, `customer_console/operators.py`, five `store.py` reads and
+writes, and **28 tests against a real Postgres 16, 0 skipped**.
+
+Six mutations killed, each one an auth fence. They remove check 1, check 3 or
+the status check. They make the refusals distinguishable. They remove the
+fail-closed guard. They count only `active` rows in the bootstrap gate.
+
+Ships **DARK** — nothing calls `admit` yet. CP-12b to CP-12g are unbuilt.
+
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
 2026-08-26. It reconciles **D35.3** with **D34**.
@@ -327,7 +337,7 @@ out of a live console.
 
 | Ticket | What it delivers | Depends on | Gate |
 |---|---|---|---|
-| **CP-12a** | **Staff identity.** Supabase Auth with the Microsoft provider. The three checks of §4.1. The `operator` table and its bootstrap path | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
+| **CP-12a** | ◐ **BUILT 2026-08-26 (substrate half).** The three checks of §4.1, the `operator` registry and the one-time bootstrap — migration 009, `operators.py`, five `store.py` functions, 28 R8 tests, 6 mutations killed. ⚠️ **Deferred to CP-12b:** the Supabase sign-in exchange itself. `admit()` takes a *verified* `(tid, email)` and nothing verifies one yet, so the module is reachable by no route | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
 | **CP-12b** | **The session and the real actor.** `cc_sess_` through `keys.py`. `operator_session`. Absolute and idle expiry. Server-side revocation. `control_audit.actor` becomes the person | CP-12a | 🟢 **AGENT-SAFE** |
 | **CP-12c** | **Roles.** The fifth auth scheme in `auth.py`. §5's matrix bound to every route. `role_matrix.test.ts` | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12d** | **Operator administration.** The three routes of §6.1, the four guards, and the console surface that drives them | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
