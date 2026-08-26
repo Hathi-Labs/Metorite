@@ -11,9 +11,23 @@ on:
     # stacked PR (one targeting another feature branch) ran no checks at all,
     # and GitHub renders "no checks" the same as "nothing failing" — so broken
     # code could look green all the way up the stack. Run on every PR instead.
-    paths-ignore:
-      - "**.md"
-      - "project-docs/**"
+    #
+    # ⚠️ AND DELIBERATELY NO `paths-ignore` HERE, unlike the `push` trigger
+    # below. It carried `**.md` + `project-docs/**` until 2026-08-26, and that
+    # is incompatible with REQUIRED status checks (H-23): when a workflow is
+    # skipped by a path filter it reports NOTHING, and a required check that
+    # never reports leaves the PR stuck on "Expected — waiting for status"
+    # forever. Not hypothetical — the docs-only PR that carries this very commit
+    # would have been the first one wedged.
+    #
+    # ⚠️ A SKIPPED JOB IS NOT THE SAME THING AND IS FINE: GitHub counts a job
+    # skipped by `if:` as satisfied. It is the WORKFLOW never starting that
+    # wedges the merge. So filter inside the workflow if you must, never at the
+    # trigger.
+    #
+    # The cost is stated rather than hidden: a docs-only PR now runs the full
+    # ~5 minute suite. That is the price of the checks meaning something at the
+    # merge button, and it is cheaper than one un-mergeable PR.
   # ── Why `push` as well, when `pull_request` already covers the PR ──────────
   #
   # `pull_request` checks out `refs/pull/N/merge`, and GitHub does NOT compute

@@ -369,12 +369,23 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-19 · VPS bring-up session
   🔴 **BLOCKING SOMETHING CONCRETE AS OF 2026-08-26.** This is no longer only
   a tidiness item. The owner wrote a valid `deploy-write` grant to unblock the
-  WS-25 pull unit (H-51) and plan-guard blocked the write anyway, because the
-  reading half has never landed — `plan-guard.mjs` on `main` has zero
-  references to `OWNER_GRANTS`. **Every grant written until this lands is
+  WS-25 pull unit, and plan-guard blocked the write anyway. The reading half
+  has never landed — `plan-guard.mjs` on `main` has zero references to
+  `OWNER_GRANTS`. Somebody placed that unit by hand on 2026-08-26, so the
+  grant never did the job it was written for. **Every grant written until this lands is
   inert, and inert SILENTLY**: nothing tells the owner their grant was not
   read. The implementation is on the local-only branch
-  `governance-d45-owner-grants` and has never been pushed.
+  `governance-d45-owner-grants`, and it is now PUSHED (2026-08-26).
+  🟢 **A merged, tested drop-in is staged — two `cp` commands close this.** See
+  `project-docs/staged/guard/README.md`. It carries the grant reader, the H-53
+  fix and the `.env.example` cut in one file, and **55 tests pass**. Measured
+  against your real grants file today: `deploy/` writes go through on the live
+  `deploy-write` grant, and `.env` still blocks with no grant.
+  ⚠️ Do not merge the `governance-d45-owner-grants` BRANCH — it conflicts with
+  the guard work that landed after it, and its own test suite has no grant
+  isolation, so it would start failing the first day a grant existed. The
+  staged file supersedes it.
+  📌 **Measured cost of the delay: 23 `ALLOW` lines written, 0 read.**
 
 ### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
 - **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
@@ -548,36 +559,49 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
-### H-50 · Install the pull-delivery timer — the box is 2 releases stale · [OWNER]
-- **Check:** `git ls-remote origin refs/heads/release` vs
-  `curl -s https://api.metorite.com/version` → different SHAs means the box is not
-  self-updating. On the box: `systemctl status acb-pull.timer` → "could not be
-  found" means the unit was never installed.
-- **Why:** 🔴 **Measured 2026-08-26.** `release` = `00fb8db0`, box = `c325f619`.
-  CI's half works — `publish-release` fast-forwards the ref correctly. The BOX's
-  half was never shipped: `scripts/vps_pull.sh` exists (WS-25) but **no systemd
-  unit runs it**, and `deploy/hostinger/` contains units for gateway, workbench,
-  backup, health-watchdog and whatsapp-bridge — nothing for pull.
-  ⚠️ **CORRECTION — an earlier version of this entry blamed fail2ban. That was
-  a guess and it was wrong.** The push path fails because GitHub's runners cannot
-  reach the VPS *inbound*, which is a **known upstream routing fault** already
-  documented in `deploy/hostinger/UPSTREAM-CONNECTIVITY-EVIDENCE.md` (2026-07-28,
-  Airtel/Hostinger) and re-measured by WS-25 on 2026-08-05 with this exact
-  signature — `Connection timed out` **and** `workbench=000000` while the box
-  answers the operator in ~240ms. Its own words: *"the VPS is not at fault and
-  cannot be fixed from inside."* So there is nothing to unban, and no firewall
-  change will help.
-  📌 **Pull-based delivery is the designed answer and it is already built.** The
-  box reaches GitHub outbound in ~29ms; only inbound is broken. `vps_pull.sh`
-  polls `release` (never `main`, so CI gating survives the inversion), holds a
-  `flock` so ticks cannot overlap, and needs no GitHub credential.
-  🟢 **What is missing is two unit files and four commands** — see H-51.
-  📌 Once pull delivery runs, the push path becomes redundant rather than broken.
-  Decide separately whether to keep it as a fast path or retire it; do not treat
-  its failures as incidents in the meantime.
-- **Authority:** WS-25 · `scripts/vps_pull.sh` · `deploy/hostinger/UPSTREAM-CONNECTIVITY-EVIDENCE.md`
-- **Added:** 2026-08-26 · WS-39 / CI session *(re-cut the same session: the
-  fail2ban hypothesis was disproved by the repo's own evidence pack.)*
+### H-53 · plan-guard blocks READS that redirect stderr · [OWNER]
+- **Check:** run `ls deploy/hostinger/ 2>&1`. A block means this entry is live.
+  After the fix, `node .claude/hooks/plan-guard.test.mjs` must report
+  **55 cases passed**.
+- 🟢 **THE FIX IS BUILT AND TESTED — two `cp` commands close this and H-17
+  together.** See `project-docs/staged/guard/README.md`. An agent cannot do the
+  copy, because the harness classifier refuses an agent edit to
+  `plan-guard.mjs`. The rest of this entry records why the rule was wrong.
+- **Why:** the `SHELL_WRITE` redirect arm in `.claude/hooks/plan-guard.mjs`
+  reads `>\s*\S`. That pattern matches `2>&1` and `2>/dev/null`. Neither one
+  writes a file. `2>&1` duplicates a file descriptor, and `/dev/null` is the bit
+  bucket. The arm was written to catch `> file`, and it over-reaches.
+  🔴 **Measured 2026-08-26, inside one hour of the path rule landing.** The
+  guard refused three PURE READS in one session — a `grep` of `.env.example`
+  with `2>/dev/null`, an `ls` of `deploy/hostinger/` with `2>&1`, and a probe of
+  the guard itself. No command in that set could change any file.
+  ⚠️ **This is the exact failure the rule's own comment names.** A guard that
+  fires on ordinary work gets routed around on purpose. The next person rewrites
+  the command, or drops the hook from their loop, and the real block leaves with
+  it. Precision is a safety property here, not a nicety.
+  🟢 **The fix is one line.** In the `SHELL_WRITE` array, replace the redirect
+  arm with the form below. It keeps every true write and drops both descriptor
+  forms.
+  ```js
+  // A redirect that creates or appends a FILE. `(?!&)` lets `2>&1` through,
+  // because it duplicates a descriptor. The /dev/null exclusion lets
+  // `2>/dev/null` through, because the bit bucket is not a protected path.
+  String.raw`>\s*(?!&)(?!\/dev\/null(\s|$))\S`,
+  ```
+  Add these two cases to `.claude/hooks/plan-guard.test.mjs`, both `false`:
+  ```js
+  ['read deploy/ with 2>&1', bash('ls deploy/hostinger/ 2>&1'), false],
+  ['read dotenv path with 2>/dev/null', bash('grep X .env.example 2>/dev/null'), false],
+  ```
+  ⚠️ The second case reads `.env.example` and must stay ALLOWED. A write to it
+  is still blocked by the `secrets` gate and by the Write branch. Confirm that
+  `['write dotenv', ...]` and `['redirect into dotenv', ...]` still block.
+- **Why an agent cannot do this:** the harness classifier refuses an agent edit
+  to `plan-guard.mjs`. That refusal is correct, and it is the same one **H-17**
+  records in its own words — the harness "blocks an agent finalizing its own
+  guardrail changes".
+- **Authority:** `.claude/hooks/plan-guard.mjs` · `.claude/hooks/plan-guard.test.mjs` · H-17
+- **Added:** 2026-08-26 · WS-39 / CI session
 
 ### H-52 · Phase 0 (D55.2) has ALREADY ENDED by trigger (b) — decide which way · [OWNER]
 - **Check:** `gh api repos/Hathi-Labs/Metorite/collaborators --jq '.[] | select(.type=="User") | select(.permissions.push or .permissions.admin) | .login'`
@@ -610,43 +634,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D55.2 · `development_and_delivery_framework.md` §3.5, §5 ·
   `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
-
-### H-51 · Create `acb-pull.service` + `.timer` (plan-guard blocks the agent) · [OWNER]
-- **Check:** `ls deploy/hostinger/acb-pull.*` → missing means unbuilt.
-- **Why:** the two files that make H-50's fix real. **An agent cannot write them:**
-  `plan-guard.mjs` PROTECTED_PATHS blocks every write under `deploy/`, and that
-  refusal is correct — these run against prod.
-  🔴 **THE GRANT ROUTE DOES NOT WORK YET — tried 2026-08-26, and this is the
-  finding.** The owner wrote `ALLOW 2026-08-26 deploy-write — pull unit for
-  WS-25` into `.claude/OWNER_GRANTS.md` and plan-guard blocked the write anyway.
-  Cause: **`plan-guard.mjs` on `main` contains no reference to `OWNER_GRANTS`,
-  `ALLOW` or grants at all** — the reading half of D45 was never landed, and the
-  grants file is still untracked. So a correctly-written grant is INERT. That is
-  **H-17**, which is `[OWNER]` for a reason it states plainly: the harness
-  "correctly blocks an agent finalizing its own guardrail changes". The
-  implementation exists on the local-only branch
-  `governance-d45-owner-grants` (its plan-guard has 7 grant references) and has
-  never been pushed.
-  ⚠️ So **do not write more grant lines expecting them to work** until H-17
-  lands. They are correct acts against a mechanism that is not listening, and
-  the failure is silent from the owner's side — the grant simply appears to be
-  ignored.
-  🟢 **What to do instead, now:** both unit files are authored and staged in the
-  session scratchpad as `acb-pull.service` and `acb-pull.timer` (the same
-  hand-over pattern H-17 uses for its own commit message). Copy them into
-  `deploy/hostinger/`, or straight to `/etc/systemd/system/` on the box.
-  ⚠️ `systemd-analyze verify` was NOT run — the dev box is Windows. The syntax
-  was reviewed by hand only; run `systemd-analyze verify` on the box before
-  enabling.
-  📌 `TimeoutStartSec=1800` is not arbitrary: `deploy.yml` already says its ssh
-  timeout is *"matched to the pull unit's TimeoutStartSec"*, because the
-  pre-migration backup alone takes ~11 minutes on the 4GB box. The unit was
-  designed and never shipped.
-  ⚠️ **Probe read-only first:** `scripts/vps_pull.sh --check` changes nothing and
-  exits 10 when behind. Run that before enabling the timer, so the first real
-  apply is a decision rather than a surprise.
-- **Authority:** `work_plan.md` §6 (deploy) · D45 (OWNER_GRANTS) · WS-25
-- **Added:** 2026-08-26 · WS-39 / CI session
 
 ### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
 - **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
