@@ -251,12 +251,16 @@ BEGIN
         -- they just land in the personal project root rather than under a
         -- folder named after a tool nobody can reach.
         --
-        -- ⚠️ The child carries `personal_owner = NULL` and gets its own grant
-        -- instead. It has to: the partial unique index allows exactly one row
-        -- per email to carry that column, and the parent already does. Privacy
-        -- is unchanged (the grant names one address); what does change is that
-        -- the project becomes visible in that member's /projects list, where a
-        -- gtd_project never appeared. Flagged in the PR as a judgement call.
+        -- ⚠️ The child carries `personal_owner` TOO, which migration **191**
+        -- is what allows: uniqueness moved onto the root
+        -- (`parent_project_id IS NULL`), so the column now means "private to
+        -- this person" at every depth rather than "this is the one personal
+        -- project". That is the difference between a member's categories
+        -- staying private and appearing on the company board — `tree.py:152`
+        -- excludes exactly `personal_owner IS NULL`. An earlier draft of this
+        -- file wrote NULL here because the old index left no choice, and the
+        -- owner's 2026-08-26 directive ("these do not show up in the project
+        -- management app but show up in the tasks app") is what settled it.
         FOR v_item IN
             SELECT DISTINCT p.id, coalesce(nullif(btrim(p.outcome), ''), 'Project') AS nm
               FROM gtd_items i
@@ -272,8 +276,9 @@ BEGIN
                    AND name = v_item.nm
             ) THEN
                 INSERT INTO pm_projects (name, parent_project_id, created_by,
-                                         source, organization_id)
-                VALUES (v_item.nm, v_proj, v_owner.email, 'manual', v_owner.org);
+                                         source, organization_id, personal_owner)
+                VALUES (v_item.nm, v_proj, v_owner.email, 'manual', v_owner.org,
+                        v_owner.email);
 
                 INSERT INTO pm_project_grants (project_id, subject, created_by,
                                                organization_id)
@@ -356,11 +361,19 @@ BEGIN
                     coalesce(v_item.created_at, now()), v_item.deleted_at)
             RETURNING id INTO v_task;
 
-            -- Assigned to its owner. This is not decoration: the lens finds a
-            -- task in a SUB-project only through the assignee arm of
-            -- MY_TASKS_FROM (`personal_owner` is on the parent, not the child),
-            -- so without this row every sub-projected task would vanish from
-            -- the Tasks app the moment it moved.
+            -- Assigned to its owner. Since migration 191 the lens would find
+            -- these anyway — every node of the private tree carries
+            -- `personal_owner`, so MY_TASKS_FROM's project arm matches — but
+            -- the row is still written, and not as belt-and-braces: an
+            -- assignee is what makes the task ANSWERABLE. `derive_disposition`
+            -- reads NEXT from "assigned to me" and WAITING from "assigned to
+            -- someone else", so a task with no assignee derives to INBOX
+            -- forever. Migrating somebody's active next-actions back into
+            -- their inbox is a quiet way to undo their triage.
+            --
+            -- ⚠️ This comment used to say `personal_owner` is on the parent and
+            -- not the child, which was true for exactly one draft and is the
+            -- kind of note that outlives its fact and then misleads.
             INSERT INTO pm_task_assignees (task_id, assignee, assigned_by,
                                            organization_id)
             VALUES (v_task, v_owner.email, v_owner.email, v_owner.org)

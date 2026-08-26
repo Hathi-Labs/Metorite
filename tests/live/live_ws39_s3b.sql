@@ -180,9 +180,26 @@ SELECT s3b_check('4d no overlay row is in the wrong tenant',
     (SELECT count(*) FROM pm_task_personal p
       JOIN pm_tasks t ON t.id = p.task_id
      WHERE p.organization_id <> t.organization_id), 0::bigint);
-SELECT s3b_check('4e Dana and Erin got DIFFERENT personal projects',
+SELECT s3b_check('4e Dana and Erin got DIFFERENT personal ROOTS',
     (SELECT count(DISTINCT id) FROM pm_projects
-      WHERE lower(personal_owner) LIKE '%@s3btest.invalid'), 2::bigint);
+      WHERE lower(personal_owner) LIKE '%@s3btest.invalid'
+        AND parent_project_id IS NULL), 2::bigint);
+
+-- ── 4h-4j. The backfilled category is PRIVATE (mig 191) ─────────────────────
+--
+-- Owner directive 2026-08-26: personal projects "do not show up in the project
+-- management app but show up in the tasks app". A sub-project created with
+-- `personal_owner = NULL` — which is what the old index forced — would have
+-- appeared on the company board beside Sales and Operations.
+SELECT s3b_check('4h the backfilled category carries personal_owner',
+    (SELECT lower(personal_owner) FROM pm_projects WHERE name = 'Kitchen Reno'),
+    'dana@s3btest.invalid');
+SELECT s3b_check('4i ...so the Projects app (tree.py:152) does not show it',
+    (SELECT count(*) FROM pm_projects
+      WHERE name = 'Kitchen Reno' AND personal_owner IS NULL), 0::bigint);
+SELECT s3b_check('4j ...and it is a CHILD, so it did not take the root''s slot',
+    (SELECT parent_project_id IS NOT NULL FROM pm_projects
+      WHERE name = 'Kitchen Reno'), true);
 
 -- The lens itself. This is MY_TASKS_FROM's ownership arm from
 -- routes/projects/personal.py, run as each member. Erin's private salary

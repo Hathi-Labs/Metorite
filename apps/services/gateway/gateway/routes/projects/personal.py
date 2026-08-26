@@ -184,7 +184,16 @@ def derive_disposition(
 # ── The personal project ────────────────────────────────────────────────────
 
 async def _load_personal_project(db: Any, email: str) -> Any | None:
-    """This member's personal project.
+    """This member's personal ROOT — the inbox their captures land in.
+
+    ⚠️ ``AND parent_project_id IS NULL`` is load-bearing since migration **191**.
+    Before it, ``personal_owner`` was unique across every row so "the row with
+    my address on it" and "my root" were the same question. They are not any
+    more: the column now means *private to this person* at every depth, and a
+    member's categories carry it too. Without the predicate this returns an
+    arbitrary node of the tree — and the row it returns is used as a WRITE
+    TARGET by :func:`ensure_personal_project` and :func:`capture`, so a quick
+    capture would land in whichever category the planner happened to pick.
 
     Keyed on the email alone and NOT on the tenant, which is safe for exactly
     one reason and it is worth naming: D-MT-1 (a) makes `app_user.email`
@@ -194,7 +203,8 @@ async def _load_personal_project(db: Any, email: str) -> Any | None:
     """
     return (await db.execute(
         text(
-            "SELECT * FROM pm_projects WHERE lower(personal_owner) = :who"
+            "SELECT * FROM pm_projects "
+            "WHERE lower(personal_owner) = :who AND parent_project_id IS NULL"
         ),
         {"who": email},
     )).fetchone()
