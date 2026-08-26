@@ -1157,6 +1157,40 @@ line — never reclaim a number by deleting the other entry.
   §1 R7
 - **Added:** 2026-08-26 · operator-identity spec session
 
+### H-64 · Board drag-and-drop writes an order that nothing reads · [AGENT]
+- **Check:** `rg -n "view_position" apps/services/gateway/gateway/routes/projects/`
+  → no hit means the read half is still missing, and the entry is still real.
+- **Why:** A drag inside one column is a silent no-op. The card returns to its
+  old place, and the user sees the gesture fail.
+  - `handleDrop` writes the order to `pm_view_task_positions` through
+    `PUT /projects/views/{id}/positions`. That half works.
+  - `GET /projects/tasks` does `SELECT t.* FROM pm_tasks t` and never joins that
+    table. `rg` finds `view_position` in **no** `.py` or `.sql` file in the tree.
+  - `GET /projects/views/{id}/positions` exists at `views.py:313`. No frontend
+    code calls it.
+  - So `view_position` is `undefined` on every real row. `sortForView` then puts
+    every task in its `created_at` branch, and each column shows creation order.
+  - `planDrop` sees no neighbour with a position, so **every** drop materialises
+    the whole group. Each drag writes up to `MAX_POSITIONS` = 1000 rows that
+    nothing reads.
+  - A same-column drop also makes `buildCellDropPatch` answer `null`, because
+    the axis value did not change. There is no optimistic move either.
+- **What it needs:** `GET /projects/tasks` takes an optional `view_id`, LEFT
+  JOINs `pm_view_task_positions`, and returns `position AS view_position`.
+  `loadProject` then sends the order-bearing view. R8 applies — verify the SQL
+  against the live database, not a fake.
+- **⚠️ Ask the owner first.** "Priority" on this surface is the `importance`
+  field (`FilterBar.tsx:74`), and `pm_tasks` has no `priority` column. The owner
+  must say whether a drop keeps rank per view (D-PM-5, the design above) or
+  writes `importance` from the neighbours (**against** D-PM-5). Do not build
+  before that answer.
+- **Also owed:** the board reads 100 tasks by `created_at` and sorts them in the
+  browser. A project above 100 tasks cannot show a correct hand order. Name this
+  in the same board row.
+- **Authority:** `specs/project_management_app.md` D-PM-5 (line 929) ·
+  `work_plan.md` §2 WS-27 row · CLAUDE.md §5 (a finding for the board)
+- **Added:** 2026-08-26 · Projects UI session (owner asked to flag, not build)
+
 ---
 
 # DONE — deleted, not archived
