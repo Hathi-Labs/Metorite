@@ -32,8 +32,11 @@ import {
   lensEnabled,
   lensEstimateStats,
   lensFetchItems,
+  lensFetchProjects,
+  lensMoveTask,
   lensPatchItem,
   lensPlan,
+  lensStageOptions,
   mapLensItem,
   splitPatch,
 } from "./lens";
@@ -518,5 +521,124 @@ describe("lensEnabled", () => {
     expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "1" })).toBe(true);
     expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "true" })).toBe(true);
     expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "on" })).toBe(true);
+  });
+});
+
+// ── Promotion (slice 5a) ────────────────────────────────────────────────────
+//
+// Everything migration 192 and the D62 guards built is unreachable until the
+// Tasks app can call `move`. These pin the three calls that make it reachable.
+
+describe("promotion — the lens reaching into the company board", () => {
+  it("lists the COMPANY's projects, not a per-user tree", async () => {
+    const { calls, restore } = stub([{ rows: [{ id: "p1", name: "Q3" }], total: 1 }]);
+    try {
+      await lensFetchProjects();
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toContain("nodes");
+    // ⚠️ NOT `/projects` — under the old store that listed `gtd_projects`, one
+    // member's private list. A promote destination can only be a real project.
+    expect(calls[0].url).not.toMatch(/\/projects(\?|$)/);
+  });
+
+  it("asks for statuses by PROJECT, never by item", async () => {
+    const { calls, restore } = stub([[{ name: "Todo" }, { name: "Doing" }]]);
+    let names: string[] = [];
+    try {
+      names = await lensStageOptions("proj-9");
+    } finally {
+      restore();
+    }
+    expect(names).toEqual(["Todo", "Doing"]);
+    expect(calls[0].url).toContain("nodes/proj-9/statuses");
+    // Statuses are per-ROOT, so "what lanes exist" has no answer until you know
+    // WHICH project. Asked of the item it can only describe where the task
+    // already is — the wrong answer inside a move dialog.
+    expect(calls[0].url).not.toContain("items/");
+  });
+
+  it("moves, answers required fields and assigns in ONE request", async () => {
+    const { calls, restore } = stub([{ id: "task-1" }]);
+    try {
+      await lensMoveTask("task-1", {
+        projectId: "proj-9",
+        customFields: { client: "Acme" },
+        assignees: ["priya@fracktal.in"],
+      });
+    } finally {
+      restore();
+    }
+    // One call, not three. Two calls can fail between them and leave a task
+    // promoted onto a team board and owned by nobody.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toContain("tasks/task-1/move");
+    expect(calls[0].body).toEqual({
+      project_id: "proj-9",
+      custom_fields: { client: "Acme" },
+      assignees: ["priya@fracktal.in"],
+    });
+  });
+
+  it("distinguishes 'leave assignees alone' from 'clear them'", async () => {
+    // ⚠️ `undefined` and `[]` are different requests. Collapsing them would make
+    // "promote without touching who owns it" impossible to express — and the
+    // server reads a missing key as leave-alone, so the difference is real all
+    // the way down.
+    const a = stub([{ id: "t" }]);
+    try {
+      await lensMoveTask("t", { projectId: "p" });
+    } finally {
+      a.restore();
+    }
+    expect(a.calls[0].body).not.toHaveProperty("assignees");
+
+    const b = stub([{ id: "t" }]);
+    try {
+      await lensMoveTask("t", { projectId: "p", assignees: [] });
+    } finally {
+      b.restore();
+    }
+    expect(b.calls[0].body).toHaveProperty("assignees", []);
+  });
+
+  it("omits keys it was not given rather than sending nulls", async () => {
+    const { calls, restore } = stub([{ id: "t" }]);
+    try {
+      await lensMoveTask("t", { projectId: "p" });
+    } finally {
+      restore();
+    }
+    expect(calls[0].body).toEqual({ project_id: "p" });
+  });
+});
+
+describe("apiMoveTask has no legacy path, and says so", () => {
+  const api = readFileSync(
+    fileURLToPath(new URL("./api.ts", import.meta.url)),
+    "utf-8",
+  );
+  const body = api.slice(
+    api.indexOf("export async function apiMoveTask"),
+    api.indexOf("export async function fetchProjects"),
+  );
+
+  it("throws when the flag is off instead of degrading", () => {
+    // ⚠️ Every OTHER function in api.ts falls back to the legacy store when the
+    // flag is off. This one must not, and the asymmetry is the point: `gtd_items`
+    // had no company board to be promoted ONTO — that absence is the whole reason
+    // D53 exists. A silent no-op would let a Promote button render, do nothing,
+    // and report success, which is worse than the button being missing.
+    expect(body).toContain("throw new Error");
+    expect(body).not.toContain("gatewayFetch");
+  });
+
+  it("names the flag and the doc in the error", () => {
+    // Somebody hitting this is a developer with the flag off, not a user. Tell
+    // them which variable and where the order is written down.
+    expect(body).toContain("NEXT_PUBLIC_TASKS_LENS");
+    expect(body).toContain("docs/TASKS_LENS.md");
   });
 });

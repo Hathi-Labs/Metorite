@@ -580,6 +580,92 @@ const PLANNER: Readonly<Record<string, string>> = {
   rollover: "my/calendar/rollover",
 };
 
+// ── Promotion: the personal lens reaching into the company board ────────────
+//
+// WS-39 S3a-client slice 5a. Everything migration 192 and the D62 guards built
+// is unreachable until the Tasks app can call `move` at all — this is that
+// call, plus the two reads a destination picker needs.
+
+/**
+ * The projects a task can be PROMOTED into.
+ *
+ * `GET /projects/nodes` and not the Tasks app's old `/projects`: the old one
+ * listed `gtd_projects`, a per-user local tree. This lists the company's, which
+ * is what "move it to a project" means.
+ *
+ * ⚠️ It returns TEAM projects only, and gets that for free rather than by
+ * filtering here — `tree.py` selects `AND personal_owner IS NULL`, so since
+ * migration 191 a member's whole private tree (inbox and every Area) is already
+ * absent. That matters for this picker specifically: offering somebody their own
+ * Areas as a promote destination would be offering a move that `D62`'s guard
+ * then refuses, which is the worst kind of control — one that looks available
+ * and is not.
+ */
+export async function lensFetchProjects(): Promise<Raw[]> {
+  const res = await projectsCall<ListResponse | Raw[]>("nodes");
+  return Array.isArray(res) ? res : (res.rows ?? []);
+}
+
+/**
+ * The status names a project offers, for the destination's lane picker.
+ *
+ * ⚠️ Keyed on the PROJECT, where the old endpoint keyed on the ITEM
+ * (`/items/{id}/stage-options`). That is not a translation, it is the fix for
+ * something the old shape could not express: statuses are per-ROOT
+ * (`load_default_status` selects `WHERE project_id = :root`), so "what stages
+ * can this task be in" has no answer until you know where the task is GOING.
+ * Asked of the item, the question can only describe where it already is — which
+ * is precisely the wrong answer inside a move dialog.
+ */
+export async function lensStageOptions(projectId: string): Promise<string[]> {
+  const res = await projectsCall<ListResponse | Raw[]>(
+    `nodes/${projectId}/statuses`,
+  );
+  const rows = Array.isArray(res) ? res : (res.rows ?? []);
+  return rows.map((r) => String((r as Raw).name ?? "")).filter(Boolean);
+}
+
+export interface LensMoveRequest {
+  /** Destination project. Omit to leave the task where it is. */
+  projectId?: string;
+  /** Values for the destination's REQUIRED custom fields (migration 192). */
+  customFields?: Record<string, unknown>;
+  /** Assignees to set atomically with the move. `undefined` leaves them alone. */
+  assignees?: string[];
+}
+
+/**
+ * Move a task into a project — optionally answering its required fields and
+ * assigning it, in ONE request.
+ *
+ * ⚠️ One request is the whole point, and it is a server property this function
+ * exists to USE rather than a convenience it invents. Two calls (move, then
+ * assign) can fail between them and leave a task promoted onto a team board,
+ * visible to everyone, owned by nobody — a state the client cannot repair
+ * because it cannot know what it was mid-way through. `move_task` does both in
+ * one transaction; splitting them here would throw that away.
+ *
+ * ⚠️ Two refusals travel back as 422 and BOTH are actionable, so callers should
+ * surface the detail rather than a generic failure:
+ *   * `required_fields_missing` carries the field DEFINITIONS, so the dialog can
+ *     render them as inputs in place;
+ *   * the D62 guards refuse a move into somebody's personal tree, and an
+ *     assignment to a colleague while the task is still in your own.
+ */
+export async function lensMoveTask(
+  taskId: string,
+  req: LensMoveRequest,
+): Promise<Raw> {
+  return post(`tasks/${taskId}/move`, {
+    ...(req.projectId ? { project_id: req.projectId } : {}),
+    ...(req.customFields ? { custom_fields: req.customFields } : {}),
+    // `undefined` and `[]` are DIFFERENT here: undefined leaves the assignees
+    // untouched, an empty array clears them. Collapsing the two would make
+    // "promote without touching who owns it" impossible to express.
+    ...(req.assignees === undefined ? {} : { assignees: req.assignees }),
+  });
+}
+
 export async function lensPlan(
   kind: "plan" | "replan" | "rollover",
   req: unknown,
