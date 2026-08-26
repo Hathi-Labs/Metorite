@@ -68,14 +68,40 @@ def test_the_file_holds_no_control_bytes(raw: str) -> None:
 # ── One deploy at a time ────────────────────────────────────────────────────
 
 def test_deploys_are_serialised(parsed: dict) -> None:
-    concurrency = parsed.get("concurrency")
+    concurrency = parsed["jobs"]["deploy"].get("concurrency")
     assert concurrency, (
-        "deploy.yml has no `concurrency:` group. Two merges minutes apart then "
-        "run two deploys against ONE box simultaneously — both executing "
+        "the deploy JOB has no `concurrency:` group. Two merges minutes apart "
+        "then run two deploys against ONE box simultaneously — both executing "
         "vps_apply.sh, both racing the migration ladder and the workbench "
         "rebuild on 4GB of RAM. Measured 2026-08-26."
     )
     assert concurrency.get("group"), "the concurrency group needs a name"
+
+
+def test_the_group_is_on_the_JOB_and_not_the_workflow(parsed: dict) -> None:
+    """⚠️ The correction that cost a delivery outage, so it is pinned.
+
+    A workflow-level group cancels the whole RUN when a newer one supersedes it
+    while pending — including `publish-release`, which fast-forwards the
+    `release` ref the box's pull path polls. Measured 2026-08-26: four
+    consecutive runs cancelled with ZERO jobs started, `release` frozen at
+    00fb8db0 while `main` moved four commits past it.
+
+    The serialisation meant to protect delivery had silently stopped it, and
+    "cancelled" reads like tidy supersession rather than like a fault.
+    """
+    assert parsed.get("concurrency") is None, (
+        "deploy.yml declares concurrency at WORKFLOW level. That queues — and "
+        "then cancels — `lint`, `test` and `publish-release` too. None of them "
+        "touch the box, and `publish-release` is how a box that cannot be "
+        "reached inbound still learns what to converge on. Put the group on the "
+        "`deploy` job."
+    )
+    for job in ("lint", "test", "publish-release"):
+        assert "concurrency" not in parsed["jobs"][job], (
+            f"`{job}` must not be serialised behind a deploy — it never touches "
+            "the box"
+        )
 
 
 def test_a_superseded_deploy_is_queued_and_never_cancelled(parsed: dict) -> None:
@@ -89,7 +115,7 @@ def test_a_superseded_deploy_is_queued_and_never_cancelled(parsed: dict) -> None
 
     A queued deploy costs minutes. A half-applied one costs a restore.
     """
-    assert parsed["concurrency"].get("cancel-in-progress") is False, (
+    assert parsed["jobs"]["deploy"]["concurrency"].get("cancel-in-progress") is False, (
         "cancel-in-progress must be FALSE for production deploys — see this "
         "test's docstring before changing it"
     )

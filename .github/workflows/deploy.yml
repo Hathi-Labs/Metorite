@@ -55,34 +55,6 @@ on:
 permissions:
   contents: read
 
-# ── ONE DEPLOY AT A TIME ────────────────────────────────────────────────────
-#
-# Added 2026-08-26 after two merges three minutes apart (#105 at 06:18:53, #104
-# at 06:21:59) put two deploys on the SAME BOX concurrently. Both ran
-# `vps_apply.sh`; the second sat in `timeout -k 30 1800 ssh` while the first held the
-# box, and the run overran its usual 5.5 minutes by an order of magnitude.
-#
-# ⚠️ `cancel-in-progress: false` is the load-bearing half, and it is the
-# opposite of what this field is usually set to. The normal reason to cancel a
-# superseded run is that its result no longer matters — true for a test job,
-# FALSE for this one. Cancelling here kills the SSH session mid-`vps_apply.sh`,
-# which is precisely the "killed mid-apply" state the deploy step's own 1800s
-# timeout exists to prevent: migrations half-applied on a ladder that CANNOT
-# ROLL BACK (R6). A queued deploy costs minutes; a half-applied one costs a
-# restore.
-#
-# ⚠️ What `cancel-in-progress: false` does NOT do, corrected 2026-08-26 after
-# watching it: it protects the RUNNING deploy, not a QUEUED one. GitHub keeps at
-# most one pending run per group, and a newer arrival CANCELS the older pending
-# one whatever this flag says — observed the same morning, when #106's run was
-# cancelled by #60's. That is harmless here and worth knowing rather than
-# discovering: `vps_apply.sh` converges the box on whatever `main` says, so the
-# newer run delivers the older one's commits too. It would NOT be harmless if
-# this workflow ever did something per-commit rather than converging.
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
 jobs:
   # ── Gate 1: Lint + Type Check ──────────────────────────────────────────
   lint:
@@ -179,6 +151,34 @@ jobs:
   deploy:
     name: "Deploy to Hostinger"
     runs-on: ubuntu-latest
+    # ── ONE DEPLOY AT A TIME — scoped to THIS JOB, never the workflow ───────
+    #
+    # Added 2026-08-26 after two merges three minutes apart put two deploys on
+    # the same box concurrently, and CORRECTED hours later after the first cut
+    # put this at workflow level and broke delivery outright.
+    #
+    # ⚠️ Why job level is not a detail. A workflow-level group cancels the whole
+    # RUN when a newer one supersedes it while pending — including
+    # `publish-release`, which fast-forwards the `release` ref that the box's
+    # pull path polls. Measured: four consecutive runs cancelled with ZERO jobs
+    # started, `release` frozen at 00fb8db0 while `main` moved four commits past
+    # it. The serialisation meant to protect delivery had quietly stopped it.
+    #
+    # `lint`, `test` and `publish-release` never touch the box, so they have no
+    # reason to queue behind a deploy and every reason not to: publishing the
+    # ref is how a box that CANNOT be reached inbound still converges.
+    #
+    # ⚠️ `cancel-in-progress: false` is the load-bearing half, and it is the
+    # opposite of the usual setting. Cancelling a running deploy kills SSH
+    # mid-`vps_apply.sh` — the "killed mid-apply" state the 1800s timeout exists
+    # to prevent, leaving migrations half-applied on a ladder that CANNOT ROLL
+    # BACK (R6). A queued deploy costs minutes; a half-applied one costs a
+    # restore. Note it protects the RUNNING deploy only: GitHub still cancels an
+    # older PENDING run when a newer arrives, which is harmless here because
+    # `vps_apply.sh` converges the box on whatever `release` says.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     # A BACKSTOP, not a leash. The step's own loop is ~105 min worst case
     # (3 rounds x (1800s ssh + 240s verify) + backoff) and every one of those
     # numbers is deliberate — the 1800s in particular, because the pre-migration
