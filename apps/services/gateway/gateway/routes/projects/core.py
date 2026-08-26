@@ -922,6 +922,121 @@ async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
     return row
 
 
+async def assert_assignable_here(
+    db: Any, task: Any, added: set[str],
+) -> None:
+    """Assigning somebody else requires the task to be in a REAL project.
+
+    Owner directive 2026-08-26: *"when assigning a task to another team member,
+    it must be placed under a specific project in the Projects app to ensure
+    proper visibility."*
+
+    ⚠️ What this is NOT. It is not a visibility fix. Assignment already grants
+    task-level visibility on purpose — ``task_visibility_clause`` has a second
+    arm matching ``pm_task_assignees``, added by WS-27j precisely so that
+    delegating outward stops being a silent no-op. The assignee CAN open a task
+    assigned to them in a project they hold no grant on, and that stays true.
+    Assigning across a ``group:`` boundary in a TEAM project is therefore left
+    alone: it works, and it was made to work deliberately.
+
+    What it fixes is ownership, not access. A task owned by somebody else,
+    sitting inside YOUR personal tree:
+
+      * is incoherent — your Areas organise your work, and this is not your work
+      * rides your lifecycle — archiving a project archives its whole subtree
+        (``tree.py``), so filing away "Kitchen reno" would file away work that
+        belongs to a colleague
+      * gives them a project breadcrumb they cannot open, forever
+
+    So the refusal is narrow by design: only when the task lives in a personal
+    project, and only for people who are not its owner. The fix offered is
+    always the same and always available — move it to a real project first,
+    which ``POST /projects/tasks/{id}/move`` already does properly.
+    """
+    if not added:
+        return
+    row = (await db.execute(
+        text("SELECT personal_owner FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
+        {"pid": str(task.project_id)},
+    )).fetchone()
+    owner = (getattr(row, "personal_owner", None) or "").lower() or None
+    if owner is None:
+        return  # an ordinary project — assign whoever you like
+    outsiders = sorted(who for who in added if who.lower() != owner)
+    if not outsiders:
+        return  # the owner assigning themselves is how capture already works
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"This task is in a personal project, so it cannot be assigned to "
+            f"{', '.join(outsiders)}. Move it to a project first — a task "
+            f"somebody else owns should not live in your private space, where "
+            f"they cannot see its project and where archiving your own work "
+            f"would file theirs away with it."
+        ),
+    )
+
+
+async def assert_move_keeps_privacy(
+    db: Any, task: Any, new_project_id: str,
+) -> None:
+    """A task may only move INTO a personal project it already lives in.
+
+    The rule in one sentence, covering all five combinations:
+
+        team    -> team              allowed
+        personal(mine) -> team       allowed  — this is PROMOTION (D53.4)
+        team    -> personal          REFUSED
+        personal(mine) -> personal(mine, other Area)   allowed
+        personal(mine) -> personal(somebody else's)    REFUSED
+
+    Why refuse, when the same person could see both projects anyway. Because
+    moving a task into a personal tree is not an organising act, it is a
+    TAKING act: `tree.py`'s project list filters `personal_owner IS NULL`, so
+    the task leaves the company board, and everyone whose access came from a
+    grant on the old project loses it. Every other way to get a task off a
+    board — archive, delete, move to another team project — leaves a timeline
+    entry and can be undone. This one would leave nothing at all.
+
+    ⚠️ And the organising need it *looks* like it serves is already served.
+    Somebody who wants to hold a team task their own way has the whole
+    per-member overlay for it (D53.7/D53.8): their own disposition, context,
+    energy and scheduled block, none of which the rest of the team sees. So
+    refusing costs a member nothing they cannot already do, which is what
+    makes this a cheap rule rather than a trade-off.
+
+    Deliberately does NOT consult the caller. An unrestricted (`data:org:read`)
+    admin can see every project, and this is not an access question — the act is
+    incoherent whoever performs it. Phrasing it on the two PROJECTS rather than
+    on the actor is also what lets an admin tidy somebody's own tree without a
+    special case.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT id, personal_owner FROM pm_projects "
+            "WHERE id IN (CAST(:old AS uuid), CAST(:new AS uuid))"
+        ),
+        {"old": str(task.project_id), "new": str(new_project_id)},
+    )).fetchall()
+    owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
+    destination = owners.get(str(new_project_id))
+    if destination is None:
+        return  # moving into team work is always fine
+    if owners.get(str(task.project_id)) == destination:
+        return  # already inside that same person's private tree
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "That project is personal, so a task cannot be moved into it from "
+            "outside. Personal projects are private — moving this task there "
+            "would remove it from everyone who can currently see it, with no "
+            "record. To take it off the board, archive it instead; to organise "
+            "it your own way, use your own disposition, context and schedule, "
+            "which nobody else sees."
+        ),
+    )
+
+
 def task_visibility_clause(vis: Visibility, alias: str = "t") -> str:
     """The task-list counterpart of :meth:`Visibility.project_clause`.
 

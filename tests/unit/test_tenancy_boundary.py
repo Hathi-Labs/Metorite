@@ -406,5 +406,13 @@ def test_the_expected_scoped_set_is_real_not_aspirational() -> None:
 
 def test_the_frozen_count_matches_the_baseline() -> None:
     """The docstring quotes 114. A baseline whose stated size and real size
-    disagree is a baseline nobody trusts."""
+    disagree is a baseline nobody trusts.
+
+    ⚠️ It stayed 114 when migration 189 added `gtd_retirement_arm`, and that is
+    the point of the four-bucket partition below: the arm table is cross-tenant
+    BY DESIGN, so it belongs in the generator's EXEMPT (where the reason gets a
+    security review) and NOT in this list of pre-tenancy debt awaiting a scope.
+    Putting it here as well was the first attempt, and
+    `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
+    """
     assert len(BASELINE_UNSCOPED) == 114

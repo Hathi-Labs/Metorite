@@ -35,7 +35,9 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_move_keeps_privacy,
     assert_no_task_cycle,
     clean_payload,
     count_where,
@@ -460,6 +462,11 @@ async def move_task(
 
         if payload.project_id and str(payload.project_id) != str(task.project_id):
             await load_visible_project(db, vis, str(payload.project_id))
+            # Before anything is computed: a task may only move INTO a personal
+            # project it already lives in. Checked after the visibility load so
+            # a caller who cannot see the destination still gets 404 and never
+            # learns from a 422 that it exists (R5: 404, never 403).
+            await assert_move_keeps_privacy(db, task, str(payload.project_id))
             new_root = await root_project_id(db, str(payload.project_id))
             values["project_id"] = str(payload.project_id)
             if new_root != str(task.root_project_id):
@@ -692,6 +699,12 @@ async def set_assignees(
             )).fetchall()
         }
         added, removed = wanted - current, current - wanted
+
+        # Requirement 5 (owner, 2026-08-26). Checked before the first write, so
+        # a refused assignment leaves the set exactly as it was rather than
+        # half-applied. REMOVALS are deliberately not guarded: taking somebody
+        # off a task can never be the thing that strands them.
+        await assert_assignable_here(db, task, added)
 
         for who in sorted(removed):
             await db.execute(
