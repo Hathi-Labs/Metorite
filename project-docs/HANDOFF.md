@@ -1073,7 +1073,7 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · D64.1
 - **Added:** 2026-08-26 · operator-identity spec session
 
-### H-55 · Name the first operators and their roles · [OWNER]
+### H-58 · Name the first operators and their roles · [OWNER]
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
   means nobody has been named yet.
 - **Why:** CP-12d ships the add, re-role and deactivate routes. Who is a
@@ -1082,7 +1082,10 @@ line — never reclaim a number by deleting the other entry.
   pulls four-eyes approval (DEF-1) out of deferral. The two arrive together.
 - **Authority:** `specs/operator_identity_and_access.md` §5 · §9 DEF-1 ·
   `work_plan.md` §6.0 C4 · D64.3
-- **Added:** 2026-08-26 · operator-identity spec session
+- **Added:** 2026-08-26 · operator-identity spec session · **renumbered from
+  H-55 on 2026-08-26**, because the STE session minted its own H-55 against a
+  different base and merged first. `test_handoff_ids_are_unique` caught it. Ids
+  are never reused, so H-55 stays with the STE entry.
 
 ### H-56 · Build CP-12a…CP-12g — the spec is written and no code exists · [AGENT]
 - **Check:** `rg -n "OPERATOR_IDENTITY_ENABLED" apps/ workbench/` → no hit means
