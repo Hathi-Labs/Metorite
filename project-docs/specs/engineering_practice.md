@@ -48,6 +48,24 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
 
 ## 1. Environments and the test database
 
+> ⚠️ **AMENDED 2026-08-26 by D55 — this section's conclusion is superseded; its
+> reasoning is not.** The paragraph below is correct **for the premise it names**:
+> *one box, single-digit customers, one developer.* The owner is changing all three,
+> so it is retired **with its premise** rather than overruled on taste. The ladder we
+> run is now local/CI → **staging** → production, and staging is built the way this
+> section's own **P-1** describes — a nightly re-derivation from production's
+> anonymised dump, not a maintained copy — which is what answers the drift objection
+> instead of ignoring it. **P-1 and "a staging environment" are the same object.**
+> Owning spec: `specs/development_and_delivery_framework.md` §3 (ADOPTED, board
+> **WS-38**); the parity contract is its §3.4.
+>
+> ⏳ **In force until it isn't: PHASE 0.** Until customer #2, a second contributor, or
+> H3 — whichever comes first — **we work directly in production** (D55.2). So for
+> today the paragraph below still describes what we run; §3.5 of the framework carries
+> the three end-triggers. ⚠️ Everything else in *this* document binds throughout, and
+> §2's **ship dark** binds harder: with no staging in front of production, a flag
+> defaulting OFF is the only thing between a merge and an incident.
+
 **We do not run a classic dev → staging → prod triple, and should not.** At one
 box and single-digit customers it buys drift (a staging environment nobody keeps
 truthful) more than safety.

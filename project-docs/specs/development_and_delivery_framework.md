@@ -1,11 +1,26 @@
 # Development & delivery framework — how we ship to customers while still building
 
-**Status:** 🟠 **PROPOSED — 2026-08-24.** Nothing here binds until the owner
-records §9's decisions. · **Owner:** vjvarada · **Classification:** CONTRACTS &
-DOCTRINE (`INDEX.md`) — no board row yet; §8 proposes **WS-38** (renumbered at
-merge 2026-08-24: WS-35 was already minted for subdomain workspaces / D51) ·
-**Verified against code and against the GitHub API on 2026-08-24** (§1 is a
-measurement, not a recollection).
+**Status:** ✅ **ADOPTED — 2026-08-26 by D55** *(proposed 2026-08-24; 🟠 PROPOSED
+until the owner recorded it)*. · **Owner:** vjvarada · **Classification:** CONTRACTS &
+DOCTRINE (`INDEX.md`) · **Board row: WS-38**, minted with D55 ·
+**§1 re-measured 2026-08-26 — read the correction block inside it before quoting any
+row; 1.1 has inverted.**
+
+> ✅ **What D55 decided** (`work_plan.md` §3): **D-A** adopt this framework and amend
+> `engineering_practice.md` §1's "no staging" on its premise change · **D-B** trunk plus
+> two fast-forward promotion refs, no long-lived `develop` · **D-C** keep migration
+> numbers and add a coordinator (option (a)) · **D-E** promotion on demand, with a soak
+> floor of one working day (tenant plane) or one passing lifecycle rehearsal (Console
+> plane) · **D-G** one repository, with the reversal triggers named in §2.4.
+>
+> ⏳ **And one clause this document did not have: PHASE 0.** Until customer #2, a second
+> contributor, or H3 — whichever comes first — **we work directly in production**, by
+> owner decision. See **§3.5**, which carries the three end-triggers. Everything else
+> here still binds during it.
+>
+> 🔴 **Still owed from the owner, and not to be mistaken for decided: D-D** (where
+> staging runs and what it costs — money plus an external account) and **D-F** (the
+> CODEOWNERS map, unwritable before a second person exists). T-7/T-8/T-9 wait on D-D.
 
 **What this owns:** the *shape* of development and delivery once there is more
 than one customer and more than one developer — branches, environments, what CI
@@ -68,8 +83,39 @@ the command in the right-hand column.
 > was hand-applied to the Console DB and verified. **1.1 is unchanged** — those
 > were hand-runs; both automatic delivery paths remain dark.
 
-**Read 1.1 and 1.3 together.** Today the only thing standing between an unreviewed
-commit and production is one person's discipline. That is a workable arrangement
+> 🔧 **RE-MEASURED 2026-08-26 — 1.1 has INVERTED, and it is the load-bearing row
+> of this whole document.** Every command below was re-run:
+>
+> | # | 2026-08-24 | 2026-08-26 | Command |
+> |---|---|---|---|
+> | 1.1 | `deploy`, `vps-health`, `vps-forensics` all `disabled_manually`; **no automatic delivery path at all** | ✅ **all eight workflows `active`.** The merge of PR #103 ran `deploy` `32874284113` (5m38s, success): box pulled to `sha8=1c031773`, *"Migrations complete (0 applied, 186 already recorded)"*, watchdog installed, `api.metorite.com/health` verified, `refs/heads/release` pushed | `gh workflow list` · `gh run view 32874284113 --log` |
+> | 1.2 | `main` 21 ahead of `release` | ✅ **0** — and it moves automatically now, because `publish-release` rides `deploy.yml` | `git rev-list --count origin/release..origin/main` |
+> | 1.3 | `main` reads `protected: false` | 🔴 **unchanged** — the API still answers `404 Branch not protected` | `gh api repos/Hathi-Labs/Metorite/branches/main/protection` |
+> | 1.5 | Operator Console has no CI | ✅ closed 2026-08-24 (PR #80, `frontend-operator`) | `rg -n operator_console .github/workflows/pr-check.yml` |
+> | 1.6 | The deploy does not apply the Console ladder | 🔴 **unchanged** — `rg -n customer_console scripts/vps_apply.sh` is still empty (**H-24**) | as stated |
+> | 1.7 | 124 remote branches | 🔴 **137** — worse, against a stated ceiling of three or four | `git ls-remote --heads origin \| wc -l` |
+>
+> **What this changes about the document, and what it does not.** §8's ⚠️ note —
+> *"while `deploy`, `vps-health` and `vps-forensics` are disabled … nothing in this
+> document's delivery half can be exercised for real"* — **is discharged**: T-5 and
+> T-9 are now exercisable, and re-enabling the workflows is no longer the
+> unblocking act because it has happened. **Everything else stands.** The two holes
+> that actually bite are untouched: `main` is still unprotected, so every gate in
+> `pr-check.yml` remains advisory at merge (T-1 → T-2, **H-23**), and the Console
+> ladder still does not travel with the deploy (T-5, **H-24**) — which is now
+> *worse* in effect than it was, because a working automatic path that silently
+> skips one of the two ladders ships Console code against a schema it does not
+> have, on a timer, without anybody choosing to.
+>
+> ⚠️ **And a caveat this document should carry rather than the board:** a green
+> `deploy` verifies that `/health` answers 200. It does not verify **which SHA**
+> answered. SHA-in-`/health` (WS-25) is the difference between *"delivery works"*
+> and *"we can prove what is running"*, and only the first is now true.
+
+**Read 1.1 and 1.3 together.** ⚠️ **Amended 2026-08-26:** with delivery automatic again, this reads *more* sharply
+rather than less. Today the only thing standing between an unreviewed
+commit and production is one person's discipline — **and the commit now reaches
+production by itself.** That is a workable arrangement
 for exactly one developer and it is the arrangement the rest of this document
 exists to replace.
 
@@ -293,6 +339,84 @@ data shaped like production; under DPDP that is customer data unless the
 identifiers are gone first. This is a named acceptance clause in §8 T-3, not a
 best-effort step.
 
+### 3.4 Environment parity — what legitimately differs, and what must not
+
+⚠️ **New 2026-08-26, and it closes a gap nothing in the corpus covered.** A repo-wide
+search for an environment parity statement returned **nothing**. That matters more than
+it sounds: without one, *"it worked in staging"* is a sentence with no defined meaning,
+and every difference between environments is discovered during an incident.
+
+**The rule, stated once:**
+
+> **Everything is identical except data, secrets, scale and the outward-facing
+> integrations. A difference not in the table below is a defect, not a configuration.**
+
+| | Local / CI | Staging | Production |
+|---|---|---|---|
+| **Code** | working tree | `staging` ref | `release` ref | 
+| **Schema** | ladder replayed from empty | prod's schema + pending ladder replayed on top | the ladder |
+| **Data** | seeded demo org | **prod-shaped, anonymised on the box before the dump leaves it** | real |
+| **Tenancy (R5)** | `organization_id` + RLS | **identical — R5 binds staging exactly as it binds prod** | identical |
+| **Secrets** | fixtures / `.env.example` | **its own set, never production's** | real |
+| **Payment provider** | fake provider, real HMAC signer | **Razorpay TEST mode** | Razorpay live (§6 gate 3) |
+| **LLM providers** | fake / recorded | real keys, **low spend cap** | real |
+| **Outbound to third parties** (invite mail, WhatsApp, calendar sync) | off | **off, and off by default is the safe direction** | on |
+| **Feature flags** | any | **the production set, plus the one being soaked** | the production set |
+| **Scale** | one process | one box | one box (today) |
+
+**Three clauses that are acceptance criteria, not aspirations:**
+
+1. **Staging never holds un-anonymised customer data.** Under DPDP it is customer data
+   until the identifiers are gone, and the anonymisation happens **on the box, before the
+   dump moves** — not after it lands. (T-9.)
+2. **Staging never holds production secrets.** A staging box with production's Razorpay
+   key or production's Console operator token is not a staging box; it is a second
+   production box with worse monitoring.
+3. **Flag parity is the point of the soak.** Staging runs *the production flag set plus
+   the one flag being soaked*. A staging box with everything switched on proves nothing
+   about the release, because the release is the production set.
+
+⚠️ **The one difference that is NOT allowed, restated because it is the tempting one:**
+**tenancy**. `organization_id` populated, RLS on, pooled schema, from the first row.
+*"It's only staging"* does not create a phase in which single-tenant code is acceptable
+(D15, R5).
+
+---
+
+### 3.5 ⏳ Phase 0 — direct to production, and how it ends (D55.2)
+
+**Until customer #2, we work directly in production.** Owner decision, 2026-08-26. It is
+the right call today and the reason is not impatience: there is exactly one customer and
+it is us (D36), so **Ring 0 is production**, and a staging box would be a second thing to
+keep truthful with no reader on the other side of it.
+
+**Phase 0 ends at whichever comes first:**
+
+| # | Trigger | Why this one |
+|---|---|---|
+| **a** | A second organization is provisioned on a real deployment | A mistake now costs somebody else's data, not ours |
+| **b** | A second human gets commit access | Advisory CI is a personal habit, and a habit does not survive a second person (§7.1) |
+| **c** | **H3 — the tenant RLS promotion runs** | After it, a mistake is no longer recoverable by one person who remembers what they did |
+
+⚠️ **Phase 0 is a statement about ENVIRONMENTS, not about discipline.** Everything else
+binds unchanged while it lasts, and two of them bind *harder*:
+
+- **Ship dark** (`engineering_practice.md` §2) — working directly in production is
+  precisely the condition under which *"every feature lands behind a flag, defaulting
+  OFF"* stops being a nicety and becomes the only thing separating a merge from an
+  incident.
+- **R6 expand/contract** — unchanged, and with no staging rehearsal in front of it, the
+  scratch-database proof (R8) is the *only* thing standing between a migration and real
+  data.
+
+**What to build during Phase 0 anyway:** T-1, T-2, T-3 and T-6. None of them needs a
+staging box, all four are cheap, and each closes a measured hole. Building the staging
+ladder (T-7/T-8/T-9) is what waits — and it waits on **D-D**, which is money.
+
+⚠️ **Write the end down when it happens.** The failure mode for this clause is the one
+`saas_multitenancy.md` §5.1 already names for its own bridge: *"a bridge with no trigger
+is a destination."* Phase 0 has three triggers; somebody has to notice one firing.
+
 ---
 
 ## 4. Two delivery planes, and the one nobody wired
@@ -494,12 +618,69 @@ the implementer, and the reviewer hunts for the case where the change is wrong.
 Two humans reviewing each other's agent output is *more* of that discipline, not
 a licence to relax it.
 
+### 7.7 The contributor workflow, end to end
+
+⚠️ **New 2026-08-26.** The owner asked for *"the collaboration model for multiple
+contributors, including feature integration and merging after development-system
+testing."* The pieces all existed — the supervisor loop in `.claude/commands/next-ticket.md`,
+the branching model in §2, the rings in `engineering_practice.md` §2 — and **nowhere
+joined them into one path a new contributor could follow.** This is that path.
+
+**One feature, from ticket to customer:**
+
+| # | Step | Who | Gate that must pass |
+|---|---|---|---|
+| 1 | **Pick a row** from `work_plan.md` §2 · check §2.0 for whether it is on the customer path | contributor | The row is 🟢, or 🟡 with its named gate cleared |
+| 2 | **Audit that it is dispatchable** — the owning spec satisfies §1's seven-point contract, and the work is not OWNER-GATE | `spec-auditor` | Verdict **GO** or **GO-NARROWED**. A NO-GO is a doc ticket, not a build ticket |
+| 3 | **Cut a branch off `main`.** Never work on `main` (`plan-guard` enforces it) | contributor | Branch named for the slice, not the workstream |
+| 4 | **Take the migration number now**, if the slice has one, and re-check it at merge | contributor | R1 · `test_migration_prefixes.py` |
+| 5 | **Build ONE narrowed slice**, behind a flag defaulting **OFF** | `ws-implementer` | Ship dark (`engineering_practice.md` §2) |
+| 6 | **Prove SQL against a real database** — never against a hermetic fake | contributor | **R8**. Five live bugs shipped green through fakes |
+| 7 | **Name the fence** for any rule the slice introduces, or label it advisory | contributor | **R7**, verified **red first** |
+| 8 | **Verify independently** — re-derive the acceptance from the code, do not trust the write-up | `ws-verifier` (never the implementer) | The owning spec's own verification commands |
+| 9 | **Review adversarially** — hunt for the case where this is wrong | `diff-reviewer` | An agent asked *"is this correct?"* says yes; ask the other question |
+| 10 | **Open a PR into `main`. Stop before merge.** | contributor | CI green — and once T-2 lands, *required* rather than advisory |
+| 11 | **Merge to `main`** → deploy is automatic → **`staging` fast-forwards on green** | CI | §2.1 |
+| 12 | **Soak on staging.** Tenant plane: one working day. Console plane: one passing **lifecycle rehearsal** (§6.3) | contributor | D55.7 |
+| 13 | **Promote a SHA to `release`** — owner-run `workflow_dispatch`, naming a commit that has soaked | 🔴 **owner** | §2.1 · T-8 |
+| 14 | **Release the feature: flip its flag**, ring by ring — us, then one friendly customer, then everyone | 🔴 **owner** for anything outward-facing or spend-bearing | `engineering_practice.md` §2 · §6 |
+| 15 | **Update the row and the owning spec's status header in the same PR** | contributor | **R4** |
+| 16 | **Add a `HANDOFF.md` entry for anything you are handing over** — the moment you create the obligation, not at the end | contributor | D39 · `test_handoff_queue.py` |
+
+**Steps 13 and 14 are different acts and conflating them is the classic error.**
+Promoting a SHA puts *code* in front of customers; flipping a flag puts *behaviour* in
+front of them. **Deploy is not release** (`engineering_practice.md` §2), and D55.4 is the
+consequence: features are promoted individually **by flag**, never by moving one
+feature's commits.
+
+**Integration discipline — the three rules that are load-bearing at N>1:**
+
+1. **Short branches, merged often.** Three or four in flight is the ceiling
+   (`engineering_practice.md` §5). Long branches are the recorded root cause behind three
+   migration collisions, two green-alone/red-together PRs in a single day, and a
+   duplicated multi-tenancy design. ⚠️ Measured 2026-08-26: **137 remote branches.**
+2. **Rebase onto `main` before asking for review, never merge `main` into the branch.**
+   A merge commit in a feature branch hides which change is being reviewed.
+3. **Partition by seam, not by file** (§7.4). Two contributors in one seam is a conflict;
+   two contributors in two seams is throughput. The seams are written down there
+   precisely so the partition is a lookup rather than a negotiation.
+
+⚠️ **What a second human does NOT inherit.** They inherit the harness on clone (D29) —
+`plan-guard`, the four supervisor agents, `/next-ticket`, the owner-gate refusals. They do
+**not** inherit the discipline currently supplied by there being only one of them, and
+that is exactly what §7.1 (make CI binding) and §7.3 (migration coordination) exist to
+replace. **Until T-2 lands, every gate in this table is advisory at merge.**
+
 ---
 
-## 8. Proposed tickets — WS-38
+## 8. Tickets — WS-38 (MINTED 2026-08-26 by D55)
 
-Not minted. The board row is the owner's act (§9 D-A). Gate labels per
-`work_plan.md` §1.7.
+✅ **MINTED 2026-08-26 as WS-38** (D55; this read *"Not minted — the board row is the
+owner's act"*). Gate labels per `work_plan.md` §1.7. **Order: T-1 → T-2 → T-3, T-6
+→ T-5 → T-10, T-11 → T-7, T-8, T-9 → T-12 → T-13, T-14, T-15.**
+
+⏳ **T-7/T-8/T-9 wait on D-D** (where staging runs). T-1, T-3 and T-6 need no staging
+box, are cheap, and each closes a measured hole — **build them during Phase 0**.
 
 | # | Ticket | Done when | Gate |
 |---|---|---|---|
@@ -525,14 +706,25 @@ T-3, T-6 (cheap, close measured holes; T-4 already landed) → T-5 (the Console 
 (money invariants) → T-7, T-8, T-9 (the staging ladder) → T-12 → T-13, T-14,
 T-15.
 
-⚠️ **T-9 and T-5 both touch the box and both are downstream of H-11.** While
+~~⚠️ **T-9 and T-5 both touch the box and both are downstream of H-11.** While
 `deploy`, `vps-health` and `vps-forensics` are disabled and the deploy secrets are
 absent (1.1), *nothing* in this document's delivery half can be exercised for
-real. **Re-enabling those workflows is the unblocking act, and it is the owner's.**
+real. **Re-enabling those workflows is the unblocking act, and it is the owner's.**~~
+
+✅ **DISCHARGED 2026-08-26.** All eight workflows are active and `deploy` runs on every
+merge to `main` (§1's correction block). The unblocking act has happened, so T-5 and T-9
+are exercisable. ⚠️ **T-5 got MORE urgent rather than less**: a working automatic path
+that silently skips the Console ladder ships Console code against a schema it does not
+have — on a timer, without anybody choosing to.
 
 ---
 
 ## 9. Decisions this needs from the owner
+
+> ✅ **ANSWERED 2026-08-26 by D55: D-A · D-B · D-C · D-E · D-G.** The rows below are
+> kept as the record of what was asked and why it could not be defaulted — the
+> reasoning is the reusable part, and the next framework question will re-raise it.
+> 🔴 **STILL OWED: D-D and D-F.**
 
 Proposed, not recorded. An agent must not mint these.
 
