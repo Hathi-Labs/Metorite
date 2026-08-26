@@ -1,5 +1,29 @@
 # Go-live runbook — Fractalworks + customer #2 (multi-tenant launch)
 
+> ## ⚠️ WRITTEN 2026-08-23 · MERGED 2026-08-26 · FOUR CLAIMS SUPERSEDED
+>
+> It sat open for four days and the tree moved under it. Merged as a **record of the
+> cutover plan**, not as instructions to follow — the sequence and its reasoning are
+> still the best account of how the RLS cutover was designed, and that is worth keeping.
+> But do **not** act on the four claims below without re-deriving them.
+>
+> | The document says | What is true now |
+> |---|---|
+> | "waiting in a stack of PRs (**#61–69, unmerged**)" | All merged. `main` is past **#107**; migrations run to **192**. |
+> | "**ClickUp** to be REMOVED, replaced later by a CSV project-name upload" | **D52 removed it outright on 2026-08-24.** No connector, no importer, no sync. The CSV replacement was never minted. |
+> | "ships with a **Sales Center package**, not Core" | **D49 retired Center packages on 2026-08-24.** Pricing is FLAT — ₹500/user/month, one `core` seat, everything live included. |
+> | Box deployed at `d460eba4` | Long superseded; read `GET /version` instead — and since **#107** the deploy pipeline verifies that SHA itself rather than trusting a health check. |
+>
+> ⚠️ **The CRM homonym guard rail below is the one to re-read carefully.** Its
+> *mechanism* still holds — `crm_contacts` / `crm_deals` / `crm_activities` carry a
+> homonym `organization_id` and `HOMONYM_BLOCKED` still refuses to scope them — but the
+> *guard rail* it leans on was package-gating, and D49 retired packages. Re-derive how
+> CRM is gated before relying on that paragraph.
+>
+> Anything not listed here has not been re-verified either; treat undated statements as
+> being about 2026-08-23.
+
+
 **Status (2026-08-23): isolation binding COMPLETE and DARK.** Everything needed to make the
 shared-DB RLS cutover safe for the **reduced launch scope** is built, verified on real Postgres,
 adversarially reviewed, and waiting in a stack of PRs (#61–69, **unmerged**). Phase 0 (deploy +
