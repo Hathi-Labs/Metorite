@@ -374,6 +374,13 @@ def test_a_key_issue_records_the_person(client, eng):
     token = _session(eng, operator_id)
     org_id, slug = _org(eng)
 
+    # `/keys` is an `elevated` row in the §5 matrix (CP-12e), so the admin
+    # opens a window first. The SUBJECT here is still the audit actor.
+    assert client.post(
+        "/operators/elevate", headers=_auth(token),
+        json={"reason": "issuing a key for a test"},
+    ).status_code == 200
+
     r = client.post(
         "/keys",
         headers=_auth(token),

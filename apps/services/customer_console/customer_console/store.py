@@ -49,6 +49,9 @@ __all__ = [
     "operator_by_email",
     "operator_by_id",
     "operator_count",
+    "operator_elevation_close",
+    "operator_elevation_live",
+    "operator_elevation_open",
     "operator_insert",
     "operator_list",
     "operator_session_by_prefix",
@@ -2021,3 +2024,70 @@ def operator_set_status(
         ),
         {"id": operator_id, "status": status},
     )
+
+
+# ── Operator elevation (CP-12e) ─────────────────────────────────────────────
+
+
+def operator_elevation_open(
+    conn: Connection,
+    *,
+    operator_id: str,
+    reason: str,
+    reference: str | None,
+    expires_at: datetime,
+) -> str:
+    """Open one elevation window. Returns its id."""
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator_elevation
+                (operator_id, reason, reference, expires_at)
+            VALUES (CAST(:op AS UUID), :reason, :ref, :expires)
+            RETURNING id
+            """
+        ),
+        {"op": operator_id, "reason": reason, "ref": reference,
+         "expires": expires_at},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def operator_elevation_live(
+    conn: Connection, operator_id: str
+) -> dict[str, Any] | None:
+    """The newest window that is neither revoked nor expired, or ``None``.
+
+    ⚠️ The expiry is filtered in SQL with `now()` AND re-checked in
+    `operator_elevation.check_window`. That is not redundant: the SQL keeps
+    the read cheap, and the Python check is what a reviewer can see, so
+    neither one is the only thing standing between a stale row and a purge.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT id, reason, reference, granted_at, expires_at
+              FROM operator_elevation
+             WHERE operator_id = CAST(:op AS UUID)
+               AND revoked_at IS NULL
+               AND expires_at > now()
+             ORDER BY expires_at DESC
+             LIMIT 1
+            """
+        ),
+        {"op": operator_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_elevation_close(conn: Connection, operator_id: str) -> int:
+    """Close every live window for one operator. Returns how many."""
+    result = conn.execute(
+        text(
+            "UPDATE operator_elevation SET revoked_at = now() "
+            "WHERE operator_id = CAST(:op AS UUID) AND revoked_at IS NULL"
+        ),
+        {"op": operator_id},
+    )
+    return int(result.rowcount or 0)

@@ -43,6 +43,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from customer_console import auth, credits, lifecycle, payments, store
+from customer_console.auth import SHARED_TOKEN_ACTOR
 from customer_console.keys import ENV_DISCOUNT, mint_key, split_key
 from customer_console.main import app
 from fastapi.routing import APIRoute
@@ -2795,7 +2796,7 @@ class TestTheManualActivation:
 
         audit = _audit_with_action(db, org_id, "subscription.activate_manual")
         assert len(audit) == 1
-        assert audit[0]["actor"] == "operator"
+        assert audit[0]["actor"] == SHARED_TOKEN_ACTOR
         assert audit[0]["detail"]["reason"] == "manual"
         assert audit[0]["detail"]["reference"] == "NEFT-ABC123"
         assert audit[0]["detail"]["seats"] == 5
@@ -3261,7 +3262,7 @@ class TestDiscountCodes:
         for _actor, detail in rows.values():
             assert code["prefix"] in detail
             assert code["code"] not in detail, "the SECRET must never land"
-        assert rows["discount.issue"][0] == "operator"
+        assert rows["discount.issue"][0] == SHARED_TOKEN_ACTOR
         assert rows["discount.redeem"][0] == "organization"
 
     def test_a_redeem_attempt_logs_the_prefix_and_only_the_prefix(

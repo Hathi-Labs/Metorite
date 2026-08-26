@@ -21,12 +21,13 @@ import uuid
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient
 from customer_console import auth, lifecycle
+from customer_console.auth import SHARED_TOKEN_ACTOR
 from customer_console.keys import split_key
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import (  # noqa: E402
+from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
     ensure_deployment,
@@ -716,7 +717,12 @@ class TestTheDeploymentKeyProvisionArm:
         # The refused attempt wrote no audit row — a hijack must never read as a
         # create in the trail, which is why the guard refuses BEFORE the write.
         assert _provision_audit(db, slug) == before_audit
-        assert all(actor == "operator"
+        # ⚠️ CP-12e renamed the SHARED token's audit actor from `operator` to
+        # `breakglass` (operator_identity_and_access.md §6.4): that credential
+        # bypasses the whole role matrix, and calling it `operator` made a
+        # bypass look routine. Asserted through the CONSTANT so the next rename
+        # does not break this suite, and so the test states the CONCEPT.
+        assert all(actor == SHARED_TOKEN_ACTOR
                    for actor, _ in _provision_audit(db, slug))
 
     def test_a_wide_key_may_re_affirm_the_same_owner_idempotently(
@@ -873,7 +879,8 @@ class TestTheDeploymentKeyProvisionArm:
                 {"k": by_key, "o": by_operator},
             ).all())
 
-        assert actors == {by_key: "deployment", by_operator: "operator"}
+        assert actors == {by_key: "deployment",
+                          by_operator: SHARED_TOKEN_ACTOR}
 
     def test_the_wide_key_is_still_not_an_operator_token(
         self, client, keyed_box, org

@@ -1156,6 +1156,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** CLAUDE.md §5 · `project-docs/INDEX.md` header · `work_plan.md`
   §1 R7
 - **Added:** 2026-08-26 · operator-identity spec session
+### H-64 · Apply Customer Console migration 009 on the box · [OWNER]
+- **Check:** on the box, `\dt operator*` against the Console database → no
+  `operator` table means still pending. From the repo alone:
+  `rg -n "customer_console" scripts/vps_apply.sh` → no hit, which is **H-24**
+  and is why this does not happen by itself.
+- **Why:** CP-12a to CP-12e merged to `main` on 2026-08-26, so the CODE is on
+  the box. The Console ladder does not travel with the deploy, so
+  `009_operator_identity.sql` is NOT applied. Nothing breaks while it is
+  missing: the new tables are read only on the `cc_sess_` path and nobody
+  holds such a token. ⚠️ **One route does break** — `GET /operators` answers
+  500 instead of 404, and the shared token can reach it. No surface calls it
+  yet (that lands with CP-12f).
+- **Authority:** `specs/operator_identity_and_access.md` §7 · `work_plan.md`
+  §6.1 (CP-12 block) · H-24
+- **Added:** 2026-08-27 · CP-12e session
 
 ---
 

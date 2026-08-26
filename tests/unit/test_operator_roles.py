@@ -222,7 +222,19 @@ def test_each_matrix_cell(client, eng, method, path, role):
 
     allowed = operator_roles.rank(role) >= operator_roles.rank(rule.min_role)
     probe = _PROBES[(method, path)]
-    r = client.request(method, path, headers=_auth(_token(eng, role)), **probe)
+    token = _token(eng, role)
+
+    # ⚠️ CP-12e: an `elevated` row needs a WINDOW as well as the rank, so an
+    # allowed cell has to open one or it would refuse for the right reason at
+    # the wrong layer and this test would prove nothing about the matrix.
+    if rule.elevated and allowed:
+        opened = client.post(
+            "/operators/elevate", headers=_auth(token),
+            json={"reason": "matrix cell under test"},
+        )
+        assert opened.status_code == 200, opened.text
+
+    r = client.request(method, path, headers=_auth(token), **probe)
 
     if allowed:
         assert r.status_code != 403, (
