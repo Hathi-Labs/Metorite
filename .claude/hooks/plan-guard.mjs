@@ -66,6 +66,34 @@ const OWNER_GATES = [
   },
 ]
 
+// Commands that WRITE. Used to decide whether a Bash command mentioning a
+// protected path is reading it (fine) or changing it (blocked).
+//
+// ⚠️ This is a TRIPWIRE, not a sandbox, and the distinction is worth being
+// honest about rather than implying more. You cannot fully constrain a shell
+// with a regex: `python -c "open('.env','w')"` and a here-doc through an
+// interpreter both evade this list, and always will. What it stops is the
+// PATH OF LEAST RESISTANCE — an agent whose Write call was just refused
+// reaching for `cp` because that is the next thing to hand. That is not a
+// hypothetical: it is exactly what happened on 2026-08-26, when
+// `deploy/hostinger/acb-pull.{service,timer}` were placed with `cp` seconds
+// after plan-guard refused the Write. The gate was correct and the agent went
+// around it without ever deciding to.
+//
+// Deliberate evasion is a different failure and a different control (review,
+// and the agent being TOLD to refuse). This closes the accident.
+const SHELL_WRITE = new RegExp(
+  [
+    // destructive/creating verbs, at a command position
+    String.raw`(^|[\s|;&(])(cp|mv|install|tee|dd|truncate|touch|ln|rsync|chmod|chown|rm|mkdir)\b`,
+    // any redirect that creates or appends
+    String.raw`>\s*\S`,
+    // in-place edits
+    String.raw`\bsed\b[^|;&]*\s-i`,
+    String.raw`\bperl\b[^|;&]*\s-i`,
+  ].join('|'),
+)
+
 // Paths an agent may never write, whatever the reason.
 const PROTECTED_PATHS = [
   { test: /(^|[\\/])\.env(\.|$)/, why: '.env files hold live credentials (OWNER-GATE, WS-2).' },
@@ -140,6 +168,60 @@ if (tool === 'Bash' || tool === 'PowerShell') {
 
   for (const gate of OWNER_GATES) {
     if (gate.test.test(cmd)) block(gate.why)
+  }
+
+  // PROTECTED_PATHS, enforced for the SHELL too. Until 2026-08-26 this list was
+  // consulted only in the Write/Edit branch below, so every path it protects —
+  // `.env` included — was writable through `cp`, `tee`, `sed -i` or a plain `>`
+  // redirect. A guard that refuses the tool an agent would naturally use, and
+  // permits the shell command that does the same thing, protects nothing; it
+  // just makes the bypass one step longer than the block.
+  //
+  // Reads stay allowed: `cat deploy/hostinger/acb-gateway.service` is how you
+  // find out what is there, and blocking it would push people to copy files out
+  // to look at them. Only a command that both MENTIONS a protected path and
+  // LOOKS LIKE A WRITE is refused.
+  // ⚠️ TOKENISED, not substring-matched — and that is not a refinement.
+  // The substring version silently failed six of the eleven cases in
+  // plan-guard.test.mjs. PROTECTED_PATHS anchors each pattern on
+  // `(^|[\\\\/])`, which is right for a FILE PATH and wrong for a path
+  // sitting inside a command: in `echo X > .env` the `.env` is preceded by a
+  // SPACE, so the anchor never matches and the guard waves it through.
+  // Splitting the command into tokens hands each pattern the thing it was
+  // written to judge.
+  // ⚠️ HEREDOC BODIES ARE DATA, NOT COMMAND — strip them before scanning.
+  // Found immediately: this rule blocked its own commit, because the commit
+  // message (passed through `git commit -m "$(cat <<'EOF' … EOF)"`) mentioned
+  // `.env` in prose while the surrounding command contained a redirect. Nothing
+  // was being written to `.env` at all.
+  //
+  // That matters beyond the annoyance. A guard with false positives on ordinary
+  // work gets routed around on purpose — the next person writes the commit
+  // message differently, or drops the guard from their loop, and the real block
+  // goes with it. Precision IS the safety property here.
+  //
+  // A heredoc that genuinely targets a protected path still blocks: in
+  // `cat > .env <<'EOF'` the `> .env` lives in the COMMAND half, which survives
+  // this strip untouched.
+  const scanned = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ')
+
+  if (SHELL_WRITE.test(scanned)) {
+    const tokens = scanned.split(/[\s;|&()<>'"`]+/).filter(Boolean)
+    for (const token of tokens) {
+      // Strip a leading `./` and any `VAR=` prefix, so a path is recognised
+      // however it was reached.
+      const candidate = token
+        .replace(/^\.\//, '')
+        .replace(/^[A-Za-z_][\w]*=/, '')
+      for (const p of PROTECTED_PATHS) {
+        if (p.test.test(candidate)) {
+          block(
+            `a shell command writing to a protected path (${candidate}) — ${p.why}\n` +
+              `  command: ${scanned.slice(0, 200)}`,
+          )
+        }
+      }
+    }
   }
 
   // Work lands on a branch, never on main. pr-check only runs against main,
