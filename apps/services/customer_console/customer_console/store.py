@@ -47,14 +47,18 @@ __all__ = [
     "lock_seat_capacity",
     "operator_active_admin_count",
     "operator_by_email",
+    "operator_by_id",
     "operator_count",
     "operator_insert",
+    "operator_list",
     "operator_session_by_prefix",
     "operator_session_insert",
     "operator_session_revoke",
     "operator_session_touch",
     "operator_sessions_revoke_all",
     "operator_set_directory_subject",
+    "operator_set_role",
+    "operator_set_status",
     "order_by_provider_id",
     "order_for_update",
     "order_lines",
@@ -1948,3 +1952,72 @@ def operator_sessions_revoke_all(conn: Connection, operator_id: str) -> int:
         {"op": operator_id},
     )
     return int(result.rowcount or 0)
+
+
+# ── Operator administration (CP-12d) ────────────────────────────────────────
+
+
+def operator_by_id(conn: Connection, operator_id: str) -> dict[str, Any] | None:
+    """One registry row by id, or ``None``."""
+    row = conn.execute(
+        text(
+            "SELECT id, email, role, status, directory_subject, created_at "
+            "FROM operator WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_list(conn: Connection) -> list[dict[str, Any]]:
+    """Every operator, active first, then by email.
+
+    No pagination. This table holds a handful of people by design — the
+    moment it does not, DEF-3's directory sync is the answer rather than a
+    page cursor over our own staff.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.id, o.email, o.role, o.status, o.created_at,
+                   o.directory_subject IS NOT NULL AS has_signed_in,
+                   (SELECT count(*) FROM operator_session s
+                     WHERE s.operator_id = o.id
+                       AND s.revoked_at IS NULL
+                       AND s.expires_at > now()) AS live_sessions
+              FROM operator o
+             ORDER BY (o.status = 'active') DESC, o.email
+            """
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def operator_set_role(conn: Connection, *, operator_id: str, role: str) -> None:
+    """Change one operator's role."""
+    conn.execute(
+        text(
+            "UPDATE operator SET role = :role, updated_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id, "role": role},
+    )
+
+
+def operator_set_status(
+    conn: Connection, *, operator_id: str, status: str
+) -> None:
+    """Change one operator's status.
+
+    ⚠️ The caller revokes the sessions. Doing it here would hide a security
+    step inside a setter, and a future caller that wanted only the status
+    change would silently get both — or, worse, would write its own status
+    update and get neither.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator SET status = :status, updated_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id, "status": status},
+    )

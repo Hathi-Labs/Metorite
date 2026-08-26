@@ -329,6 +329,7 @@ jobs:
             tests/unit/test_operator_identity.py \
             tests/unit/test_operator_session.py \
             tests/unit/test_operator_roles.py \
+            tests/unit/test_operator_admin.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
