@@ -9,6 +9,15 @@
 - Work products, source materials, instructions, records, assets, and durable docs must stay
   understandable from the nearest applicable AGENTS.md plus every parent AGENTS.md above it
 
+## Writing Standard
+
+Every document in this repo, and every message an agent sends to a person, is
+written in Simplified Technical English (ASD-STE100). Owner directive,
+2026-08-26. The contract is **`docs/style_ste.md`**, and it is the only place
+the rules live. The fence is `.claude/hooks/ste-lint.mjs`, which runs on every
+markdown write and on every commit. Docs that predate the rule are grandfathered.
+Text you add is not.
+
 ## Read Before Editing
 
 1. Read this root AGENTS.md

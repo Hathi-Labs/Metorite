@@ -10,8 +10,9 @@
 # Run manually on a diff:   uv run pre-commit run
 # Run on the whole repo:    uv run pre-commit run --all-files   (opt-in only)
 #
-# Scope note: Python only. The workbench/ (Next.js) and infra/ trees are
-# excluded here and gated by their own eslint config / CI.
+# Scope note: Python, plus markdown for the STE writing rules at the bottom of
+# this file. The workbench/ (Next.js) and infra/ trees are excluded here and
+# gated by their own eslint config / CI.
 
 exclude: '^(workbench/|infra/|__pycache__/|.*\.egg-info/)'
 
@@ -52,3 +53,19 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=1024]
+
+  # --- STE: Simplified Technical English, on the lines you ADDED ---
+  # Contract: docs/style_ste.md. Word list: .claude/hooks/ste-words.json.
+  # The same grandfather-and-ratchet rule as everything above, and here it is
+  # load-bearing: measured 2026-08-26, 196 markdown files carry 19094 errors.
+  # A whole-file gate would fail every edit to work_plan.md and be deleted within
+  # a week, so --staged reads ADDED LINES ONLY.
+  # Fence for the fence: node .claude/hooks/ste-lint.test.mjs
+  - repo: local
+    hooks:
+      - id: ste-lint
+        name: ste-lint (Simplified Technical English, added lines only)
+        entry: node .claude/hooks/ste-lint.mjs --staged
+        language: system
+        pass_filenames: false
+        files: \.mdx?$

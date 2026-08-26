@@ -7,6 +7,38 @@ know before reading anything else** — it deliberately duplicates nothing.
 
 ---
 
+## 0. How you write — Simplified Technical English
+
+**Every message you send, and every document you write, is in Simplified
+Technical English (ASD-STE100).** Owner directive, 2026-08-26. The contract is
+**`docs/style_ste.md`**. Do not restate its rules anywhere else.
+
+The five that bind hardest:
+
+1. **20 words** in a procedural sentence, **25** in a descriptive one, **6**
+   sentences in a paragraph, and one topic per paragraph.
+2. **No semicolon.** Write two sentences.
+3. **Active voice.** Name the actor.
+4. **Use the approved word.** `.claude/hooks/ste-words.json` holds the list, and
+   a replacement for each entry.
+5. **A domain word is legal.** `tenant`, `migration`, `schema` and `grant` are
+   Technical Names. A rewrite that strips one makes the text worse, not plainer.
+
+Two tiers. **STRICT** binds anything that says what to do, and that includes your
+replies to the owner. **INFORMED** binds rationale prose, where the hedging words
+drop to a warning. `docs/style_ste.md` §2 lists the paths.
+
+This composes with BLUF and does not fight it. BLUF sets the **order**, so the
+answer comes first. STE sets the **language**.
+
+**The fence:** `.claude/hooks/ste-lint.mjs` runs on every markdown write
+(PostToolUse) and on every commit (pre-commit, added lines only). Tests:
+`node .claude/hooks/ste-lint.test.mjs`. The 196 markdown files measured on
+2026-08-26 carry 19094 errors, and every one of them is grandfathered. Do not
+open a pull request that only lowers the count.
+
+---
+
 ## 1. Where truth lives (read in this order)
 
 | # | File | What it owns |

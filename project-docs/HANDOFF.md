@@ -75,25 +75,22 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-23 · `main` reads `protected: false` — CI is advisory at merge · [OWNER]
-- **Check:** `gh api repos/Hathi-Labs/Metorite/branches/main/protection` → a
-  `404 Branch not protected` means still pending. ⚠️ Read it back from the API,
-  never from the settings page; and note a *ruleset* may protect the branch
-  without the branches API reporting `protected: true`.
-- **Why:** `work_plan.md` §2 exceptions row 1 records protection being enabled
-  2026-08-03 with `enforce_admins: true` — but that was the **pre-rebrand**
-  repository, and this one's workflows are dated 2026-08-16, so the protection
-  most likely did not travel. Measured 2026-08-24: `list_branches` reports
-  `"name":"main","protected":false`. Every gate in `pr-check.yml` is therefore
-  decorative at merge, which is survivable with one disciplined developer and is
-  not survivable with two. ⚠️ It cannot simply be switched on: `pr-check.yml`
-  carries `paths-ignore` for `**.md` and `project-docs/**`, so a docs-only PR
-  produces **zero** check-runs and requiring those contexts would make every docs
-  PR unmergeable. The always-runs sentinel job (T-1) lands first, then require
-  **that** one context.
-- **Authority:** `work_plan.md` §2 exceptions row 1 · §6 (GitHub settings) ·
-  `specs/development_and_delivery_framework.md` §1.3 · T-1/T-2
-- **Added:** 2026-08-24 · delivery-framework planning session
+### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
+- **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
+  owner decided and this entry is dead.
+- **Why:** the rule holds in two places today. `ste-lint.mjs` runs as a
+  PostToolUse hook, and `.pre-commit-config.yaml` runs it on staged markdown.
+  Both are local. A person who does not install pre-commit is not bound, and CI
+  never looks. ✅ **The blocker is cleared.** PR #115 took `paths-ignore` off the
+  `pull_request` trigger on 2026-08-26, so a docs-only pull request now reports.
+  PR #116 proved it and ran 7 checks on a branch that was mostly documents. What
+  is left is the owner's call: add the `--staged` step, and require the context.
+- 📌 **`main` is now PROTECTED** (2026-08-26), with 7 required contexts.
+  So "require the context" is a settings change now, not a project. The
+  decision left is whether the STE gate BLOCKS or only reports.
+- **Authority:** owner directive 2026-08-26 · `docs/style_ste.md` §8 Q2
+  · PR #115 · PR #116
+- **Added:** 2026-08-26 · STE harness session
 
 ### H-24 · The Customer Console ladder does not travel with the deploy · [AGENT]
 - **Check:** `rg -n "customer_console" scripts/vps_apply.sh` → no hit means the
@@ -353,30 +350,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 (credentials) · `specs/engineering_practice.md`
 - **Added:** 2026-08-19 · VPS bring-up session
 
-### H-17 · Land the governance branch (D44 · D45 · OWNER_GRANTS protocol) · [OWNER]
-- **Check:** `git log main --oneline -- .claude/OWNER_GRANTS.md` → empty means
-  still pending.
-- **Why:** The main checkout sits dirty on `governance-d45-owner-grants`:
-  plan-guard's grant mechanism, CLAUDE.md's D45 exception, D44/D45 in
-  `work_plan.md` §3, and H-15 in this file — live-verified but uncommitted,
-  because the harness classifier (correctly) blocks an agent finalizing its
-  own guardrail changes. Commit message is staged at the session scratchpad
-  (`commit_d45.txt`); the 15-case grants test travels beside it
-  (`plan-guard-grants-test-content.txt` → save as
-  `.claude/hooks/plan-guard.grants.test.mjs`, then run both guard suites).
-  Both files are regenerable from the diff if the scratchpad is gone.
-- **Authority:** `work_plan.md` §6 · D45 (in flight)
-- **Added:** 2026-08-19 · VPS bring-up session
-  🔴 **BLOCKING SOMETHING CONCRETE AS OF 2026-08-26.** This is no longer only
-  a tidiness item. The owner wrote a valid `deploy-write` grant to unblock the
-  WS-25 pull unit, and plan-guard blocked the write anyway. The reading half
-  has never landed — `plan-guard.mjs` on `main` has zero references to
-  `OWNER_GRANTS`. Somebody placed that unit by hand on 2026-08-26, so the
-  grant never did the job it was written for. **Every grant written until this lands is
-  inert, and inert SILENTLY**: nothing tells the owner their grant was not
-  read. The implementation is on the local-only branch
-  `governance-d45-owner-grants` and has never been pushed.
-
 ### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
 - **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
   plus a session row for `vjvarada@gmail.com` after a real browser sign-in at
@@ -548,46 +521,6 @@ line — never reclaim a number by deleting the other entry.
   fix is to re-home the guard over the surviving Gmail/Zoho receivers.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
-
-### H-53 · plan-guard blocks READS that redirect stderr · [OWNER]
-- **Check:** run `ls deploy/hostinger/ 2>&1`. A block means this entry is live.
-  After the fix, `node .claude/hooks/plan-guard.test.mjs` must still pass every
-  case, and the two new cases below must pass with it.
-- **Why:** the `SHELL_WRITE` redirect arm in `.claude/hooks/plan-guard.mjs`
-  reads `>\s*\S`. That pattern matches `2>&1` and `2>/dev/null`. Neither one
-  writes a file. `2>&1` duplicates a file descriptor, and `/dev/null` is the bit
-  bucket. The arm was written to catch `> file`, and it over-reaches.
-  🔴 **Measured 2026-08-26, inside one hour of the path rule landing.** The
-  guard refused three PURE READS in one session — a `grep` of `.env.example`
-  with `2>/dev/null`, an `ls` of `deploy/hostinger/` with `2>&1`, and a probe of
-  the guard itself. No command in that set could change any file.
-  ⚠️ **This is the exact failure the rule's own comment names.** A guard that
-  fires on ordinary work gets routed around on purpose. The next person rewrites
-  the command, or drops the hook from their loop, and the real block leaves with
-  it. Precision is a safety property here, not a nicety.
-  🟢 **The fix is one line.** In the `SHELL_WRITE` array, replace the redirect
-  arm with the form below. It keeps every true write and drops both descriptor
-  forms.
-  ```js
-  // A redirect that creates or appends a FILE. `(?!&)` lets `2>&1` through,
-  // because it duplicates a descriptor. The /dev/null exclusion lets
-  // `2>/dev/null` through, because the bit bucket is not a protected path.
-  String.raw`>\s*(?!&)(?!\/dev\/null(\s|$))\S`,
-  ```
-  Add these two cases to `.claude/hooks/plan-guard.test.mjs`, both `false`:
-  ```js
-  ['read deploy/ with 2>&1', bash('ls deploy/hostinger/ 2>&1'), false],
-  ['read dotenv path with 2>/dev/null', bash('grep X .env.example 2>/dev/null'), false],
-  ```
-  ⚠️ The second case reads `.env.example` and must stay ALLOWED. A write to it
-  is still blocked by the `secrets` gate and by the Write branch. Confirm that
-  `['write dotenv', ...]` and `['redirect into dotenv', ...]` still block.
-- **Why an agent cannot do this:** the harness classifier refuses an agent edit
-  to `plan-guard.mjs`. That refusal is correct, and it is the same one **H-17**
-  records in its own words — the harness "blocks an agent finalizing its own
-  guardrail changes".
-- **Authority:** `.claude/hooks/plan-guard.mjs` · `.claude/hooks/plan-guard.test.mjs` · H-17
-- **Added:** 2026-08-26 · WS-39 / CI session
 
 ### H-52 · Phase 0 (D55.2) has ALREADY ENDED by trigger (b) — decide which way · [OWNER]
 - **Check:** `gh api repos/Hathi-Labs/Metorite/collaborators --jq '.[] | select(.type=="User") | select(.permissions.push or .permissions.admin) | .login'`

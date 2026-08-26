@@ -77,3 +77,19 @@ it explicitly rather than clearing the whole row.
 If the spec fails point 3 (no testable acceptance), the verdict is NO-GO and the
 blocker is a documentation task, not an implementation one. Say so plainly — a
 ticket that cannot be verified can never be done autonomously.
+
+
+## How you write
+
+Every word you write, in a file or in a report, is Simplified Technical English.
+The contract is `docs/style_ste.md`. The word list of record is
+`.claude/hooks/ste-words.json`. Hold to these five:
+
+- 20 words in a step, 25 in a description, 6 sentences in a paragraph.
+- No semicolon. Write two sentences.
+- Active voice. Name the actor.
+- Use the approved word. The linter names the replacement for each entry.
+- A domain word is legal. `tenant`, `migration` and `grant` are Technical Names.
+
+`ste-lint.mjs` reads every markdown file you write. It returns exit 2 on an
+error. Repair the text and go on. Do not soften a rule to make a report pass.
