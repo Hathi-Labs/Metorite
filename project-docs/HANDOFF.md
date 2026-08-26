@@ -385,6 +385,76 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
+### H-59 · WS-39: the Tasks UI slice — promote button, Areas, Horizons off · [AGENT]
+- 📌 **START HERE IF YOU ARE TAKING OVER TASKS AND PROJECTS.** Read **CLAUDE.md**
+  §1 for the read order, then **H-33** (the API client), then this. H-33 owns the
+  data path. This entry owns what a member can SEE and PRESS. The two are
+  separate slices and neither one alone finishes WS-39.
+- **Check:** `rg -l "apiMoveTask" workbench/control_plane/src/app/tasks/components/`
+  → **no hit means this entry is live.** The promote path shipped in slice 5a and
+  **nothing in the UI calls it.** Also `rg -c -i horizon workbench/control_plane/src/app/tasks/lib/`
+  → a non-zero count means D65 is not applied yet.
+- **Why:** ⚠️ **The Tasks app is BUILT — 36 components, live at `/tasks` today.**
+  Do not read "the UI is unbuilt" anywhere and believe it. `InboxView`,
+  `ClarifyModal`, `EngageView`, `FocusMode`, `DelegateDialog`, `ListsSidebar`,
+  `TaskBoard`, `ItemDetail` and the day planner all exist and work. What is
+  missing is narrower, and it is three things.
+
+  🟢 **(1) The promote button does not exist.** `apiMoveTask` landed in slice 5a
+  and is called by `lens.test.ts` and nothing else.
+
+  Three things depend on it, and **all three are unreachable from the product
+  today**:
+  - migration **192** — required custom fields
+  - **D62** — a task may only move into a personal project it already lives in
+  - the assign-guard — it refuses an assignment that names no project
+
+  The dialog must ask about the **DESTINATION** project, not the task's current
+  one. `apiItemStageOptions` is already re-keyed that way for exactly this
+  reason.
+
+  ⚠️ `apiMoveTask` **throws** when the flag is off, on purpose. Do not "fix" that
+  into a silent no-op. `gtd_items` has no company board to promote onto. A
+  Promote button that reports success while doing nothing is worse than an
+  error.
+
+  🟢 **(2) Areas have no UI.** `Areas` appears in `lib/api.ts`, `lib/lens.ts` and
+  `lib/types.ts`, and in no component. Members need to **create, rename, delete
+  and assign** an Area over their own personal projects. ⚠️ **This blocks H-29**:
+  `gtd_backfill_to_pm()` CREATES Areas from each member's old `gtd_projects`.
+  Run the backfill first, and people hold structure in their own data that
+  they cannot edit.
+
+  🟢 **(3) Horizons is still in the code.** `lib/columns.ts`, `lib/taskStore.ts`
+  and `lib/types.ts` all carry it. **D65 (2026-08-26) takes it off the SURFACE
+  and leaves it in the store** — the same shape D49 used for Centers. Remove the
+  nav entry and the altitude ladder. Do **not** delete the data or the routes,
+  and do **not** revoke a feature to hide it.
+
+  📌 **The product rules this UI must express** (owner directive, 2026-08-26,
+  and D62 is the recorded half):
+  - A Tasks inbox item can be **upgraded** into the Projects app.
+  - It appears in Tasks **if, and only if, it is assigned to that person**.
+  - **Assigning to another member requires a specific project.** A task assigned
+    out of somebody's private tree with no project has no place the other person
+    can legitimately see it from.
+  - **Every mandatory field must be complete** before a task moves to Projects.
+    Migration 192 added `required` to custom fields for this. `_is_blank` treats
+    `0` and `false` as ANSWERS, not blanks — do not "simplify" that.
+
+  ⚠️ **Read `routes/projects/personal.py` and `routes/projects/core.py` before
+  designing anything.** The server half has shipped across several slices.
+  Somebody who reads "make Tasks a lens over Projects" and starts writing
+  endpoints is building a second seam, which is a defect by CLAUDE.md §5.
+
+  ⚠️ **The theme sweep is the real gate, not the conformance suite.** It checks
+  eight regexes and tests **no** layout and no cross-app continuity. Switch
+  Fluent → Material → Graphite on your surface AND its neighbour, by eye.
+- **Authority:** **D65** · D62 · D53 · `work_plan.md` §2 WS-39 row ·
+  `task_manager_app.md` §13.5a · `docs/TASKS_LENS.md` · H-33 (the API client
+  half) · H-29 (the backfill). ⚠️ H-29 must NOT run before this lands.
+- **Added:** 2026-08-26 · guardrails + handoff session
+
 ### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → **15** means slice **5a** landed (the promote path) and 5b is next.
@@ -438,7 +508,9 @@ line — never reclaim a number by deleting the other entry.
   read half and is the natural place to start.
   (2) `origin` is still homeless and still per-TASK — `pm_tasks.source` is the
   nearest existing fact. Settle it before the lens touches email-captured tasks.
-  (3) `horizonId`: **WS-21 owns Horizons**, DO-NOT-DISPATCH stands.
+  (3) `horizonId`: **WS-21 owns the Horizons STORE**, and DO-NOT-DISPATCH
+  stands there. ⚠️ **D65 (2026-08-26) takes Horizons off the SURFACE.**
+  **H-59** owns that removal. Leave the data and the routes alone.
   📌 **Left standing on purpose by slice 4, for a later UI pass:** the Clarify
   destination picker still renders, with exactly one option ("Local"), and
   `GtdItem.source` / `syncState` / `providerUrl` still display for rows imported
