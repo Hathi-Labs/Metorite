@@ -97,6 +97,13 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # discloses nothing a viewer may not see. The SECRET never leaves `POST`.
     ("GET", "/keys"): _R(VIEWER),
     ("POST", "/registry/seats/overview"): _R(VIEWER),
+    # The audit trail (CP-12f). VIEWER on purpose, and it is the same
+    # argument `GET /operators` makes: a record of who did what to our
+    # customers is worth nothing if seeing it needs a privilege. It
+    # discloses no secret — `control_audit.detail` records key and
+    # discount PREFIXES only, never a token, and a test pins that.
+    ("GET", "/activity"): _R(VIEWER),
+    ("GET", "/activity/actions"): _R(VIEWER),
 
     # ── Day-to-day writes. An editor runs the business ──────────────────────
     ("POST", "/orgs/provision"): _R(EDITOR),
