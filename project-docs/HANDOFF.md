@@ -375,7 +375,17 @@ line — never reclaim a number by deleting the other entry.
   grant never did the job it was written for. **Every grant written until this lands is
   inert, and inert SILENTLY**: nothing tells the owner their grant was not
   read. The implementation is on the local-only branch
-  `governance-d45-owner-grants` and has never been pushed.
+  `governance-d45-owner-grants`, and it is now PUSHED (2026-08-26).
+  🟢 **A merged, tested drop-in is staged — two `cp` commands close this.** See
+  `project-docs/staged/guard/README.md`. It carries the grant reader, the H-53
+  fix and the `.env.example` cut in one file, and **55 tests pass**. Measured
+  against your real grants file today: `deploy/` writes go through on the live
+  `deploy-write` grant, and `.env` still blocks with no grant.
+  ⚠️ Do not merge the `governance-d45-owner-grants` BRANCH — it conflicts with
+  the guard work that landed after it, and its own test suite has no grant
+  isolation, so it would start failing the first day a grant existed. The
+  staged file supersedes it.
+  📌 **Measured cost of the delay: 23 `ALLOW` lines written, 0 read.**
 
 ### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
 - **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
@@ -551,8 +561,12 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-53 · plan-guard blocks READS that redirect stderr · [OWNER]
 - **Check:** run `ls deploy/hostinger/ 2>&1`. A block means this entry is live.
-  After the fix, `node .claude/hooks/plan-guard.test.mjs` must still pass every
-  case, and the two new cases below must pass with it.
+  After the fix, `node .claude/hooks/plan-guard.test.mjs` must report
+  **55 cases passed**.
+- 🟢 **THE FIX IS BUILT AND TESTED — two `cp` commands close this and H-17
+  together.** See `project-docs/staged/guard/README.md`. An agent cannot do the
+  copy, because the harness classifier refuses an agent edit to
+  `plan-guard.mjs`. The rest of this entry records why the rule was wrong.
 - **Why:** the `SHELL_WRITE` redirect arm in `.claude/hooks/plan-guard.mjs`
   reads `>\s*\S`. That pattern matches `2>&1` and `2>/dev/null`. Neither one
   writes a file. `2>&1` duplicates a file descriptor, and `/dev/null` is the bit
