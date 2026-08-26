@@ -2177,3 +2177,102 @@ def activity_actions(conn: Connection) -> list[str]:
         text("SELECT DISTINCT action FROM control_audit ORDER BY action")
     ).all()
     return [r[0] for r in rows]
+
+
+# ── CP-10 slice 1: the provider credential write path (H-40) ───────────────
+
+
+def provider_credential_insert(
+    conn: Connection,
+    *,
+    provider: str,
+    secret_enc: str,
+    api_base: str | None = None,
+    label: str | None = None,
+    organization_id: str | None = None,
+) -> str:
+    """Install one provider credential. **Only the ciphertext is passed here.**
+
+    Spec: ``customer_console.md`` CP-10 slice 1.
+
+    ⚠️ The plaintext never reaches this module. ``router.encrypt_secret`` is
+    the one Fernet seam and the route calls it, so a reader of `store.py`
+    cannot accidentally write a secret in the clear.
+
+    ⚠️ **INSERT only, and there is deliberately no UPDATE sibling.** The spec
+    forbids a mutable credential row, and `provider_keys.check_api_base`
+    records the second reason: without an UPDATE path nobody can re-point an
+    existing credential at a host they control and read a secret no route
+    returns.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO provider_credential
+                (provider, organization_id, secret_enc, api_base, label)
+            VALUES (:provider, CAST(:org AS uuid), :secret, :api_base, :label)
+            RETURNING id
+            """
+        ),
+        {"provider": provider, "org": organization_id, "secret": secret_enc,
+         "api_base": api_base, "label": label},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def provider_credential_list(
+    conn: Connection, *, include_revoked: bool = False
+) -> list[dict[str, Any]]:
+    """Every credential, as METADATA. **`secret_enc` is not selected.**
+
+    ⚠️ That omission is the fence, and it is structural rather than a habit.
+    A caller cannot leak what a query never fetched, so the plaintext cannot
+    reach a response through this function however carelessly it is used.
+    ``test_provider_keys.py`` asserts the column list at source level.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT c.id, c.provider, c.api_base, c.label,
+                   c.created_at, c.revoked_at,
+                   o.slug AS org_slug
+              FROM provider_credential c
+              LEFT JOIN organization o ON o.id = c.organization_id
+             WHERE (:all_rows OR c.revoked_at IS NULL)
+             ORDER BY c.provider, c.organization_id NULLS FIRST,
+                      c.created_at DESC
+            """
+        ),
+        {"all_rows": include_revoked},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def provider_credential_revoke(
+    conn: Connection, *, provider: str, organization_id: str | None = None
+) -> int:
+    """Revoke the LIVE credential for one provider. Returns rows affected.
+
+    ⚠️ Sets ``revoked_at`` rather than deleting the row. The spec names this
+    as the one permitted mutation on this table, and the partial unique index
+    is built for it: a revoked row stops blocking the live slot, so the next
+    install succeeds without destroying the record that the old key existed.
+
+    ⚠️ ``organization_id IS NOT DISTINCT FROM`` rather than ``=``. The platform
+    account is the NULL row, and ``NULL = NULL`` is NULL, so an ``=`` here
+    would silently revoke nothing and answer as though it had.
+    """
+    result = conn.execute(
+        text(
+            """
+            UPDATE provider_credential
+               SET revoked_at = now()
+             WHERE provider = :provider
+               AND organization_id IS NOT DISTINCT FROM CAST(:org AS uuid)
+               AND revoked_at IS NULL
+            """
+        ),
+        {"provider": provider, "org": organization_id},
+    )
+    return int(result.rowcount or 0)

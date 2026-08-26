@@ -64,6 +64,7 @@ from customer_console import (
     operator_roles,
     operators,
     payments,
+    provider_keys,
     store,
 )
 from customer_console.auth import (
@@ -112,6 +113,7 @@ from customer_console.router import (
     ExtractedUsage,
     TierUnknown,
     call_provider,
+    encrypt_secret,
     provider_credential,
     resolve_rate_card,
     resolve_tier,
@@ -1277,6 +1279,164 @@ def read_activity(
         ],
         "next_cursor": next_cursor,
     }
+
+
+# ── CP-10 slice 1: OUR provider credentials (H-40, D56.7) ──────────────────
+#
+# ⚠️ **This is the write path that did not exist.** `router.provider_credential`
+# has always read this table, and nothing has ever written it — so on a fresh
+# Console database the Router cannot call a provider at all. Everything else in
+# CP-10 manages a thing that could not exist.
+
+
+class ProviderCredentialRequest(BaseModel):
+    """Install a provider credential.
+
+    ⚠️ `secret` is write-ONLY. It appears in no response model in this file,
+    and `store.provider_credential_list` does not even select the column it is
+    stored in. Done-when 2 asks for a structural fence rather than an example
+    test, and those two facts are it.
+    """
+
+    provider: str = Field(min_length=1)
+    secret: str = Field(min_length=1)
+    api_base: str | None = None
+    label: str | None = None
+    #: Present means BYOK — this organization insists on its own provider
+    #: account (§3.4). Absent means the PLATFORM account, used for everyone
+    #: else, which is the row the Router falls back to.
+    org_slug: str | None = None
+
+
+class ProviderCredentialRevokeRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    org_slug: str | None = None
+
+
+def _credential_refusal(exc: Exception) -> HTTPException:
+    """400, and it SAYS WHY — see `CredentialRefused`."""
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/providers/credentials")
+def list_provider_credentials(
+    staff: Operator, include_revoked: bool = False
+) -> dict[str, Any]:
+    """Which providers we hold an account with. **Never the secret.**
+
+    Done-when 2. The plaintext is not returned here and it cannot be: the
+    query does not select `secret_enc`, so there is nothing to leak.
+    """
+    with get_engine().begin() as conn:
+        rows = store.provider_credential_list(
+            conn, include_revoked=include_revoked
+        )
+    return {
+        "credentials": [
+            {
+                "id": str(r["id"]),
+                "provider": r["provider"],
+                "api_base": r["api_base"],
+                "label": r["label"],
+                # NULL org means the PLATFORM account, which is the common
+                # case and the one the Router falls back to.
+                "org_slug": r["org_slug"],
+                "scope": "byok" if r["org_slug"] else "platform",
+                "created_at": _iso(r["created_at"]),
+                "revoked_at": _iso(r["revoked_at"]),
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/providers/credentials")
+def install_provider_credential(
+    req: ProviderCredentialRequest, staff: Operator
+) -> dict[str, Any]:
+    """Install a provider credential. Fernet at rest, INSERT only.
+
+    Done-when 1: after this route runs, `router.provider_credential()` returns
+    the key — on a database where nothing seeded it.
+
+    ⚠️ **Rotation is this same route.** The partial unique index allows one
+    LIVE credential per (provider, org), so installing over a live one revokes
+    the old row first, in the SAME transaction. That is a rotation: the old
+    key stops being used, its row survives for the record, and there is never
+    a moment with two live keys or none.
+    """
+    try:
+        provider = provider_keys.check_provider(req.provider)
+        secret = provider_keys.check_secret(req.secret)
+        api_base = provider_keys.check_api_base(req.api_base)
+    except provider_keys.CredentialRefused as exc:
+        raise _credential_refusal(exc) from exc
+
+    # Encrypted BEFORE the transaction opens. An unset encryption key must
+    # fail before anything is written, not half way through a rotation.
+    try:
+        secret_enc = encrypt_secret(secret)
+    except RuntimeError as exc:
+        # `CUSTOMER_CONSOLE_ENCRYPTION_KEY` is unset. 503 and not 500: the box
+        # is unconfigured, which is a different incident from a bug.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug) if req.org_slug else None
+        rotated = store.provider_credential_revoke(
+            conn, provider=provider, organization_id=org_id
+        )
+        credential_id = store.provider_credential_insert(
+            conn,
+            provider=provider,
+            secret_enc=secret_enc,
+            api_base=api_base,
+            label=req.label,
+            organization_id=org_id,
+        )
+        # ⚠️ The audit row records the PROVIDER and the LABEL, never the key
+        # and never a fragment of it. `key.issue` set that precedent and
+        # `test_operator_activity.py` fences the trail as a whole.
+        _audit(conn, org_id, "provider.credential.install",
+               {"provider": provider, "label": req.label,
+                "rotated": rotated, "api_base": api_base},
+               actor=staff.actor)
+
+    return {
+        "id": credential_id,
+        "provider": provider,
+        "scope": "byok" if org_id else "platform",
+        # What an operator needs to know afterwards: did this replace a live
+        # key, or add the first one?
+        "rotated": rotated,
+    }
+
+
+@app.post("/providers/credentials/revoke")
+def revoke_provider_credential(
+    req: ProviderCredentialRevokeRequest, staff: Operator
+) -> dict[str, Any]:
+    """Revoke the live credential for a provider. **The row survives.**
+
+    ⚠️ Revoking the PLATFORM credential stops every AI call that is not BYOK.
+    That is the intended behaviour of a revocation and it is why this route is
+    admin-and-elevated, but it is worth saying out loud in the one place
+    somebody will read before running it.
+    """
+    try:
+        provider = provider_keys.check_provider(req.provider)
+    except provider_keys.CredentialRefused as exc:
+        raise _credential_refusal(exc) from exc
+
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, req.org_slug) if req.org_slug else None
+        revoked = store.provider_credential_revoke(
+            conn, provider=provider, organization_id=org_id
+        )
+        _audit(conn, org_id, "provider.credential.revoke",
+               {"provider": provider, "revoked": revoked},
+               actor=staff.actor)
+    return {"provider": provider, "revoked": revoked}
 
 
 @app.get("/health")

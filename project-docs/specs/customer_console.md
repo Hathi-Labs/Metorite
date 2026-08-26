@@ -1343,7 +1343,7 @@ index is built for.
 
 | # | Slice | Why here |
 |---|---|---|
-| **1** | **`provider_credential` write path** — operator-door routes to add, list (never returning plaintext), rotate and revoke; Fernet at rest via `CUSTOMER_CONSOLE_ENCRYPTION_KEY` | **This is the one that unblocks the product.** Everything else is management of a thing that currently cannot exist |
+| **1** | ◐ **BUILT 2026-08-27** (`ws31-cp10s1-provider-keys`). `provider_keys.py`, three store functions and three routes: `GET`/`POST` `/providers/credentials` and `POST /providers/credentials/revoke`. Rotation is the install route, because the partial unique index allows one live credential per (provider, org). 40 R8 tests, **17 mutations killed and 0 survived**. ⚠️ **No new migration** — 004 already holds the table. Done-whens 1 and 2 are met | **This is the one that unblocks the product.** Everything else is management of a thing that currently cannot exist |
 | **2** | **The access model + the write routes** — INSERT-with-`effective_from` routes over bindings and rates, plus a read showing what is in force now and what is scheduled. 🆕 **Plus D60's `model_capability` table, the `task` column, the two-step resolution, and the rate-card `unit`** (§6A.9) | Turns hand-run SQL into an operator act; makes image/TTS/vision a **data** change as D32.7 promised; and 🔴 **closes the live pricing hole** — without `unit`, three of six tasks cannot be billed at all |
 | **3** | **The operator UI** — relocate the three-tab surface, re-pointed at slices 1–2 | Move, do not rebuild |
 | **4** | **CP-5's removal half** — delete `/settings/models` from the customer product, stop writing `model_config` and the `/api/settings/llm/*` write routes | R6: stop writing before dropping |
