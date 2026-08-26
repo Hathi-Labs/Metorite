@@ -1,5 +1,5 @@
 {
-  "description": "Shared project settings. RTK (Rust Token Killer) PreToolUse hook compresses noisy shell output (pytest/ruff/git/docker/...) before it reaches the agent context. Scoped by an allowlist in .claude/hooks/rtk-bash.sh; skips `uv run` and file reads. Requires `rtk` on PATH (winget install rtk-ai.rtk); no-ops silently if absent. plan-guard.mjs enforces work_plan.md §6's owner-gate registry and branch discipline deterministically — it is the layer that makes unattended dispatch safe; update it in the same PR as any §6 change. session-handoff.mjs (D39) injects project-docs/HANDOFF.md's open entries at session start, so cross-session work is carried by the repo instead of by the owner's memory; it fails open and silent.",
+  "description": "Shared project settings. RTK (Rust Token Killer) PreToolUse hook compresses noisy shell output (pytest/ruff/git/docker/...) before it reaches the agent context. Scoped by an allowlist in .claude/hooks/rtk-bash.sh; skips `uv run` and file reads. Requires `rtk` on PATH (winget install rtk-ai.rtk); no-ops silently if absent. plan-guard.mjs enforces work_plan.md §6's owner-gate registry and branch discipline deterministically — it is the layer that makes unattended dispatch safe; update it in the same PR as any §6 change. session-handoff.mjs (D39) injects project-docs/HANDOFF.md's open entries at session start, so cross-session work is carried by the repo instead of by the owner's memory; it fails open and silent. ste-lint.mjs holds the repo to Simplified Technical English (ASD-STE100) — contract docs/style_ste.md, word list .claude/hooks/ste-words.json. It reads ONLY the text an agent just wrote to a markdown file, never the rest of the file, because the rule is a ratchet over ~104 grandfathered docs; it fails open, unlike plan-guard.",
   "hooks": {
     "SessionStart": [
       {
@@ -33,6 +33,19 @@
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-guard.mjs\"",
             "timeout": 10,
             "statusMessage": "plan-guard: checking owner gates"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/ste-lint.mjs\" --hook",
+            "timeout": 15,
+            "statusMessage": "ste-lint: checking the text just written"
           }
         ]
       }

@@ -75,6 +75,30 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-52 - Decide whether STE binds product UI copy - [OWNER]
+- **Check:** read `docs/style_ste.md` §8 Q1. If the row is gone, the owner has
+  decided and this entry is dead.
+- **Why:** the 2026-08-26 directive put every document and every agent message
+  under Simplified Technical English. It did not say whether the strings a
+  customer reads in the product are in scope. Nothing checks them today, so the
+  answer changes what `ste-lint.mjs` must learn to read. UI copy lives in TSX and
+  in the theming layer, not in markdown, so the fence would be a new one.
+- **Authority:** owner directive 2026-08-26 - `docs/style_ste.md` §1, §8
+- **Added:** 2026-08-26 - STE harness session
+
+### H-53 - Decide whether `pr-check.yml` runs the STE gate, and blocks - [OWNER]
+- **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
+  owner decided and this entry is dead.
+- **Why:** the rule holds in two places today. `ste-lint.mjs` runs as a
+  PostToolUse hook, and `.pre-commit-config.yaml` runs it on staged markdown.
+  Both are local. A person who does not install pre-commit is not bound, and CI
+  never looks. ⚠️ This depends on H-23. `pr-check.yml` carries `paths-ignore`
+  for `**.md`, so a docs-only pull request produces zero check-runs. A required
+  STE context would then block every docs pull request. Land the T-1 sentinel
+  job first.
+- **Authority:** owner directive 2026-08-26 - `docs/style_ste.md` §8 Q2 - H-23
+- **Added:** 2026-08-26 - STE harness session
+
 ### H-23 · `main` reads `protected: false` — CI is advisory at merge · [OWNER]
 - **Check:** `gh api repos/Hathi-Labs/Metorite/branches/main/protection` → a
   `404 Branch not protected` means still pending. ⚠️ Read it back from the API,
