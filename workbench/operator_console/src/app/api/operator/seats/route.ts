@@ -7,5 +7,5 @@ export const dynamic = "force-dynamic";
 // plan; the Console 409s at the cap with a buy-more payload, relayed verbatim.
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => assignSeat(body));
+  return proxyToConsole((d) => assignSeat(body, d));
 }

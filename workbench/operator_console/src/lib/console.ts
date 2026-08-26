@@ -58,13 +58,49 @@ export function operatorHeaders(env: ConsoleEnv): Record<string, string> {
   };
 }
 
+// The operator's OWN session on the wire (CP-12g). The Console URL still has
+// to be configured — an unconfigured box refuses rather than guessing a host —
+// but the shared operator token is deliberately NOT required here. A console
+// that demanded it would keep a cross-org master credential on disk for no
+// reason once real sessions exist.
+export function sessionHeaders(
+  env: ConsoleEnv,
+  token: string,
+): Record<string, string> {
+  if (!env.url) {
+    throw new ConsoleUnconfigured(
+      "CUSTOMER_CONSOLE_URL must be set server-side before the operator " +
+        "console can reach the Console",
+    );
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+}
+
+// ⚠️ **CP-12g: whose credential goes on the wire.**
+//
+// `authToken` is the SIGNED-IN OPERATOR's `cc_sess_` session. When it is
+// present it replaces the shared operator token entirely, and that is the
+// whole point of CP-12: the audit row then names a person instead of reading
+// `breakglass`, and the §5 role matrix applies to them.
+//
+// Falling back to the env token for a user-driven call would be worse than
+// doing nothing. CP-12e made the shared token BYPASS every role and elevation
+// check, and log a WARNING on each use. A console that proxied through it
+// would turn ordinary work into a stream of break-glass alerts, and hand every
+// signed-in person admin rights. `route.ts` therefore REFUSES rather than
+// falls back whenever the session path is on.
 export async function callConsole(
   path: string,
   init: { method: string; body?: unknown },
-  deps: { env?: ConsoleEnv; fetchImpl?: FetchLike } = {},
+  deps: { env?: ConsoleEnv; fetchImpl?: FetchLike; authToken?: string } = {},
 ): Promise<ConsoleResult> {
   const env = deps.env ?? readConsoleEnv();
-  const headers = operatorHeaders(env);
+  const headers = deps.authToken
+    ? sessionHeaders(env, deps.authToken)
+    : operatorHeaders(env);
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
   const res = await fetchImpl(`${env.url}${path}`, {
     method: init.method,
@@ -74,63 +110,59 @@ export async function callConsole(
   return { status: res.status, body: await res.text() };
 }
 
-// ── The operator API surface CP-8 slice 1 consumes ──────────────────────────
+// ── The operator API surface the console consumes ───────────────────────────
 //
 // Reuse the Console routes that already exist and are PROVEN LIVE — never a
-// reimplementation (customer_console.md §6). Only the cross-org list (`GET
-// /orgs`, added by this ticket) is new, and it too lives on the Console.
+// reimplementation (customer_console.md §6).
+//
+// ⚠️ Every helper takes `authToken`. One that could not carry the caller's
+// session would silently fall back to the shared token, which is the exact
+// mistake `callConsole`'s comment above describes.
 
-export const listOrganizations = (d?: {
+export type Deps = {
   env?: ConsoleEnv;
   fetchImpl?: FetchLike;
-}) => callConsole("/orgs", { method: "GET" }, d ?? {});
+  authToken?: string;
+};
 
-export const billingSummary = (
-  orgSlug: string,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) =>
+export const listOrganizations = (d?: Deps) =>
+  callConsole("/orgs", { method: "GET" }, d ?? {});
+
+export const billingSummary = (orgSlug: string, d?: Deps) =>
   callConsole(
     `/billing/summary?org_slug=${encodeURIComponent(orgSlug)}`,
     { method: "GET" },
     d ?? {},
   );
 
-export const catalog = (d?: { env?: ConsoleEnv; fetchImpl?: FetchLike }) =>
+export const catalog = (d?: Deps) =>
   callConsole("/billing/catalog", { method: "GET" }, d ?? {});
 
-export const activateSubscription = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/billing/subscriptions/activate", { method: "POST", body }, d ?? {});
+export const activateSubscription = (body: unknown, d?: Deps) =>
+  callConsole(
+    "/billing/subscriptions/activate",
+    { method: "POST", body },
+    d ?? {},
+  );
 
-export const assignSeat = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/billing/seats", { method: "POST", body }, d ?? {});
+export const assignSeat = (body: unknown, d?: Deps) =>
+  callConsole("/billing/seats", { method: "POST", body }, d ?? {});
 
-export const releaseSeat = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/billing/seats/release", { method: "POST", body }, d ?? {});
+export const releaseSeat = (body: unknown, d?: Deps) =>
+  callConsole("/billing/seats/release", { method: "POST", body }, d ?? {});
 
-export const grantCredits = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/credits/grant", { method: "POST", body }, d ?? {});
+export const grantCredits = (body: unknown, d?: Deps) =>
+  callConsole("/credits/grant", { method: "POST", body }, d ?? {});
 
-export const setLifecycle = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/orgs/lifecycle", { method: "POST", body }, d ?? {});
+export const setLifecycle = (body: unknown, d?: Deps) =>
+  callConsole("/orgs/lifecycle", { method: "POST", body }, d ?? {});
 
 // CP-2g — the registry half of destroying an organization. The Console refuses
 // unless the org is already `deleted` (terminal on the lifecycle graph), strips
 // personal data + live secrets, tombstone-renames the slug, and keeps the
 // financial record. Body {org_slug, confirm} where confirm must echo the slug.
-export const purgeOrgRegistry = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/orgs/purge", { method: "POST", body }, d ?? {});
+export const purgeOrgRegistry = (body: unknown, d?: Deps) =>
+  callConsole("/orgs/purge", { method: "POST", body }, d ?? {});
 
 // Provision a new organization (create-only): the Console POST /orgs/provision
 // under the `Operator` scheme creates the org + its owner + Core seats, PLACES
@@ -139,7 +171,63 @@ export const purgeOrgRegistry = (
 // staff credential carries no deployment identity); the Console answers 400 when
 // it is missing, 404 for an unknown label and 409 when the org is already placed
 // on a different deployment — this client relays each status verbatim.
-export const provisionOrg = (
-  body: unknown,
-  d?: { env?: ConsoleEnv; fetchImpl?: FetchLike },
-) => callConsole("/orgs/provision", { method: "POST", body }, d ?? {});
+export const provisionOrg = (body: unknown, d?: Deps) =>
+  callConsole("/orgs/provision", { method: "POST", body }, d ?? {});
+
+// ── CP-12: operator identity ────────────────────────────────────────────────
+
+// The sign-in exchange (CP-12f2). ⚠️ This one carries NO credential of ours.
+// The Supabase access token in the body is the whole of the proof, and the
+// Console verifies it with the issuer before it mints anything.
+export const exchangeSession = (accessToken: string, d?: Deps) =>
+  callConsole(
+    "/operators/session",
+    { method: "POST", body: { access_token: accessToken } },
+    d ?? {},
+  );
+
+export const revokeSession = (d?: Deps) =>
+  callConsole("/operators/session", { method: "DELETE" }, d ?? {});
+
+export const listOperators = (d?: Deps) =>
+  callConsole("/operators", { method: "GET" }, d ?? {});
+
+export const addOperator = (body: unknown, d?: Deps) =>
+  callConsole("/operators", { method: "POST", body }, d ?? {});
+
+export const updateOperator = (id: string, body: unknown, d?: Deps) =>
+  callConsole(
+    `/operators/${encodeURIComponent(id)}`,
+    { method: "PATCH", body },
+    d ?? {},
+  );
+
+export const deactivateOperator = (id: string, d?: Deps) =>
+  callConsole(
+    `/operators/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+    d ?? {},
+  );
+
+// The elevation window (CP-12e). Opening one is always for the CALLER, so
+// there is no operator id to pass — the Console reads it from the session.
+export const readElevation = (d?: Deps) =>
+  callConsole("/operators/elevate", { method: "GET" }, d ?? {});
+
+export const openElevation = (body: unknown, d?: Deps) =>
+  callConsole("/operators/elevate", { method: "POST", body }, d ?? {});
+
+export const closeElevation = (d?: Deps) =>
+  callConsole("/operators/elevate", { method: "DELETE" }, d ?? {});
+
+// The audit trail (CP-12f). Filters and the opaque page cursor ride as query
+// parameters, and every one of them is optional.
+export const readActivity = (query: string, d?: Deps) =>
+  callConsole(
+    `/activity${query ? `?${query}` : ""}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+export const activityActions = (d?: Deps) =>
+  callConsole("/activity/actions", { method: "GET" }, d ?? {});

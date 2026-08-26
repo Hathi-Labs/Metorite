@@ -35,10 +35,15 @@ vi.mock("@/lib/tenantDoor", () => ({
   TenantDoorUnconfigured: class TenantDoorUnconfigured extends Error {},
 }));
 
-// The staff gate is its own suite (`staff.test.ts`); here it admits.
+// The gate has its own suites (`staff.test.ts`, `identity.test.ts`); here it
+// admits, and hands back a caller token so the deps threading is exercised.
 vi.mock("@/lib/route", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/route")>();
-  return { ...real, gateStaff: async () => null };
+  return {
+    ...real,
+    gateStaff: async () => null,
+    gate: async () => ({ ok: true, authToken: "cc_sess_test_token" }),
+  };
 });
 
 import { POST } from "./route";

@@ -13,5 +13,5 @@ export const dynamic = "force-dynamic";
 // refusal.
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => provisionOrg(body));
+  return proxyToConsole((d) => provisionOrg(body, d));
 }

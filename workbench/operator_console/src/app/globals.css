@@ -69,6 +69,24 @@ h2 {
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
 }
+/* The three surfaces, in the bar. All of them are readable by every role,
+   so none is ever hidden — see Header.tsx. */
+.topbar nav {
+  display: flex;
+  gap: 18px;
+  margin-left: auto;
+  margin-right: 18px;
+}
+.topbar nav a {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.topbar nav a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
 .brand {
   color: var(--text);
   font-weight: 700;

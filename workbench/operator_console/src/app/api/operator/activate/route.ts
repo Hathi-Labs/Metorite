@@ -9,5 +9,5 @@ export const dynamic = "force-dynamic";
 // Console, which is the authority on the double-grant 409.
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => activateSubscription(body));
+  return proxyToConsole((d) => activateSubscription(body, d));
 }
