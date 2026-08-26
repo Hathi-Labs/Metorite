@@ -320,6 +320,10 @@ class FieldIn(BaseModel):
     field_type: str | None = None
     options: list[str] | None = None
     position: int | None = None
+    #: WS-39 (migration 192). A task may not ENTER this project without a value
+    #: for this field. Checked at the MOVE, never at capture — see the
+    #: migration's header for why that boundary and not the other.
+    required: bool | None = None
     #: WS-27bj. ``"org"`` mints an org-wide definition; anything else keeps
     #: today's per-project behaviour verbatim.
     scope: str | None = None
@@ -610,6 +614,65 @@ def _json(value: Any) -> str:
     return json.dumps(value)
 
 
+async def assert_required_fields_present(
+    db: Any, root: str, values: dict[str, Any],
+) -> None:
+    """Refuse a task entering ``root`` without its mandatory fields.
+
+    Migration 192, owner directive 2026-08-26. Called at the MOVE and nowhere
+    else — a required field is a fact about a DESTINATION, and capture has no
+    destination (see 192's header for the full argument; the short version is
+    that a required-field prompt on quick capture is the friction that stops
+    people capturing at all).
+
+    ⚠️ Emptiness is judged the way a FORM would judge it, not the way Python
+    would. ``""`` and ``"   "`` are absent — somebody who tabbed past a text box
+    has not answered it — but ``0`` and ``False`` are PRESENT, because a number
+    field answered zero and a checkbox answered no are real answers. Treating
+    them as missing is the classic falsy bug, and on a *required-field* check it
+    would be worse than usual: it refuses the move and tells the user to fill in
+    a field they can see is already filled in.
+
+    Reads through :func:`load_definitions`, so an org-wide required field
+    (WS-27bj) is honoured exactly like a project-local one, and a project-local
+    definition still shadows an org-wide one on ``field_key``.
+    """
+    missing = [
+        d for d in await load_definitions(db, root)
+        if d.get("required")
+        and _is_blank(values.get(d["field_key"]))
+    ]
+    if not missing:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "error": "required_fields_missing",
+            "message": (
+                "This project requires "
+                + ", ".join(f"'{d['name']}'" for d in missing)
+                + " before a task can be moved into it."
+            ),
+            # The client renders these as inputs in the move dialog, so it needs
+            # the whole definition, not just the names — the field's type and
+            # its options are what make the prompt answerable in place rather
+            # than sending somebody off to find the project's settings.
+            "fields": missing,
+        },
+    )
+
+
+def _is_blank(value: Any) -> bool:
+    """Absent for form purposes. ``0`` and ``False`` are ANSWERS, not blanks."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
 def _definition_row(row: Any) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -622,12 +685,18 @@ def _definition_row(row: Any) -> dict[str, Any]:
         "field_type": row.field_type,
         "options": list(row.options or []),
         "position": row.position,
+        #: WS-39 / migration 192. `coalesce` in Python rather than SQL because
+        #: the column is NULLABLE by R6 — "never stated" and "stated false" are
+        #: the same answer to every reader today, and a later release may
+        #: tighten it without touching any of them.
+        "required": bool(getattr(row, "required", None) or False),
         "created_by": row.created_by,
     }
 
 
 __all__ = [
     "CHOICE_TYPES",
+    "assert_required_fields_present",
     "FIELD_TYPES",
     "MAX_FIELDS",
     "MAX_OPTIONS",
