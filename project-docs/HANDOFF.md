@@ -367,6 +367,14 @@ line — never reclaim a number by deleting the other entry.
   Both files are regenerable from the diff if the scratchpad is gone.
 - **Authority:** `work_plan.md` §6 · D45 (in flight)
 - **Added:** 2026-08-19 · VPS bring-up session
+  🔴 **BLOCKING SOMETHING CONCRETE AS OF 2026-08-26.** This is no longer only
+  a tidiness item. The owner wrote a valid `deploy-write` grant to unblock the
+  WS-25 pull unit (H-51) and plan-guard blocked the write anyway, because the
+  reading half has never landed — `plan-guard.mjs` on `main` has zero
+  references to `OWNER_GRANTS`. **Every grant written until this lands is
+  inert, and inert SILENTLY**: nothing tells the owner their grant was not
+  read. The implementation is on the local-only branch
+  `governance-d45-owner-grants` and has never been pushed.
 
 ### H-18 · Verify the first production sign-in by evidence (session → owner chain) · [AGENT]
 - **Check:** on the box, `journalctl -u acb-gateway | grep -i "owner bootstrap"`
@@ -563,12 +571,28 @@ line — never reclaim a number by deleting the other entry.
 - **Why:** the two files that make H-50's fix real. **An agent cannot write them:**
   `plan-guard.mjs` PROTECTED_PATHS blocks every write under `deploy/`, and that
   refusal is correct — these run against prod.
-  🟢 **Two ways to unblock it, and the first is the point of D45:**
-  1. add `ALLOW 2026-08-26 deploy-write — pull unit for WS-25` to
-     `.claude/OWNER_GRANTS.md` (by hand — an agent cannot write that file either)
-     and an agent will author both units against the existing
-     `acb-health-watchdog.*` conventions; or
-  2. create them directly from the content in the session write-up.
+  🔴 **THE GRANT ROUTE DOES NOT WORK YET — tried 2026-08-26, and this is the
+  finding.** The owner wrote `ALLOW 2026-08-26 deploy-write — pull unit for
+  WS-25` into `.claude/OWNER_GRANTS.md` and plan-guard blocked the write anyway.
+  Cause: **`plan-guard.mjs` on `main` contains no reference to `OWNER_GRANTS`,
+  `ALLOW` or grants at all** — the reading half of D45 was never landed, and the
+  grants file is still untracked. So a correctly-written grant is INERT. That is
+  **H-17**, which is `[OWNER]` for a reason it states plainly: the harness
+  "correctly blocks an agent finalizing its own guardrail changes". The
+  implementation exists on the local-only branch
+  `governance-d45-owner-grants` (its plan-guard has 7 grant references) and has
+  never been pushed.
+  ⚠️ So **do not write more grant lines expecting them to work** until H-17
+  lands. They are correct acts against a mechanism that is not listening, and
+  the failure is silent from the owner's side — the grant simply appears to be
+  ignored.
+  🟢 **What to do instead, now:** both unit files are authored and staged in the
+  session scratchpad as `acb-pull.service` and `acb-pull.timer` (the same
+  hand-over pattern H-17 uses for its own commit message). Copy them into
+  `deploy/hostinger/`, or straight to `/etc/systemd/system/` on the box.
+  ⚠️ `systemd-analyze verify` was NOT run — the dev box is Windows. The syntax
+  was reviewed by hand only; run `systemd-analyze verify` on the box before
+  enabling.
   📌 `TimeoutStartSec=1800` is not arbitrary: `deploy.yml` already says its ssh
   timeout is *"matched to the pull unit's TimeoutStartSec"*, because the
   pre-migration backup alone takes ~11 minutes on the 4GB box. The unit was
