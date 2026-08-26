@@ -52,7 +52,20 @@ order, so `/operators/{operator_id}` swallowed `/operators/elevate` and
 `DELETE` answered 404 instead of closing a window. Pinned by
 `test_the_elevate_routes_are_not_swallowed_by_the_path_parameter`.
 
-CP-12f and CP-12g are unbuilt.
+**◐ CP-12f BUILT 2026-08-27** (`ws31-cp12f-activity`) — the Activity
+surface. `operator_activity.py` holds the page cursor, `store.activity_page`
+holds the query, and `GET /activity` reads every company. 26 tests.
+**13 mutations killed, 0 survived.**
+
+⚠️ **H-7 was measured on this surface, not assumed.**
+`test_a_late_commit_can_be_missed_by_a_scroll` reproduces the miss on real
+Postgres 16. It also proves the row returns on the next fresh read. The
+cursor is EPHEMERAL, and that bound is what migration 168 does not have.
+
+⚠️ **F8 was found at build. See §2.** The identity stack has no front
+door. CP-12g must not start before somebody builds one.
+
+CP-12g is unbuilt.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -107,11 +120,15 @@ from the code on 2026-08-26.
 | **F5** | **Removing one person means changing the secret for everybody.** There is no per-person revocation | F1 |
 | **F6** | **Nothing slows a guess.** The sign-in route has no rate limit, no lockout and no delay | `session/route.ts` |
 | **F7** | **The gate holds by convention, not by structure.** The app has no `middleware.ts`. Each route calls the gate itself. A new route that forgets is open, and no test says otherwise | `find workbench/operator_console -name "middleware*"` returns nothing |
+| **F8** | ⚠️ **The identity stack has no front door — found 2026-08-27, at the CP-12f build.** Nothing calls `operators.admit()`. Nothing calls `operators.bootstrap()`. Nothing calls `store.operator_session_insert` except the tests. CP-12a to CP-12e verify a session that no route can issue, so every operator route today answers to the shared `breakglass` token alone. **CP-12g must not remove the passphrase before somebody builds the exchange, or the console admits nobody at all** | `[r.path for r in app.routes]` names no sign-in route |
 
 **Read F1 to F7 together and the shape is clear.** The console is protected by a
 shared password with no identity behind it. That posture was correct while the
 app was dark and nobody had deployed it. The app was deployed on 2026-08-22, so
 the posture is now the weakest control in the product.
+
+⚠️ **F8 blocks the cutover.** CP-12g deletes the passphrase. Delete it
+before the exchange exists and nobody can sign in at all.
 
 ⚠️ **F3 is the one that compounds.** Roles are only worth as much as the record
 of who used them. If the log cannot name a person, then a role gate is a control
@@ -399,8 +416,9 @@ out of a live console.
 | **CP-12c** | ◐ **BUILT 2026-08-26.** `operator_roles.py` holds the §5 matrix, enforced in `auth.require_operator` BEFORE the route body runs — so a refusal cannot reveal whether a company exists. Fails CLOSED on an unnamed route. 49 R8 tests, 7 mutations killed. Also closes CP-12b's provision-actor gap | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12d** | ◐ **BUILT 2026-08-27.** FOUR routes (`GET`/`POST` `/operators`, `PATCH`/`DELETE` `/operators/{id}`) and the four guards of §6.1. `GET` is `viewer` — who holds power over our customers is what the team should see without asking. 24 R8 tests, 8 mutations killed. ⚠️ Deferred: the console SURFACE that drives them, which lands with CP-12f | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
 | **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
-| **CP-12f** | **The Activity surface.** A cross-org read of `control_audit` with a filter for actor, action and company. Every role reads it | CP-12b | 🟢 **AGENT-SAFE** |
-| **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7** | all | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
+| **CP-12f** | ◐ **BUILT 2026-08-27.** `operator_activity.py` plus `GET /activity` and `GET /activity/actions`. Keyset-paginated, cross-org, `viewer`-readable. The `LEFT JOIN` keeps org-less and purged-company rows visible. 26 R8 tests, **13 mutations killed and 0 survived**. ⚠️ H-7 is reproduced by a test, not assumed. ⚠️ Found **F8** at build | CP-12b | 🟢 **AGENT-SAFE** |
+| **CP-12f2** | ⚠️ **THE FRONT DOOR — found at the CP-12f build, and it blocks CP-12g.** The Supabase sign-in exchange: a route that takes a verified Microsoft identity, calls `operators.admit()`, and mints the `cc_sess_` session CP-12b already verifies. §8.1 done-whens 1 to 6 are UNREACHABLE without it. See **F8** | CP-12a | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration stays **OWNER-GATE** |
+| **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
 ### 8.1 Done-when, per ticket
 
@@ -510,6 +528,7 @@ uv run pytest tests/unit/test_operator_session.py -q
 uv run pytest tests/unit/test_operator_roles.py -q
 uv run pytest tests/unit/test_operator_admin.py -q
 uv run pytest tests/unit/test_operator_elevation.py -q
+uv run pytest tests/unit/test_operator_activity.py -q
 
 # The seam ratchets must stay green.
 uv run pytest tests/unit/test_db_engine_seam.py tests/unit/test_tenant_coverage.py -q

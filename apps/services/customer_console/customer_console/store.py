@@ -2091,3 +2091,89 @@ def operator_elevation_close(conn: Connection, operator_id: str) -> int:
         {"op": operator_id},
     )
     return int(result.rowcount or 0)
+
+
+# ── CP-12f: reading the audit trail across every company ───────────────────
+
+
+def activity_page(
+    conn: Connection,
+    *,
+    limit: int,
+    cursor_created_at: datetime | None = None,
+    cursor_id: str | None = None,
+    actor: str | None = None,
+    action: str | None = None,
+    org_slug: str | None = None,
+) -> list[dict[str, Any]]:
+    """One page of ``control_audit``, newest first, across ALL organizations.
+
+    Spec: ``operator_identity_and_access.md`` §8.1 done-whens 25-26.
+
+    ⚠️ **LEFT JOIN, and it is load-bearing.** ``control_audit.organization_id``
+    is NULLABLE and two classes of row rely on that:
+
+    * every ``operator.*`` action — adding a colleague names no company;
+    * every row of a PURGED organization, because the column is
+      ``ON DELETE SET NULL`` so the history survives the customer (D63, and
+      done-when 19).
+
+    An INNER JOIN would compile, pass a casual read, and silently hide exactly
+    the rows an investigation needs. ``test_operator_activity.py`` pins both.
+
+    ⚠️ **Ordering: ``(created_at DESC, id DESC)``, a strict TOTAL order.**
+    ``created_at`` alone is not unique — one request can write several rows and
+    ``now()`` gives them all the transaction-start stamp — so paging on it
+    alone would repeat or drop rows at a page boundary. The ``id`` tiebreak is
+    what makes the keyset exact. Read :data:`~customer_console.operator_
+    activity.CURSOR_IS_EPHEMERAL` before changing this: the ordering carries a
+    known and measured limitation (H-7).
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT a.id,
+                   a.actor,
+                   a.action,
+                   a.detail,
+                   a.created_at,
+                   o.slug AS org_slug,
+                   o.name AS org_name
+              FROM control_audit a
+              LEFT JOIN organization o ON o.id = a.organization_id
+             WHERE (CAST(:actor AS TEXT) IS NULL OR a.actor = CAST(:actor AS TEXT))
+               AND (CAST(:action AS TEXT) IS NULL
+                    OR a.action = CAST(:action AS TEXT))
+               AND (CAST(:org_slug AS TEXT) IS NULL
+                    OR o.slug = CAST(:org_slug AS TEXT))
+               AND (CAST(:cursor_ts AS TIMESTAMPTZ) IS NULL
+                    OR (a.created_at, a.id)
+                       < (CAST(:cursor_ts AS TIMESTAMPTZ),
+                          CAST(:cursor_id AS UUID)))
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT :limit
+            """
+        ),
+        {
+            "actor": actor,
+            "action": action,
+            "org_slug": org_slug,
+            "cursor_ts": cursor_created_at,
+            "cursor_id": cursor_id,
+            "limit": limit,
+        },
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def activity_actions(conn: Connection) -> list[str]:
+    """Every ``action`` value that actually occurs, for a filter control.
+
+    Read from the data rather than from a constant list, because the constant
+    would be a second vocabulary to keep in step with the call sites. An action
+    nobody has performed does not need a filter entry.
+    """
+    rows = conn.execute(
+        text("SELECT DISTINCT action FROM control_audit ORDER BY action")
+    ).all()
+    return [r[0] for r in rows]

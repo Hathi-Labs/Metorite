@@ -59,6 +59,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 from customer_console import (
+    operator_activity,
     operator_elevation,
     operator_roles,
     operators,
@@ -1197,6 +1198,85 @@ def deactivate_operator(operator_id: str, staff: Operator) -> dict[str, Any]:
     return patch_operator(
         operator_id, OperatorPatchRequest(status="deactivated"), staff
     )
+
+
+# ── CP-12f: the Activity surface (D64.5, done-whens 25-26) ─────────────────
+
+
+@app.get("/activity/actions")
+def list_activity_actions(staff: Operator) -> dict[str, Any]:
+    """The distinct `action` values present, so a filter can offer real ones."""
+    with get_engine().begin() as conn:
+        return {"actions": store.activity_actions(conn)}
+
+
+@app.get("/activity")
+def read_activity(
+    staff: Operator,
+    actor: str | None = None,
+    action: str | None = None,
+    org_slug: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """The audit trail across EVERY company, newest first.
+
+    Done-when 25. Readable by a `viewer`, and cross-org by design — this is the
+    one read that answers "who did what to which customer", which no
+    single-tenant view can. It is the commercial record only: `control_audit`
+    holds our own acts against a tenant, never the tenant's content (D64.5).
+
+    Done-when 26. Keyset-paginated on `(created_at, id)`. ⚠️ The cursor is
+    EPHEMERAL and must stay so — `operator_activity.CURSOR_IS_EPHEMERAL`
+    carries the measured reason, and H-7 is what happens when a cursor like
+    this one is persisted instead.
+
+    An unknown `actor`, `action` or `org_slug` returns an EMPTY page, not a
+    404. A refusal that told the caller a company exists would be the same
+    oracle §5 spent CP-12c closing.
+    """
+    try:
+        mark = operator_activity.decode_cursor(cursor)
+    except operator_activity.CursorInvalid as exc:
+        # 400, never 500 — see the exception's docstring.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    size = operator_activity.clamp_limit(limit)
+    with get_engine().begin() as conn:
+        rows = store.activity_page(
+            conn,
+            limit=size,
+            cursor_created_at=mark.created_at if mark else None,
+            cursor_id=mark.row_id if mark else None,
+            actor=actor,
+            action=action,
+            org_slug=org_slug,
+        )
+
+    # A cursor is offered only on a FULL page. A short page is the end of the
+    # trail, and handing back a cursor there sends every client one more
+    # round-trip to discover nothing.
+    next_cursor = (
+        operator_activity.encode_cursor(rows[-1]["created_at"],
+                                        str(rows[-1]["id"]))
+        if len(rows) == size and rows
+        else None
+    )
+    return {
+        "activity": [
+            {
+                "id": str(r["id"]),
+                "actor": r["actor"],
+                "action": r["action"],
+                "detail": r["detail"],
+                "created_at": _iso(r["created_at"]),
+                "org_slug": r["org_slug"],
+                "org_name": r["org_name"],
+            }
+            for r in rows
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 @app.get("/health")
