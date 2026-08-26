@@ -59,7 +59,7 @@ permissions:
 #
 # Added 2026-08-26 after two merges three minutes apart (#105 at 06:18:53, #104
 # at 06:21:59) put two deploys on the SAME BOX concurrently. Both ran
-# `vps_apply.sh`; the second sat in `timeout 1800 ssh` while the first held the
+# `vps_apply.sh`; the second sat in `timeout -k 30 1800 ssh` while the first held the
 # box, and the run overran its usual 5.5 minutes by an order of magnitude.
 #
 # ⚠️ `cancel-in-progress: false` is the load-bearing half, and it is the
@@ -245,7 +245,16 @@ jobs:
             # and verify() then blessed the still-running OLD deployment as
             # green. A timeout kill is the one failure mode where "the app is
             # healthy" says nothing about "the deploy happened".
-            timeout 1800 ssh \
+            # ⚠️ `-k 30`: plain `timeout` sends SIGTERM, and a wedged ssh can
+            # ignore it — at which point the bound this line exists to impose
+            # does not exist. Observed 2026-08-26: run 32937837653 was still in
+            # this step at 35 minutes, past a 30-minute limit that had already
+            # fired. `-k` follows with SIGKILL, which nothing ignores.
+            #
+            # A timeout that can be ignored is worse than none, because the
+            # arithmetic downstream (3 rounds, the job's 120-minute backstop) is
+            # all computed from a number that turns out not to hold.
+            timeout -k 30 1800 ssh \
               -i ~/.ssh/deploy_key -p "$SSH_PORT" \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=30 -o ServerAliveInterval=15 \

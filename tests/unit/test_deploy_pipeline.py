@@ -148,6 +148,23 @@ def test_a_wrong_commit_fails_rather_than_warns(raw: str) -> None:
     )
 
 
+def test_the_ssh_timeout_cannot_be_ignored(raw: str) -> None:
+    """`timeout` sends SIGTERM, and a wedged ssh can ignore it.
+
+    Observed 2026-08-26: run 32937837653 sat in this step at 35 minutes, past a
+    30-minute limit that had already fired. `-k` follows with SIGKILL.
+
+    A timeout that CAN be ignored is worse than no timeout at all, because
+    everything downstream is sized from a number that turns out not to hold —
+    the 3-round loop, and the job's 120-minute backstop, are both computed from
+    this bound.
+    """
+    assert "timeout -k" in raw, (
+        "the deploy ssh must use `timeout -k <grace> <limit>` so a hung session "
+        "is SIGKILLed after refusing SIGTERM"
+    )
+
+
 def test_the_version_endpoint_the_pipeline_depends_on_still_exists() -> None:
     """The deploy gate now has a runtime dependency, so name it.
 
