@@ -455,6 +455,92 @@ line — never reclaim a number by deleting the other entry.
   half) · H-29 (the backfill). ⚠️ H-29 must NOT run before this lands.
 - **Added:** 2026-08-26 · guardrails + handoff session
 
+### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
+- **Check:** merge anything, then `curl -s -o /dev/null -w "%{http_code}" https://app.metorite.com/`
+  during the deploy window. A `500` or `502` means this is live. A `307` means the
+  box is up.
+- **Why:** 🔴 **Measured twice on 2026-08-26, on a box holding a real customer.**
+  During PR #114's deploy, Caddy logged `dial tcp 127.0.0.1:3001: connect:
+  connection refused` against `/api/auth/me`, `/api/apps/pins`,
+  `/api/projects/notifications` and `/api/chat/sessions`. **Two real browsers**
+  were in it — one Windows on `/projects`, one macOS on `/chat`. During PR #120's
+  deploy the workbench answered **HTTP 500** and `GET /version` returned empty.
+  📌 The cause is ordinary and the fix is not exotic. `vps_apply.sh` restarts the
+  workbench in place. Nothing holds requests while port 3001 is down, so Caddy
+  fails them instead of queuing or retrying.
+  ⚠️ **The deploy verification cannot see this, by construction.** `deploy.yml`
+  checks health AFTER the restart, so it measures the recovered box and reports
+  a clean deploy. The outage is real and invisible to the thing watching for it.
+  🟢 **Cheapest real options, in order.**
+  - (a) Caddy `lb_try_duration` on the workbench upstream. A request in the gap
+    then WAITS instead of failing. Minutes of work, and it covers most of the
+    window.
+  - (b) Two workbench units and a swapped upstream.
+  - (c) Accept it, and say so in the release notes.
+  ⚠️ Do not "fix" this by making the health check gentler. The check is honest.
+  It is watching the wrong moment.
+- **Authority:** `deploy/hostinger/` (owner-gated) · `.github/workflows/deploy.yml` ·
+  D36 (Fracktal is customer zero)
+- **Added:** 2026-08-26 · guardrails + handoff session
+
+### H-61 · `.claude/OWNER_GRANTS.md` is untracked AND un-ignored · [OWNER]
+- **Check:** `git check-ignore -v .claude/OWNER_GRANTS.md` → no output means this
+  entry is live. `git status --short` shows it as `??` every session.
+- **Why:** the file now DOES something — PR #119 landed the reading half of D45,
+  so plan-guard honours it. It sits in a bad third state. It is not committed,
+  and it is not ignored.
+  🔴 **`git clean -xdf` deletes it, silently, with every grant in it.** It also
+  shows as untracked noise in every `git status`, which is how people learn to
+  skim that output.
+  📌 **My recommendation, and it is the owner's call because D45 owns this.**
+  Add one `.gitignore` line. A grant is a LOCAL, one-day authorization by one
+  human at one keyboard. Committing it would make a grant travel to every
+  checkout, every cloud session and every worktree — which is the opposite of
+  what D45 is for.
+  📌 Measured 2026-08-26: 23 `ALLOW` lines, of which **1** was live. Stale lines
+  are inert by design, so this is tidiness, not risk. The file says to delete
+  them when convenient.
+- **Authority:** D45 · `.claude/OWNER_GRANTS.md` · `.claude/hooks/plan-guard.mjs`
+- **Added:** 2026-08-26 · guardrails + handoff session
+
+### H-62 · Two WS-39 design questions block the first Tasks slice · [OWNER]
+- **Check:** these are decisions, not code. `rg -n "origin" workbench/control_plane/src/app/tasks/lib/types.ts`
+  shows the field still homeless. `rg -n "workflow_stage" workbench/control_plane/src/app/tasks/lib/`
+  shows `splitPatch` still throwing.
+- **Why:** ⚠️ **Whoever picks up H-59 or H-33 meets both of these in the first
+  slice.** They are buried in H-33's prose today, where a newcomer will not see
+  them until they are already blocked. Surfaced here on purpose.
+  🟢 **(1) `workflow_stage` needs a status-name → `status_id` lookup**, resolved
+  against the task's OWN project. Statuses are per-root. `splitPatch` THROWS on
+  this today rather than dropping it, which is correct — the write fails loudly
+  instead of hiding. `apiItemStageOptions` is the read half and the natural
+  place to start.
+  🟢 **(2) `origin` is homeless, and still per-TASK.** `pm_tasks.source` is the
+  nearest existing fact. ⚠️ **Settle it BEFORE the lens touches email-captured
+  tasks.** A field that has no home when the first real writer arrives gets one
+  invented at the call site, and then there are two.
+  📌 The third question in that group is CLOSED: `horizonId` is settled by **D65**
+  and **H-59** owns the removal.
+- **Authority:** H-33 · H-59 · D65 · `task_manager_app.md` §13.5a
+- **Added:** 2026-08-26 · guardrails + handoff session
+
+### H-63 · Eight stale worktrees hold branches nobody is reading · [OWNER]
+- **Check:** `git worktree list` → more than the main checkout means this is live.
+- **Why:** measured 2026-08-26 — eight worktrees under `C:\wt-*`, each holding a
+  branch checked out. One of them blocked an ordinary `git branch -d` today,
+  which is how they announce themselves.
+  ⚠️ **Only the owner knows which hold unmerged work.** Some names look finished
+  (`cp-8-provision-customer`, `fix-migrate-tmpfile`) and some do not
+  (`ws-29-provision-rls-bind`, `ws-30-invites`). An agent cannot tell the
+  difference from a name, and removing the wrong one loses work.
+  📌 **The recorded hazard, so nobody repeats it:** `rmdir` the `node_modules`
+  junction BEFORE `git worktree remove`, or the remove follows the junction and
+  deletes the REAL `node_modules`.
+  🟢 For each: `git log --oneline origin/main..<branch>` shows what is unmerged.
+  Empty means it is safe to remove.
+- **Authority:** local dev environment · `git worktree list`
+- **Added:** 2026-08-26 · guardrails + handoff session
+
 ### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → **15** means slice **5a** landed (the promote path) and 5b is next.
