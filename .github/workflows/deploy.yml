@@ -69,9 +69,16 @@ permissions:
 # which is precisely the "killed mid-apply" state the deploy step's own 1800s
 # timeout exists to prevent: migrations half-applied on a ladder that CANNOT
 # ROLL BACK (R6). A queued deploy costs minutes; a half-applied one costs a
-# restore. So they QUEUE, and a superseded deploy still runs — harmlessly, since
-# `vps_apply.sh` is idempotent and simply converges the box on whatever `main`
-# now says.
+# restore.
+#
+# ⚠️ What `cancel-in-progress: false` does NOT do, corrected 2026-08-26 after
+# watching it: it protects the RUNNING deploy, not a QUEUED one. GitHub keeps at
+# most one pending run per group, and a newer arrival CANCELS the older pending
+# one whatever this flag says — observed the same morning, when #106's run was
+# cancelled by #60's. That is harmless here and worth knowing rather than
+# discovering: `vps_apply.sh` converges the box on whatever `main` says, so the
+# newer run delivers the older one's commits too. It would NOT be harmless if
+# this workflow ever did something per-commit rather than converging.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -245,15 +252,21 @@ jobs:
             # and verify() then blessed the still-running OLD deployment as
             # green. A timeout kill is the one failure mode where "the app is
             # healthy" says nothing about "the deploy happened".
-            # ⚠️ `-k 30`: plain `timeout` sends SIGTERM, and a wedged ssh can
-            # ignore it — at which point the bound this line exists to impose
-            # does not exist. Observed 2026-08-26: run 32937837653 was still in
-            # this step at 35 minutes, past a 30-minute limit that had already
-            # fired. `-k` follows with SIGKILL, which nothing ignores.
+            # `-k 30` escalates to SIGKILL after SIGTERM. Defensive: a timeout
+            # that can be ignored is worse than none, because everything
+            # downstream (3 rounds, the job's 120-minute backstop) is sized from
+            # a bound that would not hold.
             #
-            # A timeout that can be ignored is worse than none, because the
-            # arithmetic downstream (3 rounds, the job's 120-minute backstop) is
-            # all computed from a number that turns out not to hold.
+            # ⚠️ It is NOT what caused run 32937837653 to sit here for 35
+            # minutes, and the first version of this comment said it was. That
+            # run's ssh did not hang — `ConnectTimeout=30` fired and it reported
+            # "Connection timed out" on all three rounds. The runner could not
+            # reach the box AT ALL: `verify()` recorded `gateway_ok=0
+            # workbench=000000` for 24 polls straight while the box was serving
+            # the public internet normally and `vps-health.yml` — probing from a
+            # DIFFERENT runner — passed at 07:11. That is an IP-level block, and
+            # the most likely cause is fail2ban reacting to the SSH storm that
+            # two CONCURRENT deploys produced. See H-50.
             timeout -k 30 1800 ssh \
               -i ~/.ssh/deploy_key -p "$SSH_PORT" \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \

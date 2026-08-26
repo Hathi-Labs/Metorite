@@ -527,6 +527,34 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
+### H-50 · A deploy runner was IP-blocked by the box — check fail2ban · [OWNER]
+- **Check:** on the box, `sudo fail2ban-client status sshd` (and `status` for other
+  jails) → a populated ban list containing GitHub runner ranges confirms it. Also
+  `gh run view <deploy run id> --log-failed | grep -c "workbench=000000"` on any
+  failed deploy: 24 straight means that runner could not reach the box at all.
+- **Why:** 🔴 **Measured 2026-08-26, run `32937837653` (deploy of `ad9cbb7a`).** All
+  three rounds reported `Connection timed out` from ssh, and `verify()` logged
+  `gateway_ok=0 workbench=000000` for 24 consecutive polls — the runner could reach
+  neither port 22 nor 443. **The box was fine throughout**: it served the public
+  internet normally, and `vps-health.yml` — probing from a DIFFERENT runner — passed
+  at 07:11 during the same window. A block that follows the CLIENT rather than the
+  server is an IP ban, and the likeliest cause is fail2ban reacting to the SSH storm
+  that two CONCURRENT deploys produced (#105 and #104 merged three minutes apart,
+  both running `vps_apply.sh`, each retrying up to 3 rounds).
+  📌 **The concurrency group added in #107 should stop it recurring** by removing the
+  storm — but that is a hypothesis about the cause, not a verified fix, and it does
+  nothing about a ban already in place.
+  ⚠️ **What an agent cannot do:** reading or clearing a fail2ban jail needs box
+  access (§6 VPS reach). If runner ranges are banned, decide deliberately between
+  unbanning, raising `maxretry` for the deploy user, or whitelisting — a permanent
+  whitelist of GitHub's ranges is a real attack-surface decision, not a config tweak.
+  📌 If it is NOT fail2ban, the next suspect is Hostinger-side DDoS protection, which
+  is a support ticket rather than a box change.
+- **Authority:** `work_plan.md` §6 (VPS/deploy reach) · `.github/workflows/deploy.yml`
+  (the `-k` comment records this) · `vps-health.yml` (the outside prober that
+  disproved "the box is down")
+- **Added:** 2026-08-26 · WS-39 / CI session
+
 ### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
 - **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
   → if a deactivation path for `app_user` exists, this entry is live and the
