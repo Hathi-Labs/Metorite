@@ -286,7 +286,38 @@ def _staff_session(token: str) -> StaffIdentity:
     )
 
 
+def _stash(request: Request, identity: StaffIdentity) -> StaffIdentity:
+    """Record the identity on the request, and return it.
+
+    ⚠️ **One setter, and this is it.** A dual-arm door (``/orgs/provision``,
+    ``/registry/seats``) resolves its caller through a dependency that returns
+    ``None`` for the operator arm, so the route body has no other way to learn
+    who acted. ``request.state`` is FastAPI's own place for per-request context
+    set by a dependency, so this is the idiom rather than a second channel —
+    but it is written in ONE function precisely so it cannot become one.
+    """
+    request.state.staff = identity
+    return identity
+
+
+def _enforce_role(request: Request, identity: StaffIdentity) -> None:
+    """Apply the §5 matrix to a SESSION. Refuses **403**, fails CLOSED.
+
+    The route TEMPLATE is read from the matched route rather than from the URL,
+    so a path parameter cannot smuggle a caller into a different rule.
+    """
+    from customer_console import operator_roles
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    try:
+        operator_roles.check_route(identity.role, request.method, path)
+    except operator_roles.RoleForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+
 def require_operator(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> StaffIdentity:
     """Refuse anything that is not staff. Fails CLOSED when unconfigured.
@@ -311,7 +342,9 @@ def require_operator(
         presented = authorization.removeprefix("Bearer ").strip()
 
     if presented and is_operator_session(presented):
-        return _staff_session(presented)
+        identity = _staff_session(presented)
+        _enforce_role(request, identity)
+        return _stash(request, identity)
 
     expected = os.environ.get("CUSTOMER_CONSOLE_OPERATOR_TOKEN", "").strip()
     if not expected:
@@ -321,7 +354,11 @@ def require_operator(
         )
     if not presented or not secrets.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return StaffIdentity(actor=SHARED_TOKEN_ACTOR)
+    # ⚠️ The SHARED token carries no role, so the matrix cannot judge it and
+    # deliberately does not try. It keeps reaching everything, which is what
+    # makes it the break-glass credential CP-12e formalises — and is exactly
+    # why using it is an owner act (work_plan.md §6.1, CP-12 block (f)).
+    return _stash(request, StaffIdentity(actor=SHARED_TOKEN_ACTOR))
 
 
 def require_internal(
@@ -470,6 +507,7 @@ def organization_for_payment(
 
 
 def customer_or_operator(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Caller | None:
     """The catalog's door: a CUSTOMER key on ``can_pay``, **or** the operator.
@@ -518,7 +556,7 @@ def customer_or_operator(
         token = authorization.removeprefix("Bearer ").strip()
 
     if split_key(token) is None:
-        require_operator(authorization)
+        require_operator(request, authorization)
         return None
 
     return _caller_from_key(authorization, permits=lambda caps: caps.can_pay)
@@ -572,6 +610,7 @@ def deployment_or_operator(capability: str):
     """
 
     def _dependency(
+        request: Request,
         authorization: Annotated[str | None, Header()] = None,
     ) -> DeploymentCaller | None:
         """Return the deployment caller, or ``None`` for the operator arm."""
@@ -581,7 +620,10 @@ def deployment_or_operator(capability: str):
 
         parsed = split_key(token) if token else None
         if parsed is None or not is_deployment_key(parsed[0]):
-            require_operator(authorization)
+            # The identity lands on `request.state.staff`, which is how the
+            # operator arm of a DUAL-ARM door names the person in its audit
+            # row. CP-12b could not, and said so.
+            require_operator(request, authorization)
             return None
 
         prefix, secret = parsed

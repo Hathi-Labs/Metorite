@@ -175,7 +175,9 @@ when the log matters most.
 ## 5. The roles, bound to the routes that exist
 
 ⚠️ **This matrix is the contract.** An agent that adds a Console route must add a
-row here in the same change. `role_matrix.test.ts` fails when a route has no row.
+row here in the same change. The table of record is
+`customer_console/operator_roles.py::MATRIX`, and `test_operator_roles.py` fails
+both ways — a route with no row, and a row with no route.
 
 | Action | Console route | `viewer` | `editor` | `admin` |
 |---|---|---|---|---|
@@ -199,10 +201,23 @@ row here in the same change. `role_matrix.test.ts` fails when a route has no row
 **"elevated"** means the role is `admin` **and** a live elevation window is open.
 See §6.3.
 
-**The credit threshold** is `OPERATOR_CREDIT_ELEVATION_PAISE`. It defaults to
-**1500000 paise, which is ₹15,000**. That number is not new. **D33.4b** already
-caps the auto-top-up threshold below ₹15,000. One number for both keeps one
-vocabulary for "a credit movement large enough to need a second thought".
+**The credit threshold** is `OPERATOR_CREDIT_ELEVATION`. It defaults to
+**15,000 credits**.
+
+⚠️ **CORRECTED at build, 2026-08-26.** This read `OPERATOR_CREDIT_ELEVATION_PAISE`
+and named a rupee amount. `POST /credits/grant` grants a Decimal quantity of
+**credits**, and there is no credit-to-rupee rate in this system. The rate card
+ships UNPRICED by decision (D19.2), and pricing it is **H-42**, an owner call. A
+threshold in paise would imply a conversion that does not exist. The next
+implementer would have had to invent a price to apply it.
+
+The NUMBER still echoes **D33.4b**'s ₹15,000 auto-top-up cap, so both keep one
+idea of "large enough to need a second thought". ⚠️ Re-derive it against the
+rate card once H-42 prices one.
+
+⚠️ Only a POSITIVE grant is measured. A negative delta is a correction. Holding
+corrections to the admin bar would push people to fix a mistake by granting
+MORE rather than by reversing it.
 
 **Why `viewer` reads the activity log.** Transparency inside the team is the
 point of the log. A control that only the powerful can read is not a control.
@@ -351,7 +366,7 @@ out of a live console.
 |---|---|---|---|
 | **CP-12a** | ◐ **BUILT 2026-08-26 (substrate half).** The three checks of §4.1, the `operator` registry and the one-time bootstrap — migration 009, `operators.py`, five `store.py` functions, 28 R8 tests, 6 mutations killed. ⚠️ **Deferred to CP-12b:** the Supabase sign-in exchange itself. `admit()` takes a *verified* `(tid, email)` and nothing verifies one yet, so the module is reachable by no route | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
 | **CP-12b** | ◐ **BUILT 2026-08-26.** The fifth auth scheme (`cc_sess_`), `operator_sessions.py`, absolute **and** idle expiry, server-side revocation, and nine operator routes whose audit rows now name the person — 19 R8 tests, 8 mutations killed. ⚠️ **Known gap, pinned by a test:** `/orgs/provision` is a dual-arm door and its operator arm still records the shared actor. CP-12c closes it | CP-12a | 🟢 **AGENT-SAFE** |
-| **CP-12c** | **Roles.** The fifth auth scheme in `auth.py`. §5's matrix bound to every route. `role_matrix.test.ts` | CP-12b | 🟢 **AGENT-SAFE** |
+| **CP-12c** | ◐ **BUILT 2026-08-26.** `operator_roles.py` holds the §5 matrix, enforced in `auth.require_operator` BEFORE the route body runs — so a refusal cannot reveal whether a company exists. Fails CLOSED on an unnamed route. 49 R8 tests, 7 mutations killed. Also closes CP-12b's provision-actor gap | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12d** | **Operator administration.** The three routes of §6.1, the four guards, and the console surface that drives them | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
 | **CP-12e** | **Elevation and break-glass.** `operator_elevation`. The window. The alert. The `actor='breakglass'` row | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | **The Activity surface.** A cross-org read of `control_audit` with a filter for actor, action and company. Every role reads it | CP-12b | 🟢 **AGENT-SAFE** |
@@ -385,7 +400,12 @@ out of a live console.
 **CP-12c**
 13. Each cell of §5's matrix has a test. A `no` cell answers **403**, and the
     refusal is logged.
-14. `role_matrix.test.ts` fails when a Console operator route has no matrix row.
+14. The matrix **fails closed**: an operator route it does not name is refused.
+    `test_operator_roles.py::test_every_operator_gated_route_has_a_matrix_row`
+    fails at source level, so the refusal arrives in CI rather than in
+    production. ⚠️ **CORRECTED at build:** this said `role_matrix.test.ts`. The
+    matrix is enforced server-side in the Console, so a TypeScript test cannot
+    see the routes it must cover.
 15. Every **403** is byte-identical whether the role is too low or the company
     does not exist. A refusal must not answer a question.
 
