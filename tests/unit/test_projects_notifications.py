@@ -477,13 +477,29 @@ def test_marking_nothing_touches_the_database(monkeypatch):
     assert db.statements == []
 
 
+def _task(project_id: str = "p-team", **kw):
+    """A task row faithful enough for the write sites under test.
+
+    ⚠️ `project_id` is here because `pm_tasks.project_id` is NOT NULL on the real
+    table and `assert_assignable_here` (D62/requirement 5) reads it to find out
+    whether the task lives in somebody's personal project. A fake without it
+    passed for as long as nothing looked — which is the standing hazard of
+    hand-built row fakes, and the reason the boundary rules are ALSO proven
+    against real Postgres in `tests/live/live_ws39_personal_boundary.sql`.
+
+    The default is a TEAM project, because that is what these tests are about:
+    notifications on ordinary assignment.
+    """
+    return SimpleNamespace(id="t1", project_id=project_id, **kw)
+
+
 # ── Wiring: the write sites that produce notifications ─────────────────────
 
 def test_assigning_somebody_notifies_them(monkeypatch):
     db = FakeDB(visible_to={"priya@fracktal.in"})
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
-                        _async(SimpleNamespace(id="t1")))
+                        _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))
@@ -503,7 +519,7 @@ def test_the_notification_is_written_inside_the_assignment_transaction(monkeypat
     db = FakeDB(visible_to={"priya@fracktal.in"})
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
-                        _async(SimpleNamespace(id="t1")))
+                        _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))
@@ -531,7 +547,7 @@ def test_assigning_yourself_notifies_nobody(monkeypatch):
     db = FakeDB(visible_to={"me@fracktal.in"})
     bind(monkeypatch, db, pm_tasks, pm_notify, pm_core)
     monkeypatch.setattr(pm_tasks, "load_visible_task",
-                        _async(SimpleNamespace(id="t1")))
+                        _async(_task()))
     monkeypatch.setattr(pm_tasks, "resolve_visibility",
                         _async(pm_core.Visibility(True, "", ())))
     monkeypatch.setattr(pm_tasks, "record_activity", _async(None))
