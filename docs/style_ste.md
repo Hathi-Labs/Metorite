@@ -25,8 +25,20 @@ words are vague.
 | Markdown files this repo owns | Yes | The two tiers in §2 set how hard |
 | Commit messages, PR titles, PR bodies | Yes | Strict tier |
 | Code comments and docstrings | Advisory | No fence. Write them this way anyway |
-| Product UI copy | **Not yet** | Open question. See §8 |
-| `skills/upstream/`, `.github/skills/` | No | Synced from Anthropic. We do not own the words |
+| Product UI copy | **No** | Owner decision, 2026-08-26. See the note below |
+| `skills/upstream/` | No | Synced from Anthropic. We do not own the words |
+
+**STE stops at the repo.** It binds the documentation we write and the agents we
+run. It does not bind the app. No string a customer reads is in scope, in the
+Control Plane, in the Operator Console, or in any pane.
+
+The fence already matches that line by construction. `ste-lint.mjs` reads `.md`
+and `.mdx` files and nothing else, so a TSX file, a theme token and a product
+string never reach it. Do not widen it to reach them.
+
+The reason is the audience. STE serves a reader who must act on a procedure
+without guessing. Product copy serves a customer who must want the thing, and it
+answers to the design system.
 
 ---
 
@@ -218,10 +230,10 @@ ordinary work gets removed, and it takes the real gates with it.
 
 ## 8. Open questions
 
-| # | Question | Owner |
+| # | Question | State |
 |---|---|---|
-| Q1 | Does STE bind product UI copy, and which surface owns that check? | Owner |
-| Q2 | Should `pr-check.yml` run `--staged` on a pull request, and block? | Owner |
+| Q1 | Does STE bind product UI copy? | **Closed 2026-08-26. No.** See §1 |
+| Q2 | Should `pr-check.yml` run `--staged` on a pull request, and block? | Open. Owner. See H-55 |
 
 ---
 
