@@ -1104,7 +1104,7 @@ line — never reclaim a number by deleting the other entry.
   D32.7
 - **Added:** 2026-08-26 · AI design audit
 
-### H-54 · Configure the Supabase staff provider and the three `OPERATOR_*` values · [OWNER]
+### H-54 · Configure the Supabase staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
 - **Check:** `ssh` to the box and read the operator console env for
   `OPERATOR_ENTRA_TENANT_ID` → an unset value means still pending. From the repo
   alone: `rg -n "OPERATOR_ENTRA_TENANT_ID" workbench/operator_console/` → a hit in
@@ -1113,6 +1113,20 @@ line — never reclaim a number by deleting the other entry.
   until the owner configures the provider and sets the three values. Until then
   the console stays on **one shared passphrase**. That box has been reachable
   since 2026-08-22.
+- **⚠️ Amended 2026-08-27 by CP-12f2, and it grew two parts.**
+  1. There are **five** values now, not three. `OPERATOR_SUPABASE_URL` and
+     `OPERATOR_SUPABASE_ANON_KEY` join the three above. All five are
+     documented in `deploy/hostinger/customer_console.env.example`.
+  2. **Turn manual identity linking OFF in the Supabase project.** A staff
+     account that links a second provider can be signed in through that
+     provider. The Console refuses such a sign-in, because it reads
+     `app_metadata.provider`. That claim is not per-session, so linking is
+     the condition the bypass needs, and removing it is the durable fix.
+  3. **Confirm the Azure claim shape.** No live project has produced one
+     yet, so `operator_signin.extract_identity` reads a shape nobody has
+     measured. It fails CLOSED, so a wrong guess refuses everybody rather
+     than admitting anybody. Read one real payload and correct that one
+     function.
 - **Authority:** `specs/operator_identity_and_access.md` §10 G1–G2 ·
   `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · D64.1
 - **Added:** 2026-08-26 · operator-identity spec session
@@ -1131,19 +1145,29 @@ line — never reclaim a number by deleting the other entry.
   different base and merged first. `test_handoff_ids_are_unique` caught it. Ids
   are never reused, so H-55 stays with the STE entry.
 
-### H-56 · Build CP-12a…CP-12g — the spec is written and no code exists · [AGENT]
-- **Check:** `rg -n "OPERATOR_IDENTITY_ENABLED" apps/ workbench/` → no hit means
-  slice 1 has not started. `ls infra/customer_console/` → no `operator` migration
-  means the same.
-- **Why:** `specs/operator_identity_and_access.md` was minted 2026-08-26 and
-  audited nothing into existence. All seven slices are AGENT-SAFE. Each ships
-  behind a flag that defaults OFF, so the build does not wait on H-54. ⚠️ Start at
-  **CP-12a** and keep the order. CP-12g deletes `staff.ts`, and running it early
-  locks the team out of a live console.
+### H-56 · Build **CP-12g** — the cutover. Everything before it is done · [AGENT]
+- **Check:** `rg -n "OPERATOR_CONSOLE_STAFF_SECRET" workbench/` → a hit means
+  the cutover has not run. `rg -n "cc_sess_" workbench/operator_console/` → no
+  hit means the console still posts the shared passphrase.
+- **⚠️ Amended 2026-08-27.** This read *"Build CP-12a…CP-12g — no code
+  exists"*. CP-12a to CP-12f2 are now built and merged or in review. What is
+  left is CP-12g and the console UI.
+- **What CP-12g owes:**
+  1. Rewire `workbench/operator_console` to `POST /operators/session` and hold
+     the returned `cc_sess_` token in the cookie. Today the cookie holds the
+     passphrase itself, which is **F2**.
+  2. Build the operator-administration and Activity surfaces. The routes exist
+     and nothing renders them.
+  3. Add the route-coverage fence that closes **F7**. Show it RED first.
+  4. Delete `staff.ts` and remove `OPERATOR_CONSOLE_STAFF_SECRET`.
+- **⚠️ The order matters and it is the reverse of what it looks like.** Rewire
+  the console FIRST, and confirm one real sign-in. Delete the passphrase after
+  that. Delete it first and nobody can reach the console at all.
+- **Blocked on:** H-54. A real sign-in needs the provider configured, and that
+  is owner work. The UI can be built and tested before it.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session
-
 ### H-57 · Nothing fences `INDEX.md` completeness, so a spec can go missing · [AGENT]
 - **Check:** `rg -l "INDEX.md" tests/ .github/workflows/` → no hit means no test
   reads the index and the gap is open.

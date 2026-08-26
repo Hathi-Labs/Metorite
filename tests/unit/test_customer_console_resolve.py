@@ -93,7 +93,18 @@ INT = {"Authorization": f"Bearer {INTERNAL}"}
 #: full OpenAPI schema of a cross-tenant service to anyone who can reach the
 #: port is a real finding — pre-existing, unrelated to CP-2b, and a matter for
 #: the board rather than a line of this suite.)*
-_UNAUTHENTICATED_ROUTES = frozenset({"/health"})
+#: ⚠️ **Second entry added 2026-08-27 by WS-31 CP-12f2, and it is justified
+#: here rather than in review alone.** `POST /operators/session` is the
+#: operator sign-in exchange. It is the ONLY door into the identity system,
+#: so it cannot require the identity it issues. What guards it is the
+#: Supabase access token it carries: `operator_signin.introspect` asks the
+#: issuer who the bearer is, and `operators.admit` runs the three checks of
+#: §4.1 on the answer.
+#:
+#: ⚠️ `DELETE /operators/session` on the SAME path DOES authenticate. That is
+#: why the skip below is per ROUTE and not per path — skipping the path would
+#: quietly drop the gated half out of clause 1.
+_UNAUTHENTICATED_ROUTES = frozenset({"/health", "/operators/session"})
 
 #: Routes that authenticate by SIGNATURE rather than by a bearer token (WS-31
 #: CP-9 §9.5). They are **not** exempt from authentication — the verifier is
@@ -179,20 +190,6 @@ def _api_routes() -> list[APIRoute]:
     return [r for r in app.routes if isinstance(r, APIRoute)]
 
 
-def _guarded_calls() -> list[tuple[str, str]]:
-    """``(method, path)`` for every APIRoute a credential must open."""
-    calls: list[tuple[str, str]] = []
-    for route in _api_routes():
-        if route.path in _UNAUTHENTICATED_ROUTES:
-            continue
-        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
-            calls.append((method, route.path))
-    return sorted(calls)
-
-
-_GUARDED_CALLS = _guarded_calls()
-
-
 def _authenticates(dependant) -> bool:
     """Does this route (or any of its dependencies) authenticate somebody?
 
@@ -202,6 +199,22 @@ def _authenticates(dependant) -> bool:
     if dependant.call in auth.AUTHENTICATING_DEPENDENCIES:
         return True
     return any(_authenticates(sub) for sub in dependant.dependencies)
+
+
+def _guarded_calls() -> list[tuple[str, str]]:
+    """``(method, path)`` for every APIRoute a credential must open."""
+    calls: list[tuple[str, str]] = []
+    for route in _api_routes():
+        # Per ROUTE, not per path. One path can carry an unauthenticated
+        # method and an authenticated one — `/operators/session` does.
+        if not _authenticates(route.dependant):
+            continue
+        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+            calls.append((method, route.path))
+    return sorted(calls)
+
+
+_GUARDED_CALLS = _guarded_calls()
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
