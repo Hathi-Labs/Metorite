@@ -10,7 +10,19 @@ Six mutations killed, each one an auth fence. They remove check 1, check 3 or
 the status check. They make the refusals distinguishable. They remove the
 fail-closed guard. They count only `active` rows in the bootstrap gate.
 
-Ships **DARK** — nothing calls `admit` yet. CP-12b to CP-12g are unbuilt.
+Ships **DARK** — nothing calls `admit` yet.
+
+**◐ CP-12b BUILT 2026-08-26** (`ws31-cp12b-operator-session`) — the fifth
+auth scheme and the real actor. `cc_sess_` through `keys.py`,
+`operator_sessions.py`, five more `store.py` writes, and nine operator
+routes that now name the PERSON in `control_audit.actor`.
+
+**19 tests, 0 skipped. 550 passed across every Console suite, so the changed
+`Operator` dependency broke nothing.** Eight mutations killed. ⚠️ One known
+gap is pinned rather than hidden: `/orgs/provision` is a dual-arm door, so
+its operator arm still records the shared actor. CP-12c closes it.
+
+CP-12c to CP-12g are unbuilt.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -338,7 +350,7 @@ out of a live console.
 | Ticket | What it delivers | Depends on | Gate |
 |---|---|---|---|
 | **CP-12a** | ◐ **BUILT 2026-08-26 (substrate half).** The three checks of §4.1, the `operator` registry and the one-time bootstrap — migration 009, `operators.py`, five `store.py` functions, 28 R8 tests, 6 mutations killed. ⚠️ **Deferred to CP-12b:** the Supabase sign-in exchange itself. `admit()` takes a *verified* `(tid, email)` and nothing verifies one yet, so the module is reachable by no route | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
-| **CP-12b** | **The session and the real actor.** `cc_sess_` through `keys.py`. `operator_session`. Absolute and idle expiry. Server-side revocation. `control_audit.actor` becomes the person | CP-12a | 🟢 **AGENT-SAFE** |
+| **CP-12b** | ◐ **BUILT 2026-08-26.** The fifth auth scheme (`cc_sess_`), `operator_sessions.py`, absolute **and** idle expiry, server-side revocation, and nine operator routes whose audit rows now name the person — 19 R8 tests, 8 mutations killed. ⚠️ **Known gap, pinned by a test:** `/orgs/provision` is a dual-arm door and its operator arm still records the shared actor. CP-12c closes it | CP-12a | 🟢 **AGENT-SAFE** |
 | **CP-12c** | **Roles.** The fifth auth scheme in `auth.py`. §5's matrix bound to every route. `role_matrix.test.ts` | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12d** | **Operator administration.** The three routes of §6.1, the four guards, and the console surface that drives them | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
 | **CP-12e** | **Elevation and break-glass.** `operator_elevation`. The window. The alert. The `actor='breakglass'` row | CP-12c | 🟢 **AGENT-SAFE** |
@@ -443,6 +455,7 @@ An agent must **refuse these by name** and say so. They belong in
 ```bash
 # The Console half — R8, against a real Postgres 16.
 uv run pytest tests/unit/test_operator_identity.py -q
+uv run pytest tests/unit/test_operator_session.py -q
 uv run pytest tests/unit/test_operator_roles.py -q
 uv run pytest tests/unit/test_operator_elevation.py -q
 

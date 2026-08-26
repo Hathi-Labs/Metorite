@@ -1231,13 +1231,23 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
         if caller is not None:
             detail["key_prefix"] = caller.key_prefix
         _audit(conn, org_id, "org.provision", detail,
+               # ⚠️ CP-12b KNOWN GAP, deliberately not closed here.
+               # `/orgs/provision` is a DUAL-ARM door (deployment key OR
+               # operator), so its dependency returns `None` for the
+               # operator arm and the `StaffIdentity` is not in scope.
+               # Naming the person here would mean either a second DB
+               # read of the session or a second channel for identity,
+               # and both are worse than one honest gap. CP-12c binds
+               # every route to the role matrix and closes it there.
+               # Fence: `test_operator_session.py::
+               # test_the_provision_arm_is_the_one_known_actor_gap`.
                actor="operator" if caller is None else "deployment")
 
     return {"organization_id": org_id, "slug": req.slug}
 
 
 @app.post("/orgs/lifecycle")
-def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
+def set_lifecycle(req: LifecycleRequest, staff: Operator) -> dict[str, Any]:
     """Move an organization through the lifecycle. Transitions only, never sets.
 
     A free-form status write would let an operator move a customer straight from
@@ -1277,7 +1287,8 @@ def set_lifecycle(req: LifecycleRequest, _: Operator) -> dict[str, Any]:
             {"s": req.target, "i": org_id},
         )
         _audit(conn, org_id, "org.lifecycle",
-               {"from": current, "to": req.target, "reason": req.reason})
+               {"from": current, "to": req.target, "reason": req.reason},
+               actor=staff.actor)
 
         caps = capabilities_of(req.target)
 
@@ -1375,7 +1386,7 @@ _TOMBSTONE_RE = r"-purged-[0-9a-f]{6}$"
 
 
 @app.post("/orgs/purge")
-def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
+def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
     """CP-2g — the registry half of destroying an organization.
 
     Reachable ONLY in `deleted` — the lifecycle graph's terminal state, which
@@ -1453,7 +1464,8 @@ def purge_org_registry(req: OrgPurgeRequest, _: Operator) -> dict[str, Any]:
         )
         _audit(conn, org_id, "org.purge",
                {"slug": req.org_slug, "tombstone": tombstone,
-                "deleted": deleted, "scrubbed": scrubbed})
+                "deleted": deleted, "scrubbed": scrubbed},
+               actor=staff.actor)
     return {
         "slug": req.org_slug,
         "tombstone": tombstone,
@@ -1928,7 +1940,7 @@ def list_organizations(_: Operator) -> OrgListView:
 
 @app.post("/billing/subscriptions/activate")
 def activate_subscription_manual(
-    req: ManualActivationRequest, _: Operator
+    req: ManualActivationRequest, staff: Operator
 ) -> dict[str, Any]:
     """MANUAL / bank-transfer activation — the offline twin of ``payments.fulfil``
     (§6 item (j)).
@@ -2045,7 +2057,7 @@ def activate_subscription_manual(
         if req.credits is not None:
             detail["credits"] = str(req.credits)
         _audit(conn, org_id, "subscription.activate_manual", detail,
-               actor="operator")
+               actor=staff.actor)
 
         # Surface the result from the same view models the reads use — never a
         # recompute: the seat grid is `_seat_grid` (as `billing_summary`), the
@@ -2075,7 +2087,7 @@ def activate_subscription_manual(
 
 
 @app.post("/billing/seats")
-def assign_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
+def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
     """Assign a seat on a plan. 409 at the cap, with a buy-more payload."""
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
@@ -2109,13 +2121,14 @@ def assign_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
             identity_id=identity_id, source=req.source,
         )
         _audit(conn, org_id, "seat.assign",
-               {"email": req.email, "plan": req.plan_slug})
+               {"email": req.email, "plan": req.plan_slug},
+               actor=staff.actor)
 
     return {"assigned": True, "plan_slug": req.plan_slug}
 
 
 @app.post("/billing/seats/release")
-def release_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
+def release_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
     """Release a seat. Frees capacity immediately (D19.3)."""
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
@@ -2124,7 +2137,8 @@ def release_seat(req: SeatWriteRequest, _: Operator) -> dict[str, Any]:
             conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=identity_id
         )
         _audit(conn, org_id, "seat.release",
-               {"email": req.email, "plan": req.plan_slug, "released": released})
+               {"email": req.email, "plan": req.plan_slug, "released": released},
+               actor=staff.actor)
 
     return {"released": released}
 
@@ -2606,7 +2620,7 @@ def add_member_admin(
 
 
 @app.post("/credits/grant")
-def grant_credits(req: CreditGrantRequest, _: Operator) -> dict[str, Any]:
+def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
     """Add credits. Append-only — a correction is another row, never an edit."""
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
@@ -2616,7 +2630,8 @@ def grant_credits(req: CreditGrantRequest, _: Operator) -> dict[str, Any]:
         )
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
         _audit(conn, org_id, "credits.grant",
-               {"delta": str(req.credits), "reason": req.reason})
+               {"delta": str(req.credits), "reason": req.reason},
+               actor=staff.actor)
 
     return {"balance": str(balance)}
 
@@ -2643,7 +2658,7 @@ def credit_balance(org_slug: str, _: Operator) -> dict[str, Any]:
 
 
 @app.post("/keys")
-def issue_key(req: IssueKeyRequest, _: Operator) -> dict[str, Any]:
+def issue_key(req: IssueKeyRequest, staff: Operator) -> dict[str, Any]:
     """Mint an organization key. **The token is returned exactly once.**
 
     Only the hash is stored, so this response is the only moment the secret
@@ -2659,18 +2674,20 @@ def issue_key(req: IssueKeyRequest, _: Operator) -> dict[str, Any]:
         )
         # The audit row records the PREFIX, never the token.
         _audit(conn, org_id, "key.issue",
-               {"prefix": minted.prefix, "label": req.label})
+               {"prefix": minted.prefix, "label": req.label},
+               actor=staff.actor)
 
     return {"prefix": minted.prefix, "token": minted.token}
 
 
 @app.post("/keys/revoke")
-def revoke_key(req: RevokeKeyRequest, _: Operator) -> dict[str, Any]:
+def revoke_key(req: RevokeKeyRequest, staff: Operator) -> dict[str, Any]:
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         revoked = store.revoke_key(conn, org_id=org_id, prefix=req.prefix)
         _audit(conn, org_id, "key.revoke",
-               {"prefix": req.prefix, "revoked": revoked})
+               {"prefix": req.prefix, "revoked": revoked},
+               actor=staff.actor)
     return {"revoked": revoked}
 
 
@@ -3673,7 +3690,7 @@ _ATTEMPT_FAILURE_EVENTS = frozenset({"payment.failed"})
 
 
 @app.post("/discounts")
-def issue_discount(req: IssueDiscountRequest, _: Operator) -> dict[str, Any]:
+def issue_discount(req: IssueDiscountRequest, staff: Operator) -> dict[str, Any]:
     """Mint a discount code. **The token is returned exactly once** (SC-4g (i)).
 
     Only the hash is stored, so this response is the only moment the secret
@@ -3711,7 +3728,8 @@ def issue_discount(req: IssueDiscountRequest, _: Operator) -> dict[str, Any]:
         # The audit row records the PREFIX, never the token.
         _audit(conn, org_id, "discount.issue",
                {"prefix": minted.prefix, "label": req.label,
-                "kind": req.kind, "max_redemptions": req.max_redemptions})
+                "kind": req.kind, "max_redemptions": req.max_redemptions},
+               actor=staff.actor)
 
     return {"prefix": minted.prefix, "code": minted.token}
 

@@ -27,10 +27,12 @@ from dataclasses import dataclass
 __all__ = [
     "ENV_DEPLOYMENT",
     "ENV_DISCOUNT",
+    "ENV_SESSION",
     "MintedKey",
     "hash_secret",
     "is_deployment_key",
     "is_discount_code",
+    "is_operator_session",
     "mint_key",
     "split_key",
     "verify_secret",
@@ -55,6 +57,17 @@ ENV_DEPLOYMENT = "depl"
 #: nobody. It is presented *inside* a request already authenticated by an
 #: organization key, and what it proves is pre-authorization by an operator.
 ENV_DISCOUNT = "disc"
+#: The operator session's env segment — ``cc_sess_<prefix>_<secret>`` (CP-12b).
+#:
+#: A FOURTH **value**, not a fourth implementation — exactly the argument
+#: :data:`ENV_DISCOUNT` makes above. A staff session is a bearer secret, so it
+#: is minted, hashed and verified by this module and by nothing else.
+#:
+#: ⚠️ It replaces a cookie that held **the shared passphrase itself**
+#: (``operator_identity_and_access.md`` §2, F2). That is why the value matters:
+#: a disclosed cookie used to be a disclosed passphrase for the whole team,
+#: with nothing to revoke. This one names one person, expires, and has a row.
+ENV_SESSION = "sess"
 _PREFIX_BYTES = 6   # 12 hex chars — enough to be unique, short enough to show
 _SECRET_BYTES = 32  # 256 bits
 
@@ -103,6 +116,11 @@ def _names_env(stored_prefix: str, env: str) -> bool:
 def is_deployment_key(stored_prefix: str) -> bool:
     """True when a canonical prefix names the **deployment** scheme (CP-2b)."""
     return _names_env(stored_prefix, ENV_DEPLOYMENT)
+
+
+def is_operator_session(stored_prefix: str) -> bool:
+    """True when a canonical prefix names an **operator session** (CP-12b)."""
+    return _names_env(stored_prefix, ENV_SESSION)
 
 
 def is_discount_code(stored_prefix: str) -> bool:
