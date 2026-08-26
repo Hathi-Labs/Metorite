@@ -405,7 +405,8 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → **12** means slices 1–4 only, and slice 5 is unbuilt.
+  → **15** means slice **5a** landed (the promote path) and 5b is next.
+  **12** would mean slices 1–4 only.
   ⚠️ Do NOT grep for `api/tasks` in `lib/api.ts` and conclude anything: the
   prefix is applied once inside `gatewayFetch` (`lib/api.ts:11`) and every call
   site passes a bare `` `/items…` ``. That spelling under-reported once already
@@ -414,10 +415,22 @@ line — never reclaim a number by deleting the other entry.
   browserless surface (+ the `TASKS_LENS` gateway flag), and the client-side
   **connector excision**. What is left still writes `gtd_items` when the flag
   is on:
-  **(a) CRUD** — `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`,
+  ✅ **(a-1) SLICE 5a LANDED 2026-08-26 — the promote path.** `fetchProjects`
+  (→ `GET /projects/nodes`, the COMPANY's projects), `apiItemStageOptions`
+  (→ `nodes/{id}/statuses`, re-keyed from the ITEM to the PROJECT because
+  statuses are per-root and a move dialog is asking about the DESTINATION), and
+  a new `apiMoveTask` → `POST /projects/tasks/{id}/move`. That last one is the
+  door everything in migration **192** and **D62** was waiting on: required
+  fields, promote-and-assign, and the assign-guard's suggested fix were all
+  unreachable from the UI without it. ⚠️ `apiMoveTask` **throws** when the flag
+  is off rather than degrading — `gtd_items` has no company board to promote
+  onto, and a silent no-op would render a Promote button that does nothing and
+  reports success.
+  🟢 **(a-2) still to do:** `apiOrganize`, `apiListSubtasks`/`apiAddSubtasks`,
   `apiBulkDispose`/`apiBulkArchive`, `apiMergeInto`/`apiFileUnder`,
-  `apiItemDetail`, `apiItemStageOptions`, `fetchProjects`,
-  `fetchStatusCatalog`, `apiCaptureBatch`, `apiUploadAttachment`.
+  `apiItemDetail`, `fetchStatusCatalog`, `apiCaptureBatch`,
+  `apiUploadAttachment`. ⚠️ `apiItemDetail` needs comment + attachment reads
+  that the lens has no equivalent for yet — size it before dispatching.
   **(b) The LOCAL project tree** — `/hierarchy` · `/spaces` · `/folders` ·
   `/local-projects` (`routes/tasks/hierarchy.py`) and the store actions over
   them (`loadLocalHierarchy`, `createLocalSpace`, `createLocalFolder`,

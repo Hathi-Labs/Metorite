@@ -13,12 +13,16 @@ import {
   lensEnabled,
   lensEstimateStats,
   lensFetchItems,
+  lensFetchProjects,
+  lensMoveTask,
   lensPlan,
   lensPatchItem,
   lensPurgeItem,
   lensRestoreItem,
+  lensStageOptions,
   lensTrashItem,
 } from "./lens";
+import type { LensMoveRequest } from "./lens";
 
 // ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
 //
@@ -260,7 +264,38 @@ export async function apiItemDetail(id: string): Promise<ProviderTaskDetail> {
   };
 }
 
+/**
+ * Promote a task into a project — the Tasks app's one door to `move`.
+ *
+ * LENS ONLY, and it throws rather than degrading when the flag is off. The old
+ * store has no equivalent: `gtd_items` had no company board to be promoted ONTO,
+ * which is the whole reason D53 exists. A silent no-op here would let a promote
+ * button appear, do nothing, and report success.
+ */
+export async function apiMoveTask(
+  taskId: string,
+  req: LensMoveRequest,
+): Promise<Raw> {
+  if (!lensEnabled()) {
+    throw new Error(
+      "Moving a task into a project needs the Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
+        "The legacy store has no company board to move onto — see docs/TASKS_LENS.md.",
+    );
+  }
+  return lensMoveTask(taskId, req);
+}
+
 export async function fetchProjects(): Promise<GtdProject[]> {
+  if (lensEnabled()) {
+    // ⚠️ These are the COMPANY's projects, not a per-user tree. Under the old
+    // store `/projects` listed `gtd_projects` — one member's private list. The
+    // lens has no equivalent and should not grow one: a member's own structure
+    // is their Areas (migration 191), which are reached through `my/*` and are
+    // deliberately absent here. What this list is FOR is choosing a promote
+    // destination, and only a real project can be one.
+    const rows = await lensFetchProjects();
+    return rows.map((r) => mapProject(r as Raw));
+  }
   const rows = await gatewayFetch<Raw[]>(`/projects`);
   return rows.map(mapProject);
 }
@@ -484,7 +519,20 @@ export async function apiPatchItem(
 /** The ordered ClickUp statuses of a synced task's OWN list — the stage-picker
  *  options for the detail panel, so a task shows just its project's pipeline,
  *  not the whole-workspace union. Empty for a LOCAL / not-yet-pushed task. */
-export async function apiItemStageOptions(id: string): Promise<string[]> {
+export async function apiItemStageOptions(
+  id: string,
+  projectId?: string,
+): Promise<string[]> {
+  if (lensEnabled()) {
+    // ⚠️ The lens asks about a PROJECT; the legacy endpoint asked about an ITEM.
+    // Statuses are per-root, so "what stages exist" has no answer until you know
+    // which project — and in a move dialog the answer wanted is about the
+    // DESTINATION, which the item cannot supply. Without a project we would be
+    // guessing, and guessing a lane vocabulary is how a task lands in a lane the
+    // destination board does not render.
+    if (!projectId) return [];
+    return lensStageOptions(projectId);
+  }
   const r = await gatewayFetch<Raw>(`/items/${id}/stage-options`);
   return Array.isArray(r.statuses)
     ? (r.statuses as unknown[]).map(String)
