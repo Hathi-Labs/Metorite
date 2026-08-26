@@ -12,10 +12,10 @@ would confuse exactly the agents this cleanup serves.)*
 session (D30) and routes you here; then start at **`work_plan.md` §1** (the spec contract and
 the standing rules **R1–R8** — R6/R7/R8 are the engineering-practice rules from
 D28 and bind every PR), then **§2** (the dispatch board — ordering, states,
-gates). The board row names the **owning spec**; build
+gates). ⚠️ **Start at §2.0 if you want the shape of the work rather than a ticket** — it is the product roadmap (M0…M4) over the same rows, added 2026-08-26. The board row names the **owning spec**; build
 only from owning specs listed **ACTIVE** here. Anything in DEFERRED or
 HISTORICAL is banner-marked and dispatches nothing. `work_plan.md` §6 is the
-owner-gate registry an agent must refuse by name. Decisions (D1–D26) live in
+owner-gate registry an agent must refuse by name. Decisions (**D1–D54**, current 2026-08-26 — this read "D1–D26" until then) live in
 `work_plan.md` §3 and are never re-litigated in specs.
 
 **The two documentation roots:** `project-docs/` (this folder) = plan +
@@ -34,7 +34,7 @@ limitations). Do not add product specs to `docs/`.
 | `HANDOFF.md` | THE QUEUE (D39) — what the last session left unfinished, injected at session start by `.claude/hooks/session-handoff.mjs`. ⚠️ **Actions, never state**: `work_plan.md` §2 stays the only current-state authority, and every entry carries a **Check** that re-derives whether it is still real. Sessions delete entries whose Check passes; `/handoff` is the workflow. |
 | `../FOUNDATION_BUILDOUT_CHECKLIST.md` *(repo ROOT)* | WS-1 · WS-4 · WS-5 |
 | `specs/saas_multitenancy.md` (+ `_implementation`, `_handover`) | WS-29 — hand the **handover** to the executing agent |
-| `specs/customer_console.md` | WS-31 — the central subscription/seat/AI-metering service (D32) |
+| `specs/customer_console.md` | WS-31 — the central subscription/seat/AI-metering service (D32). ⭐ **§6A is the owning record of the AI-management refactor** (D56, 2026-08-26): the artefact-by-artefact inventory for moving model, provider-key and AI-subscription administration **out of the Command Center and into the Operator Console**, reuse-first. **CP-10** is the ticket; **CP-5** is its removal half. ⭐ **§6B is CP-11** (D57, 2026-08-26) — **the serving hop**: credits, the two different "AI API keys", and the measured fact that **nothing calls the Router**, which is what makes operator configuration inert today. **Order: CP-10 s1 → CP-11 → rest of CP-10.** `work_plan.md` §4 names this spec the single owner of *AI model & provider administration*. |
 | `specs/customer_console_infrastructure.md` | WS-31 — **where** it runs; owner decision session (Supabase/Azure/VPS; Firebase disqualified in §3) |
 | `specs/subscription_console.md` | WS-30 — ⚠️ SC-1/SC-2's "Centers & add-ons panel" and "users × Centers seat grid" are superseded by D49: one flat plan, so the grid is one column. `specs/launch_surface.md` §6.2 owns the surface. |
 | `specs/organization_identity.md` | WS-32 — the customer's own mark inside the product (logo · display name · branding on invoices) |
@@ -61,12 +61,21 @@ limitations). Do not add product specs to `docs/`.
 | `specs/permissions_sandbox_b6.md` | WS-3 |
 | `../docs/multiplayer/memory-clearance.md` *(in `docs/`!)* | WS-10 (S1 only — floor control CUT, D25.4) |
 
+## ⚠️ BOARD ROWS WITH NO OWNING SPEC — a gap, listed so it is visible
+
+| Board row | What is missing | Why it matters |
+|---|---|---|
+| **WS-36 — per-tenant restore** | No spec anywhere. Nearest prose: `saas_multitenancy.md` §6.6, `saas_multitenancy_handover.md` H8, `specs/backup_and_restore.md` (whole-cluster only) | §1's contract cannot be satisfied without one, so the row is 🔴 not dispatchable. Writing the spec is the ticket |
+| **WS-37 — trust & compliance** | No spec. Nearest prose: `saas_operations_doctrine.md` §2.7 + §3.3 | Same. ⏳ §3.3 carries a **November 2026** DPDP date that is not ours to move |
+
+*(Both were named **unowned** by `saas_operations_doctrine.md` §5 on 2026-08-12 and carried no board row for fifteen days. The rows exist as of 2026-08-26; the specs do not.)*
+
 ## CONTRACTS & DOCTRINE — binding rules; read before building, no rows of their own
 
 | Spec | Role |
 |---|---|
 | **`specs/saas_operations_doctrine.md`** | **HOW a SaaS platform is run (D33): the eight capability domains · the Indian GST/RBI-e-mandate/DPDP layer that changes product design, not just paperwork · the twelve-finding audit of what Metorite assumed as a personal brain · the gap table. §4's verdicts and §6's ordering BIND; §2 is advisory.** |
-| **`specs/development_and_delivery_framework.md`** | 🟠 **PROPOSED 2026-08-24 — binds nothing yet.** How we ship to live customers while still building: branching (trunk + two fast-forward promotion refs; **no long-lived `develop`**), the staging environment as a *nightly re-derivation* of production rather than a maintained copy (this is P-1), the **two delivery planes** (tenant ladder vs. the Customer Console's unwired one), what CI must gate, how the operator dashboard / seats / AI credits are proven, and what a second developer needs. **Amends `engineering_practice.md` §1's "no staging" on a premise change, and that amendment is the owner's to record (§9 D-A).** Proposes **WS-38** — not minted, so nothing dispatches from here yet. |
+| **`specs/development_and_delivery_framework.md`** | ✅ **ADOPTED 2026-08-26 by D55 — board row **WS-38** (see ACTIVE above). ⏳ Carries **Phase 0** (§3.5: direct-to-production until customer #2 / a second contributor / H3) and the **environment parity matrix** (§3.4) and the **end-to-end contributor workflow** (§7.7). 🔴 D-D and D-F still owed.** How we ship to live customers while still building: branching (trunk + two fast-forward promotion refs; **no long-lived `develop`**), the staging environment as a *nightly re-derivation* of production rather than a maintained copy (this is P-1), the **two delivery planes** (tenant ladder vs. the Customer Console's unwired one), what CI must gate, how the operator dashboard / seats / AI credits are proven, and what a second developer needs. **Amends `engineering_practice.md` §1's "no staging" on a premise change, and that amendment is the owner's to record (§9 D-A).** **WS-38 minted 2026-08-26** — T-1 → T-2 → T-3/T-6 → T-5 is the order; T-7/T-8/T-9 wait on D-D. |
 | **`specs/engineering_practice.md`** | **HOW we build (D28): environments, deploy≠release + rings, expand/contract migrations, what a test is worth when an agent wrote it, agent work-partitioning, security once users are not colleagues, definition of done. Its binding rules are R6/R7/R8 in `work_plan.md` §1 — read those first if you read nothing else.** |
 | `specs/user_management_contract.md` | The rules every app must follow (identity, lifecycle, permissions) |
 | `specs/org_access_control.md` | The access model of record |

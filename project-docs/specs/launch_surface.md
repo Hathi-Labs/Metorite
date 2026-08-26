@@ -105,7 +105,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Apps** | Projects | `/projects` | `feature:projects` | |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
-| **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding (§6.2) |
+| **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
 **Nine** entries, four sections, in that order *(eight until 2026-08-24; D54 added
@@ -134,7 +134,7 @@ answer rather than a diff:
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |
 | AI Studio | Agent Workshop | `/build/agents` | Incomplete |
-| Admin | Models | `/settings/models` | Operator concern, not a customer one |
+| Admin | Models | `/settings/models` | 🗑️ **LEAVING THE PRODUCT ENTIRELY — D56, 2026-08-26.** Not "held back": it is a **three-tab model-operations console in the customer's app** (providers + API keys, per-model enable, tier assignment). D32.7 ruled the customer never chooses a model; D56 relocates this surface to the **operator** console. **CP-10 slice 4 deletes the pane**, and must move `nav.test.ts`'s preview count in the same PR — the D54 precedent |
 | Admin | Agent Registry | `/agents` | Operator concern |
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
@@ -146,6 +146,18 @@ D54's Calendar pane could not land without this table and that assertion both be
 edited on purpose.)*
 
 ---
+
+> 🗑️ **One pane is not `preview` — it is leaving (D56, 2026-08-26).**
+> `/settings/models` is the only entry in the table above whose destination is
+> **deletion from this product rather than promotion into it.** It is an operator
+> capability that was built on the customer's side of the tenancy boundary, and
+> `preview` currently hides that fact rather than fixing it. `customer_console.md`
+> **CP-10** relocates it; **CP-5** (its slice 4) deletes it here. Until then it stays
+> `preview` and unreachable, which is the correct interim state.
+>
+> ⚠️ **Do not read this as a precedent for hiding an app instead of deciding it.**
+> Every other row above is a finished-enough judgement (§11 item 4, **H-21**). This
+> one is a boundary error with a ticket.
 
 ## 3. What `preview` means, precisely
 
@@ -275,7 +287,9 @@ primitive*. That distinction is the whole of this section.
 So the directive's first three bullets are mostly *wiring*, and the fourth is a
 real read that does not exist.
 
-### 6.2 The surface: Organisation, three tabs
+### 6.2 The surface: Organisation, four tabs
+
+⚠️ **Corrected 2026-08-26.** This section said *three* tabs and named three. The shipped surface has **four** — `OrganizationAdmin.tsx`'s own header reads *"Four tabs, one surface"* and the strip renders **Members & roles · Seat assignments · Branding · Requests**. The Requests tab (people who signed in and found no account — `colleague_onboarding.md` §6) landed with LS-6 and was never written back here, which is R4's failure mode exactly: the spec that calls itself the authority describing three quarters of what exists.
 
 `/settings/organization` becomes the one admin destination for the org, with
 tabs:
@@ -287,6 +301,10 @@ tabs:
    **Seated** or **Unassigned**, with Assign / Release. Above the rows, the three
    counts from `GET /me/seats`, rendered verbatim.
 3. **Branding** — today's `/settings/organization` page (logo, display name).
+4. **Requests** — people who signed in and found no account. The badge is the
+   point: an admin is supposed to learn that a colleague is locked out without
+   being told. Until it existed this screen only showed people an admin had
+   already thought of.
 
 **Unassigned is a first-class state, not an absence.** A member whose seat was
 released stays on the roster, stays `active`, and shows as *Unassigned* with an
@@ -396,8 +414,10 @@ Personal Center / Apps / AI Studio / Admin per §2. Delete the `centers` section
 move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 "Studio" section → "AI Studio".
 
-**Done when:** `nav.test.ts` asserts (a) the live set is exactly §2's eight
-`(section, href)` pairs; (b) every pane carries an explicit `launch`; (c) no
+**Done when:** `nav.test.ts` asserts (a) the live set is exactly §2's **nine**
+`(section, href)` pairs *(this clause read "eight" until 2026-08-26 — D54 added the
+Calendar pane the same day LS-1 was written, §2's own table was updated to nine and
+this line was not; `nav.test.ts` has said `"ships exactly the nine panes"` since)*; (b) every pane carries an explicit `launch`; (c) no
 section is named "Centers"; (d) `visibleSections` drops `preview` panes when the
 preview flag is off and restores them when it is on.
 

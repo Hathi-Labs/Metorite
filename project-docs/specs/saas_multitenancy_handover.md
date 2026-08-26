@@ -142,7 +142,7 @@ H1  migrations 157/158/159   ──►  H2  convert 561 call sites  ──►  H
 H4  background jobs  ◄──────────────────────────────────────────────────┘
 H5  Redis conversion        (parallel with H4)
 H6  identity cutover        (parallel with H4)
-H7  subdomain resolution    (after H6)
+H7  subdomain resolution    ⛔ WITHDRAWN 2026-08-24 (D51) — do not dispatch
 H8  blobs + partitioning    (last; needs a window)
 ```
 
@@ -1489,9 +1489,28 @@ view.
 
 ---
 
-## H7 · Subdomain tenant resolution (MT-1f) · 🟢 AGENT-SAFE · after H6
+## H7 · Subdomain tenant resolution (MT-1f) · ⛔ **WITHDRAWN — DO NOT DISPATCH**
 
-**Done when:** the workbench resolves `<slug>.<domain>`; the tenant claim rides the
+> ⛔ **WITHDRAWN 2026-08-24 by D51, banner added 2026-08-26.** The owner dropped
+> subdomain workspaces entirely (*"Drop subdomains entirely; they can cause future
+> complications"*): `saas_multitenancy.md` MT-1f is ⛔ WITHDRAWN, `work_plan.md` §6
+> records that **none of these acts will ever be performed**, and the slice-1 code
+> (host parser, proxy branch, flag) was **removed rather than left dark**.
+>
+> **Why this banner is not cosmetic.** This file is what the board tells an
+> executing agent to read — WS-29's row says *"hand THIS to the executing agent"* —
+> and for two days it presented cancelled work as `🟢 AGENT-SAFE` and as the gate
+> that follows H6. An agent working the sequence downwards would have built it.
+>
+> **What replaced it: `work_plan.md` WS-35 / MT-1k** — the organization is explicit
+> in the UI, and the multi-org workspace choice is a **session claim**, never a
+> hostname. The rule below survives its mechanism and is the reason the replacement
+> is safe: the claim may only ever **SELECT among the identity's own memberships**,
+> never grant (R11). **What survives of MT-1f:** the slug *vocabulary* only
+> (`RESERVED_LABELS` / `SLUG_RE` + the gateway slug gate) — a slug is a public
+> identifier regardless of DNS.
+
+**Done when (kept as the design record, dispatching nothing):** the workbench resolves `<slug>.<domain>`; the tenant claim rides the
 **authenticated session**; the gateway derives the tenant from the session or a
 tenant-scoped API key **only**; and a test asserts an `X-Organization-Id` header, query
 parameter or body field is **ignored, not honoured** (R11).
@@ -1510,7 +1529,14 @@ parameter or body field is **ignored, not honoured** (R11).
   tenants, HASH/default for the tail.** One partition per tenant across all tenants
   recreates the catalog pressure §1.8 rejects. Targets: `email_messages`, the
   `*_embeddings` vector tables, `chat_message`, `audit_event`.
-- **Per-tenant logical backup is a required capability, not a side effect.** "Restore this
+- **Per-tenant logical backup is a required capability, not a side effect.**
+  ⚠️ **This clause is now `work_plan.md` **WS-36**, minted 2026-08-26** — it had
+  been the third bullet of a 🟡 *"needs a window"* gate since 2026-08-08 while
+  `saas_operations_doctrine.md` §5 listed it as an **unowned domain** and D31
+  called it a cross-tenant defect from customer #2. The row is 🔴 not dispatchable
+  until it has an owning spec; ⚠️ the filtered export **must** be driven by the
+  same `discover_tables()` set the RLS policies use, so it cannot be written
+  before MT-1b promotion without forking the table list. "Restore this
   one customer to yesterday" must be answerable, and `pg_restore` on a pooled instance
   cannot answer it. Build the export/import job and **run it end to end at least once.**
 

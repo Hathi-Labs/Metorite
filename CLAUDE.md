@@ -13,7 +13,7 @@ know before reading anything else** — it deliberately duplicates nothing.
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), which are deferred/historical (you may not). A spec missing from INDEX is a defect — say so. |
 | 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract + standing rules **R1–R8**. Binding on every PR. |
-| 3 | **`project-docs/work_plan.md` §2** | The dispatch board: every workstream, its state, its gates. **This is the only current-state authority.** |
+| 3 | **`project-docs/work_plan.md` §2** | The dispatch board: every workstream, its state, its gates. **This is the only current-state authority.** ⚠️ Start at **§2.0** — the product roadmap (M0 customer zero · **M1 a second org can exist safely** · M2 self-serve and money · M3 operations · M4 the apps we sell) reads the same rows as a product instead of as a build tree. It adds no authority: where §2.0 and a row disagree, **the row wins**. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**. |
 | 5 | **`project-docs/work_plan.md` §3** | Decisions **D1–D39**. Recorded once, never re-litigated. Cite them; do not reopen them. |
 | 5a | **`project-docs/HANDOFF.md`** | The cross-session **queue of actions** (D39) — injected at session start, so pending work is carried by the repo rather than by anyone's memory. ⚠️ **Actions, never state** — row 3 stays the only current-state authority. Run each entry's **Check** first and **delete** the ones that pass; `/handoff` is the workflow. |
@@ -135,7 +135,7 @@ Rules that make it work:
 
 ## 5. What not to do
 
-- **Do not re-litigate decisions.** D1–D31 are taken. If one looks wrong, say so
+- **Do not re-litigate decisions.** **D1–D54** are taken *(this read "D1–D31" until 2026-08-26)*. If one looks wrong, say so
   and stop — do not build against your own alternative.
 - **Do not refactor the tree to conform** to R6/R7/R8. Those bind *new and
   changed* work. Existing violations are findings for the board.

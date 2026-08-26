@@ -75,24 +75,6 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-22 · Decide the development & delivery framework (D-A…D-G) and mint WS-38 · [OWNER]
-- **Check:** `rg -n "WS-38" project-docs/work_plan.md` → no hit means the board
-  row was never minted and the seven decisions in
-  `specs/development_and_delivery_framework.md` §9 are still owed. (Renumbered
-  from WS-35 at merge 2026-08-24 — WS-35 was already minted for subdomain
-  workspaces / D51, so the original Check hit the wrong workstream and would
-  have read as done on arrival.)
-- **Why:** The framework spec was written 2026-08-24 and is deliberately
-  **PROPOSED, binding nothing**. Its central item amends
-  `engineering_practice.md` §1's "we do not run a staging environment, and should
-  not" — sound for the premise it names (one box, single-digit customers, one
-  developer) and that is exactly the premise being changed. Overruling recorded
-  doctrine is not an agent's act. Until D-A is recorded, T-1…T-15 have no board
-  row to dispatch from.
-- **Authority:** `specs/development_and_delivery_framework.md` §9 · CLAUDE.md §5
-  (do not re-litigate decisions) · `work_plan.md` §3
-- **Added:** 2026-08-24 · delivery-framework planning session
-
 ### H-23 · `main` reads `protected: false` — CI is advisory at merge · [OWNER]
 - **Check:** `gh api repos/Hathi-Labs/Metorite/branches/main/protection` → a
   `404 Branch not protected` means still pending. ⚠️ Read it back from the API,
@@ -174,8 +156,11 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-21 · Promoting a `preview` app to `live` is an owner decision, not a code change · [OWNER]
 - **Check:** compare `specs/launch_surface.md` §2's live table against
-  `rg -n 'launch: "live"' workbench/control_plane/src/lib/nav.ts | wc -l` → 8 means
-  nothing has been promoted. This entry never "completes"; it is the standing rule
+  `rg -c 'launch: "live"' workbench/control_plane/src/lib/nav.ts` → **9** means
+  nothing has been promoted. ⚠️ **Corrected 2026-08-26: this said `8`.** D54 added the
+  Calendar pane on 2026-08-24 — the same day this entry was written — so the Check
+  was born wrong and would have read *"something was promoted"* on every future run.
+  The number to compare against is `nav.test.ts`'s own fence, never a remembered one. This entry never "completes"; it is the standing rule
   for the next person who finishes an app.
 - **Why:** Sixteen panes are `preview` — routes, API and tests intact, nav entry
   absent. Turning one on is the judgement "this is finished enough to sell", which
@@ -192,10 +177,16 @@ line — never reclaim a number by deleting the other entry.
   prod. If 171 has already applied, this number is no longer recoverable this
   way and the query becomes `WHERE archived_root_id = id` — which answers a
   *different* question. Unanswered → still pending.
-- **Why:** ⚠️ **Time-sensitive and ordered against H-1.** 171 changes what
-  "archived" means; the pre-migration count is the only baseline that can tell
-  us whether the lifecycle sweep behaved. Not a deploy blocker — if H-1 happens
-  first, record that this number was lost rather than substituting the other one.
+- **Why:** ⚠️ **Time-sensitive.** 171 changes what "archived" means; the
+  pre-migration count is the only baseline that can tell us whether the lifecycle
+  sweep behaved.
+  🔴 **Corrected 2026-08-26 — this said "ordered against H-1", and H-1 no longer
+  exists** (its Check passed and the entry was deleted, correctly). Worse, its
+  premise is now false: the 2026-08-25 deploy reported *"0 applied, 186 already
+  recorded"*, so the box is current with `main` and **171 has almost certainly
+  already applied**. Treat the baseline as **probably lost**: run the count, and if
+  171 is on the box, record that it was lost rather than substituting
+  `WHERE archived_root_id = id`, which answers a different question.
 - **Authority:** `work_plan.md` §2 WS-27 row
 - **Added:** 2026-08-14 · session that built WS-27bj
 
@@ -226,7 +217,12 @@ line — never reclaim a number by deleting the other entry.
   still dark.
 - **Why:** Default OFF and it gates **only** the affordance that *creates* an
   org-wide row, never the read union — which is already on and inert until a row
-  exists. Flipping it is a restart, not a release. Requires H-1 first.
+  exists. Flipping it is a restart, not a release.
+  ⚠️ **Corrected 2026-08-26: this said "Requires H-1 first", and H-1 has been
+  deleted.** What it meant — *the code that reads the flag must be on the box* — is
+  now satisfied by construction: delivery is automatic again and the last deploy had
+  nothing to apply. The remaining precondition is the ordinary one: the flag is a
+  live env write, so it is owner-gated.
 - **Authority:** `specs/project_management_app.md` §9.11 · `work_plan.md` §6
 - **Added:** 2026-08-14 · session that built WS-27bj
 
@@ -513,8 +509,15 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session
 
 ### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
-- **Check:** `rg -n "clickup_event|zoho_event" tests/` → no test asserting the
-  rule means it is still advisory.
+- **Check:** `rg -n "ast\." tests/unit/test_ingestion_receiver_parity.py` → no AST walk
+  asserting that no receiver passes a bare `event=` to a structlog logger means it is
+  still advisory. ⚠️ **Corrected 2026-08-26: the old Check was**
+  `rg -n "clickup_event|zoho_event" tests/` **and it answers the wrong question.**
+  Run today it returns a hit — `test_zoho_event_type_falls_back_to_unknown`, a test
+  **named** after the convention, which asserts fallback behaviour and not the rule.
+  A Check that matches a function name rather than the guard reads *done* while the
+  guard is still missing, which is the one failure this file's protocol exists to
+  make impossible.
 - **Why:** Passing `event=` to a structlog logger raises `TypeError` at call
   time, so receivers must use `<source>_event=`. The AST guard that enforced
   this lived in `tests/unit/test_clickup_normalise_dlq.py`, **deleted by D52
@@ -524,21 +527,67 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 (`work_plan.md` §1) · `apps/AGENTS.md` ingestion section
 - **Added:** 2026-08-24 · WS-39 S1 session
 
-### H-29 · WS-39 S3b/S3c: the `gtd_*` backfill and drop · [OWNER]
-- **Check:** `psql -c "\dt gtd_items"` on the box → table present means S3c is still
-  pending. For S3b, `SELECT count(*) FROM gtd_items WHERE deleted_at IS NULL;` → a
-  non-zero count after S3a shipped means rows are still stranded in the old store.
-- **Why:** D53.5 retires `gtd_*` in three releases; (2) the backfill into members'
-  personal `pm_project`s and (3) the drop are **data moves against live customer
-  data** — the WS-29 cutover class, on a ladder that cannot roll back (R6). Building
-  and R8-testing them against scratch databases is agent-safe; running them is not.
-  ⚠️ **Prove the mapping two-org on real Postgres first.** The failure mode is not
-  lost data — it is a mis-mapped `member_email` publishing one member's *private*
-  task into somebody else's lens.
+### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
+- **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
+  → if a deactivation path for `app_user` exists, this entry is live and the
+  question is whether it honours D63. If it returns only `gtd_people` hits
+  (the retiring connector), deactivation is still unbuilt and this is a
+  standing constraint on whoever builds it.
+- **Why:** **D63 was taken 2026-08-26, before the flow it governs exists.** That
+  was deliberate — the default somebody picks under time pressure while building
+  deactivation is exactly the wrong way to settle what happens to a departed
+  colleague's private tasks. What D63 requires:
+  * tasks in their personal tree **assigned to someone else** → hand over
+  * tasks only ever theirs → **seal**; retained, invisible, **never deleted**
+  * their `pm_task_personal` rows on team tasks → left alone; the task needs
+    reassigning, the overlay just stops being read
+  * one **owner-only, logged** door to open or export a sealed tree
+  * the deactivation dialog states the split **in numbers before the click**
+  ⚠️ **Not a WS-39 deliverable.** WS-39 made the private tree richer (Areas,
+  migration 191), which is what turned this from theoretical into something with
+  real content behind it — but member writes are §6 owner-gate and deactivation
+  belongs to whoever owns identity.
+  📌 `app_user.status` is the hook point and today holds only `'active'`.
+- **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
+- **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
+
+### H-29 · WS-39 S3b/S3c: RUN the `gtd_*` backfill, then the drop · [OWNER]
+- **Check:** `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;` on the
+  box → non-zero means S3b has not run (or has stragglers). `\dt gtd_items` → still
+  present means S3c has not run. ⚠️ Both columns exist only once migration **189** has
+  applied; if `migrated_task_id` is missing, the deploy has not carried 189 yet and
+  that is the real finding.
+- **Why:** ✅ **BUILT 2026-08-26 — the code half is DONE.** Migrations **189**
+  (backfill) and **190** (drop) are merged and R8-verified two-org on real Postgres
+  (`tests/live/live_ws39_s3b.sql`, 37 checks; `live_ws39_s3c.sql`, 22). What remains
+  is exactly the part §6 (f) reserves: **running them.**
+  📌 **They ship INERT.** 189 defines `gtd_backfill_to_pm()` and never calls it;
+  190 refuses unless armed AND every row carries `migrated_task_id`. Deploying them
+  moves nothing and drops nothing, so there is no rush and no hazard in them sitting
+  applied.
+  **The order, in full, is `docs/TASKS_LENS.md` → "The cutover runbook".** Short form:
+  slice 5 lands → `SELECT * FROM gtd_backfill_plan;` → `gtd_backfill_to_pm(false)`
+  → `gtd_backfill_to_pm(true)` → flip BOTH flags → **re-run** `gtd_backfill_to_pm(true)`
+  to sweep the window → wait days → `INSERT INTO gtd_retirement_arm` → next deploy drops.
+  ⚠️ **Do not arm until the Tasks UI slice has landed** — stronger than the earlier
+  "after slice 5", and D62/191 are why: the backfill creates **Areas** from a member's
+  old `gtd_projects`, and until the Tasks app can rename or delete one, members have
+  structure in their data they cannot edit. SQL cannot see an env var or an
+  unported route; arming is your assertion that both flags are on and nothing still
+  writes `gtd_items`. `routes/tasks/ai.py` alone names `gtd_*` 33 times today.
+  ⚠️ **Rows reading `unmappable` block the drop, on purpose.** They have no
+  resolvable owner (including the literal `'anonymous'` that `_uid` writes for an
+  unauthenticated capture). Decide each deliberately — give the address an `app_user`,
+  or delete the row — rather than widening the guard. The failure being avoided is
+  not lost data; it is one member's private task published into another's lens.
   ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
-  they are the Calendar app's per-member state and survive (D53.6).
-- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8
-- **Added:** 2026-08-24 · WS-39 S1 session
+  Calendar state, they survive (D53.6). Nor are the five `gtd_people*` tables, nor
+  `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
+  (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8 ·
+  `docs/TASKS_LENS.md`
+- **Added:** 2026-08-24 · WS-39 S1 session *(re-cut 2026-08-26 when 189/190 landed:
+  this is now a RUN entry, not a BUILD one.)*
 
 ### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
 - **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
@@ -585,6 +634,337 @@ line — never reclaim a number by deleting the other entry.
   CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
   smuggled into an unrelated PR)
 - **Added:** 2026-08-21 · session that halved H-10 (PR #46)
+
+### H-35 · Write the owning spec for WS-36 (per-tenant restore) · [AGENT]
+- **Check:** `rg -n "WS-36" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
+  NO OWNING SPEC"** section (rather than in ACTIVE) means the spec is still unwritten
+  and the row is still 🔴 not dispatchable.
+- **Why:** D31 recorded on 2026-08-11 that there is **no per-tenant restore, only a
+  whole-cluster one** — BO-23 restores the box, so serving one customer's recovery
+  **rolls every other customer back**. `saas_operations_doctrine.md` §5 then named it
+  one of only **two domains with no owner** and said both need one *before customer
+  #1*. Fifteen days later it still had no board row; WS-36 was minted 2026-08-26 and
+  is deliberately 🔴 because §1's contract needs an owning spec with testable
+  acceptance, and there is none. **What is owed is a spec, not code.**
+  ⚠️ Two constraints the spec must carry or it will be written wrong: the filtered
+  export **must** be driven by the same `discover_tables()` set the RLS policies use
+  (a second table list forks silently the first time a table is added), which means
+  it cannot be finished before **MT-1b promotion**; and this is a **customer-#2**
+  defect, not a customer-#1 gate — which is exactly how it becomes a customer-#3
+  emergency if it keeps being true.
+- **Authority:** `work_plan.md` §2 WS-36 · §2.0 M1 · D31 ·
+  `saas_operations_doctrine.md` §5 finding 9 · `saas_multitenancy_handover.md` H8
+- **Added:** 2026-08-26 · multi-tenancy product pass
+
+### H-36 · Write the owning spec for WS-37 (trust & compliance) — and take the positions it needs · [OWNER]
+- **Check:** `rg -n "WS-37" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
+  NO OWNING SPEC"** section means it is still unwritten.
+- **Why:** The second unowned domain in `saas_operations_doctrine.md` §5: consent
+  model, subprocessor disclosure, retention/deletion policy, breach-notification
+  path, customer-readable audit trail. ⏳ **It carries a date that is not ours to
+  move — §3.3 puts DPDP at November 2026.**
+  🟢 **The AGENT-SAFE half:** write the spec — name each obligation, name where it is
+  enforced, name the fence (R7). 🔴 **The OWNER half, and why this entry is [OWNER]:**
+  the *positions* — what we retain, whom we disclose as a subprocessor, what we
+  promise on breach — are commitments to customers, and an agent must not invent a
+  compliance position.
+  📌 **The one item that is cheap only now:** doctrine §6 item 4, *model the consent
+  record while the tables are still empty*. Retrofitting consent onto rows already
+  collected is a customer conversation, not a migration. Also belonging here rather
+  than to a console ticket: capping default auto-top-up **below ₹15,000** per the RBI
+  e-mandate framework (§3.2) — *"a config default with a legal reason — write the
+  reason down"*.
+- **Authority:** `work_plan.md` §2 WS-37 · §2.0 M3 · `saas_operations_doctrine.md`
+  §2.7 · §3.3 · §5 · §6
+- **Added:** 2026-08-26 · multi-tenancy product pass
+
+### H-37 · §2 rows have re-grown past the size D18 was minted to fix · [AGENT]
+- **Check:** `awk '{ print length($0) }' project-docs/work_plan.md | sort -rn | head -1`
+  → anything above ~20,000 means a single board row is still carrying a session's
+  narrative. Measured 2026-08-26: **71,702**.
+- **Why:** D18 (2026-08-09) moved row narrative into the owning specs' *"Board record"*
+  sections because §2 had reached ~77k tokens and was *"unreadable in one pass by the
+  dispatch loop it serves"*. Measured 2026-08-26 the rows are **past where they were**:
+  WS-31 71,702 characters on one line, WS-29 46,587, WS-27 41,319, WS-26 20,779,
+  WS-30 12,607 — roughly 190k characters of narrative in five cells.
+  **The mechanism is not carelessness and naming it matters:** a build session appends
+  its findings to the row because the row is where it is already looking, and each
+  append is individually correct. D18 is a rule with no fence, so under R7 it is
+  advisory — which is precisely why it decayed twice.
+  **What to do:** relocate each row's narrative into its owning spec's Board-record
+  section, leaving state, gates and pointers (D18's own shape), **and give the rule a
+  fence** — a test asserting no line in `work_plan.md` §2 exceeds a stated length is
+  cheap, structural, and is the thing that stops a third recurrence.
+  ⚠️ **Do it as its own PR.** It was deliberately not folded into the 2026-08-26
+  product pass: a ~190k-character move inside a diff that also changes states is how
+  a real correction gets lost.
+- **Authority:** `work_plan.md` §5 residual 8 item 9 · D18 · R7
+- **Added:** 2026-08-26 · multi-tenancy product pass
+
+### H-38 · Decide D-D (where staging runs, and what it costs) · [OWNER]
+- **Check:** `rg -n "D-D" project-docs/work_plan.md` → a hit only inside **D55.9's
+  "still owed"** clause (rather than a recorded answer in §3) means it is still open.
+- **Why:** D55 adopted the delivery framework and answered five of its seven open
+  decisions. **D-D is money plus an external account, which is owner-side by
+  `customer_console_infrastructure.md` §7** — a second VPS, a second Supabase pair, or
+  both. It is the one thing between here and the staging half of WS-38: **T-7
+  (`staging` ref), T-8 (`release-promote`) and T-9 (the nightly anonymised rebuild) all
+  wait on it.** Everything else on WS-38 — T-1, T-2, T-3, T-6, T-5 — is buildable during
+  Phase 0 and needs no staging box, which is why the order puts them first.
+  📌 **Worth knowing before deciding:** staging is a *nightly re-derivation* of
+  production, not a maintained copy (D55.5), so it can be smaller than production and can
+  be torn down and rebuilt. It is a cost that scales with nothing.
+- **Authority:** `work_plan.md` D55.9 · §2 WS-38 ·
+  `specs/development_and_delivery_framework.md` §9 D-D · §3.5
+- **Added:** 2026-08-26 · delivery + model-management decision session
+
+### H-39 · Decide D-F (the CODEOWNERS map) — when there is a second person to name · [OWNER]
+- **Check:** `ls .github/CODEOWNERS` → absent means still open. ⚠️ This entry is
+  **deliberately not actionable yet** and should not be closed by writing a CODEOWNERS
+  file naming one person.
+- **Why:** D55 answered D-A/B/C/E/G and left D-F open **because it cannot be written
+  before the people exist** — a CODEOWNERS map with one name in it is a rule that
+  enforces nothing and a file that goes stale. The seams it would map are already written
+  down (`development_and_delivery_framework.md` §7.4), so the work when the time comes is
+  a lookup, not a design. **T-13 is the ticket; enabling the requirement is a GitHub
+  settings change (§6).**
+  📌 Sequence note: T-13 is downstream of **T-2**. Required reviewers on an unprotected
+  branch are advisory, like every other gate here.
+- **Authority:** `work_plan.md` D55.9 · `specs/development_and_delivery_framework.md`
+  §7.4 · §9 D-F · T-13
+- **Added:** 2026-08-26 · delivery + model-management decision session
+
+### H-40 · CP-10 slice 1: give `provider_credential` a write path · [AGENT]
+- **Check:** `rg -n "INSERT INTO provider_credential" apps/ infra/` → no hit means the
+  table still has **zero writers** and the Router still cannot call a provider on the
+  platform account.
+- **Why:** 🔴 **This is the measured blocker on the entire AI product**, and it is not
+  the one anybody assumed. `router.provider_credential()` SELECTs a table that no
+  migration seeds, no route writes and no script populates — so on a fresh Console
+  database it returns `None` and there is **no way to put our DeepSeek/Anthropic/Groq key
+  in at all.** Metering being unpriced is a separate, later problem; this one stops the
+  first call.
+  **Owner-directed 2026-08-26 as the NEXT thing built** (D56.7). Slice 1 is the operator
+  door: add / list (never returning plaintext) / rotate / revoke, Fernet at rest.
+  ⚠️ **Read `customer_console/router.py` and `infra/customer_console/004_provider_keys.sql`
+  first** — 004's header already argues why this store is *not* `acb_llm.key_store` and
+  must not be merged with it: these are **our** credentials, and putting them on a
+  customer's box is the precise thing D32.1 moved metering here to avoid.
+  ⚠️ **Do not build a new operator UI in slice 3** — the three-tab surface exists at
+  `workbench/control_plane/src/app/settings/models/page.tsx`, on the wrong side of the
+  boundary. Relocate it (D56.1).
+  🔴 Installing a **real** key against the live Console is §6 (e)/(f) — build against
+  fixtures and scratch, and stop.
+- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9 · §4 (single-owner) · **D56** ·
+  `specs/customer_console.md` **CP-10** slice 1 — ⭐ **and its §6A, the artefact-by-artefact refactor inventory** (measured 2026-08-26: what MOVEs, what is REUSEd, what is REWRITTEN-AS-PROXY, what is DELETEd, plus the four decisions the ticket must take deliberately). Read §6A before writing a line — the owner's constraint is **reuse and refactor, do not create new code**, and §6A is what makes that checkable
+- **Added:** 2026-08-26 · delivery + model-management decision session
+
+### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
+- **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
+  → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and
+  the hop does not exist. ⚠️ Do **not** check by grepping for `CUSTOMER_CONSOLE_URL`
+  repo-wide — it is read by `console_resolve.py`, `seats.py` and `signin.py` for
+  **sign-in and seats**, never for an LLM call, so a repo-wide grep reads as "wired" while
+  the serving path is untouched.
+- **Why:** 🔴 **This is the ticket that makes CP-10 matter.** `v1_compat.py`'s own header
+  says it *"routes through the litellm SDK directly (no proxy)"*, so every model, tier
+  binding, rate card and provider key configured in the Operator Console is **inert as far
+  as the product is concerned**. `work_plan.md` §6 (d) recorded the shape of this on
+  2026-08-18 — *"CP-4 ships dark by having no caller, and this gate binds the first caller
+  ticket, which is where the flag arrives"* — and **that ticket was never minted**. It is
+  CP-11.
+  **Order (D57.5): CP-10 slice 1 → CP-11 → the rest of CP-10.** CP-11 cannot be proven
+  without a provider key to call with; the remaining CP-10 slices are not on its critical
+  path and must not delay it.
+  ⚠️ **Four things §6B.5 says will go wrong if not decided inside the slice:** streaming
+  (the Router's pass-through is **CP-4b, unbuilt** — either land it or refuse streaming
+  explicitly, never de-stream silently); latency (one hop on the interactive path —
+  measure it, do not assume); `_ensure_keys_loaded()` must not run for Router-served
+  calls; and the `X-CC-*` attribution headers are **slice 3's job**, because an
+  unattributed `usage_event` cannot become a per-member cap or a usage statement.
+  ⚠️ **Do not delete `v1_compat.py`'s local path** — it is BYOK and flag-off, and R6
+  forbids removing the old path in the release that adds the new one.
+  🔴 Wiring a live deployment's key and flipping `ROUTER_SERVING_ENABLED` are §6 (d)/(e).
+- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9b · §4 (single-owner) · §6 (d) ·
+  **D57** · `specs/customer_console.md` **CP-11** and ⭐ its **§6B**
+- **Added:** 2026-08-26 · AI credits + keys session
+
+### H-42 · Price the AI rate card, then flip the spend gate — in that order · [OWNER]
+- **Check:** on the Console database,
+  `SELECT count(*) FROM model_rate_card WHERE input_credits_per_1k > 0;` → `0` means the
+  card is still unpriced and nothing draws credits down. Then
+  `env | grep -c CUSTOMER_CONSOLE_SPEND_GATE` on the box.
+- **Why:** Credit **assignment** works end to end already (§6B.1) — but a granted credit
+  is currently a number that nothing consumes, because the shipped rate card is **all
+  zero** and `test_the_rate_card_ships_unpriced` refuses a priced ladder by design.
+  ⚠️ **The order is not a preference and getting it backwards is the expensive mistake.**
+  Flipping the gate against a zero card delivers **every cost of enforcement and none of
+  the benefit**: a zero-balance org — the state provisioning leaves *every* org in — is
+  refused on all AI calls, while a funded org can never reach 402 because nothing bills.
+  📌 The card is meant to be set **against measurement**, not estimates: CP-4 ships the
+  Router unpriced so a month of real per-org burn lands in `usage_event` first
+  (`002_seed_catalog.sql`'s own header). CP-11 is what finally produces that traffic, so
+  this entry becomes actionable only after CP-11 has been serving for a while.
+  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done via migration**.
+- **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
+  `specs/customer_console.md` CP-6
+- **Added:** 2026-08-26 · AI credits + keys session
+
+### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
+- **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
+  `configure_litellm` mean the tenant path still writes process-global credentials.
+- **Why:** **D58 settled the architecture and this is the one code consequence.** The
+  Console Router already does it right — `call_kwargs["api_key"] = secret`, per call, no
+  shared state. The tenant gateway does not: `_ensure_keys_loaded()` →
+  `key_store.configure_litellm()` is a once-per-process latch assigning
+  `litellm.<provider>_api_key` **and** `os.environ[...]`, which is the §6 (f) blocker.
+  `client.py:262`'s own docstring states the consequence: *"Calling it per organization
+  would not scope anything; it would make the LAST organization's key the one every caller
+  sends."*
+  **The fix is the shape `router.py` already uses — pass credentials per call.** No new
+  infrastructure, and D58.3 explains at length why a proxy is the wrong way to buy a
+  keyword argument.
+  📌 **Sequencing:** CP-11 shrinks the blast radius first (Router-served traffic stops
+  using this path at all), so this is worth doing *after* CP-11 lands, when it is a
+  cleanup rather than a live-path change. ⚠️ It does **not** close §6 (f) on its own —
+  the credential-scope redesign for `require_llm_api_auth` is the other half.
+- **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
+- **Added:** 2026-08-26 · AI architecture session
+
+### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
+- **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
+  → any file with a count means that feature's tier is still a literal, not a
+  configuration. Measured 2026-08-26: `assistant.py` 21 · `settings.py` 8 · `_common.py` 8
+  · `drafting.py` 7 · `tasks/ai.py` 6 · `notes/summaries.py` 5 · `taskStore.ts` 4 · plus
+  five more files.
+- **Why:** The owner asked that *"different features could use the different model
+  tiers"*. **They already do — by string literal at the call site**, so changing which tier
+  the email digest uses is a code change and a deploy, not an operator action. Making it
+  configurable needs a **feature→tier registry**, and at 80+ sites it is **its own ticket,
+  deliberately NOT a CP-10 slice** (D59.6 step 3).
+  📌 **Generalise, do not invent:** the Apps feature already declares its tier in its
+  **manifest** — scope `ai:tier-1` → `_SCOPE_TIER_MAP` → `tier-fast`, with a documented
+  fallback to the cheapest alias (`routes/apps/_common.py:66-79`). That is a declarative
+  feature→tier binding that works. The registry is that idea widened; a second vocabulary
+  beside it is the CLAUDE.md §5 defect.
+  ⚠️ **Blocked on nothing, but pointless before D59.6 steps 1–2** — a registry pointing at
+  tiers whose modality is a Python frozenset can only bind text tiers.
+- **Authority:** `work_plan.md` §3 **D59.4 / D59.6** (re-expressed over `(task, tier)` by
+  **D60.10**) · `specs/customer_console.md` **§6A.9**
+- **Added:** 2026-08-26 · AI architecture session
+
+### H-45 · The rate card is tokens-only, so STT cannot be priced — and it ships · [AGENT]
+- **Check:** `rg -n "def rate_call" -A 20 apps/services/customer_console/customer_console/credits.py`
+  → a body that only divides token counters by 1000 (no `unit` branch) means the hole is
+  open. Separately, `rg -n "^\s+unit\s+TEXT" infra/customer_console/*.sql` → no hit means
+  `model_rate_card` still has no `unit` column.
+  ⚠️ **Do NOT grep for the bare word `unit` in that ladder** — it matches the word
+  "opport**unit**ies" in `usage_event`'s comment and reads as **done** while the column is
+  absent. (Caught while writing this entry, 2026-08-26; it is the same defect as H-31's
+  original Check and is recorded here because the class keeps recurring: a Check must
+  match the *artefact*, never a word that happens to appear near it.)
+- **Why:** 🔴 **A live gap that predates the multimodal question and was found by it.**
+  `credits.rate_call` divides `fresh_prompt_tokens` / `cached_tokens` /
+  `completion_tokens` by 1000 against per-1k rates and **knows no other unit**;
+  `model_rate_card` carries only those three rate columns and `usage_event` only those
+  three counters.
+  **`tier-stt` ships in production seed** (`002_seed_catalog.sql:76`,
+  `groq/whisper-large-v3-turbo`) and **D19.2 specifies per-minute STT metering** — which
+  the card cannot express. Image generation (per image) and TTS (per character or second)
+  are equally unpriceable.
+  ⚠️ **This is currently invisible because the whole card ships at zero** and
+  `test_the_rate_card_ships_unpriced` keeps it there. It becomes a revenue bug the day
+  somebody prices the card and assumes STT is covered — an unpriced call is billed as
+  free, and `rate_call` raises `UnpricedModel` rather than silently zero-rating, which is
+  the one mercy here.
+  **The fix (D60.5):** `model_rate_card` re-keys on `(model, task, effective_from)` —
+  because the same multimodal model costs differently per task — and gains a `unit` ∈
+  `{token_1k, second, character, image}`. `usage_event` gains `task`, `quantity`, `unit`
+  (**nullable, R6-safe**; the token columns stay, since chat is the common case and they
+  are indexed). `rate_call` grows a unit branch.
+  📌 **Do this inside CP-10 slice 2, not as a follow-up** — without it, three of the six
+  tasks in D60's model cannot be billed at all, so shipping the access model without it
+  would ship a catalog that can describe work we cannot charge for.
+  🔴 Pricing the card itself remains an owner act (D19.2, §6); this ticket builds the
+  mechanism and prices nothing.
+- **Authority:** `work_plan.md` §3 **D60.5** · D19.2 ·
+  `specs/customer_console.md` **§6A.9** · CP-10 slice 2 · CP-6
+- **Added:** 2026-08-26 · multimodal / future-proofing session
+
+### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
+- **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
+  → only `/v1/chat/completions` means the Router still serves exactly one of D60's six
+  tasks and the shape is still undecided.
+- **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
+  **nowhere to serve them**. The fork is real and is an owner call because it is a public
+  wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
+  (`/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/audio/speech`) — every SDK
+  already speaks them, but each needs its own upload/streaming story; or **(b)** one
+  generic `/v1/invoke` taking `(task, tier, payload)` — one route, but we invent a
+  protocol nothing speaks and file upload gets awkward.
+  ✅ **DECIDED 2026-08-26 by D61.1: (a), one task at a time, starting with `transcribe`.**
+  ⚠️ **And the [OWNER] label on this entry was wrong** — the Router is an **internal seam**
+  (our gateway → our Console, on a credential we issue), not a public API, so its shape
+  commits us to nobody outside. OpenAI's shapes are also what litellm implements on *both*
+  sides, so following them costs nothing and keeps the option of exposing the Router
+  publicly later. Re-labelled [AGENT].
+  📌 **Build `transcribe` only when a caller needs it.** An endpoint nobody calls is CP-4's
+  mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
+  ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
+  measured call sites. This bounds the multimodal reach, not the next two tickets.
+- **Authority:** `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
+- **Added:** 2026-08-26 · AI design audit
+
+### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
+- **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
+  and still STT-only means the generalisation has not happened. If a *second* dispatch
+  abstraction appears elsewhere (e.g. a `resolve_provider` in `customer_console/`), that is
+  the defect this entry exists to prevent, not progress.
+- **Why:** D60 originally said the capability row carries *"the litellm verb"*. **That is
+  wrong** — `acb_stt` exists because AssemblyAI's batch API is submit-then-poll and, in the
+  package's own words, *"can't be expressed as a LiteLLM `atranscription` call"*. So
+  `invocation` names a **handler**, of which litellm verbs are one family and native
+  providers another.
+  ✅ **The reuse finding is the valuable half:** `acb_stt` already implements D60's step 2
+  — `SttProvider` as the one interface, `resolve_stt_provider(alias)` resolving alias →
+  concrete model → the provider that speaks it, with `LiteLLMSTT` and `AssemblyAISTT`
+  behind it. **That is `(model, task) → invocation`, built, for one task.** Widen it to
+  all tasks. Authoring a second dispatch abstraction beside it is the CLAUDE.md §5 defect
+  in the one place this design has been most careful to avoid it.
+  ⚠️ Consequence for G-5: `invocation` values are an **allowlist the Router knows**, never
+  free text — an operator must not be able to bind a handler that does not exist.
+- **Authority:** `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
+  G-2 / G-5** · CLAUDE.md §5
+- **Added:** 2026-08-26 · AI design audit
+
+### H-48 · Implement D61's three slice-2 answers (G-3, G-4, G-5) · [AGENT]
+- **Check:** `rg -n "pricing_mode" infra/customer_console/*.sql` → no hit means D61.4's
+  three-state rate card is unbuilt, and by extension slice 2 has not landed.
+  ✅ **All three are DECIDED (D61.3/D61.4/D61.5) — this entry is now BUILD work, not
+  decision work.** The reasoning below is kept because an implementer who does not know
+  *why* will re-derive the wrong answer.
+- **Why:** All three are five-minute decisions that become expensive retrofits.
+  **G-3 → the CALLER declares; the Router never sniffs (D61.3).** It uses the same verb as
+  chat, so it differs only in which model is bound. Payload sniffing is inference, and
+  D32.7 refuses inference in this exact area. Consequence, intended: a
+  chat call carrying an image silently goes to whatever `(chat, tier)` binds — which may
+  not accept images — and fails at the provider with an error the customer cannot act on.
+  ⚠️ D32.7 is hostile to inference (*"rejected 400, not coerced"*), which argues for the
+  caller declaring.
+  **G-4 → `pricing_mode` ∈ {`unpriced`, `absorbed`, `priced`} (D61.4).** A zero cannot
+  carry three meanings; `absorbed` rates to zero deliberately **and still writes the
+  `usage_event`**, because we want the volume even when we do not charge for it. D19.2 absorbs
+  embeddings into the package price; D60 lists `embed` as a task with a rate card, which
+  reads as billable. The card must distinguish "free on purpose" from "not priced yet",
+  because `rate_call` raises `UnpricedModel` on a zero card **by design** — so an absorbed
+  task hitting that path would **refuse the call**. 📌 The three embedding sites are in
+  ingestion and none goes through `acb_llm/client.py`, so they are not on the Router path
+  today at all.
+  **G-5 → tasks are an allowlist the Router publishes; tiers stay free text (D61.5).** A free-text task lets an operator
+  create a binding the Router cannot serve: a row that looks configured and 500s.
+- **Authority:** `specs/customer_console.md` **§6A.10** · `work_plan.md` D60.11 · D19.2 ·
+  D32.7
+- **Added:** 2026-08-26 · AI design audit
 
 ---
 

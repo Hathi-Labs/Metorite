@@ -772,8 +772,13 @@ still real; the member is annotated in `tasks/lib/types.ts`).
 A new `feature:calendar` slug is **a grant nobody holds**. Minting one would
 ship this app **dark to every existing member**, and un-darkening it is an
 owner-gated role write (`work_plan.md` §6, the WS-24 (d) class) *on top of* a
-migration that has to reach a box first — and H-1 records that `main` is many
-migrations ahead of every box. Riding the grant that already covers this
+migration that has to reach a box first. ⚠️ **Corrected 2026-08-26: this cited
+H-1 for “`main` is many migrations ahead of every box”.** H-1 no longer exists
+— its Check passed and the entry was deleted — and the claim is now false: the
+2026-08-25 deploy reported *“0 applied, 186 already recorded”*, i.e. the box is
+current with `main`. The argument is unaffected and stands on its own, which is
+why the conclusion below is unchanged — a new slug is a grant nobody holds
+whether or not migrations are behind. Riding the grant that already covers this
 surface keeps reachability exactly as it is today: the calendar lived inside
 Tasks, so everyone holding `feature:tasks` already had it. Minting
 `feature:calendar` is a later, deliberate act that must ship **with** its grant

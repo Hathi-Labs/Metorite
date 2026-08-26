@@ -4,7 +4,12 @@
 Console** by **D41**, 2026-08-18 — file was `platform_control_plane.md`. The
 path/env/package mapping is in D41.1.)*
 
-**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · CP-2d
+**Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
+model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
+2026-08-26 (D57)** — the SERVING HOP, the first-caller ticket §6 (d) has waited for
+since 2026-08-18. ⭐ **§6A** is CP-10's refactor inventory; ⭐ **§6B** is CP-11's.
+**Order: CP-10 s1 → CP-11 → the rest of CP-10** (D57.5). ✅ Credit ASSIGNMENT from the
+Operator Console already works end to end — §6B.1, do not rebuild it** · CP-2d
 SLICES 1+2 of 2 BUILT (slice 1 2026-08-22 — passwordless email OTP via Resend,
 the Auth.js provider + `EMAIL_OTP_ENABLED` flag, DARK; **slice 2 2026-08-23 — the
 Auth.js DB adapter (tenant-plane migration 186 `auth_email_otp_token`,
@@ -1031,7 +1036,23 @@ provider in the same quarter as everything else here.
 Each is an acceptance unit. **All are 🟢 AGENT-SAFE to build**; the OWNER-GATE items
 are in §8 and are all *operational*, never *constructional*.
 
-**CP-0 · Auth that a customer can actually use.** 🔴 **Ordered FIRST by D33 — it did
+**CP-0 · Auth that a customer can actually use.** ✅ **BUILT** *(`8f6eb79`; the file's
+own status header has said so since — this ticket body was left in the present tense and
+still read 🔴 until 2026-08-26, which is the R4 failure: the header and the ticket a
+dispatched agent actually reads disagreed, and four other passages in this same file
+already referred to “the fail-open posture CP-0 removed”).* **What shipped:** the Entra
+issuer defaults to `organizations` — any work/school directory, not ours — and pinning a
+tenant GUID is now the deliberate act rather than the default (`auth.ts:103`); the three
+posture predicates moved into a pure `@/authPosture` module fenced by
+`authPosture.test.ts`, so an unconfigured **production** deployment refuses traffic
+instead of allowing all of it. ⚠️ **One consequence to carry forward, not a defect:**
+`authPosture` grants its dev bypass only when `NODE_ENV` is not production, which is what
+made the whole `e2e/` suite time out under `next start` — see **H-27**.
+
+**Kept below as the record of what it removed** — the reasoning is the reusable part, and
+this is the shape D33.1 will re-enter by if anyone “simplifies” the posture module:
+
+~~🔴 **Ordered FIRST by D33 — it did
 not exist when this spec was written and it blocks customer #1, not customer #2.**
 Today sign-in is pinned to **one Microsoft Entra directory** (`workbench/control_plane/
 src/auth.ts`: *"the tenant-level app registration ensures only users in the Fracktal
@@ -1045,7 +1066,9 @@ succeeds against a fixture; a deployment with auth env unset **refuses traffic**
 non-dev environment and a test pins it (verified-red-first — the current behaviour must
 fail the new test before the fix); the docstring names the mechanism actually in force;
 `npx tsc --noEmit && npx vitest run` green. **Registering any real IdP application is
-🔴 OWNER-GATE** — build against fixtures and hand it over.
+🔴 OWNER-GATE** — build against fixtures and hand it over.~~ *(struck 2026-08-26; the
+OWNER-GATE clause on registering a real IdP application is **not** struck and still binds
+— `work_plan.md` §6.)*
 
 **CP-1 · The service skeleton and registry.** ✅ **BUILT 2026-08-12.**
 `infra/customer_console/001_customer_console.sql` (its OWN migration ladder — not
@@ -1231,7 +1254,13 @@ provider account. 🔴 Nothing new is gated: exposure to a real customer remains
 **Non-goals:** the Metorite-side forwarder (that is CP-5 plus the first caller
 ticket) · the tier-capabilities document · any rate-card price.
 
-**CP-5 · Tier capabilities and the model-access rework.** `GET /v1/tiers`, the
+**CP-5 · Tier capabilities and the model-access rework.** 🔴 **UNBUILT — specced
+2026-08-12 by D32.7, still unbuilt 2026-08-26, and the picker it removes is still in
+the customer product.** ⚠️ **Re-scoped by D56: CP-5 is now the REMOVAL half of CP-10
+and ships as its slice 4.** Removing the picker without giving the operator somewhere
+to do the job would leave the product with **no** way to manage models at all — which
+is why this sat unbuilt for a fortnight and why the two are now one piece of work.
+`GET /v1/tiers`, the
 **Metorite-side** cache, `_fit_context_window` / `_clamp_max_tokens` driven from
 it, and removal of the customer-facing model picker. **Done when:** a tier whose
 window shrinks in the Router causes **Metorite (the tenant deployment)** to fit
@@ -1248,6 +1277,128 @@ the tenant deployment because it needs the messages. Expanded, not reinterpreted
 `X-CC-Member` / `X-CC-Agent` / `X-CC-Module` / `X-CC-Run` and the `cc_live_` /
 `cc_depl_` key prefixes are **wire identifiers of this service** and are
 untouched.)*
+
+**CP-10 · The operator model-management plane — models, tiers, rate cards, provider
+accounts, provider keys and their subscriptions.** ⭐ **The artefact-by-artefact
+refactor inventory is §6A** — read it before writing a line: it carries the measured
+disposition of every file (MOVE / REUSE / REWRITE-AS-PROXY / DELETE), the serving
+chain end to end, and the four decisions this ticket must take deliberately. 🆕 **MINTED 2026-08-26 by D56 — and
+it is the NEXT ticket built** (owner-directed). Sibling of **CP-5**, which is the removal
+half and lands with it.
+
+🔴 **The finding that makes this urgent, measured repo-wide 2026-08-26.**
+`router.provider_credential()` (`customer_console/router.py:165`) SELECTs from
+`provider_credential`, and **nothing writes that table** — not `001`, not `004`, not
+`002_seed_catalog.sql`, no route, no script. On a fresh Console database it returns
+`None` every time, so **the Router cannot make a provider call on the platform's account
+at all.** The AI product is not blocked on pricing or on metering; it is blocked on there
+being no way to put a key in. CP-10 is the missing half of CP-4's Router, not a
+convenience surface.
+
+**Two more measurements that shape the ticket:**
+
+- `tier_binding` and `model_rate_card` are written **exactly once**, by
+  `002_seed_catalog.sql`. So today, adding a model, re-pointing a tier or re-pricing one
+  is a **hand-run SQL statement against the live Console database** — an owner-gated
+  production one-off, per change, forever.
+- The surface already exists **on the wrong side of the boundary**:
+  `workbench/control_plane/src/app/settings/models/page.tsx` is a complete three-tab
+  model-operations console (Providers with key entry · Models with per-provider
+  enable/disable · Tiers with model assignment) living in the **customer** product,
+  hidden only by D49's `preview`. The **operator** console has `activate · catalog ·
+  credits · lifecycle · orgs · provision · purge · seats · session` and no model surface
+  at all.
+
+⚠️ **So this ticket RELOCATES a capability across the tenancy boundary. It does not build
+a second one.** Re-point that UI at the Console's own tables, behind the operator door,
+and delete the tenant-side copy per CP-5. Authoring a fresh operator UI while that one
+exists is the CLAUDE.md §5 second-implementation defect, and it is the obvious wrong turn
+here because the new home is a different app.
+
+### What the operator manages — four objects, one of which is new
+
+| Object | Table | State |
+|---|---|---|
+| **Models** — what we can call, per provider | *(derived from `tier_binding` + `model_rate_card` today; a first-class `model` row is a design call inside this ticket)* | ⚠️ implicit |
+| **Tier bindings** — which model serves a `(task, tier)` pair | `tier_binding` (+ a `task` column) | exists, seed-only. ⚠️ **D60 re-shapes this — see §6A.9**: resolution becomes `(task, tier) → model` then `(model, task) → invocation`, so a multimodal model needs no special case |
+| **Rate cards** — what a `(model, task)` costs, **in its own unit** | `model_rate_card` (+ `task`, + `unit`) | exists, seed-only, all zero by fence. 🔴 **And tokens-only: `credits.rate_call` knows no other unit, so `tier-stt` — which ships — cannot be priced** (D60.5) |
+| 🆕 **Model capabilities** — what each model can do, and the litellm **verb** for each task | 🆕 `model_capability` | 🔴 **none — today it is `_STT_TIER_IDS: frozenset({"stt"})` in `acb_llm/client.py:95`**, so `tier-image` would be sent to `acompletion` and rejected (D60.2) |
+| **Provider accounts + API keys** — ours, and BYOK orgs' | `provider_credential` | exists, **zero writers** |
+| **Provider subscriptions** — vendor plan, quota, rate limits, spend to date, renewal | 🆕 **none — new work** | D56.3 |
+
+### The write contract — INSERT with an `effective_from`, never UPDATE
+
+`resolve_tier` and `resolve_rate_card` both take *the newest row whose `effective_from`
+has passed*. That is already the shape, and it is load-bearing: **re-pointing a tier and
+re-pricing a model are both appends**, so a past invoice is never recomputed and the
+history of what a customer was charged against stays intact.
+
+🔴 **CP-10 must not add an UPDATE path to `tier_binding` or `model_rate_card`.** A mutable
+rate card is the same defect as a balance column (CP-6) — it destroys the audit trail at
+exactly the moment a customer disputes a charge. Revocation of a `provider_credential` is
+the one exception and it is already modelled: set `revoked_at`, which the partial unique
+index is built for.
+
+### Slices — the order is load-bearing
+
+| # | Slice | Why here |
+|---|---|---|
+| **1** | **`provider_credential` write path** — operator-door routes to add, list (never returning plaintext), rotate and revoke; Fernet at rest via `CUSTOMER_CONSOLE_ENCRYPTION_KEY` | **This is the one that unblocks the product.** Everything else is management of a thing that currently cannot exist |
+| **2** | **The access model + the write routes** — INSERT-with-`effective_from` routes over bindings and rates, plus a read showing what is in force now and what is scheduled. 🆕 **Plus D60's `model_capability` table, the `task` column, the two-step resolution, and the rate-card `unit`** (§6A.9) | Turns hand-run SQL into an operator act; makes image/TTS/vision a **data** change as D32.7 promised; and 🔴 **closes the live pricing hole** — without `unit`, three of six tasks cannot be billed at all |
+| **3** | **The operator UI** — relocate the three-tab surface, re-pointed at slices 1–2 | Move, do not rebuild |
+| **4** | **CP-5's removal half** — delete `/settings/models` from the customer product, stop writing `model_config` and the `/api/settings/llm/*` write routes | R6: stop writing before dropping |
+| **5** | **Provider subscriptions** — the new object: vendor plan, quota, rate limits, spend to date, renewal date, and an alert when headroom runs low | New work; last because it is the only slice nothing is blocked on |
+| **6** | **Contract (R6): drop `model_config`** and the retired routes, a release after slice 4 | The tightening half is always a second, later migration |
+
+### Done when
+
+1. An operator with a valid operator token can install a provider API key through a
+   route, and `router.provider_credential()` returns it — **proven on a real Postgres
+   (R8), on a database where the key was installed through the route and not seeded**.
+2. The plaintext secret is **never** returned by any read route and never logged — a
+   structural fence (grep the response models), not an example test.
+3. Re-pointing `tier-balanced` to a different model takes effect for the next call and
+   **leaves the previous binding row intact**; a `usage_event` rated before the change
+   still rates against the old card. Verified red-first.
+4. No route UPDATEs `tier_binding` or `model_rate_card` — structural fence over the tree.
+5. `/settings/models` is gone from the customer product; `nav.ts` no longer carries the
+   pane; `npx tsc --noEmit && npx vitest run` green in **both** workbenches.
+6. `test_the_rate_card_ships_unpriced` **still passes** — CP-10 builds the mechanism to
+   price, and prices nothing.
+
+### Gates — unchanged, restated so they are refused by name
+
+- 🔴 **Installing a REAL provider API key against the live Console** — the credential
+  class of §8 gates 6/7 (`work_plan.md` §6 (e)/(f)). Minting keys against fixtures and
+  scratch databases is AGENT-SAFE and is the whole of an agent's mandate here.
+- 🔴 **Setting a real price on the rate card** — D19.2, §8 gate 4. Price live, never via
+  migration.
+- 🔴 **Re-pointing a tier on a live system** — it changes what every customer's next call
+  costs us and them. Same class as the above.
+
+**CP-11 · The serving hop — the tenant plane calls the Router, and the operator issues the
+key that lets it.** 🆕 **MINTED 2026-08-26 by D57.** ⭐ **Detail in §6B.** This is the
+**first-caller ticket** `work_plan.md` §6 (d) has been waiting for since 2026-08-18:
+*"CP-4 ships dark by having no caller, and this gate binds the first caller ticket, which
+is where the flag arrives."*
+
+🔴 **Why it is the whole point.** Measured 2026-08-26:
+`apps/services/gateway/gateway/routes/v1_compat.py` serves `/v1/chat/completions` and its
+own header says it *"routes through the litellm SDK directly (no proxy)"*. Repo-wide,
+`CUSTOMER_CONSOLE_URL` is read by `console_resolve.py`, `seats.py` and `signin.py` — and
+by nothing that makes an LLM call. **So every model, tier binding, rate card and provider
+key an operator configures is inert as far as the product is concerned.** CP-10 gives the
+operator the controls; CP-11 connects them to anything.
+
+**Done when:** an operator issues an organization key from the Operator Console; a tenant
+deployment holding it serves a real completion **through the Router**; the call appears in
+`usage_event` stamped with that organization's id; and **re-pointing the tier in the
+Console changes the next call with no tenant deploy**.
+
+🔴 **Gates, unchanged:** wiring a live deployment's `CUSTOMER_CONSOLE_ORG_KEY` and
+flipping the Router flag ON for a real customer is §8 gate 5 / `work_plan.md` §6 (d).
+Issuing a `cc_live_` key against a real organization is §8 gate 6 / §6 (e). Building
+against fixtures and scratch is AGENT-SAFE and is the whole of an agent's mandate.
 
 **CP-6 · Rate card, ledger and the balance gate.** ◐ **MECHANISM BUILT
 2026-08-18 — the two refusals ship OFF.** §3.4 + §4.4. **Done when:**
@@ -6963,6 +7114,768 @@ What shipped, one layer per line:
 **Still DARK.** No live deployment key holds `seat_admin` and no environment sets
 `CUSTOMER_CONSOLE_URL`/`_DEPLOYMENT_KEY`, so every layer refuses honestly today.
 Granting the capability and landing the key are OWNER-GATE (§8 gates 7/8).
+
+---
+
+## 6A. CP-10 in detail — the AI-management refactor, artefact by artefact
+
+**Written 2026-08-26 on owner directive:** *"move the entire model and AI management
+system that we had earlier created within the command center, move it out and put it into
+the operator console… manage the AI subscriptions that Metorite itself has and how it gets
+served to all of the tenants… try as much as possible not to create new code, but to reuse
+and refactor the existing code."*
+
+**Every path and count below was measured against the tree on 2026-08-26.** Re-verify at
+dispatch (§1.4 / R4) — this is an inventory, and inventories go stale.
+
+### 6A.1 The governing constraint: this is a MOVE, and the budget is refactor
+
+The capability is **already built**. It is built in the wrong place, and it is built once
+per tenant instead of once for the platform. So the measure of a good slice here is **how
+little new code it adds**, and the disposition tables below exist to make "reuse" a
+checkable claim rather than an intention.
+
+**Reuse arithmetic, stated up front so it can be held against the result:**
+
+| | Lines | Disposition |
+|---|---:|---|
+| `settings/models/page.tsx` | 931 | **MOVE** — re-point `fetch()` targets, drop the tenant-only tabs |
+| `lib/model-types.ts` | 235 | **MOVE** — the wire types survive the move; the *source* changes |
+| 12 BFF route files under `api/settings/llm/*` + `api/models/*` | ~12 files | **REWRITE-AS-PROXY** — each collapses to the 8-line `proxyToConsole` idiom that already exists |
+| `lib/console.ts` callers | — | **EXTEND** — one `export const` per route, beside `catalog`/`assignSeat`; ~6 lines each |
+| `lib/route.ts::proxyToConsole` · `lib/staff.ts` gate | — | **REUSE UNCHANGED** — the operator door and its fail-closed staff gate already exist |
+| `customer_console/router.py` reads | — | **REUSE UNCHANGED** — `resolve_tier`, `resolve_rate_card`, `provider_credential`, `decrypt_secret` |
+| `customer_console/keys.py` | — | **REUSE** — `hash_secret`/`verify_secret`/Fernet idiom; SC-4g already borrowed it for discount codes |
+| `acb_llm/model_limits.py` | 334 | **REUSE, RELOCATE LATER** — context-window and limit knowledge is what CP-5's tier-capabilities document is made of |
+| gateway `settings.py` LLM routes | 15 routes, ~950 lines | **DELETE** (slice 4) — their function moves; ⚠️ `/llm/context-windows` and `/llm/health` are read-only and are the two to look at before deleting |
+| `acb_llm/model_config.py` | 107 | **RETIRE** with `model_config` |
+| `acb_llm/key_store.py` | 494 | **KEEP** — it still serves integrations and BYOK; it stops being the *platform* key path |
+
+**Net new code is three things and nothing else:** the Console's write routes (slice 1–2),
+the provider-subscription object (slice 5), and the fences. Everything else is a move, a
+re-point, or a deletion.
+
+### 6A.2 Inventory — what exists, and where each piece lands
+
+#### (a) The Command Center surface — `workbench/control_plane/`
+
+| Artefact | Today | Disposition |
+|---|---|---|
+| `src/app/settings/models/page.tsx` | 931-line three-tab console: **Providers** (tiles → slide-in panel with API-key entry), **Models** (all models from configured providers, all start hidden, eye-icon to enable), **Tiers** (expand to edit model assignment) | **MOVE** to `workbench/operator_console/src/app/models/page.tsx` |
+| `src/lib/model-types.ts` | `LLMConfig`, `ProviderInfo`, `ModelInfo`, `TierInfo`, `PROVIDER_GUIDES`, `PROVIDER_COLOURS`, `PROVIDER_ICONS` | **MOVE** — ⚠️ this is the piece that makes the move cheap; do not re-derive these types from the Console's SQL |
+| `src/app/api/settings/llm/route.ts` · `/tier` | GET config · POST tier assignment | **REWRITE-AS-PROXY** → Console |
+| `…/llm/key/route.ts` | POST/DELETE provider API key | **REWRITE-AS-PROXY** → Console `provider_credential` |
+| `…/llm/enabled-models/` + `[id]` | enable / disable a model | **REWRITE-AS-PROXY** |
+| `…/llm/hidden-models/` + `[id]` | hide / unhide | **REWRITE-AS-PROXY** (or fold into enabled-models — see §6A.6) |
+| `…/llm/provider-models/` + `/refresh` | list / refresh a provider's catalogue | **REWRITE-AS-PROXY** |
+| `…/llm/test/route.ts` | test a tier end to end | **REWRITE-AS-PROXY** — ⚠️ valuable, and it becomes *more* useful on the operator side because it tests the platform account |
+| `…/llm/health/route.ts` | LiteLLM health | **DECIDE at slice 3** — arguably an operator read; see §6A.6 |
+| `src/app/api/models/route.ts` · `/all` | the model list the chat UI reads | ⚠️ **NOT the same thing — see §6A.6.** These serve *the product*, not the operator |
+| the `Models` nav pane | `preview` since D49 | **DELETE** (slice 4) — `launch_surface.md` §2 already records this and requires the count fence to move in the same PR |
+
+#### (b) The gateway — `apps/services/gateway/gateway/routes/settings.py`
+
+15 LLM routes between `:586` and `:1544`, nine of them gated `require_permission("feature:models")`.
+
+📌 **Measured, and it explains why this was safe to leave sitting there:**
+**`feature:models` is granted by no migration.** A repo-wide search of `infra/postgres/`
+returns nothing. Only a role holding `*` (the owner) can reach these routes today. So the
+customer-facing model picker has been unreachable-in-practice for every ordinary member —
+which is the right *outcome* arrived at by an accident of seeding rather than by design,
+and D56 is what turns it into design.
+
+| Routes | Disposition |
+|---|---|
+| `/llm/tier` · `/llm/key` · `/llm/enabled-models` (+ `custom-models`, DELETE) · `/llm/hidden-models` (+ DELETE) · `/llm/copilot-model` | **DELETE** at slice 4. These are the write path D32.7 removes |
+| `/llm` (GET config) · `/llm/provider-models` | **DELETE** at slice 4; the operator equivalent is the Console's |
+| `/llm/test` | **DELETE here, RE-CREATE on the Console side** — testing the *platform* account is an operator act |
+| `/llm/health` · `/llm/context-windows` | ⚠️ **KEEP, pending §6A.6's decision** — both are read-only, and `context-windows` is the tenant's legitimate need to know its own limits |
+| `/appearance` · `/branding` | **UNTOUCHED** — they share the file, not the concern |
+
+#### (c) The `acb_llm` package — `packages/acb_llm/acb_llm/`
+
+| Module | Lines | Disposition |
+|---|---:|---|
+| `key_store.py` | 494 | **KEEP.** It still serves **integrations** (`credential_type='integration'`) and **BYOK**. It stops being the path by which the *platform's* provider keys reach a call. ⚠️ `configure_litellm` (`:441`) is the process-global injection that §6 (f) gates — this refactor **shrinks its blast radius** (fewer orgs have platform keys to inject) and **does not close it**; do not claim otherwise |
+| `model_config.py` | 107 | **RETIRE** with the table, slice 6 |
+| `model_limits.py` | 334 | **REUSE** — context windows and clamps. This is the substance of CP-5's tier-capabilities document; relocating it to the Console is a later, separate move, not slice work |
+| `client.py` `_TIER_ALIAS_MAP` (`:86`) | — | **REFACTOR to a cache**, exactly as D32.7 and CP-5 already specify: the Router publishes tier capabilities, this becomes a cache of that, not truth |
+| `context.py` · `guardrails.py` · `prompt_cache.py` · `message_compress.py` · `tool_output.py` | — | **UNTOUCHED** — request-shaping, not model administration |
+
+#### (d) The tenant database
+
+| Object | Today | Disposition |
+|---|---|---|
+| `model_config` (mig 35, re-keyed by mig **158**) | `(organization_id, key)` → `enabled_models`, `tier_overrides` | **STOP WRITING** (slice 4) → **DROP** (slice 6). ⚠️ Reason per D56.5: not a singleton — **per-tenant copies of one platform decision** |
+| `provider_keys` (mig 08, re-keyed by **158**, typed by mig 11) | `(organization_id, provider)`, `credential_type ∈ {llm, integration}` | **KEEP.** The `integration` rows are untouched. The `llm` rows become **BYOK-only**; platform keys live in the Console's `provider_credential` |
+| `infra/litellm/config.yaml` (181 lines) | tier aliases → provider models, `api_key: os.environ/…` | **RETIRE as runtime truth.** ⚠️ It is already only a *seed* — mig 35's header records that the git-tracked files were imported once and *"the DB becomes the sole source of truth"*. Its tier rows are the same four the Console's `002_seed_catalog.sql` already seeds into `tier_binding`. **Do not migrate it twice** |
+
+#### (e) The Console — `apps/services/customer_console/`
+
+| Artefact | Today | Disposition |
+|---|---|---|
+| `router.py::resolve_tier` (`:69`) | newest `tier_binding` row whose `effective_from` has passed | **REUSE UNCHANGED** |
+| `router.py::resolve_rate_card` (`:96`) | same shape over `model_rate_card` | **REUSE UNCHANGED** |
+| `router.py::provider_credential` (`:165`) | BYOK-preferring read, falls back to the platform row | **REUSE UNCHANGED** — 🔴 and note it reads a table with **zero writers**, which is slice 1 |
+| `router.py::decrypt_secret` / `_fernet()` | Fernet over `CUSTOMER_CONSOLE_ENCRYPTION_KEY` | **REUSE** for the write side |
+| `keys.py` | `mint_key` / `hash_secret` / `verify_secret` / `split_key` | **REUSE** the pattern — SC-4g already did this for discount codes, which is the precedent to follow rather than a new one to invent |
+| `main.py` operator routes | the `Operator` credential and its door | **REUSE** — CP-10's routes go behind the same door |
+
+#### (f) The Operator Console — `workbench/operator_console/`
+
+| Artefact | Disposition |
+|---|---|
+| `lib/route.ts::proxyToConsole` (`:51`) | **REUSE UNCHANGED.** Already does staff-gate → call → relay → 503-on-unconfigured. Every CP-10 BFF route is this function plus a one-line caller |
+| `lib/staff.ts` | **REUSE UNCHANGED** — the fail-closed staff gate |
+| `lib/console.ts` | **EXTEND** — add `providerKeys`, `putProviderKey`, `revokeProviderKey`, `tierBindings`, `bindTier`, `rateCards`, `priceModel` beside the existing eleven `export const` callers. Follow `catalog` (`:98`) exactly |
+| `app/models/page.tsx` | **NEW LOCATION** for the moved 931-line surface |
+| `app/Header.tsx` | **EXTEND** — one nav entry |
+| ⚠️ design system | **D35.4: the operator console is deliberately NOT on the customer design system.** The moved page imports `@/components/ui/Button`, `@/components/Icon` and `@/components/Tabs` from `control_plane`. Those do not exist in `operator_console` and **must not be imported across the workbench boundary** — §2.4 measures the cross-import count as *zero* and that is load-bearing. Either port the three primitives as plain-CSS equivalents, or restyle. **This is the single largest piece of real work in the move, and it must be budgeted at slice 3 rather than discovered there** |
+
+### 6A.3 The AI subscriptions Metorite holds — the genuinely new object
+
+The owner asked to manage *"the AI subscriptions that Metorite itself has and how it gets
+served to all of the tenants."* Half of that exists: `provider_credential` is the account,
+`tier_binding` is how it is served. **The subscription itself is modelled nowhere.**
+
+One new Console table, `provider_subscription`, additive and idempotent like the rest of
+that ladder:
+
+| Column | Why |
+|---|---|
+| `provider` | joins to `provider_credential.provider` |
+| `plan_label` | what we bought — free text; vendors' plan names are not a vocabulary we control |
+| `quota_kind` · `quota_amount` · `quota_period` | tokens/requests/spend per day/month — the shape vendors actually sell |
+| `rate_limit_rpm` · `rate_limit_tpm` | the operational number that causes incidents |
+| `spend_to_date` · `spend_currency` · `period_start` | ⚠️ **operator-entered or vendor-API-fed, never inferred from `usage_event`** — our metering counts what we served, not what the vendor billed, and conflating them makes a reconciliation impossible |
+| `renews_at` · `notes` | the renewal is a calendar fact somebody has to act on |
+
+⚠️ **What this table must NOT become.** It is a *record of what we bought*, not a second
+metering system. `usage_event` and `credit_ledger` remain the only sources of what a
+customer consumed. A "spend" column that silently disagrees with the ledger is the defect
+this warning exists to prevent — which is why `spend_to_date` is explicitly a
+**vendor-side** figure, and the interesting number is the **difference** between it and
+our metered cost. That difference is the margin, and reporting it is the point.
+
+### 6A.4 "How it gets served to all of the tenants" — the serving chain, end to end
+
+Written out because this is the half that has no single home today, and an implementer who
+cannot see the whole chain will re-point one link and think they are done:
+
+```
+operator sets a tier binding        →  tier_binding (Console DB)
+operator installs a provider key    →  provider_credential (Console DB)   ← slice 1
+                                          │
+  tenant agent asks for "tier-balanced"   │
+        │                                 ▼
+        ├─► gateway /v1  ─────────►  Console Router  ─► resolve_tier ─► model
+        │                                              ─► provider_credential ─► secret
+        │                                              ─► resolve_rate_card ─► credits
+        │                                              ─► litellm.acompletion(…)
+        └─► (BYOK org) same path, provider_credential(organization_id=…) wins
+```
+
+**Three properties this chain must keep, and each is already decided:**
+
+1. **The tenant never names a model.** A bare model id is **400, not coerced** (D32.7) —
+   silent coercion hides a misconfigured agent behind a bill.
+2. **A tier re-point reaches every tenant with no tenant deploy.** That is the whole value
+   of the indirection, and it is CP-5's acceptance clause.
+3. **A rate-card change never re-rates history.** Both resolvers take *newest row whose
+   `effective_from` has passed*, so the write contract is INSERT-only (§6A.5).
+
+### 6A.5 The write contract — INSERT with `effective_from`, never UPDATE
+
+Restated here because it is the one rule an implementer of a CRUD surface will break by
+habit: **an admin UI naturally writes UPDATEs, and this one must not.**
+
+- **`tier_binding`, `model_rate_card`** — INSERT only. Re-pointing and re-pricing are
+  appends. A past `usage_event` must always be re-rateable against the card that was in
+  force when it happened.
+- **`provider_credential`** — INSERT to add, `revoked_at` to remove. The partial unique
+  index (`004_provider_keys.sql:45`) is built for exactly this: one live row per
+  `(provider, org)`, replaceable without blocking.
+- **`provider_subscription`** — the one table where UPDATE is correct, because it records
+  a mutable external fact rather than a priced decision.
+
+🔴 **Fence it structurally:** grep the tree for `UPDATE tier_binding` / `UPDATE
+model_rate_card`. R7 prefers a structural assertion over an example test precisely because
+the next agent has not read this paragraph.
+
+### 6A.6 Four decisions this ticket must take deliberately, not by accident
+
+Named so they are answered in a PR body rather than settled by whoever types first:
+
+1. **`/api/models` and `/api/models/all` are NOT part of this move.** They serve the
+   product — the model list a chat surface reads. Under D32.7 the product should be
+   reading **tiers**, not models, so these are a *separate* question about whether the
+   chat UI still offers a picker. ⚠️ **Do not fold them into slice 4 and delete them**;
+   confirm what reads them first.
+2. **`hidden-models` vs `enabled-models` is one concept with two tables' worth of API.**
+   `model_config`'s `enabled_models` key stores `{"enabled": [...], "hidden": [...]}` —
+   one blob. The move is the moment to collapse the two route families into one, or to
+   decide deliberately that they stay two.
+3. **`/llm/health` and `/llm/context-windows` — tenant read or operator read?**
+   `context-windows` is the tenant's legitimate need to know its own limits and should
+   probably survive as a tenant read backed by the Router's tier document.
+   `health` is an operator concern. Deleting both at slice 4 without deciding is how a
+   working diagnostic disappears.
+4. **`feature:models` becomes dead.** Nine routes depend on it and no migration grants it.
+   When those routes go, the permission has no consumers. **Leave the row; remove the
+   dependency.** Revoking a permission to hide a capability is the D49.3 defect, and a
+   grant that nobody holds costs nothing.
+
+### 6A.7 Data migration — what moves, and what is re-entered by hand
+
+⚠️ **There is deliberately no automated tenant→Console data move**, and the reason is that
+the rows are not worth moving:
+
+| Data | Volume today | Treatment |
+|---|---|---|
+| Platform provider keys (`provider_keys` where `credential_type='llm'`, org = `default`) | a handful, one per provider | **Re-entered by the owner through slice 1's route.** They are secrets; an automated cross-plane copy of secrets is a worse artefact than typing them once. 🔴 Owner act, §6 (e)/(f) |
+| Tier bindings | four rows, already seeded identically into `tier_binding` by `002_seed_catalog.sql` | **Nothing to move** — verify they agree, then delete the tenant side |
+| Enabled/hidden model lists | one JSON blob per org | **Re-entered if wanted.** Under D32.7 the customer-facing list stops existing; what survives is the operator's, and it is small |
+| BYOK keys | none today | **N/A now**, and the path is `provider_credential(organization_id=…)` when it exists |
+
+**So slice 6's drop of `model_config` strands nothing** — which is the fact that makes
+this refactor cheap, and it should be re-verified (`SELECT count(*) FROM model_config`)
+before the drop rather than trusted from this table.
+
+### 6A.8 Verification
+
+```bash
+# Console side — R8, against a real Postgres
+uv run pytest tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_router.py -q
+
+# The fence that must still pass, unchanged: CP-10 builds the mechanism to
+# price, and prices nothing
+uv run pytest tests/unit/test_customer_console_sql.py \
+              -k test_the_rate_card_ships_unpriced -q
+
+# Both workbenches
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run
+cd workbench/control_plane   && npx tsc --noEmit && npx vitest run
+
+# The cross-workbench boundary §2.4 measures as zero — it must stay zero
+rg -n "control_plane" workbench/operator_console/src/   # expect: no hits
+
+# The launch surface count fence moves with slice 4
+cd workbench/control_plane && npx vitest run src/lib/nav.test.ts
+```
+
+⚠️ Never run `tests/unit/` as a bare directory (CLAUDE.md §6) — name the files.
+
+---
+
+### 6A.9 The AI access model — `(task, tier)`, and why it survives multimodal (D60)
+
+**Rewritten 2026-08-26.** An earlier draft of this section (D59.2/D59.3) put a `modality`
+column on the **tier**. ⚠️ **That does not survive a model that does several jobs**, and it
+is corrected here rather than quietly edited, because the wrong version was briefly the
+recorded design.
+
+#### The problem with modality-on-the-tier, in one line
+
+If `tier-balanced` binds to a model that does text *and* vision *and* image generation,
+**one `modality` value on that tier cannot express it** — and the design needs a special
+case for exactly the future we are designing for. **A model that needs a special case for
+"one model, many jobs" is the wrong model.**
+
+#### Three concepts, separated
+
+| Concept | The question it answers | Belongs to | Example |
+|---|---|---|---|
+| **Task** | *what is being asked* | the **call** | `chat` · `vision` · `transcribe` · `speak` · `image` · `embed` |
+| **Tier** | *which performance / cost rung* | the **choice** | `fast` · `balanced` · `powerful` |
+| **Capability** | *what a model can do, and how it is invoked for that* | the **model** | `gpt-4o` does `chat` via `acompletion`, `image` via `aimage_generation` |
+
+Today all three are tangled in one flat string: `tier-fast` is a *tier*, `tier-stt` is a
+*task*, and the invocation verb is a Python `frozenset` (`acb_llm/client.py:95`).
+
+#### The shape
+
+```
+model_capability                    -- what a model CAN do, and HOW it is called
+  model         TEXT                -- 'openai/gpt-4o'
+  task          TEXT                -- chat | vision | transcribe | speak | image | embed
+  invocation    TEXT                -- the HANDLER, not merely a litellm verb.
+                                    -- litellm family: acompletion | atranscription |
+                                    --   aspeech | aimage_generation | aembedding
+                                    -- native family: e.g. assemblyai (submit-then-poll)
+                                    -- ⚠️ see §6A.10 G-2 — `acb_stt` already proves not
+                                    -- every provider fits a litellm verb, and its
+                                    -- SttProvider pattern is what to WIDEN here
+  streams       BOOLEAN             -- only chat and speak; CP-4b consumes this
+  PRIMARY KEY (model, task)
+
+tier_binding                        -- which model serves (task, tier)   [+ task column]
+  task           TEXT
+  tier           TEXT               -- fast | balanced | powerful
+  model          TEXT
+  effective_from TIMESTAMPTZ
+  PRIMARY KEY (task, tier, effective_from)
+
+model_rate_card                     -- what it costs   [+ task, + unit]
+  model          TEXT
+  task           TEXT               -- the SAME model costs differently per task
+  unit           TEXT               -- token_1k | second | character | image
+  …rates…
+  effective_from TIMESTAMPTZ
+  PRIMARY KEY (model, task, effective_from)
+```
+
+**Resolution is two steps, and the second is the future-proofing:**
+
+1. `(task, tier) → model` — from `tier_binding`
+2. `(model, task) → invocation` — from `model_capability`
+
+⚠️ **Why step 2 keys on `(model, task)` and not on task alone.** A multimodal model may
+expose image generation through its **chat** endpoint while another provider exposes the
+same task through a dedicated images endpoint. **Same task, different verb, depending on
+the model.** Deriving the verb from the task alone breaks the first time two providers
+disagree — and they already do.
+
+#### Multimodal needs no special case, and that is the test
+
+```
+model_capability                          tier_binding
+  ('openai/gpt-4o','chat',  'acompletion')      ('chat', 'balanced','openai/gpt-4o')
+  ('openai/gpt-4o','vision','acompletion')      ('vision','balanced','openai/gpt-4o')
+  ('openai/gpt-4o','image', 'aimage_generation')('image', 'balanced','openai/gpt-4o')
+  ('openai/gpt-4o','speak', 'aspeech')          ('speak', 'balanced','openai/gpt-4o')
+```
+
+**Nothing in the schema knows or cares that it is the same model.** Swapping images to a
+specialist tomorrow is one INSERT and touches nothing else.
+
+📌 **There is deliberately no `multimodal` flag.** If a future change needs one, this
+design has already failed.
+
+#### The flat slugs survive as aliases — which is what makes it affordable
+
+`tier-fast` → `(chat, fast)` · `tier-balanced` → `(chat, balanced)` ·
+`tier-powerful` → `(chat, powerful)` · `tier-stt` → `(transcribe, ·)`
+
+**The 80+ hardcoded call sites do not change** (D59.4). ✅ And the alias table already
+exists: `_TIER_ALIAS_MAP` (`client.py:86`) is exactly this mapping, in Python. It **moves
+to data** and stops being a mirror that the file itself warns *"must stay in sync with
+`v1_compat.py._TIER_NAME_TO_ID`"*.
+
+#### 🔴 Pricing — the gap that is live today
+
+**`credits.rate_call` is tokens-only.** Measured: it divides `fresh_prompt_tokens` /
+`cached_tokens` / `completion_tokens` by 1000 against per-1k rates and **knows no other
+unit**. `model_rate_card` carries only those three columns; `usage_event` records only
+those three counters.
+
+| Task | Priced how, in reality | Expressible today |
+|---|---|---|
+| `chat` · `embed` | per 1k tokens | ✅ |
+| `transcribe` | **per minute of audio** (D19.2 says so in terms) | 🔴 **no** |
+| `speak` | per character, or per second | 🔴 **no** |
+| `image` | per image, by size and quality | 🔴 **no** |
+
+⚠️ **So `tier-stt` — which ships in production seed today — cannot be priced**, and that
+is true *before* any multimodal work. This hole predates the question that found it and
+would have surfaced the day anyone tried to price the card.
+
+**The fix:** `model_rate_card` keys on `(model, task, effective_from)` and carries a
+`unit`. `usage_event` gains `task`, `quantity`, `unit` — **nullable, R6-safe**; the token
+columns stay, because chat is the common case and they are indexed and load-bearing.
+`rate_call` grows a unit branch.
+
+#### Four rules that keep it robust
+
+1. **Degradation stays WITHIN a task.** D32.8's *"degrade to `tier-fast`"* must mean
+   `(image, powerful) → (image, fast)` — **never** `(image, powerful) → (chat, fast)`,
+   which answers an image request with a paragraph. No cheaper rung for that task → the
+   call is **refused**.
+2. **An unbound task is a 400, never a coercion.** D32.7 already refuses a bare model id
+   *"400, not coerced — silent coercion hides a misconfigured agent behind a bill."*
+   Serving an image request from a text model is that defect in different clothes.
+3. **Capability is not availability.** `model_capability` = what it *can* do;
+   `tier_binding` = what we *use it for*. The operator's most valuable view is the **gap**
+   between them: *"gpt-4o can generate images and we have not bound it to anything."*
+4. **Streaming is per `(model, task)`.** Only `chat` and `speak` stream. **CP-4b**
+   (minted, unbuilt) consumes this; §6B.5 warns that silently de-streaming a chat UI is a
+   change nobody will attribute to the flag.
+
+#### What does not change
+
+The wire vocabulary (callers still name a tier slug) · **D32.7** (customers never see a
+model) · **D58** (litellm SDK, credentials per call, no Proxy — the verb table sits behind
+`set_provider_call()`, so this stays one seam) · the INSERT-only write contract (§6A.5) ·
+`test_the_rate_card_ships_unpriced` — **this design builds the mechanism to price
+correctly and prices nothing.**
+
+#### Order
+
+| # | Step | Size | Home |
+|---|---|---|---|
+| 1 | `model_capability` + `task` on `tier_binding` + Router two-step resolution; flat slugs become alias data | small | **CP-10 slice 2** |
+| 2 | `unit` on the rate card, `task`/`quantity`/`unit` on `usage_event`, the `rate_call` branch | small | **CP-10 slice 2** — 🔴 do not skip: without it, three of six tasks cannot be billed |
+| 3 | Operator catalog UI over capabilities, bindings and rates | small | **CP-10 slice 3** |
+| 4 | Feature→tier registry, generalising the Apps manifest precedent | **large — 80+ sites** | its own ticket (**H-44**) |
+| 5 | Customer-visible tier choice in chat | medium | after 1–4 |
+
+⚠️ **Do not let step 5 lead.** A picker over tiers whose invocation is a frozenset and
+whose bindings are string literals would look finished and change nothing.
+
+⚠️ **Four things this design leaves open, and two of them are defects in it — see
+§6A.10.** The register is deliberately a sibling section rather than a footnote here:
+a design that lists its own open questions where nobody scrolls is a design that
+reads as finished.
+
+### 6A.10 The register — ALL EIGHT CLOSED by D61 (2026-08-26)
+
+> ✅ **CLOSED THE SAME DAY.** This section was written as an open register at the
+> owner's request (*"is anything still undecided?"*), and every item was then answered
+> by **`work_plan.md` D61** on the directive *"make all the obvious decisions for me."*
+> **Seven were agent calls** under the `agent-proposed, owner may overrule` convention;
+> **one (G-1) had been mis-classified by me as an owner call** and is corrected in
+> D61.1. The register is kept in full rather than deleted — the *reasoning* is what a
+> future agent needs, and a closed question with no recorded answer gets re-opened.
+>
+> | Gap | Answer (D61) |
+> |---|---|
+> | **G-1** Router endpoint shape | **Per-task, OpenAI-shaped, one task at a time, `transcribe` first.** Not an owner call — the Router is an internal seam, and OpenAI's shapes are what litellm implements on both sides |
+> | **G-2** `invocation` too narrow | **Widen `acb_stt`'s `SttProvider` pattern**; litellm verbs become one handler family, native providers another |
+> | **G-3** who declares `vision` | **The caller. The Router never sniffs the payload** — D32.7 refuses inference in this exact area |
+> | **G-4** `embed` vs D19.2 | **`pricing_mode` ∈ {`unpriced`, `absorbed`, `priced`}** — a zero cannot carry three meanings |
+> | **G-5** tasks free text? | **Tasks are an allowlist; tiers stay free text.** Asymmetric on purpose |
+> | **G-6** BYOK × multimodal | **BYOK is per provider, so per task-as-served. Partially-BYOK is a NORMAL state**, and no new table is needed |
+> | **G-7** model deprecation | **`deprecated_at` on `model_capability`, surfaced in the catalog. Warns, never refuses** |
+> | **G-8** per-org rate limits | **Deferred with a named trigger** — the first org burn that threatens a `provider_subscription` quota, or the first vendor 429 served onward |
+>
+> 🔴 **What remains owner-owed is NOT in this register** — it is money, credentials and
+> external accounts, collected in `work_plan.md` **§6.0**. **None of it blocks building.**
+
+#### The original register, kept for its reasoning
+
+
+**Written 2026-08-26 on an adversarial re-read of §6A.9, at the owner's request** (*"is
+anything still undecided about AI functionality and access?"*). Two of these are defects
+in D60 itself, found by auditing it against the tree rather than against itself.
+
+**Ranked by whether they block work that is about to start.**
+
+---
+
+#### 🔴 G-1 · The Router serves ONE task. D60 describes six.
+
+**Measured:** `POST /v1/chat/completions` (`main.py:2711`) is the **entire** `/v1` surface
+of the Customer Console. There is no transcription endpoint, no images endpoint, no
+speech endpoint, no embeddings endpoint.
+
+So D60's catalog can *describe* `transcribe`, `image` and `speak`, and the Router has
+**nowhere to serve them**. The tenant's own `atranscription` calls (×11) run locally and
+would keep running locally after CP-11.
+
+**The fork, and it is a real one:**
+
+| Option | For | Against |
+|---|---|---|
+| **(a) Per-task endpoints**, OpenAI-shaped — `/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/audio/speech` | Every SDK already speaks them; the request/response shapes are somebody else's problem | N endpoints to build, and each needs its own streaming/upload story |
+| **(b) One generic `/v1/invoke`** taking `(task, tier, payload)` | One endpoint; new tasks need no new route | We invent a wire protocol; no SDK speaks it; file upload for audio is awkward |
+
+**Recommendation (agent, owner may overrule): (a), added one task at a time as a task is
+actually needed** — starting with `transcribe`, because it is the only non-chat task that
+already ships. An endpoint nobody calls is CP-4's mistake repeated.
+
+⚠️ **What this does NOT block:** CP-10 slice 1 (provider keys), CP-11 (chat serving), and
+the whole credit path. **Chat is 96 of the 110 measured call sites.** This gap bounds how
+much of the multimodal promise is reachable, not whether the next two tickets can start.
+
+---
+
+#### 🔴 G-2 · `invocation` is too narrow — not every provider is a litellm verb.
+
+**D60.2 says the capability row carries "the litellm verb". That is wrong, and `acb_stt`
+already proves it.**
+
+`packages/acb_stt/` exists precisely because **AssemblyAI's batch API is submit-then-poll
+and, in its own words, *"can't be expressed as a LiteLLM `atranscription` call"***. It is
+reached by a **native provider**, selected by model prefix.
+
+So `invocation` must name a **handler**, of which litellm verbs are one family and native
+providers another.
+
+✅ **And this is a reuse finding, not new work.** `acb_stt` is already the right shape,
+built for one task:
+
+- `SttProvider` — one interface callers talk to
+- `resolve_stt_provider(alias)` — resolve alias → concrete model → **pick the provider that
+  speaks it**
+- `LiteLLMSTT` and `AssemblyAISTT` behind it
+
+**That is D60's `(model, task) → invocation` step, already implemented for `transcribe`.**
+The right move is to **widen this package's pattern to all tasks**, not to invent a second
+dispatch abstraction beside it — which would be the CLAUDE.md §5 defect in the one place
+this session has been most careful to avoid it.
+
+⚠️ It also means `invocation` values are an **allowlist the Router knows**, never free
+text — see G-5.
+
+---
+
+#### 🟡 G-3 · `vision` is not obviously a task, and nobody has decided who declares it.
+
+`vision` uses the **same verb as chat** (`acompletion`); it differs only in which model is
+bound. So the open question is **who decides a call is a vision call**:
+
+- **the caller declares it** — explicit, and changes call sites, or
+- **the Router sniffs the payload** for image parts — no caller change, but it is
+  inference, and D32.7 is hostile to inference (*"a bare model id is rejected 400, not
+  coerced"*).
+
+⚠️ **Consequence if left open:** a chat call carrying an image silently goes to whatever
+model `(chat, tier)` binds — which may not accept images — and fails at the provider with
+an error the customer cannot act on. **Decide it inside CP-10 slice 2**; it is a
+five-minute decision that gets expensive as a retrofit.
+
+---
+
+#### 🟡 G-4 · `embed` in D60 contradicts D19.2, which absorbs embeddings into the package price.
+
+**D19.2 is explicit:** *"embeddings and WhatsApp per-number fees are absorbed into package
+prices."* D60 lists `embed` as a task with a rate card, which reads as billable.
+
+**Both are right about different things**, and the resolution must be written down or
+somebody will "fix" the zero rows and start billing for something the price already
+covers:
+
+> **`embed` is a task for CAPABILITY and BINDING purposes** — an operator must be able to
+> swap the embedding model — **and is rated ZERO BY DECISION (D19.2), not by omission.**
+
+⚠️ The rate card must be able to say *"free on purpose"* distinctly from *"not priced
+yet"*, because `rate_call` currently raises `UnpricedModel` on a zero card **by design**
+(*"refusing to bill it as free"*). An absorbed task hitting that path would refuse the
+call. 📌 Also worth knowing: the three embedding call sites are in **ingestion**
+(`wa_embeddings.py`, `email_embeddings.py`, `capability.py`) and none goes through
+`acb_llm/client.py`, so they are not on the Router path today at all.
+
+---
+
+#### 🟡 G-5 · Is the task list an allowlist, or free text?
+
+`tier_binding.tier` is free `TEXT` today, and that flexibility is what makes a new tier an
+INSERT (D59.1). But a **task** is different: it binds to a handler the Router must already
+know (G-2). A free-text task lets an operator create a binding the Router cannot serve —
+a row that looks configured and 500s.
+
+**Recommendation:** tasks are an **allowlist the Router publishes** (the tier-capabilities
+document CP-5 already owes), so the operator UI offers what can actually be served.
+Tiers stay free text; tasks do not.
+
+---
+
+#### 🟡 G-6 · BYOK × multimodal is unanswered.
+
+`provider_credential` prefers an org's own row **per provider** (`router.py:165`). So a
+BYOK organization that brings an OpenAI key but is served images from a different provider
+is **half-BYOK** — theirs for one task, ours for another.
+
+That is probably the right behaviour, but the **billing** consequence is undecided: §3.4
+says a BYOK org is *"metered but not charged for tokens"*, which does not say what happens
+when only some of its tasks are BYOK. **Not blocking** — no BYOK org exists — but it
+should be settled before the first one does.
+
+---
+
+#### 🟢 G-7 · Model deprecation has no surface.
+
+Vendors retire models. `effective_from` re-points forward cleanly, but nothing tells an
+operator *"the model behind `(chat, balanced)` was deprecated by its vendor"*. A
+`deprecated_at` on `model_capability`, surfaced in the catalog UI, is the cheap version.
+**Not blocking; worth a line in the operator UI when it is built.**
+
+---
+
+#### 🟢 G-8 · Per-organization rate limits and concurrency are not modelled anywhere.
+
+The credit balance bounds *spend*, not *rate*. One org can still saturate our vendor
+quota. `provider_subscription` (§6A.3) records the quota; nothing enforces a share of it.
+**Not blocking, and deliberately not designed here** — it needs a real incident or a real
+customer to shape it, and guessing produces the wrong ceiling.
+
+---
+
+### Summary — what this means for starting work
+
+| Ticket | Blocked by anything above? |
+|---|---|
+| **CP-10 slice 1** (provider-key write path) | **No.** Start today |
+| **CP-11** (the serving hop, chat) | **No.** Chat is 96 of 110 measured call sites |
+| **CP-10 slice 2** (the access model) | **Decide G-3, G-4, G-5 inside it** — all three are decisions, not research |
+| **The multimodal promise** (image / speak) | ~~Yes — G-1 and G-2~~ → ✅ **both answered by D61.1/D61.2.** It is now build work, not design work |
+| Everything else | ✅ G-6 and G-7 answered (and each is one column); **G-8 deferred with a named trigger**, which is a decision rather than an omission |
+
+## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
+
+**Written 2026-08-26 on owner directive:** *"The next main task is assigning AI credits and
+managing AI API keys through the Operator Console. Ensure all documentation is ready so the
+app can sync with the console and access AI features via the configured models."*
+
+**Every path, line number and count below was measured against the tree on 2026-08-26.**
+Re-verify at dispatch (R4).
+
+### 6B.1 What of the three already exists — read this first
+
+| The ask | State | Where |
+|---|---|---|
+| **Assign AI credits from the Operator Console** | ✅ **BUILT, end to end** | `Actions.tsx::CreditsPanel` (`:354`) → `POST /api/operator/credits` → `console.ts::grantCredits` → Console `POST /credits/grant` (`main.py:2608`) → append-only `credit_ledger`. Balance rendered at `page.tsx:229`; `GET /credits/balance` exists; `ActivatePanel` can grant at activation |
+| **Manage provider API keys (ours)** | 🔴 **`provider_credential` has zero writers** | **CP-10 slice 1** |
+| **Manage organization LLM keys (theirs)** | 🟡 **route exists, no UI** | `POST /keys` (`main.py:2645`, `Operator`-gated, token returned once). `console.ts` has no `issueKey`; there is no keys page. **CP-11 slice 1** |
+| **The app actually uses any of it** | 🔴 **nothing calls the Router** | **CP-11 slices 2–3** |
+
+⚠️ **An agent asked to "build AI credit assignment" must stop at row 1.** It is built. The
+gap around credits is not the grant — it is that **nothing draws credits down yet**, which
+is D57.4 clause 5 and is gated on pricing the card (owner, D19.2) and flipping
+`CUSTOMER_CONSOLE_SPEND_GATE` (owner, §6).
+
+### 6B.2 Two credentials called "AI API keys", and they are not the same thing
+
+This is the single most confusable pair in the system, so it is tabulated rather than
+described:
+
+| | **Provider key** | **Organization key** |
+|---|---|---|
+| Whose | **Ours** — the DeepSeek / Anthropic / Groq account | **Theirs** — one per customer organization |
+| Table | `provider_credential` (Console) | `llm_api_key` (Console) |
+| Looks like | the vendor's own secret | `cc_live_a8f3…` |
+| Who mints | nobody yet — **CP-10 s1** | `POST /keys`, `Operator`-gated — **exists** |
+| Storage | Fernet ciphertext | **hash only** — the token is returned exactly once and is not recoverable |
+| Presented by | the Router, to the vendor | the tenant deployment, to the Router |
+| Blast radius if leaked | our whole vendor bill | one organization's AI spend |
+| Gate | §6 (e)/(f) | §8 gate 6 / §6 (e) |
+
+⚠️ **And a third, already in the tree, which is neither:** `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`
+(`cc_depl_`, capability `{resolve}`) — the box's credential for *asking the registry about
+people*. `packages/acb_common/acb_common/settings.py:163-171` argues at length why these
+carry deliberately different env names: *"reusing one name for two credentials is how a box
+presents the wrong one and gets a 401 nobody can explain."* **CP-11's new setting joins
+that file and obeys that rule.**
+
+### 6B.3 The hop, and exactly where it goes
+
+```
+BEFORE (today)                          AFTER (CP-11, behind a flag)
+
+agent / Copilot SDK                     agent / Copilot SDK
+      │                                       │
+      ▼                                       ▼
+gateway /v1/chat/completions            gateway /v1/chat/completions
+      │  v1_compat.py                         │  v1_compat.py
+      │  _ensure_keys_loaded()                ├── flag OFF → unchanged, local litellm
+      ▼                                       └── flag ON  → HTTPS + cc_live_ key
+litellm.acompletion(...)                            │
+      │  tenant-local provider_keys                 ▼
+      ▼                                     Console POST /v1/chat/completions
+   the vendor                                     │  KeyCaller → organization
+                                                  ├─ resolve_tier      → model
+                                                  ├─ provider_credential → secret
+                                                  ├─ _spend_refusal (if gate on) → 402
+                                                  ├─ litellm.acompletion(...)
+                                                  └─ record_usage → usage_event
+                                                                    + credit_ledger
+                                                        │
+                                                        ▼
+                                                     the vendor
+```
+
+**The three things this buys, and each is already a recorded requirement:**
+
+1. **The operator's configuration reaches the product** — a tier re-point changes the next
+   call with no tenant deploy (CP-5's acceptance clause).
+2. **The call is metered where we can trust it** — D32.1's whole argument for moving the
+   meter out of the tenant box: *"a meter the metered party hosts is a suggestion."*
+3. **The call carries a tenant.** See 6B.6 — this is the part that surprised us.
+
+### 6B.4 Slices
+
+| # | Slice | Reuse |
+|---|---|---|
+| **1** | **Operator key issuance UI** — a keys panel on the customer page: mint, list by prefix, revoke. ⚠️ **The token is shown exactly once** and the UI must say so at the moment it is shown, not in a tooltip | `POST /keys` exists; add one `export const issueKey` to `console.ts` beside `grantCredits`, one `proxyToConsole` route, one panel beside `CreditsPanel`. **No new backend** |
+| **2** | **The gateway setting + the client** — `customer_console_org_key` in `acb_common.settings`, and one function that POSTs to the Console Router | The naming argument is already written at `settings.py:163-171`. `console_resolve.py` is the existing pattern for an outward Console call with retries and fail-closed semantics — **follow it, do not author a second HTTP client** |
+| **3** | **`v1_compat.py` routes through the Router behind `ROUTER_SERVING_ENABLED`** (default OFF — the flag §6 (d) has been waiting for) | The route keeps its request/response translation; only the *destination* changes. ⚠️ Streaming is the sharp edge — see 6B.5 |
+| **4** | **The tier-repoint proof** — a test that changes `tier_binding` and asserts the next tenant call gets the new model, with no restart | This is CP-5's acceptance clause, provable for the first time once slice 3 exists |
+| **5** | **Per-member caps (CP-7)** — a policy against the org pool, never a sub-wallet; default on exhaustion is **degrade to `tier-fast`**, not block | D32.8 + `member_ai_cap` already exists in the Console schema |
+
+### 6B.5 Four things that will go wrong if they are not decided in the slice
+
+1. **Streaming.** `v1_compat.py` serves `StreamingResponse`. The Console Router's
+   pass-through is **CP-4b (minted 2026-08-18, spec only, unbuilt)**. ⚠️ **Slice 3 must
+   either land CP-4b or refuse to route streaming calls explicitly** — silently
+   de-streaming a chat UI is a behaviour change nobody will attribute to this flag.
+2. **Latency.** One more network hop per call, on the interactive path. Measure it in
+   slice 3 and record the number; if the Console is on the same box (D47) it is a
+   loopback and the answer is "negligible" — but that is a measurement, not an assumption,
+   and it changes the day the Console moves off the box (D47 clause 4).
+3. **`_ensure_keys_loaded()`** — `v1_compat.py:18` imports it from `acb_llm.client`. Under
+   the flag it must **not** run for Router-served calls: loading tenant-local provider
+   keys for a call that will be served by our account is the process-global injection
+   (§6 (f)) doing work it does not need to do.
+4. **The `X-CC-*` attribution headers.** `X-CC-Member` / `X-CC-Agent` / `X-CC-Module` /
+   `X-CC-Run` are the Console's wire identifiers (CP-5's disambiguation note). They are
+   what makes `usage_event` answer *"which member burned this"*. **Populating them is
+   slice 3's job**, not a later nicety — an unattributed usage row cannot become a
+   per-member cap (CP-7) or a usage statement (SC-4f).
+
+### 6B.6 The dividend that changes an owner-gated item
+
+`work_plan.md` §6 (f) records, as an H4 finding: *"the live `/v1/chat/completions` path
+CANNOT be tenant-threaded — `require_llm_api_auth` is a pure token check binding no
+identity (`current_tenant()` None by construction)."*
+
+**Routing outward inverts that.** The `cc_live_` key **is** the organization identity, and
+`KeyCaller` resolves it Console-side, so a Router-served call knows its tenant where the
+local call cannot.
+
+⚠️ **This does not close §6 (f), and claiming it does would be wrong.** The local path
+survives (BYOK, flag-off, Console-unreachable), and `configure_litellm`'s process-global
+injection is untouched. What changes is narrower and worth having: **the path we serve
+production traffic on stops being the one that cannot name its tenant.** Recorded here so
+the two statements are not read as contradicting each other.
+
+### 6B.7 Failure semantics — decided now (D57.7)
+
+> **A Router call that fails because the Console is unreachable FAILS. It does not fall
+> back to the local litellm path.**
+
+A silent fallback would serve traffic on tenant-local keys, at tenant-local models,
+**unmetered** — and nobody would learn it happened. That is the "four deploys reported
+success while shipping nothing" shape applied to billing.
+
+⚠️ **BYOK is not a fallback and must not be implemented as one.** A BYOK organization is
+routed to its own credential **by configuration** (`provider_credential` with a non-NULL
+`organization_id`, which `router.py:165` already prefers), deliberately — not by a failure
+path. The two must not share code, or the first outage silently reclassifies every
+customer as BYOK.
+
+**Flag-off is a supported state, not a degraded one.** With `ROUTER_SERVING_ENABLED` unset
+the deployment behaves byte-identically to today, which is what makes slice 3 safe to
+merge before the owner is ready to flip anything.
+
+### 6B.8 Verification
+
+```bash
+# Console router + credits, R8 against a real Postgres
+uv run pytest tests/unit/test_customer_console_router.py \
+              tests/unit/test_customer_console_credits.py -q
+
+# The flag must be OFF by default and byte-identical when off
+uv run pytest tests/unit/test_v1_router_serving.py -q     # created with slice 3
+
+# Operator console
+cd workbench/operator_console && npx tsc --noEmit && npx vitest run
+
+# The unpriced fence still passes — CP-11 serves calls; it does not price them
+uv run pytest tests/unit/test_customer_console_sql.py \
+              -k test_the_rate_card_ships_unpriced -q
+```
+
+⚠️ Never run `tests/unit/` as a bare directory (CLAUDE.md §6) — name the files.
 
 ## 7. Verification
 

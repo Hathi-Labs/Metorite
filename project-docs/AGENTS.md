@@ -1,7 +1,9 @@
 # AGENTS.md — Planning Folder Navigation Guide
 
 > **For AI agents:** Read this file first. It tells you what this project is and which file to read for each concern. **For what is built and what to do next, this file deliberately owns nothing:** `work_plan.md` §2 is the dispatch board; each owning spec's status header is the completion record (rule R4). A status table that lived here went stale and lied — it was retired on 2026-08-09 (work_plan.md §5 residual 1).
-> **Organisation:** Fracktal Works · **Project:** Metorite · **Last updated:** 2026-08-09
+> **Organisation:** Hathi-Labs *(the repo is `Hathi-Labs/Metorite`; Fracktal Works is
+> **customer zero**, D36 — not the owner of the fork)* · **Project:** Metorite ·
+> **Last updated:** 2026-08-26 (multi-tenancy product pass)
 
 ---
 
@@ -9,7 +11,10 @@
 
 Metorite is a **headless, self-mutating agent orchestration platform** for running a company — and, since 2026-08-08, **a product being prepared for sale to other companies** (WS-29, decision D15: tenant = `organization_id` row isolated by Postgres RLS; a deployment is a placement, not a tenant boundary; see `specs/saas_multitenancy.md`).
 
-When a company event fires (webhook from ClickUp/Zoho, cron schedule, or ambient signal), it:
+When a company event fires (webhook from Zoho or Gmail, cron schedule, or ambient signal), it:
+*(This example named ClickUp until 2026-08-26. **D52 retired ClickUp outright** — no connector, no
+importer, no sync — and Metorite is the project-management system of record; root `AGENTS.md`
+constraint 8 is amended to say so.)*
 1. Resolves the target specialist agent (persistent local clone or in-repo `apps/agents/*`).
 2. Runs `git pull --ff-only` to pick up merged changes.
 3. Injects credentials from the Integration Registry into the MAF orchestration context.
@@ -21,11 +26,11 @@ Operators interact via a thin **Control Plane** (Next.js) with chat Q&A, HITL ap
 ## Where state lives (read in this order)
 
 1. **Root `AGENTS.md`** — global constraints (11, including D15 tenancy rules) and the DOX contract.
-2. **`work_plan.md`** — the dispatch board: WS-0…WS-29 rows (§2), the agent-ready spec contract + standing rules **R1–R8** (§1 — R6/R7/R8 are the engineering-practice rules, D28), decisions D1–D28 (§3), single-owner registry (§4), remediation record (§5), owner-gate registry (§6). **For ordering and ownership it wins over every spec, including `project_plan.md` §6.**
+2. **`work_plan.md`** — the dispatch board: **§2.0 the product roadmap** (M0…M4 — read this first if you want the *shape* of the work rather than a ticket; added 2026-08-26), **WS-0…WS-39** rows (§2), the agent-ready spec contract + standing rules **R1–R8** (§1 — R6/R7/R8 are the engineering-practice rules, D28), decisions **D1–D54** (§3), single-owner registry (§4), remediation record (§5), owner-gate registry (§6). *(This line read "WS-0…WS-29" and "D1–D28" until 2026-08-26.)* **For ordering and ownership it wins over every spec, including `project_plan.md` §6.**
 3. **The owning spec** for your concern — see the index below. Its status header is authoritative for that feature's state.
 4. `FOUNDATION_BUILDOUT_CHECKLIST.md` (repo root) — foundation items BO-1…BO-23.
 
-Milestone history, kept to one line: M1 core engine 2026-05-25 · M2 self-mutation + multi-agent 2026-06-12 · M2.5–M2.9 (streaming, hardening, tool injection, memory, email) through 2026-07 · foundation audit + app buildout 2026-07/08 · WS-29 multi-tenancy started 2026-08-08.
+Milestone history, kept to one line: M1 core engine 2026-05-25 · M2 self-mutation + multi-agent 2026-06-12 · M2.5–M2.9 (streaming, hardening, tool injection, memory, email) through 2026-07 · foundation audit + app buildout 2026-07/08 · WS-29 multi-tenancy started 2026-08-08 · **the SaaS turn 2026-08-12→08-24**: the Customer Console (D32/D41), the operations doctrine (D33), Supabase + the production identity (D34/D40), self-serve signup (D46), **flat ₹500/user/month and a nine-pane launch surface (D49)**, subdomains withdrawn (D51), and **one task store with three lenses — Projects · Tasks · Calendar (D52/D53/D54)**.
 
 ---
 
@@ -40,11 +45,18 @@ Milestone history, kept to one line: M1 core engine 2026-05-25 · M2 self-mutati
 | **How to maintain an existing external agent repo** (⚠️ superseded premise) | [`agent_repo_compatibility.md`](agent_repo_compatibility.md) |
 | **Library notes: MAF, Copilot SDK, memory** (⚠️ stale-warning in header) | [`reference.md`](reference.md) |
 | **Workspace / artifact model for agents** | [`agents-workspaces-artifacts.md`](agents-workspaces-artifacts.md) |
+| **⭐ What we SELL, and to whom** — the launch surface of record: which apps go live, which stay `preview`, flat ₹500/user/month, the seat lifecycle, the nav-resolution contract (D49, WS-34) | [`specs/launch_surface.md`](specs/launch_surface.md) |
+| **⭐ HOW a SaaS platform is RUN** — the eight capability domains, the Indian GST/RBI/DPDP layer, the twelve-finding audit, the gap table (D33) | [`specs/saas_operations_doctrine.md`](specs/saas_operations_doctrine.md) |
+| **The operator-side engine** — subscriptions, seats, keys, credits, provisioning (WS-31, D32/D41) | [`specs/customer_console.md`](specs/customer_console.md) · where it runs: [`specs/customer_console_infrastructure.md`](specs/customer_console_infrastructure.md) (D47) |
+| **The customer-facing billing surface** (WS-30) — ⚠️ not to be confused with the Customer Console above | [`specs/subscription_console.md`](specs/subscription_console.md) |
+| **The customer's own mark inside the product** — logo, display name, branding on invoices (WS-32) | [`specs/organization_identity.md`](specs/organization_identity.md) |
+| **The public face on the apex** `metorite.com` (WS-33, D46.1) | [`specs/marketing_site.md`](specs/marketing_site.md) |
+| **How we ship to live customers while still building** — branching, staging-as-a-restore, the two delivery planes (🟠 **PROPOSED, binds nothing until the owner records D-A**) | [`specs/development_and_delivery_framework.md`](specs/development_and_delivery_framework.md) |
 | **Per-feature specs** | [`specs/`](specs/) — index below |
 
 ### Per-feature specs (`specs/`)
 
-Status: 🟢 live/shipped · 🔄 in progress · 🔲 planned/not started. *(Index completed 2026-08-09 — 16 missing rows added; statuses are one-line pointers, the spec's own header wins.)*
+Status: 🟢 live/shipped · 🔄 in progress · 🔲 planned/not started. *(⚠️ **Re-audited 2026-08-26: the index below was completed on 2026-08-09 and then went stale again** — it carried **zero** rows for the nine SaaS/product specs minted between 2026-08-12 and 08-24. Those now sit in the concern table ABOVE rather than here, because they are not per-feature specs. Statuses are one-line pointers, the spec's own header wins.)*
 
 **Only forward-looking / living specs are listed.** Shipped-or-historical specs live in [`specs/archive/`](specs/archive/README.md). Foundation status of record is `FOUNDATION_BUILDOUT_CHECKLIST.md` (BO-*).
 
