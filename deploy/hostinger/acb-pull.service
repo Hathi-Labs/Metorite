@@ -1,0 +1,54 @@
+[Unit]
+# Metorite pull-based delivery (WS-25). The box fetches its own updates.
+#
+# Why this exists rather than a push from CI: GitHub's runners cannot reach this
+# VPS inbound. That is an UPSTREAM routing fault, measured and documented in
+# deploy/hostinger/UPSTREAM-CONNECTIVITY-EVIDENCE.md (2026-07-28) and re-measured
+# by WS-25 on 2026-08-05 with the same signature — `Connection timed out` AND
+# `workbench=000000` from a runner, while the box answered the operator in
+# ~240ms. Its conclusion: "the VPS is not at fault and cannot be fixed from
+# inside." Outbound is fine (~29ms to GitHub), so delivery inverts.
+#
+# ⚠️ This unit is the half that was missing. `scripts/vps_pull.sh` shipped with
+# WS-25; nothing ran it, so on 2026-08-26 the box sat two releases behind
+# `release` while every push-path deploy "failed" against a fault it could never
+# win. Worth recording: a script with no unit looks exactly like a working
+# delivery path, right up until somebody compares SHAs.
+Description=Metorite pull-based delivery (apply origin/release)
+Documentation=file:///opt/acb/app/scripts/vps_pull.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Root: the checkout is owned by `acb` and the apply restarts services.
+# vps_pull.sh names this itself — without root, git refuses every command with
+# "detected dubious ownership" and the timer fails in a way that reads like a
+# network problem.
+User=root
+
+# Invoked through bash on purpose, matching acb-health-watchdog.service: a
+# checkout that loses the executable bit (Windows contributors, archive exports)
+# would otherwise fail with a bare "Permission denied" and this would silently
+# never run — the exact failure mode WS-25 exists to end.
+ExecStart=/bin/bash /opt/acb/app/scripts/vps_pull.sh
+
+# 1800s, and NOT a round number picked for comfort: deploy.yml's ssh timeout says
+# in terms that it is "matched to the pull unit's TimeoutStartSec", because the
+# pre-migration backup alone takes ~11 minutes on the 4GB box. A shorter bound
+# kills the apply MID-MIGRATION on a ladder that cannot roll back (R6) — and the
+# old services keep answering afterwards, so a health check would call it fine.
+TimeoutStartSec=1800
+
+# ⚠️ Deliberately NO Restart=. This is a oneshot driven by a timer, and
+# vps_pull.sh exits non-zero on a failed apply *specifically* so systemd marks
+# the unit failed and `systemctl --failed` shows it. Its own comment gives the
+# reason: "for two days the only signal was a red tick on a page nobody was
+# watching." A Restart= would retry over the top of that signal and restore the
+# silence. The timer's next tick is the retry, and it is visible.
+
+[Install]
+# Not WantedBy anything: the TIMER owns when this runs. Enabling the service
+# directly would fire it once at boot and never again — which looks like working
+# delivery for exactly one reboot.

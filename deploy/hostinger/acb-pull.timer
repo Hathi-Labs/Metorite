@@ -1,0 +1,35 @@
+[Unit]
+# Timer for Metorite pull-based delivery (WS-25). See acb-pull.service for why
+# delivery is pull-based rather than pushed from CI.
+Description=Check for a new Metorite release and apply it
+
+[Timer]
+# Cover the boot case first: a box that comes back after a reboot should
+# converge on `release` without waiting for the ordinary cadence.
+OnBootSec=2min
+
+# Every 5 minutes. That is the DELIVERY LATENCY — the gap between a merge
+# passing CI and the box carrying it — and 5 minutes is cheap because the common
+# tick does one `git fetch` and exits: vps_pull.sh compares the ref and stops
+# when nothing moved.
+#
+# ⚠️ A tick that lands while an apply is still running is NOT a problem and does
+# not need a longer interval to avoid. vps_pull.sh takes an flock and a second
+# invocation exits 0 quietly, because "someone else is already applying" is a
+# normal state rather than a fault. So the interval can be chosen for latency,
+# which is the thing that actually matters, instead of for collision-avoidance.
+OnUnitActiveSec=5min
+
+# If the box was off when a tick was due, run once on the next boot rather than
+# silently skipping it. Without this a weekend of downtime ends with the box
+# still stale and nothing saying so.
+Persistent=true
+
+# The timer is not time-critical to the second; letting systemd batch it saves
+# needless wakeups on a small VPS.
+AccuracySec=30s
+
+Unit=acb-pull.service
+
+[Install]
+WantedBy=timers.target
