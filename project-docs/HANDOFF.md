@@ -579,6 +579,38 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-26 · WS-39 / CI session *(re-cut the same session: the
   fail2ban hypothesis was disproved by the repo's own evidence pack.)*
 
+### H-52 · Phase 0 (D55.2) has ALREADY ENDED by trigger (b) — decide which way · [OWNER]
+- **Check:** `gh api repos/Hathi-Labs/Metorite/collaborators --jq '.[] | select(.type=="User") | select(.permissions.push or .permissions.admin) | .login'`
+  → more than one login means trigger (b) holds. Two today: `vjvarada`, `nithinjak`.
+- **Why:** 🔴 **Measured 2026-08-26, and the dates are the finding.** D55.2
+  (`development_and_delivery_framework.md` §3.5) ends Phase 0 at *"a second human
+  gets commit access"*. `nithinjak` has held push+admin and **committed on
+  2026-08-21** — five days before D55 was written on 2026-08-26. **Phase 0 was
+  adopted already-expired**, which is precisely the failure §3.5 predicts of
+  itself: *"a bridge with no trigger is a destination… somebody has to notice one
+  firing."* Nobody did, including me, until a tripwire was pointed at it.
+  ⚠️ **Why this is not cosmetic.** The pipeline today is CONTINUOUS DEPLOYMENT —
+  merge → CI green → `release` fast-forwards → the box polls every 5 min and
+  applies. §5 says that once Phase 0 ends, `release-promote` becomes a
+  `workflow_dispatch` **OWNER-GATE** with a one-working-day soak. Nothing connects
+  those two states, so the change does not happen by itself.
+  🟢 **Two honest answers, and it is a decision rather than a fix:**
+  1. **Phase 0 has ended.** Do T-7/T-8/T-9, flip `release-promote` to owner-gated,
+     write the end down in §3.5, delete `.github/workflows/phase-0-tripwire.yml`.
+  2. **The wording does not match the intent.** If "a second human" meant "a second
+     *regular contributor*", or these accounts sit inside one trust boundary, amend
+     §3.5 to say so. ⚠️ Do not simply mute it — an unamended clause everybody knows
+     is not really in force is worse than no clause, because the next reader cannot
+     tell which of the three triggers are live.
+  📌 **Triggers (a) and (c) are still unwatched.** A second organization being
+  provisioned, and H3 (the RLS promotion), both need production visibility. The open
+  design question is whether `/version` grows a `phase0` BOOLEAN — it is public and
+  unauthenticated, so never the org count — or whether that belongs on an
+  authenticated operator endpoint.
+- **Authority:** D55.2 · `development_and_delivery_framework.md` §3.5, §5 ·
+  `.github/workflows/phase-0-tripwire.yml`
+- **Added:** 2026-08-26 · guardrails/CI session
+
 ### H-51 · Create `acb-pull.service` + `.timer` (plan-guard blocks the agent) · [OWNER]
 - **Check:** `ls deploy/hostinger/acb-pull.*` → missing means unbuilt.
 - **Why:** the two files that make H-50's fix real. **An agent cannot write them:**
