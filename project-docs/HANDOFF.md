@@ -456,53 +456,6 @@ line — never reclaim a number by deleting the other entry.
   ids are never reused, and `test_handoff_queue.py` now fences it. Re-cut to
   slices 2, 3, 4 and 5 as each landed.)*
 
-### H-34 · Add the two Tasks-lens vars to `.env.example` (and the box) · [OWNER]
-- **Check:** `rg -c "TASKS_LENS" .env.example` → `0` means still pending.
-  Both `NEXT_PUBLIC_TASKS_LENS` and `TASKS_LENS` must appear, adjacent, with the
-  comment that they are a pair.
-- **Why:** WS-39 S3a-client slice 3 introduced the gateway half of the cutover
-  switch. The pair is documented in **`docs/TASKS_LENS.md`**; what is missing is
-  the entry in `.env.example`, and `.env*` is an owner-gated path
-  (`work_plan.md` §6 `secrets`) — plan-guard refuses it by name, so an agent
-  cannot add it.
-  ```dotenv
-  # The Tasks/Calendar store cutover (WS-39, D53). BOTH or NEITHER — see
-  # docs/TASKS_LENS.md. Do not enable before the S3b backfill has run.
-  NEXT_PUBLIC_TASKS_LENS=0
-  TASKS_LENS=0
-  ```
-  ⚠️ **Adding them as `0` is the whole ask — do NOT turn them on.** `gtd_items`
-  still holds every existing task and the S3b backfill is owner-gated and has
-  not run, so enabling them early does not break the app, it **empties** it, on
-  a 200, with no error to notice.
-  📌 Worth doing anyway rather than waiting for the flip: a variable that exists
-  and reads `0` is a variable somebody can find. One that appears for the first
-  time on the day of a cutover is one that gets set on the gateway and forgotten
-  in the workbench build — which is the exact mismatch `/version`'s `tasks_lens`
-  field was added to make visible.
-  *(H-30 is the other pending `.env.example` edit — the three dead `CLICKUP_*`
-  vars. Same file, same gate; doing them in one pass costs nothing extra.)*
-- **Authority:** `work_plan.md` §2 WS-39 row · §6 (`secrets`) ·
-  `docs/TASKS_LENS.md` · `task_manager_app.md` §13.5a
-- **Added:** 2026-08-25 · WS-39 S3a-client slice 3
-
-### H-30 · Strip the three `CLICKUP_*` vars from `.env.example` · [OWNER]
-- **Check:** `rg -n "CLICKUP" .env.example` → any hit means still pending.
-- **Why:** D52 deleted every reader of these vars; the example file still offers
-  `CLICKUP_API_TOKEN`, `CLICKUP_WORKSPACE_ID`, `CLICKUP_WEBHOOK_SECRET` (lines
-  68–70) and mentions `AGENT_WEBHOOK_SECRET_CLICKUP` (line 193), so a fresh box
-  is still told to configure a retired integration. **`.env*` writes are an
-  agent refusal** (`work_plan.md` §6, the H-13 precedent), which is why this is
-  a handover and not a commit. ⚠️ Measured 2026-08-24: `plan-guard.mjs` on
-  `main` did **not** actually block a `sed -i` against `.env.example` — the
-  refusal was honoured by the agent, not enforced by the hook. That is a
-  **fence gap worth closing** (R7) and it is the more useful half of this entry.
-  The D45 branch's plan-guard may already cover it; check there first.
-- **Ready-made patch:** delete lines 68–70 and the `AGENT_WEBHOOK_SECRET_CLICKUP`
-  clause on line 193.
-- **Authority:** `work_plan.md` §6 · D52 · H-13 precedent
-- **Added:** 2026-08-24 · WS-39 S1 session
-
 ### H-31 · Re-home the `event=` structlog AST guard · [AGENT]
 - **Check:** `rg -n "ast\." tests/unit/test_ingestion_receiver_parity.py` → no AST walk
   asserting that no receiver passes a bare `event=` to a structlog logger means it is
