@@ -354,7 +354,6 @@ export function TaskBoard({
       <li key={`gap-${index}`}>
         <DropGap
           active={dropAt === gapKey(scope, index)}
-          dragging={Boolean(dragging)}
           onOver={() => dragging && setDropAt(gapKey(scope, index))}
           onDrop={() => applyDrop(colKey, cellTasks, laneKey, index)}
         />

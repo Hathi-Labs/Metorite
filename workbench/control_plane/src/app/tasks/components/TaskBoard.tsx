@@ -347,7 +347,6 @@ export function TaskBoard({
                   {manual && (
                     <DropGap
                       active={dropAt === gapKey(col.key, idx)}
-                      dragging={Boolean(dragId)}
                       onOver={() => dragId && setDropAt(gapKey(col.key, idx))}
                       onDrop={() => dropAtIndex(col.key, idx)}
                     />
@@ -377,7 +376,6 @@ export function TaskBoard({
               {manual && colItems.length > 0 && (
                 <DropGap
                   active={dropAt === gapKey(col.key, colItems.length)}
-                  dragging={Boolean(dragId)}
                   onOver={() => dragId && setDropAt(gapKey(col.key, colItems.length))}
                   onDrop={() => dropAtIndex(col.key, colItems.length)}
                 />

@@ -502,4 +502,46 @@ describe("the shared card shell is wired, not merely imported", () => {
         "--radius), it is just a different corner from the board next door.",
     ).toEqual([]);
   });
+
+  /**
+   * The drop gap does not change size while a drag is in flight.
+   *
+   * `DropGap` used to grow from `h-1.5` to `h-3` on a `dragging` prop. One gap
+   * renders above every card plus one at the end, and both boards passed
+   * board-level drag state, so lifting ONE card grew EVERY gap in EVERY column:
+   * a 12-card column gained 13 x 6px = 78px and the board stretched downward
+   * under the cursor. The hit area is now padding that a negative margin
+   * cancels, so the target is 14px and the layout contribution never moves.
+   *
+   * ⚠️ This reads the SOURCE. It cannot measure a rendered box — vitest runs on
+   * `environment: "node"` here, with no DOM. It fences the two ways the defect
+   * came back in review: a state-conditional height inside the component, and a
+   * caller re-introducing the prop. A different reflow (say `py-*` made
+   * conditional) would pass this and still be wrong, so the theme sweep by eye
+   * is still the real gate.
+   */
+  it("the drop gap's geometry does not depend on drag state", () => {
+    const gap = code("components/DropGap.tsx");
+    expect(
+      /\bdragging\b/.test(gap),
+      "`DropGap` must not read drag state. Growing the gap mid-drag reflows " +
+        "every column on the board at once, which is the defect this " +
+        "component was fixed for.",
+    ).toBe(false);
+    expect(
+      /\bh-3\b/.test(gap),
+      "The gap's strip is `h-1.5`. `h-3` is the height it used to grow to.",
+    ).toBe(false);
+
+    const callers = FILES.filter(
+      (f) => f !== "components/DropGap.tsx" && /<DropGap\b/.test(code(f)),
+    ).filter((f) =>
+      /<DropGap\b[^>]*\bdragging=/.test(code(f).replace(/\n/g, " ")),
+    );
+    expect(
+      callers,
+      "A board is passing `dragging` to `DropGap`. The prop is gone on " +
+        "purpose — the gap is the same size at rest and mid-drag.",
+    ).toEqual([]);
+  });
 });
