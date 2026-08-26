@@ -1191,22 +1191,21 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §2 WS-27 row · CLAUDE.md §5 (a finding for the board)
 - **Added:** 2026-08-26 · Projects UI session (owner asked to flag, not build)
 
-### H-65 · The Projects filter row is half-converted, and motion is now in scope · [AGENT]
+### H-65 · The Projects filter row is half-converted · [AGENT]
 - **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
   → hits on `<Select` mean the controls are still selects, and the button
   conversion below is still owed.
 - **Why:** The owner gave four more directions in the session that consolidated
   the row. Work stopped part-way, so the row is in a state nobody designed.
-  1. **`MOTION.md` binds from now on.** It sits beside `DESIGN_SYSTEM.md` in
-     `workbench/control_plane/`. Read the gate in §1 before you animate one
-     element. It passes the STE gate today, and it has **no fence** — nothing in
-     this tree tests a duration, an easing token or a gate comment. R7 makes it
-     advisory until somebody writes one.
-  2. **"Assignees" becomes a button, not a select.** A click shows the items.
-  3. **Every dropdown in the row becomes a button.** At the default value, draw a
+  1. **"Assignees" becomes a button, not a select.** A click shows the items.
+  2. **Every dropdown in the row becomes a button.** At the default value, draw a
      two-headed arrow in place of the single down arrow.
-  4. **The search field collapses to an icon** at the left of the row. Remove the
+  3. **The search field collapses to an icon** at the left of the row. Remove the
      placeholder text. A click opens the real field, with a transition.
+  ⚠️ **Direction 3 asks for a transition, and this tree has no motion contract.**
+  A `MOTION.md` was committed here on 2026-08-26 and the owner removed it the
+  same day. Ask the owner what governs motion before you write one. Do not
+  invent a duration and an easing curve at the call site.
 - **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
   `src/components/ui/Modal.tsx` is the only file that may import it. A button
   that opens a list is a popover. Do not hand-roll one, and do not import a
@@ -1217,8 +1216,8 @@ line — never reclaim a number by deleting the other entry.
   search box is the only `flex-1` in that container, so it pays for everything
   that appears or disappears. Measured: 0px at 1280, 1440 and 1600, and −76px at
   1920. Direction 4 above may remove this by construction. Measure, do not assume.
-- **Authority:** `workbench/control_plane/MOTION.md` · `AGENTS.md` rule 8 (the
-  substrate) · `specs/project_management_app.md` §11.2 item 3 · board row WS-27
+- **Authority:** `AGENTS.md` rule 8 (the substrate) ·
+  `specs/project_management_app.md` §11.2 item 3 · board row WS-27
 - **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
 
 ---
