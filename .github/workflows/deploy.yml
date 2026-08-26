@@ -55,6 +55,27 @@ on:
 permissions:
   contents: read
 
+# ── ONE DEPLOY AT A TIME ────────────────────────────────────────────────────
+#
+# Added 2026-08-26 after two merges three minutes apart (#105 at 06:18:53, #104
+# at 06:21:59) put two deploys on the SAME BOX concurrently. Both ran
+# `vps_apply.sh`; the second sat in `timeout -k 30 1800 ssh` while the first held the
+# box, and the run overran its usual 5.5 minutes by an order of magnitude.
+#
+# ⚠️ `cancel-in-progress: false` is the load-bearing half, and it is the
+# opposite of what this field is usually set to. The normal reason to cancel a
+# superseded run is that its result no longer matters — true for a test job,
+# FALSE for this one. Cancelling here kills the SSH session mid-`vps_apply.sh`,
+# which is precisely the "killed mid-apply" state the deploy step's own 1800s
+# timeout exists to prevent: migrations half-applied on a ladder that CANNOT
+# ROLL BACK (R6). A queued deploy costs minutes; a half-applied one costs a
+# restore. So they QUEUE, and a superseded deploy still runs — harmlessly, since
+# `vps_apply.sh` is idempotent and simply converges the box on whatever `main`
+# now says.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   # ── Gate 1: Lint + Type Check ──────────────────────────────────────────
   lint:
@@ -151,6 +172,15 @@ jobs:
   deploy:
     name: "Deploy to Hostinger"
     runs-on: ubuntu-latest
+    # A BACKSTOP, not a leash. The step's own loop is ~105 min worst case
+    # (3 rounds x (1800s ssh + 240s verify) + backoff) and every one of those
+    # numbers is deliberate — the 1800s in particular, because the pre-migration
+    # backup alone takes ~11 min on the 4GB box. What this stops is the case
+    # where the job hangs OUTSIDE that arithmetic and rides GitHub's 360-minute
+    # default, holding the `deploy-production` concurrency slot behind it and
+    # blocking every later deploy. Failing at 120 is recoverable; a wedged slot
+    # for six hours is not.
+    timeout-minutes: 120
     needs: [lint, test]
     # NOT `if: success()`. With skip_tests=true the `test` job is SKIPPED, and a
     # dependent guarded by success() is skipped along with it — so the emergency
@@ -215,7 +245,16 @@ jobs:
             # and verify() then blessed the still-running OLD deployment as
             # green. A timeout kill is the one failure mode where "the app is
             # healthy" says nothing about "the deploy happened".
-            timeout 1800 ssh \
+            # ⚠️ `-k 30`: plain `timeout` sends SIGTERM, and a wedged ssh can
+            # ignore it — at which point the bound this line exists to impose
+            # does not exist. Observed 2026-08-26: run 32937837653 was still in
+            # this step at 35 minutes, past a 30-minute limit that had already
+            # fired. `-k` follows with SIGKILL, which nothing ignores.
+            #
+            # A timeout that can be ignored is worse than none, because the
+            # arithmetic downstream (3 rounds, the job's 120-minute backstop) is
+            # all computed from a number that turns out not to hold.
+            timeout -k 30 1800 ssh \
               -i ~/.ssh/deploy_key -p "$SSH_PORT" \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=30 -o ServerAliveInterval=15 \
@@ -234,14 +273,49 @@ jobs:
             fi
           }
 
+          deployed_sha() {
+            # The SHA the gateway is actually running, from GET /version.
+            #
+            # Parsed with python3 rather than sed: the sed form needs
+            # backreferences, and a literal backslash-one inside this YAML
+            # inside a shell heredoc is three quoting layers deep. The first
+            # cut of this line shipped a 0x01 control byte into the file and
+            # broke the YAML outright. json.load also rejects a truncated or
+            # HTML error body instead of silently matching nothing, which on
+            # a verification step is the difference between 'wrong commit'
+            # and 'no answer' — two states that must not look alike.
+            curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null \n              | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' \n              2>/dev/null
+          }
+
           verify() {
-            # The deploy is SUCCESSFUL iff the app is actually serving to USERS,
-            # which requires Caddy: gate on the PUBLIC workbench URL answering
-            # (2xx/3xx), not just the gateway. The direct-IP gateway probe stays
-            # as a fallback for the gateway signal only — it must never mask a
-            # dead Caddy (that exact blind spot let a full outage ship green).
-            # The 4GB box can be slow right after a rebuild — allow a warm-up.
-            echo "── Verifying public workbench + gateway health ──"
+            # ⚠️ THIS CHECKS **WHICH COMMIT IS SERVING**, not merely that
+            # something is. Added 2026-08-26, and it closes the pipeline's
+            # oldest hole: until now every gate in this workflow — this
+            # function and the smoke job both — asked only "is the app up?".
+            # An app that is up on YESTERDAY'S code answers yes. That is the
+            # failure CLAUDE.md rule 8 records in one line ("four deploys once
+            # reported success while shipping nothing"), and the reason the
+            # standing instruction is to verify by the migration ledger and the
+            # deployed SHA rather than by a green tick.
+            #
+            # It is checkable now because `GET /version` exists (WS-39,
+            # 2026-08-25) and, until this change, NOTHING consumed it. A
+            # verification endpoint nobody calls is a comment.
+            #
+            # Three conditions, all required:
+            #   1. the gateway is healthy,
+            #   2. the PUBLIC workbench answers — that requires Caddy, and
+            #      gating on the gateway alone once let a full outage ship
+            #      green,
+            #   3. /version reports THIS commit.
+            #
+            # (3) is what makes a timeout-killed apply visible. The deploy
+            # step's own comment already names that case — "a timeout kill is
+            # the one failure mode where 'the app is healthy' says nothing
+            # about 'the deploy happened'" — and this is the check that finally
+            # says something about it.
+            echo "── Verifying: gateway health + public workbench + DEPLOYED SHA ──"
+            echo "   want sha: $GITHUB_SHA"
             for i in $(seq 1 24); do
               gw_ok=0
               if curl -fsS --max-time 10 "$GATEWAY_URL/health" >/dev/null 2>&1; then
@@ -250,13 +324,23 @@ jobs:
                 gw_ok=1
               fi
               wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null || echo 000)
-              if [ "$gw_ok" = 1 ] && printf '%s' "$wb_code" | grep -qE '^[23]'; then
-                echo "  gateway healthy; workbench / -> HTTP $wb_code (poll $i)"
+              got_sha=$(deployed_sha)
+
+              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23]'                  && [ "$got_sha" = "$GITHUB_SHA" ]; then
+                echo "  ✅ gateway healthy; workbench / -> HTTP $wb_code; serving $got_sha (poll $i)"
                 return 0
               fi
-              echo "  not healthy yet (gateway_ok=$gw_ok workbench=$wb_code, poll $i/24) — 10s…"
+              echo "  not there yet (gateway_ok=$gw_ok workbench=$wb_code sha=${got_sha:-none}, poll $i/24) — 10s…"
               sleep 10
             done
+            echo "  ── verification failed after 24 polls ──"
+            echo "     gateway_ok=$gw_ok  workbench=$wb_code"
+            echo "     serving: ${got_sha:-<no /version response>}"
+            echo "     wanted:  $GITHUB_SHA"
+            if [ -n "${got_sha:-}" ] && [ "$got_sha" != "$GITHUB_SHA" ]; then
+              echo "     ⚠️  The app is UP but on a DIFFERENT commit. The deploy did not"
+              echo "         land — do not read the healthy app as a successful deploy."
+            fi
             return 1
           }
 
@@ -293,6 +377,15 @@ jobs:
         # this probe hits the PUBLIC URL, which can be transiently unreachable
         # for minutes while the concurrent Next.js rebuild saturates the 4GB
         # VPS. A flap here must not mark an otherwise-successful deploy failed.
+        #
+        # ⚠️ It reports the SERVING SHA alongside the health result — and only
+        # reports it. The gate is `verify()` in the deploy job, which now fails
+        # on a SHA mismatch; duplicating that gate here would mean two places
+        # deciding the same thing, and `continue-on-error: true` makes this one
+        # unable to decide anything anyway. What it is for is the transcript: an
+        # operator reading a past run should be able to see WHICH COMMIT was
+        # answering, without SSH access and without the box still being in that
+        # state.
         continue-on-error: true
         run: |
           GATEWAY_URL="${GATEWAY_URL:-https://api.metorite.com}"
@@ -305,6 +398,9 @@ jobs:
             if curl -fsS --max-time 10 "$GATEWAY_URL/health"; then
               echo ""
               echo "Gateway is healthy (attempt $attempt)"
+              serving=$(curl -fsS --max-time 10 "$GATEWAY_URL/version" 2>/dev/null                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))'                 2>/dev/null)
+              echo "Serving commit: ${serving:-<no /version response>}"
+              echo "This run's commit: $GITHUB_SHA"
               exit 0
             fi
             echo "attempt $attempt/30 failed — retrying in 10s..."
