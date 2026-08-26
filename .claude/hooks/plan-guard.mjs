@@ -13,6 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 
 // Fail closed. A guard that crashes and exits 1 reads as "allow" — that is how a
@@ -61,7 +62,7 @@ const OWNER_GATES = [
   // --- credentials ---------------------------------------------------------
   {
     id: 'secrets',
-    test: /(^|\s)(cat|type|Get-Content)\s+[^\n|]*\.env\b/,
+    test: /(^|\s)(cat|type|Get-Content)\s+[^\n|]*\.env\b(?!\.(example|sample|template)\b)/,
     why: 'Reading .env is OWNER-GATE (credential exposure, work_plan §6 / WS-2).',
   },
 ]
@@ -86,19 +87,78 @@ const SHELL_WRITE = new RegExp(
   [
     // destructive/creating verbs, at a command position
     String.raw`(^|[\s|;&(])(cp|mv|install|tee|dd|truncate|touch|ln|rsync|chmod|chown|rm|mkdir)\b`,
-    // any redirect that creates or appends
-    String.raw`>\s*\S`,
+    // A redirect that creates or appends a FILE.
+    // `(?!&)` lets `2>&1` through — it duplicates a descriptor. The
+    // /dev/null exclusion lets `2>/dev/null` through — the bit bucket is
+    // not a path. Without these two the arm refused THREE PURE READS in one
+    // session on 2026-08-26, which is how a guard teaches people to remove it.
+    String.raw`>\s*(?!&)(?!\/dev\/null(\s|$))\S`,
     // in-place edits
     String.raw`\bsed\b[^|;&]*\s-i`,
     String.raw`\bperl\b[^|;&]*\s-i`,
   ].join('|'),
 )
 
-// Paths an agent may never write, whatever the reason.
+// Paths an agent may not write WITHOUT AN OWNER GRANT (D45). Each carries the
+// `id` the owner writes in .claude/OWNER_GRANTS.md to unlock it for one day.
+//
+// ⚠️ `.env.example` and friends are DELIBERATELY NOT HERE. They are committed
+// templates — git guarantees they hold no credential, and the `Secret scan` CI
+// check enforces that on every PR. Treating them as `.env` bought nothing and
+// cost two hand-offs (H-30, H-34) that sat open for days. Owner directive,
+// 2026-08-26.
 const PROTECTED_PATHS = [
-  { test: /(^|[\\/])\.env(\.|$)/, why: '.env files hold live credentials (OWNER-GATE, WS-2).' },
-  { test: /(^|[\\/])deploy[\\/]/, why: 'deploy/ changes are OWNER-GATE — they run against prod.' },
+  {
+    id: 'env-write',
+    test: /(^|[\\/])\.env(?!\.(example|sample|template)$)(\.|$)/i,
+    why: '.env files hold live credentials (OWNER-GATE, WS-2).',
+  },
+  {
+    id: 'deploy-write',
+    test: /(^|[\\/])deploy[\\/]/,
+    why: 'deploy/ changes are OWNER-GATE — they run against prod.',
+  },
 ]
+
+
+// --- Owner grants (D45) ------------------------------------------------------
+//
+// ⚠️ THE READING HALF. Until 2026-08-26 this did not exist on `main`, and that
+// was not a small omission: the owner wrote 22 `ALLOW` lines between 08-19 and
+// 08-26 and EVERY ONE WAS IGNORED, silently. From the owner's chair that looks
+// like an agent refusing work it was plainly authorised to do. It was really a
+// lock with no key cut. Nothing reported the failure, because nothing read the
+// file at all.
+//
+// The owner — and only the owner — unlocks ONE named gate for ONE local day by
+// hand-writing into .claude/OWNER_GRANTS.md:
+//
+//   ALLOW 2026-08-19 deploy — reason
+//
+// The guard refuses every agent write to that file, and THAT refusal is not
+// grantable — so a grant can only originate in the owner's own editor.
+// In-chat permission is not a grant. Stale lines are inert.
+const GRANT_FILE_RE = /(^|[\\/])\.claude[\\/]OWNER_GRANTS\.md$/i
+
+function ownerGrants(projectDir) {
+  let text
+  try {
+    text = fs.readFileSync(path.join(projectDir, '.claude', 'OWNER_GRANTS.md'), 'utf8')
+  } catch {
+    return new Set()
+  }
+  // Local date, deliberately not UTC: the owner writes today's date as their
+  // calendar shows it, and a UTC comparison would make a grant written after
+  // 05:30 IST read as tomorrow's.
+  const t = new Date()
+  const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+  const ids = new Set()
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*ALLOW\s+(\d{4}-\d{2}-\d{2})\s+([\w-]+)/)
+    if (m && m[1] === today) ids.add(m[2])
+  }
+  return ids
+}
 
 function block(reason) {
   process.stderr.write(
@@ -166,8 +226,26 @@ const input = payload.tool_input || {}
 if (tool === 'Bash' || tool === 'PowerShell') {
   const cmd = String(input.command || '')
 
+  // The grant file itself is never shell-writable, and that refusal is the
+  // one thing no grant can unlock — otherwise an agent could grant itself.
+  if (GRANT_FILE_RE.test(cmd.replace(/\s+/g, ' ')) || /OWNER_GRANTS/i.test(cmd)) {
+    if (SHELL_WRITE.test(cmd)) {
+      block(
+        'shell write to .claude/OWNER_GRANTS.md — grants must be owner-authored (D45). '
+          + 'This refusal is NOT grantable.',
+      )
+    }
+  }
+
+  const grants = ownerGrants(PROJECT_DIR)
+
   for (const gate of OWNER_GATES) {
-    if (gate.test.test(cmd)) block(gate.why)
+    if (gate.test.test(cmd) && !grants.has(gate.id)) {
+      block(
+        `${gate.why}\nGrantable by the OWNER only: hand-write `
+          + `"ALLOW <today> ${gate.id} — reason" into .claude/OWNER_GRANTS.md (D45).`,
+      )
+    }
   }
 
   // PROTECTED_PATHS, enforced for the SHELL too. Until 2026-08-26 this list was
@@ -214,7 +292,7 @@ if (tool === 'Bash' || tool === 'PowerShell') {
         .replace(/^\.\//, '')
         .replace(/^[A-Za-z_][\w]*=/, '')
       for (const p of PROTECTED_PATHS) {
-        if (p.test.test(candidate)) {
+        if (p.test.test(candidate) && !grants.has(p.id)) {
           block(
             `a shell command writing to a protected path (${candidate}) — ${p.why}\n` +
               `  command: ${scanned.slice(0, 200)}`,
@@ -239,8 +317,24 @@ if (tool === 'Bash' || tool === 'PowerShell') {
 
 if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit') {
   const path = String(input.file_path || input.notebook_path || '')
+
+  // Never writable by an agent, never grantable. A grant an agent can write
+  // is not a grant.
+  if (GRANT_FILE_RE.test(path)) {
+    block(
+      `writing to ${path} — grants must be owner-authored (D45). `
+        + 'This refusal is NOT grantable.',
+    )
+  }
+
+  const writeGrants = ownerGrants(PROJECT_DIR)
   for (const p of PROTECTED_PATHS) {
-    if (p.test.test(path)) block(`writing to ${path} — ${p.why}`)
+    if (p.test.test(path) && !writeGrants.has(p.id)) {
+      block(
+        `writing to ${path} — ${p.why}\nGrantable by the OWNER only: hand-write `
+          + `"ALLOW <today> ${p.id} — reason" into .claude/OWNER_GRANTS.md (D45).`,
+      )
+    }
   }
 
   const body = String(input.content || input.new_string || '')
