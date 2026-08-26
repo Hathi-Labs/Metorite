@@ -90,6 +90,14 @@ class FakeDB:
 
 
 def task_in(project_id: str) -> Any:
+    """A task row, for the MOVE guard.
+
+    ⚠️ The ASSIGN guard takes a bare `project_id` instead. The two signatures
+    differ on purpose: `move_task` has to ask the assign guard about the
+    DESTINATION project, which no existing task row carries — and a helper whose
+    parameter has to be faked at a call site is a helper asking for the wrong
+    thing.
+    """
     return _Row(project_id=project_id)
 
 
@@ -146,19 +154,19 @@ async def test_assigning_anyone_in_a_team_project_is_allowed() -> None:
     way to see a task (WS-27j). A future tightening that "fixes" it would
     re-open the silent-assignment bug that arm was added to close.
     """
-    await assert_assignable_here(FakeDB(), task_in(TEAM), {SAM, RAE})
+    await assert_assignable_here(FakeDB(), TEAM, {SAM, RAE})
 
 
 @pytest.mark.asyncio
 async def test_the_owner_may_assign_themselves_in_their_own_project() -> None:
     """This is what `capture` does on every quick capture."""
-    await assert_assignable_here(FakeDB(), task_in(RAE_HOME), {RAE})
+    await assert_assignable_here(FakeDB(), RAE_HOME, {RAE})
 
 
 @pytest.mark.asyncio
 async def test_assigning_someone_else_in_a_personal_project_is_refused() -> None:
     with pytest.raises(HTTPException) as caught:
-        await assert_assignable_here(FakeDB(), task_in(RAE_HOME), {SAM})
+        await assert_assignable_here(FakeDB(), RAE_HOME, {SAM})
     assert caught.value.status_code == 422
     assert SAM in str(caught.value.detail), (
         "the refusal must name WHO could not be assigned — a refusal that "
@@ -171,7 +179,7 @@ async def test_assigning_someone_else_in_a_personal_project_is_refused() -> None
 async def test_an_empty_change_touches_the_database_not_at_all() -> None:
     """Re-asserting the same assignees must not cost a query."""
     db = FakeDB()
-    await assert_assignable_here(db, task_in(RAE_HOME), set())
+    await assert_assignable_here(db, RAE_HOME, set())
     assert db.queries == []
 
 
@@ -184,5 +192,5 @@ async def test_removals_are_not_guarded() -> None:
     could refuse somebody's attempt to UNDO the very state it dislikes.
     """
     db = FakeDB()
-    await assert_assignable_here(db, task_in(RAE_HOME), set())
+    await assert_assignable_here(db, RAE_HOME, set())
     assert db.queries == []

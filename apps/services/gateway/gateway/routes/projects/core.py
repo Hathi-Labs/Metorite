@@ -923,7 +923,7 @@ async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
 
 
 async def assert_assignable_here(
-    db: Any, task: Any, added: set[str],
+    db: Any, project_id: str, added: set[str],
 ) -> None:
     """Assigning somebody else requires the task to be in a REAL project.
 
@@ -955,9 +955,14 @@ async def assert_assignable_here(
     """
     if not added:
         return
+    # Takes a PROJECT id, not a task. `move_task` has to ask about the
+    # DESTINATION — which is the whole point of letting promote-and-assign be
+    # one call — and a signature taking a task row would have forced a fake one
+    # at that call site. A helper whose parameter has to be faked is a helper
+    # asking for the wrong thing.
     row = (await db.execute(
         text("SELECT personal_owner FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
-        {"pid": str(task.project_id)},
+        {"pid": str(project_id)},
     )).fetchone()
     owner = (getattr(row, "personal_owner", None) or "").lower() or None
     if owner is None:

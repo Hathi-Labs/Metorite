@@ -65,7 +65,11 @@ from gateway.routes.projects.core import (
     update_row,
     validate_choice,
 )
-from gateway.routes.projects.custom_fields import apply_values, load_definitions
+from gateway.routes.projects.custom_fields import (
+    apply_values,
+    assert_required_fields_present,
+    load_definitions,
+)
 from gateway.routes.projects.filters import (
     attach_assignees,
     attach_relation_counts,
@@ -99,6 +103,15 @@ _LINK_TYPES: tuple[str, ...] = ("blocks", "relates_to", "duplicates")
 class MoveTask(BaseModel):
     project_id: str | None = None
     parent_task_id: str | None = None
+    #: WS-39. Values for the destination's REQUIRED custom fields, supplied in
+    #: the same call that moves the task — the move dialog collects them, so the
+    #: server should not need a second round trip to store them.
+    custom_fields: dict | None = None
+    #: WS-39, owner directive 2026-08-26. Promote-and-assign in ONE transaction.
+    #: Two calls (move, then assign) can fail between them, and the wreckage is
+    #: worse than either failure alone: a task promoted to a team project,
+    #: visible to everyone, owned by nobody. `None` leaves assignees untouched.
+    assignees: list[str] | None = None
 
 
 class AssigneesIn(BaseModel):
@@ -470,6 +483,24 @@ async def move_task(
             new_root = await root_project_id(db, str(payload.project_id))
             values["project_id"] = str(payload.project_id)
             if new_root != str(task.root_project_id):
+                # The destination's REQUIRED fields (migration 192), merged from
+                # what the task already carries plus what this call supplies.
+                # Checked BEFORE any value is written, so a refusal leaves the
+                # task exactly where it was rather than half-moved.
+                #
+                # Only when the ROOT changes: definitions are per-root, so a
+                # move between two projects of the same tree cannot introduce a
+                # requirement the task has not already satisfied, and asking
+                # again would be a prompt with nothing behind it.
+                merged, custom_changes = apply_values(
+                    from_jsonb(task.custom_fields),
+                    payload.custom_fields or {},
+                    await load_definitions(db, new_root),
+                )
+                await assert_required_fields_present(db, new_root, merged)
+                if custom_changes:
+                    values["custom_fields"] = merged
+
                 values["root_project_id"] = new_root
                 values["status_id"] = str((await load_default_status(db, new_root)).id)
                 # The number belongs to the old root's sequence and would
@@ -479,10 +510,22 @@ async def move_task(
                 # in a comment stops resolving.
                 values["task_number"] = await next_task_number(db, new_root)
 
-        if not values:
+        if payload.assignees is not None:
+            # Promote-and-assign, in ONE transaction. `assert_assignable_here`
+            # is re-run against the DESTINATION rather than the task's current
+            # project, which is the whole point of allowing it here: assigning a
+            # colleague is refused in a personal project, and the fix offered is
+            # this very call — so the check has to see where the task is GOING.
+            await assert_assignable_here(
+                db,
+                str(values.get("project_id", task.project_id)),
+                {a.strip().lower() for a in payload.assignees if (a or "").strip()},
+            )
+
+        if not values and payload.assignees is None:
             return row_to_dict(task, TaskModel)
 
-        row = await update_row(db, "pm_tasks", task_id, values)
+        row = await update_row(db, "pm_tasks", task_id, values) if values else task
         # WS-27ae / P-27 — SUBTASK MEMBERSHIP is a satellite of the PARENT, and
         # it is the one satellite that lives on the child's own row. Re-parenting
         # changes what both parents contain (`attach_relation_counts` draws
@@ -493,13 +536,74 @@ async def move_task(
                 db, getattr(task, "parent_task_id", None),
                 values.get("parent_task_id"),
             )
-        await record_activity(
-            db, activity_type="system", created_by=actor(user), task_id=task_id,
-            body="Task moved",
-            meta={"from_project": str(task.project_id),
-                  "from_number": getattr(task, "task_number", None)},
-        )
+        if values:
+            await record_activity(
+                db, activity_type="system", created_by=actor(user), task_id=task_id,
+                body="Task moved",
+                meta={"from_project": str(task.project_id),
+                      "from_number": getattr(task, "task_number", None)},
+            )
+
+        # ── Promote-and-assign, in the SAME transaction ─────────────────────
+        #
+        # The whole reason this lives here rather than in a follow-up call to
+        # `set_assignees`: between two calls, the move can commit and the
+        # assignment fail, leaving a task promoted onto a team board and owned
+        # by nobody. That is a worse state than either failure alone, and it is
+        # the state a client cannot repair without knowing what it was trying to
+        # do. One transaction or neither.
+        notified: dict[str, list[str]] = {"notified": [], "skipped": []}
+        if payload.assignees is not None:
+            wanted = {
+                a.strip().lower() for a in payload.assignees if (a or "").strip()
+            }
+            current = {
+                r.assignee for r in (await db.execute(
+                    text(
+                        "SELECT assignee FROM pm_task_assignees "
+                        "WHERE task_id = CAST(:tid AS uuid)"
+                    ),
+                    {"tid": task_id},
+                )).fetchall()
+            }
+            added = wanted - current
+            for who in sorted(current - wanted):
+                await db.execute(
+                    text(
+                        "DELETE FROM pm_task_assignees "
+                        "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
+                    ),
+                    {"tid": task_id, "who": who},
+                )
+            for who in sorted(added):
+                await db.execute(
+                    text(
+                        "INSERT INTO pm_task_assignees "
+                        "(task_id, assignee, assigned_by) "
+                        "VALUES (CAST(:tid AS uuid), :who, :by) "
+                        "ON CONFLICT (task_id, assignee) DO NOTHING"
+                    ),
+                    {"tid": task_id, "who": who, "by": actor(user)},
+                )
+            if added or (current - wanted):
+                await record_activity(
+                    db, activity_type="assignment", created_by=actor(user),
+                    task_id=task_id,
+                    meta={"added": sorted(added),
+                          "removed": sorted(current - wanted)},
+                )
+            if added:
+                # Inside the transaction, for `notify`'s own stated reason: an
+                # assignment that committed while its notification did not is
+                # the silent assignment WS-27j exists to end.
+                notified = await notify(
+                    db, recipients=sorted(added), kind="assigned",
+                    task_id=task_id, actor_id=actor(user),
+                )
+
         result = row_to_dict(row, TaskModel)
+        result["notified"] = notified["notified"]
+        result["skipped"] = notified["skipped"]
 
     await emit("pm.task.moved", {"task_id": task_id})
     return result
@@ -704,7 +808,7 @@ async def set_assignees(
         # a refused assignment leaves the set exactly as it was rather than
         # half-applied. REMOVALS are deliberately not guarded: taking somebody
         # off a task can never be the thing that strands them.
-        await assert_assignable_here(db, task, added)
+        await assert_assignable_here(db, str(task.project_id), added)
 
         for who in sorted(removed):
             await db.execute(
