@@ -76,7 +76,7 @@ GTD is a pipeline. Each captured "thing" flows left to right exactly once.
 5. **Engage** — Choose what to do *now* with confidence. Three models guide the choice:
    - **Four-criteria model** for the moment: **Context** (where am I / what tools) → **Time available** → **Energy available** → **Priority**.
    - **Threefold model** of daily work: doing *predefined* work (your lists), doing work *as it shows up* (ad hoc), and *defining* work (processing inboxes).
-   - **Six Horizons of Focus** for perspective (review altitudes):
+   - **Six Horizons of Focus** for perspective (review altitudes). ⚠️ **D65 (2026-08-26) takes this OFF THE SURFACE** — the method below is recorded, not shipped, and **F7** carries the detail:
 
      | Altitude | Horizon | Meaning |
      |---|---|---|
@@ -114,7 +114,7 @@ Each GTD step becomes a first-class surface in the app. This is the product's fe
 | **F4** | **Engage ("Now" view)** — focused execution surface that filters by Context + Time + Energy + Priority and shows "what should I do right now." | Engage | (new — no email analogue) |
 | **F5** | **Reflect (Weekly Review wizard)** — an agent-guided three-phase review (Get Clear / Current / Creative) that walks every list, flags projects with no next action, surfaces stale waiting-fors, and produces a review summary. | Reflect | Digest |
 | **F6** | **Delegate & Monitor ("Waiting-For Zero")** — delegate a task to a teammate (creates + assigns it in the PM tool), track it on Waiting For, monitor others' tasks/projects, detect blockers/overdue, and draft follow-up nudges. | Clarify→Delegate + Reflect | Reply Zero + follow-up drafting |
-| **F7** | **Horizons of Focus** — Areas of Focus, Goals, Vision, Purpose; connect daily next actions up the altitude ladder, and review them on a cadence. | Engage/Reflect (higher altitudes) | (new) |
+| **F7** | ⚠️ **DEFERRED BY D65 (2026-08-26) — OFF THE SURFACE, STILL IN THE CODE.** **Horizons of Focus** — Areas of Focus, Goals, Vision, Purpose; connect daily next actions up the altitude ladder, and review them on a cadence. The nav entry and the altitude ladder go. The data and the routes stay, the same shape D49 used for Centers. It returns when **F5** (Weekly Review) exists to give it a job. **H-59** owns the removal. ⚠️ **WORD COLLISION, read this before you use either term:** D65 gives the bare word **“Areas”** to the flat, per-member grouping over personal projects, which is LIVE and Tasks-app only. This row’s **“Areas of Focus”** is the H2 altitude and is a DIFFERENT thing, deferred. Whoever revives F7 must settle the naming then, and must not quietly reuse “Areas”. | Engage/Reflect (higher altitudes) | (new) |
 | **F8** | **Natural Planning** — "define a project" flow (purpose → outcome → brainstorm → organize → next action), agent-assisted. | (project planning) | Composer AI |
 | **F9** | **Assistant chat + quick actions** — right-rail agent chat with GTD quick actions: *Process my inbox*, *What's my next action?*, *Run weekly review*, *What am I waiting on?*, *Plan this project*, *What's overdue across the team?* | all | AI Chat panel + quick actions |
 
@@ -1029,7 +1029,7 @@ wall-clock budget). Also this session: `web_search` is now SerpAPI-first
 - [ ] Natural-planning project flow (F8).
 
 ### Phase 4 — Horizons, more connectors, write-back
-- [ ] Horizons of Focus (F7) + Goals mapping.
+- [ ] Horizons of Focus (F7) + Goals mapping. ⚠️ **DEFERRED BY D65** — do not build this until Weekly Review (F5) gives it a job, and settle the “Areas” / “Areas of Focus” collision first.
 - [ ] Additional **API connectors** (Asana / Jira / Linear / Monday …) — each just an adapter + default field-map.
 - [ ] Two-way write-back through the **Action Broker** (capability-gated: assignment, status/move, opt-in custom fields). Until then: suggest-only.
 - [ ] Webhook/push sync (per-provider, where the descriptor advertises `webhooks`) replacing polling.

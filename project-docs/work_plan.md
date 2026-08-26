@@ -3541,6 +3541,11 @@ by D15/D16) — read their banners before citing either.
      app**. Not "categories", not "lists" — `ListsSidebar.tsx` already spends
      "Lists" on the disposition views, and a second meaning for a live word is
      the CLAUDE.md §5 defect.
+     ⚠️ **One collision survives, and it is named rather than hidden.**
+     `task_manager_app.md` **F7** uses **“Areas of Focus”** for the H2
+     altitude. That is a different thing, and D65 defers it. The bare word
+     **“Areas”** belongs to this decision. Whoever revives F7 settles the
+     naming at that point, and may not quietly reuse the bare word.
   3. **Areas are per member and never leave the Tasks app.** A personal project
      is private at any depth (migration **191**), so its grouping is private too.
      The Projects app must not render an Area, ever.
