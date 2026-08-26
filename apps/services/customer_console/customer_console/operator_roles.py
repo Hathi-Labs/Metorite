@@ -123,6 +123,13 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # in `operators.py` are what make it safe, not a time box.
     ("GET", "/operators"): _R(VIEWER),
     ("POST", "/operators"): _R(ADMIN),
+    # ⚠️ Opening a window is ADMIN and NOT itself `elevated` — a rule that
+    # demanded a window to open a window could never be satisfied.
+    ("POST", "/operators/elevate"): _R(ADMIN),
+    # Reading and closing MY OWN window is not a privilege. A `viewer`
+    # who somehow held one must be able to see and drop it.
+    ("GET", "/operators/elevate"): _R(VIEWER),
+    ("DELETE", "/operators/elevate"): _R(VIEWER),
     ("PATCH", "/operators/{operator_id}"): _R(ADMIN),
     ("DELETE", "/operators/{operator_id}"): _R(ADMIN),
 }

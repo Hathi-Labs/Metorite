@@ -388,15 +388,18 @@ def test_a_re_role_takes_effect_on_the_very_next_request(client, eng):
     _, _, admin = _make(eng, "admin")
     victim_id, _, victim = _make(eng, "admin")
 
-    assert client.post("/keys", headers=_auth(victim),
-                       json={"org_slug": "nope", "label": "t"}
-                       ).status_code != 403
+    # `POST /operators` is admin-only and NOT `elevated`, so this measures the
+    # ROLE alone. `/keys` would also need an elevation window (CP-12e) and the
+    # test would then be about two things at once.
+    assert client.post("/operators", headers=_auth(victim),
+                       json={"email": "probe-a@fracktal.in", "role": "viewer"}
+                       ).status_code == 200
 
     client.patch(f"/operators/{victim_id}", headers=_auth(admin),
                  json={"role": "viewer"})
 
-    assert client.post("/keys", headers=_auth(victim),
-                       json={"org_slug": "nope", "label": "t"}
+    assert client.post("/operators", headers=_auth(victim),
+                       json={"email": "probe-b@fracktal.in", "role": "viewer"}
                        ).status_code == 403
 
 

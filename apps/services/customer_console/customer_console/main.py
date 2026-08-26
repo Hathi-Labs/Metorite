@@ -50,7 +50,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -58,7 +58,13 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
-from customer_console import operator_roles, operators, payments, store
+from customer_console import (
+    operator_elevation,
+    operator_roles,
+    operators,
+    payments,
+    store,
+)
 from customer_console.auth import (
     Caller,
     CatalogCaller,
@@ -955,6 +961,92 @@ def _rate_completion(conn, *, model: str, usage: ExtractedUsage) -> Decimal:
 
 # ── Routes ──────────────────────────────────────────────────────────────────
 
+# ── Elevation (CP-12e) ──────────────────────────────────────────────────────
+#
+# Spec: operator_identity_and_access.md §6.3 · D64.4. An admin holds the RIGHT
+# to elevate, not the privilege. The window is time-boxed and needs a reason.
+
+
+class ElevateRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    #: SC-4g's `<reason>:<ref>` grammar. ONE reference vocabulary in this
+    #: service, not a second invented here.
+    reference: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/operators/elevate")
+def open_elevation(req: ElevateRequest, staff: Operator) -> dict[str, Any]:
+    """Open an elevation window for the CALLING operator.
+
+    ⚠️ For themselves, always. There is no `operator_id` parameter, because
+    elevating somebody ELSE would be a way to hand out a destructive privilege
+    without them asking for it — and the person who did it would not be the
+    person the audit row named.
+    """
+    if not staff.is_session or staff.operator_id is None:
+        # The break-glass token is already past every gate. Letting it open a
+        # window would be theatre, and it would create an elevation row with
+        # no person attached to it.
+        raise HTTPException(
+            status_code=403,
+            detail="only a signed-in operator can elevate",
+        )
+    try:
+        operator_elevation.may_elevate(staff.role)
+    except operator_elevation.ElevationRefused:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    try:
+        reason = operator_elevation.check_reason(req.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    expires_at = datetime.now(UTC) + operator_elevation.ttl()
+    with get_engine().begin() as conn:
+        window_id = store.operator_elevation_open(
+            conn, operator_id=staff.operator_id, reason=reason,
+            reference=req.reference, expires_at=expires_at,
+        )
+        _audit(conn, None, "operator.elevate",
+               {"reason": reason, "reference": req.reference,
+                "expires_at": expires_at.isoformat()},
+               actor=staff.actor)
+    return {"id": window_id, "expires_at": expires_at.isoformat()}
+
+
+@app.get("/operators/elevate")
+def read_elevation(staff: Operator) -> dict[str, Any]:
+    """Is a window open for me, and until when?
+
+    The surface needs this to show a countdown. A window whose end nobody can
+    see is one people re-open out of habit.
+    """
+    if not staff.is_session or staff.operator_id is None:
+        return {"elevated": False}
+    with get_engine().begin() as conn:
+        window = store.operator_elevation_live(conn, staff.operator_id)
+    if window is None:
+        return {"elevated": False}
+    return {
+        "elevated": True,
+        "reason": window["reason"],
+        "reference": window["reference"],
+        "expires_at": window["expires_at"].isoformat(),
+    }
+
+
+@app.delete("/operators/elevate")
+def close_elevation(staff: Operator) -> dict[str, Any]:
+    """Close my window early. Finishing the job should end the privilege."""
+    if not staff.is_session or staff.operator_id is None:
+        return {"closed": 0}
+    with get_engine().begin() as conn:
+        closed = store.operator_elevation_close(conn, staff.operator_id)
+        if closed:
+            _audit(conn, None, "operator.elevate_close", {"closed": closed},
+                   actor=staff.actor)
+    return {"closed": closed}
+
+
 # ── Operator administration (CP-12d) ────────────────────────────────────────
 #
 # Spec: operator_identity_and_access.md §6.1 · D64.3. The role matrix (§5)
@@ -1029,6 +1121,12 @@ def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
     return {"id": operator_id, "email": email, "role": req.role}
 
 
+# ⚠️ THE ELEVATION ROUTES ARE DECLARED ABOVE THIS LINE ON PURPOSE.
+# FastAPI matches in declaration order, so `/operators/{operator_id}`
+# would otherwise swallow `/operators/elevate` with operator_id="elevate"
+# and `DELETE /operators/elevate` would answer 404 instead of closing a
+# window. Measured, not guessed. Fence:
+# `test_operator_elevation.py::test_the_elevate_routes_are_not_swallowed`.
 @app.patch("/operators/{operator_id}")
 def patch_operator(
     operator_id: str, req: OperatorPatchRequest, staff: Operator

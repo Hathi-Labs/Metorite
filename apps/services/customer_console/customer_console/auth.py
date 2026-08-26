@@ -216,12 +216,15 @@ class Caller:
 
 #: What ``control_audit.actor`` records for the SHARED operator token.
 #:
-#: ⚠️ This string names nobody, and that is now the point rather than an
-#: oversight. Until CP-12b every staff write recorded it, so the log could not
-#: answer "who" (``operator_identity_and_access.md`` §2, F3). It survives as the
-#: actor of the **shared** credential only — scripts today, break-glass after
-#: CP-12e — so a row carrying it is a row a reader should look at twice.
-SHARED_TOKEN_ACTOR = "operator"
+#: ⚠️ **CP-12e renamed this from ``operator`` to ``breakglass``**, and the new
+#: word is the whole point. The shared token bypasses every control in
+#: ``operator_identity_and_access.md`` — the role matrix cannot judge a
+#: credential that carries no role — so after CP-12e it IS the break-glass
+#: path and nothing else (§6.4). A row carrying this actor is a row somebody
+#: should look at, and calling it ``operator`` made it look routine.
+#:
+#: ⚠️ Old rows keep the old word. This changes what NEW rows say, not history.
+SHARED_TOKEN_ACTOR = "breakglass"
 
 
 @dataclass(frozen=True)
@@ -306,13 +309,29 @@ def _enforce_role(request: Request, identity: StaffIdentity) -> None:
     The route TEMPLATE is read from the matched route rather than from the URL,
     so a path parameter cannot smuggle a caller into a different rule.
     """
-    from customer_console import operator_roles
+    from customer_console import operator_elevation, operator_roles
 
     route = request.scope.get("route")
     path = getattr(route, "path", None) or request.url.path
     try:
-        operator_roles.check_route(identity.role, request.method, path)
+        rule = operator_roles.check_route(identity.role, request.method, path)
     except operator_roles.RoleForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+    if not rule.elevated:
+        return
+
+    # D64.4 — the sharp edges need a WINDOW as well as the role. The window is
+    # read per request, so one that expired mid-session stops the next action
+    # rather than the next sign-in.
+    with get_engine().begin() as conn:
+        window = store.operator_elevation_live(conn, identity.operator_id)
+    try:
+        operator_elevation.check_window(window, now=datetime.now(UTC))
+    except operator_elevation.NotElevated:
+        # Same 403 body as a rank refusal. Telling the two apart would say
+        # "your role is fine, you just need to elevate", which is a hint an
+        # attacker holding a stolen admin session would act on.
         raise HTTPException(status_code=403, detail="Forbidden") from None
 
 
@@ -356,8 +375,22 @@ def require_operator(
         raise HTTPException(status_code=401, detail="Unauthorized")
     # ⚠️ The SHARED token carries no role, so the matrix cannot judge it and
     # deliberately does not try. It keeps reaching everything, which is what
-    # makes it the break-glass credential CP-12e formalises — and is exactly
-    # why using it is an owner act (work_plan.md §6.1, CP-12 block (f)).
+    # makes it the BREAK-GLASS credential (§6.4) — and is exactly why using it
+    # is an owner act (work_plan.md §6.1, CP-12 block (f)).
+    #
+    # Every use is announced. This WARNING is the durable record and the thing
+    # an alert rule fires on; see `_break_glass_alert`'s note on why the
+    # Console does not send the mail itself.
+    _log.warning(
+        "operator.breakglass",
+        extra={
+            "bg_method": request.method,
+            "bg_path": getattr(
+                request.scope.get("route"), "path", None
+            ) or request.url.path,
+            "bg_alert_to": os.environ.get("OPERATOR_ALERT_EMAIL", "<unset>"),
+        },
+    )
     return _stash(request, StaffIdentity(actor=SHARED_TOKEN_ACTOR))
 
 

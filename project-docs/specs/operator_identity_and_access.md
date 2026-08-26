@@ -38,7 +38,21 @@ OPERATOR caller can isolate guard 1. Only the break-glass token reaches it,
 because that token holds no operator id. It is now a written test rather than
 a lesson somebody learns twice.
 
-CP-12e to CP-12g are unbuilt.
+**◐ CP-12e BUILT 2026-08-27** (`ws31-cp12e-elevation`) — the window and the
+break-glass path. `operator_elevation.py`, three routes, and the `elevated`
+rows of §5 now need a live window and the role together. 19 tests. **668 passed**
+across every Console suite. Nine mutations killed, plus two PAIRS.
+
+⚠️ **The shared token's audit actor is renamed `operator` to `breakglass`.**
+Four existing assertions moved with it, and they now read the constant rather
+than a literal. Old rows keep the old word.
+
+⚠️ **A real bug was caught at build.** FastAPI matches routes in declaration
+order, so `/operators/{operator_id}` swallowed `/operators/elevate` and
+`DELETE` answered 404 instead of closing a window. Pinned by
+`test_the_elevate_routes_are_not_swallowed_by_the_path_parameter`.
+
+CP-12f and CP-12g are unbuilt.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -384,7 +398,7 @@ out of a live console.
 | **CP-12b** | ◐ **BUILT 2026-08-26.** The fifth auth scheme (`cc_sess_`), `operator_sessions.py`, absolute **and** idle expiry, server-side revocation, and nine operator routes whose audit rows now name the person — 19 R8 tests, 8 mutations killed. ⚠️ **Known gap, pinned by a test:** `/orgs/provision` is a dual-arm door and its operator arm still records the shared actor. CP-12c closes it | CP-12a | 🟢 **AGENT-SAFE** |
 | **CP-12c** | ◐ **BUILT 2026-08-26.** `operator_roles.py` holds the §5 matrix, enforced in `auth.require_operator` BEFORE the route body runs — so a refusal cannot reveal whether a company exists. Fails CLOSED on an unnamed route. 49 R8 tests, 7 mutations killed. Also closes CP-12b's provision-actor gap | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12d** | ◐ **BUILT 2026-08-27.** FOUR routes (`GET`/`POST` `/operators`, `PATCH`/`DELETE` `/operators/{id}`) and the four guards of §6.1. `GET` is `viewer` — who holds power over our customers is what the team should see without asking. 24 R8 tests, 8 mutations killed. ⚠️ Deferred: the console SURFACE that drives them, which lands with CP-12f | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
-| **CP-12e** | **Elevation and break-glass.** `operator_elevation`. The window. The alert. The `actor='breakglass'` row | CP-12c | 🟢 **AGENT-SAFE** |
+| **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | **The Activity surface.** A cross-org read of `control_audit` with a filter for actor, action and company. Every role reads it | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7** | all | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
@@ -466,6 +480,7 @@ turns it into a ticket.
 | **DEF-4** | **Read-only tenant view for support, with consent and an access record** | A support request arrives that the team cannot answer without seeing tenant content. ⚠️ **D64.5 makes this an owner decision, not an engineering one** |
 | **DEF-5** | **Anomaly alerting** — a burst of reads, an odd hour, a first-time company | The activity log of CP-12f gives the data. Nobody reads a log until it alerts |
 | **DEF-6** | **Tamper-evident audit storage**, off-box and append-only | The first external audit. Today `control_audit` sits in the same database an admin can reach |
+| **DEF-7** | **Mailing the break-glass alert to `OPERATOR_ALERT_EMAIL`** | ⚠️ **CP-12e logs a WARNING instead, deliberately.** The Resend seam lives in the GATEWAY (`routes/email_otp.py`), and reaching across a service boundary for one message would put a second email seam inside the Console. The log line is the durable record and the thing an alert rule fires on. The trigger is **log alerting existing at all** — until something watches the Console's logs, mail from the Console would be the only alerting we have, which is worse than one place to look |
 
 ---
 
