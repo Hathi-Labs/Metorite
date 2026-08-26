@@ -1060,6 +1060,56 @@ line — never reclaim a number by deleting the other entry.
   D32.7
 - **Added:** 2026-08-26 · AI design audit
 
+### H-54 · Configure the Supabase staff provider and the three `OPERATOR_*` values · [OWNER]
+- **Check:** `ssh` to the box and read the operator console env for
+  `OPERATOR_ENTRA_TENANT_ID` → an unset value means still pending. From the repo
+  alone: `rg -n "OPERATOR_ENTRA_TENANT_ID" workbench/operator_console/` → a hit in
+  `src/lib/` with no hit in a deployed env is the same answer.
+- **Why:** CP-12a builds the three-check staff gate. It cannot admit anybody
+  until the owner configures the provider and sets the three values. Until then
+  the console stays on **one shared passphrase**. That box has been reachable
+  since 2026-08-22.
+- **Authority:** `specs/operator_identity_and_access.md` §10 G1–G2 ·
+  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · D64.1
+- **Added:** 2026-08-26 · operator-identity spec session
+
+### H-55 · Name the first operators and their roles · [OWNER]
+- **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
+  means nobody has been named yet.
+- **Why:** CP-12d ships the add, re-role and deactivate routes. Who is a
+  `viewer`, who is an `editor` and who is an `admin` is an owner judgement, and
+  no agent may take it. ⚠️ Naming a **second** `admin` is also the trigger that
+  pulls four-eyes approval (DEF-1) out of deferral. The two arrive together.
+- **Authority:** `specs/operator_identity_and_access.md` §5 · §9 DEF-1 ·
+  `work_plan.md` §6.0 C4 · D64.3
+- **Added:** 2026-08-26 · operator-identity spec session
+
+### H-56 · Build CP-12a…CP-12g — the spec is written and no code exists · [AGENT]
+- **Check:** `rg -n "OPERATOR_IDENTITY_ENABLED" apps/ workbench/` → no hit means
+  slice 1 has not started. `ls infra/customer_console/` → no `operator` migration
+  means the same.
+- **Why:** `specs/operator_identity_and_access.md` was minted 2026-08-26 and
+  audited nothing into existence. All seven slices are AGENT-SAFE. Each ships
+  behind a flag that defaults OFF, so the build does not wait on H-54. ⚠️ Start at
+  **CP-12a** and keep the order. CP-12g deletes `staff.ts`, and running it early
+  locks the team out of a live console.
+- **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
+  WS-31 (CP-12 clause) · D64
+- **Added:** 2026-08-26 · operator-identity spec session
+
+### H-57 · Nothing fences `INDEX.md` completeness, so a spec can go missing · [AGENT]
+- **Check:** `rg -l "INDEX.md" tests/ .github/workflows/` → no hit means no test
+  reads the index and the gap is open.
+- **Why:** CLAUDE.md §5 says a spec enters `INDEX.md` in the pull request that
+  creates it. INDEX.md's own header says a spec missing from it is a defect.
+  Neither statement has a fence, so both are advisory and **R7 calls that a
+  defect**. Measured 2026-08-26 while adding `operator_identity_and_access.md`.
+  The fix is small: one test that lists `project-docs/specs/*.md` and fails on a
+  file the index does not name.
+- **Authority:** CLAUDE.md §5 · `project-docs/INDEX.md` header · `work_plan.md`
+  §1 R7
+- **Added:** 2026-08-26 · operator-identity spec session
+
 ---
 
 # DONE — deleted, not archived
