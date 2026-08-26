@@ -1,0 +1,179 @@
+# Phase 0 tripwire — notice when the "direct to production" premise expires.
+#
+# D55.2 (`specs/development_and_delivery_framework.md` §3.5) says we work
+# DIRECTLY IN PRODUCTION until one of three things happens. It also names its own
+# failure mode, in its own words:
+#
+#     ⚠️ Write the end down when it happens. "A bridge with no trigger is a
+#        destination." Phase 0 has three triggers; SOMEBODY HAS TO NOTICE ONE
+#        FIRING.
+#
+# This is the machine noticing instead of a person.
+#
+# ⚠️ WHY IT MATTERS MECHANICALLY, not just procedurally. Today's pipeline is
+# CONTINUOUS DEPLOYMENT: merge → CI green → `release` fast-forwards → the box
+# polls every 5 minutes and applies. §5 of the same spec says that in the steady
+# state `release-promote` must be a `workflow_dispatch` OWNER-GATE with a soak
+# floor of one working day. NOTHING CONNECTS THOSE TWO STATES. Each trigger fires
+# somewhere else entirely — in the Console, in GitHub's collaborator list, in a
+# migration run — and none of them touches CI. So the pipeline has no way of
+# knowing its premise expired, and the day it does, every merge still ships
+# straight to a box holding somebody else's data.
+#
+# ── Scope, stated honestly ───────────────────────────────────────────────────
+#
+# This checks trigger (b) ONLY: "a second human gets commit access". It is the
+# one that needs no production access, and it is the one most likely to catch you
+# unprepared, because it fires the moment somebody is ADDED rather than after any
+# process that would prompt a review.
+#
+# (a) "a second organization is provisioned" and (c) "H3 — the tenant RLS
+# promotion runs" both need production visibility. They are deliberately NOT
+# guessed at here: the open design question is whether `/version` should carry a
+# `phase0` boolean (it is public and unauthenticated, so it must be a BOOLEAN and
+# never the org count — "how many customers does this company have" is business
+# information) or whether that belongs on an authenticated operator endpoint.
+# That is the owner's call and this file does not pre-empt it.
+#
+# ── It opens an issue; it does NOT fail CI ───────────────────────────────────
+#
+# On purpose. The correct response to Phase 0 ending is to DO the promotion work
+# (T-7/T-8/T-9, and flip `release-promote` to owner-gated). Failing CI would
+# block the very work needed to respond. A log line, though, is the same as
+# nothing — which is the spec's own complaint. So: a single issue, the same
+# open/comment/close shape `vps-health.yml` already uses.
+#
+# ── Delete this file when Phase 0 ends ───────────────────────────────────────
+#
+# It is scaffolding for one clause with a defined lifetime. Once the end is
+# written down and the pipeline moves to gated promotion, this has nothing left
+# to watch.
+
+name: phase-0-tripwire
+
+on:
+  schedule:
+    # Daily, off the hour. Collaborator changes are rare and not urgent to the
+    # minute; what matters is that the gap between "somebody was added" and
+    # "somebody noticed" is a day rather than however long until it next comes up
+    # in conversation. Measured 2026-08-26: that gap had already run five days,
+    # and spanned the writing of the clause itself.
+    - cron: "43 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: phase-0-tripwire
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: "Is Phase 0 still true?"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger (b) — a second human with commit access
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # `collaborators` is the literal reading of the trigger — "gets commit
+          # access" — rather than "has committed". Someone added today with an
+          # empty commit history has the access that matters, and waiting for
+          # their first commit would notice the trigger late by exactly the
+          # window in which onboarding mistakes happen.
+          #
+          # Bots are excluded by type: github-actions[bot] and friends are `Bot`,
+          # and a machine account is not "a second human". Counting them would
+          # make this fire on day one and be muted forever after — the classic
+          # way an alert becomes furniture.
+          gh api "repos/${GITHUB_REPOSITORY}/collaborators" --paginate \
+            --jq '.[] | select(.type == "User") | select(.permissions.push or .permissions.admin) | .login' \
+            | sort -u > humans.txt || true
+
+          COUNT="$(wc -l < humans.txt | tr -d ' ')"
+          echo "humans with commit access: ${COUNT}"
+          cat humans.txt
+
+          {
+            echo "count=${COUNT}"
+            echo "logins=$(paste -sd, humans.txt)"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${COUNT}" -gt 1 ]; then
+            echo "fired=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "fired=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open, update or close the tripwire issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIRED: ${{ steps.check.outputs.fired }}
+          COUNT: ${{ steps.check.outputs.count }}
+          LOGINS: ${{ steps.check.outputs.logins }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          EXISTING="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+            --label phase-0 --state open --json number --jq '.[0].number // empty')"
+
+          if [ "${FIRED}" = "0" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --repo "${GITHUB_REPOSITORY}" \
+                --body "Phase 0 trigger (b) no longer holds — one human with commit access. Closing."
+              gh issue close "$EXISTING" --repo "${GITHUB_REPOSITORY}"
+            fi
+            echo "Phase 0 (b) still true. Nothing to do."
+            exit 0
+          fi
+
+          BODY="$(mktemp)"
+          {
+            echo "**Phase 0 trigger (b) has fired: ${COUNT} humans hold commit access.**"
+            echo
+            echo "> \`${LOGINS}\`"
+            echo
+            echo "D55.2 (\`specs/development_and_delivery_framework.md\` §3.5) ends Phase 0"
+            echo "at *\"a second human gets commit access\"*, whichever trigger comes first."
+            echo
+            echo "### Why this is not cosmetic"
+            echo
+            echo "The pipeline today is **continuous deployment** — merge → CI green →"
+            echo "\`release\` fast-forwards → the box polls every 5 minutes and applies."
+            echo "§5 of the same spec says that once Phase 0 ends, \`release-promote\` must"
+            echo "become a \`workflow_dispatch\` **OWNER-GATE** with a soak floor of one"
+            echo "working day. Nothing connects those two states automatically."
+            echo
+            echo "### The decision is yours, and there are two honest answers"
+            echo
+            echo "1. **Phase 0 has ended.** Do the promotion work (T-7/T-8/T-9), flip"
+            echo "   \`release-promote\` to owner-gated, write the end down in §3.5, and"
+            echo "   delete \`.github/workflows/phase-0-tripwire.yml\`."
+            echo "2. **The trigger's wording does not match the intent.** If \"a second"
+            echo "   human\" was meant as \"a second *regular contributor*\", or these"
+            echo "   accounts sit inside one trust boundary, then amend §3.5 to say so."
+            echo "   Do not simply mute this — an unamended clause that everybody knows"
+            echo "   is not really in force is worse than no clause."
+            echo
+            echo "⚠️ This check covers trigger **(b)** only. **(a)** (a second organization"
+            echo "provisioned) and **(c)** (H3, the RLS promotion) need production"
+            echo "visibility and are not watched by anything yet."
+            echo
+            echo "**Run:** ${RUN_URL}"
+          } > "$BODY"
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open — leaving it alone."
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "Phase 0 trigger (b) has fired — ${COUNT} humans hold commit access" \
+              --label phase-0 \
+              --body-file "$BODY"
+          fi
