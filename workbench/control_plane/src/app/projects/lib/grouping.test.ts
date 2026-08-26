@@ -10,11 +10,17 @@ import { describe, expect, it } from "vitest";
 
 import type { StatusRow, TaskRow } from "./api";
 import {
+  ANYONE,
   type BoardLanes,
+  DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   GROUP_OPTIONS,
   NO_LANES,
+  UNASSIGNED,
   UNSET,
+  assigneeChoice,
+  assigneeFilter,
+  assigneeOptions,
   fromConfig,
   groupTasks,
   isFiltered,
@@ -567,5 +573,69 @@ describe("divergence — when the board stopped being the view (WS-27ab)", () =>
   it("says nothing at all when nothing changed", () => {
     expect(describeDivergence([])).toBe("");
     expect(describeDivergence(["filters"])).toBe("filters");
+  });
+});
+
+/**
+ * The "Assigned to" control (WS-27at).
+ *
+ * One control replaced the "Mine" and "Unassigned" buttons. Those two could be
+ * pressed together, and `assignee` + `unassigned` together is a filter that
+ * matches nothing — work belonging to nobody that also belongs to Priya. The
+ * mapping is a pure pair so that impossible state cannot be expressed at all.
+ */
+describe("assignee choice", () => {
+  it("round-trips every legal state", () => {
+    for (const choice of [ANYONE, UNASSIGNED, "priya@example.com"]) {
+      const filters = { ...EMPTY_FILTERS, ...assigneeFilter(choice) };
+      expect(assigneeChoice(filters)).toBe(choice);
+    }
+  });
+
+  it("never sets both fields, whatever it is handed", () => {
+    for (const choice of [ANYONE, UNASSIGNED, "priya@example.com", "  "]) {
+      const next = assigneeFilter(choice);
+      expect(next.assignee !== "" && next.unassigned).toBe(false);
+    }
+  });
+
+  it("reads unassigned ahead of a stale address", () => {
+    // A config hand-edited to hold both. The flag wins, and the control shows
+    // one value rather than lighting two options.
+    const both = { ...EMPTY_FILTERS, assignee: "priya@example.com", unassigned: true };
+    expect(assigneeChoice(both)).toBe(UNASSIGNED);
+  });
+
+  it("puts me first and folds duplicates by case", () => {
+    const people = assigneeOptions(
+      ["ZARA@example.com", "priya@example.com", "me@example.com"],
+      "me@example.com",
+      ANYONE,
+    );
+    expect(people[0]).toBe("me@example.com");
+    expect(people.filter((p) => p.toLowerCase() === "me@example.com")).toHaveLength(1);
+    expect(people).toEqual(["me@example.com", "priya@example.com", "ZARA@example.com"]);
+  });
+
+  it("keeps the current choice even when the board no longer shows it", () => {
+    // The list is derived from the FILTERED tasks. Filter to one person and
+    // everyone else leaves it — including, without this, the person you
+    // filtered to, which would strand the control on a value it cannot show.
+    const people = assigneeOptions([], "me@example.com", "gone@example.com");
+    expect(people).toContain("gone@example.com");
+  });
+
+  it("drops blank addresses rather than offering an empty row", () => {
+    expect(assigneeOptions(["", "   "], "", ANYONE)).toEqual([]);
+  });
+});
+
+describe("the grouping default is named once", () => {
+  it("is what an empty config resolves to", () => {
+    // Two places defaulted this as a bare string and had to agree. If they
+    // ever stop agreeing, a board re-groups itself on the second visit.
+    expect(fromConfig(null).groupBy).toBe(DEFAULT_GROUP_BY);
+    expect(fromConfig({}).groupBy).toBe(DEFAULT_GROUP_BY);
+    expect(GROUP_OPTIONS).toContain(DEFAULT_GROUP_BY);
   });
 });

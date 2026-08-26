@@ -36,6 +36,77 @@ export const GROUP_OPTIONS: GroupBy[] = [
   "none",
 ];
 
+/**
+ * The board's grouping axis when nobody has chosen one.
+ *
+ * Named ONCE because two places default it — this module's `fromConfig`, for a
+ * saved view whose config never stored an axis, and `page.tsx`'s initial state.
+ * They were two string literals that had to agree. A default that disagrees
+ * with itself re-groups a board on the second visit.
+ */
+export const DEFAULT_GROUP_BY: GroupBy = "status";
+
+/**
+ * The "Assigned to" control's value, and the two filter fields behind it.
+ *
+ * `Filters` carries `assignee` (an address) and `unassigned` (a flag) because
+ * the SERVER takes two parameters. One control drives both, and the pair has
+ * exactly four legal states, so the mapping is written here as two pure
+ * functions rather than inline in the bar.
+ *
+ * ⚠️ `assignee` and `unassigned` are mutually exclusive. "Work assigned to
+ * nobody, that is assigned to Priya" matches nothing, and a control that can
+ * express it is a control that can ask an unanswerable question. Every write
+ * goes through `assigneeFilter`, which always clears the other field.
+ */
+export const ANYONE = "";
+export const UNASSIGNED = "__unassigned__";
+
+/** What the control shows, given the filters. */
+export function assigneeChoice(filters: Filters): string {
+  if (filters.unassigned) return UNASSIGNED;
+  return filters.assignee || ANYONE;
+}
+
+/** What the filters become, given a choice. Never sets both fields. */
+export function assigneeFilter(choice: string): Pick<Filters, "assignee" | "unassigned"> {
+  if (choice === UNASSIGNED) return { assignee: "", unassigned: true };
+  return { assignee: choice === ANYONE ? "" : choice, unassigned: false };
+}
+
+/**
+ * The addresses the "Assigned to" control offers, in the order it offers them.
+ *
+ * `me` first and always, so the commonest choice never moves. Then everyone
+ * else on the board, sorted, case-folded to one entry each.
+ *
+ * `current` is unioned in on purpose. The list is derived from the tasks now on
+ * screen, and those tasks are the FILTERED ones — so the moment you filter to
+ * one person, everyone else leaves the list and the control cannot be changed
+ * back to them. Keeping the current value present makes the control reversible.
+ */
+export function assigneeOptions(
+  boardAssignees: readonly string[],
+  me: string,
+  current: string
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const value = raw.trim();
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(value);
+  };
+  add(me);
+  const rest = [...boardAssignees].sort((a, b) => a.localeCompare(b));
+  for (const address of rest) add(address);
+  if (current !== ANYONE && current !== UNASSIGNED) add(current);
+  return out;
+}
+
 export interface TaskGroup {
   /** Stable identity — a status id, an address, a project id, or a sentinel. */
   key: string;
@@ -121,7 +192,7 @@ export function fromConfig(config: unknown): {
   const stored = (raw.filters ?? {}) as Record<string, unknown>;
   const groupBy = GROUP_OPTIONS.includes(raw.group_by as GroupBy)
     ? (raw.group_by as GroupBy)
-    : "status";
+    : DEFAULT_GROUP_BY;
   // A sub-axis equal to the main axis is a board that lanes by its own
   // columns — nonsense a hand-edited config could still say. Normalised to
   // "none" HERE so every consumer sees one truth rather than each re-deciding.

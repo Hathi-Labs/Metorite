@@ -647,7 +647,10 @@ describe("selects and file pickers go through the primitives", () => {
    * worse, and one that improved fails until its number comes down.
    *
    * `app/projects/components/TaskPanel.tsx` is deliberately absent: it was the
-   * first file converted and is the worked example.
+   * first file converted and is the worked example. `FilterBar.tsx` left this
+   * list at WS-27at: consolidating its row put all three of its selects
+   * (status, group-by, lanes) through the primitive, and added a fourth for
+   * "Assigned to" that was never a raw one.
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
@@ -667,7 +670,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/projects/components/BulkBar.tsx": 2,
     "app/projects/components/CustomFieldValues.tsx": 1,
     "app/projects/components/FieldManager.tsx": 1,
-    "app/projects/components/FilterBar.tsx": 3,
     "app/projects/components/RelationsBlock.tsx": 1,
     "app/projects/components/RepeatEditor.tsx": 3,
     "app/projects/components/TableView.tsx": 3,

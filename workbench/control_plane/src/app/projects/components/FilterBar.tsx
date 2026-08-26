@@ -33,16 +33,22 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import { Input, Select } from "@/components/ui/Input";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
 import {
+  ANYONE,
   type BoardLanes,
+  DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   type Filters,
   GROUP_OPTIONS,
   type GroupBy,
+  UNASSIGNED,
+  assigneeChoice,
+  assigneeFilter,
+  assigneeOptions,
   describeDivergence,
   isFiltered,
   viewDivergence,
@@ -67,18 +73,60 @@ const CATEGORIES: Array<[string, string]> = [
   ["cancelled", "Cancelled"],
 ];
 
-const GROUP_LABELS: Record<GroupBy, string> = {
-  status: "Status",
-  assignee: "Assignee",
-  project: "Project",
-  importance: "Priority",
-  tag: "Tag",
-  none: "Nothing",
+/**
+ * Each axis control says what it DOES, so it needs no label beside it.
+ *
+ * "Any status" already read this way and the other two did not: a bare
+ * "Status" next to a bare "No lanes" is two controls whose meaning lived in
+ * a `<label>` that the flex row then had to carry. Folding the verb into the
+ * option text removes two elements from the busiest row in the app.
+ */
+const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
+  status: "Group by status",
+  assignee: "Group by assignee",
+  project: "Group by project",
+  importance: "Group by priority",
+  tag: "Group by tag",
+  none: "No grouping",
 };
 
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
+const LANE_OPTION_LABELS: Record<GroupBy, string> = {
+  status: "Lanes by status",
+  assignee: "Lanes by assignee",
+  project: "Lanes by project",
+  importance: "Lanes by priority",
+  tag: "Lanes by tag",
+  none: "No lanes",
+};
+
+/**
+ * A control that is NOT at its default wears the house active pair.
+ *
+ * `bg-primary/10 text-primary` is the measured norm for active/selected across
+ * this tree (`AGENTS.md` rule 6), and it is the same primary the pressed
+ * buttons in this row use — tinted rather than filled, because a select still
+ * has to read as a field you can open.
+ *
+ * The point is that the row answers "what have I changed?" at a glance. Before
+ * this, a board grouped by assignee looked exactly like a board grouped by
+ * status until you read the control.
+ *
+ * ⚠️ **On Graphite the BORDER carries this, not the text.** That is why the
+ * border is in the string and not the tint alone. Graphite is deliberately
+ * monochrome — its `--primary` is `hsl(0 0% 88%)` — so the text moves only from
+ * `rgb(237,237,237)` to `rgb(224,224,224)`, which nobody can see. The border on
+ * the same theme moves from `rgb(46,46,46)` to about `rgb(122,122,122)`, and
+ * that reads. All four themes were measured in a browser, in both modes.
+ *
+ * Colour only, and never a cue that changes the control's BOX. This row's
+ * search field is `flex-1` and absorbs whatever its siblings give up, so a
+ * border-width or ring cue would move the search bar every time a filter
+ * changed. Weight is unavailable for a different reason: `.cc-control` sets
+ * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
+ * class, and a control's weight is the theme's call rather than this bar's.
+ */
+const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
+const AT_DEFAULT = "";
 
 interface Props {
   filters: Filters;
@@ -93,8 +141,19 @@ interface Props {
    */
   lanes: BoardLanes;
   onSubGroupBy: (next: GroupBy) => void;
-  /** The signed-in member's address, for the "Mine" toggle. Empty while loading. */
+  /** The signed-in member's address, offered as "Me". Empty while loading. */
   me: string;
+  /**
+   * WS-27at — every address currently assigned work on this board, for the
+   * "Assigned to" control.
+   *
+   * ⚠️ Derived from the tasks ON SCREEN, which are the FILTERED ones. Filter to
+   * one person and the others leave this list. `assigneeOptions` unions the
+   * current choice back in so the control stays reversible, and somebody with
+   * access who holds no task here never appears at all. A complete membership
+   * list needs the directory, which is a different seam and a bigger change.
+   */
+  boardAssignees: readonly string[];
   /** WS-27m — the project's registered tags, for the tag row. */
   tags: TagRow[];
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
@@ -128,6 +187,7 @@ export function FilterBar({
   lanes,
   onSubGroupBy,
   me,
+  boardAssignees,
   tags,
   shownFields,
   onShownFields,
@@ -165,7 +225,20 @@ export function FilterBar({
   }, [draft]);
 
   const set = (patch: Partial<Filters>) => onFilters({ ...filters, ...patch });
-  const mine = Boolean(me) && filters.assignee.toLowerCase() === me.toLowerCase();
+
+  // The "Assigned to" control, derived rather than held: a second piece of
+  // state for something `filters` already says is a second thing that can be
+  // wrong. `assigneeChoice` and `assigneeFilter` are each other's inverse.
+  const choice = assigneeChoice(filters);
+  const people = assigneeOptions(boardAssignees, me, choice);
+  const isMe = (address: string) =>
+    Boolean(me) && address.toLowerCase() === me.toLowerCase();
+
+  // `subGroupBy` equal to the main axis is a board laned by its own columns.
+  // `fromConfig` normalises that away, but a hand-edited config can still
+  // arrive holding it, so the control shows "No lanes" rather than a value
+  // that is not in its own option list.
+  const lane = subGroupBy === groupBy ? "none" : subGroupBy;
 
   // Resolved from the list rather than trusted: `activeViewId` outlives a
   // project switch and a delete, and a chip lit for a view that is no longer
@@ -189,42 +262,49 @@ export function FilterBar({
           />
         </div>
 
-        <select
-          aria-label="Status"
-          className={SELECT}
-          value={filters.statusCategory}
-          onChange={(e) => set({ statusCategory: e.target.value })}
-        >
-          {CATEGORIES.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        <div className="w-[9rem]">
+          <Select
+            aria-label="Status"
+            inputSize="sm"
+            className={filters.statusCategory ? OFF_DEFAULT : AT_DEFAULT}
+            value={filters.statusCategory}
+            onChange={(e) => set({ statusCategory: e.target.value })}
+          >
+            {CATEGORIES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
 
-        {/* "Mine" writes the viewer's own address into the assignee filter
-            rather than being a separate server-side flag: one filter, so a
-            saved view carries WHOSE work it meant instead of resolving to
-            whoever opens it later. */}
-        <Button
-          variant={mine ? "primary" : "secondary"}
-          size="sm"
-          disabled={!me}
-          aria-pressed={mine}
-          onClick={() => set({ assignee: mine ? "" : me, unassigned: false })}
-        >
-          Mine
-        </Button>
-        <Button
-          variant={filters.unassigned ? "primary" : "secondary"}
-          size="sm"
-          aria-pressed={filters.unassigned}
-          onClick={() =>
-            set({ unassigned: !filters.unassigned, assignee: "" })
-          }
-        >
-          Unassigned
-        </Button>
+        {/* ONE control for who the work belongs to.
+            This was two buttons, "Mine" and "Unassigned", which could not
+            express "assigned to Priya" at all and could be pressed together
+            into a filter that matches nothing. The two server parameters
+            behind it are unchanged — `assigneeFilter` maps the choice onto
+            them, and never sets both.
+
+            "Mine" still writes the viewer's OWN address rather than a
+            server-side flag, so a saved view keeps carrying WHOSE work it
+            meant instead of resolving to whoever opens it later. */}
+        <div className="w-[11rem]">
+          <Select
+            aria-label="Assigned to"
+            inputSize="sm"
+            className={choice === ANYONE ? AT_DEFAULT : OFF_DEFAULT}
+            value={choice}
+            onChange={(e) => set(assigneeFilter(e.target.value))}
+          >
+            <option value={ANYONE}>Assignees</option>
+            <option value={UNASSIGNED}>Unassigned</option>
+            {people.map((address) => (
+              <option key={address} value={address}>
+                {isMe(address) ? "Me" : address}
+              </option>
+            ))}
+          </Select>
+        </div>
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"
@@ -234,42 +314,42 @@ export function FilterBar({
           Overdue
         </Button>
 
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Group by
-          <select
+        <div className="w-[11rem]">
+          <Select
             aria-label="Group by"
-            className={SELECT}
+            inputSize="sm"
+            className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
             value={groupBy}
             onChange={(e) => onGroupBy(e.target.value as GroupBy)}
           >
             {GROUP_OPTIONS.map((option) => (
               <option key={option} value={option}>
-                {GROUP_LABELS[option]}
+                {GROUP_OPTION_LABELS[option]}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </div>
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Lanes
-          <select
+        <div className="w-[11rem]">
+          <Select
             aria-label="Sub-group by (swimlanes)"
-            className={SELECT}
-            value={subGroupBy === groupBy ? "none" : subGroupBy}
+            inputSize="sm"
+            className={lane === "none" ? AT_DEFAULT : OFF_DEFAULT}
+            value={lane}
             onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
           >
             {GROUP_OPTIONS.filter(
               (option) => option === "none" || option !== groupBy
             ).map((option) => (
               <option key={option} value={option}>
-                {option === "none" ? "No lanes" : GROUP_LABELS[option]}
+                {LANE_OPTION_LABELS[option]}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </div>
 
         {/* WS-27x — which fields this view shows. ONE set feeding two
             consumers: the table's columns and every card's chip row, so

@@ -79,6 +79,7 @@ import { isOpenShortcut } from "./lib/search";
 import type { Edge } from "./lib/timeline";
 import {
   type BoardLanes,
+  DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   type Filters,
   type GroupBy,
@@ -333,7 +334,7 @@ function ProjectsWorkspace() {
   // editing a filter afterwards leaves the chip lit but the board honest, and
   // the chip clears the moment the state stops matching what was saved.
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [groupBy, setGroupBy] = useState<GroupBy>("status");
+  const [groupBy, setGroupBy] = useState<GroupBy>(DEFAULT_GROUP_BY);
   // WS-27y — the board's second axis plus its lane state; saved with a view.
   const [lanes, setLanes] = useState<BoardLanes>(NO_LANES);
   // WS-27x — the view's shown fields (table columns AND the chip gate), saved
@@ -841,6 +842,24 @@ function ProjectsWorkspace() {
     () => groupTasks(tasks, groupBy, { statuses, projectName }),
     [tasks, groupBy, statuses, projectName]
   );
+
+  /**
+   * WS-27at — who holds work on this board, for the "Assigned to" control.
+   *
+   * Read off the loaded tasks rather than fetched: the board already has every
+   * row it is showing, and a membership endpoint would be a second round trip
+   * to answer a question the data in hand already answers. The honest limit is
+   * in `FilterBar`'s prop doc — these are the FILTERED tasks, so the list
+   * narrows as you filter, and `assigneeOptions` unions the current choice
+   * back in so the control can always be changed back.
+   */
+  const boardAssignees = useMemo(() => {
+    const seen = new Set<string>();
+    for (const task of tasks)
+      for (const address of task.assignees ?? [])
+        if (address.trim()) seen.add(address.trim());
+    return [...seen];
+  }, [tasks]);
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
 
@@ -1413,6 +1432,7 @@ function ProjectsWorkspace() {
             }));
           }}
           me={me}
+          boardAssignees={boardAssignees}
           tags={tags}
           shownFields={shownFields}
           onShownFields={changeShownFields}
