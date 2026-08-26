@@ -54,11 +54,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
-from customer_console import payments, store
+from customer_console import operator_roles, payments, store
 from customer_console.auth import (
     Caller,
     CatalogCaller,
@@ -962,7 +962,9 @@ def health() -> dict[str, str]:
 
 
 @app.post("/orgs/provision")
-def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
+def provision(
+    req: ProvisionRequest, caller: ProvisionCaller, request: Request
+) -> dict[str, Any]:
     """Create an organization, its owner and its Core seats. Idempotent.
 
     Idempotent on the org slug rather than on a request id, because the natural
@@ -1231,17 +1233,18 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller) -> dict[str, Any]:
         if caller is not None:
             detail["key_prefix"] = caller.key_prefix
         _audit(conn, org_id, "org.provision", detail,
-               # ⚠️ CP-12b KNOWN GAP, deliberately not closed here.
-               # `/orgs/provision` is a DUAL-ARM door (deployment key OR
-               # operator), so its dependency returns `None` for the
-               # operator arm and the `StaffIdentity` is not in scope.
-               # Naming the person here would mean either a second DB
-               # read of the session or a second channel for identity,
-               # and both are worse than one honest gap. CP-12c binds
-               # every route to the role matrix and closes it there.
-               # Fence: `test_operator_session.py::
-               # test_the_provision_arm_is_the_one_known_actor_gap`.
-               actor="operator" if caller is None else "deployment")
+               # CP-12c CLOSES CP-12b's known gap. This is a DUAL-ARM
+               # door, so `caller is None` means the operator arm ran —
+               # and `auth._stash` put that arm's identity on the request.
+               # `getattr` rather than a bare attribute because the
+               # deployment arm never sets it.
+               actor=(
+                   getattr(
+                       getattr(request, "state", None), "staff", None
+                   ).actor
+                   if caller is None
+                   else "deployment"
+               ))
 
     return {"organization_id": org_id, "slug": req.slug}
 
@@ -2621,7 +2624,20 @@ def add_member_admin(
 
 @app.post("/credits/grant")
 def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
-    """Add credits. Append-only — a correction is another row, never an edit."""
+    """Add credits. Append-only — a correction is another row, never an edit.
+
+    ⚠️ **The role matrix admits an `editor` here, and the AMOUNT can raise the
+    bar to `admin`** (CP-12c, spec §5). The size is in the body, which a
+    FastAPI dependency cannot read, so this is the one rule the matrix cannot
+    apply at the door and the route body applies instead. The check runs
+    BEFORE the organization is read, so the refusal is identical whether the
+    company exists or not.
+    """
+    if staff.is_session:
+        try:
+            operator_roles.check_credit_amount(staff.role, req.credits)
+        except operator_roles.RoleForbidden:
+            raise HTTPException(status_code=403, detail="Forbidden") from None
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         store.add_credit(

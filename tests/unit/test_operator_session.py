@@ -415,28 +415,23 @@ def test_no_operator_gated_audit_call_hardcodes_the_shared_actor(client):
     )
 
 
-def test_the_provision_arm_is_the_one_known_actor_gap(client):
-    """⚠️ Pins a gap this slice deliberately did NOT close.
+def test_the_provision_arm_now_names_the_person(client):
+    """CP-12b's known gap, CLOSED by CP-12c.
 
-    `/orgs/provision` is a dual-arm door (deployment key OR operator), so its
-    dependency returns `None` for the operator arm and no `StaffIdentity` is
-    in scope. Closing it here would need either a second database read of the
-    session or a second channel for identity, and both are worse than one
-    honest gap. **CP-12c binds every route to the role matrix and closes it.**
-
-    This test fails when somebody closes the gap, which is the point — it
-    reminds them to delete it and to tick the done-when.
+    `/orgs/provision` is a dual-arm door. Its operator arm used to record the
+    shared actor because no identity was in scope. CP-12c's `auth._stash` puts
+    the identity on the request, so the arm names the person and done-when 12
+    is fully met.
     """
     src = (
         _ROOT / "apps" / "services" / "customer_console" / "customer_console"
         / "main.py"
     ).read_text(encoding="utf-8")
 
-    assert 'actor="operator" if caller is None else "deployment")' in src, (
-        "the provision arm's known actor gap is gone — good. Delete this test, "
-        "and record done-when 12 as fully met."
+    assert 'actor="operator" if caller is None else "deployment")' not in src, (
+        "the provision arm went back to the shared actor"
     )
-    assert "CP-12b KNOWN GAP" in src, "the gap lost the comment that explains it"
+    assert "CP-12c CLOSES CP-12b's known gap" in src
 
 
 # ── The R8 gate cannot silently disarm ──────────────────────────────────────
