@@ -695,6 +695,23 @@ async def configure_integrations(
             ),
         )
 
+    # ── BYOK off: this is the SECOND door to a provider key ────────────────
+    #
+    # `api/settings/llm/key/route.ts` falls back to THIS endpoint whenever
+    # `POST /settings/llm/key` answers "No env var for provider". Guarding
+    # only the front door would leave that fallback wide open, and the
+    # fallback writes an arbitrary env var by design.
+    #
+    # Only the LLM provider variables are refused. Every other integration
+    # credential (Slack, GitHub OAuth, WhatsApp and the rest) is untouched,
+    # because BYOK is about who supplies the MODEL, not about integrations.
+    from gateway.routes.settings import _PROVIDER_ENV_MAP, refuse_if_byok_disabled
+
+    _provider_vars = {v for v in _PROVIDER_ENV_MAP.values() if v}
+    if any(v.key in _provider_vars for v in req.vars):
+        refuse_if_byok_disabled()
+
+
     # Build reverse mapping: env_var → (service, suffix)
     _env_to_service_suffix: dict[str, tuple[str, str]] = {}
     for svc, guide in _SETUP_GUIDES.items():

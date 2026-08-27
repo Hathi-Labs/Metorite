@@ -1478,6 +1478,45 @@ a member at 100% with `on_exhaustion='degrade'` completes on `tier-fast`; with
 `'block'` receives 402; a member with no cap row is unaffected; the 80% warning
 fires once, not per call.
 
+**Scope extended 2026-08-27 (D66, owner call).** CP-7 held the cap ENGINE and
+named no surface. The owner asked for the surface, and asked to record it
+instead of building it.
+
+Three additions follow, all still **unbuilt**.
+
+**(a) The member's own view — activity and cost, never a model.** A member sees
+what they ran and what it cost. The row names the **activity**, which is the
+app, the agent or the run. The row names no model. This executes D32.7.
+
+⚠️ **The Live Activity app is not this view and cannot become it.** It reads a
+tenant-local Redis rollup through `GET /observability/cost`. It reports **USD**,
+and it groups **by model**. We sell **₹10 credits** (D19.2), and the Console
+holds the number we bill on. A customer who reads one number and pays another
+opens a support ticket every month.
+
+**(b) The admin's per-member read.** An org admin sees usage and cost for each
+member. The period is the month the cap already uses. `usage_event` carries the
+member attribution today, so this is a read. It records nothing new.
+
+**(c) Raising one member's budget mid-month.** The admin edits
+`member_ai_cap.monthly_credits` upward.
+
+⚠️ **This is a cap edit, and it moves no credits.** A cap is a policy against
+the org pool (D32.8). So raising one member takes nothing from another.
+An implementation that debits a second member has built the sub-wallet D32.8
+refuses.
+
+**Done when** *(these join the four above)*:
+
+- a member sees their own spend, and no model name appears on the page.
+- an admin sees the same figures for each member.
+- an admin raises a cap, and the member continues without a new sign-in.
+- the org balance does not change when a cap changes.
+
+⚠️ **Do not dispatch before CP-4b (H-68).** A streamed call is not routed, so
+the Console does not meter it. Most traffic streams. A usage view that omits
+most traffic is worse than no usage view, because the customer believes it.
+
 **CP-8 · Operator Console and reconciliation.** The §4.1a read surfaces (per company:
 plan and MRR, seats purchased vs assigned, credit balance and burn, trial expiry,
 last-login/actives) plus the nightly drift job — **and the

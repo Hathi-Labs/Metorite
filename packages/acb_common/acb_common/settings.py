@@ -211,6 +211,28 @@ class Settings(BaseSettings):
     #
     # 🔴 Flipping this on a live box is OWNER-GATE (work_plan.md §6 (d)/(e)).
     router_serving_enabled: bool = False
+
+    # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
+    #
+    # `customer_console.md` §5.1 already names the destination: the provider,
+    # model and tier tabs leave the customer product, and `/settings/models`
+    # becomes credits, burn and per-member caps. This flag is the SERVER half
+    # of that move, taken early and on its own.
+    #
+    # OFF means nobody on a tenant box can install, replace or remove a
+    # provider API key through the product. The gateway refuses both write
+    # doors with 403. READING an installed key is untouched, because the
+    # product runs on exactly those keys today while `ROUTER_SERVING_ENABLED`
+    # is off. Turning this flag off must not stop a single AI call.
+    #
+    # ⚠️ This is NOT the D57.7 fallback arm, and it must never become one.
+    # BYOK stays reachable by CONFIGURATION only — an operator sets this on
+    # one deployment, deliberately. No failure path may set it, because a
+    # Router outage that silently re-opened the key doors would reclassify a
+    # paying customer as BYOK and stop metering them.
+    #
+    # The fence: `tests/unit/test_byok_disabled.py`.
+    byok_enabled: bool = False
     # The freshness/staleness PAIR (§6(c)) — one number cannot express it.
     # Console REACHABLE  → a cached answer is re-consulted past the TTL.
     # Console UNREACHABLE → a cached person proceeds up to the ceiling, and
