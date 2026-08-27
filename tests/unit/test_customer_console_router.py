@@ -160,10 +160,15 @@ def priced_card(db):
     model = "deepseek/deepseek-v4-pro"
     with db.begin() as c:
         c.execute(text(
+            # CP-10 slice 2: `pricing_mode` is what makes a card billable,
+            # not the numbers — a zero cannot carry three meanings (G-4).
+            # The conflict target is TARGETLESS because the primary key is
+            # now (model, task, effective_from).
             "INSERT INTO model_rate_card (model, input_credits_per_1k, "
             " output_credits_per_1k, cached_input_credits_per_1k, "
-            " effective_from) VALUES (:m, 2, 6, 0.5, now()) "
-            "ON CONFLICT (model, effective_from) DO NOTHING"), {"m": model})
+            " pricing_mode, effective_from) "
+            "VALUES (:m, 2, 6, 0.5, 'priced', now()) "
+            "ON CONFLICT DO NOTHING"), {"m": model})
     yield model
     with db.begin() as c:
         # Only the fixture's row: the seed is priced at zero and stays.

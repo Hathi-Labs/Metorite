@@ -7553,8 +7553,8 @@ correctly and prices nothing.**
 
 | # | Step | Size | Home |
 |---|---|---|---|
-| 1 | `model_capability` + `task` on `tier_binding` + Router two-step resolution; flat slugs become alias data | small | **CP-10 slice 2** |
-| 2 | `unit` on the rate card, `task`/`quantity`/`unit` on `usage_event`, the `rate_call` branch | small | **CP-10 slice 2** — 🔴 do not skip: without it, three of six tasks cannot be billed |
+| 1 | `model_capability` + `task` on `tier_binding` + Router two-step resolution | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27** (migration 010) |
+| 2 | `unit` on the rate card, `task`/`quantity`/`unit` on `usage_event`, the `rate_call` branch | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27.** Closes **H-45** |
 | 3 | Operator catalog UI over capabilities, bindings and rates | small | **CP-10 slice 3** |
 | 4 | Feature→tier registry, generalising the Apps manifest precedent | **large — 80+ sites** | its own ticket (**H-44**) |
 | 5 | Customer-visible tier choice in chat | medium | after 1–4 |

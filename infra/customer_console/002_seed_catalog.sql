@@ -69,12 +69,27 @@ ON CONFLICT (slug) DO NOTHING;
 -- pass-through precisely so this can be proven rather than assumed. After
 -- that, a provider swap is an INSERT here with a later effective_from, and no
 -- customer deployment changes at all.
+-- ⚠️ TARGETLESS `ON CONFLICT DO NOTHING`, as of CP-10 slice 2 (2026-08-27).
+-- It used to name `(tier, effective_from)`. Migration 010 widens this table's
+-- primary key to `(task, tier, effective_from)`, and a named target that does
+-- not match a constraint is a HARD ERROR, not a no-op.
+--
+-- ⚠️ Naming the NEW key instead would break the FIRST deploy that carries 010,
+-- because `apply_customer_console_migrations.sh` runs every file in order in
+-- ONE pass: this file executes while the primary key is still the old one.
+-- A targetless clause is correct against BOTH schemas, which is the only form
+-- that satisfies R6 here.
+-- ⚠️ `tier-stt` LEFT THIS SEED in CP-10 slice 2, and migration 010 owns it now.
+-- This file cannot name a task: it runs BEFORE 010 creates the column. So a
+-- `tier-stt` row seeded here is necessarily tagged `chat`, which would send
+-- audio to `acompletion`. Worse, the ladder replays every deploy, so this file
+-- would re-create that wrong row after 010 had corrected it — once per deploy,
+-- for ever. 010 seeds it with `task = 'transcribe'` instead.
 INSERT INTO tier_binding (tier, model, effective_from) VALUES
     ('tier-fast',     'deepseek/deepseek-chat',      '2026-01-01T00:00:00Z'),
     ('tier-balanced', 'deepseek/deepseek-v4-pro',    '2026-01-01T00:00:00Z'),
-    ('tier-powerful', 'deepseek/deepseek-v4-pro',    '2026-01-01T00:00:00Z'),
-    ('tier-stt',      'groq/whisper-large-v3-turbo', '2026-01-01T00:00:00Z')
-ON CONFLICT (tier, effective_from) DO NOTHING;
+    ('tier-powerful', 'deepseek/deepseek-v4-pro',    '2026-01-01T00:00:00Z')
+ON CONFLICT DO NOTHING;
 
 
 -- ── Rate card ───────────────────────────────────────────────────────────────
@@ -108,4 +123,4 @@ INSERT INTO model_rate_card
     ('deepseek/deepseek-chat',      0, 0, 0, '2026-01-01T00:00:00Z'),
     ('deepseek/deepseek-v4-pro',    0, 0, 0, '2026-01-01T00:00:00Z'),
     ('groq/whisper-large-v3-turbo', 0, 0, 0, '2026-01-01T00:00:00Z')
-ON CONFLICT (model, effective_from) DO NOTHING;
+ON CONFLICT DO NOTHING;

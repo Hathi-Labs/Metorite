@@ -171,14 +171,24 @@ class TestSchema:
         # commits (the `conn` fixture rolls every test back) and the Router
         # suite's `priced_card` deletes its row in teardown.
         #
-        # The predicate mirrors `credits.RateCard.is_priced` — cached input
-        # included — so "priced" means the same thing to the fence as to the
-        # code that bills.
+        # ⚠️ WIDER THAN `credits.RateCard.is_priced`, deliberately, and it
+        # stopped being a mirror in CP-10 slice 2. `is_priced` now reads
+        # `pricing_mode` alone (D61 G-4), so a fence that mirrored it would
+        # ignore the NUMBERS — and a ladder shipping real rates under
+        # `unpriced` would pass while carrying a price somebody meant.
+        #
+        # So this asserts BOTH halves: no non-zero rate in ANY column, and
+        # no row declaring itself billable. `credits_per_unit` is in the
+        # list because CP-10 slice 2 added it, and a per-MINUTE price is as
+        # real as a per-1k one — omitting it would leave `transcribe`,
+        # `speak` and `image` able to ship priced with nothing watching.
         priced = conn.execute(
             text("SELECT count(*) FROM model_rate_card "
                  "WHERE input_credits_per_1k <> 0 "
                  "   OR output_credits_per_1k <> 0 "
-                 "   OR cached_input_credits_per_1k <> 0")
+                 "   OR cached_input_credits_per_1k <> 0 "
+                 "   OR credits_per_unit <> 0 "
+                 "   OR pricing_mode <> 'unpriced'")
         ).scalar_one()
 
         # ASCII on purpose: this string is read from a CI log and from a
@@ -369,11 +379,17 @@ class TestTheRateCardInForce:
             rate_call(card, TokenUsage(prompt_tokens=1_000_000))
 
     def test_the_newest_card_in_effect_wins(self, conn):
+        # ⚠️ `pricing_mode` is REQUIRED as of CP-10 slice 2 (D61, G-4).
+        # Numbers alone no longer make a card billable: a zero cannot mean
+        # "not yet priced", "absorbed into the seat price" (D19.2) and
+        # "deliberately free" at the same time. A card carrying real rates
+        # that nobody marked `priced` fails CLOSED, which is the safe way
+        # for a draft price to fail.
         conn.execute(text(
             "INSERT INTO model_rate_card (model, input_credits_per_1k, "
             " output_credits_per_1k, cached_input_credits_per_1k, "
-            " effective_from) "
-            "VALUES ('deepseek/deepseek-v4-pro', 2, 6, 0.5, now())"))
+            " pricing_mode, effective_from) "
+            "VALUES ('deepseek/deepseek-v4-pro', 2, 6, 0.5, 'priced', now())"))
 
         card = resolve_rate_card(conn, "deepseek/deepseek-v4-pro")
 
