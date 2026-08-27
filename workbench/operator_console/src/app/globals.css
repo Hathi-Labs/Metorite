@@ -384,3 +384,22 @@ button:disabled {
   width: 100%;
   max-width: 400px;
 }
+
+/* ── The one-time key disclosure (CP-11 slice 1) ──────────────────────────
+   This block holds a secret the operator has exactly one chance to copy, so it
+   is styled to be SELECTABLE and fully visible rather than pretty: the token
+   wraps instead of truncating, because a `text-overflow: ellipsis` here would
+   silently hand somebody half a credential. */
+pre.token {
+  margin: 10px 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}

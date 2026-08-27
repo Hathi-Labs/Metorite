@@ -174,6 +174,36 @@ export const purgeOrgRegistry = (body: unknown, d?: Deps) =>
 export const provisionOrg = (body: unknown, d?: Deps) =>
   callConsole("/orgs/provision", { method: "POST", body }, d ?? {});
 
+// ── CP-11 slice 1 — the ORGANIZATION key (`cc_live_`) ───────────────────────
+//
+// ⚠️ **Not the provider credential.** `customer_console.md` §6B.2 tabulates the
+// pair because they are the most confusable in the system:
+//
+//   provider_credential  OURS   — the DeepSeek/Anthropic secret, Fernet at
+//                                 rest, presented BY the Router TO the vendor.
+//   llm_api_key          THEIRS — one customer's `cc_live_` key, stored as a
+//                                 HASH, presented BY their box TO the Router.
+//
+// A leak of the first is our whole vendor bill. A leak of the second is one
+// organization's AI spend. They are not interchangeable and must not be merged.
+//
+// ⚠️ **`issueKey` returns the token EXACTLY ONCE.** The Console stores only the
+// hash, so the response is the only moment the secret exists anywhere. It is not
+// recoverable — a lost key is replaced, never looked up. Any caller that
+// discards this response has destroyed the key.
+export const listKeys = (orgSlug: string, d?: Deps) =>
+  callConsole(
+    `/keys?org_slug=${encodeURIComponent(orgSlug)}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+export const issueKey = (body: unknown, d?: Deps) =>
+  callConsole("/keys", { method: "POST", body }, d ?? {});
+
+export const revokeKey = (body: unknown, d?: Deps) =>
+  callConsole("/keys/revoke", { method: "POST", body }, d ?? {});
+
 // ── CP-12: operator identity ────────────────────────────────────────────────
 
 // The sign-in exchange (CP-12f2). ⚠️ This one carries NO credential of ours.
