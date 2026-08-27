@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -36,15 +37,19 @@ from sqlalchemy.engine import Connection
 from customer_console.credits import RateCard, UnpricedModel
 
 __all__ = [
+    "SSE_DONE",
     "ResolvedTier",
     "TierUnknown",
     "call_provider",
     "decrypt_secret",
     "encrypt_secret",
+    "frame_of",
     "provider_credential",
+    "relay_stream",
     "resolve_rate_card",
     "resolve_tier",
     "set_provider_call",
+    "usage_from_frame",
     "usage_from_response",
 ]
 
@@ -267,3 +272,108 @@ def usage_from_response(response: Any) -> ExtractedUsage:
         )
     except Exception:
         return ExtractedUsage()
+
+
+# ── Streaming relay (CP-4b) ─────────────────────────────────────────────────
+
+#: The sentinel every OpenAI-compatible client waits for. A client that never
+#: sees it holds the connection open until its own timeout.
+SSE_DONE = b"data: [DONE]\n\n"
+
+_DATA_PREFIX = b"data:"
+
+
+def frame_of(chunk: Any) -> bytes:
+    """Serialise ONE provider chunk into ONE SSE frame.
+
+    ⚠️ **This is the only place the Router serialises anything on the streaming
+    path**, and it runs only for a source that yields OBJECTS. A source that
+    already yields frames reaches the client untouched — see ``relay_stream``.
+
+    ⚠️ **Byte-identity is guaranteed from here outward, not from the provider's
+    socket.** litellm parses the provider's SSE and re-emits objects, so the
+    original bytes are gone before the Router sees them. CP-4b's done-when 1 is
+    fenced through the ``set_provider_call`` seam for exactly this reason: the
+    seam is the boundary we control, and the Router must not alter what crosses
+    it.
+    """
+    if isinstance(chunk, (bytes, bytearray)):
+        return bytes(chunk)
+    dump = getattr(chunk, "model_dump_json", None)
+    body = (dump(exclude_none=True) if callable(dump)
+            else json.dumps(chunk, default=str))
+    return b"data: " + body.encode("utf-8") + b"\n\n"
+
+
+def usage_from_frame(frame: bytes) -> ExtractedUsage:
+    """Pull usage out of an already-encoded SSE frame. Never raises.
+
+    A raw-frame source still has to be meterable, or the seam that makes CP-4b
+    testable without a provider account could not exercise the metering clauses.
+    """
+    try:
+        line = frame.strip()
+        if not line.startswith(_DATA_PREFIX):
+            return ExtractedUsage()
+        body = line[len(_DATA_PREFIX):].strip()
+        if body == b"[DONE]" or not body:
+            return ExtractedUsage()
+        return usage_from_response(json.loads(body))
+    except Exception:
+        return ExtractedUsage()
+
+
+def _is_done(frame: bytes) -> bool:
+    return frame.strip() == b"data: [DONE]"
+
+
+async def relay_stream(
+    source: Any,
+    *,
+    on_finish: Callable[[ExtractedUsage, bool], None],
+) -> AsyncIterator[bytes]:
+    """Relay provider frames to the client unaltered, then meter exactly once.
+
+    ``on_finish(usage, started)`` runs **exactly once**, in a ``finally``, so it
+    runs on a clean end, on a provider error mid-stream, and on a client that
+    disconnects. ``started`` is False when no frame was ever produced.
+
+    The four CP-4b hazards, each answered here:
+
+    * **Byte-identity** — a frame that arrives as ``bytes`` is yielded as it
+      arrived. Nothing re-encodes it.
+    * **Exactly one usage row** — one ``finally``, one call, whatever the exit.
+    * **The abandoned stream** — the client's disconnect closes this generator,
+      which raises ``GeneratorExit`` at the ``yield``. ``finally`` still runs, so
+      a stream we paid for is still metered.
+    * **The phantom row** — a call that fails before its first frame leaves
+      ``started`` False, and the caller writes nothing. That defect is what
+      produced the 501 this replaces.
+
+    ⚠️ ``on_finish`` is SYNCHRONOUS on purpose. Awaiting inside a generator that
+    is being closed is not reliable, and the write is a single insert. It blocks
+    the loop for that insert, which is the cheaper of the two failures.
+    """
+    started = False
+    seen_done = False
+    usage = ExtractedUsage()
+    try:
+        async for chunk in source:
+            raw = isinstance(chunk, (bytes, bytearray))
+            frame = bytes(chunk) if raw else frame_of(chunk)
+            found = usage_from_frame(frame) if raw else usage_from_response(chunk)
+            # LAST report wins. A provider that sends `stream_options.
+            # include_usage` puts the real counts in the final frame, and the
+            # frames before it carry none.
+            if found.prompt_tokens or found.completion_tokens:
+                usage = found
+            if _is_done(frame):
+                seen_done = True
+            started = True
+            yield frame
+        if not seen_done:
+            # The source ended without the sentinel. Send it, or every
+            # OpenAI-compatible client waits for a frame that never comes.
+            yield SSE_DONE
+    finally:
+        on_finish(usage, started)

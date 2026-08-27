@@ -899,10 +899,21 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         rather than inherited.
         """
         edges, writers = _call_graph()
-        assert "store.record_usage" in edges["main.chat_completions"]
+        # CP-4b (2026-08-27) factored the draw into `main._record_completion`,
+        # so the buffered and the STREAMED path share one metering writer. The
+        # exemption is unchanged in substance — the draw still hangs off the
+        # Router's own org-key route and still ends at a `credit_ledger`
+        # writer. The hop is NAMED rather than skipped, so moving the draw
+        # anywhere else still turns this red, which is the point of the fence.
+        assert "main._record_completion" in edges["main.chat_completions"]
+        assert "store.record_usage" in edges["main._record_completion"]
         assert "store.add_credit" in edges["store.record_usage"]
         assert "store.add_credit" in writers
         assert "chat_completions" in _org_key_routes()
+        # The streamed path reaches the SAME writer, through the generator.
+        # Two draws would mean two places to forget a gate.
+        assert "main._streamed_completion" in edges["main.chat_completions"]
+        assert "main._record_completion" in edges["main._streamed_completion"]
 
     def test_the_fence_actually_walks_into_the_store(self):
         """Guards the fence itself: a walk that stops at depth 1 proves nothing.
@@ -978,8 +989,8 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
                 ("main.redeem_discount_code", "main._apply_redemption",
                  "payments.fulfil", "store.grant_seats")) in found, found
         assert ("chat_completions",
-                ("main.chat_completions", "store.record_usage",
-                 "store.add_credit")) in found, found
+                ("main.chat_completions", "main._record_completion",
+                 "store.record_usage", "store.add_credit")) in found, found
         assert found, "the licensed edges must reappear once nothing is allowed"
         assert min(len(path) for _route, path in found) >= 3, (
             "every finding here is reached through an intermediate; a "
