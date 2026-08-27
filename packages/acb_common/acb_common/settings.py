@@ -194,6 +194,23 @@ class Settings(BaseSettings):
     # correct on a single-org silo, and CP-11 slice 3 must resolve the key
     # per-organization before the flag can go on anywhere else.
     customer_console_org_key: str = ""
+
+    # ── The serving hop (CP-11 slice 3, D57) ────────────────────────────────
+    #
+    # OFF sends `/v1/chat/completions` to the local litellm SDK, exactly as
+    # every release before this one did. ON sends it to the Console Router, so
+    # the tier binding, the rate card and OUR provider account decide the call.
+    #
+    # ⚠️ **Flag-off is a SUPPORTED state, not a degraded one** (§6B.7). With
+    # this unset the deployment behaves byte-identically to today, which is what
+    # makes the hop safe to merge long before anybody flips it.
+    #
+    # ⚠️ **A routed call that fails FAILS. It does NOT fall back to litellm**
+    # (D57.7). A silent fallback would serve traffic on tenant-local keys, at
+    # tenant-local models, UNMETERED, and nobody would learn it happened.
+    #
+    # 🔴 Flipping this on a live box is OWNER-GATE (work_plan.md §6 (d)/(e)).
+    router_serving_enabled: bool = False
     # The freshness/staleness PAIR (§6(c)) — one number cannot express it.
     # Console REACHABLE  → a cached answer is re-consulted past the TTL.
     # Console UNREACHABLE → a cached person proceeds up to the ceiling, and
