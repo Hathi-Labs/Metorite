@@ -145,6 +145,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -1692,3 +1693,106 @@ async def chat_completion_on_console(
     if not isinstance(body, dict):
         body = {}
     return status, body
+
+
+class ConsoleRouterVerdict(Exception):
+    """The Router ANSWERED a streamed request, and the answer was not 200.
+
+    A verdict is not an outage, and the difference decides what the caller
+    does. ``ConsoleRouterUnavailable`` means no answer was produced, so the
+    caller returns 502. A verdict carries the Router's own status and body —
+    400 for a bare model id, 402 out of credits, 403 for the breaker — and the
+    caller relays it unchanged.
+
+    ⚠️ It exists ONLY for the streaming arm, and only because a stream has no
+    other way to say it. The buffered client returns ``(status, body)`` and
+    needs no exception. A streamed call must decide before the first byte,
+    because after that the status line is already 200 and a refusal delivered
+    inside an SSE frame is one every client renders as CONTENT.
+    """
+
+    def __init__(self, status: int, body: dict[str, Any]) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+        self.body = body
+
+
+async def stream_completion_on_console(
+    payload: dict[str, Any],
+    *,
+    member: str | None = None,
+    agent: str | None = None,
+    module_slug: str | None = None,
+    run_id: str | None = None,
+) -> AsyncIterator[bytes]:
+    """Stream one completion through the Console Router, on OUR account.
+
+    Yields the Router's bytes as they arrive, unaltered. Raises
+    :class:`ConsoleRouterVerdict` or :class:`ConsoleRouterUnavailable` **before
+    the first yield**, so the caller can still choose a status code.
+
+    ⚠️ **Chunks are relayed as `aiter_bytes` produces them, and they do NOT
+    align with SSE frame boundaries.** That is deliberate. Re-framing would mean
+    parsing and re-emitting, and the Console already guarantees byte-identity
+    for what it was given. Bytes are bytes, so passing them through is both
+    cheaper and more faithful than any repair.
+
+    ⚠️ **THERE IS NO RETRY**, for the reason ``chat_completion_on_console``
+    gives: the Console meters and CHARGES on the way through. A retried stream
+    that actually succeeded bills the customer twice for one answer. This is
+    worse on a stream, not better — a stream can fail after most of its frames
+    have been delivered AND metered.
+    """
+    if not router_is_wired():
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_org_key.strip()
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id
+        )
+    )
+
+    try:
+        client = _new_http_client(_ROUTER_TIMEOUT_SECONDS)
+        async with client, client.stream(
+            "POST", f"{base}/v1/chat/completions",
+            headers=headers, json=payload,
+        ) as response:
+            status = response.status_code
+            if status != 200:
+                raw = await response.aread()
+                body = _json_object(raw)
+                # The verdict-vs-outage line, with the SAME 501 carve-out
+                # the buffered arm makes. A Console too old to stream still
+                # answers 501, and reporting that as "unreachable" would
+                # send somebody hunting a network fault. 501 here means
+                # "deploy CP-4b", which is a sentence worth relaying.
+                if status != _ROUTER_NOT_IMPLEMENTED and (
+                    status >= 500 or status in (401, 408, 429)
+                ):
+                    raise ConsoleRouterUnavailable(f"HTTP {status}")
+                raise ConsoleRouterVerdict(status, body)
+
+            async for chunk in response.aiter_bytes():
+                yield chunk
+    except (ConsoleRouterUnavailable, ConsoleRouterVerdict):
+        raise
+    except Exception as exc:
+        # ⚠️ This also catches a failure MID-stream, after bytes have gone. The
+        # caller cannot change the status by then, and that is honest: the
+        # connection breaks rather than ending in a tidy `[DONE]` that would
+        # claim a complete answer.
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+
+def _json_object(raw: bytes) -> dict[str, Any]:
+    """Parse a body we intend to relay. Never raises, always a dict."""
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
