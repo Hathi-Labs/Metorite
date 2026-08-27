@@ -3,6 +3,7 @@ import {
   listOrganizations,
   catalog,
   billingSummary,
+  listKeys,
   ConsoleUnconfigured,
 } from "@/lib/console";
 import { staffSession } from "@/lib/session";
@@ -15,7 +16,9 @@ import {
   plansNotice,
   lifecycleHint,
   readMembers,
+  readKeys,
   type MemberRow,
+  type KeyRow,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -46,22 +49,34 @@ type Loaded = {
    * operator reads "no members" off a failed request.
    */
   membersError: string | null;
+  /** The org's `cc_live_` keys, metadata only (CP-11 s1). Empty = none arrived. */
+  keys: KeyRow[];
+  /**
+   * Why the key list is empty, or null when it arrived.
+   *
+   * ⚠️ Separate from `error` for the reason `membersError` is, with one extra
+   * edge: `GET /keys` is `viewer`-readable, so a 403 here means the CONSOLE
+   * refused the caller — not that the customer has no keys. Rendering those two
+   * states the same way would tell an operator a leaked key does not exist.
+   */
+  keysError: string | null;
   error: string | null;
 };
 
 async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
   try {
-    // Three reads in parallel, all operator-door: the cross-org list (this
-    // org's numbers), the catalog (the plan pickers), and the per-org summary
-    // (the roster with seat state, LS-9).
-    // ⚠️ All three carry the CALLER's session. A read that dropped it would
+    // Four reads in parallel, all operator-door: the cross-org list (this
+    // org's numbers), the catalog (the plan pickers), the per-org summary
+    // (the roster with seat state, LS-9) and the org's `cc_live_` keys (CP-11).
+    // ⚠️ All four carry the CALLER's session. A read that dropped it would
     // reach the Console as `breakglass` — past the role matrix, and logged
     // as a break-glass event on every page view.
     const d = { authToken };
-    const [listRes, catRes, sumRes] = await Promise.all([
+    const [listRes, catRes, sumRes, keysRes] = await Promise.all([
       listOrganizations(d),
       catalog(d),
       billingSummary(slug, d),
+      listKeys(slug, d),
     ]);
     if (listRes.status !== 200) {
       return {
@@ -70,6 +85,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         plansError: null,
         members: [],
         membersError: null,
+        keys: [],
+        keysError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -94,12 +111,29 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
           "This Console build does not report members (it predates the seat roster).";
       }
     }
+    let keys: KeyRow[] = [];
+    let keysError: string | null = null;
+    if (keysRes.status !== 200) {
+      // ⚠️ Say WHICH failure this is. "No keys" and "the Console would not tell
+      // me" look identical in an empty list, and the operator reading this
+      // surface may be trying to revoke a key that has leaked.
+      keysError = `The key list returned ${keysRes.status}.`;
+    } else {
+      try {
+        keys = readKeys(JSON.parse(keysRes.body));
+      } catch {
+        keysError = "The key list could not be parsed.";
+      }
+    }
+
     return {
       org,
       plans,
       plansError: plansNotice(catRes.status, plans.length),
       members,
       membersError,
+      keys,
+      keysError,
       error: null,
     };
   } catch (e) {
@@ -109,6 +143,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       plansError: null,
       members: [],
       membersError: null,
+      keys: [],
+      keysError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -127,7 +163,7 @@ export default async function CustomerDetailPage({
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
-  const { org, plans, plansError, members, membersError, error } =
+  const { org, plans, plansError, members, membersError, keys, keysError, error } =
     await loadOrg(slug, gate.authToken);
 
   if (error) {
@@ -285,6 +321,8 @@ export default async function CustomerDetailPage({
         plans={plans}
         members={members}
         membersError={membersError}
+        keys={keys}
+        keysError={keysError}
       />
     </main>
   );

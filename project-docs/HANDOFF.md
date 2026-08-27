@@ -1226,6 +1226,28 @@ line — never reclaim a number by deleting the other entry.
   §6.1 (CP-12 block) · H-24
 - **Added:** 2026-08-27 · CP-12e session
 
+### H-67 · No UI opens an elevation window, so the cutover disarms five actions · [AGENT]
+- **Check:** `rg -n "api/operator/elevate" workbench/operator_console/src/app
+  --glob '*.tsx'` → no hit means no surface drives the route, and this is open.
+- **Why:** CP-12g slice 1 shipped `/api/operator/elevate` with GET, POST and
+  DELETE. **Nothing calls it.** CP-12e binds five actions to a live window AND
+  the `admin` role: `POST /orgs/purge`, `POST /keys`, `POST /keys/revoke`,
+  `POST /providers/credentials` and a credit grant above the cap.
+- **⚠️ It does not bite yet, and that is why it is easy to miss.** The interim
+  path calls the Console with the shared token, which CP-12e renamed
+  `breakglass`. That token bypasses the matrix and the window, so every one of
+  the five works today. They all start answering 403 the moment somebody flips
+  `OPERATOR_IDENTITY_ENABLED`.
+- **So the trigger is the cutover.** Build this BEFORE H-54 and the flag flip,
+  or the first signed-in operator can read everything and change almost nothing.
+- **Shape:** a control in `Header.tsx`. It reads `GET /operators/elevate`, shows
+  the countdown from `expires_at`, and offers to close the window early.
+  ⚠️ The reason field has a floor of 12 characters, and the Console answers 400
+  below it. ⚠️ `usesSessions()` reads server env, so a client component cannot
+  see the mode. Pass it down, or accept the Console's own 403.
+- **Authority:** `specs/operator_identity_and_access.md` §6.3 · §5 · **D64.4**
+- **Added:** 2026-08-27 · WS-31 CP-11 slice 1 session
+
 ---
 
 # DONE — deleted, not archived

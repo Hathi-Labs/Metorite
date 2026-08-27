@@ -108,14 +108,51 @@ describe("server components carry the caller's session too", () => {
   // A PAGE that reads the Console without the caller's token reaches it as
   // `breakglass`: past the §5 role matrix, and logged as a break-glass event
   // on every page view. Four page reads did exactly that until this test.
-  const READS = [
-    "listOrganizations",
-    "billingSummary",
-    "catalog",
-    "listOperators",
-    "activityActions",
-    "readActivity",
-  ];
+  // ⚠️ **DERIVED from console.ts, not hand-listed.** It was a hand-list until
+  // CP-11 slice 1, and that slice added `listKeys` — a page read the list did
+  // not name, so the fence would have passed a page that dropped the session on
+  // it. A guard with a hand-maintained inventory fails exactly when somebody
+  // adds the thing it was meant to guard.
+  const CONSOLE_SRC = readFileSync(
+    join(process.cwd(), "src", "lib", "console.ts"),
+    "utf-8",
+  );
+  const SIGNATURES = [
+    ...CONSOLE_SRC.matchAll(/^export const (\w+) = \(([^)]*)\)/gm),
+  ].map(([, name, params]) => ({
+    name,
+    // How many arguments come BEFORE the optional deps. `catalog(d?)` is 0;
+    // `billingSummary(orgSlug, d?)` is 1; `updateOperator(id, body, d?)` is 2.
+    required: params
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0 && !/^d\?\s*:/.test(p)).length,
+  }));
+  const READS = SIGNATURES.map((s) => s.name);
+
+  // Count top-level arguments in a call's text, ignoring commas nested inside
+  // objects, arrays, calls or template strings.
+  const argCount = (source: string, at: number): number | null => {
+    let depth = 0;
+    let args = 0;
+    let seen = false;
+    for (let i = at; i < source.length; i += 1) {
+      const c = source[i];
+      // ⚠️ `seen` is set BEFORE the depth bookkeeping, and that ordering is the
+      // whole of it. An argument that is one object literal — `fn({ authToken })`,
+      // which is how every page in this app calls — opens a brace on its first
+      // character. Checking `seen` only in the else-branch meant that character
+      // bumped the depth and never registered, so the call counted as ZERO
+      // arguments and three correct pages were reported as bugs.
+      if (i > at && depth >= 1 && c !== ")" && !/\s/.test(c)) seen = true;
+      if (c === "(" || c === "[" || c === "{") depth += 1;
+      else if (c === ")" || c === "]" || c === "}") {
+        depth -= 1;
+        if (depth === 0) return seen ? args + 1 : 0;
+      } else if (c === "," && depth === 1) args += 1;
+    }
+    return null;
+  };
 
   const pages: string[] = [];
   const walk = (dir: string) => {
@@ -133,21 +170,37 @@ describe("server components carry the caller's session too", () => {
     expect(pages.length).toBeGreaterThanOrEqual(5);
   });
 
+  it("derives the read list from console.ts, so it cannot go stale", () => {
+    // Guards the guard. An empty or truncated parse would make every check
+    // below vacuous, and a vacuous fence is green.
+    expect(READS.length).toBeGreaterThanOrEqual(15);
+    expect(READS).toContain("listOrganizations");
+    expect(READS).toContain("listKeys");
+    expect(SIGNATURES.find((s) => s.name === "catalog")?.required).toBe(0);
+    expect(SIGNATURES.find((s) => s.name === "listKeys")?.required).toBe(1);
+  });
+
   for (const file of pages) {
     const source = readFileSync(file, "utf-8");
     const label = file.slice(join(process.cwd(), "src", "app").length + 1);
-    for (const read of READS) {
-      // An EMPTY argument list is the bug. `fn()` drops the session;
-      // `fn(d)` or `fn(slug, d)` carries it.
-      const bare = new RegExp(`\\b${read}\\(\\s*\\)`);
-      if (!bare.test(source)) continue;
-      it(`${label} passes the caller session to ${read}`, () => {
-        expect(
-          false,
-          `${label} calls ${read}() with no deps, so the read reaches the ` +
-            `Console as the shared break-glass token instead of the person.`,
-        ).toBe(true);
-      });
+    for (const sig of SIGNATURES) {
+      // ⚠️ **Arity, not emptiness.** The original check only caught `fn()`, so
+      // `billingSummary(slug)` and `listKeys(slug)` — one argument, no deps —
+      // sailed straight through while dropping the session just as completely.
+      const call = new RegExp(`\\b${sig.name}\\s*\\(`, "g");
+      for (const m of source.matchAll(call)) {
+        const open = m.index + m[0].length - 1;
+        const n = argCount(source, open);
+        if (n === null || n > sig.required) continue;
+        it(`${label} passes the caller session to ${sig.name}`, () => {
+          expect(
+            false,
+            `${label} calls ${sig.name}() with ${n} argument(s) and it needs ` +
+              `${sig.required + 1} — the deps are missing, so the read reaches ` +
+              `the Console as the shared break-glass token, not as the person.`,
+          ).toBe(true);
+        });
+      }
     }
   }
 });

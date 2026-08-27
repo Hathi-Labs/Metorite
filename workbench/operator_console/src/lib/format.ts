@@ -76,6 +76,45 @@ export function readMembers(body: unknown): MemberRow[] {
 }
 
 /**
+ * One organization key as the Console reports it (CP-11 slice 1).
+ *
+ * ⚠️ **There is no `token` field, and there never can be.** `store.list_keys`
+ * excludes `key_hash` at the SQL level and the token itself was never stored at
+ * all. The mint response is the only moment the secret exists.
+ */
+export type KeyRow = {
+  prefix: string;
+  label: string | null;
+  created_at: string;
+  revoked: boolean;
+};
+
+/**
+ * Read the key list off a `GET /keys` body, tolerating its absence.
+ *
+ * Same contract as `readMembers`: `[]` means "no list arrived", the caller says
+ * which, and one malformed row is dropped rather than white-screening a surface
+ * an operator is using to revoke a leaked credential.
+ */
+export function readKeys(body: unknown): KeyRow[] {
+  const raw = (body as { keys?: unknown } | null)?.keys;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((k): k is KeyRow => typeof (k as KeyRow)?.prefix === "string")
+    .map((k) => ({
+      prefix: k.prefix,
+      label: typeof k.label === "string" ? k.label : null,
+      created_at: typeof k.created_at === "string" ? k.created_at : "",
+      revoked: k.revoked === true,
+    }));
+}
+
+/** Live keys first, revoked ones after — a revoked key is history, not a tool. */
+export function liveKeys(keys: KeyRow[]): KeyRow[] {
+  return keys.filter((k) => !k.revoked);
+}
+
+/**
  * How many people hold a seat, and how many do not.
  *
  * ⚠️ **These count PEOPLE, not seats.** One person on two plans is one seated
