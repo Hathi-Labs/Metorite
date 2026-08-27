@@ -7844,10 +7844,13 @@ litellm.acompletion(...)                            │
 
 ### 6B.5 Four things that will go wrong if they are not decided in the slice
 
-1. **Streaming.** `v1_compat.py` serves `StreamingResponse`. The Console Router's
-   pass-through is **CP-4b (minted 2026-08-18, spec only, unbuilt)**. ⚠️ **Slice 3 must
-   either land CP-4b or refuse to route streaming calls explicitly** — silently
-   de-streaming a chat UI is a behaviour change nobody will attribute to this flag.
+1. **Streaming.** ✅ **ANSWERED, in two slices.** Slice 3 took the second
+   option and refused to route a stream, because CP-4b was unbuilt. That kept
+   streaming on the local path, where nobody meters it. **CP-4b landed
+   2026-08-27**, and **CP-11 slice 5** removed the refusal the same day. A
+   stream is now routed and metered like any other call. ⚠️ Do not re-add a
+   local-stream arm as a safety measure. A stream on the local path is a
+   stream nobody bills, and silently de-streaming a chat UI stays forbidden.
 2. **Latency.** One more network hop per call, on the interactive path. Measure it in
    slice 3 and record the number; if the Console is on the same box (D47) it is a
    loopback and the answer is "negligible" — but that is a measurement, not an assumption,

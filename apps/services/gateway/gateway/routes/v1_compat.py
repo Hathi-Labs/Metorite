@@ -426,20 +426,20 @@ def _sanitize_upstream_error(exc: Exception) -> tuple[int, str]:
 
 
 def _router_should_serve(body: dict[str, Any]) -> bool:
-    """Whether THIS request goes to the Console Router. Three conditions, all.
+    """Whether THIS request goes to the Console Router. Two conditions, both.
 
     1. the flag is on;
-    2. the box is wired for the Router (URL **and** the `cc_live_` org key);
-    3. the request is **not** a stream.
+    2. the box is wired for the Router (URL **and** the `cc_live_` org key).
 
-    ⚠️ **Condition 3 is the one to read twice.** The Router answers 501 to a
-    streaming request because CP-4b is unbuilt, and every agent runtime streams.
-    §6B.5 forbids the other repair by name: *"silently de-streaming a chat UI is
-    a behaviour change nobody will attribute to this flag."*
+    ⚠️ **A STREAM IS ROUTED TOO, as of CP-11 slice 5.** Slice 3 carried a third
+    condition that sent every stream down the local path, because the Router
+    answered 501 and CP-4b was unbuilt. That made streaming UNMETERED, and
+    since every agent runtime streams it left most traffic unmetered. CP-4b
+    landed on 2026-08-27 and the condition is gone with it.
 
-    So a stream is served LOCALLY, and therefore **is not metered**. That is a
-    hole, not a design — it is why the log line is a WARNING on a hot path
-    rather than a debug line nobody reads, and it closes when CP-4b lands.
+    ⚠️ Do not re-add it as a "safety" measure. A stream on the local path is a
+    stream nobody bills, which is the D57.7 failure reached by a different
+    road.
     """
     from acb_common.settings import get_settings
 
@@ -454,14 +454,91 @@ def _router_should_serve(body: dict[str, Any]) -> bool:
         _log.warning("v1.router_enabled_but_unwired")
         return False
 
-    if body.get("stream", False):
-        _log.warning(
-            "v1.router_stream_served_locally",
-            reason="CP-4b unbuilt: the Router 501s a stream",
-            metered=False,
-        )
-        return False
     return True
+
+
+async def _serve_via_router_stream(
+    request: Request, body: dict[str, Any]
+) -> Any:
+    """Stream one completion through the Console Router, on OUR account.
+
+    ⚠️ **The first chunk is pulled HERE, before the response is returned.** That
+    is the whole shape of this function. A streamed refusal has to become a
+    status code, and the status line is fixed the moment a body starts. So the
+    generator is advanced once while a `JSONResponse` is still possible, and
+    only then handed to Starlette.
+
+    ⚠️ **A failure FAILS (D57.7).** There is no `except -> local` arm here
+    either. Slice 3's argument applies unchanged: a silent fallback would serve
+    a stream on tenant-local keys, at tenant-local models, UNMETERED — which is
+    precisely the hole this slice closes.
+    """
+    from acb_auth.console_resolve import (
+        ConsoleRouterUnavailable,
+        ConsoleRouterVerdict,
+        stream_completion_on_console,
+    )
+
+    outbound = dict(body)
+    outbound["messages"] = _sanitize_messages_for_provider(
+        body.get("messages", []), ""
+    )
+
+    started = time.monotonic()
+    frames = stream_completion_on_console(
+        outbound,
+        member=request.headers.get("x-cc-member") or None,
+        agent=request.headers.get("x-cc-agent") or None,
+        module_slug=request.headers.get("x-cc-module") or None,
+        run_id=request.headers.get("x-cc-run") or None,
+    )
+
+    first: bytes | None = None
+    try:
+        first = await frames.__anext__()
+    except StopAsyncIteration:
+        # The Router answered 200 and sent nothing. Rare, and not an error we
+        # can improve on: relay the empty stream.
+        first = None
+    except ConsoleRouterVerdict as verdict:
+        # A VERDICT, relayed with its own status: 402 out of credits, 400 a
+        # bare model id, 403 the breaker. Flattening these into one 502 would
+        # tell a customer their Router is broken when they are out of credits.
+        _log.info(
+            "v1.router_stream_refused", status=verdict.status,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(status_code=verdict.status, content=verdict.body)
+    except ConsoleRouterUnavailable as exc:
+        _log.error(
+            "v1.router_unavailable", error=str(exc), stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": {
+                "message": "the AI Router is unavailable",
+                "type": "ConsoleRouterUnavailable",
+                "code": 502,
+            }},
+        )
+
+    async def _relay() -> Any:
+        if first is not None:
+            yield first
+        async for chunk in frames:
+            yield chunk
+        _log.info(
+            "v1.router_stream_served",
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            metered=True,
+        )
+
+    return StreamingResponse(
+        _relay(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def _serve_via_router(
@@ -547,7 +624,13 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # the process-global credential injection (§6 (f)) doing work it does not
     # need to do. A routed call must touch none of it.
     if _router_should_serve(body):
-        return await _serve_via_router(request, body)
+        # One branch, not two: `_handle_chat_completions` already sits over
+        # ruff's complexity ceiling (C901, 20 > 15) and this must not add to
+        # it. The two hops are NOT interchangeable — the buffered one returns
+        # a dict and would silently de-stream a chat UI.
+        hop = (_serve_via_router_stream if body.get("stream", False)
+               else _serve_via_router)
+        return await hop(request, body)
 
     # H4: the provider credential this call sends is process-global and this
     # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,

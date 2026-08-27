@@ -23,6 +23,8 @@ need to do.
 """
 from __future__ import annotations
 
+import ast
+import pathlib
 from typing import Any
 
 import pytest
@@ -151,44 +153,70 @@ def test_with_the_flag_on_and_wired_it_routes(monkeypatch):
     assert v1_compat._router_should_serve(TIER_BODY) is True
 
 
-# ── 2. A stream is never routed (§6B.5 hazard 1) ────────────────────────────
+# ── 2. A stream IS routed, as of slice 5 (H-68 closed) ──────────────────────
 
-def test_a_stream_is_never_routed_however_wired_the_box_is(monkeypatch):
-    """The Router 501s a stream because CP-4b is unbuilt.
+def test_a_stream_is_routed_now_that_the_router_can_serve_one(monkeypatch):
+    """Slice 3 refused to route a stream, and slice 5 removes that refusal.
 
-    Routing one would break every agent runtime, and all of them stream. The
-    other repair — turning the stream into a single response — is forbidden by
-    name: *"silently de-streaming a chat UI is a behaviour change nobody will
-    attribute to this flag."*
+    The refusal was correct while the Console answered 501. It also meant
+    streaming was **not metered**, and every agent runtime streams — so most
+    traffic went unbilled. CP-4b made the Console stream, so the condition goes.
     """
     _configure(monkeypatch, flag="1")
-    assert v1_compat._router_should_serve({**TIER_BODY, "stream": True}) is False
+    assert v1_compat._router_should_serve({**TIER_BODY, "stream": True}) is True
 
 
-def test_a_streamed_request_says_out_loud_that_it_is_not_metered(monkeypatch, logs):
-    """The hole is logged at WARNING, on a hot path, deliberately.
+def test_nothing_diverts_a_stream_to_the_local_path(monkeypatch, logs):
+    """The old escape hatch is gone, and must not come back.
 
-    With the flag on, streaming traffic is still served locally and is NOT
-    metered. A debug line nobody reads would let that be discovered from a
-    revenue report instead.
+    A stream on the local path is a stream nobody bills. The slice-3 warning
+    (`v1.router_stream_served_locally`) existed to make that hole audible, so
+    its RETURN would mean the hole did.
     """
     _configure(monkeypatch, flag="1")
     v1_compat._router_should_serve({**TIER_BODY, "stream": True})
-    assert ("warning", "v1.router_stream_served_locally") in [
-        (lvl, ev) for lvl, ev, _ in logs.events
+    assert "v1.router_stream_served_locally" not in [
+        ev for _lvl, ev, _ in logs.events
     ]
-    kw = next(kw for _, ev, kw in logs.events
-              if ev == "v1.router_stream_served_locally")
-    assert kw["metered"] is False
 
 
-def test_the_flag_on_but_unwired_state_is_logged(monkeypatch, logs):
-    """It is indistinguishable from "the flag is off" at the surface."""
-    _configure(monkeypatch, flag="1", url="", key="")
-    v1_compat._router_should_serve(TIER_BODY)
-    assert ("warning", "v1.router_enabled_but_unwired") in [
-        (lvl, ev) for lvl, ev, _ in logs.events
-    ]
+def test_the_stream_arm_is_not_reachable_from_the_source_any_more():
+    """Source-level: the local-stream branch is deleted, not merely bypassed.
+
+    A branch left in place behind a condition is one somebody re-enables when a
+    stream misbehaves in production. Deleting it makes that a code change with
+    a review, which is the point.
+    """
+    src = pathlib.Path(v1_compat.__file__).read_text(encoding="utf-8")
+    assert "router_stream_served_locally" not in src
+
+
+def test_a_stream_takes_the_streaming_hop_not_the_buffered_one():
+    """The two hops are not interchangeable.
+
+    `_serve_via_router` returns a dict. Handing a stream to it would buffer the
+    whole completion and hand back one late blob — the "silently de-streaming a
+    chat UI" behaviour change §6B.5 forbids by name.
+
+    ⚠️ Read from the AST, never the text. A grep matches the dispatch's own
+    COMMENTS, and folding the branch into one expression would fail a text
+    fence for no reason at all.
+    """
+    src = pathlib.Path(v1_compat.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    dispatch = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
+        and n.name == "_handle_chat_completions"
+    )
+    names = {s.id for s in ast.walk(dispatch) if isinstance(s, ast.Name)}
+    literals = {
+        s.value for s in ast.walk(dispatch)
+        if isinstance(s, ast.Constant) and isinstance(s.value, str)
+    }
+    assert "_serve_via_router_stream" in names, "no streaming hop is dispatched"
+    assert "_serve_via_router" in names, "the buffered hop is gone"
+    assert "stream" in literals, "nothing branches on `stream`"
 
 
 # ── 3. The routed path ──────────────────────────────────────────────────────

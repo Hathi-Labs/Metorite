@@ -1199,40 +1199,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/operator_identity_and_access.md` §6.3 · §5 · **D64.4**
 - **Added:** 2026-08-27 · WS-31 CP-11 slice 1 session
 
-### H-68 · CP-4b: a streamed call is not routed, so it is not metered · [AGENT]
-- **Check:** `rg -n "router_stream_served_locally" apps/services/gateway/gateway/routes/v1_compat.py`
-  → a hit means the carve-out is still there, and this entry is still real.
-- **⚠️ This is the biggest hole in CP-11, and it opens the day somebody flips
-  the flag.** The Console Router answers **501** to a streaming request, because
-  CP-4b is spec-only and unbuilt. So slice 3 serves a stream on the LOCAL
-  litellm path, and a local call is metered nowhere.
-- **Why the carve-out is right anyway.** Routing a stream would break every
-  agent runtime, and all of them stream. `customer_console.md` §6B.5 forbids the
-  other repair by name: *"silently de-streaming a chat UI is a behaviour change
-  nobody will attribute to this flag."* The gap is loud instead — a WARNING on
-  every streamed call.
-- **⚠️ Read the number before you flip anything.** Most traffic on this box
-  streams. With `ROUTER_SERVING_ENABLED` on and CP-4b unbuilt, the Console
-  meters a MINORITY of calls. A revenue report will show that as low usage
-  instead of as a missing feature.
-- **What closes it:** build **CP-4b**, the Router's streaming pass-through. Then
-  delete the `stream` arm of `_router_should_serve`.
-- **Authority:** `specs/customer_console.md` **CP-4b** · §6B.5 hazard 1 ·
-  `tests/unit/test_v1_router_serving.py`
-- **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
 
 ### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
 - **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No
   line, or `0`, means the hop is inert and this is still pending.
 - **What the flip does.** `/v1/chat/completions` stops calling litellm locally
   and calls the Console Router instead. The tier binding, the rate card and OUR
-  provider account then decide every non-streaming call.
+  provider account then decide every call, streamed or not.
 - **⚠️ Three things must be true FIRST, and none of them is code.**
   1. A provider credential is installed on the Console (**H-40 built the door**,
      and `provider_credential` held 0 rows when I measured it on 2026-08-27).
   2. `CUSTOMER_CONSOLE_ORG_KEY` is on the box. Mint it from the operator
      console's **API keys** panel, which CP-11 slice 1 added.
-  3. You have read **H-68**. Streaming stays unmetered until CP-4b lands.
+  3. ~~Streaming stays unmetered.~~ ✅ **CLOSED 2026-08-27** — CP-4b and
+     CP-11 slice 5 route and meter a stream. The flip now covers ALL
+     traffic, which is what makes the revenue number readable.
 - **⚠️ A routed call that fails FAILS (D57.7).** It does not fall back to
   litellm. So an unreachable Console means the AI stops, instead of quietly
   serving unmetered traffic. That is the intended trade, and it is why the flag
