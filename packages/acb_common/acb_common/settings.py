@@ -170,6 +170,30 @@ class Settings(BaseSettings):
     # 401 nobody can explain.
     customer_console_url: str = ""
     customer_console_deployment_key: str = ""
+    # ── The THIRD credential, a third NAME on purpose (CP-11 s2) ──
+    #
+    # `cc_live_`, org-scoped. This box's key to the Console's AI ROUTER
+    # (`POST /v1/chat/completions`), read only by
+    # `acb_auth.console_resolve.chat_completion_on_console`.
+    #
+    # ⚠️ Read the paragraph above before adding a fourth. Three Console
+    # credentials now sit on this box, and they are NOT interchangeable:
+    #
+    #   CUSTOMER_CONSOLE_DEPLOYMENT_KEY  cc_depl_  {resolve}   ask about PEOPLE
+    #   CUSTOMER_CONSOLE_ORG_KEY         cc_live_  org-scoped  spend AI CREDITS
+    #   (the Console's operator token never sits on a tenant box at all)
+    #
+    # The name deliberately MATCHES the workbench BFF's
+    # `CUSTOMER_CONSOLE_ORG_KEY`: the same credential, one name, two
+    # readers. That is the `CUSTOMER_CONSOLE_URL` precedent above, and the
+    # opposite of the deployment key's argument. Same credential keeps the
+    # name. A different credential takes a new one.
+    #
+    # ⚠️ **On a SHARED box this cannot be right for every tenant**,
+    # which `seats.py` and `console_resolve.py:734` both already record. It is
+    # correct on a single-org silo, and CP-11 slice 3 must resolve the key
+    # per-organization before the flag can go on anywhere else.
+    customer_console_org_key: str = ""
     # The freshness/staleness PAIR (§6(c)) — one number cannot express it.
     # Console REACHABLE  → a cached answer is re-consulted past the TTL.
     # Console UNREACHABLE → a cached person proceeds up to the ceiling, and

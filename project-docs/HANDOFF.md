@@ -897,6 +897,17 @@ line — never reclaim a number by deleting the other entry.
   `specs/customer_console.md` **CP-10** slices 2 to 6 · ⭐ **§6A**
 - **Added:** 2026-08-26 · delivery + model-management decision session
 ### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
+- **⚠️ SLICE 2 IS BUILT (2026-08-27). The entry stays open, and that is correct.**
+  `acb_auth.console_resolve.chat_completion_on_console` is the client, and
+  `CUSTOMER_CONSOLE_ORG_KEY` is the setting. **Nothing calls either.** Only
+  slice 3 closes this entry.
+- **Two things slice 3 hits that no other slice did.** Read both before you
+  start. (1) `test_console_dependency_boundary.py` allows **exactly four**
+  importers of `console_resolve`, by equality. `v1_compat.py` is a fifth, so
+  widen `_ALLOWED_CALLERS` and write the argument beside the name — the list's
+  own rule. (2) The Router answers **501** for a streaming request, because
+  CP-4b is unbuilt. The client returns that as a verdict, so slice 3 must fall
+  back or refuse. It must never de-stream in silence.
 - **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
   → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and
   the hop does not exist. ⚠️ Do **not** check by grepping for `CUSTOMER_CONSOLE_URL`
