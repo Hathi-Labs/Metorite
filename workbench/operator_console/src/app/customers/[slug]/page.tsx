@@ -49,15 +49,19 @@ type Loaded = {
   error: string | null;
 };
 
-async function loadOrg(slug: string): Promise<Loaded> {
+async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
   try {
     // Three reads in parallel, all operator-door: the cross-org list (this
     // org's numbers), the catalog (the plan pickers), and the per-org summary
     // (the roster with seat state, LS-9).
+    // ⚠️ All three carry the CALLER's session. A read that dropped it would
+    // reach the Console as `breakglass` — past the role matrix, and logged
+    // as a break-glass event on every page view.
+    const d = { authToken };
     const [listRes, catRes, sumRes] = await Promise.all([
-      listOrganizations(),
-      catalog(),
-      billingSummary(slug),
+      listOrganizations(d),
+      catalog(d),
+      billingSummary(slug, d),
     ]);
     if (listRes.status !== 200) {
       return {
@@ -124,7 +128,7 @@ export default async function CustomerDetailPage({
 
   const { slug } = await params;
   const { org, plans, plansError, members, membersError, error } =
-    await loadOrg(slug);
+    await loadOrg(slug, gate.authToken);
 
   if (error) {
     return (

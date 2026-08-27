@@ -1145,26 +1145,33 @@ line — never reclaim a number by deleting the other entry.
   different base and merged first. `test_handoff_ids_are_unique` caught it. Ids
   are never reused, so H-55 stays with the STE entry.
 
-### H-56 · Build **CP-12g** — the cutover. Everything before it is done · [AGENT]
+### H-56 · **CP-12g slice 2** — delete the passphrase, AFTER one real sign-in · [AGENT+OWNER]
 - **Check:** `rg -n "OPERATOR_CONSOLE_STAFF_SECRET" workbench/` → a hit means
-  the cutover has not run. `rg -n "cc_sess_" workbench/operator_console/` → no
-  hit means the console still posts the shared passphrase.
-- **⚠️ Amended 2026-08-27.** This read *"Build CP-12a…CP-12g — no code
-  exists"*. CP-12a to CP-12f2 are now built and merged or in review. What is
-  left is CP-12g and the console UI.
-- **What CP-12g owes:**
-  1. Rewire `workbench/operator_console` to `POST /operators/session` and hold
-     the returned `cc_sess_` token in the cookie. Today the cookie holds the
-     passphrase itself, which is **F2**.
-  2. Build the operator-administration and Activity surfaces. The routes exist
-     and nothing renders them.
-  3. Add the route-coverage fence that closes **F7**. Show it RED first.
-  4. Delete `staff.ts` and remove `OPERATOR_CONSOLE_STAFF_SECRET`.
-- **⚠️ The order matters and it is the reverse of what it looks like.** Rewire
-  the console FIRST, and confirm one real sign-in. Delete the passphrase after
-  that. Delete it first and nobody can reach the console at all.
-- **Blocked on:** H-54. A real sign-in needs the provider configured, and that
-  is owner work. The UI can be built and tested before it.
+  the deletion has not run. That is the CORRECT state until the owner has
+  flipped the flag and signed in once.
+- **⚠️ Amended 2026-08-27.** CP-12a to CP-12g slice 1 are built. The console
+  now has both sign-in paths, and `OPERATOR_IDENTITY_ENABLED` chooses.
+- **The order, and it is the reverse of what it looks like:**
+  1. **[OWNER]** Finish **H-54**. Configure the Supabase Microsoft provider,
+     set the five `OPERATOR_*` values, turn identity linking OFF, and add
+     `<origin>/login/callback` to the redirect allowlist.
+  2. **[OWNER]** Apply migration 009 (**H-64**). `GET /operators` answers 500
+     until it is applied.
+  3. **[OWNER]** Set `OPERATOR_BOOTSTRAP_EMAIL` to your own address, then
+     flip `OPERATOR_IDENTITY_ENABLED` on the console app.
+  4. **[OWNER]** Sign in once. You become the first `admin` automatically.
+     Then add the rest of the team (**H-58**).
+  5. **[AGENT]** ONLY THEN: delete `staff.ts`, `InterimForm.tsx` and the
+     interim branch of the session route. Remove the constant from
+     `route.ts`, `session.ts` and `identity.ts`.
+  6. **[OWNER]** Remove `OPERATOR_CONSOLE_STAFF_SECRET` from the box.
+- **⚠️ Run step 5 before step 4 and nobody can sign in at all.** That is why
+  slice 1 keeps both paths.
+- **Two console env values are still undocumented**, because
+  `deploy/` is OWNER-GATE and I may not write there. Add to the operator
+  console's env: `OPERATOR_IDENTITY_ENABLED` (the flag, default off) and
+  `OPERATOR_CONSOLE_ORIGIN` (the console's own public URL, used to build the
+  Supabase callback). `OPERATOR_SUPABASE_URL` is needed by BOTH services.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session

@@ -8,5 +8,5 @@ export const dynamic = "force-dynamic";
 // reason?, ref?} is forwarded and the Console validates the reason.
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => grantCredits(body));
+  return proxyToConsole((d) => grantCredits(body, d));
 }

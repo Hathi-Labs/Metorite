@@ -7,5 +7,5 @@ export const dynamic = "force-dynamic";
 // a seat immediately (D19.3).
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => releaseSeat(body));
+  return proxyToConsole((d) => releaseSeat(body, d));
 }

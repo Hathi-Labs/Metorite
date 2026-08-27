@@ -19,14 +19,18 @@
 
 import { listOrganizations, purgeOrgRegistry } from "@/lib/console";
 import { purgeTenantOrg, TenantDoorUnconfigured } from "@/lib/tenantDoor";
-import { gateStaff, json, readJsonBody } from "@/lib/route";
+import { gate, json, readJsonBody } from "@/lib/route";
 import { ConsoleUnconfigured } from "@/lib/console";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
-  const refusal = await gateStaff();
-  if (refusal) return refusal;
+  const admitted = await gate();
+  if (!admitted.ok) return admitted.refusal;
+  // ⚠️ The CALLER's session, forwarded to both Console calls. A purge is the
+  // sharpest act this console has, so it is the last one that should reach
+  // the Console as the shared break-glass token.
+  const d = { authToken: admitted.authToken };
 
   const body = (await readJsonBody(request)) as {
     org_slug?: string;
@@ -44,7 +48,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     // 1 — the authority check.
-    const list = await listOrganizations();
+    const list = await listOrganizations(d);
     if (list.status !== 200) {
       return json(502, {
         error: `the Console's org list answered ${list.status}`,
@@ -97,7 +101,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     // 3 — the registry plane.
-    const registry = await purgeOrgRegistry({ org_slug: slug, confirm });
+    const registry = await purgeOrgRegistry({ org_slug: slug, confirm }, d);
     if (registry.status !== 200) {
       return json(502, {
         error:

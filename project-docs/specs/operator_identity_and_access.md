@@ -96,7 +96,31 @@ was swallowed, which is the CP-12e route-ordering bug a second time.
 ⚠️ **The UI is still not wired.** `workbench/operator_console` posts the old
 shared passphrase. CP-12g rewires it and removes the passphrase.
 
-CP-12g is unbuilt.
+**◐ CP-12g slice 1 BUILT 2026-08-27** (`ws31-cp12g-console`) — the console
+itself. `identity.ts`, the Operators and Activity surfaces, the Microsoft
+sign-in flow, and six BFF routes. 131 frontend tests. **14 mutations killed.**
+
+⚠️ **Done-when 27 is NOT met, and that is the design.** `staff.ts` and
+`OPERATOR_CONSOLE_STAFF_SECRET` are still here. Both paths run at once, and
+`OPERATOR_IDENTITY_ENABLED` chooses.
+
+The console has been live on the passphrase since 2026-08-22. Delete it before the owner finishes H-54 and the
+team is locked out of a running console. Slice 2 deletes it, AFTER one
+real sign-in is confirmed. H-56 carries the order.
+
+⚠️ **Done-when 28 is met, and it was shown RED first.** Two fences, each
+proven to fail before it passed. One catches an `/api/operator/**` route that
+does not reach the gate. The other catches a route or PAGE that reaches the
+Console without the caller's session.
+
+⚠️ **The second fence found four real defects in already-merged code.** Four
+page reads called the Console with no caller token. Under the session path
+each would arrive as `breakglass` — past the §5 matrix, and logged as a
+break-glass event on every page view.
+
+🔴 **Owner acts still owed:** H-54 configures Supabase and turns identity
+linking off. H-58 names the first operators. H-64 applies migration 009.
+Then the flag flip, then slice 2.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -449,7 +473,7 @@ out of a live console.
 | **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | ◐ **BUILT 2026-08-27.** `operator_activity.py` plus `GET /activity` and `GET /activity/actions`. Keyset-paginated, cross-org, `viewer`-readable. The `LEFT JOIN` keeps org-less and purged-company rows visible. 26 R8 tests, **13 mutations killed and 0 survived**. ⚠️ H-7 is reproduced by a test, not assumed. ⚠️ Found **F8** at build | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12f2** | ◐ **BUILT 2026-08-27. F8 is closed.** `operator_signin.py`, `POST` and `DELETE` `/operators/session`, and the one-time bootstrap through the door. Supabase verifies the token, then `operators.admit` runs the three checks. Done-whens 1 to 6 are reachable for the first time. 53 R8 tests, **19 mutations killed and two PAIRS**. ⚠️ A real bypass was closed at build, and 🔴 the owner must disable identity linking in Supabase. Was: The Supabase sign-in exchange: a route that takes a verified Microsoft identity, calls `operators.admit()`, and mints the `cc_sess_` session CP-12b already verifies. §8.1 done-whens 1 to 6 are UNREACHABLE without it. See **F8** | CP-12a | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration stays **OWNER-GATE** |
-| **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
+| **CP-12g** | ◐ **SLICE 1 BUILT 2026-08-27.** The console itself: `identity.ts`, the Operators and Activity surfaces, the Microsoft sign-in flow, six BFF routes, and BOTH F7 fences shown red first. 131 frontend tests, **14 mutations killed**. The fence found four already-merged page reads that dropped the caller session. ⚠️ **Slice 2 is the deletion, and it waits for the owner.** Was: Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
 ### 8.1 Done-when, per ticket
 

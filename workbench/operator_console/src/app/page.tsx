@@ -78,7 +78,10 @@ export default async function CustomersPage() {
   let all: OrgRow[] = [];
   let error: string | null = null;
   try {
-    const res = await listOrganizations();
+    // ⚠️ The CALLER's session, not the shared token. Without it this read
+    // reaches the Console as `breakglass`, which bypasses the role matrix
+    // and logs a warning on every page view.
+    const res = await listOrganizations({ authToken: gate.authToken });
     if (res.status === 200) {
       all = (JSON.parse(res.body) as OrgList).organizations;
     } else {
