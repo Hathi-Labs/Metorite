@@ -1200,7 +1200,7 @@ line — never reclaim a number by deleting the other entry.
   wrong. `tier-powerful`, `tier-balanced`, `tier-fast`. **Only a customer who
   deliberately picks a model from that group stores a bare model id.**
 - **🔴 That customer's Tasks AI breaks the day `ROUTER_SERVING_ENABLED` flips.**
-  The Console refuses a bare model id with **400** rather than coercing it
+  The Console refuses a bare model id with **400**, and does not coerce it
   (D32.7, and `resolve_tier` raises `TierUnknown`). The break stays silent
   until the flip. It then lands on the customer most engaged with the
   product. That is the one who went into settings and chose.
