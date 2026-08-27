@@ -92,37 +92,6 @@ line — never reclaim a number by deleting the other entry.
   · PR #115 · PR #116
 - **Added:** 2026-08-26 · STE harness session
 
-### H-24 · The Customer Console ladder does not travel with the deploy · [AGENT]
-- **Check:** `rg -n "customer_console" scripts/vps_apply.sh` → no hit means the
-  delivery path still applies only the tenant ladder and the gap is open.
-- **Why:** `infra/customer_console/` has its own DSN-driven applier
-  (`scripts/apply_customer_console_migrations.sh`) that **nothing invokes
-  automatically**, so the Console service can be delivered carrying code that
-  expects a schema its database does not have — the board's own "`platform_api`
-  is on the box but inert". **D47 named closing this as the obligation on the way
-  in.** Two clauses matter and neither is optional: the applier runs **before**
-  the Console unit restarts (the R6 window), and it **fails the deploy** when its
-  DSN is unset rather than skipping — a silent skip is how four deploys once
-  reported success while shipping nothing. Building it is AGENT-SAFE; running it
-  anywhere real is OWNER-GATE.
-- **Authority:** `specs/customer_console_infrastructure.md` §5 item 4 (D47) ·
-  `specs/development_and_delivery_framework.md` §4.1 · T-5
-- **Added:** 2026-08-24 · delivery-framework planning session
-
-### H-25 · The Console ladder's idempotency is an unchecked claim · [AGENT]
-- **Check:** `rg -n "infra/customer_console" .github/workflows/pr-check.yml` →
-  no hit means the gap is open.
-- **Why:** A cheap hole with the same shape as one this repo has already been
-  bitten by: `apply_customer_console_migrations.sh`'s header asserts every
-  ladder file is additive and re-runnable; **nothing verifies it** — the tenant
-  ladder earned its triple-replay job precisely because "idempotent" was a claim
-  about files nobody had checked together. (This entry originally also carried
-  "the Operator Console has no CI"; that half landed the same day it was
-  measured — PR #80, 2026-08-24, added the `frontend-operator` job to
-  `pr-check.yml` — so only the ladder half remains.)
-- **Authority:** `specs/development_and_delivery_framework.md` §4.2 · §5 · T-3
-- **Added:** 2026-08-24 · delivery-framework planning session
-
 ### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
 - **Check:** nothing in the repo can answer this — that is the point. Ask whether
   anybody has switched the org theme to Fluent → Material → Graphite and LOOKED at
@@ -872,30 +841,6 @@ line — never reclaim a number by deleting the other entry.
   §7.4 · §9 D-F · T-13
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
-### H-40 · CP-10 **slice 2**: the access model and the write routes · [AGENT]
-- **Check:** `rg -n "INSERT INTO tier_binding|INSERT INTO model_rate_card"
-  apps/` → no hit means slice 2 has not started. Tier bindings and rates are
-  still hand-run SQL.
-- **✅ Slice 1 is DONE, 2026-08-27** (`ws31-cp10s1-provider-keys`). The
-  measured blocker is cleared: `provider_credential` now has a write path, so
-  our DeepSeek, Anthropic or Groq key can be installed through a route and
-  `router.provider_credential()` returns it.
-- **⚠️ Nothing is installed yet.** The route exists. Putting a REAL key in
-  against the live Console is `work_plan.md` §6 (e)/(f) and stays an owner
-  act. It also needs `CUSTOMER_CONSOLE_ENCRYPTION_KEY` set on the box, or the
-  route answers 503.
-- **⚠️ Read §6A before slice 2.** The owner's constraint is **reuse and
-  refactor, do not create new code**, and §6A is the inventory that makes it
-  checkable. D60 also re-shapes tier resolution into two steps, and adds the
-  rate card `unit` that three of six tasks cannot be billed without.
-- **⚠️ Do not add an UPDATE path** to `tier_binding` or `model_rate_card`. A
-  mutable rate card destroys the audit trail at the moment a customer
-  disputes a charge. Both are appends with `effective_from`.
-- **Order (D57.5): slice 1 → CP-11 (H-41) → the rest of CP-10.** CP-11 is now
-  unblocked, and it is the ticket that makes any of this reach a customer.
-- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9 · §4 · **D56** ·
-  `specs/customer_console.md` **CP-10** slices 2 to 6 · ⭐ **§6A**
-- **Added:** 2026-08-26 · delivery + model-management decision session
 ### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
 - **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
   → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and
@@ -1210,21 +1155,57 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 · D45 · `.claude/hooks/plan-guard.mjs`
 - **Added:** 2026-08-27 · WS-31 CP-12g session
 
-### H-64 · Apply Customer Console migration 009 on the box · [OWNER]
-- **Check:** on the box, `\dt operator*` against the Console database → no
-  `operator` table means still pending. From the repo alone:
-  `rg -n "customer_console" scripts/vps_apply.sh` → no hit, which is **H-24**
-  and is why this does not happen by itself.
-- **Why:** CP-12a to CP-12e merged to `main` on 2026-08-26, so the CODE is on
-  the box. The Console ladder does not travel with the deploy, so
-  `009_operator_identity.sql` is NOT applied. Nothing breaks while it is
-  missing: the new tables are read only on the `cc_sess_` path and nobody
-  holds such a token. ⚠️ **One route does break** — `GET /operators` answers
-  500 instead of 404, and the shared token can reach it. No surface calls it
-  yet (that lands with CP-12f).
+### H-64 · Put the Console DSN on the box, then deploy · [OWNER]
+- **Check:** on the box, `\dt operator*` against the Console database. No
+  `operator` table means still pending. **Measured 2026-08-27 over the Supabase
+  MCP: the table does not exist.** `provider_credential` holds 0 rows.
+- **⚠️ The shape of this changed on 2026-08-27.** H-24 closed, so the deploy now
+  applies the Console ladder by itself. You no longer run a migration by hand.
+- **What is left is one file.** `/opt/acb/app/apps/services/customer_console/.env`
+  must carry `CUSTOMER_CONSOLE_DATABASE_URL`. The template is
+  `deploy/hostinger/customer_console.env.example`. The next deploy then applies
+  every ladder file, 001 to 009, and restarts the Console.
+- **⚠️ The new step FAILS the deploy** when `acb-customer-console` is enabled and
+  that value is absent. That is deliberate, and
+  `tests/unit/test_console_ladder_deploy_wiring.py` pins it. A box that runs no
+  Console skips the step and says so.
+- **Why it matters:** CP-12a to CP-12g slice 1 are on `main`, so the CODE is on
+  the box. Until the ladder runs, `GET /operators` answers 500 instead of 404,
+  and the whole operator identity stack reads tables that do not exist.
 - **Authority:** `specs/operator_identity_and_access.md` §7 · `work_plan.md`
-  §6.1 (CP-12 block) · H-24
-- **Added:** 2026-08-27 · CP-12e session
+  §6.1 (CP-12 block) · D47
+- **Added:** 2026-08-27 · CP-12e session · **rewritten 2026-08-27** after H-24
+
+### H-66 · The tenant plane serves 15 unprotected tables to the internet · [OWNER]
+- **Check:** in the Supabase dashboard for `jmzowqeosejpmjdmudwf`, open
+  **Settings → API**. A Data API that is still enabled means this is open. Or
+  read the `rls_disabled_in_public` advisor, which is ERROR level.
+- **⚠️ Measured 2026-08-27 over the Supabase MCP, on the live tenant plane.**
+  15 tables in `public` have ROW LEVEL SECURITY switched OFF, and the `anon`
+  role holds `SELECT`, `INSERT`, `UPDATE` and `DELETE` on them.
+- **The sharp one is `org_membership`.** `acb_auth/deps.py` resolves roles and
+  permissions from these tables on every request. Anyone who holds the anon key
+  can insert a membership row in any organization. The anon key is public by
+  design, so this is a cross-tenant privilege escalation reachable from the
+  internet. `user_identity`, `organization`, `tenant_placement` and `org_role`
+  carry the same exposure.
+- **The recommended fix is NOT the one the advisor prints.** Enabling RLS with
+  no policies blocks all access, and it breaks sign-in through the `app_user`
+  policy. **Disable the Data API instead.** Nothing in Metorite uses it —
+  a repo-wide search for `@supabase/supabase-js`, `SUPABASE_ANON`,
+  `NEXT_PUBLIC_SUPABASE` and `/rest/v1` returns no file. The app reaches
+  Postgres directly. One setting closes all 15 errors.
+- **Two lesser findings, same project.** `rls_auto_enable()` is a SECURITY
+  DEFINER function that `anon` can call over `/rest/v1/rpc/`. `gtd_backfill_plan`
+  is a SECURITY DEFINER view.
+- **The Console plane is clean.** `hiwnpcdfwxaydfsvqshh` enables RLS everywhere
+  with no policies, which denies `anon`. Only INFO and WARN advisors.
+- **⚠️ Applying RLS properly as the tenancy mechanism stays separate work.**
+  That is R5 and D15, and `04_policies.sql` is the staged half. Disabling the
+  Data API buys the time to do it correctly.
+- **Authority:** `work_plan.md` §6 (production one-off) · **D15** · **D45** ·
+  `specs/saas_multitenancy.md`
+- **Added:** 2026-08-27 · Supabase MCP session
 
 ---
 

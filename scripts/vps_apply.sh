@@ -174,6 +174,47 @@ for _k in PG_MODE PGHOST PGPORT PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; 
 done
 APP_DIR="$APP_DIR" bash scripts/apply_migrations.sh < /dev/null
 
+echo "==> Applying the Customer Console ladder (D47 · H-24)"
+# ⚠️ This ran NOWHERE until 2026-08-27, and that is the board's own
+# "platform_api is on the box but inert". `infra/customer_console/` is the
+# Console's ladder against the Console's OWN Supabase project (D34); the applier
+# above is bolted to the local docker Postgres and cannot reach it. So the
+# Console got a dedicated DSN-driven applier and nothing ever invoked it: the
+# deploy shipped Console CODE expecting a schema its database did not have, and
+# reported success. CP-12 made it visible — migration 009 creates the `operator`
+# tables and, unapplied, `GET /operators` answers 500 rather than 404 (H-64).
+#
+# R6 puts this BEFORE the Console restart further down, so old code never meets
+# new schema. `< /dev/null` is the same load-bearing redirect as the tenant call
+# above, for the identical reason: this whole file is delivered ON STDIN.
+#
+# ⚠️ FAIL-CLOSED, and the exact condition is deliberate. H-24 says "fail the
+# deploy when its DSN is unset rather than skipping". Read literally that would
+# brick every TENANT deploy on a box that runs no Console at all, so the test is
+# provisioned-and-misconfigured rather than merely unset:
+#   • a DSN is present         -> apply the ladder.
+#   • no DSN, unit ENABLED     -> the Console is live and misconfigured. FAIL.
+#   • no DSN, unit not enabled -> not provisioned here. Say so LOUDLY, continue.
+# The thing H-24 closes is the SILENT skip. A loud, reasoned skip is not one.
+CC_ENV="$APP_DIR/apps/services/customer_console/.env"
+CC_DSN="$(grep -E '^CUSTOMER_CONSOLE_DATABASE_URL=' "$CC_ENV" 2>/dev/null | tail -1 | cut -d= -f2-)"
+# systemd's EnvironmentFile accepts quoted values; psql would take the quotes
+# literally and try to resolve them as a hostname.
+CC_DSN="${CC_DSN%\"}"; CC_DSN="${CC_DSN#\"}"
+CC_DSN="${CC_DSN%\'}"; CC_DSN="${CC_DSN#\'}"
+if [ -n "$CC_DSN" ]; then
+  CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
+    bash scripts/apply_customer_console_migrations.sh < /dev/null
+elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+  echo "    !! acb-customer-console is ENABLED, but $CC_ENV carries no"
+  echo "       CUSTOMER_CONSOLE_DATABASE_URL. The service would serve new code"
+  echo "       against an unmigrated schema. Refusing to continue."
+  exit 1
+else
+  echo "    no Console DSN and acb-customer-console is not enabled here"
+  echo "    -> Console ladder SKIPPED (this box does not run the Console)"
+fi
+
 echo "==> Syncing Python deps"
 if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -399,6 +440,30 @@ sudo systemctl restart acb-gateway
 sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
 echo "Gateway is active"
+
+echo "==> Restarting the Customer Console (systemd)"
+# The unit FILE arrives via the BO-23 sync loop below, which deliberately does
+# not restart services. That is correct for the loop and wrong for the Console:
+# `git reset --hard` above moves files, it does not restart a running Python
+# process, so without this step the Console serves whatever code it started with
+# until somebody notices. Its ladder is already applied, so R6 holds.
+#
+# Conditional on the unit being enabled — the same "does this box run a Console"
+# test as the ladder step. Failure is LOUD: a dead service behind a green deploy
+# is the WS-25 failure mode this file carries the most scar tissue about.
+if systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+  sudo systemctl restart acb-customer-console
+  sleep 3
+  if systemctl is-active --quiet acb-customer-console; then
+    echo "    Customer Console is active (127.0.0.1:8090)"
+  else
+    echo "CUSTOMER CONSOLE FAILED TO START"
+    sudo journalctl -u acb-customer-console --no-pager -n 40 || true
+    exit 1
+  fi
+else
+  echo "    acb-customer-console is not enabled here — skipping restart"
+fi
 
 # ── App Workshop T2 (React) build vendor cache ────────────────────
 # Shared, pinned react/react-dom/esbuild/lucide-react the
