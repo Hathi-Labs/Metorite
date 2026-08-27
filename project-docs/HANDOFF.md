@@ -955,6 +955,13 @@ line — never reclaim a number by deleting the other entry.
 ### H-48 · Implement D61's three slice-2 answers (G-3, G-4, G-5) · [AGENT]
 - **Check:** `rg -n "pricing_mode" infra/customer_console/*.sql` → no hit means D61.4's
   three-state rate card is unbuilt, and by extension slice 2 has not landed.
+  ⚠️ **THIS CHECK IS NOW STALE AND WOULD LIE.** `pricing_mode` landed on
+  2026-08-27 with CP-10 slice 2, so the grep hits — but that slice built
+  **G-4 and G-5 only**. **G-3 is untouched**: `CompletionRequest` still
+  carries one field (`model`), so a caller cannot declare a task and the
+  Router serves `chat` alone. Read the NEW check instead:
+  `rg -n 'task' apps/services/customer_console/customer_console/main.py`
+  inside `class CompletionRequest` → no hit means G-3 is still open.
   ✅ **All three are DECIDED (D61.3/D61.4/D61.5) — this entry is now BUILD work, not
   decision work.** The reasoning below is kept because an implementer who does not know
   *why* will re-derive the wrong answer.
@@ -1140,27 +1147,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/saas_multitenancy.md`
 - **Added:** 2026-08-27 · Supabase MCP session
 
-### H-67 · No UI opens an elevation window, so the cutover disarms five actions · [AGENT]
-- **Check:** `rg -n "api/operator/elevate" workbench/operator_console/src/app
-  --glob '*.tsx'` → no hit means no surface drives the route, and this is open.
-- **Why:** CP-12g slice 1 shipped `/api/operator/elevate` with GET, POST and
-  DELETE. **Nothing calls it.** CP-12e binds five actions to a live window AND
-  the `admin` role: `POST /orgs/purge`, `POST /keys`, `POST /keys/revoke`,
-  `POST /providers/credentials` and a credit grant above the cap.
-- **⚠️ It does not bite yet, and that is why it is easy to miss.** The interim
-  path calls the Console with the shared token, which CP-12e renamed
-  `breakglass`. That token bypasses the matrix and the window, so every one of
-  the five works today. They all start answering 403 the moment somebody flips
-  `OPERATOR_IDENTITY_ENABLED`.
-- **So the trigger is the cutover.** Build this BEFORE H-54 and the flag flip,
-  or the first signed-in operator can read everything and change almost nothing.
-- **Shape:** a control in `Header.tsx`. It reads `GET /operators/elevate`, shows
-  the countdown from `expires_at`, and offers to close the window early.
-  ⚠️ The reason field has a floor of 12 characters, and the Console answers 400
-  below it. ⚠️ `usesSessions()` reads server env, so a client component cannot
-  see the mode. Pass it down, or accept the Console's own 403.
-- **Authority:** `specs/operator_identity_and_access.md` §6.3 · §5 · **D64.4**
-- **Added:** 2026-08-27 · WS-31 CP-11 slice 1 session
 
 
 ### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
