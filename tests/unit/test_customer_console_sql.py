@@ -369,11 +369,17 @@ class TestTheRateCardInForce:
             rate_call(card, TokenUsage(prompt_tokens=1_000_000))
 
     def test_the_newest_card_in_effect_wins(self, conn):
+        # ⚠️ `pricing_mode` is REQUIRED as of CP-10 slice 2 (D61, G-4).
+        # Numbers alone no longer make a card billable: a zero cannot mean
+        # "not yet priced", "absorbed into the seat price" (D19.2) and
+        # "deliberately free" at the same time. A card carrying real rates
+        # that nobody marked `priced` fails CLOSED, which is the safe way
+        # for a draft price to fail.
         conn.execute(text(
             "INSERT INTO model_rate_card (model, input_credits_per_1k, "
             " output_credits_per_1k, cached_input_credits_per_1k, "
-            " effective_from) "
-            "VALUES ('deepseek/deepseek-v4-pro', 2, 6, 0.5, now())"))
+            " pricing_mode, effective_from) "
+            "VALUES ('deepseek/deepseek-v4-pro', 2, 6, 0.5, 'priced', now())"))
 
         card = resolve_rate_card(conn, "deepseek/deepseek-v4-pro")
 

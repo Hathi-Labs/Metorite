@@ -905,43 +905,6 @@ line — never reclaim a number by deleting the other entry.
   **D60.10**) · `specs/customer_console.md` **§6A.9**
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-45 · The rate card is tokens-only, so STT cannot be priced — and it ships · [AGENT]
-- **Check:** `rg -n "def rate_call" -A 20 apps/services/customer_console/customer_console/credits.py`
-  → a body that only divides token counters by 1000 (no `unit` branch) means the hole is
-  open. Separately, `rg -n "^\s+unit\s+TEXT" infra/customer_console/*.sql` → no hit means
-  `model_rate_card` still has no `unit` column.
-  ⚠️ **Do NOT grep for the bare word `unit` in that ladder** — it matches the word
-  "opport**unit**ies" in `usage_event`'s comment and reads as **done** while the column is
-  absent. (Caught while writing this entry, 2026-08-26; it is the same defect as H-31's
-  original Check and is recorded here because the class keeps recurring: a Check must
-  match the *artefact*, never a word that happens to appear near it.)
-- **Why:** 🔴 **A live gap that predates the multimodal question and was found by it.**
-  `credits.rate_call` divides `fresh_prompt_tokens` / `cached_tokens` /
-  `completion_tokens` by 1000 against per-1k rates and **knows no other unit**;
-  `model_rate_card` carries only those three rate columns and `usage_event` only those
-  three counters.
-  **`tier-stt` ships in production seed** (`002_seed_catalog.sql:76`,
-  `groq/whisper-large-v3-turbo`) and **D19.2 specifies per-minute STT metering** — which
-  the card cannot express. Image generation (per image) and TTS (per character or second)
-  are equally unpriceable.
-  ⚠️ **This is currently invisible because the whole card ships at zero** and
-  `test_the_rate_card_ships_unpriced` keeps it there. It becomes a revenue bug the day
-  somebody prices the card and assumes STT is covered — an unpriced call is billed as
-  free, and `rate_call` raises `UnpricedModel` rather than silently zero-rating, which is
-  the one mercy here.
-  **The fix (D60.5):** `model_rate_card` re-keys on `(model, task, effective_from)` —
-  because the same multimodal model costs differently per task — and gains a `unit` ∈
-  `{token_1k, second, character, image}`. `usage_event` gains `task`, `quantity`, `unit`
-  (**nullable, R6-safe**; the token columns stay, since chat is the common case and they
-  are indexed). `rate_call` grows a unit branch.
-  📌 **Do this inside CP-10 slice 2, not as a follow-up** — without it, three of the six
-  tasks in D60's model cannot be billed at all, so shipping the access model without it
-  would ship a catalog that can describe work we cannot charge for.
-  🔴 Pricing the card itself remains an owner act (D19.2, §6); this ticket builds the
-  mechanism and prices nothing.
-- **Authority:** `work_plan.md` §3 **D60.5** · D19.2 ·
-  `specs/customer_console.md` **§6A.9** · CP-10 slice 2 · CP-6
-- **Added:** 2026-08-26 · multimodal / future-proofing session
 
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`

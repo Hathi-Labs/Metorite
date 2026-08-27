@@ -47,6 +47,7 @@ __all__ = [
     "provider_credential",
     "relay_stream",
     "resolve_rate_card",
+    "resolve_invocation",
     "resolve_tier",
     "set_provider_call",
     "usage_from_frame",
@@ -69,9 +70,14 @@ class TierUnknown(Exception):
 class ResolvedTier:
     tier: str
     model: str
+    #: Which task this binding serves. Resolution is two steps as of
+    #: D60: (task, tier) -> model, then (model, task) -> invocation.
+    task: str = "chat"
 
 
-def resolve_tier(conn: Connection, tier: str) -> ResolvedTier:
+def resolve_tier(
+    conn: Connection, tier: str, task: str = "chat"
+) -> ResolvedTier:
     """Resolve a tier alias to the model currently bound to it.
 
     Picks the newest binding whose ``effective_from`` has passed, so a future
@@ -84,21 +90,28 @@ def resolve_tier(conn: Connection, tier: str) -> ResolvedTier:
         text(
             """
             SELECT model FROM tier_binding
-            WHERE tier = :tier AND effective_from <= now()
+            WHERE tier = :tier AND task = :task AND effective_from <= now()
             ORDER BY effective_from DESC
             LIMIT 1
             """
         ),
-        {"tier": tier},
+        {"tier": tier, "task": task},
     ).first()
     if row is None:
-        raise TierUnknown(f"no binding for tier {tier!r}")
-    return ResolvedTier(tier=tier, model=row[0])
+        # ⚠️ An UNBOUND TASK IS A 400, never a coercion to the chat binding
+        # (§6A.9 rule 2). Serving an image request from a text model is D32.7's
+        # "silent coercion hides a misconfigured agent behind a bill" wearing
+        # different clothes, and the customer gets a paragraph where they asked
+        # for a picture.
+        raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
+    return ResolvedTier(tier=tier, model=row[0], task=task)
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────
 
-def resolve_rate_card(conn: Connection, model: str) -> RateCard:
+def resolve_rate_card(
+    conn: Connection, model: str, task: str = "chat"
+) -> RateCard:
     """The rate card in force for one model, as of now.
 
     Deliberately the same shape as :func:`resolve_tier`: newest row whose
@@ -120,26 +133,62 @@ def resolve_rate_card(conn: Connection, model: str) -> RateCard:
         text(
             """
             SELECT input_credits_per_1k, output_credits_per_1k,
-                   cached_input_credits_per_1k
+                   cached_input_credits_per_1k,
+                   unit, credits_per_unit, pricing_mode
             FROM model_rate_card
-            WHERE model = :model AND effective_from <= now()
+            WHERE model = :model AND task = :task AND effective_from <= now()
             ORDER BY effective_from DESC
             LIMIT 1
             """
         ),
-        {"model": model},
+        {"model": model, "task": task},
     ).first()
     if row is None:
         raise UnpricedModel(
-            f"{model!r} has no rate-card row in effect; refusing to bill it "
-            "as free"
+            f"{model!r} has no rate-card row in effect for task {task!r}; "
+            "refusing to bill it as free"
         )
     return RateCard(
         model=model,
         input_per_1k=row[0],
         output_per_1k=row[1],
         cached_input_per_1k=row[2],
+        task=task,
+        unit=row[3],
+        credits_per_unit=row[4],
+        pricing_mode=row[5],
     )
+
+
+def resolve_invocation(conn: Connection, model: str, task: str) -> str:
+    """Which provider verb serves this ``(model, task)``. D60 step two.
+
+    Replaces ``_STT_TIER_IDS: frozenset({"stt"})`` in ``acb_llm/client.py``,
+    which meant ``tier-image`` would be handed to ``acompletion`` and rejected
+    by the provider (D60.2). A frozenset cannot grow a row.
+
+    ⚠️ **Capability is not availability** (§6A.9 rule 3). This answers what the
+    model CAN do. ``tier_binding`` decides what we USE it for, and the gap
+    between the two is the operator's most valuable view.
+
+    Raises:
+        TierUnknown: the pair has no capability row. Refusing is the point —
+            guessing ``acompletion`` is how audio reaches a chat endpoint.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT invocation FROM model_capability
+            WHERE model = :model AND task = :task
+            """
+        ),
+        {"model": model, "task": task},
+    ).first()
+    if row is None:
+        raise TierUnknown(
+            f"{model!r} declares no capability for task {task!r}"
+        )
+    return row[0]
 
 
 # ── Provider credentials ────────────────────────────────────────────────────

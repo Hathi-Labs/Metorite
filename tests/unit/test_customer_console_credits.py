@@ -36,11 +36,28 @@ from customer_console.credits import (
     rate_call,
 )
 
+#: ⚠️ `pricing_mode="priced"` is REQUIRED as of CP-10 slice 2 (D61, G-4).
+#: Numbers alone no longer make a card billable, because a zero cannot carry
+#: three meanings — not-yet-priced, absorbed into the seat price (D19.2), and
+#: deliberately free are three different states with one number.
 CARD = RateCard(
     model="deepseek/deepseek-v4-pro",
     input_per_1k=Decimal("2.0"),
     output_per_1k=Decimal("6.0"),
     cached_input_per_1k=Decimal("0.5"),
+    pricing_mode="priced",
+)
+
+#: A minute of audio, priced per minute. `transcribe` could not be priced at
+#: all before this slice, and `tier-stt` ships in the production seed.
+STT_CARD = RateCard(
+    model="groq/whisper-large-v3-turbo",
+    input_per_1k=Decimal(0),
+    output_per_1k=Decimal(0),
+    task="transcribe",
+    unit="minutes",
+    credits_per_unit=Decimal("0.4"),
+    pricing_mode="priced",
 )
 
 
@@ -80,8 +97,76 @@ class TestRating:
         with pytest.raises(UnpricedModel):
             rate_call(unpriced, TokenUsage(prompt_tokens=1_000_000))
 
-    def test_a_card_with_any_nonzero_rate_is_priced(self):
-        assert RateCard("m", Decimal(0), Decimal("0.1")).is_priced is True
+    def test_numbers_alone_no_longer_make_a_card_billable(self):
+        """⚠️ This REPLACES `test_a_card_with_any_nonzero_rate_is_priced`.
+
+        That test asserted the old rule — any non-zero rate meant priced — and
+        D61's G-4 retires it. The mode is the authority now. A card carrying
+        real numbers that nobody marked `priced` **fails closed**, which is the
+        safe direction: it refuses to bill rather than billing a rate somebody
+        was still drafting.
+        """
+        drafted = RateCard("m", Decimal(0), Decimal("0.1"))
+        assert drafted.pricing_mode == "unpriced"
+        assert drafted.is_priced is False
+        with pytest.raises(UnpricedModel):
+            rate_call(drafted, TokenUsage(prompt_tokens=1000))
+
+        assert RateCard(
+            "m", Decimal(0), Decimal("0.1"), pricing_mode="priced"
+        ).is_priced is True
+
+    def test_absorbed_is_free_and_is_NOT_an_error(self):
+        """D19.2 absorbs embeddings into the seat price. That is not a mistake.
+
+        An absorbed task that raised `UnpricedModel` would be indistinguishable
+        from a misconfigured one, and somebody would "fix" it by inventing a
+        price the customer never agreed to.
+        """
+        absorbed = RateCard(
+            "m", Decimal(0), Decimal(0), task="embed", pricing_mode="absorbed"
+        )
+        assert absorbed.is_priced is False
+        assert absorbed.is_absorbed is True
+        assert rate_call(absorbed, TokenUsage(prompt_tokens=1_000_000)) == 0
+
+
+class TestUnitsOtherThanTokens:
+    """🔴 Three of six tasks could not be priced at all before this slice.
+
+    `transcribe` is sold per minute of audio (D19.2 says so in terms), `speak`
+    per character and `image` per image. None of them divides a token count by
+    1000, and `rate_call` knew no other unit.
+    """
+
+    def test_a_transcription_is_priced_per_minute(self):
+        cost = rate_call(STT_CARD, TokenUsage(), quantity=Decimal("3.5"))
+        assert cost == Decimal("1.4")
+
+    def test_a_per_unit_card_with_no_quantity_REFUSES(self):
+        """⚠️ It must not fall back to the token rates.
+
+        A minute of audio rated per 1k tokens produces a number, and a
+        plausible one, and a wrong one. Refusing is visible; a plausible wrong
+        number is not.
+        """
+        with pytest.raises(UnpricedModel) as exc:
+            rate_call(STT_CARD, TokenUsage(prompt_tokens=5000))
+        assert "minutes" in str(exc.value)
+
+    def test_a_token_card_ignores_quantity(self):
+        # Its quantity IS the usage counters. A stray quantity must not
+        # double-count or override them.
+        with_q = rate_call(
+            CARD, TokenUsage(prompt_tokens=1000, completion_tokens=500),
+            quantity=Decimal("999"),
+        )
+        assert with_q == Decimal("5.0")
+
+    def test_the_unit_price_is_decimal_not_float(self):
+        assert isinstance(
+            rate_call(STT_CARD, TokenUsage(), quantity=Decimal(1)), Decimal
+        )
 
     def test_money_is_decimal_not_float(self):
         # Small rates x large token counts, summed thousands of times a month,

@@ -310,6 +310,14 @@ jobs:
       # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
       # it is named here so a DB gate leaking into it later disarms loudly.
       #
+      # ⚠️ WS-31 CP-10 slice 2 (2026-08-27) adds the ELEVENTH Console suite,
+      # `test_customer_console_tasks.py` — the task allowlist, two-step
+      # resolution and the per-unit rate card. Added IN THE PR THAT CREATED
+      # IT and carrying the same self-defending test (it reads this file).
+      # 🔴 It fences the pricing hole that was LIVE: `rate_call` was
+      # tokens-only, so `tier-stt` — in the production seed — could not be
+      # priced, and neither could `speak` or `image`.
+      #
       # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
       # -coded to the Console suites' skip string — so a suite gated on a
       # DIFFERENT variable could be added to the file list above, skip every
@@ -326,6 +334,7 @@ jobs:
             tests/unit/test_customer_console_operator_list.py \
             tests/unit/test_customer_console_member_write.py \
             tests/unit/test_customer_console_seat_overview.py \
+            tests/unit/test_customer_console_tasks.py \
             tests/unit/test_operator_identity.py \
             tests/unit/test_operator_session.py \
             tests/unit/test_operator_roles.py \
