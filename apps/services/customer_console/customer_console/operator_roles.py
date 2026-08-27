@@ -135,6 +135,21 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # customer's AI call is billed against, and a wrong one stops the
     # product for everybody. Admin AND a window.
     ("POST", "/providers/credentials"): _R(ADMIN, elevated=True),
+    # ── The model catalog (CP-10 slice 3) ───────────────────────────────
+    # Reading it is ordinary work: what we can call, what we use it for,
+    # what it costs, and the two gaps between those.
+    ("GET", "/catalog/models"): _R(VIEWER),
+    # Declaring a capability is a FACT about a model, not a commercial
+    # term. Nobody is billed against it and it is reversible, so `editor`
+    # and no window. Getting it wrong fails loudly at the provider.
+    ("POST", "/catalog/capabilities"): _R(EDITOR),
+    # ⚠️ Re-pointing a tier decides what EVERY customer call runs on. A
+    # wrong model here does not fail loudly — it answers, plausibly, at
+    # the wrong price. Same severity as installing a provider key above.
+    ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
+    # ⚠️ This is what customers are BILLED. Admin and a window, and the
+    # number itself stays the owner's commercial act (H-42, §8).
+    ("POST", "/catalog/rates"): _R(ADMIN, elevated=True),
     ("POST", "/providers/credentials/revoke"): _R(ADMIN, elevated=True),
     # Operator administration — admin only (D64.3), and NOT `elevated`.
     # Adding a colleague is ordinary work an admin does often, and a

@@ -7555,7 +7555,7 @@ correctly and prices nothing.**
 |---|---|---|---|
 | 1 | `model_capability` + `task` on `tier_binding` + Router two-step resolution | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27** (migration 010) |
 | 2 | `unit` on the rate card, `task`/`quantity`/`unit` on `usage_event`, the `rate_call` branch | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27.** Closes **H-45** |
-| 3 | Operator catalog UI over capabilities, bindings and rates | small | **CP-10 slice 3** |
+| 3 | Operator catalog PLANE over capabilities, bindings and rates | small | ◐ **CP-10 slice 3, 2026-08-27** — the ROUTES and their rules are built (`GET /catalog/models`, `POST /catalog/{capabilities,bindings,rates}`). ⚠️ The **UI is not**, and it is the relocation §6A names: re-point `settings/models/page.tsx` at these routes and delete the tenant-side copy per CP-5 |
 | 4 | Feature→tier registry, generalising the Apps manifest precedent | **large — 80+ sites** | its own ticket (**H-44**) |
 | 5 | Customer-visible tier choice in chat | medium | after 1–4 |
 

@@ -85,6 +85,7 @@ from customer_console.auth import (
     SeatAdminCaller,
     SignedWebhook,
 )
+from customer_console import catalog
 from customer_console.credits import (
     CREDIT_QUANTUM,
     LEDGER_REASON_MANUAL,
@@ -1437,6 +1438,260 @@ class ProviderCredentialRevokeRequest(BaseModel):
 def _credential_refusal(exc: Exception) -> HTTPException:
     """400, and it SAYS WHY — see `CredentialRefused`."""
     return HTTPException(status_code=400, detail=str(exc))
+
+
+# ── The operator's model catalog (CP-10 slice 3) ────────────────────────────
+#
+# ⚠️ **INSERT ONLY** (§6A.5). Re-pointing a tier and re-pricing a model are
+# both appends with an `effective_from`, so a past invoice is never recomputed
+# and the history of what a customer was charged against stays intact. There is
+# deliberately no PATCH or DELETE on a binding or a rate, and adding one is not
+# a refactor. `revoked_at` on a provider credential is the one exception, and
+# it is already modelled.
+
+
+class CapabilityRequest(BaseModel):
+    model: str
+    task: str
+    invocation: str
+    streams: bool = False
+
+
+class BindingRequest(BaseModel):
+    tier: str
+    task: str
+    model: str
+    #: Omit for "now". A future date STAGES a change without taking effect,
+    #: which is the same shape `seat_grant` and `model_rate_card` already use.
+    effective_from: datetime | None = None
+
+
+class RateRequest(BaseModel):
+    model: str
+    task: str
+    unit: str
+    pricing_mode: str
+    input_per_1k: Decimal = Decimal(0)
+    output_per_1k: Decimal = Decimal(0)
+    cached_input_per_1k: Decimal = Decimal(0)
+    credits_per_unit: Decimal = Decimal(0)
+    effective_from: datetime | None = None
+
+
+def _catalog_refusal(exc: catalog.CatalogRefused) -> HTTPException:
+    """A refused catalog write is a 400 the operator can act on."""
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/catalog/models")
+def catalog_models(staff: Operator) -> dict[str, Any]:
+    """Everything the operator manages, and the two GAPS between the tables.
+
+    ⚠️ **The gaps are the point.** `model_capability` says what a model CAN do.
+    `tier_binding` says what we USE it for. Neither table shows the difference,
+    and the difference is where the mistakes live:
+
+    * ``unbound`` — capable and unused. *"This model can generate images and we
+      have not bound it to anything."* Money left on the table.
+    * ``unserved`` — bound and NOT capable. The Router resolves a model and
+      then cannot decide which verb to call. That is a 500 waiting for the
+      first request, and it is invisible in either table alone.
+    """
+    with get_engine().begin() as conn:
+        tasks = [
+            {"slug": r[0], "label": r[1], "natural_unit": r[2]}
+            for r in conn.execute(text(
+                "SELECT slug, label, natural_unit FROM task_catalog "
+                "ORDER BY sort_order"))
+        ]
+        caps = [
+            {"model": r[0], "task": r[1], "invocation": r[2], "streams": r[3]}
+            for r in conn.execute(text(
+                "SELECT model, task, invocation, streams FROM model_capability "
+                "ORDER BY model, task"))
+        ]
+        # IN FORCE ONLY — the newest row per key whose date has passed. The
+        # superseded rows stay in the table for the audit trail, and showing
+        # them here would read as "these are all live".
+        bindings = [
+            {"tier": r[0], "task": r[1], "model": r[2],
+             "effective_from": _iso(r[3])}
+            for r in conn.execute(text(
+                "SELECT DISTINCT ON (task, tier) tier, task, model, "
+                "       effective_from "
+                "FROM tier_binding WHERE effective_from <= now() "
+                "ORDER BY task, tier, effective_from DESC"))
+        ]
+        rates = [
+            {"model": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
+             "input_per_1k": str(r[4]), "output_per_1k": str(r[5]),
+             "cached_input_per_1k": str(r[6]), "credits_per_unit": str(r[7]),
+             "effective_from": _iso(r[8])}
+            for r in conn.execute(text(
+                "SELECT DISTINCT ON (model, task) model, task, unit, "
+                "       pricing_mode, input_credits_per_1k, "
+                "       output_credits_per_1k, cached_input_credits_per_1k, "
+                "       credits_per_unit, effective_from "
+                "FROM model_rate_card WHERE effective_from <= now() "
+                "ORDER BY model, task, effective_from DESC"))
+        ]
+
+    cap_pairs = [(c["model"], c["task"]) for c in caps]
+    bind_pairs = [(b["model"], b["task"]) for b in bindings]
+    return {
+        "tasks": tasks,
+        "capabilities": caps,
+        "bindings": bindings,
+        "rates": rates,
+        "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
+        "unserved": catalog.unserved_bindings(cap_pairs, bind_pairs),
+    }
+
+
+@app.post("/catalog/capabilities")
+def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any]:
+    """Declare what a model can do, and which provider verb does it.
+
+    Replaces `_STT_TIER_IDS`, a frozenset that could not grow a row (D60.2).
+    This one is an UPSERT rather than an append, and the difference is
+    deliberate: a capability is a FACT about a model, not a commercial term.
+    Nobody is billed against it, so correcting it destroys no audit trail.
+    """
+    try:
+        invocation = catalog.check_invocation(req.invocation)
+        streams = catalog.check_streams(req.task, req.streams)
+    except catalog.CatalogRefused as exc:
+        raise _catalog_refusal(exc) from exc
+
+    with get_engine().begin() as conn:
+        if not _task_exists(conn, req.task):
+            raise HTTPException(
+                status_code=400, detail=f"unknown task {req.task!r}")
+        conn.execute(
+            text(
+                "INSERT INTO model_capability (model, task, invocation, streams) "
+                "VALUES (:m, :t, :i, :s) "
+                "ON CONFLICT (model, task) DO UPDATE "
+                "SET invocation = EXCLUDED.invocation, "
+                "    streams = EXCLUDED.streams"
+            ),
+            {"m": req.model, "t": req.task, "i": invocation, "s": streams},
+        )
+        _audit(conn, None, "catalog.capability",
+               {"model": req.model, "task": req.task, "invocation": invocation},
+               actor=staff.actor)
+    return {"model": req.model, "task": req.task, "invocation": invocation,
+            "streams": streams}
+
+
+@app.post("/catalog/bindings")
+def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
+    """Point a `(task, tier)` pair at a model. **INSERT, never UPDATE.**
+
+    ⚠️ **This decides what every customer's call actually runs on**, which is
+    why the matrix asks for `admin` AND an elevation window. A wrong model here
+    does not fail loudly — it answers, plausibly, at the wrong price.
+
+    ⚠️ The binding is refused unless the model DECLARES the capability. Without
+    that check the Router resolves a model and then cannot choose a verb, which
+    is a 500 on the first request rather than an error anybody sees here.
+    """
+    with get_engine().begin() as conn:
+        if not _task_exists(conn, req.task):
+            raise HTTPException(
+                status_code=400, detail=f"unknown task {req.task!r}")
+
+        capable = conn.execute(
+            text("SELECT 1 FROM model_capability "
+                 "WHERE model = :m AND task = :t"),
+            {"m": req.model, "t": req.task},
+        ).first()
+        if capable is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{req.model!r} declares no capability for task "
+                    f"{req.task!r}; declare it first"
+                ),
+            )
+
+        conn.execute(
+            text(
+                "INSERT INTO tier_binding (tier, task, model, effective_from) "
+                "VALUES (:tier, :task, :model, COALESCE(:eff, now()))"
+            ),
+            {"tier": req.tier, "task": req.task, "model": req.model,
+             "eff": req.effective_from},
+        )
+        _audit(conn, None, "catalog.binding",
+               {"tier": req.tier, "task": req.task, "model": req.model},
+               actor=staff.actor)
+    return {"tier": req.tier, "task": req.task, "model": req.model}
+
+
+@app.post("/catalog/rates")
+def set_rate(req: RateRequest, staff: Operator) -> dict[str, Any]:
+    """Price one `(model, task)`. **INSERT, never UPDATE.**
+
+    🔴 **Setting a real price is the OWNER's commercial act** (§8, D19.2, and
+    H-42). This route is the MECHANISM, and building it prices nothing: the
+    ladder still ships every card `unpriced`, and
+    `test_the_rate_card_ships_unpriced` fails if that stops being true.
+
+    ⚠️ The unit must be the task's own. `transcribe` is sold per minute of
+    audio, and pricing it per 1k tokens produces a plausible wrong number
+    rather than an error — which is why `task_catalog` carries `natural_unit`.
+    """
+    with get_engine().begin() as conn:
+        natural = conn.execute(
+            text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
+            {"t": req.task},
+        ).scalar_one_or_none()
+        if natural is None:
+            raise HTTPException(
+                status_code=400, detail=f"unknown task {req.task!r}")
+
+        try:
+            catalog.check_rate(
+                catalog.RateProposal(
+                    model=req.model, task=req.task, unit=req.unit,
+                    pricing_mode=req.pricing_mode,
+                    input_per_1k=req.input_per_1k,
+                    output_per_1k=req.output_per_1k,
+                    cached_input_per_1k=req.cached_input_per_1k,
+                    credits_per_unit=req.credits_per_unit,
+                ),
+                natural_unit=natural,
+            )
+        except catalog.CatalogRefused as exc:
+            raise _catalog_refusal(exc) from exc
+
+        conn.execute(
+            text(
+                "INSERT INTO model_rate_card (model, task, unit, "
+                "    input_credits_per_1k, output_credits_per_1k, "
+                "    cached_input_credits_per_1k, credits_per_unit, "
+                "    pricing_mode, effective_from) "
+                "VALUES (:m, :t, :u, :i, :o, :c, :cpu, :pm, "
+                "        COALESCE(:eff, now()))"
+            ),
+            {"m": req.model, "t": req.task, "u": req.unit,
+             "i": req.input_per_1k, "o": req.output_per_1k,
+             "c": req.cached_input_per_1k, "cpu": req.credits_per_unit,
+             "pm": req.pricing_mode, "eff": req.effective_from},
+        )
+        _audit(conn, None, "catalog.rate",
+               {"model": req.model, "task": req.task,
+                "pricing_mode": req.pricing_mode, "unit": req.unit},
+               actor=staff.actor)
+    return {"model": req.model, "task": req.task,
+            "pricing_mode": req.pricing_mode}
+
+
+def _task_exists(conn, task: str) -> bool:
+    return conn.execute(
+        text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
+    ).first() is not None
 
 
 @app.get("/providers/credentials")
