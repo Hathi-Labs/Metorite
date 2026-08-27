@@ -50,11 +50,13 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
@@ -112,11 +114,13 @@ from customer_console.lifecycle import (
     capabilities_of,
 )
 from customer_console.router import (
+    SSE_DONE,
     ExtractedUsage,
     TierUnknown,
     call_provider,
     encrypt_secret,
     provider_credential,
+    relay_stream,
     resolve_rate_card,
     resolve_tier,
     usage_from_response,
@@ -3342,6 +3346,90 @@ def whoami(caller: KeyCaller) -> dict[str, Any]:
     }
 
 
+def _record_completion(
+    usage: ExtractedUsage,
+    *,
+    org_id: str,
+    caller: Any,
+    resolved: Any,
+    client_ref: str | None,
+) -> None:
+    """Write ONE usage row and draw the credits for it. Never raises.
+
+    The ONE metering writer, shared by the buffered path and the streamed one.
+    Two writers would drift, and the streamed one would be the one nobody
+    checked. Metering is best-effort and never fails a completion: an unmetered
+    completion is a revenue problem, a failed completion is a product problem,
+    and the product problem is worse.
+    """
+    try:
+        with get_engine().begin() as conn:
+            # CP-6: the draw. `record_usage` negates this into `credit_ledger`
+            # in the SAME transaction as the usage row, so a retried write that
+            # inserts nothing also charges nothing. Zero while the card is
+            # unpriced, which is the shipped state until the owner prices it.
+            billed = _rate_completion(conn, model=resolved.model, usage=usage)
+            store.record_usage(
+                conn, org_id=org_id,
+                # SERVER-generated. The caller's id is correlation only — see
+                # migration 005 and CompletionRequest.client_ref.
+                request_id=f"rtr-{uuid.uuid4().hex}",
+                client_ref=client_ref,
+                billed_credits=billed,
+                user_email=caller.member, agent=caller.agent,
+                module_slug=caller.module_slug, run_id=caller.run_id,
+                model=resolved.model, tier=resolved.tier,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cached_tokens=usage.cached_tokens,
+            )
+    except Exception:
+        _log.exception("router.metering_failed")
+
+
+async def _streamed_completion(
+    call_kwargs: dict[str, Any],
+    *,
+    org_id: str,
+    caller: Any,
+    resolved: Any,
+    client_ref: str | None,
+) -> AsyncIterator[bytes]:
+    """Open the provider stream and relay it, metering the result exactly once.
+
+    ⚠️ **The provider call happens HERE, not in the route.** ``asyncio.run``
+    closes the loop it creates, so a stream opened that way is dead before its
+    first frame. Starlette iterates this generator on its own running loop, so
+    the call and every ``__anext__`` share one loop.
+
+    A failure BEFORE the first frame writes no usage row. ``relay_stream`` never
+    starts, so its ``finally`` never runs, and the row is impossible rather than
+    merely unwritten. That is the phantom-row defect which produced the 501 this
+    replaces, closed by construction (done-when 4).
+    """
+    def _on_finish(usage: ExtractedUsage, started: bool) -> None:
+        if not started:
+            return
+        _record_completion(
+            usage, org_id=org_id, caller=caller,
+            resolved=resolved, client_ref=client_ref,
+        )
+
+    try:
+        source = await call_provider(**call_kwargs)
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        _log.warning("router.stream_open_failed", extra={"upstream_status": status})
+        # The status line is already 200 by the time a body iterator runs, so we
+        # cannot turn this into a 502. Close the stream cleanly instead. A
+        # client that never sees the sentinel waits for its own timeout.
+        yield SSE_DONE
+        return
+
+    async for frame in relay_stream(source, on_finish=_on_finish):
+        yield frame
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     """Proxy one completion, gate it, and charge it.
@@ -3366,18 +3454,6 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     driven through ``asyncio.run`` inside the threadpool worker instead.
     """
     org_id = caller.organization_id
-
-    if req.stream:
-        # 501, not a 500. CP-4 forwarded `stream` and returned litellm's
-        # CustomStreamWrapper to FastAPI, which failed to serialise it — the
-        # client got "Internal Server Error" AND a phantom zero-token usage row
-        # was committed for a completion nobody received. Refusing explicitly is
-        # honest; the streaming path is CP-4b and is the half that matters most,
-        # since every agent runtime streams through this choke point.
-        raise HTTPException(
-            status_code=501,
-            detail="streaming is not implemented on the Router yet (CP-4b)",
-        )
 
     with get_engine().begin() as conn:
         try:
@@ -3439,6 +3515,34 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     if api_base:
         call_kwargs["api_base"] = api_base
 
+    if req.stream:
+        # CP-4b. Everything above this line has already run: the tier
+        # resolved, the credential loaded, and CP-6's balance gate and
+        # breaker either refused or did not. A refusal delivered inside an
+        # SSE frame is one every client renders as CONTENT, so the gate has
+        # to be behind us before the stream opens (done-when 5).
+        call_kwargs["stream"] = True
+        # Ask for the usage frame. Without it an OpenAI-compatible provider
+        # reports no counts on a stream at all, and we would be metering a
+        # guess. A provider that ignores the option costs us nothing here —
+        # `relay_stream` keeps the last counts it saw, which stay zero.
+        call_kwargs["stream_options"] = {"include_usage": True}
+        return StreamingResponse(
+            _streamed_completion(
+                call_kwargs,
+                org_id=org_id,
+                caller=caller,
+                resolved=resolved,
+                client_ref=req.client_ref,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                # Proxies that buffer turn a stream into one late blob.
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     try:
         response = asyncio.run(call_provider(**call_kwargs))
     except HTTPException:
@@ -3462,30 +3566,11 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # is a revenue problem, a failed completion is a product problem, and the
     # product problem is worse. It runs only AFTER a successful provider call,
     # so a failed request can no longer leave a phantom row behind.
-    try:
-        usage = usage_from_response(response)
-        with get_engine().begin() as conn:
-            # CP-6: the draw. `record_usage` negates this into `credit_ledger`
-            # in the SAME transaction as the usage row, so a retried write that
-            # inserts nothing also charges nothing. Zero while the card is
-            # unpriced, which is the shipped state until the owner prices it.
-            billed = _rate_completion(conn, model=resolved.model, usage=usage)
-            store.record_usage(
-                conn, org_id=org_id,
-                # SERVER-generated. The caller's id is correlation only — see
-                # migration 005 and CompletionRequest.client_ref.
-                request_id=f"rtr-{uuid.uuid4().hex}",
-                client_ref=req.client_ref,
-                billed_credits=billed,
-                user_email=caller.member, agent=caller.agent,
-                module_slug=caller.module_slug, run_id=caller.run_id,
-                model=resolved.model, tier=resolved.tier,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                cached_tokens=usage.cached_tokens,
-            )
-    except Exception:
-        _log.exception("router.metering_failed")
+    _record_completion(
+        usage_from_response(response),
+        org_id=org_id, caller=caller,
+        resolved=resolved, client_ref=req.client_ref,
+    )
 
     return response
 

@@ -13,6 +13,7 @@ on every run, which means in practice nobody runs it.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from decimal import Decimal
@@ -560,27 +561,334 @@ class TestTheCustomerCannotRedirectOurCredential:
         assert calls[-1]["max_tokens"] == 32_000
 
 
-class TestStreaming:
-    """F3. CP-4 forwarded `stream` and handed litellm's CustomStreamWrapper to
-    FastAPI, which failed to serialise it: the client got a 500 AND a phantom
-    zero-token usage row was committed for a completion nobody received."""
+#: What a streaming provider emits, as the frames it emits them in. Byte
+#: strings on purpose: done-when 1 is about bytes, and a fixture built from
+#: dicts would let the Router re-serialise and still pass.
+#:
+#: The last frame carries the usage, which is what `stream_options.
+#: include_usage` asks an OpenAI-compatible provider for. The frames before it
+#: carry none — that IS the streaming shape, and metering a guess instead is
+#: the defect done-when 2 exists to stop.
+PROVIDER_FRAMES = [
+    b'data: {"id":"chatcmpl-s1","object":"chat.completion.chunk",'
+    b'"choices":[{"index":0,"delta":{"role":"assistant","content":"Sixteen"}}]}\n\n',
+    b'data: {"id":"chatcmpl-s1","object":"chat.completion.chunk",'
+    b'"choices":[{"index":0,"delta":{"content":" pumps"}}]}\n\n',
+    b'data: {"id":"chatcmpl-s1","object":"chat.completion.chunk",'
+    b'"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+    b'"usage":{"prompt_tokens":1200,"completion_tokens":40,'
+    b'"prompt_tokens_details":{"cached_tokens":900}}}\n\n',
+    b"data: [DONE]\n\n",
+]
 
-    def test_streaming_is_refused_explicitly_not_with_a_500(self, client, org_key):
+
+def _streaming_provider(frames=None, *, fail_before_first=False):
+    """A provider whose call returns an async iterator of SSE frames."""
+    emitted = list(PROVIDER_FRAMES if frames is None else frames)
+
+    async def _stub(**kwargs):
+        if fail_before_first:
+            raise RuntimeError("provider refused the stream")
+
+        async def _gen():
+            for f in emitted:
+                yield f
+
+        return _gen()
+
+    return _stub
+
+
+class TestStreaming:
+    """CP-4b. The half that matters most: every agent runtime streams.
+
+    Replaces CP-4's explicit 501. That refusal was honest — CP-4 handed
+    litellm's ``CustomStreamWrapper`` to FastAPI, which could not serialise it,
+    so the client got a 500 **and** a phantom zero-token usage row was committed
+    for a completion nobody received. Both defects are fenced below as
+    permanent, not merely fixed.
+    """
+
+    # ── done-when 1 ──
+    def test_the_relayed_frames_are_byte_identical_to_the_providers(
+            self, client, org_key):
         _, key = org_key
+        router_mod.set_provider_call(_streaming_provider())
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            assert r.status_code == 200
+            body = b"".join(r.iter_bytes())
+
+        # Frame boundaries, ordering and the sentinel, with nothing
+        # re-serialised in between.
+        assert body == b"".join(PROVIDER_FRAMES)
+
+    def test_the_response_is_an_event_stream(self, client, org_key):
+        _, key = org_key
+        router_mod.set_provider_call(_streaming_provider())
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            assert r.headers["content-type"].startswith("text/event-stream")
+            # A buffering proxy turns a stream into one late blob.
+            assert r.headers.get("x-accel-buffering") == "no"
+            r.read()
+
+    def test_the_sentinel_is_added_when_the_provider_omits_it(
+            self, client, org_key):
+        # A client that never sees `[DONE]` waits for its own timeout.
+        _, key = org_key
+        router_mod.set_provider_call(
+            _streaming_provider(PROVIDER_FRAMES[:-1]))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        assert body.endswith(b"data: [DONE]\n\n")
+        assert body.count(b"data: [DONE]") == 1
+
+    def test_the_router_asks_for_the_usage_frame(self, client, org_key):
+        # Without `include_usage` an OpenAI-compatible provider reports no
+        # counts on a stream at all, and we would be metering a guess.
+        seen: list[dict] = []
+
+        async def _stub(**kwargs):
+            seen.append(kwargs)
+
+            async def _gen():
+                for f in PROVIDER_FRAMES:
+                    yield f
+
+            return _gen()
+
+        _, key = org_key
+        router_mod.set_provider_call(_stub)
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        assert seen[-1]["stream"] is True
+        assert seen[-1]["stream_options"] == {"include_usage": True}
+
+    # ── done-when 2 ──
+    def test_one_stream_writes_one_usage_row(self, client, org_key, db):
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        router_mod.set_provider_call(_streaming_provider())
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        assert TestMetering._count(db, slug) == before + 1
+
+    def test_the_row_carries_the_counts_the_STREAM_reported(
+            self, client, org_key, db):
+        # From the final frame, not from the request and not from a guess.
+        slug, key = org_key
+        router_mod.set_provider_call(_streaming_provider())
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT prompt_tokens, completion_tokens, cached_tokens "
+                "FROM usage_event u JOIN organization o "
+                "ON o.id = u.organization_id WHERE o.slug = :s "
+                "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+
+        assert tuple(row) == (1200, 40, 900)
+
+    # ── done-when 4 ──
+    def test_a_stream_that_never_starts_writes_no_usage_row(
+            self, client, org_key, db):
+        """The phantom-row defect that produced the 501, as a permanent fence."""
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        router_mod.set_provider_call(_streaming_provider(fail_before_first=True))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        assert TestMetering._count(db, slug) == before
+        # The stream still closes cleanly, or the client waits for a timeout.
+        assert body == b"data: [DONE]\n\n"
+
+    def test_an_empty_stream_writes_no_usage_row(self, client, org_key, db):
+        # A provider that opens the stream and sends nothing has delivered
+        # nothing. `started` is False, so there is nothing to meter.
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        router_mod.set_provider_call(_streaming_provider([]))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        assert TestMetering._count(db, slug) == before
+
+    # ── done-when 5 ──
+    def test_a_refused_stream_never_opens_the_stream(
+            self, client, org_key, db, gate_on):
+        """A refusal inside an SSE frame is one every client renders as content.
+
+        So the balance gate has to answer with its own status code, before a
+        single frame exists.
+        """
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        opened: list[bool] = []
+
+        async def _stub(**kwargs):
+            opened.append(True)
+            raise AssertionError("the gate let a refused stream reach the provider")
+
+        router_mod.set_provider_call(_stub)
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": "tier-balanced", "stream": True,
             "messages": [{"role": "user", "content": "x"}]})
 
-        assert r.status_code == 501
-        assert "CP-4b" in r.json()["detail"]
-
-    def test_a_refused_stream_writes_no_usage_row(self, client, org_key, db):
-        slug, key = org_key
-        before = TestMetering._count(db, slug)
-        client.post("/v1/chat/completions", headers=key, json={
-            "model": "tier-balanced", "stream": True,
-            "messages": [{"role": "user", "content": "x"}]})
+        assert r.status_code == 402, r.text
+        assert not r.headers["content-type"].startswith("text/event-stream")
+        assert r.json()["detail"]["reason"] == "insufficient_credits"
+        assert opened == []
         assert TestMetering._count(db, slug) == before
+
+    def test_an_unknown_tier_refuses_a_stream_with_400(self, client, org_key):
+        # The same refusal the buffered path gives. `stream: true` is not a way
+        # around D32.7's "name a tier, not a model".
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "deepseek/deepseek-v4-pro", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert r.status_code == 400
+        assert "name a tier" in r.json()["detail"]
+
+
+class TestTheRelayItself:
+    """done-when 3, and the generator mechanics the HTTP tests cannot reach.
+
+    A client that disconnects mid-stream has still cost us the provider call.
+    Dropping that row is a revenue hole that scales with flaky networks, and
+    writing it twice is the credibility event `request_id UNIQUE` exists to
+    prevent. So the relay is exercised directly: the HTTP layer cannot be made
+    to abandon a response deterministically.
+    """
+
+    @staticmethod
+    async def _drive(frames, *, stop_after=None):
+        finished: list[tuple] = []
+
+        async def _src():
+            for f in frames:
+                yield f
+
+        gen = router_mod.relay_stream(
+            _src(), on_finish=lambda u, s: finished.append((u, s)))
+        got = []
+        try:
+            async for frame in gen:
+                got.append(frame)
+                if stop_after is not None and len(got) >= stop_after:
+                    break
+        finally:
+            await gen.aclose()
+        return got, finished
+
+    def test_an_abandoned_stream_is_metered_once(self):
+        got, finished = asyncio.run(
+            self._drive(PROVIDER_FRAMES, stop_after=1))
+
+        assert got == PROVIDER_FRAMES[:1]
+        # EXACTLY once, and it did start, so the provider call is charged.
+        assert len(finished) == 1
+        assert finished[0][1] is True
+
+    def test_a_completed_stream_reports_finish_exactly_once(self):
+        got, finished = asyncio.run(self._drive(PROVIDER_FRAMES))
+
+        assert got == PROVIDER_FRAMES
+        assert len(finished) == 1
+        usage, started = finished[0]
+        assert started is True
+        assert (usage.prompt_tokens, usage.completion_tokens) == (1200, 40)
+
+    def test_the_LAST_usage_report_wins_not_the_first(self):
+        """Some providers report usage cumulatively, on more than one frame.
+
+        The final frame is the only one that carries the whole call. Keeping
+        the first report would under-bill every such provider, silently and
+        forever. No fixture with usage on ONE frame can tell the two rules
+        apart, which is why this one carries it on two.
+        """
+        partial = (
+            b'data: {"id":"c","choices":[{"index":0,"delta":{"content":"a"}}],'
+            b'"usage":{"prompt_tokens":1200,"completion_tokens":5}}\n\n'
+        )
+        final = (
+            b'data: {"id":"c","choices":[{"index":0,"delta":{},'
+            b'"finish_reason":"stop"}],'
+            b'"usage":{"prompt_tokens":1200,"completion_tokens":40}}\n\n'
+        )
+        _, finished = asyncio.run(self._drive([partial, final]))
+
+        usage, started = finished[0]
+        assert started is True
+        assert usage.completion_tokens == 40, (
+            "the LAST report is the whole call; the first is only a prefix"
+        )
+
+    def test_a_source_that_yields_nothing_reports_started_false(self):
+        _, finished = asyncio.run(self._drive([]))
+
+        assert len(finished) == 1
+        assert finished[0][1] is False
+
+    def test_a_provider_error_mid_stream_still_meters_what_arrived(self):
+        """We paid for the frames that did arrive, so they are still metered."""
+        async def _src():
+            yield PROVIDER_FRAMES[0]
+            raise RuntimeError("provider dropped the connection")
+
+        finished: list[tuple] = []
+
+        async def _run():
+            gen = router_mod.relay_stream(
+                _src(), on_finish=lambda u, s: finished.append((u, s)))
+            got = []
+            with pytest.raises(RuntimeError):
+                async for frame in gen:
+                    got.append(frame)
+            return got
+
+        got = asyncio.run(_run())
+
+        assert got == PROVIDER_FRAMES[:1]
+        assert len(finished) == 1
+        assert finished[0][1] is True
+
+    def test_an_object_source_is_serialised_once_and_only_once(self):
+        # The production litellm path yields OBJECTS, not frames. `frame_of` is
+        # the one serialisation point, and it must produce one SSE frame.
+        got, _ = asyncio.run(self._drive([
+            {"id": "x", "choices": [{"delta": {"content": "hi"}}]}]))
+
+        assert got[0] == (
+            b'data: {"id": "x", "choices": [{"delta": {"content": "hi"}}]}\n\n')
+        assert got[-1] == b"data: [DONE]\n\n"
 
 
 class TestFailureShapes:

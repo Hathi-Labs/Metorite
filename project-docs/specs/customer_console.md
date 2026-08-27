@@ -310,9 +310,9 @@ Postgres, **4** database-free structural fences in
 `test_console_dependency_boundary.py` and **7** in
 `test_signin_resolve_route.py` · CP-3 was **rejected by independent
 verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
-**CP-4b (streaming pass-through) MINTED 2026-08-18, spec only** — it carries the
-half of CP-4's done-when that was never met (`stream: true` returns 501) and
-CP-4's ✅ is amended accordingly ·
+**CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
+half of CP-4's done-when that was never met (`stream: true` returned 501).
+The 501 and its two fences are gone, and CP-4's ✅ now stands whole ·
 **CP-9 (the `payment_provider` seam — Razorpay) MINTED 2026-08-18, spec only.**
 It is the ticket **three documents already cited and nobody had written**: §2's
 non-goal, `work_plan.md` §6(b) and §3 D35.5/D42.1 all pointed at **CP-8** for
@@ -1196,7 +1196,8 @@ exists per completion; a retried `request_id` writes **one** row, not two.
 > the half that matters most: every agent runtime streams through this choke
 > point, so CP-4 as it stands cannot carry a single real caller.
 
-**CP-4b · Streaming pass-through.** 🔲 **MINTED 2026-08-18** — CP-4's owed
+**CP-4b · Streaming pass-through.** ✅ **BUILT 2026-08-27**
+(`ws31-cp4b-streaming`) — CP-4's owed
 second half, carved out of its done-when rather than left as an unmet clause
 under a ✅. Make `stream: true` work end to end on the Customer Console's
 `POST /v1/chat/completions`: relay the provider's SSE frames to the client
