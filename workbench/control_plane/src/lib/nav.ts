@@ -366,14 +366,12 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Themes · colour mode · density · accent",
         launch: "live",
       },
-      {
-        href: "/settings/models",
-        label: "Models",
-        icon: "Cpu",
-        note: "LLMs · tiers · providers",
-        feature: "models",
-        launch: "preview", // an operator concern, not a customer one
-      },
+      // ⚠️ NO MODELS ENTRY, and no route behind it either. CP-5 deleted
+      // `settings/models/page.tsx` on 2026-08-28 (D32.7, §5.1): model
+      // operations moved to the OPERATOR console, which is where the
+      // keys and the rate card already lived. A customer never sees a
+      // model, so there is nothing here to gate — `preview` was hiding
+      // a surface that should not exist in this product at all.
       {
         href: "/agents",
         label: "Agent Registry",
