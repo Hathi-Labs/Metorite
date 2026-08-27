@@ -238,16 +238,39 @@ def test_no_tenant_module_imports_customer_console() -> None:
 #: A **FIFTH** importer is a new call site that no runtime assertion sees until a
 #: customer's seat cap is exhausted. Widening this list again needs the same
 #: thing this entry got: the argument, written down, next to the name.
+#:
+#: ⚠️ **The FIFTH entry — ``routes/v1_compat.py``, WS-31 CP-11 slice 3 — and the
+#: argument for it, because the paragraph above is this list's own rule.**
+#: It calls ``chat_completion_on_console`` and **allocates no seat**. It touches
+#: neither ``resolve_for_signin`` nor any registry write: it spends AI CREDITS,
+#: which is a different resource with a different door and a different table —
+#: a ``cc_live_`` organization key against ``POST /v1/chat/completions``, not the
+#: ``cc_depl_`` deployment key every other entry here presents
+#: (``customer_console.md`` §6B.2 tabulates the pair).
+#:
+#: ⚠️ **This entry is the ONE that is not session-email-only, and that is not a
+#: loophole.** The other four carry a provider-verified session email because
+#: they name a PERSON to the registry. This one names nobody: the organization
+#: is a property of the credential (``KeyCaller``), and the route makes no tenant
+#: claim from its body or its headers — the ``X-CC-*`` values it forwards are
+#: attribution for a usage row, never identity, and the Console binds them to
+#: fields it never authorises against. So R11 holds here by there being no claim
+#: to make, which is the same way the CP-2h seat READ satisfies it.
+#:
+#: What stays forbidden is unchanged: wiring ANY of these functions behind
+#: ``resolve_access`` is farmable seat burn.
 _RESOLVE_CLIENT = "packages/acb_auth/acb_auth/console_resolve.py"
 _THE_ONE_CALLER = "apps/services/gateway/gateway/routes/signin.py"
 _THE_SIGNUP_CALLER = "apps/services/gateway/gateway/routes/signup.py"
 _THE_SEAT_CALLER = "apps/services/gateway/gateway/routes/seats.py"
 _THE_INVITE_CALLER = "apps/services/gateway/gateway/routes/admin/members.py"
+_THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
 _ALLOWED_CALLERS = (
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
     _THE_INVITE_CALLER,
+    _THE_ROUTER_CALLER,
 )
 
 
@@ -267,7 +290,7 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly FOUR callers, and all are named here.
+    """``console_resolve`` has exactly FIVE callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
@@ -281,9 +304,17 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     capped ``seat_admin`` door, which allocates NO seat via ``resolve_for_signin``)
     and ``routes/admin/members.py`` (``invite_member_on_console`` — the
     ``member_admin`` door, which writes a membership row and likewise allocates
-    NO seat). All four are **session-email-only** routes; what stays forbidden is
-    wiring any of them behind ``resolve_access`` (six callers, one a room
-    fan-out) = farmable seat burn. A FIFTH is the drift.
+    NO seat). Those four are **session-email-only** routes.
+
+    ⚠️ FOUR → FIVE by WS-31 CP-11 slice 3 (2026-08-27): ``routes/v1_compat.py``
+    (``chat_completion_on_console`` — the AI Router hop). It is the one entry
+    that names no person, because the organization is a property of the
+    ``cc_live_`` credential and the route makes no tenant claim at all. The
+    argument is written beside the name above.
+
+    What stays forbidden is unchanged: wiring any of them behind
+    ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.
+    A SIXTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -306,10 +337,12 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly four sites may "
+        "It allocates a SEAT (`resolve_for_signin`). Exactly five sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
-        "the customer seat-admin write, and the member-invite mirror — each with "
-        "a provider-verified session email. Never `resolve_access` (six callers, "
+        "the customer seat-admin write, the member-invite mirror and the CP-11 "
+        "AI Router hop (which allocates no seat and names no person). The first "
+        "four each carry a provider-verified session email. "
+        "Never `resolve_access` (six callers, "
         "one of them a fan-out over a room's participants), never "
         "`_with_resolved_access` (every authenticated request). "
         "customer_console.md §6 clause 11 · CP-2c slice 2 · WS-30 SC-2a · "

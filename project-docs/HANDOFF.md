@@ -841,47 +841,6 @@ line — never reclaim a number by deleting the other entry.
   §7.4 · §9 D-F · T-13
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
-### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
-- **⚠️ SLICE 2 IS BUILT (2026-08-27). The entry stays open, and that is correct.**
-  `acb_auth.console_resolve.chat_completion_on_console` is the client, and
-  `CUSTOMER_CONSOLE_ORG_KEY` is the setting. **Nothing calls either.** Only
-  slice 3 closes this entry.
-- **Two things slice 3 hits that no other slice did.** Read both before you
-  start. (1) `test_console_dependency_boundary.py` allows **exactly four**
-  importers of `console_resolve`, by equality. `v1_compat.py` is a fifth, so
-  widen `_ALLOWED_CALLERS` and write the argument beside the name — the list's
-  own rule. (2) The Router answers **501** for a streaming request, because
-  CP-4b is unbuilt. The client returns that as a verdict, so slice 3 must fall
-  back or refuse. It must never de-stream in silence.
-- **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
-  → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and
-  the hop does not exist. ⚠️ Do **not** check by grepping for `CUSTOMER_CONSOLE_URL`
-  repo-wide — it is read by `console_resolve.py`, `seats.py` and `signin.py` for
-  **sign-in and seats**, never for an LLM call, so a repo-wide grep reads as "wired" while
-  the serving path is untouched.
-- **Why:** 🔴 **This is the ticket that makes CP-10 matter.** `v1_compat.py`'s own header
-  says it *"routes through the litellm SDK directly (no proxy)"*, so every model, tier
-  binding, rate card and provider key configured in the Operator Console is **inert as far
-  as the product is concerned**. `work_plan.md` §6 (d) recorded the shape of this on
-  2026-08-18 — *"CP-4 ships dark by having no caller, and this gate binds the first caller
-  ticket, which is where the flag arrives"* — and **that ticket was never minted**. It is
-  CP-11.
-  **Order (D57.5): CP-10 slice 1 → CP-11 → the rest of CP-10.** CP-11 cannot be proven
-  without a provider key to call with; the remaining CP-10 slices are not on its critical
-  path and must not delay it.
-  ⚠️ **Four things §6B.5 says will go wrong if not decided inside the slice:** streaming
-  (the Router's pass-through is **CP-4b, unbuilt** — either land it or refuse streaming
-  explicitly, never de-stream silently); latency (one hop on the interactive path —
-  measure it, do not assume); `_ensure_keys_loaded()` must not run for Router-served
-  calls; and the `X-CC-*` attribution headers are **slice 3's job**, because an
-  unattributed `usage_event` cannot become a per-member cap or a usage statement.
-  ⚠️ **Do not delete `v1_compat.py`'s local path** — it is BYOK and flag-off, and R6
-  forbids removing the old path in the release that adds the new one.
-  🔴 Wiring a live deployment's key and flipping `ROUTER_SERVING_ENABLED` are §6 (d)/(e).
-- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9b · §4 (single-owner) · §6 (d) ·
-  **D57** · `specs/customer_console.md` **CP-11** and ⭐ its **§6B**
-- **Added:** 2026-08-26 · AI credits + keys session
-
 ### H-42 · Price the AI rate card, then flip the spend gate — in that order · [OWNER]
 - **Check:** on the Console database,
   `SELECT count(*) FROM model_rate_card WHERE input_credits_per_1k > 0;` → `0` means the
@@ -1239,6 +1198,51 @@ line — never reclaim a number by deleting the other entry.
   see the mode. Pass it down, or accept the Console's own 403.
 - **Authority:** `specs/operator_identity_and_access.md` §6.3 · §5 · **D64.4**
 - **Added:** 2026-08-27 · WS-31 CP-11 slice 1 session
+
+### H-68 · CP-4b: a streamed call is not routed, so it is not metered · [AGENT]
+- **Check:** `rg -n "router_stream_served_locally" apps/services/gateway/gateway/routes/v1_compat.py`
+  → a hit means the carve-out is still there, and this entry is still real.
+- **⚠️ This is the biggest hole in CP-11, and it opens the day somebody flips
+  the flag.** The Console Router answers **501** to a streaming request, because
+  CP-4b is spec-only and unbuilt. So slice 3 serves a stream on the LOCAL
+  litellm path, and a local call is metered nowhere.
+- **Why the carve-out is right anyway.** Routing a stream would break every
+  agent runtime, and all of them stream. `customer_console.md` §6B.5 forbids the
+  other repair by name: *"silently de-streaming a chat UI is a behaviour change
+  nobody will attribute to this flag."* The gap is loud instead — a WARNING on
+  every streamed call.
+- **⚠️ Read the number before you flip anything.** Most traffic on this box
+  streams. With `ROUTER_SERVING_ENABLED` on and CP-4b unbuilt, the Console
+  meters a MINORITY of calls. A revenue report will show that as low usage
+  instead of as a missing feature.
+- **What closes it:** build **CP-4b**, the Router's streaming pass-through. Then
+  delete the `stream` arm of `_router_should_serve`.
+- **Authority:** `specs/customer_console.md` **CP-4b** · §6B.5 hazard 1 ·
+  `tests/unit/test_v1_router_serving.py`
+- **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
+
+### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
+- **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No
+  line, or `0`, means the hop is inert and this is still pending.
+- **What the flip does.** `/v1/chat/completions` stops calling litellm locally
+  and calls the Console Router instead. The tier binding, the rate card and OUR
+  provider account then decide every non-streaming call.
+- **⚠️ Three things must be true FIRST, and none of them is code.**
+  1. A provider credential is installed on the Console (**H-40 built the door**,
+     and `provider_credential` held 0 rows when I measured it on 2026-08-27).
+  2. `CUSTOMER_CONSOLE_ORG_KEY` is on the box. Mint it from the operator
+     console's **API keys** panel, which CP-11 slice 1 added.
+  3. You have read **H-68**. Streaming stays unmetered until CP-4b lands.
+- **⚠️ A routed call that fails FAILS (D57.7).** It does not fall back to
+  litellm. So an unreachable Console means the AI stops, instead of quietly
+  serving unmetered traffic. That is the intended trade, and it is why the flag
+  is worth flipping deliberately and not by default.
+- **⚠️ On a SHARED box one org key cannot be right for every tenant.** The
+  setting is correct on a single-org silo only. Somebody must resolve the key
+  per-organization before this goes on anywhere else.
+- **Authority:** `work_plan.md` §6 (d)/(e) · **D57** · **D57.7** ·
+  `specs/customer_console.md` §6B.7
+- **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
 
 ---
 
