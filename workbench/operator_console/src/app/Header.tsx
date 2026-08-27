@@ -14,6 +14,7 @@ import Elevation from "./Elevation";
 const NAV = [
   { href: "/", label: "Customers" },
   { href: "/activity", label: "Activity" },
+  { href: "/models", label: "Models" },
   { href: "/operators", label: "Operators" },
 ];
 

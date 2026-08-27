@@ -250,6 +250,27 @@ export const openElevation = (body: unknown, d?: Deps) =>
 export const closeElevation = (d?: Deps) =>
   callConsole("/operators/elevate", { method: "DELETE" }, d ?? {});
 
+// The MODEL catalog (CP-10 slice 3) — capabilities, tier bindings and rates.
+//
+// ⚠️ **Not the same catalog as `catalog()` above**, which is the priced PLAN
+// ladder (`/billing/catalog`). The Console has carried both names since CP-6
+// and this file inherits the ambiguity rather than inventing a third word for
+// one of them. These four map to the Console's own `/catalog/*` paths.
+//
+// ⚠️ The two WRITES that matter are `admin` AND need a live elevation
+// window (§5 matrix). The Console enforces that; nothing here does.
+export const readModelCatalog = (d?: Deps) =>
+  callConsole("/catalog/models", { method: "GET" }, d ?? {});
+
+export const declareCapability = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/capabilities", { method: "POST", body }, d ?? {});
+
+export const bindTier = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/bindings", { method: "POST", body }, d ?? {});
+
+export const setModelRate = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/rates", { method: "POST", body }, d ?? {});
+
 // The audit trail (CP-12f). Filters and the opaque page cursor ride as query
 // parameters, and every one of them is optional.
 export const readActivity = (query: string, d?: Deps) =>
