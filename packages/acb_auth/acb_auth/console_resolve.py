@@ -172,10 +172,12 @@ __all__ = [
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleMemberWriteUnavailable",
     "ConsoleProvisionUnavailable",
+    "ConsoleRouterUnavailable",
     "ConsoleSeatWriteUnavailable",
     "ReconcileSummary",
     "ResolveDecision",
     "assign_seat_on_console",
+    "chat_completion_on_console",
     "invalidate",
     "invite_member_on_console",
     "is_wired",
@@ -183,6 +185,7 @@ __all__ = [
     "reconcile",
     "release_seat_on_console",
     "resolve_for_signin",
+    "router_is_wired",
     "seat_overview_on_console",
 ]
 
@@ -390,17 +393,22 @@ def _within(record: _Record, bound_seconds: float) -> bool:
 
 # ── The HTTP hop ────────────────────────────────────────────────────────────
 
-def _new_http_client() -> Any:
+def _new_http_client(timeout: float = _HTTP_TIMEOUT_SECONDS) -> Any:
     """The one place an HTTP client for the Console is built.
 
     A function rather than an inline constructor so the timeout is configured
     once — and so a test can drive the four outcomes through a real
     ``httpx.MockTransport`` instead of stubbing out the request-building code
     that is half of what there is to get wrong here.
+
+    ⚠️ The timeout is a PARAMETER as of CP-11 slice 2, and the default is
+    unchanged. The Router hop needs a far longer one than a sign-in resolve
+    does (see ``_ROUTER_TIMEOUT_SECONDS``), and the alternative was a second
+    client factory — which is the thing this module's own note forbids.
     """
     import httpx
 
-    return httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
+    return httpx.AsyncClient(timeout=timeout)
 
 
 async def _post_resolve(
@@ -1520,3 +1528,167 @@ async def resolve_for_signin(
         registry_status=org.get("status"),
         source="console",
     )
+
+
+# ── The AI Router client (CP-11 slice 2) ────────────────────────────────────
+#
+# ⚠️ **Still the ONE Console httpx client** (the note above `_post_provision`).
+# This is the tenant box's path to the Console's AI Router
+# (`POST /v1/chat/completions`) and it lives HERE for the reason the seat client
+# does: a second Console client anywhere is root `CLAUDE.md` §5's defect by name.
+#
+# ⚠️ **A DIFFERENT CREDENTIAL from every arm above it.** Resolve, provision and
+# seat all present `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` (`cc_depl_`). This arm
+# presents `CUSTOMER_CONSOLE_ORG_KEY` (`cc_live_`), because the Router's door is
+# `KeyCaller` and the ORGANIZATION is a property of that credential.
+# `customer_console.md` §6B.2 tabulates the pair — they are the most confusable
+# thing in the system. So `is_wired()` is the wrong question here, and
+# `router_is_wired()` is the right one.
+#
+# ⚠️ **SHIPS DARK — nothing calls this.** `v1_compat.py` still serves
+# `/v1/chat/completions` from litellm directly. Moving it behind
+# `ROUTER_SERVING_ENABLED` is CP-11 slice 3, and that slice owns §6B.5's four
+# hazards (streaming, latency, `_ensure_keys_loaded`, attribution).
+
+#: A completion is not a sign-in. `_HTTP_TIMEOUT_SECONDS` is 5s, chosen so an
+#: unreachable Console degrades inside a person's patience. Applied to a model
+#: call it would abort essentially every real completion. This is long enough
+#: for a slow model and still bounded, so a wedged Router cannot pin a gateway
+#: worker for ever.
+_ROUTER_TIMEOUT_SECONDS = 120.0
+
+#: The Router's own "I cannot do that" for a streaming request. It is a VERDICT
+#: and not an outage, even though it is a 5xx: CP-4b is unbuilt, the Console
+#: refuses EXPLICITLY rather than silently de-streaming, and slice 3 has to see
+#: that answer to decide what to do about it (§6B.5 hazard 1).
+_ROUTER_NOT_IMPLEMENTED = 501
+
+
+class ConsoleRouterUnavailable(Exception):
+    """The Router produced no answer we could relay.
+
+    Transport-only, the same line :func:`_post_seat_call` draws: the box is
+    unwired, the network failed, or the Console answered with a status proving
+    no ANSWER was produced (5xx, 401, 408, 429).
+
+    A genuine verdict is NOT this. It comes back as ``(status_code, body)``,
+    and four of them carry meaning the caller must not flatten into "outage":
+
+    * **402** — the balance gate refused (CP-6). The tenant has to see "out of
+      credits" as itself.
+    * **400** — an unknown tier. A misconfigured agent must be visible, not
+      quietly billed (D32.7).
+    * **403** — the per-run circuit breaker.
+    * **501** — streaming, which CP-4b has not built.
+    """
+
+
+def router_is_wired() -> bool:
+    """Whether this box can reach the Console's AI Router.
+
+    BOTH the address and the ORG key, for :func:`is_wired`'s reason: either one
+    alone is a misconfiguration rather than a partial capability.
+
+    ⚠️ Deliberately SEPARATE from :func:`is_wired`. A box can be wired for
+    sign-in resolution and not for AI, and one predicate for both would arm one
+    capability the moment somebody configured the other.
+    """
+    settings = get_settings()
+    return bool(
+        settings.customer_console_url.strip()
+        and settings.customer_console_org_key.strip()
+    )
+
+
+def _attribution_headers(
+    *,
+    member: str | None,
+    agent: str | None,
+    module_slug: str | None,
+    run_id: str | None,
+) -> dict[str, str]:
+    """The ``X-CC-*`` headers that let a ``usage_event`` answer *who burned it*.
+
+    ⚠️ §6B.5 hazard 4: an unattributed usage row can never become a per-member
+    cap (CP-7) or a usage statement (SC-4f), so these are not a later nicety.
+
+    Every one is OPTIONAL on the wire and the Console binds an absent header to
+    ``None``. An EMPTY value is therefore omitted rather than sent, because
+    sending it would record the empty string as a member — which reads as an
+    attribution nobody made rather than as the absence of one.
+    """
+    pairs = (
+        ("X-CC-Member", member),
+        ("X-CC-Agent", agent),
+        ("X-CC-Module", module_slug),
+        ("X-CC-Run", run_id),
+    )
+    return {name: value for name, value in pairs if value}
+
+
+async def chat_completion_on_console(
+    payload: dict[str, Any],
+    *,
+    member: str | None = None,
+    agent: str | None = None,
+    module_slug: str | None = None,
+    run_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Serve one completion through the Console Router, on OUR provider account.
+
+    Returns the Console's ``(status_code, body)`` for the caller to relay, and
+    raises :class:`ConsoleRouterUnavailable` when no answer was produced.
+
+    ⚠️ **``payload["model"]`` must name a TIER, not a model.** The Console 400s
+    a bare model id rather than coercing it to a default (D32.7). That refusal
+    is a VERDICT this function returns, never an exception it raises.
+
+    ⚠️ **THERE IS NO RETRY, and the omission is deliberate.** Every other arm in
+    this module tolerates a retry because a resolve is idempotent. A completion
+    is not: the Console meters and CHARGES on the way through, so blindly
+    retrying a request that actually succeeded bills the customer twice for one
+    answer. An outage fails closed and hands the decision to the caller.
+    """
+    if not router_is_wired():
+        # Ship-dark: an unwired box has no Router to call. Slice 3's flag also
+        # guards this, and this is the same guarantee one layer down.
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_org_key.strip()
+
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id
+        )
+    )
+
+    try:
+        client = _new_http_client(_ROUTER_TIMEOUT_SECONDS)
+        async with client:
+            response = await client.post(
+                f"{base}/v1/chat/completions", headers=headers, json=payload
+            )
+    except Exception as exc:
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+    # The verdict-vs-outage line, with ONE carve-out from the seat arm's rule.
+    # 501 is a 5xx and is nonetheless an ANSWER: the Router saying CP-4b is
+    # unbuilt so streaming is refused. Folding it into the outage branch would
+    # report an unreachable Console to somebody whose real problem is that they
+    # asked for a stream.
+    status = response.status_code
+    if status != _ROUTER_NOT_IMPLEMENTED and (
+        status >= 500 or status in (401, 408, 429)
+    ):
+        raise ConsoleRouterUnavailable(f"HTTP {status}")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return status, body
