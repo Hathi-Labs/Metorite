@@ -9,6 +9,8 @@
 // only teaches them to guess URLs. What a role may *do* is decided by the
 // Console's §5 matrix, on the request, not by which links this file renders.
 
+import Elevation from "./Elevation";
+
 const NAV = [
   { href: "/", label: "Customers" },
   { href: "/activity", label: "Activity" },
@@ -35,6 +37,7 @@ export default function Header() {
           </a>
         ))}
       </nav>
+      <Elevation />
       <button type="button" className="linklike" onClick={signOut}>
         Sign out
       </button>

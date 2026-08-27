@@ -403,3 +403,37 @@ pre.token {
   word-break: break-all;
   user-select: all;
 }
+
+/* The elevation window control (CP-12g). Sits in the top bar beside sign-out,
+   because a standing destructive privilege must be visible wherever you are —
+   not on a settings page you have to go looking for. */
+.elevation {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+
+.elevation input {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+/* Amber, not red: an open window is a STATE the operator chose, not an error.
+   Red here would train people to ignore red. */
+.elevation.elevated {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: #fdf1d6;
+  color: #7a4b00;
+  font-weight: 600;
+}
+
+.elevation-error {
+  color: #a11;
+  max-width: 28rem;
+}
