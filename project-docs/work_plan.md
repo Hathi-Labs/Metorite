@@ -3562,6 +3562,52 @@ by D15/D16) — read their banners before citing either.
   rename and delete one.** Otherwise members hold structure in their own data
   that they cannot edit. That constraint already sits in H-29 and this is why.
 
+
+- **D66 — The customer never brings a model, and never sees one. The AI surface
+  the customer gets is spend, not configuration.** *(owner call, 2026-08-27,
+  taken in two parts in one session. Owning spec:
+  **`specs/customer_console.md`** §5.1 + §4.5. Board: **WS-31**, ticket series
+  **CP-7** and **CP-11**.)*
+
+  **What forced it.** `customer_console.md` §5.1 already said the provider,
+  model and tier tabs leave the customer product. Nothing enforced it. Two
+  server doors still wrote a provider API key. The first door's failure branch
+  opened the second one. The spec named the replacement surface *"credits, burn
+  and per-member caps"* and then gave it no shape.
+
+  1. **BYOK is OFF for the customer.** ✅ **BUILT — CP-11 slice 4.** The
+     `byok_enabled` setting defaults to `False`, and both write doors refuse
+     with 403. Reading an installed key is untouched, because the product runs
+     on those keys while `ROUTER_SERVING_ENABLED` is off. ⚠️ *"For the time
+     being"* is the owner's own framing. BYOK stays a **tier**, not an
+     exception (§3.4), and an operator can turn it on for one deployment.
+
+  2. **A failure must never turn it back on.** This is **D57.7 one layer
+     down**. A Router outage that re-opened the key doors would move a paying
+     customer onto their own keys and stop metering them. The fence is
+     `tests/unit/test_byok_disabled.py`, which fails if any service names the
+     environment variable at all.
+
+  3. **The customer's AI view shows ACTIVITY and COST, never a model.** This
+     executes **D32.7**, and it corrects an assumption. The Live Activity app
+     is **not** that view: it reads a tenant-local Redis rollup, reports **USD**
+     and breaks down **by model**. The product sells **₹10 credits** (D19.2) and
+     the Console holds the number we bill on. Two sources cannot both be the
+     bill.
+
+  4. **An admin sees per-member usage and cost, and sets a monthly budget.**
+     The engine exists and is unwired: `member_ai_cap.monthly_credits`,
+     `credits.decide_member_cap`, degrade-to-`tier-fast` by default, and the
+     80% warning. **CP-7 owns it.** ⚠️ A cap stays a **policy against the org
+     pool, never a sub-wallet** (D32.8). Raising one member's budget mid-month
+     is a cap edit, and it is not a transfer of credits.
+
+  5. **This is a spec, not a queue item.** The owner asked for the shape to be
+     recorded and not built. CP-7's done-whens carry the READ half and the
+     top-up. Nothing here dispatches before CP-4b closes the streaming hole
+     (**H-68**), because a usage view that omits most traffic is worse than
+     none.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |
