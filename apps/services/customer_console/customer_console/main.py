@@ -753,6 +753,16 @@ class CompletionRequest(BaseModel):
     """
 
     model: str = "tier-balanced"
+    #: G-3 (D61): **the CALLER declares the task. The Router never sniffs
+    #: the payload.** `vision` uses the same verb as `chat` and differs
+    #: only in which model is bound, so somebody has to say — and
+    #: inference is what D32.7 is hostile to (*'a bare model id is
+    #: rejected 400, not coerced'*).
+    #:
+    #: ⚠️ Defaulting to `chat` is what keeps every existing caller working
+    #: unchanged. It is NOT a coercion: an explicit task that has no
+    #: binding still 400s rather than falling back here.
+    task: str = "chat"
     messages: list[dict[str, Any]]
     #: The caller's own correlation id. Stored as `client_ref`, trusted for
     #: NOTHING — it used to be the metering idempotency key, which let a caller
@@ -934,7 +944,9 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
     return None
 
 
-def _rate_completion(conn, *, model: str, usage: ExtractedUsage) -> Decimal:
+def _rate_completion(
+    conn, *, model: str, usage: ExtractedUsage, task: str = "chat",
+) -> tuple[Decimal, str | None]:
     """Credits drawn by one completion. **Never raises.**
 
     An unpriced model bills zero *loudly* rather than failing the call: the
@@ -949,24 +961,47 @@ def _rate_completion(conn, *, model: str, usage: ExtractedUsage) -> Decimal:
     credential served the call, so a priced card would charge them. Harmless
     while every card is zero, and it must be closed before any real price is
     set — it is recorded in the spec's CP-6 note rather than left as a surprise.
+
+    ⚠️ Returns the UNIT alongside the credits, so the usage row can record
+    what the number was measured in. A row that says `0.4` without saying
+    `minutes` is a number nobody can check afterwards.
     """
+    # ⚠️ Resolving the CARD and RATING it are separate `try` blocks on
+    # purpose. A card that exists but is not priced still knows what it
+    # would be measured IN, and the usage row should say so — otherwise
+    # every row written before the owner prices the card records a NULL
+    # unit, and the day prices arrive the history cannot be read back.
     try:
-        card = resolve_rate_card(conn, model)
-        return quantize_credits(
-            rate_call(
-                card,
-                TokenUsage(
-                    prompt_tokens=usage.prompt_tokens,
-                    completion_tokens=usage.completion_tokens,
-                    cached_tokens=usage.cached_tokens,
-                ),
-            )
+        card = resolve_rate_card(conn, model, task)
+    except UnpricedModel:
+        _log.warning(
+            "router.unpriced_model",
+            extra={"router_model": model, "router_task": task},
+        )
+        return Decimal(0), None
+
+    try:
+        return (
+            quantize_credits(
+                rate_call(
+                    card,
+                    TokenUsage(
+                        prompt_tokens=usage.prompt_tokens,
+                        completion_tokens=usage.completion_tokens,
+                        cached_tokens=usage.cached_tokens,
+                    ),
+                )
+            ),
+            card.unit,
         )
     except UnpricedModel:
         # `router_model`, not `model`: a stdlib LogRecord already owns several
         # short names and a collision raises inside the logging call itself.
-        _log.warning("router.unpriced_model", extra={"router_model": model})
-        return Decimal(0)
+        _log.warning(
+            "router.unpriced_model",
+            extra={"router_model": model, "router_task": task},
+        )
+        return Decimal(0), card.unit
 
 
 # ── Routes ──────────────────────────────────────────────────────────────────
@@ -3623,7 +3658,9 @@ def _record_completion(
             # in the SAME transaction as the usage row, so a retried write that
             # inserts nothing also charges nothing. Zero while the card is
             # unpriced, which is the shipped state until the owner prices it.
-            billed = _rate_completion(conn, model=resolved.model, usage=usage)
+            billed, unit = _rate_completion(
+                conn, model=resolved.model, usage=usage, task=resolved.task,
+            )
             store.record_usage(
                 conn, org_id=org_id,
                 # SERVER-generated. The caller's id is correlation only — see
@@ -3634,6 +3671,13 @@ def _record_completion(
                 user_email=caller.member, agent=caller.agent,
                 module_slug=caller.module_slug, run_id=caller.run_id,
                 model=resolved.model, tier=resolved.tier,
+                task=resolved.task,
+                # ⚠️ `quantity` stays NULL for a token-priced call. The three
+                # token columns already carry it, and a second copy of the
+                # same number is a second thing to disagree with. It is for
+                # the units that have no column — minutes, characters, images.
+                quantity=None,
+                unit=unit,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 cached_tokens=usage.cached_tokens,
@@ -3712,13 +3756,16 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
     with get_engine().begin() as conn:
         try:
-            resolved = resolve_tier(conn, req.model)
+            resolved = resolve_tier(conn, req.model, req.task)
         except TierUnknown:
             # 400, not a silent coercion to a default. A misconfigured agent
             # must be visible rather than quietly billed (D32.7).
             raise HTTPException(
                 status_code=400,
-                detail=f"unknown tier {req.model!r}; name a tier, not a model",
+                detail=(
+                    f"no binding for tier {req.model!r} on task "
+                    f"{req.task!r}; name a tier, not a model"
+                ),
             )
         provider = resolved.model.split("/", 1)[0]
         try:

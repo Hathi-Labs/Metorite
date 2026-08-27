@@ -434,11 +434,13 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             INSERT INTO usage_event
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
-                 completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref)
+                 completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
+                 task, quantity, unit)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
-                 :cached_tokens, :provider_cost_usd, :run_id, :client_ref)
+                 :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
+                 :task, :quantity, :unit)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -458,6 +460,12 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             "provider_cost_usd": fields.get("provider_cost_usd"),
             "run_id": fields.get("run_id"),
             "client_ref": fields.get("client_ref"),
+            # CP-10 slice 2 columns. NULL on a row written before this
+            # existed, and NULL from any caller that does not say — a
+            # guessed unit must not look like a measured one.
+            "task": fields.get("task"),
+            "quantity": fields.get("quantity"),
+            "unit": fields.get("unit"),
         },
     ).first()
 

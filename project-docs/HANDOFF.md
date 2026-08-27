@@ -952,41 +952,6 @@ line — never reclaim a number by deleting the other entry.
   G-2 / G-5** · CLAUDE.md §5
 - **Added:** 2026-08-26 · AI design audit
 
-### H-48 · Implement D61's three slice-2 answers (G-3, G-4, G-5) · [AGENT]
-- **Check:** `rg -n "pricing_mode" infra/customer_console/*.sql` → no hit means D61.4's
-  three-state rate card is unbuilt, and by extension slice 2 has not landed.
-  ⚠️ **THIS CHECK IS NOW STALE AND WOULD LIE.** `pricing_mode` landed on
-  2026-08-27 with CP-10 slice 2, so the grep hits — but that slice built
-  **G-4 and G-5 only**. **G-3 is untouched**: `CompletionRequest` still
-  carries one field (`model`), so a caller cannot declare a task and the
-  Router serves `chat` alone. Read the NEW check instead:
-  `rg -n 'task' apps/services/customer_console/customer_console/main.py`
-  inside `class CompletionRequest` → no hit means G-3 is still open.
-  ✅ **All three are DECIDED (D61.3/D61.4/D61.5) — this entry is now BUILD work, not
-  decision work.** The reasoning below is kept because an implementer who does not know
-  *why* will re-derive the wrong answer.
-- **Why:** All three are five-minute decisions that become expensive retrofits.
-  **G-3 → the CALLER declares; the Router never sniffs (D61.3).** It uses the same verb as
-  chat, so it differs only in which model is bound. Payload sniffing is inference, and
-  D32.7 refuses inference in this exact area. Consequence, intended: a
-  chat call carrying an image silently goes to whatever `(chat, tier)` binds — which may
-  not accept images — and fails at the provider with an error the customer cannot act on.
-  ⚠️ D32.7 is hostile to inference (*"rejected 400, not coerced"*), which argues for the
-  caller declaring.
-  **G-4 → `pricing_mode` ∈ {`unpriced`, `absorbed`, `priced`} (D61.4).** A zero cannot
-  carry three meanings; `absorbed` rates to zero deliberately **and still writes the
-  `usage_event`**, because we want the volume even when we do not charge for it. D19.2 absorbs
-  embeddings into the package price; D60 lists `embed` as a task with a rate card, which
-  reads as billable. The card must distinguish "free on purpose" from "not priced yet",
-  because `rate_call` raises `UnpricedModel` on a zero card **by design** — so an absorbed
-  task hitting that path would **refuse the call**. 📌 The three embedding sites are in
-  ingestion and none goes through `acb_llm/client.py`, so they are not on the Router path
-  today at all.
-  **G-5 → tasks are an allowlist the Router publishes; tiers stay free text (D61.5).** A free-text task lets an operator
-  create a binding the Router cannot serve: a row that looks configured and 500s.
-- **Authority:** `specs/customer_console.md` **§6A.10** · `work_plan.md` D60.11 · D19.2 ·
-  D32.7
-- **Added:** 2026-08-26 · AI design audit
 
 ### H-54 · Configure the Supabase staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
 - **Check:** `ssh` to the box and read the operator console env for

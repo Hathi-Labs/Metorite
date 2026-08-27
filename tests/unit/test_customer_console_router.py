@@ -1268,3 +1268,172 @@ class TestThePerRunCircuitBreaker:
 
         assert _complete(
             client, key, headers={"X-CC-Run": "run-hot"}).status_code == 200
+
+
+# ── G-3: the CALLER declares the task ───────────────────────────────────────
+
+class TestTheCallerDeclaresTheTask:
+    """D61 G-3. **The Router never sniffs the payload.**
+
+    `vision` uses the same provider verb as `chat` and differs only in which
+    model is bound, so somebody has to say which it is. The alternative —
+    inspecting the messages for image parts — is INFERENCE, and D32.7 is
+    hostile to inference in this exact area: *"a bare model id is rejected 400,
+    not coerced, because silent coercion hides a misconfigured agent behind a
+    bill."*
+    """
+
+    def test_the_task_defaults_to_chat_so_no_existing_caller_changes(self):
+        from customer_console.main import CompletionRequest
+
+        assert CompletionRequest(
+            model="tier-fast", messages=[{"role": "user", "content": "x"}]
+        ).task == "chat"
+
+    def test_a_caller_may_declare_one(self):
+        from customer_console.main import CompletionRequest
+
+        req = CompletionRequest(
+            model="tier-stt", task="transcribe",
+            messages=[{"role": "user", "content": "x"}],
+        )
+        assert req.task == "transcribe"
+
+    def test_the_router_NEVER_inspects_the_payload_to_guess(self):
+        """The fence for G-3's whole decision.
+
+        ⚠️ Read from the AST, not the text — this module's docstrings discuss
+        `image_url` and sniffing precisely while explaining why it is refused,
+        so a grep would match the prose that forbids it.
+
+        The names below are how payload inspection would actually be written.
+        `_sanitize_messages_for_provider` is a REPAIR, not a decision, and it
+        lives on the tenant side.
+        """
+        import ast
+        import pathlib
+
+        import customer_console.main as main_mod
+
+        src = pathlib.Path(main_mod.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        handler = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+            and n.name == "chat_completions"
+        )
+        names = {
+            s.attr for s in ast.walk(handler) if isinstance(s, ast.Attribute)
+        } | {
+            s.id for s in ast.walk(handler) if isinstance(s, ast.Name)
+        }
+        literals = {
+            s.value for s in ast.walk(handler)
+            if isinstance(s, ast.Constant) and isinstance(s.value, str)
+        }
+        for sniffed in ("image_url", "input_audio", "content_type"):
+            assert sniffed not in literals, (
+                f"the Router reads {sniffed!r} from the payload — that is "
+                "inference, and G-3 says the CALLER declares the task"
+            )
+        assert "task" in names or "task" in literals
+
+
+class TestTaskRoutingEndToEnd:
+    def test_an_unbound_task_is_a_400_and_NOT_the_chat_binding(
+            self, client, org_key):
+        """§6A.9 rule 2. Serving an image request from a text model is D32.7's
+        coercion defect in different clothes — it answers, plausibly, and
+        bills."""
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-fast", "task": "image",
+            "messages": [{"role": "user", "content": "a cat"}]})
+
+        assert r.status_code == 400, r.text
+        assert "image" in r.json()["detail"]
+
+    def test_the_default_chat_path_is_unchanged(self, client, org_key):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "x"}]})
+        assert r.status_code == 200, r.text
+
+    def test_rating_picks_the_card_for_THIS_task_not_the_newest_one(self, db):
+        """⚠️ One model can serve several tasks, at different prices.
+
+        A rating path that looked up by model alone would take the NEWEST card
+        for that model whatever task it priced — so an `image` card added after
+        a `chat` card would silently re-price every chat completion. No fixture
+        with one card per model can tell the two lookups apart, which is why
+        this one writes two.
+        """
+        from customer_console.main import _rate_completion
+        from customer_console.router import ExtractedUsage
+
+        model = f"test/{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            # chat FIRST, image SECOND. The wrong lookup takes the newest.
+            c.execute(text(
+                "INSERT INTO model_rate_card (model, task, unit, "
+                " input_credits_per_1k, output_credits_per_1k, pricing_mode, "
+                " effective_from) VALUES "
+                "(:m, 'chat', 'tokens', 2, 6, 'priced', now() - interval '1 h')"),
+                {"m": model})
+            c.execute(text(
+                "INSERT INTO model_rate_card (model, task, unit, "
+                " input_credits_per_1k, output_credits_per_1k, "
+                " credits_per_unit, pricing_mode, effective_from) VALUES "
+                "(:m, 'image', 'images', 0, 0, 999, 'priced', now())"),
+                {"m": model})
+
+        with db.begin() as c:
+            chat_billed, chat_unit = _rate_completion(
+                c, model=model,
+                usage=ExtractedUsage(prompt_tokens=1000, completion_tokens=500),
+                task="chat",
+            )
+            # ⚠️ The IMAGE call is what distinguishes the two lookups.
+            # `resolve_rate_card` defaults its task to "chat", so
+            # dropping the argument is a NO-OP on a chat call and a
+            # chat-only fixture proves nothing. Measured: the mutation
+            # survived twice before this line existed.
+            img_billed, img_unit = _rate_completion(
+                c, model=model, usage=ExtractedUsage(), task="image",
+            )
+
+        # 1000 fresh input @2 + 500 output @6 = 2 + 3 = 5 credits.
+        assert chat_unit == "tokens"
+        assert chat_billed == Decimal("5.0")
+        # The image card is per IMAGE, and rating it as tokens would
+        # report "tokens" here and bill from the wrong column.
+        assert img_unit == "images", (
+            "the chat card was used to price an image call"
+        )
+
+        with db.begin() as c:
+            c.execute(text("DELETE FROM model_rate_card WHERE model = :m"),
+                      {"m": model})
+
+    def test_the_usage_row_records_the_task_and_the_unit(
+            self, client, org_key, db):
+        """A row that says `0.4` without saying `minutes` cannot be checked."""
+        slug, key = org_key
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "x"}]})
+
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT task, unit, quantity FROM usage_event u "
+                "JOIN organization o ON o.id = u.organization_id "
+                "WHERE o.slug = :s ORDER BY u.created_at DESC LIMIT 1"),
+                {"s": slug}).first()
+
+        assert row[0] == "chat"
+        assert row[1] == "tokens"
+        # ⚠️ NULL on purpose for a token-priced call: the three token columns
+        # already carry the quantity, and a second copy is a second thing to
+        # disagree with. `quantity` is for the units that have no column.
+        assert row[2] is None
