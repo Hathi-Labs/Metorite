@@ -1182,10 +1182,13 @@ line — never reclaim a number by deleting the other entry.
 
 ---
 
-### H-72 · A LIVE app offers the customer a raw model id, and the flag flip breaks it · [AGENT+OWNER]
-- **Check:** `rg -n "Your enabled models"
-  workbench/control_plane/src/app/tasks/components/TaskSettingsModal.tsx`
-  → a hit means the picker is still there, and this is open.
+### H-72 · A saved raw model id in a LIVE app breaks on the flag flip · [OWNER]
+- **Check:** on the box, look for a `task_settings` row whose
+  `chat_model` / `clarify_model` / `atomize_model` / `email_capture_model`
+  does not start with `tier-`. No such row means nobody ever picked one,
+  and this closes with no migration at all.
+  ⚠️ **The picker itself is already gone** (part 1 below). This entry is
+  now only about values ALREADY STORED.
 - **Why:** 🔴 **D32.7 says customers never see a model, and one does.** Found
   while scoping CP-5, which targets the `preview` models page. This is a
   different surface and a live one. The chain is measured, not inferred:
@@ -1206,8 +1209,9 @@ line — never reclaim a number by deleting the other entry.
   product. That is the one who went into settings and chose.
 - **So the trigger is H-69**, the same flip that arms metering.
 - **Two questions, and the second is the owner's:**
-  1. Remove the `optgroup` so only tiers are offered. That is the D32.7 fix
-     and it is small.
+  1. ✅ **DONE 2026-08-27.** The `optgroup` is gone, the fetch that fed it
+     is gone, and `modelVocabulary.test.ts` fails if either returns. This
+     stops NEW model ids. ⚠️ It heals nothing already saved.
   2. ⚠️ **What happens to a value already saved?** A stored `openai/gpt-4o`
      must become *some* tier, and choosing which is a product decision — a
      migration that guessed would silently re-point somebody's work.
