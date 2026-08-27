@@ -1182,6 +1182,47 @@ line — never reclaim a number by deleting the other entry.
 
 ---
 
+### H-72 · A LIVE app offers the customer a raw model id, and the flag flip breaks it · [AGENT+OWNER]
+- **Check:** `rg -n "Your enabled models"
+  workbench/control_plane/src/app/tasks/components/TaskSettingsModal.tsx`
+  → a hit means the picker is still there, and this is open.
+- **Why:** 🔴 **D32.7 says customers never see a model, and one does.** Found
+  while scoping CP-5, which targets the `preview` models page. This is a
+  different surface and a live one. The chain is measured, not inferred:
+  1. `/tasks` is `launch: "live"` in `nav.ts` — one of the nine panes.
+  2. `app/tasks/page.tsx` renders `<TaskSettingsModal />` twice.
+  3. The modal reads `/api/settings/llm/enabled-models` and offers each one
+     under an `optgroup` labelled **"Your enabled models"** (line 174).
+  4. The chosen value saves to `chatModel` / `clarifyModel` / `atomizeModel`
+     / `emailCaptureModel`.
+  5. `AssistantRail.tsx:276` passes `model={chatModel}` into the chat call.
+- **⚠️ The defaults are TIERS**, so nothing is broken today and nothing looks
+  wrong. `tier-powerful`, `tier-balanced`, `tier-fast`. **Only a customer who
+  deliberately picks a model from that group stores a bare model id.**
+- **🔴 That customer's Tasks AI breaks the day `ROUTER_SERVING_ENABLED` flips.**
+  The Console refuses a bare model id with **400** rather than coercing it
+  (D32.7, and `resolve_tier` raises `TierUnknown`). The break stays silent
+  until the flip. It then lands on the customer most engaged with the
+  product. That is the one who went into settings and chose.
+- **So the trigger is H-69**, the same flip that arms metering.
+- **Two questions, and the second is the owner's:**
+  1. Remove the `optgroup` so only tiers are offered. That is the D32.7 fix
+     and it is small.
+  2. ⚠️ **What happens to a value already saved?** A stored `openai/gpt-4o`
+     must become *some* tier, and choosing which is a product decision — a
+     migration that guessed would silently re-point somebody's work.
+     `test_byok_default.py` shows the old orchestrator coerced to
+     `tier-balanced`; D32.7 retired coercion precisely because it hides a
+     misconfiguration behind a bill.
+- **📌 Also check `/email`** — `ai-settings/SettingsTab.tsx` reads the same two
+  endpoints. It is `preview` (WS-17 incomplete), so it is not urgent, but it is
+  the same defect and should go the same way.
+- **Authority:** **D32.7** · `specs/customer_console.md` §6A CP-5 ·
+  `specs/launch_surface.md` §2 (the live nine)
+- **Added:** 2026-08-27 · WS-31 CP-5 scoping session
+
+---
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
