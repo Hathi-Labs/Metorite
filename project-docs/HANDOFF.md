@@ -872,31 +872,30 @@ line — never reclaim a number by deleting the other entry.
   §7.4 · §9 D-F · T-13
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
-### H-40 · CP-10 slice 1: give `provider_credential` a write path · [AGENT]
-- **Check:** `rg -n "INSERT INTO provider_credential" apps/ infra/` → no hit means the
-  table still has **zero writers** and the Router still cannot call a provider on the
-  platform account.
-- **Why:** 🔴 **This is the measured blocker on the entire AI product**, and it is not
-  the one anybody assumed. `router.provider_credential()` SELECTs a table that no
-  migration seeds, no route writes and no script populates — so on a fresh Console
-  database it returns `None` and there is **no way to put our DeepSeek/Anthropic/Groq key
-  in at all.** Metering being unpriced is a separate, later problem; this one stops the
-  first call.
-  **Owner-directed 2026-08-26 as the NEXT thing built** (D56.7). Slice 1 is the operator
-  door: add / list (never returning plaintext) / rotate / revoke, Fernet at rest.
-  ⚠️ **Read `customer_console/router.py` and `infra/customer_console/004_provider_keys.sql`
-  first** — 004's header already argues why this store is *not* `acb_llm.key_store` and
-  must not be merged with it: these are **our** credentials, and putting them on a
-  customer's box is the precise thing D32.1 moved metering here to avoid.
-  ⚠️ **Do not build a new operator UI in slice 3** — the three-tab surface exists at
-  `workbench/control_plane/src/app/settings/models/page.tsx`, on the wrong side of the
-  boundary. Relocate it (D56.1).
-  🔴 Installing a **real** key against the live Console is §6 (e)/(f) — build against
-  fixtures and scratch, and stop.
-- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9 · §4 (single-owner) · **D56** ·
-  `specs/customer_console.md` **CP-10** slice 1 — ⭐ **and its §6A, the artefact-by-artefact refactor inventory** (measured 2026-08-26: what MOVEs, what is REUSEd, what is REWRITTEN-AS-PROXY, what is DELETEd, plus the four decisions the ticket must take deliberately). Read §6A before writing a line — the owner's constraint is **reuse and refactor, do not create new code**, and §6A is what makes that checkable
+### H-40 · CP-10 **slice 2**: the access model and the write routes · [AGENT]
+- **Check:** `rg -n "INSERT INTO tier_binding|INSERT INTO model_rate_card"
+  apps/` → no hit means slice 2 has not started. Tier bindings and rates are
+  still hand-run SQL.
+- **✅ Slice 1 is DONE, 2026-08-27** (`ws31-cp10s1-provider-keys`). The
+  measured blocker is cleared: `provider_credential` now has a write path, so
+  our DeepSeek, Anthropic or Groq key can be installed through a route and
+  `router.provider_credential()` returns it.
+- **⚠️ Nothing is installed yet.** The route exists. Putting a REAL key in
+  against the live Console is `work_plan.md` §6 (e)/(f) and stays an owner
+  act. It also needs `CUSTOMER_CONSOLE_ENCRYPTION_KEY` set on the box, or the
+  route answers 503.
+- **⚠️ Read §6A before slice 2.** The owner's constraint is **reuse and
+  refactor, do not create new code**, and §6A is the inventory that makes it
+  checkable. D60 also re-shapes tier resolution into two steps, and adds the
+  rate card `unit` that three of six tasks cannot be billed without.
+- **⚠️ Do not add an UPDATE path** to `tier_binding` or `model_rate_card`. A
+  mutable rate card destroys the audit trail at the moment a customer
+  disputes a charge. Both are appends with `effective_from`.
+- **Order (D57.5): slice 1 → CP-11 (H-41) → the rest of CP-10.** CP-11 is now
+  unblocked, and it is the ticket that makes any of this reach a customer.
+- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9 · §4 · **D56** ·
+  `specs/customer_console.md` **CP-10** slices 2 to 6 · ⭐ **§6A**
 - **Added:** 2026-08-26 · delivery + model-management decision session
-
 ### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
 - **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
   → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and

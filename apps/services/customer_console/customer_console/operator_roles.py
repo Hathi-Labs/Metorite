@@ -96,6 +96,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # "stored in the clear, indexed, and safe to show or log", so listing them
     # discloses nothing a viewer may not see. The SECRET never leaves `POST`.
     ("GET", "/keys"): _R(VIEWER),
+    # Which providers we hold an account with, and when each was installed.
+    # ⚠️ NO SECRET, and not a fragment of one — `store.provider_credential_
+    # list` does not select the ciphertext column at all. Viewer for the same
+    # reason `GET /keys` is: knowing which vendors serve our customers is
+    # ordinary operational knowledge, and hiding it teaches people to ask.
+    ("GET", "/providers/credentials"): _R(VIEWER),
     ("POST", "/registry/seats/overview"): _R(VIEWER),
     # The audit trail (CP-12f). VIEWER on purpose, and it is the same
     # argument `GET /operators` makes: a record of who did what to our
@@ -124,6 +130,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/keys/revoke"): _R(ADMIN, elevated=True),
     ("POST", "/discounts"): _R(ADMIN, elevated=True),
     ("POST", "/orgs/purge"): _R(ADMIN, elevated=True),
+    # OUR provider accounts (CP-10 slice 1). Installing one is the sharpest
+    # act on this console after a purge: the key it stores is what every
+    # customer's AI call is billed against, and a wrong one stops the
+    # product for everybody. Admin AND a window.
+    ("POST", "/providers/credentials"): _R(ADMIN, elevated=True),
+    ("POST", "/providers/credentials/revoke"): _R(ADMIN, elevated=True),
     # Operator administration — admin only (D64.3), and NOT `elevated`.
     # Adding a colleague is ordinary work an admin does often, and a
     # window on it would train people to keep one open. The four guards
