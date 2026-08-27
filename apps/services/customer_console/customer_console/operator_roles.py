@@ -141,6 +141,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # window on it would train people to keep one open. The four guards
     # in `operators.py` are what make it safe, not a time box.
     ("GET", "/operators"): _R(VIEWER),
+    # Signing MYSELF out is not a privilege (CP-12f2). ⚠️ There is no row
+    # for `POST /operators/session`, and there must not be: that route is
+    # the front door and carries no `Operator` dependency, so it never
+    # reaches this matrix. `test_operator_signin.py` names the ungated
+    # routes out loud so a THIRD one cannot appear unnoticed.
+    ("DELETE", "/operators/session"): _R(VIEWER),
     ("POST", "/operators"): _R(ADMIN),
     # ⚠️ Opening a window is ADMIN and NOT itself `elevated` — a rule that
     # demanded a window to open a window could never be satisfied.

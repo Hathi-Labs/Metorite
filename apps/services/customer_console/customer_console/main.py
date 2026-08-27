@@ -62,6 +62,8 @@ from customer_console import (
     operator_activity,
     operator_elevation,
     operator_roles,
+    operator_sessions,
+    operator_signin,
     operators,
     payments,
     provider_keys,
@@ -975,6 +977,121 @@ class ElevateRequest(BaseModel):
     #: SC-4g's `<reason>:<ref>` grammar. ONE reference vocabulary in this
     #: service, not a second invented here.
     reference: str | None = Field(default=None, max_length=200)
+
+
+# ── CP-12f2: the FRONT DOOR (F8) ───────────────────────────────────────────
+#
+# ⚠️ Declared BEFORE `/operators/{operator_id}`, and that is not cosmetic.
+# FastAPI matches in DECLARATION order, so the path parameter would otherwise
+# swallow `/operators/session` and answer 404. CP-12e already shipped that bug
+# once with `/operators/elevate`. A test pins both.
+
+
+class SigninRequest(BaseModel):
+    """The Supabase access token the operator's browser just obtained."""
+
+    access_token: str = Field(min_length=1)
+
+
+@app.post("/operators/session")
+def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
+    """Exchange a Supabase sign-in for an operator session. **Closes F8.**
+
+    ⚠️ **This route is deliberately UNAUTHENTICATED.** It is the only door
+    into the identity system, so it cannot require the identity it issues.
+    What guards it is the token: `operator_signin.introspect` asks Supabase
+    who the bearer is, and `operators.admit` then runs all three checks of
+    §4.1 against the answer.
+
+    Every refusal is the SAME 403 body, whatever failed. A door that
+    distinguished "wrong directory" from "not on the registry" would tell an
+    attacker which half to work on.
+    """
+    try:
+        identity = operator_signin.introspect(req.access_token)
+    except operator_signin.SigninUnconfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except operator_signin.SigninRejected as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    now = datetime.now(UTC)
+    issued = operator_sessions.issue(now=now)
+    try:
+        with get_engine().begin() as conn:
+            row = store.operator_by_email(conn, identity.email)
+
+            # The one-time bootstrap, and ONLY for somebody already inside our
+            # directory. Letting a stranger trigger it would consume the
+            # one-time path before the owner reached it, which is a denial of
+            # the bootstrap even though it grants the stranger nothing.
+            if row is None and identity.tid == operators.staff_tenant_id():
+                try:
+                    operators.bootstrap(conn)
+                except operators.BootstrapRefused:
+                    # The registry already holds a row, so the normal path
+                    # applies and `admit` below refuses on the registry check.
+                    pass
+                row = store.operator_by_email(conn, identity.email)
+
+            operator = operators.admit(
+                row, tid=identity.tid, email=identity.email
+            )
+
+            store.operator_session_insert(
+                conn,
+                operator_id=operator.id,
+                prefix=issued.prefix,
+                key_hash=issued.key_hash,
+                expires_at=issued.expires_at,
+                ip=operator_signin.safe_ip(
+                    request.client.host if request.client else None
+                ),
+                user_agent=request.headers.get("user-agent"),
+            )
+            # Recorded on every sign-in, not only the first. A person whose
+            # directory subject changes is a person whose account was
+            # rebuilt, and the newest value is the one that matches.
+            store.operator_set_directory_subject(
+                conn, operator_id=operator.id, subject=identity.subject
+            )
+            _audit(conn, None, "operator.signin",
+                   {"role": operator.role}, actor=operator.email)
+    except operators.OperatorUnconfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except operators.OperatorForbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    return {
+        "token": issued.token,
+        "expires_at": _iso(issued.expires_at),
+        "operator": {
+            "id": operator.id,
+            "email": operator.email,
+            "role": operator.role,
+        },
+    }
+
+
+@app.delete("/operators/session")
+def operator_sign_out(staff: Operator) -> dict[str, Any]:
+    """Sign out. **Revokes the session server-side**, closing F5.
+
+    The interim gate could only ask the browser to forget a cookie, because
+    the cookie WAS the shared passphrase and nothing recorded it. This drops
+    one row's `revoked_at`, so the next request with that token is refused
+    with no restart and no cache wait.
+
+    A break-glass caller holds no session row, so there is nothing to revoke
+    and this answers 409 rather than pretending it worked.
+    """
+    if not staff.is_session or not staff.session_id:
+        raise HTTPException(
+            status_code=409,
+            detail="the shared token holds no session to revoke",
+        )
+    with get_engine().begin() as conn:
+        store.operator_session_revoke(conn, staff.session_id)
+    return {"revoked": True}
 
 
 @app.post("/operators/elevate")
