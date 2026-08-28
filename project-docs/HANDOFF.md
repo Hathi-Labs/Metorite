@@ -1024,18 +1024,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session
-### H-57 · Nothing fences `INDEX.md` completeness, so a spec can go missing · [AGENT]
-- **Check:** `rg -l "INDEX.md" tests/ .github/workflows/` → no hit means no test
-  reads the index and the gap is open.
-- **Why:** CLAUDE.md §5 says a spec enters `INDEX.md` in the pull request that
-  creates it. INDEX.md's own header says a spec missing from it is a defect.
-  Neither statement has a fence, so both are advisory and **R7 calls that a
-  defect**. Measured 2026-08-26 while adding `operator_identity_and_access.md`.
-  The fix is small: one test that lists `project-docs/specs/*.md` and fails on a
-  file the index does not name.
-- **Authority:** CLAUDE.md §5 · `project-docs/INDEX.md` header · `work_plan.md`
-  §1 R7
-- **Added:** 2026-08-26 · operator-identity spec session
 ### H-65 · plan-guard cannot see a write made by an interpreter reading a heredoc · [AGENT]
 - **Check:** read `.claude/hooks/plan-guard.mjs` near the `scanned` constant.
   A regex still strips every heredoc body before the protected-path scan, and
