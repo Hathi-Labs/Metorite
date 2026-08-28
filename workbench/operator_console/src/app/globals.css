@@ -1,17 +1,64 @@
-/* Plain, theming-exempt staff styles (D35.4). This app is deliberately NOT on
-   the customer design system: "one product, one look" is for surfaces customers
-   see. A clean, legible internal tool is the whole brief. */
+/* Staff styles for the Operator Console.
+   ─────────────────────────────────────────────────────────────────────────
+   ⚠️ **Theming-exempt by D35.4, and that is a BOUNDARY decision, not a
+   licence to be plain.** The exemption exists because this is a different
+   Next.js app and `customer_console.md` §2.4 measures the cross-import count
+   from `control_plane` as ZERO. It does not say a staff tool deserves less
+   care — the spec's own words are "port the primitives as plain-CSS
+   equivalents, or restyle".
+
+   So this file is that port. It carries the same IDEAS as the customer design
+   system, re-expressed in plain CSS with no import crossing the boundary:
+
+     · one token scale, never a colour written at a call site;
+     · one tone vocabulary (`src/lib/tone.ts`) that decides what a state
+       LOOKS like, so a status cannot draw two ways on two pages;
+     · a component layer, so nothing is hand-rolled per page.
+
+   ⚠️ Every class name that existed before 2026-08-29 still resolves. Eight
+   pages depend on them and a rename would be a silent visual regression on
+   the seven this change does not touch. */
 
 :root {
+  /* ── Surfaces ─────────────────────────────────────────────────────── */
   --bg: #0f1115;
+  --bg-subtle: #12151b;
   --panel: #171a21;
+  --panel-2: #1d212a;
+  --panel-3: #232833;
+
+  /* ── Line + text ──────────────────────────────────────────────────── */
   --border: #2a2f3a;
+  --border-strong: #3a4150;
   --text: #e6e8eb;
   --muted: #9aa4b2;
-  --accent: #4c8bf5;
-  --danger: #e5534b;
-  --ok: #3fb950;
-  --warn: #d29922;
+  --faint: #6b7482;
+
+  /* ── Semantic hues. A tone is a MEASUREMENT (how broken, how urgent),
+        and every one carries a soft partner for tinted fills, so a call
+        site never reaches for rgba() to get a background. ────────────── */
+  --accent: #5b93f7;
+  --accent-soft: rgba(91, 147, 247, 0.13);
+  --accent-line: rgba(91, 147, 247, 0.35);
+  --danger: #ef6461;
+  --danger-soft: rgba(239, 100, 97, 0.13);
+  --danger-line: rgba(239, 100, 97, 0.38);
+  --ok: #46c46a;
+  --ok-soft: rgba(70, 196, 106, 0.13);
+  --ok-line: rgba(70, 196, 106, 0.35);
+  --warn: #dda437;
+  --warn-soft: rgba(221, 164, 55, 0.13);
+  --warn-line: rgba(221, 164, 55, 0.38);
+
+  /* ── Scale. Named, so two surfaces cannot drift apart by a pixel. ─── */
+  --r-sm: 5px;
+  --r: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 6px 20px -6px rgba(0, 0, 0, 0.55);
+  --ring: 0 0 0 3px var(--accent-soft);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
@@ -25,6 +72,7 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -35,19 +83,38 @@ a:hover {
   text-decoration: underline;
 }
 
+/* A visible focus ring everywhere, once. Before this, focus was drawn only on
+   inputs, so a keyboard operator tabbing to a destructive button saw nothing
+   at all. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
 .wrap {
-  max-width: 1100px;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 16px 24px 48px;
+  padding: 16px 24px 64px;
 }
 
 h1 {
-  font-size: 22px;
+  font-size: 21px;
+  letter-spacing: -0.01em;
   margin: 0 0 4px;
 }
 h2 {
-  font-size: 16px;
-  margin: 24px 0 8px;
+  font-size: 15px;
+  letter-spacing: -0.005em;
+  margin: 22px 0 8px;
+}
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 20px 0 8px;
 }
 
 .muted {
@@ -59,38 +126,50 @@ h2 {
 .ok-t { color: var(--ok); }
 .warn-t { color: var(--warn); }
 .accent-t { color: var(--accent); }
+.danger-t { color: var(--danger); }
+.mono { font-family: var(--mono); font-size: 0.94em; }
 
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 0 14px;
+  gap: 12px;
+  padding: 10px 0 12px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
 }
-/* The three surfaces, in the bar. All of them are readable by every role,
-   so none is ever hidden — see Header.tsx. */
 .topbar nav {
   display: flex;
-  gap: 18px;
+  gap: 4px;
   margin-left: auto;
-  margin-right: 18px;
+  margin-right: 12px;
 }
+/* Nav entries are pills rather than bare text: the bar also holds the
+   elevation control and sign-out, and three kinds of clickable text in one
+   row gave no clue which were destinations. */
 .topbar nav a {
   color: var(--muted);
   font-size: 13px;
   font-weight: 500;
+  padding: 5px 11px;
+  border-radius: var(--r-sm);
 }
 .topbar nav a:hover {
   color: var(--text);
+  background: var(--panel-2);
   text-decoration: none;
+}
+.topbar nav a[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .brand {
   color: var(--text);
   font-weight: 700;
   font-size: 15px;
+  letter-spacing: -0.01em;
 }
 .brand span {
   color: var(--muted);
@@ -101,20 +180,27 @@ h2 {
 }
 .linklike {
   margin: 0;
-  padding: 4px 10px;
+  padding: 5px 11px;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.linklike:hover {
+.linklike:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--muted);
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.linklike:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-/* ── Page head (title + primary action side by side) ─────────────────── */
+/* ── Page head ───────────────────────────────────────────────────────── */
 .pagehead {
   display: flex;
   justify-content: space-between;
@@ -128,6 +214,10 @@ h2 {
   flex-basis: 100%;
   max-width: 560px;
 }
+.pagehead p {
+  margin: 2px 0 0;
+  max-width: 68ch;
+}
 
 .primary-cta {
   margin-top: 4px;
@@ -138,30 +228,45 @@ h2 {
 /* ── Stat cards ──────────────────────────────────────────────────────── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 10px;
   margin: 16px 0;
 }
 .stat {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r);
   padding: 12px 14px;
 }
 .stat .num {
   font-size: 24px;
   font-weight: 700;
   line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 .stat .small-num {
   font-size: 18px;
 }
 .stat .lbl {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  font-weight: 600;
 }
+/* A stat that is a PROBLEM reads as one without being red-on-red. */
+.stat.alarm {
+  border-color: var(--danger-line);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel);
+}
+.stat.alarm .num { color: var(--danger); }
+.stat.caution {
+  border-color: var(--warn-line);
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel);
+}
+.stat.caution .num { color: var(--warn); }
+.stat.good .num { color: var(--ok); }
 
 /* ── Seat usage bar ──────────────────────────────────────────────────── */
 .bar {
@@ -183,8 +288,9 @@ h2 {
 .warnbadge {
   margin-left: 6px;
   padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid var(--warn);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
   color: var(--warn);
   font-size: 11px;
   cursor: help;
@@ -192,28 +298,43 @@ h2 {
 
 /* ── Banners ─────────────────────────────────────────────────────────── */
 .banner {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--warn);
-  border-radius: 6px;
-  padding: 10px 14px;
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel);
+  border: 1px solid var(--warn-line);
+  border-left-width: 3px;
+  border-radius: var(--r);
+  padding: 11px 14px;
   margin: 12px 0;
-  color: var(--muted);
+  color: var(--text);
 }
+.banner strong { color: var(--warn); }
 .banner.info {
-  border-left-color: var(--accent);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel);
+  border-color: var(--accent-line);
   color: var(--text);
 }
+.banner.info strong { color: var(--accent); }
 .banner.danger {
-  border-left-color: var(--danger);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel);
+  border-color: var(--danger-line);
   color: var(--text);
+}
+.banner.danger strong { color: var(--danger); }
+.banner ul { margin: 8px 0 0; padding-left: 20px; }
+.banner li { margin: 3px 0; }
+
+/* A quiet aside. Used but never defined before this file was rewritten, so it
+   rendered as unstyled body text. */
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0 0;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────── */
 .empty {
   background: var(--panel);
-  border: 1px dashed var(--border);
-  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
   padding: 24px 28px;
   margin: 16px 0;
   max-width: 640px;
@@ -233,60 +354,118 @@ table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 12px;
+  font-variant-numeric: tabular-nums;
 }
 th,
 td {
   text-align: left;
-  padding: 10px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 th {
   color: var(--muted);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  border-bottom-color: var(--border-strong);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
 }
 tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--panel-2);
+}
+tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .pill {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--border);
   font-size: 12px;
   cursor: default;
+  white-space: nowrap;
 }
 .pill[title]:not([title=""]) {
   cursor: help;
 }
-.pill.active { border-color: var(--ok); color: var(--ok); }
-.pill.trial { border-color: var(--accent); color: var(--accent); }
+/* ⚠️ These four lifecycle states are ALSO expressed in `src/lib/tone.ts`.
+   The classes stay because seven pages already emit them; new code asks
+   `tone.ts` and renders `.chip`, so there is one vocabulary and one place to
+   change it. */
+.pill.active { border-color: var(--ok-line); background: var(--ok-soft); color: var(--ok); }
+.pill.trial { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 .pill.suspended,
-.pill.past_due { border-color: var(--warn); color: var(--warn); }
+.pill.past_due { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
 .pill.cancelled,
-.pill.deleted { border-color: var(--danger); color: var(--danger); }
+.pill.deleted { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+
+/* ── Chip — the tone vocabulary's only rendering ──────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip.ok { border-color: var(--ok-line); background: var(--ok-soft); color: var(--ok); }
+.chip.warn { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
+.chip.danger { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+.chip.accent { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.chip.mono { font-family: var(--mono); font-size: 11.5px; }
 
 /* ── Panels & forms ──────────────────────────────────────────────────── */
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
   margin: 12px 0;
 }
+.panel > h2:first-child,
+.panel > h3:first-child {
+  margin-top: 0;
+}
 .success-panel {
-  border-color: var(--ok);
+  border-color: var(--ok-line);
+  background: linear-gradient(var(--ok-soft), var(--ok-soft)), var(--panel);
+}
+
+/* A panel header that carries a title and a description together, so every
+   section explains itself the same way instead of each page inventing a
+   layout for the same two facts. */
+.panel-head {
+  margin-bottom: 12px;
+}
+.panel-head h2 {
+  margin: 0 0 3px;
+}
+.panel-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  max-width: 72ch;
 }
 
 label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
-  margin: 10px 0 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 10px 0 3px;
 }
 
 .field-hint {
@@ -302,14 +481,37 @@ select {
   padding: 7px 9px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   color: var(--text);
   font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+input::placeholder {
+  color: var(--faint);
 }
 input:focus,
 select:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+/* A checkbox label is not a field label — it sits beside its control and must
+   not inherit the uppercase treatment above. */
+label:has(> input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  margin: 0;
 }
 
 details.advanced {
@@ -332,24 +534,32 @@ button {
   padding: 8px 14px;
   background: var(--accent);
   color: #fff;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
+  transition: filter 0.12s, background 0.12s, border-color 0.12s;
 }
 button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.12);
 }
 button.secondary {
   background: transparent;
-  border: 1px solid var(--border);
+  border-color: var(--border);
   color: var(--text);
+}
+button.secondary:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+  filter: none;
 }
 button.danger {
   background: var(--danger);
 }
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -363,6 +573,32 @@ button:disabled {
   min-width: 300px;
 }
 
+/* A form laid out as fields rather than a bare flex row. `.row` put a label
+   above each control and then let the controls fall out of alignment; this
+   keeps a label glued to its own input. */
+.formrow {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.formrow .field {
+  flex: 1 1 170px;
+  min-width: 140px;
+}
+.formrow .field label {
+  margin-top: 0;
+}
+.formrow .field.grow {
+  flex: 2 1 240px;
+}
+.formrow button {
+  margin-top: 0;
+  height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .result {
   margin-top: 10px;
   font-size: 13px;
@@ -371,6 +607,105 @@ button:disabled {
 }
 .result.err { color: var(--danger); }
 .result.ok { color: var(--ok); }
+
+/* ── Tabs ────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0 0;
+}
+.tabs button {
+  margin: 0;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tabs button:hover:not(:disabled) {
+  color: var(--text);
+  filter: none;
+}
+.tabs button[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tabs .count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Readiness matrix ────────────────────────────────────────────────── */
+/* 🔴 The reason this page was rebuilt. Three tables that must AGREE — what a
+   model can do, what a tier points at, and what we charge — cannot be diffed
+   by eye. The matrix puts one cell where all three meet. */
+.matrix-scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+.matrix {
+  border-collapse: separate;
+  border-spacing: 6px;
+  margin-top: 0;
+  min-width: 520px;
+}
+.matrix th {
+  position: static;
+  background: transparent;
+  border: none;
+  padding: 4px 8px;
+}
+.matrix td {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+  padding: 9px 11px;
+  vertical-align: top;
+  min-width: 148px;
+}
+.matrix tbody tr:hover { background: transparent; }
+.matrix .tier-name {
+  font-weight: 600;
+  white-space: nowrap;
+  padding-right: 12px;
+  border: none;
+  background: transparent;
+  min-width: 0;
+}
+.matrix .cell-model {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+  display: block;
+  margin-bottom: 6px;
+}
+.matrix .cell-flags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.matrix td.is-broken {
+  border-color: var(--danger-line);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel-2);
+}
+.matrix td.is-unpriced {
+  border-color: var(--warn-line);
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel-2);
+}
+.matrix td.is-empty {
+  border-style: dashed;
+  background: transparent;
+  color: var(--faint);
+}
 
 /* ── Login ───────────────────────────────────────────────────────────── */
 .login-center {
@@ -383,6 +718,7 @@ button:disabled {
 .login-card {
   width: 100%;
   max-width: 400px;
+  box-shadow: var(--shadow-2);
 }
 
 /* ── The one-time key disclosure (CP-11 slice 1) ──────────────────────────
@@ -395,8 +731,8 @@ pre.token {
   padding: 12px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -418,22 +754,27 @@ pre.token {
 .elevation input {
   padding: 0.25rem 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   font: inherit;
   font-size: 0.85rem;
+  width: auto;
 }
 
 /* Amber, not red: an open window is a STATE the operator chose, not an error.
-   Red here would train people to ignore red. */
+   Red here would train people to ignore red.
+   ⚠️ Now drawn from the warn tokens rather than two hardcoded hex values, so
+   it moves with the rest of the palette instead of staying a light-mode chip
+   embedded in a dark tool. */
 .elevation.elevated {
   padding: 0.15rem 0.6rem;
-  border-radius: 999px;
-  background: #fdf1d6;
-  color: #7a4b00;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
   font-weight: 600;
 }
 
 .elevation-error {
-  color: #a11;
+  color: var(--danger);
   max-width: 28rem;
 }
