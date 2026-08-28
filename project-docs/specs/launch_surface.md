@@ -134,7 +134,7 @@ answer rather than a diff:
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |
 | AI Studio | Agent Workshop | `/build/agents` | Incomplete |
-| Admin | Models | `/settings/models` | 🗑️ **LEAVING THE PRODUCT ENTIRELY — D56, 2026-08-26.** Not "held back": it is a **three-tab model-operations console in the customer's app** (providers + API keys, per-model enable, tier assignment). D32.7 ruled the customer never chooses a model; D56 relocates this surface to the **operator** console. **CP-10 slice 4 deletes the pane**, and must move `nav.test.ts`'s preview count in the same PR — the D54 precedent |
+| Admin | Models | ~~`/settings/models`~~ | ✅ **GONE — deleted 2026-08-28 (CP-5).** The route, the page, `TierCard`, `ProviderCard`, `model-types` and five BFF routes are all removed, and the operator console's `/models` is where this lives now. The history below is kept because it explains WHY. 🗑️ **LEFT THE PRODUCT ENTIRELY — D56, 2026-08-26.** Not "held back": it is a **three-tab model-operations console in the customer's app** (providers + API keys, per-model enable, tier assignment). D32.7 ruled the customer never chooses a model. D56 relocated this surface to the **operator** console. **CP-10 slice 4 deletes the pane**, and must move `nav.test.ts`'s preview count in the same PR — the D54 precedent |
 | Admin | Agent Registry | `/agents` | Operator concern |
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |

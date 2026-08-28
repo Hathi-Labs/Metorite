@@ -1141,44 +1141,9 @@ line — never reclaim a number by deleting the other entry.
 
 ---
 
-### H-70 · BYOK is closed on the server, and the Providers tab still renders · [AGENT]
-- **Check:** `rg -n "Providers" workbench/control_plane/src/app/settings/models/page.tsx`
-  → a hit means the tab is still there, and this is open.
-- **Why:** CP-11 slice 4 closed both server doors. `byok_enabled` defaults to
-  `False`, so `POST /settings/llm/key` and the `/integrations/configure`
-  fallback both answer 403. **The page does not know that.** A user who reaches
-  `/settings/models` by URL still sees a Providers tab and a key field. The 403
-  arrives only after they paste a key.
-- **⚠️ The risk is small today and it is not zero.** The pane is `preview`, so
-  no nav entry points at it. `launch_surface.md` §3 is explicit that `preview`
-  hides the entry and keeps the route, so the URL works for anybody who has it.
-- **Shape:** `customer_console.md` §5.1 says the provider, model and tier tabs
-  leave the customer product, and the surface becomes credits, burn and
-  per-member caps. That replacement is **CP-7**, and CP-7 must not dispatch
-  before CP-4b. So do the cheap half now: read the flag in the page and hide
-  the three tabs when it is off. Do not build the replacement here.
-- **Authority:** `specs/customer_console.md` §5.1 · **D66.1** · D32.7
-- **Added:** 2026-08-27 · WS-31 CP-11 slice 4 session
 
 ---
 
-### H-71 · The workbench calls a `DELETE /settings/llm/key` the gateway never implemented · [AGENT]
-- **Check:** `rg -n "delete\(\"/llm/key\"" apps/services/gateway/gateway/routes/settings.py`
-  → no hit means the gateway still has no handler, and this is open.
-- **Why:** `workbench/control_plane/src/app/api/settings/llm/key/route.ts`
-  exports a `DELETE` that forwards to `DELETE {GATEWAY}/settings/llm/key`. The
-  gateway registers a **POST** at that path and no DELETE. FastAPI answers 405,
-  the route relays it, and the surface reports a failure the user cannot act on.
-- **⚠️ Do not "fix" this by adding the handler without reading D66.** Removing a
-  provider key is a BYOK write. It belongs behind the same
-  `refuse_if_byok_disabled()` guard as the other two doors, or it becomes a
-  third door that only closes when somebody remembers it.
-- **This is pre-existing, and slice 4 did not cause it.** It was measured while
-  closing the write doors.
-- **Shape:** either delete the client-side `DELETE` with the Providers tab
-  (H-70), or add the guarded handler. Deleting is cheaper and matches D66.1.
-- **Authority:** `specs/customer_console.md` §5.1 · **D66.1**
-- **Added:** 2026-08-27 · WS-31 CP-11 slice 4 session
 
 ---
 
