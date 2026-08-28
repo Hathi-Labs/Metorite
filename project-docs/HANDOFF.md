@@ -1190,6 +1190,49 @@ line — never reclaim a number by deleting the other entry.
   `specs/launch_surface.md` §2 (the live nine)
 - **Added:** 2026-08-27 · WS-31 CP-5 scoping session
 
+### H-73 · CP-7's per-member cap rests on an identity the member controls · [AGENT+OWNER]
+- **Check:** `grep -n "x-cc-member" apps/services/gateway/gateway/routes/v1_compat.py`
+  → a `request.headers.get(...)` hit means the member identity is still taken
+  from the inbound request, and this is open. A hit that reads it from a
+  verified session means somebody fixed it, and CP-7's engine can proceed.
+- **Why:** 🔴 **The cap engine is built and must stay unwired.**
+  `credits.decide_member_cap` and the `member_ai_cap` table both exist. Wiring
+  them to today's inputs would ship a control that does not control anything.
+  The chain is measured, not inferred:
+  1. `auth.py:497` binds `Caller.member` from the **`X-CC-Member` header**.
+  2. `auth.py:211` says so out loud: *"Attribution only. Never used to select
+     rows, never used to authorise."*
+  3. `v1_compat.py:490` forwards it **verbatim from the inbound request** —
+     `request.headers.get("x-cc-member")`. It is not derived from the session.
+  4. So the capped party chooses which cap applies. **Omit the header and
+     there is no cap row, and no cap row means unlimited** — which is correct
+     behaviour for an absent policy and a total bypass for a present one.
+- **⚠️ This is migration 005's defect class, one column over.** 005 moved
+  `request_id` server-side because *"the party being invoiced must not control
+  whether it exists."* The same sentence with two words changed: **the party
+  being capped must not control which cap applies.**
+- **📌 Why the gateway cannot fix it alone.** On `/v1/chat/completions` there
+  is no session to derive from. `require_llm_api_auth` is a pure token check
+  that binds no identity. So `current_tenant()` is `None` by construction.
+  That is the `work_plan.md` §6 (f) H4 finding. `saas_multitenancy.md` §3082
+  records the same for `X-CC-Agent`. The gateway has nothing true to put in
+  the header.
+- **🟢 The reads did NOT wait for this, and shipped.** `/my/usage/activity`
+  and `/my/usage/members` (CP-7 slice 1) report the same attribution and are
+  safe, because a cost report is not an authorisation decision. **Attribution
+  is good enough to REPORT and not good enough to ENFORCE.**
+- **Two questions, and the second is the owner's:**
+  1. Where does a trustworthy member identity come from? A session-scoped
+     door beside the org key is the obvious shape, but it is a new auth
+     scheme and §4's registry says who owns that.
+  2. ⚠️ **Is a per-member cap worth a fifth auth scheme at all?** The org
+     pool, the balance gate and the run ceiling already stop runaway spend.
+     A cap is a *management* feature, not a *safety* one. Answering "not yet"
+     is a legitimate answer and it costs nothing to defer.
+- **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
+  `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
+- **Added:** 2026-08-28 · WS-31 CP-7 slice 1
+
 ---
 
 # DONE — deleted, not archived

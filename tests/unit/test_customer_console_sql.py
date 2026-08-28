@@ -514,3 +514,112 @@ class TestKeys:
 
     def test_an_unknown_prefix_resolves_to_nothing(self, conn):
         assert store.resolve_key(conn, prefix="cc_live_deadbeef") is None
+
+# ── CP-7 slice 1: the spend reads (D66) ─────────────────────────────────────
+#
+# R8 binds every test here. Each one asks something only a real server answers:
+# a CITEXT grouping, a COALESCE fallback chain over NULLs, an interval window,
+# and a NULL-safe optional filter. A hermetic fake would pass all four while
+# the SQL was wrong — which is the exact history R8 was minted from.
+
+class TestSpendReads:
+    def _usage(self, conn, org, **fields):
+        assert store.record_usage(
+            conn, org_id=org, request_id=f"req-{uuid.uuid4().hex}",
+            billed_credits=fields.pop("credits", Decimal("1")), **fields,
+        ) is True
+
+    def test_activity_prefers_the_agent_then_the_module(self, conn, org):
+        self._usage(conn, org, agent="email-assistant", module_slug="email")
+        self._usage(conn, org, agent=None, module_slug="crm")
+        self._usage(conn, org, agent=None, module_slug=None)
+
+        rows = {r["activity"]: r for r in
+                store.usage_by_activity(conn, org_id=org)}
+
+        # The agent WINS over the module when both are present — a row is not
+        # counted twice and it is not filed under the coarser of the two.
+        assert set(rows) == {"email-assistant", "crm",
+                             store.UNATTRIBUTED_ACTIVITY}
+        assert rows["email-assistant"]["calls"] == 1
+
+    def test_an_unattributed_row_is_named_not_dropped(self, conn, org):
+        self._usage(conn, org, credits=Decimal("7"))
+
+        rows = store.usage_by_activity(conn, org_id=org)
+
+        # Dropping it would make the parts silently fail to sum to the whole,
+        # and the customer would have no way to see that they did not.
+        assert [r["activity"] for r in rows] == [store.UNATTRIBUTED_ACTIVITY]
+        assert rows[0]["credits"] == Decimal("7")
+
+    def test_the_member_filter_is_null_safe(self, conn, org):
+        """The `(:member IS NULL OR ...)` arm — the shape that silently returns
+        nothing when a driver binds an absent parameter as SQL NULL."""
+        self._usage(conn, org, user_email="alice@corp.com", agent="a")
+        self._usage(conn, org, user_email="bob@corp.com", agent="b")
+
+        everyone = store.usage_by_activity(conn, org_id=org)
+        just_alice = store.usage_by_activity(
+            conn, org_id=org, member="alice@corp.com")
+
+        assert len(everyone) == 2
+        assert [r["activity"] for r in just_alice] == ["a"]
+
+    def test_a_member_is_matched_case_insensitively(self, conn, org):
+        """`user_email` is CITEXT. Only a real server knows that.
+
+        It matters because the header is typed by a human somewhere upstream,
+        and `Alice@Corp.com` billing to a different row than `alice@corp.com`
+        would split one person's spend across two lines of the admin's report.
+        """
+        self._usage(conn, org, user_email="Alice@Corp.com", agent="a")
+        self._usage(conn, org, user_email="alice@corp.com", agent="a")
+
+        rows = store.usage_by_member(conn, org_id=org)
+
+        assert len(rows) == 1
+        assert rows[0]["calls"] == 2
+
+    def test_a_member_with_no_email_is_reported_not_hidden(self, conn, org):
+        self._usage(conn, org, user_email=None, credits=Decimal("3"))
+
+        rows = store.usage_by_member(conn, org_id=org)
+
+        assert [r["member"] for r in rows] == [store.UNATTRIBUTED_ACTIVITY]
+
+    def test_the_window_excludes_an_older_row(self, conn, org):
+        self._usage(conn, org, agent="recent")
+        self._usage(conn, org, agent="ancient")
+        # Backdate one PAST the window. `record_usage` always stamps now(), so
+        # this is the only way to test the interval against a real clock.
+        conn.execute(
+            text("UPDATE usage_event SET created_at = now() - interval '99 days' "
+                 "WHERE organization_id = :o AND agent = 'ancient'"),
+            {"o": org},
+        )
+
+        rows = store.usage_by_activity(conn, org_id=org)
+
+        assert [r["activity"] for r in rows] == ["recent"]
+
+    def test_one_organization_never_reads_another(self, conn, org):
+        other = store.ensure_organization(
+            conn, slug=f"other-{uuid.uuid4().hex[:8]}", name="Other Ltd",
+            gstin="29ABCDE1234F1Z5", billing_state="KA",
+        )
+        self._usage(conn, org, agent="mine")
+        self._usage(conn, other, agent="theirs")
+
+        assert [r["activity"] for r in
+                store.usage_by_activity(conn, org_id=org)] == ["mine"]
+
+    def test_credits_come_back_as_Decimal_not_float(self, conn, org):
+        """Money. A float total disagrees with the sum of its own rows."""
+        self._usage(conn, org, agent="a", credits=Decimal("0.1"))
+        self._usage(conn, org, agent="a", credits=Decimal("0.2"))
+
+        rows = store.usage_by_activity(conn, org_id=org)
+
+        assert isinstance(rows[0]["credits"], Decimal)
+        assert rows[0]["credits"] == Decimal("0.3")

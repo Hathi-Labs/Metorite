@@ -480,6 +480,133 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
     return True
 
 
+# ── Spend reads (CP-7 slice 1 · D66) ────────────────────────────────────────
+#
+# ⚠️ **NEITHER QUERY SELECTS `model`, AND THAT IS THE POINT.** D32.7 and D66
+# say a customer never sees a model. These two functions are the surface that
+# answers "what did we spend it on", so they are exactly where a model column
+# would be added by somebody being helpful. `TestNoModelReachesTheCustomer`
+# reads this module's AST and fails if `model` appears in either SELECT.
+#
+# ⚠️ **`user_email` is CALLER-SUPPLIED attribution (`X-CC-Member`), not a
+# verified identity.** These are READS, so that is tolerable: an admin looking
+# at a cost breakdown is not an authorisation decision. It is NOT tolerable for
+# the per-member CAP, which is why the cap engine stays unwired — see H-73.
+
+#: The window every spend read is measured over, in days. NAMED because a
+#: figure whose window is unstated reads as authoritative and is not — the
+#: same argument `my_billing`'s `windowDays` already makes.
+SPEND_WINDOW_DAYS = 30
+
+#: What a usage row is called when it carries no agent and no module. The
+#: string is returned to the customer, so it is a word, not a NULL the browser
+#: has to decide how to render.
+UNATTRIBUTED_ACTIVITY = "unattributed"
+
+#: A NAMED page size. `usage_event` is a table the customer grows by using the
+#: product, so an unbounded `SELECT` here is the CP-9 §9.3(6) defect again.
+SPEND_PAGE_SIZE = 100
+
+
+def usage_by_activity(
+    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+    member: str | None = None,
+) -> list[dict[str, Any]]:
+    """What this organization ran, and what it cost. **Never what it ran ON.**
+
+    Grouped by activity — the agent, else the module, else
+    :data:`UNATTRIBUTED_ACTIVITY`. That ordering is D66 (a)'s "the app, the
+    agent or the run", narrowed to the two columns `usage_event` actually
+    carries for it.
+
+    Pass ``member`` to scope the answer to one person, which is D66 (a)'s own
+    view. Leave it ``None`` for the whole organization.
+
+    ⚠️ **`billed_credits` is 0 while the rate card is unpriced (H-42).** The
+    call counts are real from the first routed call; the money is not. This
+    function does not apologise for that, because `my_billing` reports the same
+    zeros from the same rows and a second explanation here would be a second
+    vocabulary for one fact.
+    """
+    total = conn.execute(
+        text(
+            """
+            SELECT COALESCE(agent, module_slug, :unattributed) AS activity,
+                   COUNT(*)                                    AS calls,
+                   COALESCE(SUM(billed_credits), 0)            AS credits
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+              -- ⚠️ The CAST is load-bearing, not decoration. A bare
+              -- `:member IS NULL` gives Postgres no type to infer and the
+              -- statement fails to PREPARE with AmbiguousParameter — every
+              -- call, not just the filtered one. CITEXT (not TEXT) because
+              -- that is `user_email`'s own type, and casting to TEXT would
+              -- silently reimpose case-sensitive matching on one side.
+              AND (CAST(:member AS CITEXT) IS NULL
+                   OR user_email = CAST(:member AS CITEXT))
+            GROUP BY 1
+            ORDER BY credits DESC, calls DESC, activity ASC
+            LIMIT :lim
+            """
+        ),
+        {"org": org_id, "days": days, "member": member,
+         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+    )
+    return [
+        {"activity": r.activity, "calls": int(r.calls),
+         "credits": Decimal(r.credits)}
+        for r in total
+    ]
+
+
+def usage_by_member(
+    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """Per-member cost for one organization — D66 (b), the admin's read.
+
+    ⚠️ **A read, and only a read.** It writes nothing and it decides nothing.
+    The same numbers must not be turned into an enforcement decision without
+    first fixing the identity they rest on (H-73).
+
+    A row whose `user_email` is NULL is reported under
+    :data:`UNATTRIBUTED_ACTIVITY` rather than dropped. Dropping it would make
+    the per-member figures silently fail to add up to the organization total,
+    and the admin would have no way to see that they did not.
+    """
+    rows = conn.execute(
+        text(
+            """
+            -- ⚠️ **GROUP BY the CITEXT column, never by its ::text cast.**
+            -- The cast strips the case-insensitive collation, so
+            -- `Alice@Corp.com` and `alice@corp.com` become two rows and one
+            -- person's spend is split across both. Measured against a real
+            -- server (R8) — this SELECT grouped by the cast in its first
+            -- draft and every hermetic assertion still passed.
+            --
+            -- MIN() rather than a bare projection so the label is
+            -- deterministic: within one CITEXT group Postgres is free to
+            -- return whichever spelling it stored first.
+            SELECT COALESCE(MIN(user_email::text), :unattributed) AS member,
+                   COUNT(*)                                       AS calls,
+                   COALESCE(SUM(billed_credits), 0)               AS credits
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+            GROUP BY user_email
+            ORDER BY credits DESC, calls DESC, member ASC
+            LIMIT :lim
+            """
+        ),
+        {"org": org_id, "days": days,
+         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+    )
+    return [
+        {"member": r.member, "calls": int(r.calls), "credits": Decimal(r.credits)}
+        for r in rows
+    ]
+
+
 # ── Keys ────────────────────────────────────────────────────────────────────
 
 def issue_key(conn: Connection, *, org_id: str, prefix: str, key_hash: str,
