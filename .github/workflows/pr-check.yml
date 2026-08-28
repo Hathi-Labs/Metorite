@@ -146,9 +146,17 @@ jobs:
 
       # Non-blocking initially: mypy is strict in pyproject but the full repo
       # hasn't been swept. Report now; flip to blocking per the ratchet plan.
+      #
+      # ⚠️ `--exclude '^apps/agents/'` is what makes this step REPORT ANYTHING.
+      # Seven agents each ship a top-level `agents.py` with no `__init__.py`,
+      # so mypy aborts on the duplicate-module error and stops: it checked
+      # almost nothing and printed "Found 1 error". Because the step is
+      # `continue-on-error`, that read as a clean report for as long as it has
+      # existed. With the exclusion it checks 418 files and finds 1508 errors
+      # (measured 2026-08-28) — which is the number the ratchet is against.
       - name: mypy strict (report-only)
         continue-on-error: true
-        run: uv run mypy apps packages || echo "type errors above (non-blocking — tracked)"
+        run: uv run mypy apps packages --exclude '^apps/agents/' || echo "type errors above (non-blocking — tracked)"
 
       # Non-blocking: per-PR codebase-health on just the changed files, so a PR
       # that adds a big/complex function is visible in review before it merges.

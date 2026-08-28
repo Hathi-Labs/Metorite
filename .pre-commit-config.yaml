@@ -38,10 +38,30 @@ repos:
       - id: mypy
         # Use the project's own resolution rather than the isolated hook env,
         # so workspace packages + stubs are visible.
-        pass_filenames: false
-        entry: uv run mypy
+        #
+        # `pass_filenames` MUST stay true. It was false, and with no `args:`
+        # that gave mypy no target at all: every commit died on
+        # "Missing target module, package, files, or command." — so this hook
+        # has never once type-checked anything (H-28).
+        #
+        # ⚠️ REPORT-ONLY, and deliberately so. `mypy` is `strict = true` over a
+        # tree that has never been swept: 1508 errors in 271 files, measured
+        # 2026-08-28. A BLOCKING diff-scoped hook would stop a commit on
+        # somebody else's 30 pre-existing errors in the file you touched, and
+        # the only thing that teaches is `--no-verify`. A hook people bypass is
+        # worse than one that reports, because the bypass becomes the habit.
+        #
+        # This matches the ratchet the CI step already states: report now, flip
+        # to blocking once the sweep lands. Flipping it early is not a
+        # tightening — it is how the ratchet gets abandoned.
+        pass_filenames: true
+        entry: bash -c 'uv run mypy "$@" || true' --
+        verbose: true
         language: system
         types: [python]
+        # pyproject's [tool.mypy] `exclude` does NOT apply to paths passed
+        # explicitly on the command line, so the same exclusions live here.
+        exclude: ^(workbench|infra|build|dist)/
 
   # --- Hygiene: strip the UTF-8 BOMs that break radon/xenon/other parsers ---
   - repo: https://github.com/pre-commit/pre-commit-hooks
