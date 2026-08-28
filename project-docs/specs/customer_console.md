@@ -309,7 +309,11 @@ plus **50** in `test_deployment_resolve_cache.py` against a real **tenant**
 Postgres, **4** database-free structural fences in
 `test_console_dependency_boundary.py` and **7** in
 `test_signin_resolve_route.py` · CP-3 was **rejected by independent
-verification once** and rebuilt (see its ticket) · CP-5 · CP-7 · CP-8 spec only ·
+verification once** and rebuilt (see its ticket) ·
+**CP-5 ✅ BUILT 2026-08-27** (the customer's model picker is deleted) ·
+**CP-7 ◐ SLICE 1 BUILT 2026-08-28** — the two spend READS. The cap ENGINE
+stays unwired, because the member identity it would rest on is a request
+header (**H-73**) · CP-8 spec only ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
 half of CP-4's done-when that was never met (`stream: true` returned 501).
 The 501 and its two fences are gone, and CP-4's ✅ now stands whole ·
@@ -1514,7 +1518,44 @@ refuses.
 - an admin raises a cap, and the member continues without a new sign-in.
 - the org balance does not change when a cap changes.
 
-⚠️ **Do not dispatch before CP-4b (H-68).** A streamed call is not routed, so
+**Slice 1 — the two spend READS — BUILT 2026-08-28**
+(`ws31-cp7s1-spend-reads`). `GET /my/usage/activity` serves (a).
+`GET /my/usage/members` serves (b). The `cc_live_` key scopes both to one
+organization.
+
+Neither read selects a model. Two independent fences hold that line. One
+reads the SQL through the AST (`test_customer_console_spend_reads.py`). The
+other reads the response body
+(`test_customer_console_key_auth.py::TestTheSpendReads`).
+
+**R8 caught two live bugs. Every hermetic assertion had passed them both.**
+A bare `:member IS NULL` gives Postgres no type to infer. The statement then
+fails to PREPARE, which breaks *every* call and not only the filtered one.
+
+The second bug is worse. `usage_by_member` grouped by `user_email::text`,
+and that cast strips the CITEXT collation. So `Alice@Corp.com` and
+`alice@corp.com` became two rows. One person's spend then split across both
+lines of the admin's report. A named test now covers each bug.
+
+⚠️ **(c) — raising a cap — is NOT built. The cap ENGINE stays unwired. See
+H-73.** `decide_member_cap` and `member_ai_cap` both exist already.
+
+The missing part is a member identity that the member cannot choose.
+`Caller.member` comes from the `X-CC-Member` header (`auth.py:497`).
+`v1_compat.py:490` forwards that header from the inbound request, unchanged.
+
+A member who omits the header therefore has no cap row, and no cap row means
+no limit. **Attribution is good enough to REPORT. It is not good enough to
+ENFORCE.** That is why the reads shipped and the engine did not. Migration
+005 states the same rule for the invoice — *the party we bill must not
+control whether the row exists.*
+
+⚠️ **Do not dispatch the CAP ENGINE before H-73.** The reads above did not wait
+for it, and they did not need to.
+
+⚠️ **CP-4b (H-68) closed on 2026-08-27.** The streaming objection below blocks
+nothing now. It stays because it records why the reads waited.
+A streamed call is not routed, so
 the Console does not meter it. Most traffic streams. A usage view that omits
 most traffic is worse than no usage view, because the customer believes it.
 

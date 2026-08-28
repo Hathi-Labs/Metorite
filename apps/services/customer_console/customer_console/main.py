@@ -3934,6 +3934,106 @@ def my_billing(caller: KeyCaller) -> dict[str, Any]:
     }
 
 
+# ══ CP-7 slice 1 · the spend reads (D66) ═══════════════════════════════════
+#
+# **What a customer may see about their AI spend: the activity, and the cost.**
+# Not the model, not the provider, not the tier. D32.7 settled that customers
+# never see a model, and D66 restated it for this surface specifically.
+#
+# ⚠️ **These two routes are READS, and CP-7's cap ENGINE is deliberately not
+# here.** A cap decides whether a member may spend, so it must rest on an
+# identity the member cannot choose. `X-CC-Member` is a request header the
+# caller sets (`auth.py:497`, forwarded verbatim by `v1_compat.py:490`), so a
+# cap enforced on it is evaded by omitting it. That is migration 005's defect
+# class exactly — *the party being invoiced must not control whether it
+# exists* — and H-73 carries it. Attribution is good enough to REPORT and not
+# good enough to ENFORCE, and the gap between those two is this comment.
+#
+# **Authorisation note.** Both routes are organization-scoped by the key, like
+# every other `/my/*` route. Neither can distinguish an admin from a member,
+# because a `cc_live_` key IS the organization and reaches no role
+# (`auth.py:155`). Deciding that *this viewer* may see *other people's* costs
+# is the workbench's job — it holds the session, and the Console does not.
+
+
+class ActivitySpendRow(BaseModel):
+    activity: str
+    calls: int
+    credits: str
+
+
+class ActivitySpendView(BaseModel):
+    rows: list[ActivitySpendRow]
+    windowDays: int
+    #: Echoed back so the browser renders the scope it actually got rather than
+    #: the one it asked for. They differ whenever the caller omits the filter.
+    member: str | None = None
+
+
+class MemberSpendRow(BaseModel):
+    member: str
+    calls: int
+    credits: str
+
+
+class MemberSpendView(BaseModel):
+    rows: list[MemberSpendRow]
+    windowDays: int
+
+
+@app.get("/my/usage/activity")
+def my_usage_by_activity(
+    caller: KeyCaller, member: str | None = None,
+) -> ActivitySpendView:
+    """What this organization ran, and what it cost. **D66 (a).**
+
+    Pass ``member`` to scope it to one person. The workbench fills that from
+    the signed-in session, never from the browser — see the block comment
+    above on why the Console cannot make that decision itself.
+
+    Credits are returned as **strings**, not floats. They are money, the
+    ledger stores `NUMERIC(14,4)`, and `float` is the standard way to make a
+    total disagree with the sum of its rows.
+    """
+    with get_engine().begin() as conn:
+        rows = store.usage_by_activity(
+            conn, org_id=caller.organization_id, member=member,
+        )
+    return ActivitySpendView(
+        rows=[
+            ActivitySpendRow(
+                activity=r["activity"], calls=r["calls"],
+                credits=str(r["credits"]),
+            )
+            for r in rows
+        ],
+        windowDays=store.SPEND_WINDOW_DAYS,
+        member=member,
+    )
+
+
+@app.get("/my/usage/members")
+def my_usage_by_member(caller: KeyCaller) -> MemberSpendView:
+    """Per-member cost inside this organization. **D66 (b).**
+
+    ⚠️ **This does not read `member_ai_cap`, and it must not start.** Showing a
+    cap beside a spend figure implies the cap is being enforced, and it is not
+    (H-73). A number that looks like a control and is not one is worse than an
+    absent number.
+    """
+    with get_engine().begin() as conn:
+        rows = store.usage_by_member(conn, org_id=caller.organization_id)
+    return MemberSpendView(
+        rows=[
+            MemberSpendRow(
+                member=r["member"], calls=r["calls"], credits=str(r["credits"]),
+            )
+            for r in rows
+        ],
+        windowDays=store.SPEND_WINDOW_DAYS,
+    )
+
+
 # ══ CP-9 · the checkout: orders, redemption, and the money guard ════════════
 #
 # **The auth answer, in one paragraph, because it is the question the audit

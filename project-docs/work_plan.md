@@ -3602,6 +3602,18 @@ by D15/D16) — read their banners before citing either.
      pool, never a sub-wallet** (D32.8). Raising one member's budget mid-month
      is a cap edit, and it is not a transfer of credits.
 
+  4a. 🆕 **BUILT 2026-08-28 — the READ half only** (`ws31-cp7s1-spend-reads`).
+     `GET /my/usage/activity` and `GET /my/usage/members` answer items 3 and 4
+     above. Neither read names a model, and two fences hold that.
+
+  4b. 🔴 **The cap ENGINE stays unwired, and H-73 says why.** A cap decides
+     whether a member may spend. So it must rest on an identity the member
+     cannot choose. `Caller.member` comes from the `X-CC-Member` header, and
+     `v1_compat.py:490` forwards that header from the request without change.
+     A member who omits it has no cap row, and no cap row means no limit.
+     **Attribution is good enough to report. It is not good enough to
+     enforce.** Migration 005 states the same rule for the invoice.
+
   5. **This is a spec, not a queue item.** The owner asked for the shape to be
      recorded and not built. CP-7's done-whens carry the READ half and the
      top-up. Nothing here dispatches before CP-4b closes the streaming hole
