@@ -67,20 +67,50 @@ def test_the_apply_normalises_venv_ownership() -> None:
     )
 
 
-def test_the_chown_happens_AFTER_uv_sync() -> None:
-    """🔴 Ordering IS the fix, and it is the half a lazy test would miss.
+def _sync_index(lines: list[str]) -> int:
+    return next(i for i, ln in enumerate(lines) if ln.strip() == "uv sync")
 
-    A chown before `uv sync` normalises the damage the LAST run left. It does
-    nothing about the damage THIS run is about to create, so the next app-user
-    deploy fails exactly as before. The repair has to follow the thing that
-    causes the harm.
+
+def test_the_venv_is_repaired_BEFORE_uv_sync_and_with_sudo() -> None:
+    """🔴 This is the half PR #155 got wrong, and getting it wrong meant the
+    fix shipped to a box that could not reach it.
+
+    #155 chowned only as root, only after the sync. It never executed once,
+    because of a race nobody has to lose deliberately:
+
+      1. a merge moves `release`;
+      2. the PUSH path (app user) reaches the box first and checks out the SHA;
+      3. it dies at `uv sync` on files it cannot remove;
+      4. `acb-pull` wakes, compares SHAs, says "already current", never
+         applies — so ROOT NEVER GETS A TURN.
+
+    Measured 2026-08-29: the box sat at 16f5dccd with the chown present at line
+    254 of its own checkout, 39 root-owned files under `.venv`, and
+    `/providers` still 404.
+
+    So the repair must come FIRST and must use `sudo`, because the user who
+    needs it is precisely the user who lacks the permission.
     """
     lines = _executable_lines(_APPLY)
-    sync_at = next(i for i, ln in enumerate(lines) if ln.strip() == "uv sync")
-    chown_at = next(i for i, ln in enumerate(lines) if ln in _venv_chown_lines(lines))
-    assert chown_at > sync_at, (
-        "chown the venv AFTER `uv sync`. Before it, the apply cleans up the "
-        "previous run's mess and then makes an identical one"
+    head = _venv_chown_lines(lines[: _sync_index(lines)])
+    before = [ln for ln in head if "sudo" in ln]
+    assert before, (
+        "repair the venv with `sudo chown` BEFORE `uv sync`. A root-only "
+        "repair after the sync cannot run: the app-user path advances the SHA "
+        "and dies first, so the pull path never applies"
+    )
+
+
+def test_the_venv_is_normalised_AFTER_uv_sync_when_root_ran_it() -> None:
+    """The other half, and still necessary. A root-run apply creates new
+    root-owned files. Left alone they are exactly what the next app-user deploy
+    trips over — the before-repair would then be cleaning up a mess this script
+    made one run earlier, forever."""
+    lines = _executable_lines(_APPLY)
+    after = _venv_chown_lines(lines[_sync_index(lines) :])
+    assert after, (
+        "chown the venv AFTER `uv sync` too, so a root-run apply does not hand "
+        "the next app-user deploy the same failure"
     )
 
 
@@ -104,9 +134,10 @@ def test_the_owner_is_DERIVED_from_APP_DIR_not_hardcoded() -> None:
     elsewhere — and `chown` failing under `set -e` fails the deploy.
     """
     lines = _executable_lines(_APPLY)
+    joined = "\n".join(lines)
     chowns = _venv_chown_lines(lines)
     assert chowns, "no venv chown to inspect"
-    assert any("stat" in ln and "APP_DIR" in ln for ln in chowns), (
+    assert "stat -c" in joined and "APP_DIR" in joined, (
         "derive the owner from $APP_DIR with stat, so the apply stays correct "
         "on a box that installs somewhere other than /opt/acb/app"
     )

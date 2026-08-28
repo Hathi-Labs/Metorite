@@ -246,13 +246,41 @@ fi
 #
 # ⚠️ **Normalise AFTER the sync, and only as root.** Root can always remove
 # root's files, so the root path never fails — it only leaves the mess that
-# makes the NEXT app-user deploy fail. Chowning here is what stops that
-# inheritance. Deriving the owner from $APP_DIR rather than naming `acb` keeps
-# this correct on a box that installs somewhere else.
+# makes the NEXT app-user deploy fail. Deriving the owner from $APP_DIR rather
+# than naming `acb` keeps this correct on a box that installs somewhere else.
+#
+# 🔴 **REPAIR BEFORE, NORMALISE AFTER — and the BEFORE half is the one that
+# matters.** The first version of this fix (PR #155) only chowned as root,
+# after the sync, and it never once ran. The reason is a race nobody had to
+# lose deliberately:
+#
+#   1. a merge moves `release`;
+#   2. the PUSH path (app user) reaches the box first and checks out the SHA;
+#   3. it dies here at `uv sync`, because the root files are still there;
+#   4. `acb-pull` wakes, compares SHAs, says "already current" — and never
+#      applies. So ROOT NEVER GETS A TURN, and the repair never executes.
+#
+# Measured 2026-08-29: the box sat at 16f5dccd with the chown present at line
+# 254 of its own checkout, 39 root-owned files under `.venv`, and `/providers`
+# still 404. The fix was on the box and could not reach itself.
+#
+# So repair up front, with `sudo`, whoever is running. The app user already
+# holds passwordless sudo — this script uses `sudo systemctl` throughout — and
+# without it the app-user path has no way out of a hole only root can dig it
+# out of.
+VENV_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+if [ -d "$APP_DIR/.venv" ]; then
+  if sudo chown -R "$VENV_OWNER" "$APP_DIR/.venv" 2>/dev/null; then
+    echo "    venv ownership repaired to $VENV_OWNER before sync"
+  else
+    echo "    WARNING: could not chown $APP_DIR/.venv — uv sync may fail on"
+    echo "             files this user cannot remove (see PR #155/#156)."
+  fi
+fi
 uv sync
 if [ "$(id -u)" = "0" ] && [ -d "$APP_DIR/.venv" ]; then
-  chown -R "$(stat -c '%U:%G' "$APP_DIR")" "$APP_DIR/.venv"
-  echo "    venv normalised to $(stat -c '%U:%G' "$APP_DIR") — root ran this apply"
+  chown -R "$VENV_OWNER" "$APP_DIR/.venv"
+  echo "    venv normalised to $VENV_OWNER — root ran this apply"
 fi
 
 # ── [TRIAL] Free local diarization (sherpa-onnx) ──────────────────
