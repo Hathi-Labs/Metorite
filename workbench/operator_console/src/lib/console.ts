@@ -282,3 +282,32 @@ export const readActivity = (query: string, d?: Deps) =>
 
 export const activityActions = (d?: Deps) =>
   callConsole("/activity/actions", { method: "GET" }, d ?? {});
+
+// ── OUR provider accounts (CP-10 slice 4) ───────────────────────────────────
+//
+// ⚠️ **This is the `provider_credential` half of the pair tabulated above**,
+// not `llm_api_key`. A leak here is our whole vendor bill.
+//
+// ⚠️ **The secret is WRITE-ONLY and the read proves it structurally.** The
+// Console's list query does not select `secret_enc`, so `listProviderCreds`
+// cannot return a key or a fragment of one — there is nothing to redact
+// because there is nothing there.
+//
+// ⚠️ **Installing over a live credential ROTATES it**, in one transaction:
+// the old row is revoked, the new one inserted, and there is never a moment
+// with two live keys or none. That is the same POST, not a second route.
+export const listProviderCreds = (includeRevoked: boolean, d?: Deps) =>
+  callConsole(
+    `/providers/credentials${includeRevoked ? "?include_revoked=true" : ""}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+// 🔴 `admin` AND a live elevation window. The Console enforces it; this does
+// not. Installing the PLATFORM credential arms every AI call we serve.
+export const installProviderCred = (body: unknown, d?: Deps) =>
+  callConsole("/providers/credentials", { method: "POST", body }, d ?? {});
+
+// 🔴 Revoking the PLATFORM credential stops every AI call that is not BYOK.
+export const revokeProviderCred = (body: unknown, d?: Deps) =>
+  callConsole("/providers/credentials/revoke", { method: "POST", body }, d ?? {});
