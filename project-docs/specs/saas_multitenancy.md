@@ -1004,6 +1004,36 @@ Postgres RLS protects Postgres. These do not run on Postgres:
 | **Langfuse / observability** | One project | Tenant tag on every trace, or a project per tenant |
 | **Self-mutation** | Native-MAF agents open PRs against **this monorepo** (root `AGENTS.md` constraint 3) | **Hard-blocked for third-party tenants.** See §6.2. |
 
+#### 1.9a The Supabase Data API — a SECOND door into Postgres · CLOSED 2026-08-28
+
+⚠️ **RLS protects Postgres. It does not protect you from a caller who does not
+need your app.** Supabase serves every table in an exposed schema over HTTPS
+through PostgREST, under the `anon` role. That key is **public by design** and
+ships in browser code. So RLS stood alone in front of 157 tables. On 15 of
+them RLS was switched off.
+
+On those 15, `anon` held `SELECT`, `INSERT`, `UPDATE`, `DELETE` and
+`TRUNCATE`. The sharpest three:
+
+- `auth_email_otp_token` — read a sign-in code, then sign in as that person.
+- `org_membership` / `org_role` — insert a row, then hold admin in any tenant.
+- `crm_contacts` / `crm_deals` — customer zero's own data, and truncatable.
+
+✅ **The owner disabled the Data API on `jmzowqeosejpmjdmudwf`, 2026-08-28.**
+The security advisor fell from **17 ERROR rows to 0**. `rls_disabled_in_public`
+stopped firing, and that is the evidence: the lint reports only tables in a
+schema PostgREST serves.
+
+⚠️ **Do not turn it back on.** Metorite reaches Postgres directly as `acb_app`.
+That role holds 628 grants of its own and belongs to no other role. No file in
+this repo imports `@supabase/supabase-js` or calls `/rest/v1`. The Data API
+gives us nothing, and it re-exposes 157 tables.
+
+📌 **This closed a hole. It did not build the tenancy mechanism.** RLS stays
+the real answer (D15, R5). `04_policies.sql` stays the staged half. H3 on the
+board stays the cutover. What changed is the schedule: that cutover can now
+happen when we choose it, and not under pressure.
+
 ---
 
 ## 2. DECISION — modules are ENTITLEMENTS, and entitlements are not permissions

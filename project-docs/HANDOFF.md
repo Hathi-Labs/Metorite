@@ -1036,39 +1036,6 @@ line — never reclaim a number by deleting the other entry.
   §6.1 (CP-12 block) · D47
 - **Added:** 2026-08-27 · CP-12e session · **rewritten 2026-08-27** after H-24
 
-### H-66 · The tenant plane serves 15 unprotected tables to the internet · [OWNER]
-- **Check:** in the Supabase dashboard for `jmzowqeosejpmjdmudwf`, open
-  **Settings → API**. A Data API that is still enabled means this is open. Or
-  read the `rls_disabled_in_public` advisor, which is ERROR level.
-- **⚠️ Measured 2026-08-27 over the Supabase MCP, on the live tenant plane.**
-  15 tables in `public` have ROW LEVEL SECURITY switched OFF, and the `anon`
-  role holds `SELECT`, `INSERT`, `UPDATE` and `DELETE` on them.
-- **The sharp one is `org_membership`.** `acb_auth/deps.py` resolves roles and
-  permissions from these tables on every request. Anyone who holds the anon key
-  can insert a membership row in any organization. The anon key is public by
-  design, so this is a cross-tenant privilege escalation reachable from the
-  internet. `user_identity`, `organization`, `tenant_placement` and `org_role`
-  carry the same exposure.
-- **The recommended fix is NOT the one the advisor prints.** Enabling RLS with
-  no policies blocks all access, and it breaks sign-in through the `app_user`
-  policy. **Disable the Data API instead.** Nothing in Metorite uses it —
-  a repo-wide search for `@supabase/supabase-js`, `SUPABASE_ANON`,
-  `NEXT_PUBLIC_SUPABASE` and `/rest/v1` returns no file. The app reaches
-  Postgres directly. One setting closes all 15 errors.
-- **Two lesser findings, same project.** `rls_auto_enable()` is a SECURITY
-  DEFINER function that `anon` can call over `/rest/v1/rpc/`. `gtd_backfill_plan`
-  is a SECURITY DEFINER view.
-- **The Console plane is clean.** `hiwnpcdfwxaydfsvqshh` enables RLS everywhere
-  with no policies, which denies `anon`. Only INFO and WARN advisors.
-- **⚠️ Applying RLS properly as the tenancy mechanism stays separate work.**
-  That is R5 and D15, and `04_policies.sql` is the staged half. Disabling the
-  Data API buys the time to do it correctly.
-- **Authority:** `work_plan.md` §6 (production one-off) · **D15** · **D45** ·
-  `specs/saas_multitenancy.md`
-- **Added:** 2026-08-27 · Supabase MCP session
-
-
-
 ### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
 - **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No
   line, or `0`, means the hop is inert and this is still pending.
