@@ -515,6 +515,57 @@ sleep 3
 systemctl is-active --quiet acb-workbench || { echo "WORKBENCH FAILED TO START"; exit 1; }
 echo "Workbench is active"
 
+# ── Operator Console (Next.js, staff-only) ────────────────────────
+#
+# 🔴 **THIS BLOCK EXISTS BECAUSE THE CONSOLE DRIFTED FOR TWO DAYS.** Measured
+# 2026-08-28: `operator.metorite.com` served, and both `/models` (merged
+# 2026-08-27) and `/providers` (merged 2026-08-28) answered **404**. The site
+# was up, Caddy routed it, and nothing in this script rebuilt it — so every
+# operator feature merged to `main` stayed on `main`.
+#
+# ⚠️ **The unit file is NOT in this repo.** Every other service here is copied
+# from `deploy/hostinger/*.service`; this one was stood up by hand on the box,
+# so there is nothing to `cp`. That is a real gap and it is recorded in the
+# handoff queue — until it closes, this block manages an artefact it cannot
+# reproduce.
+#
+# ⚠️ **Deliberately AFTER the workbench.** Customer surfaces come up first, so
+# a failure here fails the job loudly without having delayed a single customer
+# request. That ordering is the whole reason this is safe to fail hard on.
+#
+# Conditional on the unit being enabled — the same test the Console block uses,
+# so a box that does not run the operator console skips this silently rather
+# than failing. Override the name if it runs under a different one.
+OC_UNIT="${OPERATOR_CONSOLE_UNIT:-acb-operator-console}"
+OC_DIR="$APP_DIR/workbench/operator_console"
+
+if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
+  echo "==> Rebuilding + restarting Operator Console ($OC_UNIT)"
+  cd "$OC_DIR"
+  if [ -f package-lock.json ] || [ -f package.json ]; then
+    npm ci --prefer-offline 2>/dev/null || npm install
+    # Same clean build as the workbench: a kept `.next` produces stale
+    # client-reference-manifest errors under Turbopack.
+    rm -rf .next
+    # 1GB heap ceiling — this box has 4GB and two Next builds run per deploy.
+    NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  fi
+  sudo systemctl restart "$OC_UNIT"
+  sleep 3
+  if systemctl is-active --quiet "$OC_UNIT"; then
+    echo "    Operator Console is active"
+  else
+    echo "OPERATOR CONSOLE FAILED TO START"
+    sudo journalctl -u "$OC_UNIT" --no-pager -n 40 || true
+    exit 1
+  fi
+else
+  echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
+  echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"
+  echo "    on the box. If it runs on this host at all, it is NOT being"
+  echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
+fi
+
 echo "==> Ensuring Caddy is serving"
 # Caddy fronts BOTH public hostnames — if it is down, the whole app
 # is unreachable no matter how healthy gateway/workbench are. The
