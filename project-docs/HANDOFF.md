@@ -1180,6 +1180,36 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/pr-check.yml`
 - **Added:** 2026-08-28 · H-28 fix session
 
+### H-75 · The Operator Console's systemd unit and Caddy block are NOT in the repo · [OWNER]
+- **Check:** `rg -l "operator" deploy/hostinger/` → no hit means the unit file
+  is still only on the box, and this is open.
+- **Why:** 🔴 **The console is deployed and was never reproducible.**
+  `operator.metorite.com` serves, Caddy routes it, a process answers — and
+  none of that exists in version control. Every other service here is copied
+  from `deploy/hostinger/*.service` by `vps_apply.sh`. This one was stood up
+  by hand.
+- **📌 The drift it caused is measured, not theoretical.** On 2026-08-28 both
+  `/models` (merged 08-27) and `/providers` (merged 08-28) answered **404** on
+  the live console. The site was up and the code was two days behind, because
+  nothing rebuilt it.
+- **✅ Half of this is now closed.** `scripts/vps_apply.sh` builds and restarts
+  the console on every deploy, guarded on the unit being enabled and
+  overridable by `OPERATOR_CONSOLE_UNIT`.
+  `test_operator_console_deploy_wiring.py` fences all three properties.
+- **⚠️ What is STILL open, and it is the owner's half:**
+  1. Commit `acb-operator-console.service` to `deploy/hostinger/` to match
+     what runs on the box, and add the `sudo cp` line the workbench block
+     already has. **`deploy/` is §6 owner-gate and plan-guard blocks an agent
+     from writing there** — the same wall as H-13's three patches.
+  2. Commit the Caddy site block for `operator.metorite.com`.
+  3. Confirm the running unit is called `acb-operator-console`. If it is not,
+     set `OPERATOR_CONSOLE_UNIT` on the box or rename the unit.
+- **📌 Until 1 and 2 land, the deploy manages an artefact it cannot
+  reproduce.** Losing the box loses the console's configuration entirely.
+- **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
+  app) · `scripts/vps_apply.sh`
+- **Added:** 2026-08-28 · operator-console deploy session
+
 ---
 
 # DONE — deleted, not archived
