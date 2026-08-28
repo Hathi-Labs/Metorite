@@ -14,22 +14,23 @@
 
 import { ACCENT_HUES, type AccentHue, statusAccent } from "@/lib/statusAccent";
 
-export interface TagRow {
-  id: string;
-  /**
-   * `null` means ORG-WIDE (WS-27bj / D-PM-16): the tag belongs to the whole
-   * organization rather than this project, and the list is `org-wide ∪
-   * root-local` with root-local shadowing. Widened because the gateway can send
-   * `null` today — a type that still said `string` would be a contract this
-   * side had already stopped honouring.
-   */
-  project_id: string | null;
-  name: string;
-  color: string;
-  description?: string | null;
-  /** How many live tasks wear it. Present on the list endpoint. */
-  task_count?: number;
-}
+import type { TagRow } from "./api";
+
+/**
+ * The tag wire type. **Declared once, in `./api`, and re-exported here.**
+ *
+ * It used to be declared in BOTH files, and the two were assignable only for
+ * as long as they happened to agree (H-6). `page.tsx` passes rows between the
+ * modules, so the day one gained a field the other did not, the build broke
+ * somewhere unrelated to the change. That is what widening `project_id` for
+ * org-wide vocabularies actually surfaced.
+ *
+ * `./api` owns it because that is where its siblings live — `TaskRow`,
+ * `StatusRow`, `FieldRow`, `ViewRow` — and six of the eight consumers already
+ * imported it from there. The re-export keeps `from "../lib/tags"` working for
+ * the other two, so this collapses a duplicate without moving anybody.
+ */
+export type { TagRow } from "./api";
 
 /** Mirrors the gateway's `MAX_TAGS_PER_TASK`. */
 export const MAX_TAGS_PER_TASK = 25;

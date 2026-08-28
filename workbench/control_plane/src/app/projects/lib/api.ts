@@ -135,13 +135,15 @@ export interface ViewRow {
 export interface TagRow {
   id: string;
   /**
-   * `null` means ORG-WIDE (WS-27bj / D-PM-16).
+   * `null` means ORG-WIDE (WS-27bj / D-PM-16): the tag belongs to the whole
+   * organization rather than this project, and the list is `org-wide ∪
+   * root-local` with root-local shadowing.
    *
-   * ⚠️ This is the SECOND declaration of this shape — `lib/tags.ts` has one too,
-   * and the two are assignable only while they agree. Widening one and not the
-   * other is what surfaced the duplication: `page.tsx` passes rows between them.
-   * Recorded as a board finding rather than merged here; collapsing two public
-   * wire types is its own change.
+   * ⚠️ **This is the ONLY declaration of `TagRow`, and it must stay that way.**
+   * `lib/tags.ts` carried a second copy until H-6 collapsed it, and the two
+   * were assignable only for as long as they happened to agree. Widening this
+   * field and not its twin is what surfaced the duplication. `lib/tags.ts` now
+   * re-exports this type, so both import paths still resolve here.
    */
   project_id: string | null;
   name: string;
