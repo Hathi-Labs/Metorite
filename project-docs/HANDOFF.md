@@ -719,29 +719,6 @@ line — never reclaim a number by deleting the other entry.
   (verify by evidence, never by a green job)
 - **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
 
-### H-28 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
-- **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
-  false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
-  Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
-  module, package, files, or command."*
-- **Why:** `pass_filenames: false` tells pre-commit not to append the staged paths,
-  and nothing supplies targets in their place, so the hook fails on **every** commit
-  that touches Python — it has never been able to pass. The comment above it says it
-  is "diff-scoped", which is the opposite of what `pass_filenames: false` does; the
-  intent and the setting disagree and only the setting runs. ⚠️ The fix is not
-  simply `args: [apps, packages]`: that type-checks the whole tree on every commit,
-  which is slow and would surface the existing strict-mode backlog as a block on
-  unrelated work. Wanted: the diff-scoped behaviour the comment describes, which
-  probably means dropping `pass_filenames: false` and letting the staged paths
-  through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
-  landed with `SKIP=mypy` (every other hook ran and passed).
-  ⚠️ This hook failing on every Python commit is *why* `SKIP=mypy` gets typed by
-  habit, which is the second-order cost: a skip nobody questions is not a gate.
-- **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
-  CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
-  smuggled into an unrelated PR)
-- **Added:** 2026-08-21 · session that halved H-10 (PR #46)
-
 ### H-35 · Write the owning spec for WS-36 (per-tenant restore) · [AGENT]
 - **Check:** `rg -n "WS-36" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
   NO OWNING SPEC"** section (rather than in ACTIVE) means the spec is still unwritten
@@ -1232,6 +1209,28 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
   `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
 - **Added:** 2026-08-28 · WS-31 CP-7 slice 1
+
+### H-74 · mypy is strict over a tree nobody has swept — 1508 errors · [AGENT]
+- **Check:** `uv run mypy apps packages --exclude '^apps/agents/' 2>&1 | tail -1`
+  → a count above zero means the sweep has not happened and this is open.
+- **Why:** **Two dead halves of one ratchet, both found while fixing H-28.**
+  The pre-commit hook passed no target, so it type-checked nothing. The CI step
+  ran `uv run mypy apps packages`, which aborts on a duplicate-module error and
+  checked almost nothing. CI is `continue-on-error`, so its "Found 1 error"
+  read as a clean report for as long as the step has existed.
+- **📌 Both halves now report.** The hook is diff-scoped and report-only. CI
+  excludes `apps/agents/` and reaches 418 files. **Neither blocks**, which is
+  the honest state — 1508 errors in 271 files, measured 2026-08-28.
+- **⚠️ Do not flip either one to blocking before the sweep.** A blocking
+  diff-scoped hook stops your commit on somebody else's errors in the file you
+  touched. The only thing that teaches is `--no-verify`, and a bypass habit is
+  worse than a report.
+- **📌 The seven colliding modules are the other half of the story.**
+  `apps/agents/*/agents.py` — seven files, one module name, no `__init__.py`.
+  Until they are packaged, no tool that walks the tree can see past them.
+- **Authority:** `work_plan.md` §1 R7 · `.pre-commit-config.yaml` ·
+  `.github/workflows/pr-check.yml`
+- **Added:** 2026-08-28 · H-28 fix session
 
 ---
 
