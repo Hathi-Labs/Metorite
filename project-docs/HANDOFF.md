@@ -1138,9 +1138,12 @@ line — never reclaim a number by deleting the other entry.
      `test_byok_default.py` shows the old orchestrator coerced to
      `tier-balanced`; D32.7 retired coercion precisely because it hides a
      misconfiguration behind a bill.
-- **📌 Also check `/email`** — `ai-settings/SettingsTab.tsx` reads the same two
-  endpoints. It is `preview` (WS-17 incomplete), so it is not urgent, but it is
-  the same defect and should go the same way.
+- **✅ `/email` is DONE (2026-08-28).** `ai-settings/SettingsTab.tsx` carried
+  the same picker and it is gone the same way. The fence moved with it:
+  `src/lib/modelVocabulary.test.ts` is now ONE table-driven test over both
+  surfaces, not a copy per app. Add a row when a third picker appears.
+- **⚠️ What is left here is the OWNER half only** — the stored-value query
+  below. No code change remains.
 - **Authority:** **D32.7** · `specs/customer_console.md` §6A CP-5 ·
   `specs/launch_surface.md` §2 (the live nine)
 - **Added:** 2026-08-27 · WS-31 CP-5 scoping session

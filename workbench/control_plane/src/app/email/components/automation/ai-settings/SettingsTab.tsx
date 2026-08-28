@@ -133,10 +133,6 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [llm, setLlm] = useState<LLMConfigResponse | null>(null);
-  // Only the models the user enabled on the Models page (eye toggle).
-  const [enabledModels, setEnabledModels] = useState<
-    { id: string; label?: string; provider?: string }[]
-  >([]);
   const [dialog, setDialog] = useState<
     | "followup"
     | "digest"
@@ -167,12 +163,6 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
     fetch("/api/settings/llm")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setLlm(d))
-      .catch(() => {});
-    // The model dropdown should offer the LiteLLM tiers + only the models the
-    // user made visible on the Models page (not the full static catalogue).
-    fetch("/api/settings/llm/enabled-models")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setEnabledModels(d.enabled ?? d.custom ?? []))
       .catch(() => {});
   }, []);
 
@@ -467,7 +457,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
                   }
                   className={`${INPUT_CLS} w-56 py-1`}
                 >
-                  {llm || enabledModels.length > 0 ? (
+                  {llm ? (
                     <>
                       {llm && (
                         <optgroup label="Tiers (auto-routing)">
@@ -479,21 +469,29 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
                           ))}
                         </optgroup>
                       )}
-                      {enabledModels.length > 0 && (
-                        <optgroup label="Your enabled models">
-                          {enabledModels.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.label || m.id}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {/* Keep a previously-saved value selectable even if it's
-                          no longer a tier or an enabled model. */}
+                      {/* ⚠️ A RAW-MODEL OPTGROUP WAS HERE, and D32.7 is why
+                          it is not. **Customers never see a model.** Tiers are
+                          the only vocabulary, and the
+                          Console answers a bare model id with a 400 rather
+                          than coercing it — so a value picked here would stop
+                          working the day `ROUTER_SERVING_ENABLED` flips.
+
+                          This is H-72's defect on a second surface. /tasks was
+                          the urgent one because /tasks is LIVE; /email is
+                          `preview` (WS-17), so this closes the same hole
+                          before anyone can fall into it.
+
+                          ⚠️ This stops NEW ones. It does not heal a value
+                          already saved: that still shows below, because hiding
+                          it would leave somebody staring at a picker that
+                          disagrees with what their email AI actually runs on.
+                          Which tier an existing model id should become is a
+                          product decision (H-72). */}
                       {cfg.value &&
-                        !llm?.tiers.some((t) => t.tier_name === cfg.value) &&
-                        !enabledModels.some((m) => m.id === cfg.value) && (
-                          <option value={cfg.value}>{cfg.value}</option>
+                        !llm?.tiers.some((t) => t.tier_name === cfg.value) && (
+                          <option value={cfg.value}>
+                            {cfg.value} (not a tier — ask us)
+                          </option>
                         )}
                     </>
                   ) : (
