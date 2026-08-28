@@ -7596,12 +7596,40 @@ correctly and prices nothing.**
 |---|---|---|---|
 | 1 | `model_capability` + `task` on `tier_binding` + Router two-step resolution | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27** (migration 010) |
 | 2 | `unit` on the rate card, `task`/`quantity`/`unit` on `usage_event`, the `rate_call` branch | small | ✅ **BUILT — CP-10 slice 2, 2026-08-27.** Closes **H-45** |
-| 3 | Operator catalog PLANE over capabilities, bindings and rates | small | ◐ **CP-10 slice 3, 2026-08-27** — the ROUTES and their rules are built (`GET /catalog/models`, `POST /catalog/{capabilities,bindings,rates}`). ⚠️ The **UI is not**, and it is the relocation §6A names: re-point `settings/models/page.tsx` at these routes and delete the tenant-side copy per CP-5 |
+| 3 | Operator catalog PLANE over capabilities, bindings and rates | small | ✅ **BUILT — CP-10 slice 3 (routes, 2026-08-27) + slice 3b (the `/models` surface, 2026-08-27).** The tenant-side copy is deleted by CP-5 (#145) |
+| 3c | Operator surface for OUR provider accounts | small | ✅ **BUILT — CP-10 slice 4, 2026-08-28.** `/providers`, over the `GET/POST /providers/credentials` + revoke routes slice 1 shipped. See below |
 | 4 | Feature→tier registry, generalising the Apps manifest precedent | **large — 80+ sites** | its own ticket (**H-44**) |
 | 5 | Customer-visible tier choice in chat | medium | after 1–4 |
 
 ⚠️ **Do not let step 5 lead.** A picker over tiers whose invocation is a frozenset and
 whose bindings are string literals would look finished and change nothing.
+
+**CP-10 slice 4 — the provider-credential surface — BUILT 2026-08-28**
+(`ws31-cp10s4-provider-credentials`).
+
+This closed the last hand-run step in the AI chain. Slice 1 shipped
+`GET /providers/credentials`, the install POST and the revoke POST in
+2026-08-26. No page called them for two days. So installing the key that lets
+the Router call a vendor meant an operator running curl against the Console.
+
+Measured on the live Console on 2026-08-28: `provider_credential` held **0**
+live rows. That single fact is why no AI call can be served, and no surface
+said so.
+
+The page reads the list SERVER-side with the caller's own token. The secret
+crosses no read path, and the fence is structural rather than an example: the
+Console's list query does not select `secret_enc`, and the client component
+runs no `GET`.
+
+⚠️ **Two wrong conclusions this page could cause, and both cost money.** An
+operator reads a list and concludes "we are covered" when the only live row is
+**revoked**, or when it is **scoped to one organization**. Each looks exactly
+like coverage. `armedProviders` counts live AND platform rows only, and
+`providers.test.ts` tests both mistakes.
+
+⚠️ **Installing over a live credential ROTATES it** — the same POST revokes the
+old row and inserts the new one in one transaction. The page says so before the
+click, because a silent replacement reads as a duplicate insert.
 
 ⚠️ **Four things this design leaves open, and two of them are defects in it — see
 §6A.10.** The register is deliberately a sibling section rather than a footnote here:
