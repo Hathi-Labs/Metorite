@@ -552,13 +552,48 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   fi
   sudo systemctl restart "$OC_UNIT"
   sleep 3
-  if systemctl is-active --quiet "$OC_UNIT"; then
-    echo "    Operator Console is active"
-  else
+  if ! systemctl is-active --quiet "$OC_UNIT"; then
     echo "OPERATOR CONSOLE FAILED TO START"
     sudo journalctl -u "$OC_UNIT" --no-pager -n 40 || true
     exit 1
   fi
+  echo "    Operator Console is active"
+
+  # 🔴 **ACTIVE IS NOT SERVED, AND THE DIFFERENCE COST TWO DAYS.**
+  #
+  # Measured 2026-08-28 and again 2026-08-29: the unit was `active (running)`
+  # for the whole period `/providers` and `/models` answered 404. `is-active`
+  # reports that a process holds the port. It reports NOTHING about which build
+  # that process loaded, and a Next.js server started against a stale `.next`
+  # holds the port perfectly while serving last week's routes.
+  #
+  # That is this repo's most expensive recurring failure wearing its third hat:
+  # a green signal that describes the machinery instead of the delivery. So
+  # probe the routes, and fail the deploy when one is missing.
+  #
+  # ⚠️ The route list is DERIVED FROM THE SOURCE TREE, never written down here.
+  # The whole defect is a thing that was correct when written and silently
+  # stopped matching the tree. A hardcoded list would rot the same way.
+  #
+  # ⚠️ Only 404 is a failure. `/providers` with no session answers a redirect to
+  # `/login`, and that IS a pass — it proves the route compiled. Treating a
+  # redirect as failure would make this gate refuse a correct deploy.
+  OC_PORT="${OPERATOR_CONSOLE_PORT:-3002}"
+  oc_stale=""
+  for oc_page in "$OC_DIR"/src/app/*/page.tsx; do
+    [ -f "$oc_page" ] || continue
+    oc_route="$(basename "$(dirname "$oc_page")")"
+    oc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null || echo 000)"
+    [ "$oc_code" = "404" ] && oc_stale="$oc_stale /$oc_route"
+  done
+  if [ -n "$oc_stale" ]; then
+    echo "OPERATOR CONSOLE IS SERVING A STALE BUILD — 404 on:$oc_stale"
+    echo "    The unit is active and these routes exist in src/app/."
+    echo "    The build did not take. Do NOT record this deploy as successful."
+    exit 1
+  fi
+  echo "    Operator Console serves every route in src/app/"
 else
   echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
   echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"

@@ -125,6 +125,54 @@ def test_a_box_that_does_NOT_run_it_skips_cleanly() -> None:
     ), "guard the block on the unit being enabled, as the Console block does"
 
 
+def test_the_deploy_proves_the_build_TOOK_not_merely_that_it_STARTED() -> None:
+    """🔴 The half of H-75 that the first pass missed, and the costlier half.
+
+    Measured twice — 2026-08-28 and 2026-08-29 — `acb-operator-console` was
+    `active (running)` for the whole window in which `/providers` and `/models`
+    answered **404**. `systemctl is-active` reports that a process holds the
+    port. A Next.js server started against a stale `.next` holds the port
+    perfectly and serves the previous build.
+
+    So the guard that shipped in PR #153 was itself an instance of the defect
+    it was written to stop: it certified the machinery, not the delivery. The
+    deploy must fetch a real route and fail on 404.
+    """
+    lines = _executable_lines(_APPLY)
+    window = "\n".join(lines)
+    window = window[window.index("OC_UNIT=") :]
+    assert "curl" in window, (
+        "restarting is not serving — the deploy must fetch a route back from "
+        "the console it just restarted"
+    )
+    assert '"404"' in window, (
+        "the probe must key on 404 specifically. `/providers` with no session "
+        "redirects to /login, and that is a PASS — it proves the route "
+        "compiled. A gate that failed on any non-200 would refuse a good deploy"
+    )
+    assert "exit 1" in window.split("oc_stale")[-1], (
+        "a stale build must FAIL the deploy. Logging it and continuing is how "
+        "the console drifted for two days behind a green job"
+    )
+
+
+def test_the_probed_routes_are_DERIVED_from_the_source_tree() -> None:
+    """⚠️ A written-down route list rots exactly the way the build did.
+
+    The whole defect is a thing that was correct on the day it was written and
+    then silently stopped matching the tree. A fence with that same property is
+    not a fence — it is the bug with a test around it. Enumerate
+    `src/app/*/page.tsx` so adding a page automatically extends the check.
+    """
+    lines = _executable_lines(_APPLY)
+    window = "\n".join(lines)
+    window = window[window.index("OC_UNIT=") :]
+    assert "src/app" in window and "page.tsx" in window, (
+        "derive the routes from src/app/*/page.tsx — that is what stops this "
+        "check going stale while reporting success"
+    )
+
+
 def test_the_unit_name_is_overridable() -> None:
     """⚠️ The unit file is NOT in this repo — the console was stood up by hand,
     so unlike every other service here there is no `deploy/hostinger/*.service`
