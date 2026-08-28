@@ -220,7 +220,40 @@ if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
+
+# 🔴 **TWO DELIVERY PATHS, TWO UIDs, ONE VENV.** This aborted every push-path
+# deploy from 2026-08-26 to 2026-08-29, and it aborted them RIGHT HERE — before
+# the workbench build and before the Operator Console block. So the box took
+# each new checkout and none of the new builds, which is why `git log` on the
+# box read current while every compiled surface stayed days behind.
+#
+# The header of this file says "one file, so the two paths cannot drift". The
+# FILE does not drift. The UID does:
+#
+#   pull path   acb-pull.service runs `User=root`  → writes root-owned files
+#   push path   deploy.yml SSHes as the app user   → cannot remove them
+#
+# Measured 2026-08-29: 36 files of 9883 under `.venv` were `root:root` in an
+# otherwise `acb:acb` tree, and `uv sync` stopped on the first one it met:
+#
+#   error: failed to remove file `…/sherpa_onnx-1.13.6.dist-info/INSTALLER`:
+#          Permission denied (os error 13)
+#
+# `set -e` (line 42) then took the remaining 480 lines with it. The job polled
+# 24 times x 3 rounds for a SHA no process was working toward any more, and
+# reported the box unreachable — so for three days this read as a network or
+# health fault, which is where the diagnosis kept going.
+#
+# ⚠️ **Normalise AFTER the sync, and only as root.** Root can always remove
+# root's files, so the root path never fails — it only leaves the mess that
+# makes the NEXT app-user deploy fail. Chowning here is what stops that
+# inheritance. Deriving the owner from $APP_DIR rather than naming `acb` keeps
+# this correct on a box that installs somewhere else.
 uv sync
+if [ "$(id -u)" = "0" ] && [ -d "$APP_DIR/.venv" ]; then
+  chown -R "$(stat -c '%U:%G' "$APP_DIR")" "$APP_DIR/.venv"
+  echo "    venv normalised to $(stat -c '%U:%G' "$APP_DIR") — root ran this apply"
+fi
 
 # ── [TRIAL] Free local diarization (sherpa-onnx) ──────────────────
 # Adds free CPU-only speaker separation for Whisper transcripts.
