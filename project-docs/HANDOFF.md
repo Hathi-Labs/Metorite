@@ -192,16 +192,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §9.11 · `work_plan.md` §6
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-6 · `TagRow` is declared twice on the frontend · [AGENT]
-- **Check:** `rg -n "interface TagRow" workbench/control_plane/src/app/projects/lib/`
-  → two hits means still pending.
-- **Why:** `lib/tags.ts` and `lib/api.ts` each declare it, and `page.tsx` passes
-  rows between them, so they are assignable only while they agree. Widening one
-  for org-wide vocabularies is what surfaced it; both were widened to keep the
-  build green. Collapsing two public wire types is its own change (CLAUDE.md §5).
-- **Authority:** `specs/project_management_app.md` §9.11.1 ("findings for the board")
-- **Added:** 2026-08-14 · session that built WS-27bj
-
 ### H-7 · `now()` can move backwards, and migration 168's keyset cursor assumes it cannot · [AGENT]
 - **Check:** `rg -n "updated_at, id" infra/postgres/168*.sql` → the delta feed's
   cursor still ordering on `(updated_at, id)` with no monotonic guarantee means
