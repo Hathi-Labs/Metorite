@@ -16,7 +16,7 @@ meaning, and every section below builds one part of it.
 
 ### 1.1 A customer in chat
 
-1. A customer sees three tiers. They are **Fast**, **Medium** and **Powerful**.
+1. A customer sees three tiers. They are **Fast**, **Balanced** and **Powerful**.
 2. An uploaded image goes to a separate **image tier**. The Router calls that
    tier separately. If the chat model already understands images, the Router
    uses the chat model and calls nothing else.
@@ -84,14 +84,16 @@ names it. The customer never sees a slug.
 | Slug | Label the customer sees |
 |---|---|
 | `tier-fast` | Fast |
-| `tier-balanced` | **Medium** |
+| `tier-balanced` | **Balanced** |
 | `tier-powerful` | Powerful |
 | `tier-vision` | (not shown — see §3.2) |
 | `tier-stt` | (not shown — see §3.3) |
 
-⚠️ **Do not rename `tier-balanced`.** The owner says "Medium". The slug stays
-`tier-balanced`, and the label becomes `Medium`. A rename breaks every binding
-row and every past usage row that names the old slug.
+⚠️ **The label is `Balanced`, and the slug is `tier-balanced`.** The owner
+considered "Medium" and kept "Balanced" on 2026-08-29. The two now agree, and
+that is convenient rather than required — D-AI-1 exists so a future label
+change costs nothing. A slug rename would break every binding row and every
+past usage row that names the old slug.
 
 **Build:** a `tier_catalog` table. Columns: `slug`, `label`, `description`,
 `sort_order`, `customer_visible`. The customer picker reads it. The operator
