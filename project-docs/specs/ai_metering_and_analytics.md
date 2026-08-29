@@ -159,6 +159,31 @@ walk the chain. Slice 10 adds that.
 
 ---
 
+### 3.6 Failover, and what it refuses to do
+
+**Decision D-AI-6.** The Router walks the chain. Three rules bound it.
+
+1. **A bad request does not fail over.** A 400, 404, 413 or 422 fails the same
+   way on every step. Each try costs money, so the walk stops.
+2. **A bad key of ours strikes off the whole vendor.** A 401 or 403 means our
+   credential is wrong. Every model from that vendor presents the same key.
+3. **The customer pays for the step that ANSWERED.** A request that falls over
+   from an expensive model to a cheap one costs the cheap one.
+
+⚠️ **A stream does not fail over.** After the first frame reaches the client,
+the request is half answered. A retry would join two different completions into
+one response, which is worse than the error. Failover *before* the first frame
+is legal, and it is a separate slice.
+
+⚠️ **The chain tries at most `MAX_CHAIN_ATTEMPTS` steps.** An unbounded chain
+is an unbounded bill and an unbounded wait.
+
+⚠️ **`usage_event` has no column for the step that served.** A failover writes
+a `router.failover` log line, and nothing else. So the Operator Console cannot
+show a failover history yet, and that page stays sample-only.
+
+---
+
 ## 4. Customer surfaces — documented now, built later
 
 **Owner directive, 2026-08-29: record these and build them when the time is
@@ -297,7 +322,9 @@ Each slice ships alone and is verifiable alone.
 | **7** | Customer time series | C3 |
 | **8** | Per-member budget | C5, **after H-73** |
 | **9** | `tier_binding.rank`, and the Console reads and writes a chain | §3.5 |
-| **10** | The Router walks the chain when a step fails | §3.5, A5 |
+| **10** | The Router walks the chain when a step fails ✅ | §3.5, §3.6 |
+| **11** | A stream fails over before its first frame | §3.6 |
+| **12** | `usage_event` records the step that served | §3.6, A5 |
 
 ---
 
@@ -316,6 +343,9 @@ agent breaks it.
 | Every step of a chain shares one date | `test_customer_console_fallback_chain.py` — two dates resolve as two chains, and the first choice disappears |
 | A shorter chain leaves no orphan step | `test_customer_console_fallback_chain.py` — a three-step chain replaced by two resolves to two |
 | The Console saves the chain whole | `catalog.test.ts` — the page posts `models`, never `model` |
+| A bad request is not retried | `test_router_failover.py` — a 400 stops the walk and never calls the backup |
+| A bad key strikes off its vendor | `test_router_failover.py` — a 401 skips every model from that vendor |
+| The customer pays for what ANSWERED | `test_router_failover.py` — the walk returns the step that replied |
 
 ⚠️ **R8 binds every read here.** Verify the SQL against a real database. The
 two reads in slice 1 were verified against the live Console database on

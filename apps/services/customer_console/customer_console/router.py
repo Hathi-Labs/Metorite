@@ -28,6 +28,7 @@ import base64
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -474,3 +475,103 @@ async def relay_stream(
             yield SSE_DONE
     finally:
         on_finish(usage, started)
+
+
+# ── Failover: which upstream errors are worth trying the next step for ──────
+
+
+#: An unbounded chain is an unbounded bill and an unbounded wait. litellm is
+#: already told `num_retries: 1`, so three steps is up to six provider calls
+#: on one request — which is the ceiling, not the target.
+MAX_CHAIN_ATTEMPTS = 3
+
+#: Statuses where the REQUEST is wrong. Every step fails these identically, so
+#: walking the chain spends money to learn nothing.
+#:
+#: ⚠️ **413 is deliberately here.** A model with a bigger window might accept an
+#: over-long payload, so retrying is tempting — and each attempt re-uploads the
+#: whole thing. Paying three times to maybe fit is the wrong default.
+TERMINAL_STATUSES = frozenset({400, 404, 413, 422})
+
+#: Statuses that say OUR credential is bad. A second model from the SAME vendor
+#: uses the same key, so it fails the same way — skip that vendor entirely.
+CREDENTIAL_STATUSES = frozenset({401, 403})
+
+
+def is_retryable(status: int | None) -> bool:
+    """Is another step worth trying?
+
+    ⚠️ **`None` is retryable, and that is the common case.** A timeout, a DNS
+    failure and a dropped connection all arrive with no status. Those are
+    exactly the provider-down shapes a chain exists for, so treating "no
+    status" as terminal would make failover fire only for the errors that
+    least need it.
+    """
+    if status is None:
+        return True
+    if status in TERMINAL_STATUSES:
+        return False
+    if status in CREDENTIAL_STATUSES:
+        return True
+    return status == 408 or status == 429 or status >= 500
+
+
+class UpstreamFailed(Exception):
+    """Every step of the chain refused, or one refused terminally.
+
+    ⚠️ **Carries a STATUS, not a message.** The upstream message can quote the
+    request, and the request can carry customer content — so the caller maps
+    the status to its own wording and the provider's text never leaves here.
+    """
+
+    def __init__(self, status: int | None) -> None:
+        super().__init__(f"upstream failed with {status}")
+        self.status = status
+
+
+async def call_chain(
+    attempts: Sequence[ResolvedTier],
+    kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
+    | None = None,
+) -> tuple[Any, ResolvedTier]:
+    """Try each step in order and return the first answer, and who gave it.
+
+    🔴 **This is D-AI-5 actually doing something.** Until it existed the chain
+    was configuration the Router stored and never read.
+
+    ⚠️ **Returns the step that ANSWERED, and the caller must bill from it.** An
+    Opus request that fell over to Haiku costs Haiku. Pricing the intended step
+    would overcharge a customer for a model they did not get.
+
+    ⚠️ **A vendor that answers 401 is struck off for the rest of the walk.**
+    Every model from that vendor presents the same key of ours, so trying a
+    second one spends a round trip to learn what we already know.
+
+    Lives here, not in the route, because a route needs FastAPI and a test of
+    failover ORDER should not. `kwargs_for` is a callable for the same reason:
+    building a provider call needs the request, the credential and the clamp,
+    and none of that is this function's business.
+    """
+    dead_vendors: set[str] = set()
+    for position, step in enumerate(attempts):
+        vendor = step.model.split("/", 1)[0]
+        if vendor in dead_vendors:
+            continue
+        try:
+            return await call_provider(**kwargs_for(step)), step
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if status in CREDENTIAL_STATUSES:
+                dead_vendors.add(vendor)
+            remaining = [
+                s for s in attempts[position + 1:]
+                if s.model.split("/", 1)[0] not in dead_vendors
+            ]
+            if not is_retryable(status) or not remaining:
+                raise UpstreamFailed(status) from exc
+            if on_failover is not None:
+                on_failover(step, remaining[0], status)
+    # Unreachable while `attempts` is non-empty: the loop either returns or
+    # raises. Kept so a future edit that empties it fails loudly.
+    raise UpstreamFailed(None)
