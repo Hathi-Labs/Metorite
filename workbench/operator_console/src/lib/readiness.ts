@@ -140,6 +140,68 @@ export function buildMatrix(data: CatalogLike): Matrix {
   return { tiers, tasks: data.tasks, rows, counts };
 }
 
+export type NextStep = {
+  title: string;
+  detail: string;
+  tone: "ok" | "warn" | "danger";
+};
+
+/** The ONE thing to do next, in plain words.
+ *
+ * 🔴 **This replaced a 4×5 grid.** The matrix showed twenty cells to say four
+ * facts — sixteen of them read "not bound" — and it still needed a horizontal
+ * scrollbar. A grid earns its place when the data is dense. This data is
+ * sparse, so the grid made a reader cross-reference a row against a column to
+ * learn one thing.
+ *
+ * ⚠️ **One step at a time, and the order is the design.** Nothing can be
+ * priced before it can be served, so "cannot serve" always outranks "unpriced".
+ * Showing both at once makes a reader choose, and the wrong choice wastes an
+ * afternoon pricing a binding that will never run.
+ */
+export function nextStep(m: Matrix): NextStep {
+  if (m.tiers.length === 0) {
+    return {
+      title: "Set up your first tier",
+      detail:
+        "A tier is a speed and quality setting a customer picks — Fast, " +
+        "Balanced or Powerful. Until one points at a model, every AI request " +
+        "fails.",
+      tone: "danger",
+    };
+  }
+  if (m.counts.broken > 0) {
+    const n = m.counts.broken;
+    return {
+      title: `Fix ${n} broken ${n === 1 ? "tier" : "tiers"}`,
+      detail:
+        `${n === 1 ? "A tier points" : "Some tiers point"} at a model that ` +
+        "cannot do that job. The first customer request will fail. Change the " +
+        "model, or tell us the model can do it.",
+      tone: "danger",
+    };
+  }
+  if (m.counts.unpriced > 0) {
+    const n = m.counts.unpriced;
+    return {
+      // "Set your prices" while nothing is priced at all, then a countdown.
+      title: m.counts.ready === 0 ? "Set your prices" : `Price ${n} more`,
+      detail:
+        `${n} ${n === 1 ? "model is" : "models are"} connected and ready, and ` +
+        "none of them has a price. They will answer customers and charge " +
+        "nothing. Setting a price is a business decision, not a technical one.",
+      tone: "warn",
+    };
+  }
+  return {
+    title: "Everything is ready",
+    detail:
+      `${m.counts.ready} ${m.counts.ready === 1 ? "model" : "models"} can ` +
+      "serve customers and every one has a price.",
+    tone: "ok",
+  };
+}
+
 /** The one-line verdict above the matrix.
  *
  * 🔴 The zero-tier case is the shipped state and must not read as an empty

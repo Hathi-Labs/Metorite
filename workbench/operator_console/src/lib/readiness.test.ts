@@ -21,6 +21,7 @@ import {
   cellState,
   capableModelsFor,
   providerOf,
+  nextStep,
   readinessLine,
   tiersIn,
 } from "./readiness";
@@ -187,5 +188,82 @@ describe("the line an operator reads first", () => {
 
   it("reads as a count when everything is fine", () => {
     expect(readinessLine(buildMatrix(DATA()))).toContain("servable and priced");
+  });
+});
+
+describe("the one thing to do next", () => {
+  // 🔴 This replaced a 4x5 grid that showed twenty cells to say four facts.
+  // The order below IS the design: nothing can be priced before it can be
+  // served, so a reader is never asked to choose between two problems.
+
+  it("starts at the beginning when no tier exists", () => {
+    const step = nextStep(buildMatrix(DATA({ bindings: [] })));
+    expect(step.title).toBe("Set up your first tier");
+    expect(step.tone).toBe("danger");
+    // ⚠️ It must explain what a tier IS. A reader who does not know that
+    // cannot act on any instruction that assumes it.
+    expect(step.detail).toContain("Fast");
+  });
+
+  it("ranks BROKEN above unpriced, always", () => {
+    // Pricing a binding that will never run wastes an afternoon.
+    const m = buildMatrix(
+      DATA({
+        bindings: [{ tier: "t", task: "chat", model: "whisper-1" }],
+        rates: [],
+      }),
+    );
+    expect(m.counts.broken).toBe(1);
+    expect(nextStep(m).title).toContain("Fix");
+  });
+
+  it("says SET YOUR PRICES while nothing is priced at all", () => {
+    const step = nextStep(buildMatrix(DATA({ rates: [] })));
+    expect(step.title).toBe("Set your prices");
+    expect(step.tone).toBe("warn");
+    // The money sentence must be unmissable — this is the shipped state.
+    expect(step.detail).toContain("charge");
+  });
+
+  it("counts down once some are priced", () => {
+    const m = buildMatrix(
+      DATA({
+        tasks: [
+          { slug: "chat", label: "Chat", natural_unit: "tokens" },
+          { slug: "transcribe", label: "Transcribe", natural_unit: "minutes" },
+        ],
+        capabilities: [
+          { model: "gpt-4o", task: "chat" },
+          { model: "w", task: "transcribe" },
+        ],
+        bindings: [
+          { tier: "t", task: "chat", model: "gpt-4o" },
+          { tier: "t", task: "transcribe", model: "w" },
+        ],
+        rates: [{ model: "gpt-4o", task: "chat", pricing_mode: "priced" }],
+      }),
+    );
+    expect(m.counts.ready).toBe(1);
+    expect(m.counts.unpriced).toBe(1);
+    expect(nextStep(m).title).toBe("Price 1 more");
+  });
+
+  it("says so when there is nothing to do", () => {
+    const step = nextStep(buildMatrix(DATA()));
+    expect(step.title).toBe("Everything is ready");
+    expect(step.tone).toBe("ok");
+  });
+
+  it("never uses a word a newcomer would have to look up", () => {
+    // ⚠️ The owner's bar: a fifteen-year-old should be able to act on this.
+    const banned = ["binding", "capability", "tier_binding", "rate card",
+                    "unpriced", "servable", "resolve"];
+    for (const data of [DATA(), DATA({ rates: [] }), DATA({ bindings: [] })]) {
+      const step = nextStep(buildMatrix(data));
+      const text = `${step.title} ${step.detail}`.toLowerCase();
+      for (const word of banned) {
+        expect(text).not.toContain(word);
+      }
+    }
   });
 });
