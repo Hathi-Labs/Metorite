@@ -926,36 +926,6 @@ button:disabled {
   letter-spacing: 0;
   font-family: var(--mono);
 }
-.tier-task {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 0;
-  border-top: 1px solid var(--border);
-}
-.tier-task > .lhs {
-  min-width: 0;
-}
-.tier-task .task-name {
-  font-size: 12px;
-  color: var(--muted);
-}
-.tier-task .task-model {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text);
-  word-break: break-all;
-}
-.tier-task .task-model.none {
-  color: var(--faint);
-  font-family: inherit;
-  font-style: italic;
-}
-
-/* ── Toolbar: search + segmented filter ──────────────────────────────── */
-/* 🔴 The roster had neither. That is fine at two customers and useless at
-   fifty, which is the number this product is being built for. */
 .toolbar {
   display: flex;
   gap: 10px;
@@ -1162,4 +1132,401 @@ pre.token {
 .elevation-error {
   color: var(--danger);
   max-width: 28rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WS-31 — the AI surfaces: grouped nav, the model browser, chains, providers.
+
+   ⚠️ Every colour below is a token. A raw hex here would be a second palette,
+   and the second palette is the one that stops matching in light mode.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── Grouped sidebar ──────────────────────────────────────────────────────
+   A flat list of seven stopped teaching anything. The groups are three
+   different jobs, and an operator with a customer waiting is only ever in the
+   first one. */
+.navgroup {
+  margin-bottom: 14px;
+}
+
+.navgroup h2 {
+  margin: 0 0 4px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* ── The provenance banner ────────────────────────────────────────────────
+   The banner class already carries info and danger. Sample data is neither: it
+   is not a fault, and it is not neutral information — it is a warning that
+   nothing below is real. */
+.banner.warn {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+.banner.warn strong {
+  color: var(--warn);
+}
+
+/* ── Search, sort and facets ──────────────────────────────────────────── */
+.sortpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.sortpick select {
+  width: auto;
+  margin: 0;
+}
+
+.facets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.facetrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.facetlabel {
+  min-width: 44px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.facet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 10px;
+  width: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.facet:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.facet[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ⚠️ Disabled at zero, NOT hidden. A chip that disappears makes the row jump
+   under the pointer, and it hides that the capability exists at all. */
+.facet:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.facet .count {
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.facet[aria-pressed="true"] .count {
+  background: var(--accent-line);
+  color: var(--text);
+}
+
+.facet .glyph {
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.resultline {
+  margin: 12px 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── The model cards ──────────────────────────────────────────────────── */
+.modelgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 12px;
+}
+
+.modelcard {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+
+.modelcard > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modelcard h3 {
+  margin: 0 0 2px;
+  font-size: 14.5px;
+}
+
+.modeldesc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.kindrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.modelfacts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.modelfacts div {
+  min-width: 0;
+}
+
+.modelfacts dt {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.modelfacts dd {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── Fallback chains ──────────────────────────────────────────────────── */
+.chain {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chain li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+/* The number is the whole point: it is the ORDER the Router tries them in. */
+.chain .rank {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.chain li:first-child .rank {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chainbody {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.problems {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.problems li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  line-height: 1.45;
+}
+
+.job-edit {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+/* ── The outage question ──────────────────────────────────────────────── */
+.outage-line {
+  margin: 12px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.outage-line.ok { color: var(--ok); }
+.outage-line.warn { color: var(--warn); }
+.outage-line.danger { color: var(--danger); }
+.outage-line.neutral { color: var(--muted); font-weight: 500; }
+
+.outcomes {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.outcomes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+.outcomes li.down { border-left-color: var(--danger); }
+.outcomes li.failover { border-left-color: var(--warn); }
+.outcomes li.already-broken { border-left-color: var(--border-strong); }
+
+/* ── Provider cards ───────────────────────────────────────────────────────
+   🔴 One card per VENDOR, not per key. The flat table drew two keys for the
+   same vendor as unrelated rows, and a second key is exactly how a rate limit
+   stops being an outage. */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+
+.provider-card > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keyrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+/* A revoked key stays on the card — it is the record of what was replaced —
+   but it must never compete with a live one for attention. */
+.keyrow.dead {
+  opacity: 0.55;
+  background: transparent;
+}
+
+.keymain {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.keylabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.guide {
+  margin: 4px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+.guide p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.guide ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.guide li {
+  margin: 3px 0;
+  font-size: 13px;
+  line-height: 1.5;
 }

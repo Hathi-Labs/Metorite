@@ -19,11 +19,15 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  type ProviderCred,
+  type ProviderAccount,
   armedProviders,
   byokOrgs,
   coverageLine,
   describeScope,
+  groupByProvider,
+  groupLine,
+  healthLabel,
+  healthTone,
   isLive,
   isPlatform,
   wouldRotate,
@@ -32,17 +36,20 @@ import {
 const SRC = join(__dirname, "..");
 const ADMIN = readFileSync(join(SRC, "app", "providers", "ProviderAdmin.tsx"), "utf8");
 const PAGE = readFileSync(join(SRC, "app", "providers", "page.tsx"), "utf8");
+const READ = readFileSync(join(SRC, "lib", "read.ts"), "utf8");
 const HEADER = readFileSync(join(SRC, "app", "Header.tsx"), "utf8");
 
-const CRED = (over: Partial<ProviderCred> = {}): ProviderCred => ({
+const CRED = (over: Partial<ProviderAccount> = {}): ProviderAccount => ({
   id: "c1",
   provider: "anthropic",
-  api_base: null,
+  apiBase: null,
   label: null,
-  org_slug: null,
-  scope: "platform",
-  created_at: "2026-08-28T00:00:00Z",
-  revoked_at: null,
+  orgSlug: null,
+  createdAt: "2026-08-28T00:00:00Z",
+  revokedAt: null,
+  health: "unknown",
+  lastCheckedAt: null,
+  healthNote: null,
   ...over,
 });
 
@@ -54,13 +61,13 @@ describe("coverage — the number that decides whether AI works", () => {
   it("does NOT count a revoked one", () => {
     // 🔴 A revoked row still renders in the table. Counting it would tell an
     // operator they are covered while every call fails.
-    expect(armedProviders([CRED({ revoked_at: "2026-08-28T01:00:00Z" })])).toEqual([]);
+    expect(armedProviders([CRED({ revokedAt: "2026-08-28T01:00:00Z" })])).toEqual([]);
   });
 
   it("does NOT count a BYOK one", () => {
     // 🔴 The sharper of the two. A key scoped to one org looks exactly like
     // coverage in a list, and leaves every OTHER tenant with no AI at all.
-    expect(armedProviders([CRED({ org_slug: "acme", scope: "byok" })])).toEqual([]);
+    expect(armedProviders([CRED({ orgSlug: "acme" })])).toEqual([]);
   });
 
   it("de-duplicates and sorts, so the line reads the same every time", () => {
@@ -70,7 +77,7 @@ describe("coverage — the number that decides whether AI works", () => {
   });
 
   it("reports BYOK organizations separately", () => {
-    expect(byokOrgs([CRED(), CRED({ id: "c2", org_slug: "acme" })])).toEqual(["acme"]);
+    expect(byokOrgs([CRED(), CRED({ id: "c2", orgSlug: "acme" })])).toEqual(["acme"]);
   });
 });
 
@@ -85,7 +92,7 @@ describe("the line an operator reads first", () => {
   });
 
   it("says the same when the only credential is revoked", () => {
-    expect(coverageLine([CRED({ revoked_at: "2026-08-28T01:00:00Z" })]))
+    expect(coverageLine([CRED({ revokedAt: "2026-08-28T01:00:00Z" })]))
       .toContain("every AI call fails");
   });
 
@@ -109,11 +116,11 @@ describe("rotation is the same POST, and must be said BEFORE the click", () => {
     // They are different rows under the partial unique index, so installing
     // one genuinely does not touch the other.
     expect(wouldRotate([CRED()], "anthropic", "acme")).toBe(false);
-    expect(wouldRotate([CRED({ org_slug: "acme" })], "anthropic", null)).toBe(false);
+    expect(wouldRotate([CRED({ orgSlug: "acme" })], "anthropic", null)).toBe(false);
   });
 
   it("ignores a revoked row — replacing nothing is not a rotation", () => {
-    expect(wouldRotate([CRED({ revoked_at: "2026-08-28T01:00:00Z" })], "anthropic", null))
+    expect(wouldRotate([CRED({ revokedAt: "2026-08-28T01:00:00Z" })], "anthropic", null))
       .toBe(false);
   });
 
@@ -125,14 +132,14 @@ describe("rotation is the same POST, and must be said BEFORE the click", () => {
 describe("row labels", () => {
   it("distinguishes platform from BYOK in words, not a code", () => {
     expect(describeScope(CRED())).toContain("everyone");
-    expect(describeScope(CRED({ org_slug: "acme" }))).toContain("acme");
+    expect(describeScope(CRED({ orgSlug: "acme" }))).toContain("acme");
   });
 
   it("reads org_slug, not the scope string", () => {
     // `scope` is the Console's derived word. `org_slug` is the column the
     // Router keys on, so a disagreement between them must resolve to the row.
-    expect(isPlatform(CRED({ org_slug: "acme", scope: "platform" }))).toBe(false);
-    expect(isLive(CRED({ revoked_at: null }))).toBe(true);
+    expect(isPlatform(CRED({ orgSlug: "acme" }))).toBe(false);
+    expect(isLive(CRED({ revokedAt: null }))).toBe(true);
   });
 });
 
@@ -151,8 +158,14 @@ describe("the secret never crosses a read path", () => {
   });
 
   it("the page reads server-side and surfaces a failure", () => {
-    expect(PAGE).toContain("listProviderCreds");
-    expect(PAGE).toContain("The Console answered");
+    // ⚠️ **Two files now, and the split is the point.** The page is a SERVER
+    // component that reads through `read.ts`, and `read.ts` is the only place
+    // that turns a non-200 into something a reader sees. Asserting the call
+    // site alone would pass on a page that swallowed the status.
+    expect(PAGE).not.toContain("use client");
+    expect(PAGE).toContain("readAccounts");
+    expect(READ).toContain("listProviderCreds");
+    expect(READ).toContain("The Console answered");
   });
 
   it("relays a refusal VERBATIM", () => {
@@ -169,9 +182,74 @@ describe("the surface", () => {
     expect(HEADER).toContain('label: "Providers"');
   });
 
+  it("so are the other two AI pages, in the same group", () => {
+    expect(HEADER).toContain('href: "/models"');
+    expect(HEADER).toContain('href: "/tiers"');
+  });
+
   it("confirms before revoking, and says what revoking costs", () => {
     // 🔴 Revoking the platform credential stops every non-BYOK AI call.
     expect(ADMIN).toContain("confirm(");
     expect(ADMIN).toContain("not BYOK");
+  });
+});
+
+describe("one card per vendor", () => {
+  const ROWS = [
+    CRED({ id: "a1", provider: "anthropic" }),
+    CRED({ id: "a2", provider: "anthropic", label: "overflow" }),
+    CRED({ id: "a3", provider: "anthropic", orgSlug: "acme" }),
+    CRED({ id: "a4", provider: "anthropic", revokedAt: "2026-08-01T00:00:00Z" }),
+    CRED({ id: "o1", provider: "openai" }),
+    CRED({ id: "z1", provider: "groq", revokedAt: "2026-08-01T00:00:00Z" }),
+  ];
+
+  it("🔴 keeps SEVERAL platform keys for one vendor as several", () => {
+    // The flat table drew these as unrelated rows, which is exactly why nobody
+    // noticed we had a spare — a second key is how a rate limit stops being an
+    // outage.
+    const g = groupByProvider(ROWS).find((x) => x.provider === "anthropic");
+    expect(g?.platform).toHaveLength(2);
+    expect(g?.byok).toHaveLength(1);
+    expect(g?.revoked).toHaveLength(1);
+  });
+
+  it("puts vendors we can actually call first", () => {
+    // ⚠️ A dead vendor needs attention, but it is not what somebody came to
+    // find. The banner above carries the alarm; this list stays useful.
+    expect(groupByProvider(ROWS).map((g) => g.provider))
+      .toEqual(["anthropic", "openai", "groq"]);
+  });
+
+  it("says plainly when a vendor has no live key at all", () => {
+    const g = groupByProvider(ROWS).find((x) => x.provider === "groq");
+    expect(groupLine(g!)).toContain("Nothing here can be called");
+  });
+
+  it("🔴 does not call a BYOK-only vendor covered", () => {
+    const byokOnly = [CRED({ provider: "mistral", orgSlug: "acme" })];
+    const g = groupByProvider(byokOnly)[0];
+    expect(groupLine(g)).toContain("No account for everyone");
+  });
+
+  it("counts the spare rather than saying 'ok'", () => {
+    const g = groupByProvider(ROWS).find((x) => x.provider === "anthropic");
+    expect(groupLine(g!)).toContain("2 keys");
+  });
+});
+
+describe("the health dot", () => {
+  it("🔴 paints an UNCHECKED account neutral, never green", () => {
+    // Nothing probes a vendor account today, so every live row reports
+    // `unknown`. Green would be a claim nobody measured, on the one screen
+    // where believing it means not checking.
+    expect(healthTone("unknown")).toBe("neutral");
+    expect(healthLabel("unknown")).toBe("never checked");
+  });
+
+  it("separates slow from dead", () => {
+    expect(healthTone("degraded")).toBe("warn");
+    expect(healthTone("failing")).toBe("danger");
+    expect(healthTone("ok")).toBe("ok");
   });
 });

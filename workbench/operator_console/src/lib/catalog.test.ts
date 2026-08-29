@@ -13,22 +13,31 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { describeRate, singular, type RateRow } from "./catalog";
+import { describeRate, singular, type ModelRate } from "./catalog";
 
 const SRC = join(__dirname, "..");
-const ADMIN = readFileSync(join(SRC, "app", "models", "CatalogAdmin.tsx"), "utf8");
+const BROWSER = readFileSync(join(SRC, "app", "models", "ModelBrowser.tsx"), "utf8");
+const RATECARD = readFileSync(join(SRC, "app", "models", "RateCard.tsx"), "utf8");
+const DECLARE = readFileSync(join(SRC, "app", "models", "DeclareModel.tsx"), "utf8");
+const TIERS = readFileSync(join(SRC, "app", "tiers", "TierBoard.tsx"), "utf8");
 const PAGE = readFileSync(join(SRC, "app", "models", "page.tsx"), "utf8");
 const HEADER = readFileSync(join(SRC, "app", "Header.tsx"), "utf8");
 
-const CARD = (over: Partial<RateRow> = {}): RateRow => ({
+/** ⚠️ Strip comments before scanning. A file that EXPLAINS why it does not do
+ *  something must not fail the fence that checks it does not. Seven times in
+ *  this repo, and counting. */
+const code = (t: string) =>
+  t.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+
+const CARD = (over: Partial<ModelRate> = {}): ModelRate => ({
   model: "m",
   task: "chat",
   unit: "tokens",
-  pricing_mode: "priced",
-  input_per_1k: "2",
-  output_per_1k: "6",
-  cached_input_per_1k: "0.5",
-  credits_per_unit: "0",
+  mode: "priced",
+  inputPer1k: "2",
+  outputPer1k: "6",
+  cachedInputPer1k: "0.5",
+  creditsPerUnit: "0",
   ...over,
 });
 
@@ -43,7 +52,7 @@ describe("the rate line", () => {
     expect(
       describeRate(CARD({
         task: "transcribe", unit: "minutes",
-        input_per_1k: "0", output_per_1k: "0", credits_per_unit: "0.4",
+        inputPer1k: "0", outputPer1k: "0", creditsPerUnit: "0.4",
       })),
     ).toBe("0.4 per minute");
   });
@@ -51,15 +60,15 @@ describe("the rate line", () => {
   it("distinguishes absorbed from not priced", () => {
     // D19.2's embeddings are deliberately free. Saying "free" where the card
     // means "nobody has set this yet" is how a draft price ships.
-    expect(describeRate(CARD({ pricing_mode: "absorbed" })))
+    expect(describeRate(CARD({ mode: "absorbed" })))
       .toContain("absorbed");
-    expect(describeRate(CARD({ pricing_mode: "unpriced" })))
+    expect(describeRate(CARD({ mode: "unpriced" })))
       .toBe("not priced");
   });
 
   it("never shows a token rate for a non-token card", () => {
     const line = describeRate(CARD({
-      task: "image", unit: "images", credits_per_unit: "3",
+      task: "image", unit: "images", creditsPerUnit: "3",
     }));
     expect(line).not.toContain("per 1k");
     expect(line).toBe("3 per image");
@@ -79,58 +88,84 @@ describe("unit names read as English", () => {
 });
 
 describe("the surface", () => {
-  it("shows the UNSERVED gap as an alarm, not a list", () => {
-    // ⚠️ Bound but NOT capable is a 500 waiting for the first request. It is
-    // the only thing on this page that is actually broken, so it is the only
-    // thing rendered as a banner.
-    const unserved = ADMIN.indexOf("data.unserved.length");
-    const unbound = ADMIN.indexOf("data.unbound.length");
-    expect(unserved).toBeGreaterThan(-1);
-    expect(unbound).toBeGreaterThan(-1);
-    // Both ABOVE the tables — an operator will not diff two tables by eye.
-    expect(unserved).toBeLessThan(ADMIN.indexOf("Tier bindings"));
-    expect(unbound).toBeLessThan(ADMIN.indexOf("Tier bindings"));
-    // And the broken one first.
-    expect(unserved).toBeLessThan(unbound);
+  // 🔴 **These fences moved because the page split in two.** `/models` used to
+  // hold the catalog AND the tier bindings, which is why it was confusing: a
+  // reader had to know which of two questions they were answering. Finding a
+  // model is one job, deciding what a tier runs on is another, and the fences
+  // follow the jobs.
+
+  it("the catalog can be SEARCHED and filtered, not just read", () => {
+    // ⚠️ The reason this page was rebuilt. Three stacked tables were fine with
+    // one provider. OpenRouter alone exposes two hundred models, and an
+    // operator asked "which of these reads an image" had nowhere to ask it.
+    expect(code(BROWSER)).toContain("filterModels");
+    expect(code(BROWSER)).toContain("kindFacets");
+    expect(code(BROWSER)).toContain('type="search"');
   });
 
-  it("relays a refusal VERBATIM", () => {
+  it("🔴 the catalog runs NO fetch of its own", () => {
+    // The list is read by the server component with the caller's own token. A
+    // client fetch would put a cross-tenant read on a path the browser can
+    // replay, and would reach the Console as `breakglass`.
+    expect(code(BROWSER)).not.toContain("fetch(");
+    expect(PAGE).not.toContain("use client");
+    expect(PAGE).toContain("readAiCatalog");
+  });
+
+  it("says out loud that a card can ship with no price", () => {
+    // 🔴 Setting a real number is the owner's commercial act (H-42). An
+    // operator must not read the zeros as an oversight to quietly fix.
+    expect(code(RATECARD)).toContain("no price");
+    expect(code(RATECARD)).toContain("charge nothing");
+  });
+
+  it("keeps the vendor's price and OUR price apart, in words", () => {
+    // ⚠️ Two numbers, two tables, and reading one as the other inverts a
+    // margin. The catalog says what we PAY; the rate card says what we CHARGE.
+    expect(code(BROWSER)).toContain("We pay");
+    expect(code(RATECARD)).toContain("not what the vendor charges us");
+  });
+
+  it("relays a refusal VERBATIM, on both surfaces that write", () => {
     // The Console is the authority on a refusal — it knows the unit rule, the
     // capability rule and the pricing-mode rule. Paraphrasing here would be a
     // second vocabulary for the same 400.
-    expect(ADMIN).toContain("The Console refused:");
-    expect(ADMIN).toContain("result.text");
+    expect(code(TIERS)).toContain("The Console refused:");
+    expect(code(DECLARE)).toContain("The Console refused:");
   });
 
-  it("drives the four catalog routes and no others", () => {
-    expect(ADMIN).toContain("/api/operator/catalog/bindings");
-    expect(ADMIN).toContain("/api/operator/catalog/capabilities");
-    // ⚠️ The page READS through the server component, not a client fetch, so
-    // `/models` is absent here on purpose.
-    expect(PAGE).toContain("readModelCatalog");
+  it("drives the two catalog write routes, each from its own surface", () => {
+    expect(code(TIERS)).toContain("/api/operator/catalog/bindings");
+    expect(code(DECLARE)).toContain("/api/operator/catalog/capabilities");
   });
 
-  it("says out loud that the card ships unpriced", () => {
-    // 🔴 Setting a real number is the owner's commercial act (H-42). An
-    // operator reading this page must not think the zeros are an oversight
-    // they should quietly fix.
-    expect(ADMIN).toContain("unpriced");
-  });
-
-  it("is reachable from the sidebar", () => {
+  it("is reachable from the sidebar, and so are its neighbours", () => {
     // ⚠️ Asserted as two facts rather than one object literal. The nav entry
     // grew an `icon` field when the top bar became a sidebar (2026-08-29), and
     // a test pinned to the literal broke on a change that did not touch
     // reachability at all — which is the thing this test is actually for.
     expect(HEADER).toContain('href: "/models"');
     expect(HEADER).toContain('label: "Models"');
+    expect(HEADER).toContain('href: "/tiers"');
   });
 
   it("offers no way to EDIT a binding or a rate", () => {
     // §6A.5: both are INSERT-only. A past invoice must stay readable against
     // what it was actually charged on, so there is no PATCH and no DELETE.
-    expect(ADMIN).not.toContain('method: "PATCH"');
-    expect(ADMIN).not.toContain('method: "DELETE"');
-    expect(ADMIN).not.toContain('method: "PUT"');
+    for (const f of [TIERS, DECLARE, RATECARD, BROWSER]) {
+      expect(code(f)).not.toContain('method: "PATCH"');
+      expect(code(f)).not.toContain('method: "DELETE"');
+      expect(code(f)).not.toContain('method: "PUT"');
+    }
+  });
+
+  it("🔴 does not draw an ENABLED control for something it cannot save", () => {
+    // A backup step has nowhere to go — `tier_binding` has no rank column. An
+    // enabled button over a table that cannot store the value is worse than no
+    // button: the operator uses it, believes they are covered, and finds out
+    // during an outage.
+    const add = code(TIERS).indexOf("Add a backup");
+    expect(add).toBeGreaterThan(-1);
+    expect(code(TIERS).slice(add - 300, add)).toContain("disabled");
   });
 });

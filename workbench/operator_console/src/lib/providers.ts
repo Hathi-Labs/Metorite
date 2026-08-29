@@ -1,4 +1,4 @@
-// Our provider accounts — display logic (CP-10 slice 4).
+// Our provider accounts — display logic (CP-10 slice 4, rebuilt WS-31).
 //
 // Extracted from `app/providers/ProviderAdmin.tsx` so it can be tested: this
 // console's suite is `lib/*.test.ts` and carries no React renderer.
@@ -12,31 +12,27 @@
 //
 // Both are the same mistake — counting rows instead of counting LIVE PLATFORM
 // rows — so both are one function with tests on either side of it.
+//
+// ⚠️ **The type is `ProviderAccount` from `contract.ts`, not a second shape.**
+// This file used to carry its own snake_case `ProviderCred` mirroring the
+// Console's JSON. Two shapes for one object is how a vocabulary splits, so the
+// mapping now happens once in `read.ts` and everything downstream speaks one
+// language.
 
-export type ProviderCred = {
-  id: string;
-  provider: string;
-  api_base: string | null;
-  label: string | null;
-  /** NULL means the PLATFORM account — the row the Router falls back to. */
-  org_slug: string | null;
-  scope: string;
-  created_at: string | null;
-  revoked_at: string | null;
-};
+import type { ProviderAccount, ProviderHealth } from "./contract";
+import type { Tone } from "./tone";
 
-export const PLATFORM = "platform";
-export const BYOK = "byok";
+export type { ProviderAccount };
 
 /** Live means not revoked. Nothing subtler, and nothing is inferred. */
-export function isLive(c: ProviderCred): boolean {
-  return !c.revoked_at;
+export function isLive(c: ProviderAccount): boolean {
+  return !c.revokedAt;
 }
 
-/** Platform means org-less. `scope` is the Console's word for the same fact,
- *  and this reads `org_slug` because that is the column the Router keys on. */
-export function isPlatform(c: ProviderCred): boolean {
-  return !c.org_slug;
+/** Platform means org-less — the row the Router falls back to for a tenant
+ *  that has not brought its own key. */
+export function isPlatform(c: ProviderAccount): boolean {
+  return !c.orgSlug;
 }
 
 /** The providers we can actually call for a tenant with no BYOK credential.
@@ -44,17 +40,17 @@ export function isPlatform(c: ProviderCred): boolean {
  * ⚠️ **Live AND platform, both.** A revoked row and an org-scoped row each
  * look like coverage in a list and neither is.
  */
-export function armedProviders(creds: ProviderCred[]): string[] {
+export function armedProviders(creds: ProviderAccount[]): string[] {
   return [
     ...new Set(creds.filter((c) => isLive(c) && isPlatform(c)).map((c) => c.provider)),
   ].sort();
 }
 
 /** Organizations that insist on their own vendor account (§3.4 BYOK). */
-export function byokOrgs(creds: ProviderCred[]): string[] {
+export function byokOrgs(creds: ProviderAccount[]): string[] {
   return [
     ...new Set(
-      creds.filter((c) => isLive(c) && !isPlatform(c)).map((c) => c.org_slug as string),
+      creds.filter((c) => isLive(c) && !isPlatform(c)).map((c) => c.orgSlug as string),
     ),
   ].sort();
 }
@@ -65,7 +61,7 @@ export function byokOrgs(creds: ProviderCred[]): string[] {
  * works. It must not read as an empty table — an empty table looks like a
  * page nobody has used yet, not like a system that cannot serve.
  */
-export function coverageLine(creds: ProviderCred[]): string {
+export function coverageLine(creds: ProviderAccount[]): string {
   const armed = armedProviders(creds);
   if (armed.length === 0) {
     return (
@@ -83,7 +79,9 @@ export function coverageLine(creds: ProviderCred[]): string {
  * a silent replacement as a duplicate insert.
  */
 export function wouldRotate(
-  creds: ProviderCred[], provider: string, orgSlug: string | null,
+  creds: ProviderAccount[],
+  provider: string,
+  orgSlug: string | null,
 ): boolean {
   const target = (provider || "").trim().toLowerCase();
   if (!target) return false;
@@ -91,11 +89,91 @@ export function wouldRotate(
     (c) =>
       isLive(c) &&
       c.provider.toLowerCase() === target &&
-      (c.org_slug ?? null) === (orgSlug || null),
+      (c.orgSlug ?? null) === (orgSlug || null),
   );
 }
 
 /** What one row says about itself, in an operator's words. */
-export function describeScope(c: ProviderCred): string {
-  return isPlatform(c) ? "platform (everyone)" : `BYOK — ${c.org_slug}`;
+export function describeScope(c: ProviderAccount): string {
+  return isPlatform(c) ? "platform (everyone)" : `BYOK — ${c.orgSlug}`;
+}
+
+// ── One card per vendor ─────────────────────────────────────────────────────
+//
+// 🔴 **A vendor can have SEVERAL accounts, and the old flat table hid that.**
+// One platform key plus one BYOK key per organization is already legal today,
+// and a second platform key is how we survive a rate limit or a suspended
+// billing account without touching a tier. A table sorted by provider drew
+// those as unrelated rows.
+
+export type ProviderGroup = {
+  provider: string;
+  /** Not revoked, no organization — the ones that serve everybody. */
+  platform: ProviderAccount[];
+  /** Not revoked, scoped to one organization. */
+  byok: ProviderAccount[];
+  /** Revoked, of either kind. Kept for the record, drawn quietly. */
+  revoked: ProviderAccount[];
+};
+
+/** Group the flat list into one entry per vendor, live rows first.
+ *
+ * ⚠️ Sorted with ARMED vendors first, then alphabetically. A vendor we cannot
+ * call is the one that needs attention, but it is also the one an operator is
+ * least likely to be looking for — putting it at the top would bury the
+ * working accounts under whatever was abandoned longest ago. The banner above
+ * carries the alarm instead. */
+export function groupByProvider(creds: ProviderAccount[]): ProviderGroup[] {
+  const names = [...new Set(creds.map((c) => c.provider))].sort();
+  const groups = names.map((provider) => {
+    const mine = creds.filter((c) => c.provider === provider);
+    return {
+      provider,
+      platform: mine.filter((c) => isLive(c) && isPlatform(c)),
+      byok: mine.filter((c) => isLive(c) && !isPlatform(c)),
+      revoked: mine.filter((c) => !isLive(c)),
+    };
+  });
+  return groups.sort(
+    (a, b) =>
+      Number(b.platform.length > 0) - Number(a.platform.length > 0) ||
+      a.provider.localeCompare(b.provider),
+  );
+}
+
+/** The colour of a health dot.
+ *
+ * 🔴 **`unknown` is NEUTRAL, never green.** Nothing probes a vendor account
+ * today, so every live row reports `unknown`. A green dot there would be a
+ * claim nobody measured, on the one screen where believing it means not
+ * checking. */
+export function healthTone(h: ProviderHealth): Tone {
+  if (h === "ok") return "ok";
+  if (h === "degraded") return "warn";
+  if (h === "failing") return "danger";
+  return "neutral";
+}
+
+export function healthLabel(h: ProviderHealth): string {
+  if (h === "ok") return "answering";
+  if (h === "degraded") return "slow or rate limited";
+  if (h === "failing") return "not answering";
+  return "never checked";
+}
+
+/** What one vendor card says in its header, in one line. */
+export function groupLine(g: ProviderGroup): string {
+  if (g.platform.length === 0) {
+    return g.byok.length > 0
+      ? `No account for everyone — ${g.byok.length} organization${
+          g.byok.length === 1 ? "" : "s"
+        } bring their own.`
+      : "No live key. Nothing here can be called.";
+  }
+  const spare = g.platform.length - 1;
+  const base =
+    spare > 0
+      ? `${g.platform.length} keys for everyone`
+      : "1 key, serving everyone";
+  return g.byok.length > 0 ? `${base} · ${g.byok.length} bring their own` : base;
 }

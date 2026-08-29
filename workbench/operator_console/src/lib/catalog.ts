@@ -1,21 +1,19 @@
-// The model catalog's display logic (CP-10 slice 3).
+// The rate card in words — what a customer is billed, said so an operator can
+// check it against the contract.
 //
-// Extracted from `app/models/CatalogAdmin.tsx` so it can be tested — this
-// console's suite is `lib/*.test.ts` and carries no React renderer. What is
-// worth testing here is the RATE line: an operator reading "0.4 per 1k" when
-// the card actually charges 0.4 per MINUTE would sign off on a price forty
-// times wrong, and nothing downstream would catch it.
+// 🔴 **The failure this exists to prevent.** An operator reading "0.4 per 1k"
+// when the card actually charges 0.4 per MINUTE would sign off on a price
+// forty times wrong, and nothing downstream would catch it — both numbers are
+// real, they just belong to different columns.
+//
+// ⚠️ **The type is `ModelRate` from `contract.ts`, not a second shape.** This
+// file used to carry a snake_case `RateRow` mirroring the Console's JSON. The
+// mapping happens once in `read.ts` now, so everything downstream speaks one
+// language.
 
-export type RateRow = {
-  model: string;
-  task: string;
-  unit: string;
-  pricing_mode: string;
-  input_per_1k: string;
-  output_per_1k: string;
-  cached_input_per_1k: string;
-  credits_per_unit: string;
-};
+import type { ModelRate } from "./contract";
+
+export type { ModelRate };
 
 /** Singular form of a unit, for "0.4 per minute" rather than "per minutes". */
 export function singular(unit: string): string {
@@ -27,19 +25,19 @@ export function singular(unit: string): string {
 /** How this card charges, in words an operator can check against the contract.
  *
  * ⚠️ **Reads the UNIT, never the mode.** A card can be `priced` in minutes or
- * in tokens, and the two use different columns — `credits_per_unit` versus the
+ * in tokens, and the two use different columns — `creditsPerUnit` versus the
  * three per-1k rates. Choosing the wrong column shows a number that is real
  * and belongs to something else.
  */
-export function describeRate(row: RateRow): string {
-  if (row.pricing_mode === "absorbed") {
+export function describeRate(row: ModelRate): string {
+  if (row.mode === "absorbed") {
     // D19.2: deliberately free, and NOT the same as unpriced. Saying "free"
     // where the card means "nobody has set this yet" is how a draft ships.
     return "absorbed into the seat price";
   }
-  if (row.pricing_mode !== "priced") return "not priced";
+  if (row.mode !== "priced") return "not priced";
   if (row.unit === "tokens") {
-    return `${row.input_per_1k} in / ${row.output_per_1k} out per 1k`;
+    return `${row.inputPer1k} in / ${row.outputPer1k} out per 1k`;
   }
-  return `${row.credits_per_unit} per ${singular(row.unit)}`;
+  return `${row.creditsPerUnit} per ${singular(row.unit)}`;
 }

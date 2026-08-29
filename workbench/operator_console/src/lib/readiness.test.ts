@@ -1,269 +1,72 @@
-// The readiness matrix — WS-31, the operator UX rebuild.
+// Model identity — reading a vendor out of an id, and offering only what works.
 //
-// ⚠️ **This app has no React renderer in its suite**, so anything expressed in
-// JSX is untested by construction. That is exactly why every judgement the
-// matrix makes is a pure function: the pixels are unverifiable here, the
-// MEANING is not, and the meaning is what an operator acts on.
+// 🔴 **The matrix tests that used to fill this file are gone with the matrix.**
+// They tested one cell per (tier, task), and a tier now holds an ordered chain
+// of models — a list, not a square. `fallback.test.ts` is the fence on that
+// judgement, and it is the only one, because two modules answering "what should
+// I do next" would disagree inside a month.
 //
-// The subject is what an operator CONCLUDES from a cell. Two wrong conclusions
-// cost real money, and they are the same mistake in opposite directions:
-//
-//   1. "this tier works" when the bound model cannot serve the task — a 500 on
-//      the first request a customer makes;
-//   2. "this tier is fine" when it is servable but unpriced — it runs, and
-//      bills nothing.
+// What is left is the part that was never about the matrix, and the vendor
+// split is the one with real money behind it: a wrong vendor on a chip claims
+// a credential we may not hold.
 
 import { describe, expect, it } from "vitest";
 
-import {
-  type CatalogLike,
-  buildMatrix,
-  cellState,
-  capableModelsFor,
-  providerOf,
-  nextStep,
-  readinessLine,
-  tiersIn,
-} from "./readiness";
-
-const CAP = new Set(["gpt-4o::chat"]);
-const PRICED = new Map([["gpt-4o::chat", "priced"]]);
-
-const DATA = (over: Partial<CatalogLike> = {}): CatalogLike => ({
-  tasks: [
-    { slug: "chat", label: "Chat", natural_unit: "tokens" },
-    { slug: "transcribe", label: "Transcribe", natural_unit: "minutes" },
-  ],
-  capabilities: [{ model: "gpt-4o", task: "chat" }],
-  bindings: [{ tier: "tier-fast", task: "chat", model: "gpt-4o" }],
-  rates: [{ model: "gpt-4o", task: "chat", pricing_mode: "priced" }],
-  ...over,
-});
-
-describe("one cell, which is the whole judgement", () => {
-  it("is empty when no tier points at the pair", () => {
-    expect(cellState(null, "chat", CAP, PRICED)).toBe("empty");
-  });
-
-  it("is BROKEN when bound to a model that cannot serve the task", () => {
-    // 🔴 The Router resolves this model and then cannot decide which provider
-    // verb to call. It is the only state here that is actually failing.
-    expect(cellState("whisper-1", "chat", CAP, PRICED)).toBe("broken");
-  });
-
-  it("is unpriced when capable but the card says so", () => {
-    const priced = new Map([["gpt-4o::chat", "unpriced"]]);
-    expect(cellState("gpt-4o", "chat", CAP, priced)).toBe("unpriced");
-  });
-
-  it("treats a MISSING rate row as unpriced, not as ready", () => {
-    // ⚠️ To an operator these are one fact: nobody has said what this costs.
-    // Reading "no row" as ready is how a tier ships billing nothing.
-    expect(cellState("gpt-4o", "chat", CAP, new Map())).toBe("unpriced");
-  });
-
-  it("counts `absorbed` as ready, because that is a DECISION", () => {
-    // D19.2's embeddings are deliberately free. Drawing "free on purpose" the
-    // same as "nobody has set this yet" is the confusion `describeRate`
-    // already exists to prevent in words.
-    const priced = new Map([["gpt-4o::chat", "absorbed"]]);
-    expect(cellState("gpt-4o", "chat", CAP, priced)).toBe("ready");
-  });
-
-  it("🔴 ranks BROKEN above unpriced when a pair is both", () => {
-    // The precedence IS the design. A pair that cannot be served must not read
-    // as merely a pricing chore somebody can get to next week.
-    expect(cellState("whisper-1", "chat", CAP, new Map())).toBe("broken");
-  });
-});
-
-describe("the tier axis", () => {
-  it("is derived from the bindings, never hardcoded", () => {
-    // ⚠️ There is no tier registry to read. A fixed list would hide every tier
-    // an operator creates, which is the entire set this page is for.
-    expect(
-      tiersIn([{ tier: "tier-smart" }, { tier: "tier-fast" }, { tier: "tier-fast" }]),
-    ).toEqual(["tier-fast", "tier-smart"]);
-  });
-
-  it("survives a blank tier without inventing a row", () => {
-    expect(tiersIn([{ tier: "" }, { tier: "tier-fast" }])).toEqual(["tier-fast"]);
-  });
-});
-
-describe("the grid", () => {
-  it("gives every tier a cell for every task", () => {
-    const m = buildMatrix(DATA());
-    expect(m.rows).toHaveLength(1);
-    expect(m.rows[0].cells.map((c) => c.task)).toEqual(["chat", "transcribe"]);
-  });
-
-  it("counts each state once", () => {
-    const m = buildMatrix(DATA());
-    expect(m.counts).toEqual({ ready: 1, broken: 0, unpriced: 0, empty: 1 });
-  });
-
-  it("lets the LAST binding win for a pair", () => {
-    // Bindings are INSERT-only (§6A.5), so the table keeps superseded rows.
-    // The Console returns the in-force set today; this stays correct if that
-    // ever changes rather than drawing whichever row happened to sort first.
-    const m = buildMatrix(
-      DATA({
-        bindings: [
-          { tier: "tier-fast", task: "chat", model: "old-model" },
-          { tier: "tier-fast", task: "chat", model: "gpt-4o" },
-        ],
-      }),
-    );
-    expect(m.rows[0].cells[0].model).toBe("gpt-4o");
-    expect(m.rows[0].cells[0].state).toBe("ready");
-  });
-});
+import { capableModelsFor, providerOf } from "./readiness";
 
 describe("which vendor a model belongs to", () => {
-  it("splits on the FIRST slash", () => {
-    expect(providerOf("openai/gpt-4o")).toBe("openai");
+  it("reads the part before the first slash", () => {
+    expect(providerOf("anthropic/claude-sonnet-4")).toBe("anthropic");
   });
 
-  it("🔴 attributes a re-hosted model to the HOST, not the author", () => {
-    // ⚠️ `openrouter/anthropic/claude-3` is one OpenRouter model. Splitting on
-    // the last slash calls it Anthropic, and the chip then claims a credential
-    // we may not hold — which is a wrong answer to "can we serve this".
+  it("🔴 splits on the FIRST slash, not the last", () => {
+    // `openrouter/anthropic/claude-3` is ONE OpenRouter model. Attributing it
+    // to Anthropic makes the chip claim a credential we may not hold, and the
+    // outage simulator then reports a survival that will not happen.
     expect(providerOf("openrouter/anthropic/claude-3")).toBe("openrouter");
   });
 
-  it("treats a bare id as its own vendor rather than guessing", () => {
+  it("treats an id with no slash as its own vendor", () => {
+    // `whisper-1` is served by whoever the platform credential belongs to.
+    // Guessing would be worse than showing the id back.
     expect(providerOf("whisper-1")).toBe("whisper-1");
+  });
+
+  it("survives an empty id and stray whitespace", () => {
     expect(providerOf("")).toBe("");
+    expect(providerOf("  openai/gpt-4o  ")).toBe("openai");
+  });
+
+  it("does not read a LEADING slash as an empty vendor", () => {
+    // ⚠️ `indexOf` returns 0 there, and a naive `> -1` test would yield "".
+    expect(providerOf("/gpt-4o")).toBe("/gpt-4o");
   });
 });
 
-describe("the models a tier may be pointed at", () => {
-  it("offers only models that DECLARE the task", () => {
-    // 🔴 The whole point of the dropdown. The old form was free text, so an
-    // operator could bind a tier to any string at all — and a model with no
-    // capability 500s on the first request instead of failing validation.
-    const caps = [
-      { model: "gpt-4o", task: "chat" },
-      { model: "whisper-1", task: "transcribe" },
-    ];
-    expect(capableModelsFor(caps, "chat")).toEqual(["gpt-4o"]);
+describe("which models may be offered for a job", () => {
+  const CAPS = [
+    { model: "openai/gpt-4o", task: "chat" },
+    { model: "anthropic/haiku", task: "chat" },
+    { model: "openai/whisper", task: "transcribe" },
+    { model: "openai/gpt-4o", task: "chat" },
+  ];
+
+  it("🔴 offers ONLY models that declared the task", () => {
+    // The old form was free text, so a typo produced a tier that looked
+    // correct and 500d on the first request. A list of capable models makes
+    // that state unreachable by hand.
+    expect(capableModelsFor(CAPS, "chat")).toEqual([
+      "anthropic/haiku",
+      "openai/gpt-4o",
+    ]);
   });
 
-  it("de-duplicates and sorts, so the list reads the same every time", () => {
-    const caps = [
-      { model: "b", task: "chat" },
-      { model: "a", task: "chat" },
-      { model: "a", task: "chat" },
-    ];
-    expect(capableModelsFor(caps, "chat")).toEqual(["a", "b"]);
+  it("de-duplicates, so one model is offered once", () => {
+    expect(capableModelsFor(CAPS, "chat").filter((m) => m === "openai/gpt-4o"))
+      .toHaveLength(1);
   });
 
-  it("returns empty rather than everything when nothing is capable", () => {
-    // ⚠️ Falling back to "all models" would put the broken state back within
-    // one click, which is exactly what this list exists to prevent.
-    expect(capableModelsFor([{ model: "a", task: "chat" }], "image")).toEqual([]);
-  });
-});
-
-describe("the line an operator reads first", () => {
-  it("says nothing can be served when no tier is bound", () => {
-    // 🔴 The shipped state. An empty table reads as a page nobody has used
-    // yet; this must read as a system that cannot serve anyone.
-    const line = readinessLine(buildMatrix(DATA({ bindings: [] })));
-    expect(line).toContain("no AI request can be served");
-  });
-
-  it("leads with BROKEN when anything is broken", () => {
-    const m = buildMatrix(
-      DATA({ bindings: [{ tier: "t", task: "chat", model: "whisper-1" }] }),
-    );
-    expect(readinessLine(m)).toContain("500");
-  });
-
-  it("reports unpriced only once nothing is broken", () => {
-    const m = buildMatrix(DATA({ rates: [] }));
-    expect(readinessLine(m)).toContain("bill nothing");
-  });
-
-  it("reads as a count when everything is fine", () => {
-    expect(readinessLine(buildMatrix(DATA()))).toContain("servable and priced");
-  });
-});
-
-describe("the one thing to do next", () => {
-  // 🔴 This replaced a 4x5 grid that showed twenty cells to say four facts.
-  // The order below IS the design: nothing can be priced before it can be
-  // served, so a reader is never asked to choose between two problems.
-
-  it("starts at the beginning when no tier exists", () => {
-    const step = nextStep(buildMatrix(DATA({ bindings: [] })));
-    expect(step.title).toBe("Set up your first tier");
-    expect(step.tone).toBe("danger");
-    // ⚠️ It must explain what a tier IS. A reader who does not know that
-    // cannot act on any instruction that assumes it.
-    expect(step.detail).toContain("Fast");
-  });
-
-  it("ranks BROKEN above unpriced, always", () => {
-    // Pricing a binding that will never run wastes an afternoon.
-    const m = buildMatrix(
-      DATA({
-        bindings: [{ tier: "t", task: "chat", model: "whisper-1" }],
-        rates: [],
-      }),
-    );
-    expect(m.counts.broken).toBe(1);
-    expect(nextStep(m).title).toContain("Fix");
-  });
-
-  it("says SET YOUR PRICES while nothing is priced at all", () => {
-    const step = nextStep(buildMatrix(DATA({ rates: [] })));
-    expect(step.title).toBe("Set your prices");
-    expect(step.tone).toBe("warn");
-    // The money sentence must be unmissable — this is the shipped state.
-    expect(step.detail).toContain("charge");
-  });
-
-  it("counts down once some are priced", () => {
-    const m = buildMatrix(
-      DATA({
-        tasks: [
-          { slug: "chat", label: "Chat", natural_unit: "tokens" },
-          { slug: "transcribe", label: "Transcribe", natural_unit: "minutes" },
-        ],
-        capabilities: [
-          { model: "gpt-4o", task: "chat" },
-          { model: "w", task: "transcribe" },
-        ],
-        bindings: [
-          { tier: "t", task: "chat", model: "gpt-4o" },
-          { tier: "t", task: "transcribe", model: "w" },
-        ],
-        rates: [{ model: "gpt-4o", task: "chat", pricing_mode: "priced" }],
-      }),
-    );
-    expect(m.counts.ready).toBe(1);
-    expect(m.counts.unpriced).toBe(1);
-    expect(nextStep(m).title).toBe("Price 1 more");
-  });
-
-  it("says so when there is nothing to do", () => {
-    const step = nextStep(buildMatrix(DATA()));
-    expect(step.title).toBe("Everything is ready");
-    expect(step.tone).toBe("ok");
-  });
-
-  it("never uses a word a newcomer would have to look up", () => {
-    // ⚠️ The owner's bar: a fifteen-year-old should be able to act on this.
-    const banned = ["binding", "capability", "tier_binding", "rate card",
-                    "unpriced", "servable", "resolve"];
-    for (const data of [DATA(), DATA({ rates: [] }), DATA({ bindings: [] })]) {
-      const step = nextStep(buildMatrix(data));
-      const text = `${step.title} ${step.detail}`.toLowerCase();
-      for (const word of banned) {
-        expect(text).not.toContain(word);
-      }
-    }
+  it("returns nothing for a task nothing can do, rather than everything", () => {
+    expect(capableModelsFor(CAPS, "speak")).toEqual([]);
   });
 });
