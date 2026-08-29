@@ -4074,6 +4074,15 @@ class OrgUsageRow(BaseModel):
 
 class OrgUsageView(BaseModel):
     windowDays: int
+    #: How many organizations exist, and how many this page carries.
+    #:
+    #: 🔴 The two differ once there are more than `SPEND_PAGE_SIZE` of them, and
+    #: the rows that fall off are the QUIET ones — they sort last by spend, and
+    #: they are exactly what the LEFT JOIN in `usage_by_org` exists to include.
+    #: A page that did not say so would look complete while hiding the most
+    #: actionable customers.
+    total: int = 0
+    shown: int = 0
     rows: list[OrgUsageRow]
 
 
@@ -4101,13 +4110,14 @@ def admin_usage_by_org(
     """
     days = max(1, min(int(days), store.USAGE_MAX_DAYS))
     with get_engine().begin() as conn:
-        rows = store.usage_by_org(conn, days=days)
+        page = store.usage_by_org(conn, days=days)
+        rows = page["rows"]
         balances = store.credit_balance_by_org(conn)
         # The burn window is its own read rather than a slice of the first —
         # a 30-day total cannot answer "what is the recent rate".
         burn = {
             r["slug"]: r["credits"]
-            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)
+            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)["rows"]
         }
 
     annotated = analytics.annotate_orgs(
@@ -4115,6 +4125,11 @@ def admin_usage_by_org(
     )
     return OrgUsageView(
         windowDays=days,
+        # 🔴 Truncation is REPORTED, never silent. Rows sort by spend, so the
+        # quiet customers the LEFT JOIN exists to include are the ones the cap
+        # removes. The console says "100 of 563" rather than looking complete.
+        total=page["total"],
+        shown=page["shown"],
         rows=[
             OrgUsageRow(
                 slug=r["slug"], name=r["name"], calls=r["calls"],

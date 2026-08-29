@@ -62,3 +62,49 @@ def _isolate_write_artifact_context():
     finally:
         _WRITE_ARTIFACT_CONTEXT.clear()
         _WRITE_ARTIFACT_CONTEXT.update(snapshot)
+
+
+# ── R8: say out loud when the database-gated suites did not run ─────────────
+#
+# 🔴 **The hole this closes.** Measured 2026-08-30: a local `pytest` over the 26
+# Console suites reported **123 passed, 843 skipped**, and every skip read "R8
+# requires a REAL Postgres". Nothing about that run looked wrong. pytest prints
+# the skip count in the same grey as everything else, and in a full-tree run it
+# sits under 4,900 passes where nobody reads it. So the loop was: change SQL,
+# run the suite, see green, push — and find out in CI, or in production.
+#
+# ⚠️ **ADVISORY, not a fence (R7).** This prevents nothing. It makes an
+# invisible fact visible, which is a different and weaker thing, and it is
+# labelled that way on purpose. The fence for R8 is CI, which sets both DSNs
+# and fails when a test does.
+#
+# ⚠️ **Keyed on the ENVIRONMENT, never on the skip reasons.** Counting skips
+# whose reason names the variable was the obvious design and it is a mirror:
+# the 26 suites do NOT share one reason string (three of them phrase it
+# differently), so the count would silently under-report the moment somebody
+# wrote a twenty-seventh. Whether the variable is set is a fact with nothing to
+# go stale.
+
+_R8_VARS = ("CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Print what this run did NOT prove."""
+    missing = [v for v in _R8_VARS if not os.environ.get(v, "").strip()]
+    if not missing:
+        return
+
+    skipped = len(terminalreporter.stats.get("skipped", []))
+    if skipped == 0:
+        return
+
+    w = terminalreporter.write_line
+    terminalreporter.write_sep("=", "R8: what this run did not prove", yellow=True)
+    w(f"{skipped} test(s) skipped. These are unset: {', '.join(missing)}")
+    w("")
+    w("Every suite that checks SQL against a real database was among them.")
+    w("A hermetic fake agrees with whatever SQL it is handed, which is how")
+    w("five live bugs shipped green (CLAUDE.md R8).")
+    w("")
+    w("  bash scripts/dev_db.sh                       # start the scratch DBs")
+    w('  eval "$(bash scripts/dev_db.sh --export)"    # then re-run this suite')

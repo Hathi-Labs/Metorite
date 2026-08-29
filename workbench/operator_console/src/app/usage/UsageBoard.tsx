@@ -43,8 +43,15 @@ function Spark({ days }: { days: UsageDay[] }) {
 }
 
 export default function UsageBoard({
-  rows, days, spikes,
-}: { rows: OrgUsageRow[]; days: UsageDay[]; spikes: string[] }) {
+  rows, days, spikes, total,
+}: {
+  rows: OrgUsageRow[];
+  days: UsageDay[];
+  spikes: string[];
+  /** How many organizations EXIST. Differs from `rows.length` once the page
+   *  is capped, and the ones missing are the quiet ones. */
+  total: number;
+}) {
   // ⚠️ Purged organizations arrive from the Console on purpose — their usage
   // rows survive the purge as billing history. The roster already owns the
   // rule that they are not customers, so this hides them by default and says
@@ -169,6 +176,14 @@ export default function UsageBoard({
               })}
             </tbody>
           </table>
+        )}
+
+        {total > rows.length && (
+          <p className="note">
+            Showing {rows.length} of {total} organizations, ordered by credits
+            billed. The rest spent least — which means a customer who bought
+            credits and used none is at the end, not on this page.
+          </p>
         )}
 
         {purged.length > 0 && (

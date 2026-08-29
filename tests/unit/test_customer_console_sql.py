@@ -637,21 +637,68 @@ class TestOperatorSpendReads:
         # ⚠️ The most actionable row on the page is "bought credits, used
         # none". An INNER JOIN hides exactly that customer, and the page then
         # looks healthy because only busy customers are on it.
-        rows = store.usage_by_org(conn, days=30)
-        assert any(r["credits"] == 0 and r["calls"] == 0 for r in rows), (
+        #
+        # 🔴 **Asserted against THIS test's own organization, by slug.** The
+        # first version scanned every returned row for a zero, which passed on
+        # a fresh CI database and failed on a scratch one holding 563
+        # organizations — because the page is capped and a zero-usage row sorts
+        # LAST. A test that asserts on rows it did not create is testing the
+        # database's contents.
+        slug = conn.execute(
+            text("SELECT slug FROM organization WHERE id = :i"), {"i": org}
+        ).scalar_one()
+        # ⚠️ **Asked for a page big enough to hold every organization.** The
+        # default page is capped and rows sort by credits DESC, so a zero-usage
+        # organization sorts LAST — asserting against the default page tests
+        # the pagination, and passes or fails on whether this fixture's random
+        # slug happened to sort into the first hundred. That is the defect
+        # below, not the LEFT JOIN this test is about.
+        page = store.usage_by_org(conn, days=30, limit=10_000)
+        mine = [r for r in page["rows"] if r["slug"] == slug]
+        assert mine, (
             "usage_by_org must LEFT JOIN — an organization with no usage is "
             "the row an operator most needs to see"
         )
+        assert mine[0]["credits"] == 0 and mine[0]["calls"] == 0
+
+    def test_a_quiet_customer_can_fall_OFF_the_default_page(self, conn, org):
+        """🔴 The known defect, pinned so nobody rediscovers it (H-76).
+
+        The LEFT JOIN exists to show "bought credits, used none". The ORDER BY
+        sorts that row last. The LIMIT then removes it. Below the cap the two
+        rules never meet, which is why dev, CI and production all agree this is
+        fine — found on 2026-08-30 against a scratch database of 563.
+
+        This test does not assert the bug happens. It asserts the page ADMITS
+        its own truncation, which is the part that must never regress.
+        """
+        page = store.usage_by_org(conn, days=30, limit=1)
+        assert page["shown"] == 1
+        assert page["total"] >= 1
+        if page["total"] > 1:
+            assert page["shown"] < page["total"], (
+                "a truncated page must report the total, or the table looks "
+                "complete while hiding the most actionable customers"
+            )
+
+    def test_it_reports_how_many_rows_it_left_out(self, conn, org):
+        # 🔴 The cap fights the LEFT JOIN: rows sort by credits DESC, so a
+        # zero-usage organization sorts last and falls off the end first. That
+        # is survivable only while the page SAYS it is truncated.
+        page = store.usage_by_org(conn, days=30)
+        assert page["shown"] == len(page["rows"])
+        assert page["total"] >= page["shown"]
+        assert page["shown"] <= store.SPEND_PAGE_SIZE
 
     def test_it_returns_one_row_per_organization(self, conn, org):
-        rows = store.usage_by_org(conn, days=30)
+        rows = store.usage_by_org(conn, days=30)["rows"]
         slugs = [r["slug"] for r in rows]
         assert len(slugs) == len(set(slugs)), "an org must not appear twice"
 
     def test_credits_come_back_as_Decimal_not_float(self, conn, org):
         # Money never becomes a float. The API layer stringifies these, and a
         # float would already have lost precision before it got there.
-        for r in store.usage_by_org(conn, days=30):
+        for r in store.usage_by_org(conn, days=30)["rows"]:
             assert isinstance(r["credits"], Decimal)
             assert isinstance(r["cost_usd"], Decimal)
 

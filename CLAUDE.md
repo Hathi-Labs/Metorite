@@ -192,6 +192,10 @@ Rules that make it work:
   memory and calendar suites deselected.
 - `uv run pytest …` is the runner. Frontend: `npx tsc --noEmit && npx vitest run`
   in `workbench/control_plane`.
+- **R8 needs a database, and without one 843 tests SKIP while the run reads
+  green.** Measured 2026-08-30. Run `bash scripts/dev_db.sh` first, then
+  `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1
+  owns the loop.
 - `.claude/` (agents, commands, hooks, settings) is **tracked** — every checkout
   inherits the same review loop and the same refusals (D29). Local-only and
   derived paths stay ignored; the CodeGraph index is rebuilt, never committed.
