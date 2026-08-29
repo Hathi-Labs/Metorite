@@ -92,6 +92,60 @@ scratch-database pattern.
 > schedule. Anonymise before it leaves the box. This single job would have caught
 > more of this month's incidents than any other change on this page.
 
+### 1.1 The local loop — build against a real database, then deploy
+
+**Owner directive, 2026-08-30.** Design locally against a real database. Prove
+the process. Deploy after that.
+
+**Run this first, before any work that touches SQL:**
+
+```sh
+bash scripts/dev_db.sh                       # start both scratch databases
+eval "$(bash scripts/dev_db.sh --export)"    # set both DSNs in this shell
+uv run pytest tests/unit/test_customer_console_sql.py -q
+bash scripts/dev_db.sh --down                # throw them away
+```
+
+The script starts two containers. Both are throwaway. It applies the whole
+Console ladder, and it prints the two DSNs.
+
+It applies each migration through the container's own `psql`. A Windows box
+carries no `psql`, and `scripts/apply_customer_console_migrations.sh` needs
+one. On the main development machine that script cannot run at all.
+
+**Why a command, and not the paragraph above it.** §1 described the
+`mt-scratch` pattern for weeks. A pattern is a thing a person must remember.
+
+**What we measured on 2026-08-30.** A local `pytest` over the 26 Console suites
+gave **123 passed and 843 skipped**. Every skip said *"R8 requires a REAL
+Postgres"*. The run looked green. It had proved about one test in eight. With
+the two DSNs set, the same command gives **967 passed and 4 skipped**.
+
+⚠️ **A skip is not a pass, and pytest prints both in the same grey.** In a
+full-tree run the count sits under 4900 passes, where nobody reads it. So
+`tests/conftest.py` now prints a block at the end of any run that skipped tests
+while the DSNs are unset. It is **advisory** (R7). It prevents nothing, and CI
+remains the fence.
+
+**What this catches that CI does not.** CI replays the ladder from zero, so
+every database it tests is small and clean. A scratch database that has run the
+whole suite holds hundreds of rows.
+
+On 2026-08-30 that difference found a live defect in one command.
+`usage_by_org` uses a LEFT JOIN, so an organization with no usage appears. It
+then orders by credits **descending** and caps the page. So the cap removes
+the row the LEFT JOIN exists to include, and it removes that row first. Below
+100 organizations nothing shows it. Dev, CI and production all agreed it was fine.
+
+**Two rules follow.**
+
+1. **Run the database suites before you push, not after.** The loop takes 80
+   seconds. CI takes two and a half minutes, one push later.
+2. **A test must assert on rows it created.** The defect above surfaced as a
+   test that scanned every returned row for a zero. It passed on a fresh
+   database and failed on a full one. That test reported on the database
+   instead of on the function.
+
 ## 2. Release: deploy is not release
 
 **Deploy** = the code is on the box. **Release** = a customer can see the

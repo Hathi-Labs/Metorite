@@ -132,3 +132,38 @@ page, switch the theme, and look at it. An agent cannot do this step.
 - [ ] A long value wraps. It does not truncate a credential.
 - [ ] The keyboard reaches every control, and the focus ring is visible.
 - [ ] The empty state names what is absent.
+
+## 9. Where the data on a screen comes from
+
+We build a screen before its backend exists. That is deliberate. It is also the
+fastest way to put fiction in front of an operator.
+
+**Four rules hold the line.**
+
+1. **`src/lib/contract.ts` is the only shape a screen reads.** No page touches a
+   Console JSON response. A late or different endpoint is one change in
+   `read.ts`.
+2. **`read.ts` stamps an origin on every read.** The origin travels with the
+   data, so a screen cannot hold one without the other.
+3. **`Shell` draws the banner.** A page that drew its own banner is a page that
+   can forget one. `Shell` takes the origin as a required value.
+4. **No file under `src/app/` may import `@/lib/sample`.**
+   `source.test.ts` scans for it and fails.
+
+**Four origins, and each says a different thing:**
+
+| Origin | What it means | What the reader sees |
+|---|---|---|
+| `live` | This deployment answered | Nothing. The only silent case. |
+| `sample` | Designed placeholder | A warning. None of the numbers are real. |
+| `missing` | The backend is not built | What the backend still owes. |
+| `error` | The Console refused | The refusal, word for word. |
+
+**To see the sample data, set `OPERATOR_CONSOLE_SAMPLE_DATA=1`.**
+
+🔴 **Production never sets it.** The flag is off unless a person sets it to
+`1`, `true`, `yes` or `on`. The parse is strict on purpose. A loose test turns
+`0` on, because `0` is a non-empty string.
+
+⚠️ **A refusal outranks the flag.** An endpoint that answered 500 is not an
+unbuilt feature. `resolve` returns `error` even in sample mode.

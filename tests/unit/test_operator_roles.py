@@ -105,75 +105,14 @@ def _org(eng) -> str:
     return slug
 
 
-# ── Done-when 14: the matrix covers every operator-gated route ──────────────
-
-
-def test_every_operator_gated_route_has_a_matrix_row():
-    """Done-when 14, as a SOURCE fence.
-
-    ⚠️ This is the test that stops the matrix rotting. A new operator route
-    added without a row is refused at RUNTIME (the matrix fails closed), which
-    is safe but arrives as a mystery 403 in production. This makes it arrive in
-    CI instead, which is what R7 asks a rule to do.
-    """
-    from customer_console import operator_roles
-
-    src = (
-        _ROOT / "apps" / "services" / "customer_console" / "customer_console"
-        / "main.py"
-    ).read_text(encoding="utf-8")
-
-    gates = (
-        "Operator", "ProvisionCaller", "SeatAdminCaller", "MemberAdminCaller",
-        "CatalogCaller",
-    )
-    pattern = re.compile(
-        r'@app\.(get|post|patch|delete)\("([^"]+)"\)\s*\ndef \w+\(([^)]*)\)',
-        re.S,
-    )
-
-    missing = []
-    for m in pattern.finditer(src):
-        method, path, args = m.group(1).upper(), m.group(2), m.group(3)
-        if not any(re.search(rf":\s*{g}\b", args) for g in gates):
-            continue
-        if operator_roles.rule_for(method, path) is None:
-            missing.append(f"{method} {path}")
-
-    assert not missing, (
-        "these operator-reachable routes have no row in the §5 matrix, so a "
-        f"signed-in operator is refused with an unexplained 403: {missing}"
-    )
-
-
-def test_the_matrix_names_no_route_that_does_not_exist():
-    """The mirror of the above — a row for a deleted route is a lie."""
-    from customer_console import operator_roles
-
-    src = (
-        _ROOT / "apps" / "services" / "customer_console" / "customer_console"
-        / "main.py"
-    ).read_text(encoding="utf-8")
-    declared = {
-        (m.group(1).upper(), m.group(2))
-        for m in re.finditer(r'@app\.(get|post|patch|delete)\("([^"]+)"\)', src)
-    }
-    # CP-12d and CP-12f add `/operators*`; a row may legitimately land first.
-    stale = [
-        f"{k[0]} {k[1]}"
-        for k in operator_roles.MATRIX
-        if k not in declared and not k[1].startswith("/operators")
-    ]
-    assert not stale, f"the matrix names routes that do not exist: {stale}"
-
-
-def test_every_matrix_row_names_a_known_role():
-    from customer_console import operator_roles
-    from customer_console.operators import ROLES
-
-    for key, rule in operator_roles.MATRIX.items():
-        assert rule.min_role in ROLES, f"{key} demands an unknown role"
-
+# ── Done-when 14 lives in `test_operator_role_matrix_source.py` now ─────────
+#
+# 🔴 **Moved on 2026-08-30, because this module is R8-gated and they are not.**
+# The three matrix checks read a file and a dict. They need no database — but
+# the `pytestmark` above skipped them with everything else, so on a developer
+# machine they never ran and CI was the only place they could fail. That is
+# what happened to `GET /admin/usage/orgs`: shipped with no matrix row, caught
+# one push later. Keep them out of here.
 
 # ── Done-when 13: the cells, driven off the matrix itself ───────────────────
 

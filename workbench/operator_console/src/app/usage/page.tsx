@@ -42,6 +42,7 @@ export default async function UsagePage() {
   if (!session.ok) redirect("/login");
 
   let rows: OrgUsageRow[] = [];
+  let total = 0;
   let days: UsageDay[] = [];
   let spikes: string[] = [];
   let error: string | null = null;
@@ -53,7 +54,15 @@ export default async function UsagePage() {
       usageDaily(WINDOW_DAYS, undefined, deps),
     ]);
     if (orgs.status === 200) {
-      rows = (JSON.parse(orgs.body) as { rows: OrgUsageRow[] }).rows;
+      const body = JSON.parse(orgs.body) as {
+        rows: OrgUsageRow[];
+        total?: number;
+      };
+      rows = body.rows;
+      // ⚠️ The page is capped and the rows sort by spend, so the customers
+      // that fall off are the QUIET ones — the exact rows the read LEFT JOINs
+      // to include. Carrying the total is what stops the table looking whole.
+      total = body.total ?? body.rows.length;
     } else {
       // Surfaced, never swallowed. An empty table would hide a 500 and read as
       // "nobody has used AI yet".
@@ -91,7 +100,7 @@ export default async function UsagePage() {
         {error ? (
           <div className="banner danger">{error}</div>
         ) : (
-          <UsageBoard rows={rows} days={days} spikes={spikes} />
+          <UsageBoard rows={rows} days={days} spikes={spikes} total={total} />
         )}
       </main>
     </>

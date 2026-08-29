@@ -85,13 +85,20 @@ def resolve_tier(
     ``seat_grant`` and ``model_rate_card``. Repricing and re-pointing are both
     "insert a row with a later date", never "edit the live one", so history
     stays reconstructable.
+
+    ⚠️ **``rank ASC`` is the tiebreak, and it is load-bearing.** A tier holds
+    an ordered CHAIN as of migration 011, and every step of one chain shares an
+    ``effective_from``. Without the rank tiebreak this returns an arbitrary
+    step — most often the wrong one, and only under the multi-step chains that
+    are the whole point of the feature. This function returns the PRIMARY;
+    :func:`resolve_chain` returns the whole thing.
     """
     row = conn.execute(
         text(
             """
             SELECT model FROM tier_binding
             WHERE tier = :tier AND task = :task AND effective_from <= now()
-            ORDER BY effective_from DESC
+            ORDER BY effective_from DESC, rank ASC
             LIMIT 1
             """
         ),
@@ -105,6 +112,47 @@ def resolve_tier(
         # for a picture.
         raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
     return ResolvedTier(tier=tier, model=row[0], task=task)
+
+
+def resolve_chain(
+    conn: Connection, tier: str, task: str = "chat"
+) -> list[ResolvedTier]:
+    """Every model bound to this ``(task, tier)``, in the order to try them.
+
+    🔴 **This is what a fallback IS.** The Router walks this list and stops at
+    the first step that answers, so a provider being overloaded costs a retry
+    instead of costing the customer their request.
+
+    ⚠️ **One chain, one ``effective_from``.** The whole chain is written at a
+    single timestamp (migration 011), so this takes the newest timestamp that
+    has passed and then every row at it. Reading "the newest row per rank"
+    instead would silently splice two different chains together — half of
+    yesterday's and half of today's — which is a configuration nobody chose and
+    nobody could reproduce from the audit trail.
+
+    Raises:
+        TierUnknown: nothing is bound. Same refusal as :func:`resolve_tier`,
+            and for the same reason (§6A.9 rule 2): coercing an unbound task to
+            the chat binding hides a misconfigured agent behind a bill.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT model, rank FROM tier_binding
+            WHERE tier = :tier AND task = :task
+              AND effective_from = (
+                  SELECT max(effective_from) FROM tier_binding
+                  WHERE tier = :tier AND task = :task
+                    AND effective_from <= now()
+              )
+            ORDER BY rank ASC
+            """
+        ),
+        {"tier": tier, "task": task},
+    ).all()
+    if not rows:
+        raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
+    return [ResolvedTier(tier=tier, model=r[0], task=task) for r in rows]
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────

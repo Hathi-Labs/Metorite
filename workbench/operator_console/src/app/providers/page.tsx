@@ -1,9 +1,8 @@
 import { redirect } from "next/navigation";
 
-import { ConsoleUnconfigured, listProviderCreds } from "@/lib/console";
-import type { ProviderCred } from "@/lib/providers";
+import { readAccounts } from "@/lib/read";
 import { staffSession } from "@/lib/session";
-import Header from "../Header";
+import Shell, { Unconfigured } from "../Shell";
 import ProviderAdmin from "./ProviderAdmin";
 
 export const dynamic = "force-dynamic";
@@ -28,63 +27,24 @@ export const dynamic = "force-dynamic";
 // ⚠️ **The list is read HERE, server-side, with the caller's own token.** The
 // secret is not in it and cannot be — the Console's query does not select the
 // column. Reading it in the client would put the list on a path the browser
-// can replay, for no benefit.
+// can replay, for no benefit. The Console answered means a failure is surfaced
+// rather than drawn as an empty table.
 
 export default async function ProvidersPage() {
   const session = await staffSession();
-  if (!session.configured) {
-    return (
-      <>
-        <Header />
-        <main className="wrap">
-          <div className="banner">
-            The staff gate is not configured on this deployment, so nobody can
-            sign in. Set it server-side and reload.
-          </div>
-        </main>
-      </>
-    );
-  }
+  if (!session.configured) return <Unconfigured />;
   if (!session.ok) redirect("/login");
 
-  let creds: ProviderCred[] = [];
-  let error: string | null = null;
-  try {
-    const result = await listProviderCreds(true, { authToken: session.authToken });
-    if (result.status === 200) {
-      creds = (JSON.parse(result.body) as { credentials: ProviderCred[] }).credentials;
-    } else {
-      // Surfaced, never swallowed. An empty table would hide a 500 and read
-      // as "nothing installed yet", which is a different and calmer fact.
-      error = `The Console answered ${result.status}. ${result.body}`;
-    }
-  } catch (e) {
-    if (e instanceof ConsoleUnconfigured) {
-      error = "The Customer Console is not configured on this deployment.";
-    } else {
-      throw e;
-    }
-  }
+  const accounts = await readAccounts({ authToken: session.authToken });
 
   return (
-    <>
-      <Header />
-      <main className="wrap">
-        <div className="pagehead">
-          <div>
-            <h1>Providers</h1>
-            <p className="muted">
-              The vendor accounts the Router calls on. Installing one here is
-              what arms AI for every customer who has not brought their own.
-            </p>
-          </div>
-        </div>
-        {error ? (
-          <div className="banner">{error}</div>
-        ) : (
-          <ProviderAdmin creds={creds} />
-        )}
-      </main>
-    </>
+    <Shell
+      title="Providers"
+      lede="The vendor accounts the Router calls on. Installing one here is what arms AI for every customer who has not brought their own."
+      origin={accounts.origin}
+      note={accounts.note}
+    >
+      <ProviderAdmin creds={accounts.data} />
+    </Shell>
   );
 }

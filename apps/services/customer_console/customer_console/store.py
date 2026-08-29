@@ -628,7 +628,8 @@ USAGE_MAX_DAYS = 365
 
 def usage_by_org(
     conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
-) -> list[dict[str, Any]]:
+    limit: int = SPEND_PAGE_SIZE,
+) -> dict[str, Any]:
     """Per-organization AI usage over the window. **Operator-only.**
 
     ⚠️ **A LEFT JOIN, deliberately.** An organization with no usage must appear
@@ -641,6 +642,28 @@ def usage_by_org(
     make a past invoice unexplainable. The caller decides whether to show them
     — `partitionRoster` in the console already owns that rule, and a second
     copy of it in SQL would be a second vocabulary for one decision.
+
+    🔴 **The page is CAPPED, and the cap fights the LEFT JOIN.** Rows sort by
+    credits descending, so a zero-usage organization sorts LAST — and it is
+    precisely the row the LEFT JOIN above exists to include. Past
+    `SPEND_PAGE_SIZE` organizations the two rules cancel out and the most
+    actionable customers fall off the end.
+
+    Found on 2026-08-30 by running this against a scratch database holding 563
+    organizations. It cannot be seen below the cap, so dev, CI and production
+    (2 organizations) all agree it is fine.
+
+    This returns `total` so the truncation is at least never SILENT, and the
+    console says "100 of 563". The ordering itself is a design question and it
+    is NOT settled here: an operator wants the biggest spenders *and* the quiet
+    ones, which is two queries or one union, not one `ORDER BY`. HANDOFF H-76.
+
+    ⚠️ **`limit` is a real parameter, not a test hook.** A paginated read owes
+    its caller a page size. It exists because the alternative was a test that
+    asserted a zero-usage organization appears in the DEFAULT page — which is
+    the very thing the cap makes untrue, so the test passed or failed on
+    whether the fixture's random slug sorted into the first hundred. A test
+    that encodes the defect it is meant to catch is worse than no test.
     """
     rows = conn.execute(
         text(
@@ -661,9 +684,9 @@ def usage_by_org(
             LIMIT :lim
             """
         ),
-        {"days": days, "lim": SPEND_PAGE_SIZE},
+        {"days": days, "lim": max(1, int(limit))},
     )
-    return [
+    out = [
         {
             "slug": r.slug,
             "name": r.name,
@@ -675,6 +698,11 @@ def usage_by_org(
         }
         for r in rows
     ]
+    # ⚠️ Counted separately, and cheaply — `count(*)` over `organization` reads
+    # one small table. Counting the joined result would repeat the aggregate
+    # for no extra truth.
+    total = conn.execute(text("SELECT count(*) FROM organization")).scalar_one()
+    return {"rows": out, "total": int(total), "shown": len(out)}
 
 
 def usage_daily(

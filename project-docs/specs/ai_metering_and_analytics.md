@@ -133,6 +133,30 @@ An administrator may change it. A member may not.
 
 This reuses `model_config`, key `agent_aliases`, which already exists.
 
+### 3.5 A tier holds an ordered chain
+
+**Decision D-AI-5.** A tier points at an ordered list of models, not at one
+model. The Router tries rank 1. If that step fails, it tries rank 2.
+
+**Owner directive, 2026-08-29.** A provider goes down. We hold a live key for
+three other vendors. Today every customer on that tier gets an error, because
+`tier_binding` has nowhere to put a second choice.
+
+Three rules make a chain mean something.
+
+1. **The Console writes a chain whole.** Every step shares one `effective_from`.
+   To remove a step, write the chain you want. §6A.5 stays insert-only, so an
+   old invoice still reads against what it charged.
+2. **The Console checks every step, not the first.** An unchecked backup is
+   worse than no backup. The Router reaches it only after the first choice
+   failed, so the error arrives during an outage.
+3. **A chain on one provider is not a backup.** The provider goes down, not
+   the model. The Operator Console warns, and it does not refuse — the operator
+   decides.
+
+⚠️ **The table stores an order. It does not retry.** The Router does not yet
+walk the chain. Slice 10 adds that.
+
 ---
 
 ## 4. Customer surfaces — documented now, built later
@@ -272,6 +296,8 @@ Each slice ships alone and is verifiable alone.
 | **6** | Margin and runway | A1, A2 |
 | **7** | Customer time series | C3 |
 | **8** | Per-member budget | C5, **after H-73** |
+| **9** | `tier_binding.rank`, and the Console reads and writes a chain | §3.5 |
+| **10** | The Router walks the chain when a step fails | §3.5, A5 |
 
 ---
 
@@ -287,7 +313,12 @@ agent breaks it.
 | Money leaves the API as a string | `test_customer_console_key_auth.py` — no float in a spend body |
 | A tier slug never changes | `test_index_completeness.py` sibling — the slug set is append-only |
 | An image refusal names the reason | Router test — a missing `tier-vision` returns 4xx, never a text-only answer |
+| Every step of a chain shares one date | `test_customer_console_fallback_chain.py` — two dates resolve as two chains, and the first choice disappears |
+| A shorter chain leaves no orphan step | `test_customer_console_fallback_chain.py` — a three-step chain replaced by two resolves to two |
+| The Console saves the chain whole | `catalog.test.ts` — the page posts `models`, never `model` |
 
 ⚠️ **R8 binds every read here.** Verify the SQL against a real database. The
 two reads in slice 1 were verified against the live Console database on
-2026-08-29, and the gap fill was the defect that check found.
+2026-08-29, and the gap fill was the defect that check found. Slice 9 ran
+against a throwaway Postgres on 2026-08-30, and `now()` being stable inside one
+transaction was the defect that check found.

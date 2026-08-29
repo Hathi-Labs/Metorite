@@ -1495,10 +1495,35 @@ class CapabilityRequest(BaseModel):
 class BindingRequest(BaseModel):
     tier: str
     task: str
-    model: str
+    #: The single model, for the one-step case every caller used before 011.
+    model: str | None = None
+    #: The ORDERED chain, primary first. Supersedes `model` when both arrive.
+    #:
+    #: ⚠️ A chain is written WHOLE, at one `effective_from`. Removing a step is
+    #: "send the chain you want", never a delete — §6A.5 is insert-only so a
+    #: past invoice stays readable against what it was actually charged on.
+    models: list[str] | None = None
     #: Omit for "now". A future date STAGES a change without taking effect,
     #: which is the same shape `seat_grant` and `model_rate_card` already use.
     effective_from: datetime | None = None
+
+    def chain(self) -> list[str]:
+        """The steps to write, in order, de-duplicated.
+
+        ⚠️ **A repeated model is dropped, not refused.** The primary key would
+        reject the second row anyway, and failing the whole request over a
+        duplicate would lose the four steps that were fine. The second try adds
+        nothing either way — it is the same model on the same provider.
+        """
+        raw = self.models if self.models else ([self.model] if self.model else [])
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in raw:
+            m = (m or "").strip()
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
 
 
 class RateRequest(BaseModel):
@@ -1548,14 +1573,24 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # IN FORCE ONLY — the newest row per key whose date has passed. The
         # superseded rows stay in the table for the audit trail, and showing
         # them here would read as "these are all live".
+        # IN FORCE ONLY, and the WHOLE chain (011).
+        #
+        # ⚠️ **Every row at the newest timestamp, not the newest row per rank.**
+        # A chain is written whole at one `effective_from`, so taking the newest
+        # row per rank would splice half of yesterday's chain onto half of
+        # today's — a configuration nobody chose and nobody could reproduce
+        # from the audit trail.
         bindings = [
-            {"tier": r[0], "task": r[1], "model": r[2],
-             "effective_from": _iso(r[3])}
+            {"tier": r[0], "task": r[1], "model": r[2], "rank": r[3],
+             "effective_from": _iso(r[4])}
             for r in conn.execute(text(
-                "SELECT DISTINCT ON (task, tier) tier, task, model, "
-                "       effective_from "
-                "FROM tier_binding WHERE effective_from <= now() "
-                "ORDER BY task, tier, effective_from DESC"))
+                "SELECT b.tier, b.task, b.model, b.rank, b.effective_from "
+                "FROM tier_binding b "
+                "WHERE b.effective_from = ("
+                "    SELECT max(x.effective_from) FROM tier_binding x "
+                "    WHERE x.task = b.task AND x.tier = b.tier "
+                "      AND x.effective_from <= now()) "
+                "ORDER BY b.task, b.tier, b.rank"))
         ]
         rates = [
             {"model": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
@@ -1631,37 +1666,63 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
     that check the Router resolves a model and then cannot choose a verb, which
     is a 500 on the first request rather than an error anybody sees here.
     """
+    chain = req.chain()
+    if not chain:
+        raise HTTPException(
+            status_code=400,
+            detail="give a model, or an ordered list of models",
+        )
+
     with get_engine().begin() as conn:
         if not _task_exists(conn, req.task):
             raise HTTPException(
                 status_code=400, detail=f"unknown task {req.task!r}")
 
-        capable = conn.execute(
-            text("SELECT 1 FROM model_capability "
-                 "WHERE model = :m AND task = :t"),
-            {"m": req.model, "t": req.task},
-        ).first()
-        if capable is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{req.model!r} declares no capability for task "
-                    f"{req.task!r}; declare it first"
+        # ⚠️ **EVERY step is checked, not just the primary.** An unchecked
+        # backup is worse than no backup: it is only reached after the primary
+        # has already failed, so the 500 arrives during an outage, when nobody
+        # has attention to spare for it.
+        for model in chain:
+            capable = conn.execute(
+                text("SELECT 1 FROM model_capability "
+                     "WHERE model = :m AND task = :t"),
+                {"m": model, "t": req.task},
+            ).first()
+            if capable is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{model!r} declares no capability for task "
+                        f"{req.task!r}; declare it first"
+                    ),
+                )
+
+        # 🔴 **One timestamp for the whole chain, computed ONCE.** Letting each
+        # row default to `now()` would give the steps different microsecond
+        # timestamps, and resolution takes every row at the newest one — so the
+        # chain would resolve to its last step alone. The bug would be
+        # invisible until the primary failed.
+        eff = conn.execute(
+            text("SELECT COALESCE(CAST(:eff AS TIMESTAMPTZ), now())"),
+            {"eff": req.effective_from},
+        ).scalar_one()
+
+        for position, model in enumerate(chain, start=1):
+            conn.execute(
+                text(
+                    "INSERT INTO tier_binding "
+                    "    (tier, task, model, rank, effective_from) "
+                    "VALUES (:tier, :task, :model, :rank, :eff)"
                 ),
+                {"tier": req.tier, "task": req.task, "model": model,
+                 "rank": position, "eff": eff},
             )
 
-        conn.execute(
-            text(
-                "INSERT INTO tier_binding (tier, task, model, effective_from) "
-                "VALUES (:tier, :task, :model, COALESCE(:eff, now()))"
-            ),
-            {"tier": req.tier, "task": req.task, "model": req.model,
-             "eff": req.effective_from},
-        )
         _audit(conn, None, "catalog.binding",
-               {"tier": req.tier, "task": req.task, "model": req.model},
+               {"tier": req.tier, "task": req.task, "chain": chain},
                actor=staff.actor)
-    return {"tier": req.tier, "task": req.task, "model": req.model}
+    return {"tier": req.tier, "task": req.task, "model": chain[0],
+            "chain": chain}
 
 
 @app.post("/catalog/rates")
@@ -4013,6 +4074,15 @@ class OrgUsageRow(BaseModel):
 
 class OrgUsageView(BaseModel):
     windowDays: int
+    #: How many organizations exist, and how many this page carries.
+    #:
+    #: 🔴 The two differ once there are more than `SPEND_PAGE_SIZE` of them, and
+    #: the rows that fall off are the QUIET ones — they sort last by spend, and
+    #: they are exactly what the LEFT JOIN in `usage_by_org` exists to include.
+    #: A page that did not say so would look complete while hiding the most
+    #: actionable customers.
+    total: int = 0
+    shown: int = 0
     rows: list[OrgUsageRow]
 
 
@@ -4040,13 +4110,14 @@ def admin_usage_by_org(
     """
     days = max(1, min(int(days), store.USAGE_MAX_DAYS))
     with get_engine().begin() as conn:
-        rows = store.usage_by_org(conn, days=days)
+        page = store.usage_by_org(conn, days=days)
+        rows = page["rows"]
         balances = store.credit_balance_by_org(conn)
         # The burn window is its own read rather than a slice of the first —
         # a 30-day total cannot answer "what is the recent rate".
         burn = {
             r["slug"]: r["credits"]
-            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)
+            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)["rows"]
         }
 
     annotated = analytics.annotate_orgs(
@@ -4054,6 +4125,11 @@ def admin_usage_by_org(
     )
     return OrgUsageView(
         windowDays=days,
+        # 🔴 Truncation is REPORTED, never silent. Rows sort by spend, so the
+        # quiet customers the LEFT JOIN exists to include are the ones the cap
+        # removes. The console says "100 of 563" rather than looking complete.
+        total=page["total"],
+        shown=page["shown"],
         rows=[
             OrgUsageRow(
                 slug=r["slug"], name=r["name"], calls=r["calls"],

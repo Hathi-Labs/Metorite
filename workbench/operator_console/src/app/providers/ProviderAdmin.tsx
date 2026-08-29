@@ -1,17 +1,11 @@
 "use client";
 
-import { useState } from "react";
-
-import {
-  type ProviderCred,
-  byokOrgs,
-  coverageLine,
-  describeScope,
-  isLive,
-  wouldRotate,
-} from "@/lib/providers";
-
-// The operator's provider-account surface — WS-31 CP-10 slice 4.
+// Our provider accounts — WS-31 CP-10 slice 4, rebuilt as cards.
+//
+// 🔴 **What changed.** This was a flat table with one row per credential, which
+// drew two keys for the same vendor as unrelated lines. A second platform key
+// is exactly how a rate limit stops being an outage, and the table made that
+// invisible. One card per vendor now, with every key it holds.
 //
 // ⚠️ **The secret lives in local state and nowhere else.** It is cleared the
 // moment the Console answers, it is never put in a URL, never logged, and
@@ -22,7 +16,25 @@ import {
 // the list with the caller's own token and passes it down. A client fetch
 // would put the list on a path the browser can replay.
 
-type Props = { creds: ProviderCred[] };
+import { useState } from "react";
+
+import { categoricalChip, providerGlyph } from "@/lib/categorical";
+import { KNOWN_PROVIDERS, guideFor } from "@/lib/providerGuides";
+import {
+  type ProviderAccount,
+  byokOrgs,
+  coverageLine,
+  describeScope,
+  groupByProvider,
+  groupLine,
+  healthLabel,
+  healthTone,
+  isLive,
+  wouldRotate,
+} from "@/lib/providers";
+import { chipClass } from "@/lib/tone";
+
+type Props = { creds: ProviderAccount[] };
 
 export default function ProviderAdmin({ creds }: Props) {
   const [provider, setProvider] = useState("");
@@ -33,10 +45,24 @@ export default function ProviderAdmin({ creds }: Props) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const rotating = wouldRotate(creds, provider, orgSlug.trim() || null);
   const live = creds.filter(isLive);
   const byok = byokOrgs(creds);
+  const groups = groupByProvider(creds);
+  const guide = guideFor(provider);
+
+  function startAdd(preset: string) {
+    setProvider(preset);
+    setSecret("");
+    setOrgSlug("");
+    setLabel("");
+    setApiBase("");
+    setAdding(true);
+    setNote(null);
+    setError(null);
+  }
 
   async function install(e: React.FormEvent) {
     e.preventDefault();
@@ -70,7 +96,7 @@ export default function ProviderAdmin({ creds }: Props) {
       setNote(
         body.rotated
           ? `Rotated. The previous ${provider.trim()} key is revoked and no longer used.`
-          : `Installed. Reload to see it listed.`,
+          : "Installed. Reload to see it listed.",
       );
     } catch {
       setError("The request did not complete. Nothing was installed.");
@@ -79,9 +105,9 @@ export default function ProviderAdmin({ creds }: Props) {
     }
   }
 
-  async function revoke(c: ProviderCred) {
-    const what = c.org_slug ? `${c.provider} for ${c.org_slug}` : `${c.provider} (PLATFORM)`;
-    const warn = c.org_slug
+  async function revoke(c: ProviderAccount) {
+    const what = c.orgSlug ? `${c.provider} for ${c.orgSlug}` : `${c.provider} (PLATFORM)`;
+    const warn = c.orgSlug
       ? `Revoke ${what}? That organization falls back to our platform account.`
       : `Revoke ${what}?\n\nThis stops every AI call that is not BYOK.`;
     if (!confirm(warn)) return;
@@ -91,7 +117,7 @@ export default function ProviderAdmin({ creds }: Props) {
       const r = await fetch("/api/operator/providers/revoke", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ provider: c.provider, org_slug: c.org_slug }),
+        body: JSON.stringify({ provider: c.provider, org_slug: c.orgSlug }),
       });
       const text = await r.text();
       if (!r.ok) setError(`The Console refused: ${text}`);
@@ -101,120 +127,220 @@ export default function ProviderAdmin({ creds }: Props) {
     }
   }
 
+  function Key({ c }: { c: ProviderAccount }) {
+    return (
+      <div className={`keyrow ${isLive(c) ? "" : "dead"}`}>
+        <div className="keymain">
+          <span className="keylabel">{c.label ?? describeScope(c)}</span>
+          <span className="muted small">
+            {describeScope(c)}
+            {c.apiBase ? ` · ${c.apiBase}` : ""}
+            {c.createdAt ? ` · added ${c.createdAt.slice(0, 10)}` : ""}
+          </span>
+          {c.healthNote && <span className="muted small">{c.healthNote}</span>}
+        </div>
+        {isLive(c) ? (
+          <>
+            <span className={chipClass(healthTone(c.health))}>
+              {healthLabel(c.health)}
+            </span>
+            <button
+              type="button"
+              className="linklike"
+              onClick={() => revoke(c)}
+              disabled={busy}
+            >
+              Revoke
+            </button>
+          </>
+        ) : (
+          <span className="chip">revoked</span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
-      <div className={live.length === 0 ? "banner" : "note"}>
+      <div className={live.length === 0 ? "banner danger" : "note"}>
         {coverageLine(creds)}
-        {byok.length > 0 && ` BYOK organizations: ${byok.join(", ")}.`}
+        {byok.length > 0 && ` Organizations with their own key: ${byok.join(", ")}.`}
       </div>
 
-      <h2>Install or rotate</h2>
-      <p className="muted">
-        Installing a provider we already hold a live key for <strong>rotates</strong>{" "}
-        it: the old key is revoked and the new one installed together, so there
-        is never a moment with two live keys or none.
-      </p>
-
-      <form onSubmit={install}>
-        <label>
-          Provider
-          <input
-            value={provider}
-            onChange={(e) => setProvider(e.target.value)}
-            placeholder="anthropic"
-            required
-          />
-        </label>
-        <label>
-          Secret
-          <input
-            type="password"
-            value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-            placeholder="the vendor API key"
-            autoComplete="off"
-            required
-          />
-        </label>
-        <label>
-          API base <span className="muted">(optional)</span>
-          <input
-            value={apiBase}
-            onChange={(e) => setApiBase(e.target.value)}
-            placeholder="https://api.anthropic.com"
-          />
-        </label>
-        <label>
-          Label <span className="muted">(optional)</span>
-          <input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="what this account is, for the next person"
-          />
-        </label>
-        <label>
-          Organization slug <span className="muted">(optional — BYOK only)</span>
-          <input
-            value={orgSlug}
-            onChange={(e) => setOrgSlug(e.target.value)}
-            placeholder="leave empty for the platform account"
-          />
-        </label>
-
-        {rotating && (
-          <div className="banner">
-            A live {provider.trim()} credential already exists for{" "}
-            {orgSlug.trim() || "the platform account"}. Saving will REPLACE it.
-          </div>
-        )}
-
-        <button type="submit" disabled={busy}>
-          {rotating ? "Rotate" : "Install"}
-        </button>
-      </form>
-
-      {error && <div className="banner">{error}</div>}
+      {error && <div className="banner danger">{error}</div>}
       {note && <div className="note">{note}</div>}
 
-      <h2>Installed</h2>
-      {creds.length === 0 ? (
-        <p className="muted">Nothing installed yet.</p>
+      {/* ── What we hold, one card per vendor ── */}
+      {groups.length === 0 ? (
+        <div className="empty">
+          <h2>No vendor accounts</h2>
+          <p className="muted">
+            Every AI request fails until one is installed. Pick a vendor below
+            and paste its key.
+          </p>
+        </div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Scope</th>
-                <th>Label</th>
-                <th>API base</th>
-                <th>Installed</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {creds.map((c) => (
-                <tr key={c.id} className={isLive(c) ? undefined : "muted"}>
-                  <td>{c.provider}</td>
-                  <td>{describeScope(c)}</td>
-                  <td>{c.label ?? "—"}</td>
-                  <td>{c.api_base ?? "default"}</td>
-                  <td>{c.created_at ?? "—"}</td>
-                  <td>
-                    {isLive(c) ? (
-                      <button onClick={() => revoke(c)} disabled={busy}>
-                        Revoke
-                      </button>
-                    ) : (
-                      "revoked"
-                    )}
-                  </td>
-                </tr>
+        <div className="provider-grid">
+          {groups.map((g) => (
+            <section className="provider-card" key={g.provider}>
+              <header>
+                <span className={categoricalChip(g.provider)}>
+                  <span className="glyph">{providerGlyph(g.provider)}</span>
+                  {g.provider}
+                </span>
+                <span className="muted small">{groupLine(g)}</span>
+              </header>
+
+              {guideFor(g.provider)?.description && (
+                <p className="muted small">{guideFor(g.provider)?.description}</p>
+              )}
+
+              {[...g.platform, ...g.byok, ...g.revoked].map((c) => (
+                <Key key={c.id} c={c} />
               ))}
-            </tbody>
-          </table>
+
+              <button
+                type="button"
+                className="linklike add-job"
+                onClick={() => startAdd(g.provider)}
+              >
+                + Add another {g.provider} key
+              </button>
+            </section>
+          ))}
         </div>
       )}
+
+      {/* ── Install or rotate ── */}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>{adding && provider ? `Add a ${provider} key` : "Add a vendor"}</h2>
+          <p>
+            Installing a vendor we already hold a live key for{" "}
+            <strong>rotates</strong> it: the old key is revoked and the new one
+            installed together, so there is never a moment with two live keys or
+            none.
+          </p>
+        </div>
+
+        <div className="facetrow">
+          {KNOWN_PROVIDERS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className="facet"
+              aria-pressed={provider === p}
+              onClick={() => startAdd(p)}
+            >
+              <span className="glyph">{providerGlyph(p)}</span>
+              {p}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="facet"
+            aria-pressed={adding && !KNOWN_PROVIDERS.includes(provider)}
+            onClick={() => startAdd("")}
+          >
+            Something else
+          </button>
+        </div>
+
+        {adding && (
+          <form onSubmit={install}>
+            {guide && (
+              <div className="guide">
+                <p>{guide.description}</p>
+                <ol>
+                  {guide.steps.map((s) => (
+                    <li key={s}>{s}</li>
+                  ))}
+                </ol>
+                <p className="muted small">
+                  {guide.keyLooksLike && (
+                    <>
+                      The key looks like{" "}
+                      <span className="mono">{guide.keyLooksLike}</span> ·{" "}
+                    </>
+                  )}
+                  <a href={guide.setupUrl} target="_blank" rel="noreferrer">
+                    Open the vendor page
+                  </a>
+                </p>
+              </div>
+            )}
+
+            <label>
+              Vendor
+              <input
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                placeholder="anthropic"
+                required
+              />
+            </label>
+            <label>
+              Secret
+              <input
+                type="password"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder="the vendor API key"
+                autoComplete="off"
+                required
+              />
+            </label>
+
+            <details className="advanced">
+              <summary>Where it goes, and who it is for</summary>
+              <label>
+                Label <span className="muted">(optional)</span>
+                <input
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="what this account is, for the next person"
+                />
+              </label>
+              <label>
+                API base <span className="muted">(optional)</span>
+                <input
+                  value={apiBase}
+                  onChange={(e) => setApiBase(e.target.value)}
+                  placeholder="leave empty for the vendor's own host"
+                />
+              </label>
+              <label>
+                One organization only <span className="muted">(optional)</span>
+                <input
+                  value={orgSlug}
+                  onChange={(e) => setOrgSlug(e.target.value)}
+                  placeholder="leave empty to serve every customer"
+                />
+              </label>
+            </details>
+
+            {rotating && (
+              <div className="banner">
+                A live {provider.trim()} key already exists for{" "}
+                {orgSlug.trim() || "every customer"}. Saving will REPLACE it.
+              </div>
+            )}
+
+            <div className="job-actions">
+              <button type="submit" disabled={busy}>
+                {rotating ? "Rotate" : "Install"}
+              </button>
+              <button
+                type="button"
+                className="linklike"
+                onClick={() => setAdding(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
     </>
   );
 }
