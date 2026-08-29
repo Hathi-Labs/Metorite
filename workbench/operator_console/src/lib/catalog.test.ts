@@ -117,8 +117,13 @@ describe("the surface", () => {
     expect(ADMIN).toContain("unpriced");
   });
 
-  it("is reachable from the top bar", () => {
-    expect(HEADER).toContain('{ href: "/models", label: "Models" }');
+  it("is reachable from the sidebar", () => {
+    // ⚠️ Asserted as two facts rather than one object literal. The nav entry
+    // grew an `icon` field when the top bar became a sidebar (2026-08-29), and
+    // a test pinned to the literal broke on a change that did not touch
+    // reachability at all — which is the thing this test is actually for.
+    expect(HEADER).toContain('href: "/models"');
+    expect(HEADER).toContain('label: "Models"');
   });
 
   it("offers no way to EDIT a binding or a rate", () => {
