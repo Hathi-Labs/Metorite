@@ -163,8 +163,10 @@ describe("the secret never crosses a read path", () => {
 });
 
 describe("the surface", () => {
-  it("is reachable from the top bar", () => {
-    expect(HEADER).toContain('{ href: "/providers", label: "Providers" }');
+  it("is reachable from the sidebar", () => {
+    // ⚠️ Two facts, not one object literal — see the note in catalog.test.ts.
+    expect(HEADER).toContain('href: "/providers"');
+    expect(HEADER).toContain('label: "Providers"');
   });
 
   it("confirms before revoking, and says what revoking costs", () => {
