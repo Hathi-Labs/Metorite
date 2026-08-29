@@ -728,6 +728,34 @@ def usage_daily(
     ]
 
 
+def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
+    """Credit balance for every organization, keyed by slug. **Operator-only.**
+
+    ⚠️ **Summed from the ledger, never read from a column.** `credit_ledger` is
+    the authority and `balance_of` already sums it for one organization. A
+    stored balance column would be a second authority, and the two disagree the
+    first time a write lands outside the path that maintains it.
+
+    ⚠️ An organization with no ledger row returns 0, not a missing key. The
+    caller renders every organization, and a `KeyError` inside a page that
+    lists all of them is a blank page rather than a missing cell.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                       AS slug,
+                   COALESCE(SUM(l.delta), 0)    AS balance
+            FROM organization o
+            LEFT JOIN credit_ledger l ON l.organization_id = o.id
+            GROUP BY o.id, o.slug
+            LIMIT :lim
+            """
+        ),
+        {"lim": SPEND_PAGE_SIZE},
+    )
+    return {r.slug: Decimal(r.balance) for r in rows}
+
+
 # ── Keys ────────────────────────────────────────────────────────────────────
 
 def issue_key(conn: Connection, *, org_id: str, prefix: str, key_hash: str,
