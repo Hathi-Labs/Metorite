@@ -298,8 +298,9 @@ export const SAMPLE_CATALOG: AiCatalog = {
  * "sample data" without saying what is missing teaches nobody anything. */
 export const OWED = {
   models:
-    "The catalog reads live today, but context window, vendor price and the " +
-    "kind chips need columns on `model_capability` that do not exist yet.",
+    "The catalog reads live. Context window, vendor price and the image and " +
+    "reasoning chips come from `model_profile` (migration 012) — a model with " +
+    "no profile row yet shows a dash, which is true rather than guessed.",
   tiers:
     "Ordered fallback needs a `rank` column on `tier_binding`, and the Router " +
     "needs to catch a vendor error and try the next step.",

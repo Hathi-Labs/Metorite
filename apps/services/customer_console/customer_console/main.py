@@ -1595,6 +1595,22 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "      AND x.effective_from <= now()) "
                 "ORDER BY b.task, b.tier, b.rank"))
         ]
+        # What each model IS (012). LEFT of everything: a model with no profile
+        # row is normal, and it renders as em dashes rather than vanishing.
+        profiles = [
+            {"model": r[0], "label": r[1], "context_window": r[2],
+             "max_output": r[3],
+             # ⚠️ Money as STRINGS. These are NUMERIC in the database, and a
+             # parsed float re-formatted is how a number stops matching itself.
+             "vendor_input_per_1m_usd": None if r[4] is None else str(r[4]),
+             "vendor_output_per_1m_usd": None if r[5] is None else str(r[5]),
+             "description": r[6], "reads_images": r[7], "thinks_first": r[8]}
+            for r in conn.execute(text(
+                "SELECT model, label, context_window, max_output, "
+                "       vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
+                "       description, reads_images, thinks_first "
+                "FROM model_profile ORDER BY model"))
+        ]
         rates = [
             {"model": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
              "input_per_1k": str(r[4]), "output_per_1k": str(r[5]),
@@ -1614,6 +1630,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
     return {
         "tasks": tasks,
         "capabilities": caps,
+        "profiles": profiles,
         "bindings": bindings,
         "rates": rates,
         "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
@@ -1791,6 +1808,96 @@ def _task_exists(conn, task: str) -> bool:
     return conn.execute(
         text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
     ).first() is not None
+
+
+
+class ProfileRequest(BaseModel):
+    """What a model IS — window, output cap, what the vendor charges us.
+
+    ⚠️ **Every measurement is OPTIONAL and defaults to `None`.** `None` means
+    "nobody has told us", which the console draws as an em dash. A default of
+    zero would render as "0 tokens" and "free", and both read as facts.
+    """
+
+    model: str
+    label: str | None = None
+    context_window: int | None = None
+    max_output: int | None = None
+    #: 🔴 What the VENDOR charges US, per million tokens. NOT `model_rate_card`,
+    #: which is what we charge a customer. Reading one as the other inverts a
+    #: margin, which is why the name carries both the payer and the unit.
+    vendor_input_per_1m_usd: Decimal | None = None
+    vendor_output_per_1m_usd: Decimal | None = None
+    description: str = ""
+    reads_images: bool = False
+    thinks_first: bool = False
+
+
+@app.post("/catalog/profiles")
+def set_model_profile(req: ProfileRequest, staff: CatalogCaller) -> dict[str, Any]:
+    """Record what a model IS. **UPSERT, and that is deliberate.**
+
+    ⚠️ **The only catalog write that is not insert-only**, and the difference is
+    the point. A tier binding and a rate card are commercial decisions, so a
+    past invoice must stay readable against the one that produced it. A context
+    window is a fact about the world — nobody is owed a history of what a
+    vendor's documentation said last month.
+
+    ⚠️ **`editor`, and NO elevation window.** Every other catalog write demands
+    `admin` plus elevation because it changes what runs or what we charge. This
+    changes neither: it is reference data an operator reads before choosing.
+    Gating a description edit behind elevation would teach people to reach for
+    the break-glass token for routine work, which is the opposite of what §5 is
+    for.
+
+    ⚠️ **The model does not have to exist in `model_capability` yet.** Writing
+    the profile first and declaring the capability second is a legitimate order
+    — an operator researching models fills these in before deciding which to
+    connect — and a foreign key would forbid it for no benefit.
+    """
+    model = (req.model or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO model_profile (
+                    model, label, context_window, max_output,
+                    vendor_input_per_1m_usd, vendor_output_per_1m_usd,
+                    description, reads_images, thinks_first, updated_at
+                ) VALUES (
+                    :model, :label, :ctx, :out, :vin, :vout,
+                    :descr, :imgs, :think, now()
+                )
+                ON CONFLICT (model) DO UPDATE SET
+                    label = EXCLUDED.label,
+                    context_window = EXCLUDED.context_window,
+                    max_output = EXCLUDED.max_output,
+                    vendor_input_per_1m_usd = EXCLUDED.vendor_input_per_1m_usd,
+                    vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
+                    description = EXCLUDED.description,
+                    reads_images = EXCLUDED.reads_images,
+                    thinks_first = EXCLUDED.thinks_first,
+                    updated_at = now()
+                """
+            ),
+            {
+                "model": model,
+                "label": (req.label or "").strip() or None,
+                "ctx": req.context_window,
+                "out": req.max_output,
+                "vin": req.vendor_input_per_1m_usd,
+                "vout": req.vendor_output_per_1m_usd,
+                "descr": (req.description or "").strip(),
+                "imgs": req.reads_images,
+                "think": req.thinks_first,
+            },
+        )
+        _audit(conn, None, "catalog.profile", {"model": model},
+               actor=staff.actor)
+    return {"model": model}
 
 
 @app.get("/providers/credentials")

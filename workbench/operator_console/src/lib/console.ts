@@ -291,6 +291,13 @@ export const bindTier = (body: unknown, d?: Deps) =>
 export const setModelRate = (body: unknown, d?: Deps) =>
   callConsole("/catalog/rates", { method: "POST", body }, d ?? {});
 
+// What a model IS (migration 012). ⚠️ The only catalog write that is an UPSERT
+// rather than an insert, and the only one gated at `editor` without an
+// elevation window — a context window is a fact about the world, not a
+// commercial decision that owes an audit trail.
+export const setModelProfile = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/profiles", { method: "POST", body }, d ?? {});
+
 // The audit trail (CP-12f). Filters and the opaque page cursor ride as query
 // parameters, and every one of them is optional.
 export const readActivity = (query: string, d?: Deps) =>

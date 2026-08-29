@@ -1,0 +1,184 @@
+"use client";
+
+// What a model IS — the editor behind each card's "Add details".
+//
+// 🔴 **Its own file, so `ModelBrowser` stays free of `fetch(`.** That fence is
+// about READS: the catalog is read by the server component with the caller's
+// own token, and a client GET would put a cross-tenant list on a path the
+// browser can replay. A write to our own BFF route is a different thing, and
+// separating them keeps the fence meaning what it says.
+//
+// ⚠️ **Empty means UNKNOWN and is sent as null.** A blank context window must
+// not arrive as 0 — the database refuses a zero window on purpose, because "0
+// tokens" reads as a broken model while a missing row reads as a missing row.
+//
+// ⚠️ **The price here is what the VENDOR charges US.** The rate card below the
+// list is what a customer pays. Two numbers, two tables, and reading one as the
+// other inverts a margin — so the label says "we pay" and the unit is on it.
+
+import { useState } from "react";
+
+import type { CatalogModel } from "@/lib/contract";
+
+/** Blank, or not a number, becomes null. Zero is refused by the database. */
+function numeric(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+export default function ModelDetails({ m }: { m: CatalogModel }) {
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState(m.label === m.id ? "" : m.label);
+  const [ctx, setCtx] = useState(m.contextWindow?.toString() ?? "");
+  const [out, setOut] = useState(m.maxOutput?.toString() ?? "");
+  const [vin, setVin] = useState(m.inputPer1M?.toString() ?? "");
+  const [vout, setVout] = useState(m.outputPer1M?.toString() ?? "");
+  const [description, setDescription] = useState(m.description);
+  const [readsImages, setReadsImages] = useState(m.kinds.includes("vision"));
+  const [thinksFirst, setThinksFirst] = useState(m.kinds.includes("reasoning"));
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const known =
+    m.contextWindow !== null || m.inputPer1M !== null || m.description !== "";
+
+  async function save() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/operator/catalog/profiles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: m.id,
+          label: label.trim() || null,
+          context_window: numeric(ctx),
+          max_output: numeric(out),
+          vendor_input_per_1m_usd: numeric(vin),
+          vendor_output_per_1m_usd: numeric(vout),
+          description: description.trim(),
+          reads_images: readsImages,
+          thinks_first: thinksFirst,
+        }),
+      });
+      setResult({ ok: res.ok, text: await res.text() });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="linklike add-job" onClick={() => setOpen(true)}>
+        {known ? "Edit details" : "+ Add details"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="job-edit">
+      <p className="field-hint">
+        Leave a box empty for &ldquo;we do not know&rdquo;. It shows as a dash,
+        which is true — a zero would read as a broken model.
+      </p>
+
+      <label htmlFor={`lbl-${m.id}`}>Name</label>
+      <input
+        id={`lbl-${m.id}`}
+        value={label}
+        placeholder={m.id}
+        onChange={(e) => setLabel(e.target.value)}
+      />
+
+      <label htmlFor={`d-${m.id}`}>What it is good at</label>
+      <input
+        id={`d-${m.id}`}
+        value={description}
+        placeholder="cheap and quick, weaker on long reasoning"
+        onChange={(e) => setDescription(e.target.value)}
+      />
+
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`c-${m.id}`}>Reads at most</label>
+          <input
+            id={`c-${m.id}`}
+            inputMode="numeric"
+            value={ctx}
+            placeholder="200000"
+            onChange={(e) => setCtx(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`o-${m.id}`}>Writes at most</label>
+          <input
+            id={`o-${m.id}`}
+            inputMode="numeric"
+            value={out}
+            placeholder="64000"
+            onChange={(e) => setOut(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`vi-${m.id}`}>We pay, per 1M in</label>
+          <input
+            id={`vi-${m.id}`}
+            inputMode="decimal"
+            value={vin}
+            placeholder="3"
+            onChange={(e) => setVin(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vo-${m.id}`}>We pay, per 1M out</label>
+          <input
+            id={`vo-${m.id}`}
+            inputMode="decimal"
+            value={vout}
+            placeholder="15"
+            onChange={(e) => setVout(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <label>
+        <input
+          type="checkbox"
+          checked={readsImages}
+          onChange={(e) => setReadsImages(e.target.checked)}
+        />
+        Reads images
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={thinksFirst}
+          onChange={(e) => setThinksFirst(e.target.checked)}
+        />
+        Thinks before answering
+      </label>
+
+      <div className="job-actions">
+        <button type="button" disabled={busy} onClick={save}>
+          Save
+        </button>
+        <button type="button" className="linklike" onClick={() => setOpen(false)}>
+          Close
+        </button>
+      </div>
+
+      {result && (
+        <p className={result.ok ? "result ok" : "result err"}>
+          {result.ok
+            ? "Saved. Reload to see it on the card."
+            : `The Console refused: ${result.text}`}
+        </p>
+      )}
+    </div>
+  );
+}

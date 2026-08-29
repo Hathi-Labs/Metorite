@@ -184,6 +184,44 @@ show a failover history yet, and that page stays sample-only.
 
 ---
 
+### 3.7 What a model IS
+
+**Decision D-AI-7.** `model_profile` records the window, the output cap, what
+the vendor charges us, and two capability flags. It is keyed on the model.
+
+**Why it exists.** `/models` is the page an operator picks a model on. It could
+not say how big the window is, whether the model reads an image, or what we
+pay — no column held any of it. Every card showed a dash.
+
+**Four rules.**
+
+1. **Keyed on the model, not on the model and the task.** A window is a
+   property of the model. The pair key gives a model with two tasks two copies,
+   free to disagree.
+2. **This table is UPDATED in place.** A binding and a rate card stay
+   insert-only. A past invoice must read against the decision that made it. A
+   window is a fact about the world.
+3. **NULL means nobody told us.** The database refuses a window of zero. Zero
+   reads as a broken model, and as a free one in the price column.
+4. **Nothing is seeded.** A table of vendor windows and prices is a mirror of
+   eleven vendors' documentation. It starts to lie the first time one of them
+   ships a model.
+
+⚠️ **`vendor_*_per_1m_usd` is what the VENDOR charges US.** `model_rate_card`
+is what we charge a customer. These two are the most confusable pair after
+`provider_credential` and `llm_api_key`. Read one as the other and the margin
+inverts. So the column name carries the payer and the unit.
+
+⚠️ **`reads_images` and `thinks_first` are not tasks.** No tier binds them.
+They are properties of a chat model, and D-AI-2 turns on the first one.
+
+⚠️ **`editor`, and no elevation window.** This is the only catalog write that
+demands neither. It changes nothing about what runs or what we charge. A
+description edit behind an elevation window teaches an operator to reach for
+the break-glass token for routine work.
+
+---
+
 ## 4. Customer surfaces — documented now, built later
 
 **Owner directive, 2026-08-29: record these and build them when the time is
@@ -325,6 +363,7 @@ Each slice ships alone and is verifiable alone.
 | **10** | The Router walks the chain when a step fails ✅ | §3.5, §3.6 |
 | **11** | A stream fails over before its first frame | §3.6 |
 | **12** | `usage_event` records the step that served | §3.6, A5 |
+| **13** | `model_profile` — what a model IS ✅ | §3.7 |
 
 ---
 
@@ -346,6 +385,8 @@ agent breaks it.
 | A bad request is not retried | `test_router_failover.py` — a 400 stops the walk and never calls the backup |
 | A bad key strikes off its vendor | `test_router_failover.py` — a 401 skips every model from that vendor |
 | The customer pays for what ANSWERED | `test_router_failover.py` — the walk returns the step that replied |
+| An unknown measurement is never zero | `test_customer_console_model_profile.py` — the database refuses a window of 0 |
+| A capability flag is never assumed | `read.test.ts` — a profile that says false yields no kind |
 
 ⚠️ **R8 binds every read here.** Verify the SQL against a real database. The
 two reads in slice 1 were verified against the live Console database on
