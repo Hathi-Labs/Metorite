@@ -870,6 +870,28 @@ button:disabled {
   font-weight: 700;
 }
 
+/* ── Sparkline ───────────────────────────────────────────────────────────
+   ⚠️ `preserveAspectRatio="none"` lets the box stretch to the panel while the
+   path keeps its own coordinate space, so one viewBox serves every width. The
+   stroke does NOT scale with it — `vector-effect` keeps the line 1.5px at any
+   stretch, and without it a wide panel draws a hairline and a narrow one draws
+   a slab. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  overflow: visible;
+}
+.spark path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
 /* ── Tier cards ──────────────────────────────────────────────────────────
    🔴 Replaced a form that made you TYPE the tier name and the model id. Both
    had to be exact, neither was listed anywhere on the page, and a typo in
