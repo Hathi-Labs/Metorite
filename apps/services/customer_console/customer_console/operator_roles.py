@@ -110,6 +110,13 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # discount PREFIXES only, never a token, and a test pins that.
     ("GET", "/activity"): _R(VIEWER),
     ("GET", "/activity/actions"): _R(VIEWER),
+    # Cross-org AI usage (WS-31). VIEWER, for the same reason the audit trail
+    # is: what our customers spend on AI is a thing the team should see
+    # without asking, and a number nobody may read is a number nobody
+    # notices going wrong. It discloses no secret - totals and credit
+    # balances only, never a prompt, a response or a key.
+    ("GET", "/admin/usage/orgs"): _R(VIEWER),
+    ("GET", "/admin/usage/daily"): _R(VIEWER),
 
     # ── Day-to-day writes. An editor runs the business ──────────────────────
     ("POST", "/orgs/provision"): _R(EDITOR),

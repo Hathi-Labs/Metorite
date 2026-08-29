@@ -607,6 +607,155 @@ def usage_by_member(
     ]
 
 
+# ── Operator spend reads (WS-31) ────────────────────────────────────────────
+#
+# 🔴 **THESE TWO READ ACROSS EVERY TENANT, AND THAT IS THE POINT.** Every other
+# read in this module is scoped by `organization_id` because R5 says so. These
+# are the operator's "how are our customers using AI" question, which cannot be
+# answered one tenant at a time, so the scoping happens at the CALLER — the
+# route must be behind the operator role gate, never a customer session.
+#
+# ⚠️ If you are about to reuse one of these for a customer-facing surface, you
+# want `usage_by_activity` / `usage_by_member` instead. They take an `org_id`
+# and cannot leak. Reaching for these because they return more is how a tenant
+# ends up reading another tenant's spend.
+
+#: Longest window an operator may ask for in one query. A year of daily rows is
+#: 365 points, which is already more than any chart reads usefully, and an
+#: unbounded window lets one request scan the whole table.
+USAGE_MAX_DAYS = 365
+
+
+def usage_by_org(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """Per-organization AI usage over the window. **Operator-only.**
+
+    ⚠️ **A LEFT JOIN, deliberately.** An organization with no usage must appear
+    with zeros rather than vanish: "this customer has bought credits and used
+    none" is the single most actionable row on the page, and an INNER JOIN
+    silently hides exactly that customer.
+
+    ⚠️ **Purged organizations are RETURNED, not filtered.** Their `usage_event`
+    rows survive the purge as billing history, and dropping them here would
+    make a past invoice unexplainable. The caller decides whether to show them
+    — `partitionRoster` in the console already owns that rule, and a second
+    copy of it in SQL would be a second vocabulary for one decision.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                                AS slug,
+                   o.name                                AS name,
+                   COUNT(u.id)                           AS calls,
+                   COALESCE(SUM(u.billed_credits), 0)    AS credits,
+                   COUNT(DISTINCT u.user_email)          AS members,
+                   COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
+                   MAX(u.created_at)                     AS last_seen
+            FROM organization o
+            LEFT JOIN usage_event u
+                   ON u.organization_id = o.id
+                  AND u.created_at >= now() - make_interval(days => :days)
+            GROUP BY o.id, o.slug, o.name
+            ORDER BY credits DESC, calls DESC, o.slug ASC
+            LIMIT :lim
+            """
+        ),
+        {"days": days, "lim": SPEND_PAGE_SIZE},
+    )
+    return [
+        {
+            "slug": r.slug,
+            "name": r.name,
+            "calls": int(r.calls),
+            "credits": Decimal(r.credits),
+            "members": int(r.members),
+            "cost_usd": Decimal(r.cost_usd),
+            "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+        }
+        for r in rows
+    ]
+
+
+def usage_daily(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS, org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """AI usage per day. One series, two callers.
+
+    Pass ``org_id`` for one organization — that is the customer-facing trend,
+    and it is tenant-safe. Leave it ``None`` for the platform total, which is
+    operator-only.
+
+    🔴 **The gap fill is the whole function.** A series built by grouping
+    `usage_event` alone returns only days that HAVE rows, and a chart drawing a
+    straight line between two points a week apart reads as steady usage across
+    a week that had none. `generate_series` emits every day in the window and
+    the LEFT JOIN fills the rest with zeros.
+
+    ⚠️ The `CAST(:org AS UUID)` is load-bearing for the same reason the CAST in
+    `usage_by_activity` is: a bare ``:org IS NULL`` gives Postgres no type to
+    infer and the statement fails to PREPARE with AmbiguousParameter — on every
+    call, including the unfiltered one.
+    """
+    rows = conn.execute(
+        text(
+            """
+            WITH span AS (
+              SELECT generate_series(
+                       date_trunc('day', now() - make_interval(days => :days - 1)),
+                       date_trunc('day', now()),
+                       interval '1 day'
+                     ) AS day
+            )
+            SELECT s.day::date                        AS day,
+                   COUNT(u.id)                        AS calls,
+                   COALESCE(SUM(u.billed_credits), 0) AS credits
+            FROM span s
+            LEFT JOIN usage_event u
+                   ON date_trunc('day', u.created_at) = s.day
+                  AND (CAST(:org AS UUID) IS NULL
+                       OR u.organization_id = CAST(:org AS UUID))
+            GROUP BY s.day
+            ORDER BY s.day
+            """
+        ),
+        {"days": days, "org": org_id},
+    )
+    return [
+        {"day": r.day.isoformat(), "calls": int(r.calls),
+         "credits": Decimal(r.credits)}
+        for r in rows
+    ]
+
+
+def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
+    """Credit balance for every organization, keyed by slug. **Operator-only.**
+
+    ⚠️ **Summed from the ledger, never read from a column.** `credit_ledger` is
+    the authority and `balance_of` already sums it for one organization. A
+    stored balance column would be a second authority, and the two disagree the
+    first time a write lands outside the path that maintains it.
+
+    ⚠️ An organization with no ledger row returns 0, not a missing key. The
+    caller renders every organization, and a `KeyError` inside a page that
+    lists all of them is a blank page rather than a missing cell.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                       AS slug,
+                   COALESCE(SUM(l.delta), 0)    AS balance
+            FROM organization o
+            LEFT JOIN credit_ledger l ON l.organization_id = o.id
+            GROUP BY o.id, o.slug
+            LIMIT :lim
+            """
+        ),
+        {"lim": SPEND_PAGE_SIZE},
+    )
+    return {r.slug: Decimal(r.balance) for r in rows}
+
+
 # ── Keys ────────────────────────────────────────────────────────────────────
 
 def issue_key(conn: Connection, *, org_id: str, prefix: str, key_hash: str,

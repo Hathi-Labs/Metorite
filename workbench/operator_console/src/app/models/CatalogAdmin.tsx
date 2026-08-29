@@ -23,7 +23,7 @@
 import { useState } from "react";
 
 import { describeRate } from "@/lib/catalog";
-import { buildMatrix, readinessLine, type CellState } from "@/lib/readiness";
+import { buildMatrix, nextStep, type CellState } from "@/lib/readiness";
 import TierCards from "./TierCards";
 import { chipClass, pricingTone } from "@/lib/tone";
 
@@ -120,6 +120,7 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
   }
 
   const matrix = buildMatrix(data);
+  const step = nextStep(matrix);
 
   // One lookup over the matrix the page already computes, rather than a second
   // pass with its own idea of what a cell means. `readiness.ts` stays the only
@@ -166,92 +167,26 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
 
       <ResultLine result={result} />
 
-      {/* ── Readiness: the question an operator actually has ── */}
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Can we serve it?</h2>
-          <p>{readinessLine(matrix)}</p>
+      {/* ── One instruction, in words nobody has to look up ── */}
+      <div className={`nextstep ${step.tone}`}>
+        <span className="dot" aria-hidden="true" />
+        <div>
+          <h2>{step.title}</h2>
+          <p>{step.detail}</p>
         </div>
+      </div>
 
-        <div className="stats">
-          <div className={`stat ${matrix.counts.ready > 0 ? "good" : ""}`}>
-            <div className="num">{matrix.counts.ready}</div>
-            <div className="lbl">Servable</div>
-          </div>
-          <div className={`stat ${matrix.counts.broken > 0 ? "alarm" : ""}`}>
-            <div className="num">{matrix.counts.broken}</div>
-            <div className="lbl">Cannot serve</div>
-          </div>
-          <div className={`stat ${matrix.counts.unpriced > 0 ? "caution" : ""}`}>
-            <div className="num">{matrix.counts.unpriced}</div>
-            <div className="lbl">Unpriced</div>
-          </div>
-          <div className="stat">
-            <div className="num">{matrix.tiers.length}</div>
-            <div className="lbl">Tiers</div>
-          </div>
-        </div>
-
-        {matrix.tiers.length === 0 ? (
-          <div className="empty">
-            <h2>Nothing is bound yet</h2>
-            <p className="muted">
-              A tier is created by pointing it at a model. Until one exists, the
-              Router has nothing to resolve and every AI request fails.
-            </p>
-          </div>
-        ) : (
-          <div className="matrix-scroll">
-            <table className="matrix">
-              <thead>
-                <tr>
-                  <th />
-                  {matrix.tasks.map((t) => (
-                    <th key={t.slug}>
-                      {t.label}
-                      <div className="muted small">{t.natural_unit}</div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {matrix.rows.map((row) => (
-                  <tr key={row.tier}>
-                    <td className="tier-name">{row.tier}</td>
-                    {row.cells.map((c) => {
-                      const copy = CELL_COPY[c.state];
-                      const cls =
-                        c.state === "broken"
-                          ? "is-broken"
-                          : c.state === "unpriced"
-                            ? "is-unpriced"
-                            : c.state === "empty"
-                              ? "is-empty"
-                              : "";
-                      return (
-                        <td key={c.task} className={cls} title={copy.why}>
-                          {c.model ? (
-                            <>
-                              <span className="cell-model">{c.model}</span>
-                              <span className="cell-flags">
-                                <span className={chipClass(copy.tone as never)}>
-                                  {copy.label}
-                                </span>
-                              </span>
-                            </>
-                          ) : (
-                            <span className="muted small">not bound</span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <TierCards
+        tiers={matrix.tiers}
+        tasks={data.tasks}
+        capabilities={data.capabilities}
+        stateOf={stateOf}
+        modelOf={modelOf}
+        busy={busy}
+        onBind={(tier, task, model) =>
+          send("/api/operator/catalog/bindings", { tier, task, model })
+        }
+      />
 
       {/* ── The three tables, as tabs ── */}
       <section className="panel">
@@ -314,18 +249,6 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
               </tbody>
             </table>
 
-            <h3>Point a tier at a model</h3>
-            <TierCards
-              tiers={matrix.tiers}
-              tasks={data.tasks}
-              capabilities={data.capabilities}
-              stateOf={stateOf}
-              modelOf={modelOf}
-              busy={busy}
-              onBind={(tier, task, model) =>
-                send("/api/operator/catalog/bindings", { tier, task, model })
-              }
-            />
           </div>
         ) : null}
 

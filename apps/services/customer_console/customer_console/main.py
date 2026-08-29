@@ -85,7 +85,7 @@ from customer_console.auth import (
     SeatAdminCaller,
     SignedWebhook,
 )
-from customer_console import catalog
+from customer_console import analytics, catalog
 from customer_console.credits import (
     CREDIT_QUANTUM,
     LEDGER_REASON_MANUAL,
@@ -3979,6 +3979,119 @@ class MemberSpendRow(BaseModel):
 class MemberSpendView(BaseModel):
     rows: list[MemberSpendRow]
     windowDays: int
+
+
+# ── Operator usage (WS-31, `specs/ai_metering_and_analytics.md` §5) ─────────
+#
+# 🔴 **THESE TWO CROSS TENANTS.** Every `/my/*` read above is scoped by the
+# caller's own key. These are scoped by nothing but the `Operator` gate, which
+# is therefore the whole of their security. Do not copy this shape onto a
+# customer route.
+#
+# ⚠️ **Margin is a RATIO, never money.** `launch_surface.md` §4 sells
+# "₹500/user/month + AI credits" and never says what a credit costs, so
+# `billed_credits` and `provider_cost_usd` are different units. Subtracting
+# them would invent an exchange rate, and an invented margin reads as fact.
+
+
+class OrgUsageRow(BaseModel):
+    slug: str
+    name: str
+    calls: int
+    credits: str
+    members: int
+    costUsd: str
+    balance: str
+    lastSeen: str | None = None
+    #: Credits billed per dollar of provider cost. NULL when the cost is zero
+    #: — that is "we have not measured it", not "excellent margin".
+    marginRatio: str | None = None
+    #: NULL means "no burn to extrapolate from", never "forever".
+    runwayDays: int | None = None
+    silent: bool = False
+
+
+class OrgUsageView(BaseModel):
+    windowDays: int
+    rows: list[OrgUsageRow]
+
+
+class UsageDayRow(BaseModel):
+    day: str
+    calls: int
+    credits: str
+
+
+class UsageSeriesView(BaseModel):
+    windowDays: int
+    days: list[UsageDayRow]
+    spikes: list[str]
+
+
+@app.get("/admin/usage/orgs")
+def admin_usage_by_org(
+    _: Operator, days: int = store.SPEND_WINDOW_DAYS,
+) -> OrgUsageView:
+    """Every organization's AI usage, with margin, runway and the silent flag.
+
+    Credits and costs are **strings**. They are money, the ledger stores
+    `NUMERIC(14,4)`, and `float` is the standard way to make a total disagree
+    with the sum of its rows.
+    """
+    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    with get_engine().begin() as conn:
+        rows = store.usage_by_org(conn, days=days)
+        balances = store.credit_balance_by_org(conn)
+        # The burn window is its own read rather than a slice of the first —
+        # a 30-day total cannot answer "what is the recent rate".
+        burn = {
+            r["slug"]: r["credits"]
+            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)
+        }
+
+    annotated = analytics.annotate_orgs(
+        rows, balances, burn, datetime.now(UTC),
+    )
+    return OrgUsageView(
+        windowDays=days,
+        rows=[
+            OrgUsageRow(
+                slug=r["slug"], name=r["name"], calls=r["calls"],
+                credits=str(r["credits"]), members=r["members"],
+                costUsd=str(r["cost_usd"]), balance=str(r["balance"]),
+                lastSeen=r["last_seen"],
+                marginRatio=(
+                    None if r["margin_ratio"] is None else str(r["margin_ratio"])
+                ),
+                runwayDays=r["runway_days"], silent=r["silent"],
+            )
+            for r in annotated
+        ],
+    )
+
+
+@app.get("/admin/usage/daily")
+def admin_usage_daily(
+    _: Operator, days: int = store.SPEND_WINDOW_DAYS, org_slug: str | None = None,
+) -> UsageSeriesView:
+    """AI usage per day, for the platform or for one organization.
+
+    ⚠️ The series fills every gap. A client must not add a second gap fill —
+    two of them disagree the first time one is changed.
+    """
+    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, org_slug) if org_slug else None
+        series = store.usage_daily(conn, days=days, org_id=org_id)
+
+    return UsageSeriesView(
+        windowDays=days,
+        days=[
+            UsageDayRow(day=r["day"], calls=r["calls"], credits=str(r["credits"]))
+            for r in series
+        ],
+        spikes=analytics.spike_days(series),
+    )
 
 
 @app.get("/my/usage/activity")

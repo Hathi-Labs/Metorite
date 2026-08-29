@@ -870,6 +870,28 @@ button:disabled {
   font-weight: 700;
 }
 
+/* ── Sparkline ───────────────────────────────────────────────────────────
+   ⚠️ `preserveAspectRatio="none"` lets the box stretch to the panel while the
+   path keeps its own coordinate space, so one viewBox serves every width. The
+   stroke does NOT scale with it — `vector-effect` keeps the line 1.5px at any
+   stretch, and without it a wide panel draws a hairline and a narrow one draws
+   a slab. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  overflow: visible;
+}
+.spark path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
 /* ── Tier cards ──────────────────────────────────────────────────────────
    🔴 Replaced a form that made you TYPE the tier name and the model id. Both
    had to be exact, neither was listed anywhere on the page, and a typo in
@@ -986,69 +1008,89 @@ button:disabled {
   opacity: 0.75;
 }
 
-/* ── Readiness matrix ────────────────────────────────────────────────── */
-/* 🔴 The reason this page was rebuilt. Three tables that must AGREE — what a
-   model can do, what a tier points at, and what we charge — cannot be diffed
-   by eye. The matrix puts one cell where all three meet. */
-.matrix-scroll {
-  overflow-x: auto;
-  margin-top: 12px;
+/* ── Tier card jobs ──────────────────────────────────────────────────────
+   🔴 Replaced the readiness matrix. That grid drew 20 cells to say 4 facts,
+   16 of them reading "not bound", and still needed a horizontal scrollbar. An
+   unset job is now hidden behind a button rather than rendered as an empty
+   box — 16 empty boxes is the ABSENCE of information drawn at the same weight
+   as its presence. */
+.job {
+  border-top: 1px solid var(--border);
+  padding: 9px 0 8px;
 }
-.matrix {
-  border-collapse: separate;
-  border-spacing: 6px;
-  margin-top: 0;
-  min-width: 520px;
+.job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.matrix th {
-  position: static;
-  background: transparent;
-  border: none;
-  padding: 4px 8px;
-}
-.matrix td {
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  background: var(--panel-2);
-  padding: 9px 11px;
-  vertical-align: top;
-  min-width: 148px;
-}
-.matrix tbody tr:hover { background: transparent; }
-.matrix .tier-name {
+.job-name {
+  font-size: 12.5px;
   font-weight: 600;
-  white-space: nowrap;
-  padding-right: 12px;
-  border: none;
-  background: transparent;
-  min-width: 0;
+  color: var(--text);
 }
-.matrix .cell-model {
+.job-model {
+  display: block;
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--text);
+  color: var(--muted);
   word-break: break-all;
-  display: block;
-  margin-bottom: 6px;
+  margin: 3px 0 6px;
 }
-.matrix .cell-flags {
+.job-foot,
+.job-actions {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
 }
-.matrix td.is-broken {
-  border-color: var(--danger-line);
-  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel-2);
-}
-.matrix td.is-unpriced {
-  border-color: var(--warn-line);
-  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel-2);
-}
-.matrix td.is-empty {
+.job-actions { margin-top: 8px; }
+.job select { margin-top: 4px; }
+.add-job {
+  margin-top: 10px;
+  width: 100%;
   border-style: dashed;
-  background: transparent;
-  color: var(--faint);
 }
+
+/* ── Next step ───────────────────────────────────────────────────────────
+   ONE instruction, in words nobody has to look up. `nextStep()` decides which,
+   and the order is the design: nothing can be priced before it can be served. */
+.nextstep {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  padding: 16px 18px;
+  margin: 16px 0;
+}
+.nextstep h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.nextstep p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 68ch;
+}
+.nextstep .dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 6px;
+}
+.nextstep.ok { border-left-color: var(--ok-line); }
+.nextstep.ok .dot { background: var(--ok); }
+.nextstep.ok h2 { color: var(--ok); }
+.nextstep.warn { border-left-color: var(--warn-line); background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel); }
+.nextstep.warn .dot { background: var(--warn); }
+.nextstep.warn h2 { color: var(--warn); }
+.nextstep.danger { border-left-color: var(--danger-line); background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel); }
+.nextstep.danger .dot { background: var(--danger); }
+.nextstep.danger h2 { color: var(--danger); }
 
 /* ── Login ───────────────────────────────────────────────────────────── */
 .login-center {

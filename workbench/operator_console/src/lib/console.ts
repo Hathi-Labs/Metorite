@@ -135,6 +135,26 @@ export const billingSummary = (orgSlug: string, d?: Deps) =>
     d ?? {},
   );
 
+// ── Operator usage (WS-31, `specs/ai_metering_and_analytics.md` §5) ────────
+// ⚠️ Both cross tenants. The Console gates them on the operator role, so the
+// caller's OWN token must be passed — a shared token reaches the Console as
+// `breakglass` and bypasses the role matrix.
+
+export const orgUsage = (days: number, d?: Deps) =>
+  callConsole(
+    `/admin/usage/orgs?days=${encodeURIComponent(String(days))}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
+export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
+  callConsole(
+    `/admin/usage/daily?days=${encodeURIComponent(String(days))}` +
+      (orgSlug ? `&org_slug=${encodeURIComponent(orgSlug)}` : ""),
+    { method: "GET" },
+    d ?? {},
+  );
+
 export const catalog = (d?: Deps) =>
   callConsole("/billing/catalog", { method: "GET" }, d ?? {});
 
