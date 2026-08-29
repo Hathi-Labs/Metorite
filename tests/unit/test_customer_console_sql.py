@@ -623,3 +623,64 @@ class TestSpendReads:
 
         assert isinstance(rows[0]["credits"], Decimal)
         assert rows[0]["credits"] == Decimal("0.3")
+
+
+class TestOperatorSpendReads:
+    """WS-31 §5 — the operator's cross-tenant reads (R8: real Postgres only).
+
+    🔴 **These two are the only reads in `store.py` that cross tenants**, so the
+    tests below check the two things that make that safe: they return an
+    organization with no usage at all, and they never silently drop a day.
+    """
+
+    def test_an_org_with_no_usage_still_appears(self, conn, org):
+        # ⚠️ The most actionable row on the page is "bought credits, used
+        # none". An INNER JOIN hides exactly that customer, and the page then
+        # looks healthy because only busy customers are on it.
+        rows = store.usage_by_org(conn, days=30)
+        assert any(r["credits"] == 0 and r["calls"] == 0 for r in rows), (
+            "usage_by_org must LEFT JOIN — an organization with no usage is "
+            "the row an operator most needs to see"
+        )
+
+    def test_it_returns_one_row_per_organization(self, conn, org):
+        rows = store.usage_by_org(conn, days=30)
+        slugs = [r["slug"] for r in rows]
+        assert len(slugs) == len(set(slugs)), "an org must not appear twice"
+
+    def test_credits_come_back_as_Decimal_not_float(self, conn, org):
+        # Money never becomes a float. The API layer stringifies these, and a
+        # float would already have lost precision before it got there.
+        for r in store.usage_by_org(conn, days=30):
+            assert isinstance(r["credits"], Decimal)
+            assert isinstance(r["cost_usd"], Decimal)
+
+    def test_the_daily_series_fills_every_gap(self, conn):
+        # 🔴 The whole reason `usage_daily` uses generate_series. Grouping
+        # `usage_event` alone returns only days that HAVE rows, and a chart
+        # drawing a line between two points a week apart reads as steady use
+        # across a week that had none.
+        rows = store.usage_daily(conn, days=7)
+        assert len(rows) == 7, f"expected 7 days, got {len(rows)}"
+        days = [r["day"] for r in rows]
+        assert days == sorted(days), "the series must be in date order"
+
+    def test_the_daily_series_reports_zero_rather_than_null(self, conn):
+        # A null renders as a hole in a chart. A zero renders as a quiet day,
+        # which is what it is.
+        for r in store.usage_daily(conn, days=3):
+            assert r["calls"] == 0
+            assert r["credits"] == Decimal(0)
+
+    def test_the_org_filter_PREPAREs_in_both_directions(self, conn, org):
+        # ⚠️ The CAST is load-bearing. A bare `:org IS NULL` gives Postgres no
+        # type to infer and the statement fails to PREPARE with
+        # AmbiguousParameter — on EVERY call, including the unfiltered one. So
+        # both paths must be exercised, not just the filtered one.
+        assert len(store.usage_daily(conn, days=3, org_id=None)) == 3
+        assert len(store.usage_daily(conn, days=3, org_id=org)) == 3
+
+    def test_a_window_of_one_day_returns_one_row(self, conn):
+        # An off-by-one in `days - 1` inside generate_series is invisible on a
+        # 30-day window and obvious on a 1-day one.
+        assert len(store.usage_daily(conn, days=1)) == 1
