@@ -40,7 +40,7 @@ import { type Sourced, resolve } from "./source";
 type WireCatalog = {
   tasks: Task[];
   capabilities: { model: string; task: string }[];
-  bindings: { tier: string; task: string; model: string }[];
+  bindings: { tier: string; task: string; model: string; rank?: number }[];
   rates: {
     model: string;
     task: string;
@@ -111,18 +111,24 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
       priced: priced.has(id),
     }));
 
-  // ⚠️ **Every live chain is exactly ONE step.** `tier_binding` has no rank
-  // column, so there is no second choice to read. The screen will therefore
-  // report "no backup" on every tier, which is not a display bug — it is the
-  // true state of the system until the migration lands.
-  const byTier = new Map<string, TierJob[]>();
+  // Bindings arrive as one row per STEP (migration 011), already ordered by
+  // rank, and several rows share a (tier, task). Group them back into chains.
+  //
+  // ⚠️ **A row with no rank is rank 1.** The Console fills the column in, but a
+  // deployment mid-rollout can answer from older code — and defaulting to 0
+  // would put an unranked step ahead of a real primary, which is the one
+  // ordering mistake nobody would see until a failover.
+  const jobs = new Map<string, TierJob>();
   for (const b of w.bindings) {
-    if (!byTier.has(b.tier)) byTier.set(b.tier, []);
-    byTier.get(b.tier)?.push({
-      tier: b.tier,
-      task: b.task,
-      chain: [{ model: b.model, rank: 1 }],
-    });
+    const k = `${b.tier}::${b.task}`;
+    if (!jobs.has(k)) jobs.set(k, { tier: b.tier, task: b.task, chain: [] });
+    jobs.get(k)?.chain.push({ model: b.model, rank: b.rank ?? 1 });
+  }
+
+  const byTier = new Map<string, TierJob[]>();
+  for (const job of jobs.values()) {
+    if (!byTier.has(job.tier)) byTier.set(job.tier, []);
+    byTier.get(job.tier)?.push(job);
   }
 
   const tiers: Tier[] = [...byTier.keys()].sort().map((slug) => ({

@@ -1530,3 +1530,17 @@ pre.token {
   font-size: 13px;
   line-height: 1.5;
 }
+
+/* Reorder and remove, on one chain step. Small, and quiet until hovered — the
+   models are what a reader is scanning, not the controls. */
+.stepactions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.stepactions .linklike {
+  padding: 2px 4px;
+  font-size: 12px;
+}

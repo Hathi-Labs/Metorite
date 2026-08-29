@@ -159,13 +159,21 @@ describe("the surface", () => {
     }
   });
 
-  it("🔴 does not draw an ENABLED control for something it cannot save", () => {
-    // A backup step has nowhere to go — `tier_binding` has no rank column. An
-    // enabled button over a table that cannot store the value is worse than no
-    // button: the operator uses it, believes they are covered, and finds out
-    // during an outage.
-    const add = code(TIERS).indexOf("Add a backup");
-    expect(add).toBeGreaterThan(-1);
-    expect(code(TIERS).slice(add - 300, add)).toContain("disabled");
+  it("🔴 posts the WHOLE chain, never just the primary", () => {
+    // The hazard that replaced the disabled button. The Console writes every
+    // step at one `effective_from`, so a request carrying only `model` REPLACES
+    // the chain with a one-step chain — silently deleting the backups the
+    // operator just added, and leaving a page that still shows them.
+    expect(code(TIERS)).toContain("tier, task, models");
+    expect(code(TIERS)).not.toMatch(/body:\s*JSON\.stringify\(\{\s*tier,\s*task,\s*model\s*\}/);
   });
+
+  it("judges the chain being EDITED, not the one already saved", () => {
+    // ⚠️ An operator adding a second Anthropic model must be told it is not a
+    // real backup BEFORE they save it. Judging the saved chain would show the
+    // warning one click too late, against a chain they have already changed.
+    const call = code(TIERS).indexOf("chainProblems(shown, ctx)");
+    expect(call).toBeGreaterThan(-1);
+  });
+
 });

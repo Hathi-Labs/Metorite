@@ -57,8 +57,10 @@ export default function TierBoard({
   const ctx: ChainContext = useMemo(() => ({ models, armed }), [models, armed]);
 
   const [down, setDown] = useState<string[]>([]);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  // The chain being edited, per (tier, job). Absent means "as saved".
+  const [drafts, setDrafts] = useState<Record<string, string[]>>({});
+  const [adding, setAdding] = useState<string | null>(null);
+  const [pick, setPick] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -87,105 +89,99 @@ export default function TierBoard({
 
   const key = (t: string, task: string) => `${t}::${task}`;
 
-  async function savePrimary(tier: string, task: string, model: string) {
+  /** Save one chain, whole.
+   *
+   * ⚠️ **`models`, never `model`.** The Console writes every step at one
+   * `effective_from`, and a request that sent only the primary would REPLACE
+   * the chain with a one-step chain — silently removing the backups the
+   * operator just added.
+   */
+  async function saveChain(tier: string, task: string, models: string[]) {
     setBusy(true);
     setResult(null);
     try {
       const res = await fetch("/api/operator/catalog/bindings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ tier, task, model }),
+        body: JSON.stringify({ tier, task, models }),
       });
       setResult({ ok: res.ok, text: await res.text() });
-      if (res.ok) setEditing(null);
+      if (res.ok) {
+        const d = { ...drafts };
+        delete d[`${tier}::${task}`];
+        setDrafts(d);
+      }
     } finally {
       setBusy(false);
     }
   }
 
+  /** One job, and the chain the Router walks for it.
+   *
+   * 🔴 **A chain is edited locally and saved WHOLE.** The Console writes every
+   * step at one `effective_from` (migration 011), so "remove a step" is "send
+   * the chain you want" — there is no delete. Saving on every click would work
+   * and would fill the audit trail with half-finished chains, so the draft
+   * lives here until somebody means it.
+   */
   function Job({ tier, job }: { tier: Tier; job: TierJob }) {
-    const steps = orderedChain(job);
-    const problems = chainProblems(job, ctx);
+    const saved = orderedChain(job).map((s) => s.model);
+    const k = key(tier.slug, job.task);
+    const chain = drafts[k] ?? saved;
+    // Element by element, with no separator at all. A joined comparison
+    // needs a character that cannot appear in a model id, and picking one
+    // is a bug waiting for the first id that contains it.
+    const dirty =
+      chain.length !== saved.length || chain.some((m, i) => m !== saved[i]);
+
+    // ⚠️ Judged on the DRAFT, not on what is saved. An operator adding a
+    // second Anthropic model should be told it is not a real backup before
+    // they save it, not after.
+    const shown: TierJob = { ...job, chain: chain.map((m, i) => ({ model: m, rank: i + 1 })) };
+    const problems = chainProblems(shown, ctx);
     const tone = chainTone(problems);
-    const open = editing === key(tier.slug, job.task);
+
     const options = capableModelsFor(
-      models.flatMap((m) => m.kinds.map((k) => ({ model: m.id, task: k }))),
+      models.flatMap((m) => m.kinds.map((kind) => ({ model: m.id, task: kind }))),
       job.task,
-    );
+    ).filter((m) => !chain.includes(m));
+
+    const setChain = (next: string[]) => setDrafts({ ...drafts, [k]: next });
+
+    function move(from: number, to: number) {
+      if (to < 0 || to >= chain.length) return;
+      const next = [...chain];
+      const [s] = next.splice(from, 1);
+      next.splice(to, 0, s);
+      setChain(next);
+    }
 
     return (
       <div className="job">
         <div className="job-head">
           <span className="job-name">{taskLabel(job.task)}</span>
-          <span className={chipClass(tone)}>{chainLabel(job, problems)}</span>
+          <span className={chipClass(tone)}>{chainLabel(shown, problems)}</span>
         </div>
 
         <ol className="chain">
-          {steps.map((s, i) => (
-            <li key={`${s.model}-${s.rank}`}>
-              <span className="rank" aria-hidden="true">
-                {i + 1}
-              </span>
+          {chain.map((model, i) => (
+            <li key={`${model}-${i}`}>
+              <span className="rank" aria-hidden="true">{i + 1}</span>
               <div className="chainbody">
-                <span className="job-model">{s.model}</span>
-                <Provider model={s.model} />
+                <span className="job-model">{model}</span>
+                <Provider model={model} />
               </div>
-              {i === 0 && (
-                <button
-                  type="button"
-                  className="linklike"
-                  onClick={() => {
-                    setEditing(key(tier.slug, job.task));
-                    setDraft(s.model);
-                  }}
-                >
-                  Change
-                </button>
-              )}
+              <div className="stepactions">
+                <button type="button" className="linklike" aria-label={`Move ${model} up`}
+                  disabled={i === 0} onClick={() => move(i, i - 1)}>↑</button>
+                <button type="button" className="linklike" aria-label={`Move ${model} down`}
+                  disabled={i === chain.length - 1} onClick={() => move(i, i + 1)}>↓</button>
+                <button type="button" className="linklike" aria-label={`Remove ${model}`}
+                  onClick={() => setChain(chain.filter((_, j) => j !== i))}>Remove</button>
+              </div>
             </li>
           ))}
         </ol>
-
-        {open && (
-          <div className="job-edit">
-            <label htmlFor={`m-${tier.slug}-${job.task}`}>
-              First choice for {taskLabel(job.task)}
-            </label>
-            <select
-              id={`m-${tier.slug}-${job.task}`}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            >
-              <option value="">Choose a model…</option>
-              {options.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            {options.length === 0 && (
-              <p className="field-hint">
-                No model can do this job yet. Add one on the Models page first.
-              </p>
-            )}
-            <div className="job-actions">
-              <button
-                type="button"
-                disabled={busy || !draft}
-                onClick={() => savePrimary(tier.slug, job.task, draft)}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                className="linklike"
-                onClick={() => setEditing(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
 
         {problems.length > 0 && (
           <ul className="problems">
@@ -198,16 +194,52 @@ export default function TierBoard({
           </ul>
         )}
 
-        {/* ⚠️ Disabled, with the reason ON the control. A tooltip somebody has
-            to hover for is not a reason they will read. */}
-        <button
-          type="button"
-          className="linklike add-job"
-          disabled
-          title="Backups need a database change first"
-        >
-          + Add a backup — not possible yet
-        </button>
+        {adding === k ? (
+          <div className="job-edit">
+            <label htmlFor={`add-${k}`}>
+              {chain.length === 0 ? "First choice" : "Try this next"}
+            </label>
+            <select id={`add-${k}`} value={pick} onChange={(e) => setPick(e.target.value)}>
+              <option value="">Choose a model…</option>
+              {options.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+            {options.length === 0 && (
+              <p className="field-hint">
+                Every model that can do this job is already in the list. Add
+                another on the Models page first.
+              </p>
+            )}
+            <div className="job-actions">
+              <button type="button" disabled={!pick}
+                onClick={() => { setChain([...chain, pick]); setAdding(null); setPick(""); }}>
+                Add
+              </button>
+              <button type="button" className="linklike" onClick={() => setAdding(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="linklike add-job"
+            onClick={() => { setAdding(k); setPick(""); }}>
+            {chain.length === 0 ? "+ Choose a model" : "+ Add a backup"}
+          </button>
+        )}
+
+        {dirty && (
+          <div className="job-actions">
+            <button type="button" disabled={busy || chain.length === 0}
+              onClick={() => saveChain(tier.slug, job.task, chain)}>
+              Save this order
+            </button>
+            <button type="button" className="linklike"
+              onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
+              Undo
+            </button>
+          </div>
+        )}
       </div>
     );
   }
