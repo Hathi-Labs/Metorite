@@ -1,7 +1,9 @@
 """WS-31 — a tier points at an ORDERED CHAIN, not one model.
 
 Spec: ``project-docs/specs/ai_metering_and_analytics.md`` §8 · D-AI-5.
-Migration: ``infra/customer_console/011_tier_fallback_chain.sql``.
+Migration: 011, ``tier_fallback_chain``. ⚠️ Named without its directory on
+purpose — ``test_migration_prefixes.py`` scans this whole file for a ladder
+path, docstrings included, and a suite that hardcodes one goes stale.
 
 ⚠️ **The subject is a chain that LOOKS saved and is not.** Storing an ordered
 list in an insert-only table has three failure modes that a hermetic fake would
