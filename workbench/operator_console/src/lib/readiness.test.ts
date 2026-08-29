@@ -19,6 +19,8 @@ import {
   type CatalogLike,
   buildMatrix,
   cellState,
+  capableModelsFor,
+  providerOf,
   readinessLine,
   tiersIn,
 } from "./readiness";
@@ -114,6 +116,52 @@ describe("the grid", () => {
     );
     expect(m.rows[0].cells[0].model).toBe("gpt-4o");
     expect(m.rows[0].cells[0].state).toBe("ready");
+  });
+});
+
+describe("which vendor a model belongs to", () => {
+  it("splits on the FIRST slash", () => {
+    expect(providerOf("openai/gpt-4o")).toBe("openai");
+  });
+
+  it("🔴 attributes a re-hosted model to the HOST, not the author", () => {
+    // ⚠️ `openrouter/anthropic/claude-3` is one OpenRouter model. Splitting on
+    // the last slash calls it Anthropic, and the chip then claims a credential
+    // we may not hold — which is a wrong answer to "can we serve this".
+    expect(providerOf("openrouter/anthropic/claude-3")).toBe("openrouter");
+  });
+
+  it("treats a bare id as its own vendor rather than guessing", () => {
+    expect(providerOf("whisper-1")).toBe("whisper-1");
+    expect(providerOf("")).toBe("");
+  });
+});
+
+describe("the models a tier may be pointed at", () => {
+  it("offers only models that DECLARE the task", () => {
+    // 🔴 The whole point of the dropdown. The old form was free text, so an
+    // operator could bind a tier to any string at all — and a model with no
+    // capability 500s on the first request instead of failing validation.
+    const caps = [
+      { model: "gpt-4o", task: "chat" },
+      { model: "whisper-1", task: "transcribe" },
+    ];
+    expect(capableModelsFor(caps, "chat")).toEqual(["gpt-4o"]);
+  });
+
+  it("de-duplicates and sorts, so the list reads the same every time", () => {
+    const caps = [
+      { model: "b", task: "chat" },
+      { model: "a", task: "chat" },
+      { model: "a", task: "chat" },
+    ];
+    expect(capableModelsFor(caps, "chat")).toEqual(["a", "b"]);
+  });
+
+  it("returns empty rather than everything when nothing is capable", () => {
+    // ⚠️ Falling back to "all models" would put the broken state back within
+    // one click, which is exactly what this list exists to prevent.
+    expect(capableModelsFor([{ model: "a", task: "chat" }], "image")).toEqual([]);
   });
 });
 

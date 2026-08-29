@@ -24,6 +24,7 @@ import { useState } from "react";
 
 import { describeRate } from "@/lib/catalog";
 import { buildMatrix, readinessLine, type CellState } from "@/lib/readiness";
+import TierCards from "./TierCards";
 import { chipClass, pricingTone } from "@/lib/tone";
 
 export type Catalog = {
@@ -107,10 +108,6 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
   const [capVerb, setCapVerb] = useState("acompletion");
   const [capStreams, setCapStreams] = useState(false);
 
-  // Binding
-  const [bindTierName, setBindTierName] = useState("");
-  const [bindTask, setBindTask] = useState("chat");
-  const [bindModel, setBindModel] = useState("");
 
   async function send(path: string, body: unknown) {
     setBusy(true);
@@ -122,10 +119,18 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
     }
   }
 
-  const unitOf = (task: string) =>
-    data.tasks.find((t) => t.slug === task)?.natural_unit ?? "";
-
   const matrix = buildMatrix(data);
+
+  // One lookup over the matrix the page already computes, rather than a second
+  // pass with its own idea of what a cell means. `readiness.ts` stays the only
+  // place that decides whether a pair is servable.
+  const cells = new Map(
+    matrix.rows.flatMap((r) => r.cells.map((c) => [`${c.tier}::${c.task}`, c])),
+  );
+  const modelOf = (tier: string, task: string) =>
+    cells.get(`${tier}::${task}`)?.model ?? null;
+  const stateOf = (tier: string, task: string) =>
+    cells.get(`${tier}::${task}`)?.state ?? "empty";
 
   return (
     <>
@@ -310,64 +315,17 @@ export default function CatalogAdmin({ data }: { data: Catalog }) {
             </table>
 
             <h3>Point a tier at a model</h3>
-            <p className="note">
-              An append, never an edit — the old row stays so a past invoice can
-              still be read against what it was charged on. Needs an elevation
-              window.
-            </p>
-            <div className="formrow">
-              <div className="field">
-                <label htmlFor="bind-tier">Tier</label>
-                <input
-                  id="bind-tier"
-                  aria-label="Tier"
-                  placeholder="tier-fast"
-                  value={bindTierName}
-                  onChange={(e) => setBindTierName(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="bind-task">Task</label>
-                <select
-                  id="bind-task"
-                  aria-label="Task for the binding"
-                  value={bindTask}
-                  onChange={(e) => setBindTask(e.target.value)}
-                >
-                  {data.tasks.map((t) => (
-                    <option key={t.slug} value={t.slug}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field grow">
-                <label htmlFor="bind-model">Model</label>
-                <input
-                  id="bind-model"
-                  aria-label="Model for the binding"
-                  placeholder="deepseek/deepseek-chat"
-                  value={bindModel}
-                  onChange={(e) => setBindModel(e.target.value)}
-                />
-              </div>
-              <button
-                type="button"
-                disabled={busy || !bindTierName || !bindModel}
-                onClick={() =>
-                  send("/api/operator/catalog/bindings", {
-                    tier: bindTierName,
-                    task: bindTask,
-                    model: bindModel,
-                  })
-                }
-              >
-                Bind
-              </button>
-            </div>
-            <p className="note">
-              This task is priced in {unitOf(bindTask)}.
-            </p>
+            <TierCards
+              tiers={matrix.tiers}
+              tasks={data.tasks}
+              capabilities={data.capabilities}
+              stateOf={stateOf}
+              modelOf={modelOf}
+              busy={busy}
+              onBind={(tier, task, model) =>
+                send("/api/operator/catalog/bindings", { tier, task, model })
+              }
+            />
           </div>
         ) : null}
 
