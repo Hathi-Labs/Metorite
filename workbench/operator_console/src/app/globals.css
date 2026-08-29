@@ -643,6 +643,61 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Toolbar: search + segmented filter ──────────────────────────────── */
+/* 🔴 The roster had neither. That is fine at two customers and useless at
+   fifty, which is the number this product is being built for. */
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 16px 0 4px;
+}
+.toolbar .search {
+  flex: 1 1 220px;
+  max-width: 320px;
+  width: auto;
+}
+/* `type="search"` draws a WebKit cancel button that ignores the palette and
+   renders as a light blob in a dark tool. */
+.toolbar .search::-webkit-search-cancel-button {
+  filter: invert(0.6);
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  flex-wrap: wrap;
+}
+.segmented button {
+  margin: 0;
+  padding: 5px 11px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.segmented button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+  filter: none;
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.segmented .count {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 /* ── Readiness matrix ────────────────────────────────────────────────── */
 /* 🔴 The reason this page was rebuilt. Three tables that must AGREE — what a
    model can do, what a tier points at, and what we charge — cannot be diffed
