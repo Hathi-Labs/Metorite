@@ -59,6 +59,70 @@
   --shadow-2: 0 6px 20px -6px rgba(0, 0, 0, 0.55);
   --ring: 0 0 0 3px var(--accent-soft);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+/* ── Light mode ───────────────────────────────────────────────────────────
+   Taste Skill's rule is "dual-mode by default, contrast and hierarchy parity
+   across themes", and parity is the hard half: a palette that merely inverts
+   produces grey-on-grey chips and an accent that fails contrast on white.
+   Every hue below is re-chosen for a light ground rather than reused.
+
+   ⚠️ **Dark stays the DEFAULT, and that is a deliberate limit, not an
+   oversight.** This theme has never been looked at by a human — the agent that
+   wrote it has no browser, and `DESIGN_SYSTEM.md` §8 is explicit that the real
+   gate is switching the theme and LOOKING at the surface. Honouring
+   `prefers-color-scheme` immediately would hand an unverified palette to every
+   operator whose OS is set to light, which is most of them.
+
+   So it is opt-in until somebody has seen it. Once it has been eyeballed, the
+   whole change is to add:
+
+       @media (prefers-color-scheme: light) {
+         :root:not([data-theme="dark"]) { ...the block below... }
+       }
+
+   ⚠️ The palette is written once, here. Do not duplicate it into a media
+   query as well — two copies of a token set drift, and the drift shows up as
+   one surface disagreeing with the next, which is exactly what a token system
+   exists to stop. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg-subtle: #eceef2;
+  --panel: #ffffff;
+  --panel-2: #f2f4f7;
+  --panel-3: #e6e9ee;
+
+  --border: #dde1e8;
+  --border-strong: #bcc3ce;
+  --text: #161a21;
+  --muted: #58616e;
+  --faint: #8a929f;
+
+  /* Darkened against white. The dark theme's #5b93f7 measures ~2.6:1 on
+     #ffffff and fails every contrast floor for text. */
+  --accent: #2158d0;
+  --accent-soft: rgba(33, 88, 208, 0.09);
+  --accent-line: rgba(33, 88, 208, 0.3);
+  --danger: #c0322e;
+  --danger-soft: rgba(192, 50, 46, 0.09);
+  --danger-line: rgba(192, 50, 46, 0.32);
+  --ok: #157f3a;
+  --ok-soft: rgba(21, 127, 58, 0.1);
+  --ok-line: rgba(21, 127, 58, 0.3);
+  --warn: #8a5a00;
+  --warn-soft: rgba(138, 90, 0, 0.1);
+  --warn-line: rgba(138, 90, 0, 0.32);
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 8px 24px -8px rgba(16, 24, 40, 0.18);
+  color-scheme: light;
+}
+
+/* The search field's WebKit cancel button is drawn by the browser, so it needs
+   the inversion removed on a light ground or it becomes invisible. */
+:root[data-theme="light"] .toolbar .search::-webkit-search-cancel-button {
+  filter: none;
 }
 
 * {
