@@ -40,6 +40,17 @@ import { type Sourced, resolve } from "./source";
 type WireCatalog = {
   tasks: Task[];
   capabilities: { model: string; task: string }[];
+  profiles?: {
+    model: string;
+    label: string | null;
+    context_window: number | null;
+    max_output: number | null;
+    vendor_input_per_1m_usd: string | null;
+    vendor_output_per_1m_usd: string | null;
+    description: string;
+    reads_images: boolean;
+    thinks_first: boolean;
+  }[];
   bindings: { tier: string; task: string; model: string; rank?: number }[];
   rates: {
     model: string;
@@ -64,12 +75,14 @@ type WireCred = {
   revoked_at: string | null;
 };
 
-/** A task slug that is also a model kind. Everything else we cannot infer.
+/** A task slug that is also a model kind.
  *
- * ⚠️ **`vision` and `reasoning` are absent on purpose.** No column records
- * them, and guessing from a model name — "anything with `-4o` reads images" —
- * would produce a filter that quietly returns the wrong models. An empty kind
- * list is honest. A wrong one is not. */
+ * ⚠️ **`vision` and `reasoning` are NOT here, and they are not guessed.** They
+ * are not tasks — no tier binds them — they are properties of a chat model, and
+ * `model_profile` records them as of migration 012. Before that column existed
+ * this mapping had no way to know, and inferring from a model name ("anything
+ * with `-4o` reads images") would have produced a filter that quietly returns
+ * the wrong models. An empty kind list is honest. A wrong one is not. */
 const KIND_FROM_TASK: Record<string, ModelKind> = {
   chat: "chat",
   image: "image",
@@ -93,23 +106,45 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     kinds.get(c.model)?.add(k);
   }
 
+  const profiles = new Map((w.profiles ?? []).map((p) => [p.model, p]));
+
+  // ⚠️ **A model with NO profile row is normal, not an error.** Nothing is
+  // seeded — a table of hardcoded context windows is a mirror of eleven
+  // vendors' documentation and starts lying the first time one ships a model.
+  // A missing row renders as em dashes, which is true.
+  //
+  // ⚠️ **A number arrives as a STRING and stays one until it is drawn.** These
+  // are NUMERIC in the database. `Number()` here is the last step before the
+  // display, never a round trip.
+  const num = (v: string | null): number | null => {
+    if (v === null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const models: CatalogModel[] = [...new Set(w.capabilities.map((c) => c.model))]
     .sort()
-    .map((id) => ({
-      id,
-      // No `label` column exists. The id IS the label until one does, which is
-      // better than a prettified guess that stops matching what the Router uses.
-      label: id,
-      provider: id.includes("/") ? id.slice(0, id.indexOf("/")) : id,
-      kinds: [...(kinds.get(id) ?? [])],
-      contextWindow: null,
-      maxOutput: null,
-      inputPer1M: null,
-      outputPer1M: null,
-      description: "",
-      declared: true,
-      priced: priced.has(id),
-    }));
+    .map((id) => {
+      const p = profiles.get(id);
+      const kindList = [...(kinds.get(id) ?? [])];
+      if (p?.reads_images) kindList.push("vision");
+      if (p?.thinks_first) kindList.push("reasoning");
+      return {
+        id,
+        // The id IS the label until somebody records one — better than a
+        // prettified guess that stops matching what the Router uses.
+        label: p?.label ?? id,
+        provider: id.includes("/") ? id.slice(0, id.indexOf("/")) : id,
+        kinds: kindList,
+        contextWindow: p?.context_window ?? null,
+        maxOutput: p?.max_output ?? null,
+        inputPer1M: num(p?.vendor_input_per_1m_usd ?? null),
+        outputPer1M: num(p?.vendor_output_per_1m_usd ?? null),
+        description: p?.description ?? "",
+        declared: true,
+        priced: priced.has(id),
+      };
+    });
 
   // Bindings arrive as one row per STEP (migration 011), already ordered by
   // rank, and several rows share a (tier, task). Group them back into chains.

@@ -153,6 +153,12 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # ⚠️ Re-pointing a tier decides what EVERY customer call runs on. A
     # wrong model here does not fail loudly — it answers, plausibly, at
     # the wrong price. Same severity as installing a provider key above.
+    # ⚠️ EDITOR, and NO elevation — unlike every other catalog write. A
+    # profile changes neither what runs nor what we charge: it records what a
+    # model IS, so an operator can choose one. Gating a description edit behind
+    # elevation teaches people to reach for the break-glass token for routine
+    # work, which is the opposite of what this matrix is for.
+    ("POST", "/catalog/profiles"): _R(EDITOR),
     ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).

@@ -42,6 +42,7 @@ import {
   toggle,
 } from "@/lib/modelSearch";
 import { chipClass, type Tone } from "@/lib/tone";
+import ModelDetails from "./ModelDetails";
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = {
   ready: "ok",
@@ -106,6 +107,8 @@ function Card({ m }: { m: CatalogModel }) {
           <dd>{formatVendorPrice(m.inputPer1M, m.outputPer1M)}</dd>
         </div>
       </dl>
+
+      <ModelDetails m={m} />
     </article>
   );
 }
