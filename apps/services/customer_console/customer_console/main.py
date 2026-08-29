@@ -61,6 +61,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 from customer_console import (
+    analytics,
+    catalog,
     operator_activity,
     operator_elevation,
     operator_roles,
@@ -71,6 +73,7 @@ from customer_console import (
     provider_keys,
     store,
 )
+from customer_console import router as router_mod
 from customer_console.auth import (
     Caller,
     CatalogCaller,
@@ -85,7 +88,6 @@ from customer_console.auth import (
     SeatAdminCaller,
     SignedWebhook,
 )
-from customer_console import analytics, catalog
 from customer_console.credits import (
     CREDIT_QUANTUM,
     LEDGER_REASON_MANUAL,
@@ -117,13 +119,14 @@ from customer_console.lifecycle import (
 from customer_console.router import (
     SSE_DONE,
     ExtractedUsage,
+    ResolvedTier,
     TierUnknown,
     call_provider,
     encrypt_secret,
     provider_credential,
     relay_stream,
+    resolve_chain,
     resolve_rate_card,
-    resolve_tier,
     usage_from_response,
 )
 from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
@@ -3817,7 +3820,12 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
     with get_engine().begin() as conn:
         try:
-            resolved = resolve_tier(conn, req.model, req.task)
+            # 🔴 **The whole chain, not one model (D-AI-5).** Every step is
+            # resolved and credentialled inside this one transaction, because
+            # the provider call happens after the connection closes — looking a
+            # credential up mid-failover would need a second connection on the
+            # hottest path in the system.
+            chain = resolve_chain(conn, req.model, req.task)
         except TierUnknown:
             # 400, not a silent coercion to a default. A misconfigured agent
             # must be visible rather than quietly billed (D32.7).
@@ -3828,15 +3836,23 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                     f"{req.task!r}; name a tier, not a model"
                 ),
             )
-        provider = resolved.model.split("/", 1)[0]
-        try:
-            credential = provider_credential(conn, provider=provider, org_id=org_id)
-        except Exception:
-            # A missing or rotated encryption key must fail CLOSED with the same
-            # 503 shape the other secrets use — not a 500 that reads as a bug.
-            _log.exception("router.credential_unavailable")
-            raise HTTPException(
-                status_code=503, detail="provider credentials unavailable")
+
+        credentials: dict[str, tuple[str, str | None] | None] = {}
+        for step in chain:
+            vendor = step.model.split("/", 1)[0]
+            if vendor in credentials:
+                continue
+            try:
+                credentials[vendor] = provider_credential(
+                    conn, provider=vendor, org_id=org_id
+                )
+            except Exception:
+                # A missing or rotated encryption key must fail CLOSED with the
+                # same 503 shape the other secrets use — not a 500 that reads
+                # as a bug.
+                _log.exception("router.credential_unavailable")
+                raise HTTPException(
+                    status_code=503, detail="provider credentials unavailable")
 
         # CP-6. BEFORE the provider call, which is the only place a refusal is
         # worth anything: after it we have already spent the money. Metering
@@ -3847,36 +3863,55 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     if refusal is not None:
         raise refusal
 
-    if credential is None:
+    # ⚠️ **A step we hold no key for is not a step.** It cannot be tried at all,
+    # so it is dropped here rather than attempted and counted as a failure —
+    # otherwise one unconfigured vendor in the middle of a chain would burn an
+    # attempt and a chunk of the latency budget on every single request.
+    attempts = [
+        step for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None
+    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+
+    if not attempts:
+        # Unchanged shape: the first step names the vendor somebody has to go
+        # and configure.
+        provider = chain[0].model.split("/", 1)[0]
         raise HTTPException(
             status_code=503,
             detail=f"no provider credential configured for {provider!r}",
         )
-    secret, api_base = credential
 
-    # ALLOWLIST. Only named parameters reach the provider, and the ones that
-    # multiply our cost are clamped. `api_base` is ours alone — a caller can
-    # neither set it nor see it.
-    passthrough = {
-        k: v for k, v in req.model_dump(exclude_none=True).items()
-        if k in _FORWARDABLE
-    }
-    requested_max = passthrough.get("max_tokens")
-    passthrough["max_tokens"] = min(
-        int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
-        _MAX_OUTPUT_TOKENS,
-    )
-    call_kwargs: dict[str, Any] = {
-        **passthrough,
-        "model": resolved.model,
-        "api_key": secret,
-        # Bounded explicitly rather than left to litellm's defaults, so one
-        # request cannot become fifty provider calls.
-        "num_retries": 1,
-        "timeout": 120,
-    }
-    if api_base:
-        call_kwargs["api_base"] = api_base
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain.
+
+        ⚠️ ALLOWLIST. Only named parameters reach the provider, and the ones
+        that multiply our cost are clamped. `api_base` is ours alone — a caller
+        can neither set it nor see it.
+        """
+        secret, api_base = credentials[step.model.split("/", 1)[0]]  # type: ignore[misc]
+        passthrough = {
+            k: v for k, v in req.model_dump(exclude_none=True).items()
+            if k in _FORWARDABLE
+        }
+        requested_max = passthrough.get("max_tokens")
+        passthrough["max_tokens"] = min(
+            int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
+            _MAX_OUTPUT_TOKENS,
+        )
+        out: dict[str, Any] = {
+            **passthrough,
+            "model": step.model,
+            "api_key": secret,
+            # Bounded explicitly rather than left to litellm's defaults, so one
+            # request cannot become fifty provider calls.
+            "num_retries": 1,
+            "timeout": 120,
+        }
+        if api_base:
+            out["api_base"] = api_base
+        return out
+
+    resolved = attempts[0]
 
     if req.stream:
         # CP-4b. Everything above this line has already run: the tier
@@ -3884,6 +3919,15 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # breaker either refused or did not. A refusal delivered inside an
         # SSE frame is one every client renders as CONTENT, so the gate has
         # to be behind us before the stream opens (done-when 5).
+        #
+        # 🔴 **A STREAM DOES NOT FAIL OVER, and it must not.** Once the first
+        # frame has reached the client the request is half-answered; retrying
+        # on another model would splice two different completions into one
+        # response, which is worse than the error. Failing over *before* the
+        # first frame is legitimate and is a separate slice — it needs the
+        # generator to attempt the call eagerly, which changes when the
+        # response headers are sent.
+        call_kwargs = _kwargs_for(resolved)
         call_kwargs["stream"] = True
         # Ask for the usage frame. Without it an OpenAI-compatible provider
         # reports no counts on a stream at all, and we would be metering a
@@ -3906,24 +3950,49 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             },
         )
 
+    # ── Walk the chain ──────────────────────────────────────────────────────
+    #
+    # ⚠️ **`resolved` is reassigned to the step that ANSWERED**, and that is not
+    # bookkeeping. `_record_completion` prices the call from it, so billing an
+    # Opus request that actually fell over to Haiku at Opus rates would
+    # overcharge the customer for a model they did not get.
+    #
+    # The walk lives in `router.call_chain` rather than here: a route needs
+    # FastAPI, and a test of failover ORDER should not.
+    def _note_failover(
+        frm: ResolvedTier, to: ResolvedTier, status: int | None
+    ) -> None:
+        # 📌 The only evidence a chain ever earned its keep. `usage_event` has
+        # no column for the step that served, so this line is the record.
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model, "fo_to": to.model,
+                "fo_status": status, "fo_tier": frm.tier, "fo_task": frm.task,
+            },
+        )
+
     try:
-        response = asyncio.run(call_provider(**call_kwargs))
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
     except HTTPException:
         raise
-    except Exception as exc:
+    except router_mod.UpstreamFailed as failed:
         # Map upstream failures to something a caller can branch on. Without
         # this a provider 429 is indistinguishable from a Router bug and every
         # client treats both as fatal (or both as retryable). The message is
         # deliberately NOT echoed: it can carry the request, and the request can
         # carry customer content.
-        status = getattr(exc, "status_code", None)
+        status = failed.status
         _log.warning("router.provider_error", extra={"upstream_status": status})
         if isinstance(status, int) and 400 <= status < 600:
             raise HTTPException(
                 status_code=502 if status >= 500 else status,
                 detail="upstream provider error",
-            )
-        raise HTTPException(status_code=502, detail="upstream provider error")
+            ) from failed
+        raise HTTPException(
+            status_code=502, detail="upstream provider error") from failed
 
     # Metering is best-effort and NEVER fails the call: an unmetered completion
     # is a revenue problem, a failed completion is a product problem, and the
