@@ -135,21 +135,71 @@ This reuses `model_config`, key `agent_aliases`, which already exists.
 
 ---
 
-## 4. Customer surfaces
+## 4. Customer surfaces — documented now, built later
 
-| # | Surface | State | Blocked by |
-|---|---|---|---|
-| C1 | Spend by app | **Built** (CP-7) | — |
-| C2 | Spend by member | **Built** (CP-7) | — |
-| C3 | **Spend over time** | To build | — |
-| C4 | **Buy AI credits** | To build | Razorpay (H-14) |
-| C5 | **A budget for each member** | To build | 🔴 **H-73** |
-| C6 | Tier picker showing three labels | To build | §3.1 `tier_catalog` |
+**Owner directive, 2026-08-29: record these and build them when the time is
+right.** The operator side comes first. This section holds enough detail that a
+later agent does not have to re-derive any of it.
 
-🔴 **C5 cannot ship until H-73 closes.** The Console reads the member from the
-`X-CC-Member` header, and the gateway forwards that header from the request. A
-member who omits it escapes their own budget. A budget the person being
-budgeted can turn off is not a budget.
+Every surface below lives in `workbench/control_plane`. That app has had **no
+UI change** for AI metering. The two reads in C1 and C2 shipped in CP-7 and no
+page calls them.
+
+### 4.1 The table
+
+| # | Surface | Reads | State | Blocked by |
+|---|---|---|---|---|
+| C1 | Spend by app | `GET /my/usage/activity` | API built, **no UI** | — |
+| C2 | Spend by member | `GET /my/usage/members` | API built, **no UI** | — |
+| C3 | Spend over time | `usage_daily(org_id=...)` | Store built, no route | — |
+| C4 | Buy AI credits | `POST /credits/grant` | Not built | Razorpay (**H-14**) |
+| C5 | A budget for each member | — | Not built | 🔴 **H-73** |
+| C6 | The tier picker | `tier_catalog` | Not built | §3.1 |
+
+### 4.2 What each one must do
+
+**C1 and C2 are the cheapest work in this file.** The reads exist, they are
+tenant-safe, and they take a `member` argument. One page consumes both.
+
+- Show the whole company by default.
+- Let an administrator pick one member, and pass that member to C1.
+- Name the unattributed row. `store.UNATTRIBUTED_ACTIVITY` holds the word.
+- 🔴 Say that every credit column reads zero while the rate card is unpriced
+  (**H-42**). A column of zeros with no explanation reads as "we use no AI".
+
+**C3 uses `usage_daily` with an `org_id`.** That function already exists and is
+tenant-safe with the argument. Do not write a second query.
+
+- The series fills every gap. Do not add a second gap fill in the client.
+- 30 days by default. `USAGE_MAX_DAYS` bounds the request.
+
+**C4 sells credits.** It needs the Razorpay account first.
+
+- Reuse `credit_ledger` and the `LEDGER_REASON_PURCHASE` vocabulary.
+- Show the balance before and after.
+
+**C5 is blocked, and the block is not a schedule problem.**
+
+🔴 The Console reads the member from the `X-CC-Member` header, and the gateway
+forwards that header from the request. **A member who omits it escapes the
+budget.** A budget the budgeted person can turn off is not a budget. H-73 owns
+this. Do not build C5 first and secure it later.
+
+**C6 shows three labels.** `tier_catalog.customer_visible` decides which.
+
+- Read the label, never the slug. §3.1 says why.
+- An app default comes from `model_config`, key `agent_aliases`.
+
+### 4.3 What the customer must never see
+
+**D66 binds every surface above.** A customer sees a tier. A customer never
+sees a model id, a provider name, or a rate card.
+
+⚠️ `usage_event` carries `model` and `tier` on the same row. A spend table that
+selects `model` because the column is there breaks D66 in one line. The two
+reads in C1 and C2 already exclude it, and a new read must do the same.
+
+---
 
 ---
 

@@ -665,12 +665,27 @@ class TestOperatorSpendReads:
         days = [r["day"] for r in rows]
         assert days == sorted(days), "the series must be in date order"
 
-    def test_the_daily_series_reports_zero_rather_than_null(self, conn):
+    def test_the_daily_series_reports_zero_rather_than_null(self, conn, org):
         # A null renders as a hole in a chart. A zero renders as a quiet day,
         # which is what it is.
-        for r in store.usage_daily(conn, days=3):
-            assert r["calls"] == 0
+        #
+        # ⚠️ **Scoped to a FRESH org, not the whole table.** The first version
+        # of this test asserted `calls == 0` on the unfiltered series and CI
+        # failed it with `assert 57 == 0` — the shared database carries rows
+        # from every other suite in the module. A test that asserts on data it
+        # does not create is testing the database's contents, not the function.
+        for r in store.usage_daily(conn, days=3, org_id=org):
+            assert r["calls"] == 0, "a fresh org has no usage"
             assert r["credits"] == Decimal(0)
+            assert r["credits"] is not None
+
+    def test_the_unfiltered_series_never_returns_a_null_cell(self, conn):
+        # The shape half, over whatever the shared database happens to hold.
+        # A null in either column is a hole in the chart regardless of volume.
+        for r in store.usage_daily(conn, days=3):
+            assert r["calls"] is not None
+            assert r["credits"] is not None
+            assert isinstance(r["credits"], Decimal)
 
     def test_the_org_filter_PREPAREs_in_both_directions(self, conn, org):
         # ⚠️ The CAST is load-bearing. A bare `:org IS NULL` gives Postgres no
