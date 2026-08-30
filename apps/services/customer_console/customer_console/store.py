@@ -786,6 +786,14 @@ def usage_by_org(
                    -- here would report activity nobody had.
                    COUNT(DISTINCT u.user_email) FILTER
                        (WHERE u.refusal_reason IS NULL) AS members,
+                   -- 🔴 **A5's whole point, on the operator's page.** Without
+                   -- this the refusal column is written and read by nobody:
+                   -- a walled customer loses `silent` (their `last_seen`
+                   -- moved) and gains NOTHING, so the wall makes them HARDER
+                   -- to find than silence did. The inverted FILTER, over the
+                   -- same window, so `calls` and `refusals` are comparable.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NOT NULL) AS refusals,
                    COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
                    -- ⚠️ `last_seen` takes NO filter, on purpose. A refusal
                    -- MUST move it — a customer at a wall is a customer who is
@@ -811,6 +819,8 @@ def usage_by_org(
             "costed_calls": int(r.costed_calls),
             "costed_credits": Decimal(r.costed_credits),
             "members": int(r.members),
+            # A plain count, never money. It is how many times we said no.
+            "refusals": int(r.refusals),
             "cost_usd": Decimal(r.cost_usd),
             "last_seen": r.last_seen.isoformat() if r.last_seen else None,
         }

@@ -659,12 +659,21 @@ is `NOT NULL` (`001_customer_console.sql:256`). A row needs a tenant, and at
 | `unit` | the task's unit, from `task_catalog` | The row stays readable beside a served row |
 | `tier` | the tier the caller ASKED for | A5 must say which tier the customer wanted |
 | `run_id` | `caller.run_id` | A `run_ceiling_exceeded` row without its run is not actionable. `main.py:1007` reads the same field to decide the refusal |
+| `client_ref` | `req.client_ref` | *(Added 2026-08-31.)* The customer's own correlation id, exactly as a served row carries it. Support matches "my request failed" against this and nothing else |
 | `model` | `NULL` | No model answered |
 | `provider_cost_usd` | `NULL` | No vendor billed us |
 
 ⚠️ **`tier` holds the REQUESTED tier, never a resolved one.** At
 `tier_unknown` there is nothing to resolve, and the tier on the request is the
 fact A5 reports.
+
+🔴 **`tier`, `task` and `client_ref` are CLIPPED at 200 characters
+(`_REFUSAL_LABEL_MAX`, added 2026-08-31).** All three are caller-supplied, and
+nothing upstream bounds any of them. A refused request costs the sender
+nothing. So an unclipped label lets one sender grow the table by megabytes,
+for the price of a rejected request. These cells are observability — *which tier
+did they ask for* — and never an authority anything reads back. A clipped
+value answers that question, and a whole one answers nothing more.
 
 #### 🔴 The five counting reads MUST exclude a refusal
 
@@ -706,6 +715,33 @@ left all three byte-identical.
   refusal out here makes that customer read as SILENT to A3, which is the
   exact defect H-76 closed. An agent sweeping the file for a refusal filter
   must skip this read on purpose.
+
+#### 🔴 The operator SEES the wall — added 2026-08-31
+
+**A diff review found the signal stopped half way, and this closes it.** The
+first build wrote `refusal_reason` and filtered five reads. Nothing then read
+the column. So a walled customer LOST `silent` — their `last_seen` moved —
+and gained nothing in its place. Hitting a wall made a customer harder to find
+than saying nothing did, which is the opposite of A5.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `refusals` | `store.py:790` | `COUNT(u.id) FILTER (WHERE u.refusal_reason IS NOT NULL)`, over the same window as `calls` |
+| `refusals` | `main.py`, `OrgUsageRow` | On the wire from `GET /admin/usage/orgs`. A plain int, because it is a count and not money |
+| `isWalled` | `usage.ts` | Refusals above zero AND `calls` at zero — an organization that got NOTHING through |
+| the `walled` chip | `usage.ts::orgFlags` | Renders immediately above `silent`, in `danger` tone |
+| the Refused column | `UsageBoard.tsx` | Beside Calls, so "0 calls, 41 refused" reads as one sentence |
+
+⚠️ **`walled` and `silent` are ONE signal handed between two flags.** A
+refusal moves `last_seen`, so the two can never fire on one row. The narrow
+test is deliberate. Refusals beside real traffic are a customer who meets a
+limit now and then. Only "nothing got through" is a support call nobody has
+made yet.
+
+**Fences.** `test_customer_console_sql.py` proves the count and proves
+`is_silent` stays false for a funded, walled organization.
+`test_customer_console_pricing_truth.py` drives a real 400 and reads the count
+off the board. `usage.test.ts` holds the chip, the tone and the handoff.
 
 #### Done when — one clause per artefact. All seven are met
 

@@ -1322,7 +1322,8 @@ def _refusal_row(db, org_id: str) -> dict | None:
     with db.begin() as c:
         row = c.execute(text(
             "SELECT request_id, refusal_reason, billed_credits, quantity, "
-            "       unit, tier, task, model, provider_cost_usd, run_id "
+            "       unit, tier, task, model, provider_cost_usd, run_id, "
+            "       client_ref "
             "FROM usage_event "
             "WHERE organization_id = :o AND refusal_reason IS NOT NULL"
         ), {"o": org_id}).all()
@@ -1330,7 +1331,8 @@ def _refusal_row(db, org_id: str) -> dict | None:
     if not row:
         return None
     keys = ("request_id", "refusal_reason", "billed_credits", "quantity",
-            "unit", "tier", "task", "model", "provider_cost_usd", "run_id")
+            "unit", "tier", "task", "model", "provider_cost_usd", "run_id",
+            "client_ref")
     return dict(zip(keys, row[0], strict=True))
 
 
@@ -1364,12 +1366,16 @@ class TestARefusalReachesTheMeter:
     def test_the_row_holds_the_shape_A5_reads(self, client, org_key, org_id, db):
         """§8.1 clause 4, field by field."""
         _, key = org_key
+        ref = f"cust-{uuid.uuid4().hex[:8]}"
         client.post("/v1/chat/completions", headers=key, json={
-            "model": "tier-imaginary",
+            "model": "tier-imaginary", "client_ref": ref,
             "messages": [{"role": "user", "content": "hi"}]})
 
         row = _refusal_row(db, org_id)
         assert row is not None
+        # 📌 The customer's OWN correlation id, exactly as a served row carries
+        # it. Without it, "my request failed" has nothing support can match.
+        assert row["client_ref"] == ref
         # We served nothing, so we charge nothing and consume nothing.
         assert row["billed_credits"] == Decimal("0.0000")
         assert row["quantity"] == Decimal(0)
@@ -1384,6 +1390,30 @@ class TestARefusalReachesTheMeter:
         assert row["provider_cost_usd"] is None
         # Minted exactly as the served path mints it (001:271 NOT NULL UNIQUE).
         assert row["request_id"].startswith("rtr-")
+
+    def test_a_HUGE_caller_label_is_clipped_before_it_persists(
+            self, client, org_key, org_id, db):
+        """🔴 A refused request is FREE, and its `model` is whatever they typed.
+
+        Nothing upstream bounds the field, so without a clip a five-megabyte
+        "model" string would persist once per 400 at no cost to the sender —
+        unbounded growth an attacker drives for the price of a rejected
+        request. The cell is OBSERVABILITY ("which tier did they ask for"), so
+        a clipped value answers the question just as well.
+        """
+        from customer_console.main import _REFUSAL_LABEL_MAX
+
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "x" * 100_000,
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        # The customer still gets their refusal, and it is still a 400.
+        assert r.status_code == 400, r.text
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        assert len(row["tier"]) <= _REFUSAL_LABEL_MAX
+        assert _REFUSAL_LABEL_MAX == 200
 
     def test_a_refusal_draws_no_credit(self, client, org_key, org_id, db):
         _, key = org_key

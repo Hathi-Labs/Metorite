@@ -4554,9 +4554,27 @@ _REFUSAL_REASONS = frozenset({
     REFUSAL_TIER_UNKNOWN,
 })
 
+#: How much of a caller-supplied label a refusal row keeps.
+#:
+#: 🔴 **A refused request is FREE, and its `model` and `task` are whatever the
+#: caller typed.** Nothing upstream bounds either one, so a five-megabyte
+#: "model" string would persist once per 400, at no cost to the sender. These
+#: two cells are OBSERVABILITY — "which tier did they ask for" — and never an
+#: authority anything reads back, so a truncated value answers the question
+#: just as well as a whole one.
+_REFUSAL_LABEL_MAX = 200
+
+
+def _clip(value: str | None) -> str | None:
+    """Bound one caller-supplied label. ``None`` stays ``None``."""
+    if value is None:
+        return None
+    return str(value)[:_REFUSAL_LABEL_MAX]
+
 
 def _record_refusal(
     reason: str, *, org_id: str, caller: Any, tier: str, task: str,
+    client_ref: str | None = None,
 ) -> None:
     """Write the one ``usage_event`` row that says we refused (A5).
 
@@ -4585,6 +4603,9 @@ def _record_refusal(
         _log.warning("router.refusal_slug_unknown",
                      extra={"router_refusal": reason})
         return
+    # ⚠️ Clipped BEFORE the database sees them, so a five-megabyte label is
+    # never sent as a bind parameter either.
+    tier, task = _clip(tier) or "", _clip(task) or ""
     try:
         with get_engine().begin() as conn:
             store.record_usage(
@@ -4601,6 +4622,13 @@ def _record_refusal(
                 # A `run_ceiling_exceeded` row without its run is not
                 # actionable, and the breaker reads the same field.
                 run_id=caller.run_id,
+                # 📌 The customer's own correlation id, exactly as the served
+                # path carries it. Support finds a refused call the same way
+                # they find a served one, and without it the customer's "my
+                # request rtr-… failed" has nothing to match.
+                client_ref=_clip(client_ref),
+                # Both clipped above, because both are caller-supplied and
+                # unbounded and a refused request costs the sender nothing.
                 tier=tier, task=task,
                 # The call consumed nothing, and the task's own unit keeps the
                 # row readable beside a served one.
@@ -4723,7 +4751,8 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
     if unknown_tier is not None:
         _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
-                        tier=req.model, task=req.task)
+                        tier=req.model, task=req.task,
+                        client_ref=req.client_ref)
         raise unknown_tier
 
     if refusal is not None:
@@ -4740,7 +4769,8 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         detail = refusal.detail
         if isinstance(detail, dict) and detail.get("reason"):
             _record_refusal(str(detail["reason"]), org_id=org_id, caller=caller,
-                            tier=req.model, task=req.task)
+                            tier=req.model, task=req.task,
+                            client_ref=req.client_ref)
         raise refusal
 
     # ⚠️ **A step we hold no key for is not a step.** It cannot be tried at all,
@@ -5054,6 +5084,15 @@ class OrgUsageRow(BaseModel):
     #: NULL means "no burn to extrapolate from", never "forever".
     runwayDays: int | None = None
     silent: bool = False
+    #: How many times we REFUSED this organization over the same window
+    #: (§8.1, A5). A plain int, because it is a count and not money.
+    #:
+    #: 🔴 **This is what makes a wall FINDABLE.** A refusal moves `last_seen`,
+    #: so a walled customer stops reading as `silent` — and without this count
+    #: the wall would make them HARDER to find than silence did. `refusals`
+    #: above zero with `calls` at zero is an organization that got nothing
+    #: through, which is the row support wants before the customer writes in.
+    refusals: int = 0
 
 
 class OrgUsageView(BaseModel):
@@ -5146,6 +5185,7 @@ def admin_usage_by_org(
                     None if r["costed_share"] is None else str(r["costed_share"])
                 ),
                 runwayDays=r["runway_days"], silent=r["silent"],
+                refusals=r["refusals"],
             )
             for r in annotated
         ],

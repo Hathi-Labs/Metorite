@@ -506,3 +506,33 @@ def test_margin_is_judged_over_the_COSTED_calls_only(client, db):
     # And the wire carries the coverage for every row it does show.
     view = client.get("/admin/usage/orgs", headers=OP).json()
     assert all("costedShare" in r for r in view["rows"][:3])
+
+
+def test_the_operator_board_carries_the_REFUSAL_count(client, db, org, serve):
+    """§8.1, A5 — the wall reaches the operator, not only the table.
+
+    🔴 **This is the end of the signal, and without it the slice is
+    write-only.** A refusal moves `last_seen`, so a walled customer stops
+    reading as `silent`. If the count never reached the board, hitting a wall
+    would make a customer HARDER to find than saying nothing did.
+    """
+    from customer_console import store as store_mod
+
+    slug, _org_id, key = org
+    tier = f"tier-pt-walled-{uuid.uuid4().hex[:6]}"
+
+    # A real 400 through the real route, so the row is the Router's own.
+    assert _ask(client, key, tier).status_code == 400
+
+    # Through the STORE, uncapped, for the reason the margin test gives: the
+    # board's page is capped and this org has spent nothing, so it sorts last.
+    with db.begin() as c:
+        rows = store_mod.usage_by_org(c, days=30, limit=1_000_000)["rows"]
+    mine = next(r for r in rows if r["slug"] == slug)
+    assert mine["refusals"] == 1
+    assert mine["calls"] == 0, "a refusal is not a call"
+
+    # The wire names the field on every row it shows, so the console's
+    # `walled` chip has a number to read.
+    view = client.get("/admin/usage/orgs", headers=OP).json()
+    assert all("refusals" in r for r in view["rows"][:3])

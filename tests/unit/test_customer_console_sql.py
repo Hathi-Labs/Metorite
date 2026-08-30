@@ -929,3 +929,99 @@ class TestARefusalIsNotACall:
             text("SELECT count(*) FROM usage_event WHERE organization_id = :o "
                  "AND served_rank > 1"), {"o": org},
         ).scalar_one() == 0
+
+    # ── The operator can SEE the wall ───────────────────────────────────────
+
+    def test_a_walled_org_reports_its_refusals_and_ZERO_calls(
+            self, conn, org):
+        """🔴 The signal, end to end. Without this the slice is write-only.
+
+        A refusal moves `last_seen`, so a walled customer stops reading as
+        `silent` to A3. If nothing else reported the wall, hitting one would
+        make a customer HARDER to find than saying nothing did — the column
+        would be written by the Router and read by nobody.
+        """
+        self._refused(conn, org, reason="insufficient_credits")
+        self._refused(conn, org, reason="insufficient_credits")
+
+        mine = self._row_for(conn, org)
+
+        assert mine["refusals"] == 2
+        assert mine["calls"] == 0
+
+    def test_the_two_counts_are_measured_over_the_SAME_window(
+            self, conn, org):
+        # `calls` and `refusals` sit side by side on the operator's page, so a
+        # refusal older than the window must leave both. Two windows on one
+        # row is how a page starts disagreeing with itself.
+        self._refused(conn, org)
+        conn.execute(
+            text("UPDATE usage_event SET created_at = now() - interval '99 days' "
+                 "WHERE organization_id = :o"), {"o": org},
+        )
+
+        assert self._row_for(conn, org)["refusals"] == 0
+
+    def test_a_served_call_is_never_counted_as_a_refusal(self, conn, org):
+        # The inverted FILTER, checked in the direction that would silently
+        # inflate a support queue rather than empty one.
+        self._served(conn, org, agent="a")
+
+        mine = self._row_for(conn, org)
+
+        assert mine["calls"] == 1
+        assert mine["refusals"] == 0
+
+    def test_a_WALLED_but_funded_org_is_NOT_silent(self, conn, org):
+        """🔴 The flag handoff, pinned on the side that produces it.
+
+        `is_silent` is what the wall switches OFF, and `refusals` is what
+        must switch on in its place. The operator console renders one chip or
+        the other from exactly these two numbers, so a change that let both
+        read false would hide the customer entirely.
+        """
+        from datetime import UTC, datetime
+
+        from customer_console import analytics
+
+        slug = conn.execute(
+            text("SELECT slug FROM organization WHERE id = :i"), {"i": org},
+        ).scalar_one()
+        # FUNDED. `is_silent` returns False on a zero balance whatever the
+        # timestamps say, so an unfunded org would pass this test vacuously.
+        store.add_credit(conn, org_id=org, delta=Decimal("500"),
+                         reason="purchase")
+        self._refused(conn, org, reason="run_ceiling_exceeded")
+
+        balance = balance_of(store.credit_deltas(conn, org_id=org))
+        last_seen = store.last_seen_by_org(conn)[slug]
+
+        assert balance > 0
+        assert analytics.is_silent(
+            balance, last_seen, datetime.now(UTC)) is False
+        assert self._row_for(conn, org)["refusals"] == 1
+
+    def test_the_writer_and_the_CHECK_name_the_same_three_slugs(self, conn):
+        """R7 against DRIFT. Two lists say what a refusal may be called.
+
+        `main._REFUSAL_REASONS` guards the write, and migration 020's CHECK
+        guards the table. Adding a slug to one and not the other is silent in
+        both directions: the writer drops a legal slug, or a new slug reaches
+        the database and raises. Read from `pg_constraint` rather than from
+        the migration text, so what is asserted is the APPLIED schema.
+        """
+        import re
+
+        from customer_console.main import _REFUSAL_REASONS
+
+        definition = conn.execute(
+            text("SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                 "WHERE conname = 'usage_event_refusal_reason_known'"),
+        ).scalar_one()
+
+        in_the_database = set(re.findall(r"'([a-z_]+)'::text", definition))
+
+        assert in_the_database == set(_REFUSAL_REASONS), (
+            f"the writer says {sorted(_REFUSAL_REASONS)} and the database "
+            f"says {sorted(in_the_database)} — one of them was edited alone"
+        )
