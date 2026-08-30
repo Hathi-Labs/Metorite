@@ -13,6 +13,15 @@
 //
 // What survives is what had nothing to do with the matrix: how to read a
 // vendor out of a model id, and which models may be offered for a job.
+//
+// ⚠️ **`vendorWarning` belongs here and nowhere else.** It answers "is the
+// vendor half of this id one we can actually call", which is `providerOf`'s
+// question with the credentials added. Putting it in the declare form would
+// hide it from the test suite, which carries no React renderer.
+
+import type { ProviderAccount } from "./contract";
+import { KNOWN_PROVIDERS, vendorLabel } from "./providerGuides";
+import { armedProviders } from "./providers";
 
 /** The vendor a model id belongs to.
  *
@@ -45,4 +54,37 @@ export function capableModelsFor(
   return [
     ...new Set(capabilities.filter((c) => c.task === task).map((c) => c.model)),
   ].sort();
+}
+
+/** What the typed model id says about the vendor half, before anything is
+ *  saved.
+ *
+ * 🔴 **The vendor half is the half that goes wrong silently.** The Router
+ * resolves it as `model.split("/", 1)[0]` and looks the credential up on
+ * exactly that word. A model declared under a vendor we hold no key for is
+ * accepted here, binds to a tier happily, and answers 503 on the first
+ * customer request. Two spellings caused that in this very console —
+ * `google` for what litellm calls `gemini`, and `together` for `together_ai`.
+ *
+ * ⚠️ **This warns. It never blocks.** Declaring a model before installing its
+ * key is a legitimate order of work, and a form that refused it would send
+ * somebody back to the API. */
+export function vendorWarning(model: string, accounts: ProviderAccount[]): string | null {
+  const id = model.trim();
+  if (!id) return null;
+  if (!id.includes("/")) {
+    return (
+      "This id names no vendor. The Router reads the vendor from the part " +
+      "before the first slash, so it will look for a credential called " +
+      `"${id}".`
+    );
+  }
+  const vendor = providerOf(id);
+  if (armedProviders(accounts).includes(vendor)) return null;
+  const known = KNOWN_PROVIDERS.includes(vendor);
+  return known
+    ? `No live key for ${vendorLabel(vendor)}. Declaring this is fine — a ` +
+      "tier bound to it answers 503 until you install one on Providers."
+    : `"${vendor}" is not a vendor we hold a key for, and not one we have ` +
+      "written up. Check it is the id litellm uses, not the company's name.";
 }

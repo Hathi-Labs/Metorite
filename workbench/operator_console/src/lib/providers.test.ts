@@ -26,8 +26,7 @@ import {
   describeScope,
   groupByProvider,
   groupLine,
-  healthLabel,
-  healthTone,
+  groupStatus,
   isLive,
   isPlatform,
   wouldRotate,
@@ -151,10 +150,25 @@ describe("the secret never crosses a read path", () => {
     expect(ADMIN).not.toContain("/api/operator/providers?");
   });
 
-  it("the secret field is a password input and clears on success", () => {
-    expect(ADMIN).toContain('type="password"');
+  it("the secret field is MASKED BY DEFAULT and clears on success", () => {
+    // ⚠️ **This test used to read `type="password"` literally, and the field
+    // is now revealable.** The reveal is deliberate — a key typed by hand into
+    // a masked box is unverifiable, and the retry costs a second visit to the
+    // vendor's console. So the property worth pinning moved: not "always
+    // masked", but "masked unless somebody asks, and never asking by default".
+    expect(ADMIN).toContain("useState(false)");
+    expect(ADMIN).toContain('showSecret ? "text" : "password"');
     expect(ADMIN).toContain('setSecret("")');
     expect(ADMIN).toContain('autoComplete="off"');
+  });
+
+  it("🔴 the reveal does not survive the save, or the panel closing", () => {
+    // A revealed key left on screen outlives the reason it was revealed. Both
+    // exits put it back behind the mask before anything else happens.
+    const success = ADMIN.slice(ADMIN.indexOf("A key left in a field survives"));
+    expect(success).toContain("setShowSecret(false)");
+    const closer = ADMIN.slice(ADMIN.indexOf("function close()"));
+    expect(closer.slice(0, 400)).toContain("setShowSecret(false)");
   });
 
   it("the page reads server-side and surfaces a failure", () => {
@@ -166,6 +180,36 @@ describe("the secret never crosses a read path", () => {
     expect(PAGE).toContain("readAccounts");
     expect(READ).toContain("listProviderCreds");
     expect(READ).toContain("The Console answered");
+  });
+
+  it("🔴 the free-text card's sentinel can never be a real vendor", () => {
+    // ⚠️ `openFor` holds a slug, and one value of it means "the card that is
+    // not a vendor". If a vendor could ever be spelled that way, opening its
+    // card would blank the vendor field and the operator would install a key
+    // under whatever they typed next. The Console's own regex rules it out:
+    // a slug must start with [a-z0-9], and this starts with an underscore.
+    const sentinel = ADMIN.match(/const OTHER = "([^"]*)";/)?.[1];
+    expect(sentinel).toBeDefined();
+    expect(sentinel).not.toMatch(/^[a-z0-9][a-z0-9_.-]{1,39}$/);
+    // And it must be plain ASCII. A sentinel written as a leading space once
+    // reached disk as a NUL byte, which git then classified as binary while
+    // every test and the typechecker passed on it.
+    expect(sentinel).toMatch(/^[\x21-\x7e]+$/);
+  });
+
+  it("🔴 declares NO component inside the component", () => {
+    // A component declared in `ProviderAdmin`'s body is a new function object
+    // on every render, so React sees a different element type and REMOUNTS it.
+    // The setup panel holds the secret field: typing one character calls
+    // `setSecret`, re-renders, remounts the panel, and the caret is gone —
+    // making the one field this page exists for unusable, one character at a
+    // time. It typechecks, and every other test here passes on it.
+    const body = ADMIN.slice(ADMIN.indexOf("export default function ProviderAdmin"));
+    expect(body).not.toMatch(/\n {2}function [A-Z]/);
+    // And the two that were inside must be at module scope, where their
+    // identity is stable across renders.
+    expect(ADMIN).toMatch(/\nfunction SetupPanel\(/);
+    expect(ADMIN).toMatch(/\nfunction Card\(/);
   });
 
   it("relays a refusal VERBATIM", () => {
@@ -195,21 +239,23 @@ describe("the surface", () => {
 });
 
 describe("one card per vendor", () => {
+  // ⚠️ ONE live platform row per vendor, because the DATABASE says so:
+  // `provider_credential_live_uniq` (004) is unique over (provider, org)
+  // where the row is live, and the two-platform-key insert was tried against
+  // the real schema on 2026-08-30 and refused. An earlier version of this
+  // suite pinned "several platform keys stay several" — a state that cannot
+  // exist, copied from sample data that modelled it anyway.
   const ROWS = [
-    CRED({ id: "a1", provider: "anthropic" }),
-    CRED({ id: "a2", provider: "anthropic", label: "overflow" }),
+    CRED({ id: "a1", provider: "anthropic", createdAt: "2026-07-14T09:12:00Z" }),
     CRED({ id: "a3", provider: "anthropic", orgSlug: "acme" }),
     CRED({ id: "a4", provider: "anthropic", revokedAt: "2026-08-01T00:00:00Z" }),
     CRED({ id: "o1", provider: "openai" }),
     CRED({ id: "z1", provider: "groq", revokedAt: "2026-08-01T00:00:00Z" }),
   ];
 
-  it("🔴 keeps SEVERAL platform keys for one vendor as several", () => {
-    // The flat table drew these as unrelated rows, which is exactly why nobody
-    // noticed we had a spare — a second key is how a rate limit stops being an
-    // outage.
+  it("🔴 holds the platform key SINGULAR, beside BYOK and the record", () => {
     const g = groupByProvider(ROWS).find((x) => x.provider === "anthropic");
-    expect(g?.platform).toHaveLength(2);
+    expect(g?.platform?.id).toBe("a1");
     expect(g?.byok).toHaveLength(1);
     expect(g?.revoked).toHaveLength(1);
   });
@@ -232,24 +278,111 @@ describe("one card per vendor", () => {
     expect(groupLine(g)).toContain("No account for everyone");
   });
 
-  it("counts the spare rather than saying 'ok'", () => {
+  it("says since WHEN the key has served, not how many keys", () => {
+    // 🔴 The line used to count keys ("2 keys for everyone") — a count whose
+    // only values are zero and one is noise wearing numerals.
     const g = groupByProvider(ROWS).find((x) => x.provider === "anthropic");
-    expect(groupLine(g!)).toContain("2 keys");
+    expect(groupLine(g!)).toContain("since 2026-07-14");
+    expect(groupLine(g!)).not.toMatch(/\d+ keys/);
+  });
+
+  // ── The catalogue, not the receipt ──────────────────────────────────────
+  //
+  // 🔴 The page's whole job is getting the FIRST key installed, and with no
+  // keys it drew nothing at all. These four pin the fix.
+
+  it("🔴 draws a card for a vendor we hold NO key for", () => {
+    const g = groupByProvider([], ["anthropic", "groq"]);
+    expect(g.map((x) => x.provider)).toEqual(["anthropic", "groq"]);
+    expect(g[0].platform).toBeNull();
+  });
+
+  it("🔴 still draws a vendor we hold a key for that is not on the list", () => {
+    // Hiding a live credential because somebody forgot to add its guide is
+    // how a key gets forgotten — and it is our vendor bill.
+    const held = [CRED({ provider: "acme-llm" })];
+    expect(groupByProvider(held, ["anthropic"]).map((x) => x.provider))
+      .toContain("acme-llm");
+  });
+
+  it("lists each vendor ONCE when it is both held and known", () => {
+    const held = [CRED({ provider: "anthropic" })];
+    const names = groupByProvider(held, ["anthropic", "groq"])
+      .map((x) => x.provider);
+    expect(names.filter((n) => n === "anthropic")).toHaveLength(1);
+  });
+
+  it("keeps armed vendors above the ones still to do", () => {
+    const held = [CRED({ provider: "openai" })];
+    expect(groupByProvider(held, ["anthropic", "openai"])[0].provider)
+      .toBe("openai");
   });
 });
 
-describe("the health dot", () => {
-  it("🔴 paints an UNCHECKED account neutral, never green", () => {
-    // Nothing probes a vendor account today, so every live row reports
-    // `unknown`. Green would be a claim nobody measured, on the one screen
-    // where believing it means not checking.
-    expect(healthTone("unknown")).toBe("neutral");
-    expect(healthLabel("unknown")).toBe("never checked");
+describe("where a vendor stands, in one word", () => {
+  it("🔴 separates 'never set up' from 'we revoked it'", () => {
+    // ⚠️ The second is a decision somebody took. Drawing it as "not set up"
+    // invites the next operator to quietly undo it.
+    const untouched = groupByProvider([], ["mistral"])[0];
+    const dropped = groupByProvider(
+      [CRED({ provider: "mistral", revokedAt: "2026-08-01T00:00:00Z" })],
+    )[0];
+    expect(groupStatus(untouched)).toBe("untouched");
+    expect(groupStatus(dropped)).toBe("dropped");
+    expect(groupLine(untouched)).toBe("Not set up.");
+    expect(groupLine(dropped)).toContain("removed");
+    expect(groupLine(dropped)).not.toBe(groupLine(untouched));
   });
 
-  it("separates slow from dead", () => {
-    expect(healthTone("degraded")).toBe("warn");
-    expect(healthTone("failing")).toBe("danger");
-    expect(healthTone("ok")).toBe("ok");
+  it("does not call a BYOK-only vendor connected", () => {
+    const g = groupByProvider([CRED({ provider: "groq", orgSlug: "acme" })])[0];
+    expect(groupStatus(g)).toBe("byok-only");
+  });
+
+  it("calls a vendor with a live platform key connected", () => {
+    expect(groupStatus(groupByProvider([CRED({ provider: "groq" })])[0]))
+      .toBe("connected");
+  });
+});
+
+describe("what the card must NOT invent", () => {
+  // ⚠️ **Comments are stripped before scanning.** The component's own header
+  // legitimately NAMES the removed things while explaining why they are gone,
+  // and a fence that reads prose has gone blind on prose eight times in this
+  // repo. Code lines only.
+  const CODE = ADMIN.split("\n")
+    .filter((ln) => {
+      const t = ln.trim();
+      return !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+    })
+    .join("\n");
+
+  it("🔴 draws no health, because nothing measures any", () => {
+    // The sample screen wore green "answering" and amber "rate limited"
+    // chips. No probe exists, so on live data every one of those could only
+    // read "never checked" — and the owner, reasonably, asked what the column
+    // of fiction meant. Removed 2026-08-30. The contract keeps the fields as
+    // the probe slice's promise; the card shows only facts we hold.
+    expect(CODE).not.toContain("healthTone");
+    expect(CODE).not.toContain("healthLabel");
+    expect(CODE).not.toContain("healthNote");
+    expect(CODE).not.toContain("never checked");
+  });
+
+  it("🔴 offers Replace and Remove, never 'add another key'", () => {
+    // `provider_credential_live_uniq` makes a second live platform key
+    // impossible, so "add another" promised an insert and delivered a
+    // replace. The two words now say exactly what the POST does.
+    expect(CODE).not.toContain("Add another");
+    expect(CODE).toMatch(/>\s*Replace\s*</);
+    expect(CODE).toMatch(/>\s*Remove\s*</);
+  });
+
+  it("demotes a customer's own key below the platform key", () => {
+    // BYOK is an exception for one customer, not part of our coverage.
+    // Drawing it at the platform key's weight is how it gets read as
+    // coverage anyway — which is the page's original sin, fenced above.
+    expect(ADMIN).toContain("uses their own account");
+    expect(ADMIN).toMatch(/function ByokRow\(/);
   });
 });

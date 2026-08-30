@@ -11,7 +11,8 @@
 
 import { useState } from "react";
 
-import type { Task } from "@/lib/contract";
+import type { ProviderAccount, Task } from "@/lib/contract";
+import { vendorWarning } from "@/lib/readiness";
 
 const VERBS = [
   "acompletion",
@@ -21,13 +22,21 @@ const VERBS = [
   "aimage_generation",
 ];
 
-export default function DeclareModel({ tasks }: { tasks: Task[] }) {
+export default function DeclareModel({
+  tasks,
+  accounts = [],
+}: {
+  tasks: Task[];
+  accounts?: ProviderAccount[];
+}) {
   const [model, setModel] = useState("");
   const [task, setTask] = useState(tasks[0]?.slug ?? "chat");
   const [verb, setVerb] = useState("acompletion");
   const [streams, setStreams] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const warning = vendorWarning(model, accounts);
 
   async function declare() {
     setBusy(true);
@@ -64,6 +73,7 @@ export default function DeclareModel({ tasks }: { tasks: Task[] }) {
             value={model}
             onChange={(e) => setModel(e.target.value)}
           />
+          {warning && <span className="field-hint warn">{warning}</span>}
         </div>
         <div className="field">
           <label htmlFor="cap-task">What it does</label>

@@ -41,7 +41,7 @@ export default async function ModelsPage() {
     >
       <ModelBrowser models={catalog.data.models} />
       <RateCard rates={catalog.data.rates} tasks={catalog.data.tasks} />
-      <DeclareModel tasks={catalog.data.tasks} />
+      <DeclareModel tasks={catalog.data.tasks} accounts={catalog.data.accounts} />
     </Shell>
   );
 }

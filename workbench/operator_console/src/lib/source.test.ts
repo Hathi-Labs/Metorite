@@ -150,10 +150,36 @@ describe("nothing under src/app can reach the sample directly", () => {
   it("🔴 the sample holds UNHEALTHY shapes, not a happy path", () => {
     // ⚠️ A designer who only ever sees green ships the red states untested.
     expect(SAMPLE_CATALOG.accounts.some((a) => a.revokedAt)).toBe(true);
-    expect(SAMPLE_CATALOG.accounts.some((a) => a.health === "failing")).toBe(true);
     expect(SAMPLE_CATALOG.models.some((m) => !m.declared)).toBe(true);
     expect(SAMPLE_CATALOG.models.some((m) => !m.priced)).toBe(true);
     expect(SAMPLE_CATALOG.tiers.some((t) => t.jobs.some((j) => j.chain.length === 1)))
       .toBe(true);
+  });
+
+  it("🔴 the sample holds NO probed health, because nothing probes", () => {
+    // This asserted the opposite until 2026-08-30 — a `failing` account with
+    // the note "401 from the vendor". Nothing on the backend measures vendor
+    // health, so a sample that models a probe teaches a feature that does not
+    // exist, and the owner reads it as the page's meaning. Unhealthy is good
+    // sample data; IMPOSSIBLE is not.
+    for (const a of SAMPLE_CATALOG.accounts) {
+      expect(a.health).toBe("unknown");
+      expect(a.lastCheckedAt).toBeNull();
+      expect(a.healthNote).toBeNull();
+    }
+  });
+
+  it("🔴 the sample never holds two live platform keys for one vendor", () => {
+    // `provider_credential_live_uniq` refuses the second insert — proved
+    // against the real schema on 2026-08-30. The sample carried exactly that
+    // state ("Main billing account" + "Overflow account") and the card grew
+    // UI for it.
+    const seen = new Set<string>();
+    for (const a of SAMPLE_CATALOG.accounts) {
+      if (a.revokedAt || a.orgSlug) continue;
+      expect(seen.has(a.provider), `two live platform keys for ${a.provider}`)
+        .toBe(false);
+      seen.add(a.provider);
+    }
   });
 });
