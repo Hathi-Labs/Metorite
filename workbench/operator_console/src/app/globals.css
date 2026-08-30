@@ -873,14 +873,21 @@ button:disabled {
   --cat-1: #2f66c4; --cat-2: #1f8a5e; --cat-3: #9a6608; --cat-4: #9c4a91;
   --cat-5: #14788a; --cat-6: #a8452a; --cat-7: #5a63b0; --cat-8: #5f7521;
 }
-.chip.cat-0 { color: var(--cat-1); border-color: var(--cat-1); }
-.chip.cat-1 { color: var(--cat-2); border-color: var(--cat-2); }
-.chip.cat-2 { color: var(--cat-3); border-color: var(--cat-3); }
-.chip.cat-3 { color: var(--cat-4); border-color: var(--cat-4); }
-.chip.cat-4 { color: var(--cat-5); border-color: var(--cat-5); }
-.chip.cat-5 { color: var(--cat-6); border-color: var(--cat-6); }
-.chip.cat-6 { color: var(--cat-7); border-color: var(--cat-7); }
-.chip.cat-7 { color: var(--cat-8); border-color: var(--cat-8); }
+/* ⚠️ Each slot names its hue TWICE: as `color` and as `--hue`. The glyph
+   below needs the parent's hue for its own background while it paints its
+   letter in `--panel` — and `background: currentColor` cannot do that,
+   because currentColor resolves against the element's OWN `color`. The
+   first build did exactly that and every glyph drew a panel-coloured box
+   with a panel-coloured letter: an empty tile on every vendor card.
+   `categorical.test.ts` fences the pairing. */
+.chip.cat-0 { --hue: var(--cat-1); color: var(--cat-1); border-color: var(--cat-1); }
+.chip.cat-1 { --hue: var(--cat-2); color: var(--cat-2); border-color: var(--cat-2); }
+.chip.cat-2 { --hue: var(--cat-3); color: var(--cat-3); border-color: var(--cat-3); }
+.chip.cat-3 { --hue: var(--cat-4); color: var(--cat-4); border-color: var(--cat-4); }
+.chip.cat-4 { --hue: var(--cat-5); color: var(--cat-5); border-color: var(--cat-5); }
+.chip.cat-5 { --hue: var(--cat-6); color: var(--cat-6); border-color: var(--cat-6); }
+.chip.cat-6 { --hue: var(--cat-7); color: var(--cat-7); border-color: var(--cat-7); }
+.chip.cat-7 { --hue: var(--cat-8); color: var(--cat-8); border-color: var(--cat-8); }
 .chip[class*="cat-"] { background: var(--panel-2); }
 .chip .glyph {
   display: inline-flex;
@@ -889,7 +896,7 @@ button:disabled {
   width: 15px;
   height: 15px;
   border-radius: 3px;
-  background: currentColor;
+  background: var(--hue, currentColor);
   color: var(--panel);
   font-size: 10px;
   font-weight: 700;
