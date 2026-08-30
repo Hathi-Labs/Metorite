@@ -7881,6 +7881,8 @@ table is the single saved answer.
 | `POST /catalog/credit-price` | Console | The write. Admin plus an elevation window. The migration seeds no row |
 | `GET /catalog/models` | Console | Carries the ruling row as `credit_price`, money as strings |
 | "What a credit costs" panel | operator console | `/pricing` shows the frame, seeds the margin cockpit, converts a transfer |
+| "The price list" panel | operator console | One row per slate tier: the in-force price in its own unit, and in rupees |
+| "Price from cost" panel | operator console | One margin knob. Suggested charge = the first model's cost / (1 - margin). Apply writes the card |
 
 Two rules bind it. **Billing never reads the table** - a call bills
 credits, and the tier card owns how many. The fence is
