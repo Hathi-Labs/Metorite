@@ -270,6 +270,11 @@ export const deactivateOperator = (id: string, d?: Deps) =>
 
 // The elevation window (CP-12e). Opening one is always for the CALLER, so
 // there is no operator id to pass — the Console reads it from the session.
+// Who am I signed in as (GET /operators/session). Viewer-level; the
+// break-glass token answers method:"breakglass" with no name to show.
+export const readOperatorSession = (d?: Deps) =>
+  callConsole("/operators/session", { method: "GET" }, d ?? {});
+
 export const readElevation = (d?: Deps) =>
   callConsole("/operators/elevate", { method: "GET" }, d ?? {});
 

@@ -30,6 +30,7 @@
 import { usePathname } from "next/navigation";
 
 import Elevation from "./Elevation";
+import Identity from "./Identity";
 import ThemeToggle from "./ThemeToggle";
 
 type NavItem = {
@@ -134,6 +135,7 @@ export default function Header() {
           privilege and must be visible from every page — not on a settings
           screen somebody has to go looking for. */}
       <div className="sidebar-foot">
+        <Identity />
         <Elevation />
         <div className="sidebar-actions">
           <ThemeToggle />

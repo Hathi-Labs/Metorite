@@ -189,6 +189,7 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # reaches this matrix. `test_operator_signin.py` names the ungated
     # routes out loud so a THIRD one cannot appear unnoticed.
     ("DELETE", "/operators/session"): _R(VIEWER),
+    ("GET", "/operators/session"): _R(VIEWER),
     ("POST", "/operators"): _R(ADMIN),
     # ⚠️ Opening a window is ADMIN and NOT itself `elevated` — a rule that
     # demanded a window to open a window could never be satisfied.

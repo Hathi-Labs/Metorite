@@ -815,3 +815,36 @@ def test_this_suite_is_named_in_the_spec_verification_block() -> None:
         _ROOT / "project-docs" / "specs" / "operator_identity_and_access.md"
     ).read_text(encoding="utf-8")
     assert "tests/unit/test_operator_signin.py" in spec
+
+
+# ── Who am I — the sidebar's identity row (GET /operators/session) ─────────
+
+
+def test_whoami_names_the_signed_in_operator_and_their_role(
+    client, eng, issuer
+):
+    """The row exists so an operator knows which name their writes audit
+    under, and which matrix rank judges them."""
+    email = _email()
+    _register(eng, email, role="editor")
+    issuer["serve"](_payload(email))
+    token = _signin(client).json()["token"]
+
+    r = client.get("/operators/session", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json() == {"method": "session", "actor": email, "role": "editor"}
+
+
+def test_whoami_admits_the_break_glass_token_but_names_NOBODY(client):
+    """The shared token carries no person. Claiming one would put a made-up
+    name over audit lines the sidebar teaches operators to trust."""
+    r = client.get("/operators/session", headers=_auth(SHARED))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["method"] == "breakglass"
+    assert body["actor"] is None
+    assert body["role"] is None
+
+
+def test_whoami_refuses_the_anonymous(client):
+    assert client.get("/operators/session").status_code in (401, 403)

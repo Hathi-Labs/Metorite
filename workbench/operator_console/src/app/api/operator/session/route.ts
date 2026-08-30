@@ -5,8 +5,10 @@ import { json, readJsonBody } from "@/lib/route";
 import {
   ConsoleUnconfigured,
   exchangeSession,
+  readOperatorSession,
   revokeSession,
 } from "@/lib/console";
+import { proxyToConsole } from "@/lib/route";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +32,12 @@ const COOKIE_OPTIONS = {
 } as const;
 
 type Body = { secret?: string; access_token?: string };
+
+// GET → who am I, per the Console (method, actor, role). Always for the
+// CALLER: the Console reads the operator from the session it was handed.
+export async function GET(): Promise<Response> {
+  return proxyToConsole((d) => readOperatorSession(d));
+}
 
 export async function POST(request: Request): Promise<Response> {
   const body = (await readJsonBody(request)) as Body;
