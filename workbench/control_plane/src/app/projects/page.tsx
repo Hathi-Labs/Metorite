@@ -1790,13 +1790,21 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && nodeKind(selected) !== "folder" ? (
-        // Capture-first here too: a title and Enter. Everything else about a
-        // task — status, assignee, subtasks — is set from the panel once it
-        // exists, because a create form that asks six questions is a create
-        // form people work around. A FOLDER offers no composer at all: it
-        // holds projects, not tasks (migration 193), and the server refuses
-        // the write — the missing form says so before the 422 has to.
+      {selected &&
+      !overview &&
+      nodeKind(selected) !== "folder" &&
+      (mode === "timeline" || prefillAssignee) ? (
+        // Capture-first, but WHERE work lands (owner ask 2026-08-31,
+        // Plane's discipline — no global composer above a board that
+        // captures per column). Board, list, table and calendar each carry
+        // their own QuickAdd, which also inherits the group it sits in, so
+        // this bar was a second, worse door on those canvases. It stays on
+        // TIMELINE (the one canvas with no in-place capture) and whenever
+        // the People Center's "Assign work" pre-fill needs somewhere
+        // visible to land. Everything else about a task — status,
+        // assignee, subtasks — is set from the panel once it exists. A
+        // FOLDER offers no composer at all: it holds projects, not tasks
+        // (migration 193), and the server refuses the write.
         <form onSubmit={submitTask} className="border-b border-border px-3 py-2">
           {prefillAssignee ? (
             // §6.4: the pre-fill is VISIBLE and dismissible — silently
