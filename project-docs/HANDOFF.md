@@ -1180,27 +1180,6 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/pr-check.yml`
 - **Added:** 2026-08-28 · H-28 fix session
 
-### H-76 · The operator usage page truncates the rows it exists to show · [AGENT]
-- **Check:** `rg "ORDER BY credits DESC" apps/services/customer_console/customer_console/store.py`
-  → a hit means the ordering is unchanged, and this is open.
-- **Why:** `usage_by_org` uses a LEFT JOIN so an organization with no usage
-  appears. Its own docstring calls that row *"the single most actionable row
-  on the page"*. The query then orders by credits **descending** and caps the
-  page. So the cap removes that row first.
-- **📌 Measured, not theoretical.** Found 2026-08-30 against a scratch database
-  holding 563 organizations. Below the cap the two rules never meet, so dev,
-  CI and production all agree the page is correct.
-- **✅ Already done, and it is only half:** the read returns `total` and
-  `shown`, the API carries both, and the console prints "100 of 563". The
-  truncation is no longer silent. `test_a_quiet_customer_can_fall_OFF_the_default_page`
-  pins that the page admits it.
-- **⚠️ What is open:** the ORDERING itself. An operator wants the biggest
-  spenders **and** the quiet ones. One `ORDER BY` cannot give both. Two reads,
-  or one union, is the shape. To sort quiet-but-funded customers first, the
-  query needs the credit balance. That is a second read today
-  (`credit_balance_by_org`). This is a real slice, not a one-line change.
-- **Owning spec:** `specs/ai_metering_and_analytics.md` §5.
-
 ### H-75 · The Operator Console's systemd unit and Caddy block are NOT in the repo · [OWNER]
 - **Check:** `rg -l "operator" deploy/hostinger/` → no hit means the unit file
   is still only on the box, and this is open.
