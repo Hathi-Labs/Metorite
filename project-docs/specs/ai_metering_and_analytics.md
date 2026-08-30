@@ -3,17 +3,21 @@
 **Status: ACTIVE.** Owner directive, 2026-08-29. This specification owns the AI
 tier vocabulary that a customer sees, and every surface that reports AI use.
 
-**Slice state, re-measured 2026-08-31.** Slices 1, 2, 5, 6, 10, 11, 12 and 13
-are **BUILT**. Slice 6 shipped as `b3ce3a9c` (#163) and slice 12 as `537147b2`
-(#168). **Slice 5 shipped on 2026-08-31** as `020_usage_refusal.sql` plus the
-Router and store changes §8.1 records. **Slice 11 shipped on 2026-08-31** as
-the stream walk §8.6 records. §8's table carries a Gate column, so a dispatcher
-reads AGENT-SAFE or OWNER-GATE per row.
+**Slice state, re-measured 2026-08-31.** Slices 1, 2, 4, 5, 6, 10, 11, 12 and
+13 are **BUILT**. Slice 6 shipped as `b3ce3a9c` (#163) and slice 12 as
+`537147b2` (#168). §8's table carries a Gate column, so a dispatcher reads
+AGENT-SAFE or OWNER-GATE per row.
 
-**Two slices are SPEC ONLY, and each one holds a contract.** Slice 3 is §8.4
-and slice 4 is §8.5. Both are AGENT-SAFE. Each contract names its done-when
-clauses, its fences (R7) and its verification command. Slices 5 and 11 held
-two more contracts, and §8.1 and §8.6 are now their build records.
+**Three of them shipped on 2026-08-31.** Slice 5 shipped as
+`020_usage_refusal.sql` plus the Router and store changes §8.1 records. Slice
+11 shipped as the stream walk §8.6 records. Slice 4 shipped as the image rule
+§8.5 records.
+
+**One slice is SPEC ONLY, and it holds a contract.** Slice 3 is §8.4, and it is
+AGENT-SAFE. Its clause 6 is the only unbuilt clause left in this file. The
+contract names its done-when clauses, its fences (R7) and its verification
+command. Slices 4, 5 and 11 held three more contracts, and §8.5, §8.1 and §8.6
+are now their build records.
 
 **The other three, so that 13 rows add up.** *(Added 2026-08-30 — the two
 paragraphs above accounted for 10 slices and left 3 unnamed.)* Slice 7 is SPEC
@@ -165,9 +169,15 @@ reads the payload.
 
 *(The opening line read "The Router decides, and the customer does not" until
 2026-08-30. It fought three live decisions. G-3 and D61 put the declaration on
-the caller, and `CompletionRequest.task` (`main.py:834-843`) carries it today.
+the caller, and `CompletionRequest.task` (`main.py:834-852`) carries it today.
 The Router still picks WHICH MODEL answers, and the four steps below are that
 choice.)*
+
+⚠️ **Step 0, and it did not move** *(added 2026-08-31 with the build)*. A
+chosen tier that binds NO chat model meets the `TierUnknown` wall this route
+already had. The detail still says *"name a tier, not a model"*, and the
+refusal row names the tier the CALLER asked for. D-AI-2 changes nothing here,
+because there is no chat model on which to read a flag.
 
 **On a call that declares `task: vision`, the Router does this:**
 
@@ -189,7 +199,7 @@ call. A chat model that already reads images costs one.
 
 ⚠️ **Both bills read the (tier, task) pair, never a model rate card.** Step 2
 bills (chosen tier, `chat`). Step 3 bills (`tier-vision`, `vision`). Both go
-through `resolve_tier_rate` in `router.py`. D67 moved the customer price onto
+through `resolve_tier_rate` (`router.py:331`). D67 moved the customer price onto
 the tier, and the model-keyed write endpoint answers 410
 (`015_tier_pricing.sql:16-19`). This section said "rate card" and meant the
 retired one until 2026-08-30.
@@ -207,10 +217,10 @@ line, and it names both halves of the wall:
 no vision model is bound; the chat model for tier <slug> does not read images
 ```
 
-An operator reads it and knows which half to fix. The wording follows the
-shape `main.py:4571` already uses for an unbound tier. A
-silent drop of the image makes the model answer about text it cannot see, and
-the answer looks correct.
+An operator reads it and knows which half to fix. The wording follows the shape
+the unbound-tier refusal beside it already uses (`_resolve_serving_chain`,
+`main.py:4821`). A silent drop of the image makes the model answer about text
+it cannot see, and the answer looks correct.
 
 ### 3.3 A specialised tier stays invisible
 
@@ -551,7 +561,7 @@ is still agent-safe. §7 holds the gates themselves.
 | **1** | Operator reads: `usage_by_org`, `usage_daily` in `store.py` ✅ | O2, O3 | AGENT-SAFE |
 | **2** | Operator Console `/usage` page ✅ | O2, O3 | AGENT-SAFE |
 | **3** | The `customer_visible` column and the label seam — the TABLE shipped in `015`. **§8.4 holds the contract** | §3.1, C6 | AGENT-SAFE |
-| **4** | Router image rule — **§8.5 holds the contract** | §3.2 | AGENT-SAFE · the serving flip is the owner's (H-69) |
+| **4** | Router image rule ✅ `resolve_vision_chain` — **§8.5** | §3.2 | AGENT-SAFE · the serving flip is the owner's (H-69) |
 | **5** | Record a refusal in `usage_event` ✅ `020_usage_refusal.sql` — **§8.1** | A5 | AGENT-SAFE |
 | **6** | Margin and runway ✅ `b3ce3a9c` (#163) — **§8.2** | A1, A2 | AGENT-SAFE · a priced margin waits on H-42 |
 | **7** | Customer time series | C3 | AGENT-SAFE |
@@ -1060,21 +1070,31 @@ uv run pytest tests/unit/test_customer_console_tier_pricing.py -q
 
 Frontend: `npx vitest run` in `workbench/control_plane`.
 
-### 8.5 The Router image rule (slice 4, §3.2) — SPEC ONLY, 2026-08-30
+### 8.5 The Router image rule (slice 4, §3.2) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**, which is the D16/D17 convention CP-2b and CP-2c
-used. Where a name or a number below disagrees with the tree, the tree wins.
-Re-verify every anchor at dispatch.
+**This shipped on 2026-08-31.** The resolver is `router.resolve_vision_chain`,
+the route reads it through `main._resolve_serving_chain`, and the meter now
+records the task the CUSTOMER declared. The section is the build record rather
+than a proposal. Every anchor below was re-measured on the branch that built
+it.
 
 **Gate: AGENT-SAFE.** The serving flip stays the owner's act (H-69), and the
 build in front of it is agent work.
 
-**The problem.** `POST /v1/chat/completions` resolves one chain for the task
-the caller declared (`main.py:4570`). A `vision` task therefore reaches
-`tier-vision` or it reaches a 400. Nothing reads `model_profile.reads_images`
-(`012_model_profile.sql:60`), so a chat model that already reads images is
-never used, and every image call costs a second call.
+⚠️ **Nothing about this slice is observable yet, and that is the launch
+state.** Nothing populates `model_profile.reads_images` (§3.7 rule 4 seeds no
+row at all), and nothing binds `tier-vision` (F3). So every `task: vision` call
+today reads the flag as FALSE, falls, and answers the 400 of clause 3.
+
+Two operator acts change that. Somebody runs the vendor feed, which ships the
+flag populated (§6A.11). Somebody binds `tier-vision`. Slice 4 changes no
+behaviour a customer can see until one of those happens.
+
+**The problem this closed.** `POST /v1/chat/completions` resolved one chain for
+the task the caller declared. A `vision` task therefore reached `tier-vision`
+or it reached a 400. Nothing read `model_profile.reads_images`
+(`012_model_profile.sql:60`), so a chat model that already reads images was
+never used, and every image call cost a second call.
 
 **The answer, in one line.** Read the flag first. Use the chat model when the
 flag is TRUE. Fall to the `tier-vision` chain when it is FALSE.
@@ -1086,30 +1106,62 @@ flag is TRUE. Fall to the `tier-vision` chain when it is FALSE.
 
 1. **One model on a TRUE flag.** Take a tier whose chat model sets
    `reads_images`. A `task: vision` call on it calls exactly one model. That
-   model is the tier's own chat binding.
+   model is the tier's own chat binding. **The test writes its own
+   `model_profile` row.** Nothing seeds that table, so a fence that leaned on
+   the ladder would measure an empty one.
 2. **The `tier-vision` chain on a FALSE flag.** Take a tier whose chat model
    clears the flag. The same call resolves `tier-vision` for the `vision`
-   task. It then walks that chain (`router.py:127-168`).
+   task. It then walks that chain (`resolve_chain`, `router.py:152-193`).
+   **The test writes its own `tier_binding` rows** for both halves, and it
+   removes the `tier-vision` one afterwards. F3 measured that tier as unbound,
+   and clause 3's fence needs it to stay unbound.
 3. **400 and no completion on an unbound `tier-vision`.** The route returns
    HTTP 400 with the detail §3.2 step 4 names. It calls no provider, and it
    writes no completion.
-4. **The bills follow the pair.** Step 1 above bills (chosen tier, `chat`).
-   Step 2 bills (`tier-vision`, `vision`). Both read `tier_rate_card` through
-   `resolve_tier_rate` (`router.py:224`).
+
+   🔴 **The refusal row says `tier_unknown`, and the HTTP detail says the
+   vision sentence.** These are two different things. `_REFUSAL_REASONS`
+   (`main.py:4674-4678`) and `020_usage_refusal.sql`'s CHECK both close the
+   vocabulary at three slugs. A fourth slug needs a migration, and it is a
+   second spelling of one wall. The row is true as it stands, because
+   nothing binds `tier-vision`. It names `tier-vision` as the tier and
+   `vision` as the task, because the missing binding is the thing an operator
+   has to go and make. Its unit is `tokens`, which `_task_unit` reads from
+   `task_catalog` (`010_tasks_units_capabilities.sql:46`).
+4. **The bills follow the pair, and the ROW follows the customer.** Step 1
+   above bills (chosen tier, `chat`). Step 2 bills (`tier-vision`, `vision`).
+   Both read `tier_rate_card` through `resolve_tier_rate` (`router.py:331`).
+
+   🔴 **`usage_event.task` reads `vision` on BOTH served paths.** The customer
+   asked for vision, so analytics must answer with vision — otherwise the lift
+   files a customer's image work under `chat` and §1.3 undercounts it.
+   `_record_completion` takes a `declared_task` argument for exactly this
+   split, and `served_rank` still records the step that answered.
 5. **The Router still reads no payload.** The caller declares the task
-   (`main.py:834-843`). Nothing added by this slice looks inside `messages`.
+   (`CompletionRequest.task`, `main.py:834-852`). Nothing added by this slice
+   looks inside `messages`. `resolve_vision_chain` takes a connection and a
+   tier slug, and it takes nothing else.
 6. **The tier does not drop.** §6A.9 rule 1 forbids a degradation across
    tasks, and step 2 is a lift rather than a degradation. §3.2 records the
    reconciliation.
+
+⚠️ **The flag is read on the FIRST STEP of the chat chain.** §3.2 step 1 says
+*the model bound to the chosen tier*, and that is rank 1. A chain whose rank-2
+step disagrees with its rank-1 step is a warning the Console owes an operator.
+It is not a second resolution rule, and nothing here builds one.
 
 #### Fences (R7)
 
 | Rule | Fence |
 |---|---|
-| A chat model that reads images serves the image itself | `test_customer_console_router.py` — a TRUE flag calls one model |
-| A chat model that reads no image falls to `tier-vision` | `test_customer_console_router.py` — a FALSE flag calls the `tier-vision` chain |
-| An image refusal names the reason | `test_customer_console_router.py` — a missing `tier-vision` returns 400, never a text-only answer |
-| The Router never reads the payload | `test_customer_console_router.py` — an image in `messages` with `task: chat` stays on the chat binding |
+| A chat model that reads images serves the image itself | `test_customer_console_router.py` — `TestTheRouterImageRule`, a TRUE flag calls exactly one model |
+| A chat model that reads no image falls to `tier-vision` | `test_customer_console_router.py` — a FALSE flag, and an ABSENT profile row, both call the `tier-vision` chain |
+| An image refusal names the reason | `test_customer_console_router.py` — a missing `tier-vision` returns 400, calls no provider, and writes no completion |
+| An image refusal reaches the meter as `tier_unknown` | `test_customer_console_router.py` — one row, `tier-vision` / `vision` / `tokens`, and `_REFUSAL_REASONS` still holds three |
+| The bill follows the pair that SERVED | `test_customer_console_router.py` — the lift bills the chosen tier's `chat` card, and the fall bills nothing from it |
+| The row says what the CUSTOMER asked for | `test_customer_console_router.py` — the lift writes `task = vision` on a call served by the `chat` binding |
+| The Router never reads the payload | `test_customer_console_router.py` — an image in `messages` with `task: chat` stays on the chat binding, with `tier-vision` bound and available |
+| A stream takes the same two paths | `test_customer_console_router.py` — a streamed `task: vision` call lifts, falls, and walls exactly as a buffered one does |
 
 **Verification.** The suite is database-gated (R8), so start the database
 first.
@@ -1253,6 +1305,8 @@ agent breaks it.
 | Money leaves the API as a string | `test_customer_console_key_auth.py` — no float in a spend body |
 | A tier slug never changes | `test_index_completeness.py` sibling — the slug set is append-only |
 | An image refusal names the reason | `test_customer_console_router.py` — a missing `tier-vision` returns 400, never a text-only answer |
+| A chat model that reads images costs ONE call | `test_customer_console_router.py` — a `task: vision` call on a TRUE flag calls exactly one model |
+| The meter says what the CUSTOMER asked for | `test_customer_console_router.py` — a lifted vision call writes `task = vision` and bills the `chat` pair |
 | Every step of a chain shares one date | `test_customer_console_fallback_chain.py` — two dates resolve as two chains, and the first choice disappears |
 | A shorter chain leaves no orphan step | `test_customer_console_fallback_chain.py` — a three-step chain replaced by two resolves to two |
 | The Console saves the chain whole | `catalog.test.ts` — the page posts `models`, never `model` |

@@ -40,19 +40,24 @@ from sqlalchemy.engine import Connection
 from customer_console.credits import RateCard, TierRate, UnpricedModel
 
 __all__ = [
+    "CHAT_TASK",
     "SERVING_INVOCATIONS",
     "SSE_DONE",
     "TRANSCRIPTION_RESPONSE_FORMAT",
+    "VISION_TASK",
+    "VISION_TIER",
     "Credential",
     "ResolvedTier",
     "TierUnknown",
     "UnservableInvocation",
+    "VisionUnbound",
     "call_provider",
     "decrypt_secret",
     "duration_seconds",
     "encrypt_secret",
     "frame_of",
     "provider_credential",
+    "reads_images",
     "relay_stream",
     "resolve_invocation",
     "resolve_rate_card",
@@ -64,6 +69,20 @@ __all__ = [
     "vendor_cost_per_minute_usd",
     "vendor_cost_usd",
 ]
+
+
+#: The task a caller declares when it sends an image (D-AI-2). Priced in
+#: tokens, exactly like ``chat`` (`010_tasks_units_capabilities.sql`:46).
+VISION_TASK = "vision"
+
+#: The task a chat model serves. D-AI-2 reads this binding FIRST, because a
+#: chat model that reads images costs one call and a second model costs two.
+CHAT_TASK = "chat"
+
+#: The tier that holds a dedicated image-reading model. §3.3 keeps it out of
+#: the customer picker: no caller ever names it, and :func:`resolve_vision_chain`
+#: is the only thing that resolves it.
+VISION_TIER = "tier-vision"
 
 
 class TierUnknown(Exception):
@@ -172,6 +191,88 @@ def resolve_chain(
         ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1]))
         for r in rows
     ]
+
+
+# ── D-AI-2: an image follows the chat model when it can (§3.2) ──────────────
+
+
+class VisionUnbound(Exception):
+    """Both halves of the image wall are down at once (§3.2 step 4).
+
+    The chosen tier has a chat model that does not read images, AND nothing
+    binds :data:`VISION_TIER`. So no model in the system can see the image.
+
+    ⚠️ **A separate class from :class:`TierUnknown` because the SENTENCE
+    differs.** The route answers 400 either way, and the customer must be told
+    WHICH half to fix — a tier that binds nothing at all is a different repair
+    from a tier whose chat model is text-only. The refusal SLUG stays
+    ``tier_unknown`` (`020_usage_refusal.sql`'s CHECK closes the vocabulary at
+    three), because the wording of an HTTP detail and the slug the meter
+    records are two different things.
+    """
+
+
+def reads_images(conn: Connection, model: str) -> bool:
+    """Does this model read an image itself? ``model_profile.reads_images``.
+
+    🔴 **ONE source for the flag** (§3.2). ``model_capability`` holds no
+    ``vision`` row for any model, so a capability read answers nothing, and two
+    sources for one fact is how the two start to disagree.
+
+    A model with NO profile row answers FALSE. Nobody has told us the model
+    reads images, and D-AI-2 then routes the image to a model that certainly
+    does rather than to one that may drop it in silence.
+    """
+    row = conn.execute(
+        text("SELECT reads_images FROM model_profile WHERE model = :m"),
+        {"m": model},
+    ).first()
+    return bool(row and row[0])
+
+
+def resolve_vision_chain(
+    conn: Connection, tier: str
+) -> list[ResolvedTier]:
+    """Which chain serves a ``task: vision`` call on *tier* (D-AI-2, §3.2).
+
+    🔴 **Nothing here reads the payload.** The CALLER declares the task (G-3,
+    D61). This function takes a tier slug and a connection, and it never sees
+    ``messages`` — inferring the task from an ``image_url`` part is exactly the
+    inference D32.7 is hostile to.
+
+    Two answers, and the money is the whole reason for the first one:
+
+    1. The chosen tier's CHAT chain, when its primary model sets
+       ``reads_images``. One model answers, and the call bills the (chosen
+       tier, ``chat``) pair. A second call to a vision model would cost a
+       second call.
+    2. The :data:`VISION_TIER` chain otherwise, billing (``tier-vision``,
+       ``vision``). This is a capability LIFT and not a degradation, so §6A.9
+       rule 1 does not forbid it: the tier the customer picked does not drop,
+       and every chat turn beside it stays where it was.
+
+    ⚠️ **The flag is read on the PRIMARY chat binding**, which is *the model
+    bound to the chosen tier* that §3.2 step 1 names. A chain whose BACKUP
+    disagrees with its primary is an operator warning the Console owes, not a
+    second resolution rule here.
+
+    Raises:
+        TierUnknown: the chosen tier binds no chat model at all (§3.2 step 0).
+            The caller answers this with the wall it already had, unchanged.
+        VisionUnbound: the chat model reads no image and nothing binds
+            :data:`VISION_TIER`. Both halves are down, and the sentence names
+            both.
+    """
+    chat_chain = resolve_chain(conn, tier, CHAT_TASK)
+    if reads_images(conn, chat_chain[0].model):
+        return chat_chain
+    try:
+        return resolve_chain(conn, VISION_TIER, VISION_TASK)
+    except TierUnknown as unbound:
+        raise VisionUnbound(
+            f"no vision model is bound; the chat model for tier {tier} "
+            "does not read images"
+        ) from unbound
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────

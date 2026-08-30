@@ -53,6 +53,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, NoReturn
@@ -4487,6 +4488,7 @@ def _record_completion(
     client_ref: str | None,
     byok: bool = False,
     quantity: Decimal | None = None,
+    declared_task: str | None = None,
 ) -> None:
     """Write ONE usage row and draw the credits for it. Never raises.
 
@@ -4515,6 +4517,15 @@ def _record_completion(
     price. That is why the cost branch below reads ``quantity`` rather than
     the task name — the rule is about how the call is MEASURED, not about
     which of D60's six tasks it happens to be.
+
+    🔴 **``declared_task`` is what the CUSTOMER ASKED FOR, and the ROW records
+    it. The BILL follows ``resolved``** (§8.5 clause 4). D-AI-2 lets a
+    ``vision`` call be served by the chat binding of the tier the customer
+    picked, so the two names disagree on exactly that path: the row must read
+    ``vision`` or analytics cannot answer *"how much image work is this
+    customer doing"*, and the price must read (chosen tier, ``chat``) or we
+    charge them for a second call nobody made. Every other caller passes
+    ``None``, the two names agree, and nothing changes.
     """
     try:
         with get_engine().begin() as conn:
@@ -4562,7 +4573,9 @@ def _record_completion(
                 user_email=caller.member, agent=caller.agent,
                 module_slug=caller.module_slug, run_id=caller.run_id,
                 model=resolved.model, tier=resolved.tier,
-                task=resolved.task,
+                # The task the caller DECLARED, which is the served one for
+                # every caller but D-AI-2's lift. See the docstring.
+                task=declared_task or resolved.task,
                 # ⚠️ `quantity` stays NULL for a token-priced call, because
                 # that caller passes none. The three token columns already
                 # carry the number, and a second copy of it is a second thing
@@ -4781,6 +4794,86 @@ def _raise_spend_refusal(
     raise refusal
 
 
+# ── D-AI-2: which chain serves a `task: vision` call (§8.5, §3.2) ───────────
+
+
+@dataclass(frozen=True)
+class _TierWall:
+    """The 400 a resolution refused with, and the pair the meter records.
+
+    ⚠️ **The HTTP sentence and the refusal SLUG are two different things.**
+    ``error`` carries the wording a person reads, and it differs between the
+    two walls below. The slug is ``tier_unknown`` for both, because
+    ``_REFUSAL_REASONS`` and `020_usage_refusal.sql`'s CHECK close the
+    vocabulary at three and a fourth spelling of one wall is what that CHECK
+    exists to stop.
+    """
+
+    error: HTTPException | None
+    #: The tier a refusal row names. The one the CALLER asked for, except at
+    #: the image wall — there the missing binding is `tier-vision`, and that
+    #: is the fact A5 has to report.
+    tier: str
+    #: The task a refusal row names, read the same way.
+    task: str
+
+
+def _resolve_serving_chain(
+    conn, *, tier: str, task: str,
+) -> tuple[list[ResolvedTier], _TierWall]:
+    """The chain that serves this call, or the wall that refuses it.
+
+    🔴 **The refusal is RETURNED, never raised** (§8.1 clause 3). The meter
+    has to record the wall, and a row written on the serving connection rolls
+    back with the raise. So the route carries the 400 out of the transaction
+    and delivers it there.
+
+    🔴 **An image follows the chat model when it can (D-AI-2, §3.2).** A
+    caller that declares ``vision`` reaches :func:`router.resolve_vision_chain`,
+    which reads ``model_profile.reads_images`` and answers with the chosen
+    tier's own chat chain (one model, one call) or with the ``tier-vision``
+    chain. **Nothing here reads ``messages``** — the caller DECLARES the task
+    (G-3, D61), and inference is what D32.7 is hostile to.
+
+    Three answers, and each one is a different repair:
+
+    1. A chain. The call proceeds.
+    2. The tier binds nothing for this task — §3.2 step 0, the wall this route
+       already had, unchanged.
+    3. The chat model reads no image and nothing binds ``tier-vision`` — §3.2
+       step 4. The sentence names both halves, so an operator knows which one
+       to fix.
+    """
+    try:
+        chain = (
+            router_mod.resolve_vision_chain(conn, tier)
+            if task == router_mod.VISION_TASK
+            else resolve_chain(conn, tier, task)
+        )
+    except router_mod.VisionUnbound as unbound:
+        # A 200 here would answer about text the model cannot see, and that
+        # answer looks correct — which is why the silent drop is the worse
+        # outcome and this is a 400.
+        return [], _TierWall(
+            HTTPException(status_code=400, detail=str(unbound)),
+            router_mod.VISION_TIER, router_mod.VISION_TASK,
+        )
+    except TierUnknown:
+        # 400, not a silent coercion to a default. A misconfigured agent must
+        # be visible rather than quietly billed (D32.7).
+        return [], _TierWall(
+            HTTPException(
+                status_code=400,
+                detail=(
+                    f"no binding for tier {tier!r} on task "
+                    f"{task!r}; name a tier, not a model"
+                ),
+            ),
+            tier, task,
+        )
+    return chain, _TierWall(None, tier, task)
+
+
 def _open_stream_chain(
     attempts: list[ResolvedTier],
     kwargs_for: Any,
@@ -4835,6 +4928,7 @@ async def _streamed_completion(
     resolved: Any,
     client_ref: str | None,
     byok: bool = False,
+    declared_task: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Replay the first chunk, relay the rest, and meter the result once.
 
@@ -4858,6 +4952,9 @@ async def _streamed_completion(
         _record_completion(
             usage, org_id=org_id, caller=caller,
             resolved=resolved, client_ref=client_ref, byok=byok,
+            # A streamed `vision` call takes D-AI-2's lift exactly as a
+            # buffered one does, so its row says `vision` too (§8.5 clause 4).
+            declared_task=declared_task,
         )
 
     async def _replayed() -> AsyncIterator[Any]:
@@ -4900,29 +4997,18 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # serving connection rolls back with the raise — so the 400 is CARRIED out
     # of the transaction rather than thrown through it. `_spend_refusal`
     # already works this way, and its docstring states the rule.
-    unknown_tier: HTTPException | None = None
     refusal: HTTPException | None = None
-    chain: list[ResolvedTier] = []
     credentials: dict[str, router_mod.Credential | None] = {}
 
     with get_engine().begin() as conn:
-        try:
-            # 🔴 **The whole chain, not one model (D-AI-5).** Every step is
-            # resolved and credentialled inside this one transaction, because
-            # the provider call happens after the connection closes — looking a
-            # credential up mid-failover would need a second connection on the
-            # hottest path in the system.
-            chain = resolve_chain(conn, req.model, req.task)
-        except TierUnknown:
-            # 400, not a silent coercion to a default. A misconfigured agent
-            # must be visible rather than quietly billed (D32.7).
-            unknown_tier = HTTPException(
-                status_code=400,
-                detail=(
-                    f"no binding for tier {req.model!r} on task "
-                    f"{req.task!r}; name a tier, not a model"
-                ),
-            )
+        # 🔴 **The whole chain, not one model (D-AI-5).** Every step is
+        # resolved and credentialled inside this one transaction, because the
+        # provider call happens after the connection closes — looking a
+        # credential up mid-failover would need a second connection on the
+        # hottest path in the system.
+        chain, wall = _resolve_serving_chain(
+            conn, tier=req.model, task=req.task)
+        unknown_tier = wall.error
 
         if unknown_tier is None:
             credentials = _chain_credentials(conn, chain, org_id=org_id)
@@ -4937,7 +5023,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
     if unknown_tier is not None:
         _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
-                        tier=req.model, task=req.task,
+                        tier=wall.tier, task=wall.task,
                         client_ref=req.client_ref)
         raise unknown_tier
 
@@ -5088,6 +5174,8 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 resolved=resolved,
                 client_ref=req.client_ref,
                 byok=_byok_served(resolved),
+                # What the CUSTOMER asked for. The bill follows `resolved`.
+                declared_task=req.task,
             ),
             media_type="text/event-stream", headers=headers,
         )
@@ -5115,6 +5203,10 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # legally mix a BYOK vendor with a platform one, and §3.4's zero-rating
         # follows whichever account the tokens actually ran on.
         byok=_byok_served(resolved),
+        # 📌 What the CUSTOMER asked for, which is what analytics must report.
+        # The BILL follows `resolved`, so D-AI-2's lift records `vision` and
+        # charges the (chosen tier, `chat`) pair (§8.5 clause 4).
+        declared_task=req.task,
     )
 
     return response
