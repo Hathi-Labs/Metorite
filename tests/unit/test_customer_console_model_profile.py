@@ -18,6 +18,7 @@ R8: every test below runs against a real Postgres.
 from __future__ import annotations
 
 import os
+import typing
 import uuid
 
 import pytest
@@ -185,3 +186,66 @@ class TestWhatItIsNotTiedTo:
             )
         ).scalars().all()
         assert columns == ["model"]
+
+
+# ---- The ROUTE, not the table (2026-08-30) --------------------------------
+#
+# Nothing anywhere POSTed /catalog/profiles until the owner did, live, and
+# hit a 500 on every save: the route bound `CatalogCaller`, whose OPERATOR
+# arm returns None by design, and then read `staff.actor`. So the store
+# above was proven and the door in front of it never was. These tests are
+# the door's.
+
+
+class TestTheProfileRoute:
+    TOKEN = "test-operator-token"
+    OP: typing.ClassVar[dict[str, str]] = {
+        "Authorization": f"Bearer {TOKEN}"}
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", self.TOKEN)
+        pytest.importorskip("fastapi")
+        from customer_console.main import app
+        from fastapi.testclient import TestClient
+        return TestClient(app)
+
+    def test_an_operator_can_actually_save_a_profile(self, client, engine):
+        """The owner's live repro, verbatim: assemblyai/best from the feed -
+        every fact null, label null. It answered 500 for every operator."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "label": None,
+            "context_window": None, "max_output": None,
+            "vendor_input_per_1m_usd": None,
+            "vendor_output_per_1m_usd": None,
+            "vendor_cached_input_per_1m_usd": None,
+            "description": "", "reads_images": False, "thinks_first": False})
+        assert r.status_code == 200, r.text
+
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            # And the audit row names a real actor - the crash site.
+            actor = conn.execute(text(
+                "SELECT actor FROM control_audit "
+                "WHERE action = 'catalog.profile' "
+                "ORDER BY created_at DESC LIMIT 1")).scalar()
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert actor, "the profile audit row must name who saved it"
+
+    def test_a_customer_key_may_NOT_write_our_reference_data(self, client):
+        """The door also admitted `can_pay` customer keys - D66 in spirit:
+        the customer never brings a model, so they never describe one
+        either. A key-shaped token must be refused, not served."""
+        r = client.post(
+            "/catalog/profiles",
+            headers={"Authorization": "Bearer cc_live_abcd_efgh12345678"},
+            json={"model": "x/y"})
+        assert r.status_code in (401, 403)
+
+    def test_anonymous_is_refused(self, client):
+        assert client.post(
+            "/catalog/profiles", json={"model": "x/y"}
+        ).status_code in (401, 403)
