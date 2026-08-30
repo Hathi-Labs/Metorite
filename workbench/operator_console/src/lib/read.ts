@@ -84,6 +84,12 @@ type WireCatalog = {
     cached_input_per_1k: string;
     credits_per_unit: string;
   }[];
+  // 017 — the credit's own price. Absent from a Console still mid-rollout.
+  credit_price?: {
+    inr_per_credit: string;
+    usd_to_inr: string;
+    effective_from: string | null;
+  } | null;
   // 014 — the vendor feed. Absent from a Console still mid-rollout.
   feed?: {
     synced_at: string | null;
@@ -299,6 +305,13 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
   return {
     tasks: w.tasks, models, rates, tiers, accounts: [], failovers, feed,
     tierRates,
+    creditPrice: w.credit_price
+      ? {
+          inrPerCredit: w.credit_price.inr_per_credit,
+          usdToInr: w.credit_price.usd_to_inr,
+          effectiveFrom: w.credit_price.effective_from,
+        }
+      : null,
   };
 }
 

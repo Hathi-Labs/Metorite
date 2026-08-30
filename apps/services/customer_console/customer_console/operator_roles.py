@@ -49,15 +49,15 @@ _RANK = {VIEWER: 0, EDITOR: 1, ADMIN: 2}
 #: ⚠️ **CREDITS, not paise — a deliberate correction to spec §5.**
 #:
 #: The spec named this `OPERATOR_CREDIT_ELEVATION_PAISE`. `POST /credits/grant`
-#: grants a Decimal quantity of CREDITS, and there is no credit-to-rupee rate
-#: in this system today: the rate card ships UNPRICED on purpose (D19.2, and
-#: pricing it is H-42, an owner decision). A threshold in paise would imply a
-#: conversion that does not exist, and whoever added one later would be
-#: inventing a price. So the unit is the one the route actually moves.
+#: grants a Decimal quantity of CREDITS, and the credit-to-rupee rate is a
+#: `credit_price` row (017) the owner may not have set yet — the table ships
+#: EMPTY on purpose (D19.2; setting it is H-42, an owner act). A threshold
+#: in paise would be undefined until they do, and whoever hardcoded one
+#: would be inventing a price. So the unit is the one the route moves.
 #:
 #: The NUMBER still echoes **D33.4b**'s ₹15,000 auto-top-up cap, so the two
 #: ideas of "large enough to need a second thought" stay one idea.
-#: ⚠️ Re-derive it against the rate card once H-42 prices one.
+#: ⚠️ Re-derive it against `credit_price` once the owner sets one.
 DEFAULT_CREDIT_ELEVATION = 15_000
 
 
@@ -175,6 +175,8 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # so the refusal is authenticated, not an anonymous probe's oracle.
     ("POST", "/catalog/rates"): _R(ADMIN, elevated=True),
     ("POST", "/catalog/tier-rates"): _R(ADMIN, elevated=True),
+    # The credit's own rupee price (017) — the same commercial sharpness.
+    ("POST", "/catalog/credit-price"): _R(ADMIN, elevated=True),
     ("POST", "/providers/credentials/revoke"): _R(ADMIN, elevated=True),
     # Operator administration — admin only (D64.3), and NOT `elevated`.
     # Adding a colleague is ordinary work an admin does often, and a

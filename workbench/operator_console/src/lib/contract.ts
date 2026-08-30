@@ -268,6 +268,19 @@ export const EMPTY_FEED: VendorFeed = {
   syncedAt: null, source: null, models: 0, rows: [], available: [],
 };
 
+/** The credit's own price (migration 017) — what one credit SELLS for.
+ *
+ * ⚠️ STRINGS, exact — the same money rule as every price on this wire.
+ * Billing never reads it: a call bills credits, and the tier card owns how
+ * many (D67). This converts rupees to credits when somebody BUYS them.
+ * Null until the owner saves one (H-42). */
+export type CreditPrice = {
+  inrPerCredit: string;
+  /** INR per USD — the saved PLANNING rate margins convert with. */
+  usdToInr: string;
+  effectiveFrom: string | null;
+};
+
 // ── What the whole catalog read returns ─────────────────────────────────────
 
 export type Task = { slug: string; label: string; natural_unit: string };
@@ -282,9 +295,11 @@ export type AiCatalog = {
   feed: VendorFeed;
   /** What customers pay, per (tier, job) — D67. The card billing reads. */
   tierRates: TierRate[];
+  /** The credit's own rupee price — null until the owner sets it (H-42). */
+  creditPrice: CreditPrice | null;
 };
 
 export const EMPTY_CATALOG: AiCatalog = {
   tasks: [], models: [], rates: [], tiers: [], accounts: [], failovers: [],
-  feed: EMPTY_FEED, tierRates: [],
+  feed: EMPTY_FEED, tierRates: [], creditPrice: null,
 };

@@ -183,7 +183,7 @@ class TestTheWriteContractIsInsertOnly:
         from customer_console.operator_roles import MATRIX
 
         for route in ("/catalog/bindings", "/catalog/rates",
-                      "/catalog/tier-rates"):
+                      "/catalog/tier-rates", "/catalog/credit-price"):
             rule = MATRIX[("POST", route)]
             assert rule.elevated is True, route
         # And reading is not a privilege.

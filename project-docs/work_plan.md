@@ -3643,6 +3643,9 @@ by D15/D16) — read their banners before citing either.
      tier, the task and the price can exist first.
   4. **Pricing moved to `/tiers` in the console.** `/models` keeps the
      supply side only: what a model is, and what WE pay for it.
+     *(Amended 2026-08-30, the owner's IA pass: the cockpit now owns its
+     own `/pricing` page, beside the new `credit_price` frame. The key
+     stays `(tier, task)`.)*
 
 - **D68 — A tier serves ONE kind of job, and the registry says which.**
   *(owner call, 2026-08-30, on sight of the per-tier job dropdown. Owning

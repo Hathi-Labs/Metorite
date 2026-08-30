@@ -180,6 +180,25 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     const cat = catalogFromWire(WIRE({}));
     expect(cat.tierRates).toEqual([]);
   });
+
+  it("carries the credit price through with money as STRINGS (017)", () => {
+    const cat = catalogFromWire(WIRE({
+      credit_price: {
+        inr_per_credit: "1.500000", usd_to_inr: "88.000000",
+        effective_from: "2026-08-30T00:00:00Z",
+      },
+    }));
+    expect(cat.creditPrice).toEqual({
+      inrPerCredit: "1.500000", usdToInr: "88.000000",
+      effectiveFrom: "2026-08-30T00:00:00Z",
+    });
+  });
+
+  it("no saved credit price reads as null, never as zero", () => {
+    expect(catalogFromWire(WIRE({})).creditPrice).toBeNull();
+    expect(catalogFromWire(WIRE({ credit_price: null })).creditPrice)
+      .toBeNull();
+  });
 });
 
 describe("chains", () => {

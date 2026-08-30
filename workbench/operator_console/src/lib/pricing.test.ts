@@ -145,4 +145,19 @@ describe("the /pricing page wiring", () => {
     // table IS the page — hiding it would leave the page empty.
     expect(read("../app/pricing/TierPricing.tsx")).toContain("useState(true)");
   });
+
+  it("🔴 the credit price panel sits ABOVE the cockpit it seeds (017)", () => {
+    const page = read("../app/pricing/page.tsx");
+    expect(page).toContain("<CreditPrice");
+    expect(page.indexOf("<CreditPrice")).toBeLessThan(
+      page.indexOf("<TierPricing"));
+  });
+
+  it("the cockpit seeds its assumptions from the SAVED price", () => {
+    // Seeded, not hardwired: the operator can still overtype a what-if,
+    // and the storage fence above proves the what-if goes nowhere.
+    const panel = read("../app/pricing/TierPricing.tsx");
+    expect(panel).toContain("creditPrice?.inrPerCredit");
+    expect(panel).toContain("creditPrice?.usdToInr");
+  });
 });

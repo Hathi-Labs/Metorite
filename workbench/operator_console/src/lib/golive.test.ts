@@ -112,19 +112,37 @@ describe("step 4 — prices", () => {
     expect(s.detail).toContain("NOTHING");
   });
 
+  const DECIDED = {
+    ...BOUND,
+    tierRates: [{
+      tier: "fast", task: "chat", unit: "tokens",
+      mode: "absorbed" as const, inputPer1k: "0", outputPer1k: "0",
+      cachedInputPer1k: "0", creditsPerUnit: "0",
+    }],
+  };
+
   it("counts ABSORBED as decided — free on purpose is a decision", () => {
     const s = step(
       {
-        ...BOUND,
-        tierRates: [{
-          tier: "fast", task: "chat", unit: "tokens",
-          mode: "absorbed", inputPer1k: "0", outputPer1k: "0",
-          cachedInputPer1k: "0", creditsPerUnit: "0",
-        }],
+        ...DECIDED,
+        creditPrice: {
+          inrPerCredit: "1", usdToInr: "88", effectiveFrom: null,
+        },
       },
       "prices",
     );
     expect(s.state).toBe("done");
+  });
+
+  it("🔴 stays PARTIAL while the credit itself has no rupee price", () => {
+    // Both halves of H-42: the tier rates say how many credits a call
+    // burns, and `credit_price` says what a credit sells for. With only
+    // the first, a bank transfer has no official conversion — the rail
+    // must not read green.
+    const s = step(DECIDED, "prices");
+    expect(s.state).toBe("partial");
+    expect(s.detail).toContain("H-42");
+    expect(s.detail).toContain("no rupee price");
   });
 
   it("waits quietly while nothing is bound yet", () => {
