@@ -51,6 +51,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -63,6 +64,7 @@ from sqlalchemy import text
 from customer_console import (
     analytics,
     catalog,
+    feed,
     operator_activity,
     operator_elevation,
     operator_roles,
@@ -133,6 +135,59 @@ from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_count
 
 _log = logging.getLogger("platform.router")
 
+
+# ── The feed's clock (owner directive, 2026-08-30) ──────────────────────────
+#
+# "Updated regularly" is an env var, not a promise. Unset or non-positive
+# means OFF (ship dark — flipping it is the owner's act, H-77); a positive
+# float is the refresh period in hours. The loop must never die on a bad
+# night: every failure is one warning line and one more sleep, and the
+# packaged-snapshot fallback inside `feed.fetch_feed` already absorbs the
+# network being down.
+_FEED_SYNC_HOURS_VAR = "CUSTOMER_CONSOLE_FEED_SYNC_HOURS"
+
+
+def _feed_sync_hours() -> float:
+    try:
+        hours = float(os.environ.get(_FEED_SYNC_HOURS_VAR, "0"))
+    except ValueError:
+        _log.warning("feed.autosync_off reason=unparseable %s",
+                     _FEED_SYNC_HOURS_VAR)
+        return 0.0
+    return hours if hours > 0 else 0.0
+
+
+def _feed_sync_once() -> dict[str, Any]:
+    started = datetime.now(UTC)
+    raw, source = feed.fetch_feed()
+    rows = feed.parse_feed(raw)
+    with get_engine().begin() as conn:
+        counts = feed.sync(conn, rows, source, started)
+    return {"source": source, **counts}
+
+
+async def _feed_autosync(hours: float) -> None:
+    while True:
+        try:
+            result = await asyncio.to_thread(_feed_sync_once)
+            _log.info("feed.autosync source=%s models=%d",
+                      result["source"], result["models_seen"])
+        except Exception as exc:  # the loop outlives any night
+            _log.warning("feed.autosync_failed error=%s", exc)
+        await asyncio.sleep(hours * 3600)
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    hours = _feed_sync_hours()
+    task = asyncio.create_task(_feed_autosync(hours)) if hours else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+
+
 app = FastAPI(
     title="Metorite Customer Console",
     description=(
@@ -140,6 +195,7 @@ app = FastAPI(
         "design (saas_multitenancy.md §0.9.2) — never exposed to a tenant."
     ),
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 
@@ -1644,6 +1700,63 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "ORDER BY 1 DESC, tier, task LIMIT 50"))
         ]
 
+        # The vendor feed (014): upstream facts, fetched instead of typed.
+        # Three reads, one purpose — the operator clicks instead of copying
+        # out of a vendor's HTML pricing page:
+        #   meta      "how current is what you are looking at", from the
+        #             sync ledger, because currency is a provable claim;
+        #   rows      feed facts for models ALREADY declared or profiled, so
+        #             the console can show DRIFT (the vendor moved a price
+        #             under a profile somebody typed);
+        #   available what a CONNECTED vendor offers that nobody declared —
+        #             "latest models" as a list with an Add button, not a
+        #             newsletter. Vendors without a live platform key are
+        #             excluded: a model we hold no key for is not available,
+        #             it is a brochure.
+        meta_row = conn.execute(text(
+            "SELECT source, finished_at FROM feed_sync_log "
+            "ORDER BY id DESC LIMIT 1")).fetchone()
+        feed_total = conn.execute(
+            text("SELECT COUNT(*) FROM vendor_price_feed")).scalar() or 0
+
+        def _feed_wire(r: Any) -> dict[str, Any]:
+            # ⚠️ Money as STRINGS, same rule as profiles above.
+            return {
+                "model": r[0], "provider": r[1], "mode": r[2], "task": r[3],
+                "invocation": r[4], "context_window": r[5], "max_output": r[6],
+                "vendor_input_per_1m_usd": None if r[7] is None else str(r[7]),
+                "vendor_output_per_1m_usd":
+                    None if r[8] is None else str(r[8]),
+                "vendor_cached_input_per_1m_usd":
+                    None if r[9] is None else str(r[9]),
+                "reads_images": r[10], "thinks_first": r[11],
+                "deprecated_on": None if r[12] is None else r[12].isoformat(),
+            }
+
+        _FEED_COLS = (
+            "model, provider, mode, task, invocation, context_window, "
+            "max_output, vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
+            "vendor_cached_input_per_1m_usd, reads_images, thinks_first, "
+            "deprecated_on"
+        )
+        feed_rows = [
+            _feed_wire(r) for r in conn.execute(text(
+                f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                "WHERE model IN (SELECT model FROM model_capability "
+                "                UNION SELECT model FROM model_profile) "
+                "ORDER BY model"))
+        ]
+        feed_available = [
+            _feed_wire(r) for r in conn.execute(text(
+                f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                "WHERE provider IN (SELECT provider FROM provider_credential "
+                "                   WHERE organization_id IS NULL "
+                "                     AND revoked_at IS NULL) "
+                "  AND model NOT IN (SELECT model FROM model_capability "
+                "                    UNION SELECT model FROM model_profile) "
+                "ORDER BY provider, mode, model LIMIT 1000"))
+        ]
+
     cap_pairs = [(c["model"], c["task"]) for c in caps]
     bind_pairs = [(b["model"], b["task"]) for b in bindings]
     return {
@@ -1655,7 +1768,35 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "failovers": failovers,
         "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
         "unserved": catalog.unserved_bindings(cap_pairs, bind_pairs),
+        "feed": {
+            "synced_at": None if meta_row is None else _iso(meta_row[1]),
+            "source": None if meta_row is None else meta_row[0],
+            "models": int(feed_total),
+            "rows": feed_rows,
+            "available": feed_available,
+        },
     }
+
+
+@app.post("/catalog/feed/sync")
+def sync_vendor_feed(staff: Operator) -> dict[str, Any]:
+    """Pull the vendor feed NOW and land it in ``vendor_price_feed``.
+
+    The other half of "updated regularly" is the flag-gated autosync loop
+    (``CUSTOMER_CONSOLE_FEED_SYNC_HOURS``); this endpoint is the button, and
+    it works with the flag off. Reference data only — nothing here touches
+    ``model_profile``, a rate card, or anything billing reads. The response
+    repeats the evidence row (source + counts) so the caller can verify the
+    sync happened rather than believe it did.
+    """
+    started = datetime.now(UTC)
+    raw, source = feed.fetch_feed()
+    rows = feed.parse_feed(raw)
+    with get_engine().begin() as conn:
+        counts = feed.sync(conn, rows, source, started)
+        _audit(conn, None, "catalog.feed_sync",
+               {"source": source, **counts}, actor=staff.actor)
+    return {"source": source, **counts}
 
 
 @app.post("/catalog/capabilities")

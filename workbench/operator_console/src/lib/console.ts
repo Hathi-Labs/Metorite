@@ -298,6 +298,11 @@ export const setModelRate = (body: unknown, d?: Deps) =>
 export const setModelProfile = (body: unknown, d?: Deps) =>
   callConsole("/catalog/profiles", { method: "POST", body }, d ?? {});
 
+// Pull the vendor feed (migration 014) — litellm's price map — into
+// `vendor_price_feed` NOW. Reference data only: nothing billing reads moves.
+export const syncVendorFeed = (d?: Deps) =>
+  callConsole("/catalog/feed/sync", { method: "POST", body: {} }, d ?? {});
+
 // The audit trail (CP-12f). Filters and the opaque page cursor ride as query
 // parameters, and every one of them is optional.
 export const readActivity = (query: string, d?: Deps) =>

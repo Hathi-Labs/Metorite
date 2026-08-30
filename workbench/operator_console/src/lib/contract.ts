@@ -187,6 +187,61 @@ export type FailoverEvent = {
   requests: number;
 };
 
+// ── The vendor feed: upstream facts, fetched instead of typed ───────────────
+//
+// 🔴 **LIVE since migration 014 (owner directive, 2026-08-30).** No vendor
+// publishes a machine-readable price list, so the reliable source is litellm's
+// community price map — keyed on the SAME provider ids the Router routes on,
+// and bundled offline inside the litellm package the Console already ships.
+// The feed is a cache of upstream claims: billing still reads `model_profile`,
+// which only an explicit operator save changes. The feed's job is to make that
+// save a one-click copy, and to make a vendor's price change VISIBLE (drift)
+// instead of silent.
+
+export type FeedModel = {
+  /** Vendor-qualified, the Router's grammar: `deepseek/deepseek-chat`. */
+  id: string;
+  provider: string;
+  /** litellm's word for what it does — `chat`, `embedding`, `rerank`… */
+  mode: string;
+  /** OUR task slug, mapped server-side in ONE place (`feed.MODE_MAP`).
+   *  NULL means a mode we cannot serve yet — the row informs, but there is
+   *  no one-click declare for it. */
+  task: string | null;
+  invocation: string | null;
+  contextWindow: number | null;
+  maxOutput: number | null;
+  /** ⚠️ STRINGS, unlike CatalogModel's display prices — the feed is
+   *  NUMERIC(14,6) and these values get POSTED back into profiles, so a
+   *  float round-trip here would write its own noise into the database.
+   *  `Number()` on them only to compare and to draw. */
+  inputPer1M: string | null;
+  outputPer1M: string | null;
+  cachedInputPer1M: string | null;
+  readsImages: boolean;
+  thinksFirst: boolean;
+  /** The vendor's own retirement date, when litellm records one. */
+  deprecatedOn: string | null;
+};
+
+export type VendorFeed = {
+  /** NULL means never synced — an empty feed is a state, not an error. */
+  syncedAt: string | null;
+  /** `github` (live) or `packaged:litellm` (offline snapshot). */
+  source: string | null;
+  /** How many models the whole feed table holds. */
+  models: number;
+  /** Feed facts for models ALREADY declared or profiled — the drift surface. */
+  rows: FeedModel[];
+  /** What CONNECTED vendors offer that nobody declared. Vendors we hold no
+   *  live platform key for are excluded: that is a brochure, not an offer. */
+  available: FeedModel[];
+};
+
+export const EMPTY_FEED: VendorFeed = {
+  syncedAt: null, source: null, models: 0, rows: [], available: [],
+};
+
 // ── What the whole catalog read returns ─────────────────────────────────────
 
 export type Task = { slug: string; label: string; natural_unit: string };
@@ -198,8 +253,10 @@ export type AiCatalog = {
   tiers: Tier[];
   accounts: ProviderAccount[];
   failovers: FailoverEvent[];
+  feed: VendorFeed;
 };
 
 export const EMPTY_CATALOG: AiCatalog = {
   tasks: [], models: [], rates: [], tiers: [], accounts: [], failovers: [],
+  feed: EMPTY_FEED,
 };

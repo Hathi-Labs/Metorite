@@ -7810,6 +7810,38 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ---
 
+### 6A.11 The vendor feed — upstream facts, fetched instead of typed (2026-08-30)
+
+**Owner directive, 2026-08-30.** Model facts and vendor prices must come from
+upstream, or from one reliable source when the vendor publishes none. No
+vendor publishes a machine-readable price list. The reliable source is
+litellm's price map, `model_prices_and_context_window.json`. The community
+updates it near-daily. Its keys use the same provider ids the Router routes
+on. The litellm package also holds an offline copy of the same file.
+
+The feed is a cache of upstream claims. It is never a billing input. Billing
+cost reads `model_profile`, and only an operator save changes that table.
+The feed makes the save a one-click copy. It also makes a vendor price move
+visible as drift, instead of silent.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `vendor_price_feed` + `feed_sync_log` | migration `014` | The cache, and one evidence row per sync |
+| `feed.py` | `customer_console` | Parse, map `mode` to `(task, invocation)`, fetch with offline fallback |
+| `POST /catalog/feed/sync` | Console | The button. Staff-gated, returns source and counts |
+| `GET /catalog/models` `feed` block | Console | `rows` (declared, the drift surface) and `available` (connected vendors only) |
+| `CUSTOMER_CONSOLE_FEED_SYNC_HOURS` | env | The clock. Unset means off. The flip is the owner's act (H-77) |
+| `/models` page | operator console | Freshness strip, drift chips, copy button, "Available from your vendors" |
+
+Three rules bind the feed. A vendor we hold no live platform key for offers
+nothing, so `available` excludes it. A mode the Router has no verb for lands
+without a task, so the page shows it and cannot declare it. Money maths is
+Decimal from the first parse, so trailing zeros never read as drift.
+
+**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py`
+against a real Postgres (R8). Frontend: `feed.test.ts` inside
+`npx vitest run` in `workbench/operator_console`.
+
 ### Summary — what this means for starting work
 
 | Ticket | Blocked by anything above? |

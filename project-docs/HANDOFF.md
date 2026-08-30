@@ -1210,6 +1210,23 @@ line — never reclaim a number by deleting the other entry.
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session
 
+### H-77 · Set the vendor feed's clock on the box · [OWNER]
+- **Check:** on the box, `grep CUSTOMER_CONSOLE_FEED_SYNC_HOURS /opt/acb/app/.env`.
+  No line, or `0`, means the feed only updates when somebody presses the
+  button, and this is still open.
+- **Why:** the owner's directive (2026-08-30) asks for vendor prices that
+  update on their own. Migration `014` and `feed.py` built the machinery.
+  The loop ships dark (CLAUDE.md §4), so the clock is an env var the owner
+  sets. `24` is the sensible value — litellm moves near-daily.
+- **What it does NOT touch:** `model_profile`, the rate card, or any billing
+  read. The sync fills `vendor_price_feed` and the console shows drift. The
+  operator still clicks to copy a price into a profile.
+- **The button works today.** "Fetch the latest" on `/models` syncs once with
+  the flag unset. The flag only adds the clock.
+- **Authority:** `customer_console.md` §6A.11 · `work_plan.md` §6
+  (enforcement flips)
+- **Added:** 2026-08-30 · vendor-feed session
+
 ---
 
 # DONE — deleted, not archived
