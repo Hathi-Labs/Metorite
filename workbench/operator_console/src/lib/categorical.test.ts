@@ -9,7 +9,13 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CAT_SLOTS, categoricalChip, providerGlyph, slotFor } from "./categorical";
+import {
+  CAT_SLOTS,
+  categoricalBox,
+  categoricalChip,
+  providerGlyph,
+  slotFor,
+} from "./categorical";
 
 const CSS = readFileSync(join(__dirname, "..", "app", "globals.css"), "utf8");
 const RULES = CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
@@ -104,5 +110,38 @@ describe("the glyph", () => {
       const rule = RULES.slice(at, RULES.indexOf("}", at));
       expect(rule).toContain("--hue: var(--cat-");
     }
+  });
+});
+
+describe("the organization monogram box", () => {
+  it("wears the SAME slot as the chip would — one name, one colour", () => {
+    for (const n of ["Fracktal Works", "aster", "orrery"]) {
+      expect(categoricalBox(n)).toBe(`orgglyph cat-${slotFor(n)}`);
+    }
+  });
+
+  it("every slot has a box rule defining its --hue", () => {
+    // The box reads var(--hue) with a NEUTRAL fallback, so a slot with no
+    // rule degrades to a grey box — visible, never invisible (the
+    // currentColor lesson, applied in advance).
+    for (let i = 0; i < CAT_SLOTS; i++) {
+      const at = RULES.indexOf(`.orgglyph.cat-${i}`);
+      expect(at).toBeGreaterThan(-1);
+      const rule = RULES.slice(at, RULES.indexOf("}", at));
+      expect(rule).toContain("--hue: var(--cat-");
+    }
+    const box = RULES.slice(RULES.indexOf(".orgglyph {"));
+    const rule = box.slice(0, box.indexOf("}"));
+    expect(rule).toContain("background: var(--hue");
+    expect(rule).not.toContain("background: currentColor");
+  });
+
+  it("the roster and the detail hero both draw it", () => {
+    const table = readFileSync(
+      join(__dirname, "..", "app", "CustomerTable.tsx"), "utf8");
+    const detail = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
+    expect(table).toContain("categoricalBox(");
+    expect(detail).toContain("categoricalBox(");
   });
 });

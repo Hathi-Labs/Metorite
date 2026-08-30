@@ -13,6 +13,7 @@
 
 import { useMemo, useState } from "react";
 
+import { categoricalBox, providerGlyph } from "@/lib/categorical";
 import { formatDate, formatPaise, seatsTotals, statusHelp, trialHint, type OrgRow } from "@/lib/format";
 import { attentionFlags, filterRoster, sortRoster, type RosterFilter } from "@/lib/roster";
 import { chipClass, lifecycleTone } from "@/lib/tone";
@@ -119,19 +120,29 @@ export default function CustomerTable({ rows }: { rows: OrgRow[] }) {
               return (
                 <tr key={o.slug}>
                   <td>
-                    <a href={`/customers/${encodeURIComponent(o.slug)}`}>
-                      {o.name}
-                    </a>
-                    <div className="muted small">{o.slug}</div>
-                    {flags.length > 0 && (
-                      <div className="cell-flags" style={{ marginTop: 5 }}>
-                        {flags.map((f) => (
-                          <span key={f.kind} className={chipClass(f.tone)}>
-                            {f.label}
-                          </span>
-                        ))}
+                    <div className="orgcell">
+                      <span
+                        className={categoricalBox(o.name)}
+                        aria-hidden="true"
+                      >
+                        {providerGlyph(o.name)}
+                      </span>
+                      <div>
+                        <a href={`/customers/${encodeURIComponent(o.slug)}`}>
+                          {o.name}
+                        </a>
+                        <div className="muted small">{o.slug}</div>
+                        {flags.length > 0 && (
+                          <div className="cell-flags" style={{ marginTop: 5 }}>
+                            {flags.map((f) => (
+                              <span key={f.kind} className={chipClass(f.tone)}>
+                                {f.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </td>
                   <td>
                     <span

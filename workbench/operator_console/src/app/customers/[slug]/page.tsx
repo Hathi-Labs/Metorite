@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { categoricalBox, providerGlyph } from "@/lib/categorical";
 import {
   listOrganizations,
   catalog,
@@ -239,12 +240,22 @@ export default async function CustomerDetailPage({
         <a href="/">← All customers</a>
       </p>
       <div className="pagehead">
-        <div>
-          <h1>{org.name}</h1>
-          <p className="muted">
-            {org.slug} ·{" "}
-            <span className={`pill ${org.status}`}>{org.status.replace("_", " ")}</span>
-          </p>
+        <div className="orghero">
+          <span
+            className={`${categoricalBox(org.name)} lg`}
+            aria-hidden="true"
+          >
+            {providerGlyph(org.name)}
+          </span>
+          <div>
+            <h1>{org.name}</h1>
+            <div className="herochips">
+              <span className={`pill ${org.status}`}>
+                {org.status.replace("_", " ")}
+              </span>
+              <span className="chip mono">{org.slug}</span>
+            </div>
+          </div>
         </div>
       </div>
 

@@ -60,3 +60,13 @@ export function providerGlyph(name: string): string {
   const s = (name || "").trim();
   return s ? s[0].toUpperCase() : "?";
 }
+
+/** A solid monogram box for an ORGANIZATION (mockup adoption, 2026-08-30).
+ *
+ * Same slot, same stability rule as the chip — one name, one colour,
+ * everywhere. The box form reads at roster density where a full chip
+ * would shout; the letter comes from `providerGlyph`, which is a
+ * first-letter rule and not provider-specific despite its name. */
+export function categoricalBox(name: string): string {
+  return `orgglyph cat-${slotFor(name)}`;
+}

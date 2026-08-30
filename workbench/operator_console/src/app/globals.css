@@ -1010,6 +1010,57 @@ button:disabled {
   font-weight: 700;
 }
 
+/* ── The organization monogram ────────────────────────────────────────────
+   The box reads `--hue` exactly as the chip glyph does — a slot that
+   defines no hue falls back to a neutral box instead of an invisible one. */
+.orgglyph {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  background: var(--hue, var(--panel-3));
+  color: var(--panel);
+}
+.orgglyph.lg {
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  font-size: 19px;
+}
+.orgglyph.cat-0 { --hue: var(--cat-1); }
+.orgglyph.cat-1 { --hue: var(--cat-2); }
+.orgglyph.cat-2 { --hue: var(--cat-3); }
+.orgglyph.cat-3 { --hue: var(--cat-4); }
+.orgglyph.cat-4 { --hue: var(--cat-5); }
+.orgglyph.cat-5 { --hue: var(--cat-6); }
+.orgglyph.cat-6 { --hue: var(--cat-7); }
+.orgglyph.cat-7 { --hue: var(--cat-8); }
+
+.orgcell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.orgcell > div {
+  min-width: 0;
+}
+
+.orghero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.herochips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
 /* ── Sparkline ───────────────────────────────────────────────────────────
    ⚠️ `preserveAspectRatio="none"` lets the box stretch to the panel while the
    path keeps its own coordinate space, so one viewBox serves every width. The
