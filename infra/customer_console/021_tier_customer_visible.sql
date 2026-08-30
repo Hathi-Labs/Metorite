@@ -23,6 +23,13 @@
 -- `IS NULL` predicate. A NOT NULL boolean holds no such sentinel, so the guard
 -- is the column itself: the seed runs in the same block that creates it.
 --
+-- ⚠️ **The guard reads ONE schema, and `current_schema()` is which.** Every
+-- other statement in this file resolves through the search path. A guard that
+-- reads `information_schema.columns` across all schemas answers "the column
+-- exists" for a `tier_catalog` in a schema the ALTER never touches. The block
+-- then skips, and the unqualified `COMMENT ON COLUMN` below fails the deploy
+-- under `ON_ERROR_STOP`. A diff review reproduced that with a probe schema.
+--
 -- R6: expand only. One column, with a default. Rename nothing. Drop nothing.
 -- R1: 018 is the highest number on disk. 019 and 020 are claimed by sibling
 -- branches (§3.1), so the merge re-checks this number.
@@ -34,7 +41,8 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'tier_catalog'
+        WHERE table_schema = current_schema()
+          AND table_name = 'tier_catalog'
           AND column_name = 'customer_visible'
     ) THEN
         ALTER TABLE tier_catalog

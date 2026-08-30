@@ -538,12 +538,16 @@ def test_my_tiers_reads_the_same_slate_for_two_organizations(client, db, org):
     about the caller, so one organization reads nothing of another's."""
     _slug_a, org_id_a, key_a = org
     slug_b = f"tp-{uuid.uuid4().hex[:8]}"
-    client.post("/orgs/provision", headers=OP, json={
+    # ⚠️ Both setup calls are ASSERTED, and the `org` fixture's copies are
+    # not. A bare `.json()["token"]` on a refusal raises KeyError, which
+    # reports the last line of the setup and names none of the reason.
+    made = client.post("/orgs/provision", headers=OP, json={
         "slug": slug_b, "name": "B", "owner_email": f"o@{slug_b}.com",
         "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
-    token_b = client.post(
-        "/keys", headers=OP, json={"org_slug": slug_b}).json()["token"]
-    key_b = {"Authorization": f"Bearer {token_b}"}
+    assert made.status_code == 200, made.text
+    minted = client.post("/keys", headers=OP, json={"org_slug": slug_b})
+    assert minted.status_code == 200, minted.text
+    key_b = {"Authorization": f"Bearer {minted.json()['token']}"}
 
     body_a = client.get("/my/tiers", headers=key_a).json()
     body_b = client.get("/my/tiers", headers=key_b).json()
