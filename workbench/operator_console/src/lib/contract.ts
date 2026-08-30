@@ -99,6 +99,9 @@ export type CatalogModel = {
    *  WE charge. Two different numbers, and confusing them inverts a margin. */
   inputPer1M: number | null;
   outputPer1M: number | null;
+  /** The vendor's discounted CACHE-READ rate (013). NULL means untold, and a
+   *  cache-hitting call cannot be costed until it is. */
+  cachedInputPer1M: number | null;
   description: string;
   /** A `model_capability` row exists, so the Router will accept it. */
   declared: boolean;

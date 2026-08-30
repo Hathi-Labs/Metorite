@@ -55,6 +55,11 @@ const M = (
   maxOutput: out,
   inputPer1M: inP,
   outputPer1M: outP,
+  // ⚠️ The cache-read rate is deliberately UNTOLD for most sample rows —
+  // that is the common real state, and the cost column must show what it
+  // does about it.
+  cachedInputPer1M: id === "anthropic/claude-sonnet-4" ? 0.3
+    : id === "openai/gpt-4o" ? 1.25 : null,
   description,
   declared,
   priced,

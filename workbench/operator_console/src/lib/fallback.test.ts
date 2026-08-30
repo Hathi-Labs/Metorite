@@ -35,6 +35,7 @@ const model = (
   maxOutput: null,
   inputPer1M: null,
   outputPer1M: null,
+  cachedInputPer1M: null,
   description: "",
   declared,
   priced: true,
