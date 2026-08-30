@@ -39,7 +39,7 @@
 import { PROJECT_STATES, PROJECT_STATE_ORDER } from "@/lib/statusAccent";
 
 import type { ProjectRow } from "./api";
-import { ownState } from "./tree";
+import { hasRunState, type NodeLevel, ownState } from "./tree";
 
 /**
  * One menu entry, in terms with no React in them.
@@ -80,6 +80,11 @@ export interface ProjectMenuHandlers {
 export interface ProjectMenuUi {
   /** Swap the row's label for its inline rename field. */
   onBeginRename: () => void;
+  /**
+   * Open Space Settings — name, icon, icon colour (migration 194). Offered
+   * on a SPACE only, and optional so a read-only tree can omit it.
+   */
+  onOpenSettings?: () => void;
 }
 
 /**
@@ -98,7 +103,13 @@ export interface ProjectMenuUi {
 export function projectMenuItems(
   project: ProjectRow,
   handlers: ProjectMenuHandlers,
-  ui?: ProjectMenuUi
+  ui?: ProjectMenuUi,
+  /**
+   * Which level this row occupies. It decides what the menu may offer:
+   * a run state on a project/subproject, Space Settings on a space.
+   * Defaults to 'project' so an older caller keeps today's menu.
+   */
+  level: NodeLevel = "project"
 ): ProjectMenuItem[] {
   const current = ownState(project);
   const archived = Boolean(project.archived_at);
@@ -121,10 +132,22 @@ export function projectMenuItems(
     items.push({ kind: "sep" });
   }
 
-  // A folder has no run state of its own (migration 193): it groups, and
-  // its children inherit state from the nearest PROJECT ancestor. Offering
-  // the list would write `status` onto a row nothing reads it from.
-  if (project.kind === "folder") {
+  // A SPACE opens its settings — name, icon, icon colour (migration 194).
+  // Offered only here, because only a space draws an icon of its own.
+  if (level === "space" && ui?.onOpenSettings) {
+    items.push({
+      kind: "item",
+      label: "Space settings",
+      icon: "Settings",
+      onSelect: ui.onOpenSettings,
+    });
+    items.push({ kind: "sep" });
+  }
+
+  // Only a project or a subproject owns a run state (owner directive
+  // 2026-08-31). A space summarises and a folder groups; neither DOES work.
+  // The server refuses the write — this is the courtesy in front of it.
+  if (!hasRunState(level)) {
     items.push(...archiveItems(project, handlers, archived));
     return items;
   }

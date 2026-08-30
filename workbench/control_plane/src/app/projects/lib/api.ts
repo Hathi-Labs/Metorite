@@ -52,6 +52,37 @@ export interface ProjectRow {
   children?: ProjectRow[];
 }
 
+/** One direct child in a node's roll-up. */
+export interface SummaryChild {
+  id: string;
+  name: string;
+  kind: string;
+  status?: string | null;
+  archived: boolean;
+  /** Tasks in this child's WHOLE subtree, visible to the caller. */
+  tasks: number;
+  overdue: number;
+  by_category: Record<string, number>;
+}
+
+/**
+ * What `GET /nodes/{id}/summary` returns — the roll-up a space or folder
+ * shows instead of a board, and the aggregate a parent project folds into
+ * its own views (migration 194 / owner directive 2026-08-31).
+ */
+export interface NodeSummary {
+  id: string;
+  name: string;
+  level: "portfolio" | "space" | "folder" | "project" | "subproject";
+  /** Tasks in the whole subtree, the node's own included. */
+  tasks: number;
+  overdue: number;
+  by_category: Record<string, number>;
+  /** Descendant PROJECTS. Folders are not counted — they hold no work. */
+  projects: number;
+  children: SummaryChild[];
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -232,6 +263,13 @@ export { call as projectsCall };
 
 export const projectsApi = {
   tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),
+
+  /** The subtree roll-up behind every dashboard and every aggregate view. */
+  summary: (nodeId: string) =>
+    call<NodeSummary>(`nodes/${nodeId}/summary`),
+
+  /** The same shape one level up — every space the caller can see. */
+  portfolio: () => call<NodeSummary>("summary"),
 
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),

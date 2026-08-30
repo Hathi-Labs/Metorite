@@ -7,17 +7,27 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { hashSlot } from "@/lib/categorical";
+import { ICON_REGISTRY } from "@/lib/theme/icon-registry";
+
 import {
+  LEVEL_ICONS,
   type ProjectNode,
+  SPACE_ICON_CHOICES,
   canMoveUnder,
   childCreationOptions,
   effectiveState,
   filterByCenter,
   flatten,
+  hasRunState,
+  levelOf,
   moreRestrictive,
   nodeKind,
+  nodeLevel,
   ownState,
   pathTo,
+  showsDashboard,
+  spaceMarker,
   subtreeIds,
 } from "./tree";
 
@@ -228,5 +238,111 @@ describe("nodeKind — NULL reads as project (R6)", () => {
     expect(nodeKind({})).toBe("project");
     expect(nodeKind({ kind: null })).toBe("project");
     expect(nodeKind({ kind: "folder" })).toBe("folder");
+  });
+});
+
+describe("nodeLevel / levelOf — the four levels (migration 194)", () => {
+  it("maps kind plus generation onto a level", () => {
+    expect(nodeLevel("project", 1)).toBe("space");
+    expect(nodeLevel("project", 2)).toBe("project");
+    expect(nodeLevel("project", 3)).toBe("subproject");
+    expect(nodeLevel("folder", 2)).toBe("folder");
+  });
+
+  // space → folder → project → folder → subproject: the deepest legal
+  // shape, and the one where folders MUST be transparent or every level
+  // below the first folder reads one step too deep.
+  const forest = [
+    {
+      id: "space",
+      name: "Space",
+      children: [
+        {
+          id: "f1",
+          name: "Folder",
+          kind: "folder",
+          children: [
+            {
+              id: "proj",
+              name: "Project",
+              children: [
+                {
+                  id: "f2",
+                  name: "Phases",
+                  kind: "folder",
+                  children: [{ id: "sub", name: "Phase 1" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  it("reads a level off the forest, folders transparent", () => {
+    expect(levelOf(forest, "space")).toBe("space");
+    expect(levelOf(forest, "f1")).toBe("folder");
+    expect(levelOf(forest, "proj")).toBe("project");
+    expect(levelOf(forest, "f2")).toBe("folder");
+    expect(levelOf(forest, "sub")).toBe("subproject");
+  });
+
+  it("an unknown id reads as space — the safest wrong answer", () => {
+    // A space offers no run state and no destructive control, so guessing
+    // it cannot expose an action the row does not have.
+    expect(levelOf(forest, "nope")).toBe("space");
+  });
+
+  it("only a project and a subproject own a run state", () => {
+    expect(hasRunState("project")).toBe(true);
+    expect(hasRunState("subproject")).toBe(true);
+    expect(hasRunState("space")).toBe(false);
+    expect(hasRunState("folder")).toBe(false);
+  });
+
+  it("only a space and a folder show a dashboard instead of views", () => {
+    expect(showsDashboard("space")).toBe(true);
+    expect(showsDashboard("folder")).toBe(true);
+    // A parent project keeps its views and folds the subtree INTO them.
+    expect(showsDashboard("project")).toBe(false);
+    expect(showsDashboard("subproject")).toBe(false);
+  });
+});
+
+describe("spaceMarker — a name and a SLOT, never a colour", () => {
+  it("uses what the space chose, converting 1-based to 0-based", () => {
+    expect(spaceMarker({ name: "Ops", icon: "Cpu", icon_slot: 3 })).toEqual({
+      icon: "Cpu",
+      slot: 2,
+    });
+  });
+
+  it("falls back to the default glyph and a slot hashed from the name", () => {
+    const marker = spaceMarker({ name: "Operations" });
+    expect(marker.icon).toBe(LEVEL_ICONS.space);
+    expect(marker.slot).toBe(hashSlot("Operations"));
+    // Stable: the same name must never repaint between renders or users.
+    expect(spaceMarker({ name: "Operations" })).toEqual(marker);
+  });
+
+  it("ignores a slot outside the ramp rather than emitting a dead class", () => {
+    // `bg-cat-9` has no custom property behind it, and a declaration that
+    // resolves to nothing takes the whole rule with it.
+    for (const bad of [0, 9, -1, 99]) {
+      expect(spaceMarker({ name: "X", icon_slot: bad }).slot).toBe(
+        hashSlot("X")
+      );
+    }
+  });
+
+  it("every offered icon exists in the themed registry", () => {
+    // A name absent from the registry renders as a hole, and the theme
+    // system has no way to warn about one.
+    for (const name of SPACE_ICON_CHOICES) {
+      expect(ICON_REGISTRY[name], `${name} missing from the registry`).toBeDefined();
+    }
+    expect(ICON_REGISTRY[LEVEL_ICONS.space]).toBeDefined();
+    expect(ICON_REGISTRY[LEVEL_ICONS.folder]).toBeDefined();
   });
 });

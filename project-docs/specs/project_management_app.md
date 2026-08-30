@@ -626,6 +626,85 @@ upsert per drop (the board's cross-column drag patches whatever field `column_by
 
 ---
 
+### 5.1 The tree grammar — space, folder, project, subproject
+
+**Owner directive, 2026-08-31.** Migrations 193 and 194. The tree had one
+node type and no depth limit. Real trees grew five levels of identical rows,
+and no row showed what it was.
+
+The grammar is now:
+
+```
+space (root) -> [folder] -> project -> [folder] -> subproject
+```
+
+**Projects count toward the depth. Folders do not.** A space is generation 1,
+a project is 2, and a subproject is 3. Three is the limit. A folder groups
+the nodes below it. A folder does not nest, it holds no tasks, and it is
+never a root.
+
+`pm_projects.kind` holds `project` or `folder`. NULL reads as `project`
+(R6). The grammar itself is one pure function,
+`core.assert_node_grammar`. It is not a CHECK constraint, because the rules
+must read the parent chain, and a CHECK cannot walk one. Create and move
+both call it. A PATCH cannot change a kind: a folder that became a project
+would move past every rule.
+
+**A LEVEL is derived, and never stored.** `core.node_level` reads the kind
+and the generation. A stored level and the tree can disagree, and the tree
+is the fact.
+
+**What each level does:**
+
+| Level | Shows | Run state | Icon | Holds tasks |
+|---|---|---|---|---|
+| space | a dashboard of the whole subtree | no | its own | no |
+| folder | a dashboard of the projects below | no | folder glyph | no |
+| project | its views, with the subtree folded in | yes | run-state dot | yes |
+| subproject | its own views | yes | run-state dot | yes |
+
+**A space is not a project.** It shows a roll-up, and it has none of a
+project's views. A folder does the same for the projects below it. A
+project that holds subprojects keeps its views and adds the subtree to
+them. To see one subproject alone, click that subproject.
+
+**Only a project or a subproject has a run state.** A space summarises and a
+folder groups. Neither does work, so neither starts, pauses or stops.
+`core.assert_run_state_allowed` refuses the write. The menu also hides the
+control, but the refusal is the fence.
+
+**One endpoint feeds every roll-up.** `GET /projects/nodes/{id}/summary`
+counts the subtree in two grouped queries. It gives the totals, the counts
+for each category, the overdue count, and one line for each direct child.
+Every count passes through the caller's own task-visibility clause. A
+roll-up that added rows the reader cannot open is a disclosure channel in a
+summary's clothes.
+
+**Space Settings** changes the name, the icon and the icon colour. Open it
+with a right-click on the space. `pm_projects.icon` holds a themed icon
+NAME, and `pm_projects.icon_slot` holds a slot from 1 to 8 on the
+categorical ramp. Neither column holds a colour. The theme decides which
+pack draws the glyph, and what the hue is in light mode and dark mode. A
+hex value in these columns is the one thing `DESIGN_SYSTEM.md` rule 1
+refuses, and a later re-theme cannot reach it.
+
+🔭 **FUTURE — a space belongs to a team.** When departments, teams and
+groups exist, a space gets an owning team. The space then appears in that
+team's Center. The seam is already here: a `pm_project_grants` row with a
+`group:<slug>` subject is how a Center gets its slice today (D12). So the
+future column names an owner. It is not a second grant mechanism, and it is
+not a second dialog — it is a third field in Space Settings.
+
+**Fences:** `tests/unit/test_projects_node_kind.py` and
+`tests/unit/test_projects_space_identity.py` read each CHECK out of its
+migration, then exercise every refusal.
+`workbench/control_plane/src/app/projects/lib/tree.test.ts` pins the UI
+half: `childCreationOptions`, `levelOf`, `hasRunState`, `showsDashboard` and
+`spaceMarker`. It also asserts that every icon the picker offers is present
+in the themed registry.
+
+---
+
 ### 5.x The standalone app groups by Center (D22 amendment, 2026-08-10)
 
 `department_centers.md` §5's dual-access rule names this app its first consumer:

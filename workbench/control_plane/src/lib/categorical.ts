@@ -41,6 +41,15 @@ export interface CategoricalAccent {
   chip: string;
   /** The solid dot, for a leading marker or a legend. */
   dot: string;
+  /**
+   * The hue as FOREGROUND alone, for a glyph that is drawn rather than
+   * filled — a space's icon in the Projects sidebar (migration 194).
+   *
+   * Added here rather than sliced out of `chip` by a caller: a substring of
+   * a class string is not an API, and the split would break silently the
+   * day an entry gains a second `text-` utility.
+   */
+  text: string;
 }
 
 /**
@@ -51,14 +60,14 @@ export interface CategoricalAccent {
  * `` `bg-cat-${n}` `` is a class that exists in this file and in no stylesheet.
  */
 export const CATEGORICAL_ACCENTS: CategoricalAccent[] = [
-  { chip: "border-cat-1/30 bg-cat-1/10 text-cat-1", dot: "bg-cat-1" },
-  { chip: "border-cat-2/30 bg-cat-2/10 text-cat-2", dot: "bg-cat-2" },
-  { chip: "border-cat-3/30 bg-cat-3/10 text-cat-3", dot: "bg-cat-3" },
-  { chip: "border-cat-4/30 bg-cat-4/10 text-cat-4", dot: "bg-cat-4" },
-  { chip: "border-cat-5/30 bg-cat-5/10 text-cat-5", dot: "bg-cat-5" },
-  { chip: "border-cat-6/30 bg-cat-6/10 text-cat-6", dot: "bg-cat-6" },
-  { chip: "border-cat-7/30 bg-cat-7/10 text-cat-7", dot: "bg-cat-7" },
-  { chip: "border-cat-8/30 bg-cat-8/10 text-cat-8", dot: "bg-cat-8" },
+  { chip: "border-cat-1/30 bg-cat-1/10 text-cat-1", dot: "bg-cat-1", text: "text-cat-1" },
+  { chip: "border-cat-2/30 bg-cat-2/10 text-cat-2", dot: "bg-cat-2", text: "text-cat-2" },
+  { chip: "border-cat-3/30 bg-cat-3/10 text-cat-3", dot: "bg-cat-3", text: "text-cat-3" },
+  { chip: "border-cat-4/30 bg-cat-4/10 text-cat-4", dot: "bg-cat-4", text: "text-cat-4" },
+  { chip: "border-cat-5/30 bg-cat-5/10 text-cat-5", dot: "bg-cat-5", text: "text-cat-5" },
+  { chip: "border-cat-6/30 bg-cat-6/10 text-cat-6", dot: "bg-cat-6", text: "text-cat-6" },
+  { chip: "border-cat-7/30 bg-cat-7/10 text-cat-7", dot: "bg-cat-7", text: "text-cat-7" },
+  { chip: "border-cat-8/30 bg-cat-8/10 text-cat-8", dot: "bg-cat-8", text: "text-cat-8" },
 ];
 
 /** How many slots the ramp has. Callers take the modulus against this. */

@@ -28,6 +28,7 @@ import {
   type TaskRow,
   type FieldRow,
   type TagRow,
+  type NodeSummary,
   type ViewRow,
   projectsApi,
 } from "./lib/api";
@@ -103,7 +104,21 @@ import {
   visibleIds,
 } from "./lib/selection";
 import { fetchAccess } from "@/lib/access";
-import { filterByCenter, flatten, type NodeKind, nodeKind } from "./lib/tree";
+import {
+  filterByCenter,
+  flatten,
+  levelOf,
+  type NodeKind,
+  nodeKind,
+  showsDashboard,
+} from "./lib/tree";
+import NodeDashboard from "./components/NodeDashboard";
+import SpaceSettings from "./components/SpaceSettings";
+import {
+  PROJECT_APP_SECTIONS,
+  type ProjectAppId,
+  SPACES_SECTION_LABEL,
+} from "./lib/projectApps";
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -162,19 +177,26 @@ function renderState(kind: "loading" | "empty" | "error", message: string) {
 function ProjectNav({
   roots,
   selectedId,
-  mine,
-  onMine,
+  app,
+  onApp,
   onSelect,
   onAddChild,
+  onOpenSettings,
+  onNewSpace,
   onPicked,
   actions,
 }: {
   roots: ProjectRow[];
   selectedId: string | null;
-  mine: boolean;
-  onMine: () => void;
+  /** The app-level destination, or null when a space/project is selected. */
+  app: ProjectAppId | null;
+  onApp: (id: ProjectAppId) => void;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, kind: NodeKind) => void;
+  /** Open Space Settings for a space (migration 194). */
+  onOpenSettings: (space: ProjectRow) => void;
+  /** The + on the Spaces heading. */
+  onNewSpace: () => void;
   /** Called after any navigation, so the phone's drawer can close. */
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
@@ -182,31 +204,90 @@ function ProjectNav({
 }) {
   return (
     <>
-      {/* My work sits ABOVE the tree, not in a separate app. The personal
-          lens is a view of the same store — putting it anywhere else would
-          re-teach the split that D-PM-6 was revised to remove. */}
-      <button
-        type="button"
-        aria-pressed={mine}
-        onClick={() => {
-          onMine();
-          onPicked?.();
-        }}
-        className={`mb-2 w-full rounded-md px-2 py-1.5 text-left text-sm tech-transition ${
-          mine ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted"
-        }`}
-      >
-        My work
-      </button>
+      {/* The app's own destinations, in the main sidebar's grammar (owner
+          directive 2026-08-31). My work stays HERE rather than in a
+          section of its own: the personal lens is a view of the same
+          store, and separating it would re-teach the split D-PM-6 was
+          revised to remove. */}
+      {PROJECT_APP_SECTIONS.map((section) => (
+        <div key={section.id} className="mb-2">
+          {section.label ? (
+            <p className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {section.label}
+            </p>
+          ) : null}
+          <div className="flex flex-col gap-0.5">
+            {section.items.map((item) => {
+              const preview = item.launch === "preview";
+              const active = !preview && app === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={preview}
+                  title={preview ? `${item.label} — not built yet` : item.note}
+                  onClick={() => {
+                    if (preview) return;
+                    onApp(item.id);
+                    onPicked?.();
+                  }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm tech-transition ${
+                    active
+                      ? "bg-primary/15 text-primary"
+                      : preview
+                        ? "cursor-not-allowed text-muted-foreground/50"
+                        : "text-foreground hover:bg-muted"
+                  }`}
+                >
+                  <Icon name={item.icon} className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {/* `preview` is "not built", never "hidden by permission"
+                      — so it says so rather than disappearing. */}
+                  {preview ? (
+                    <span className="shrink-0 text-[10px] uppercase tracking-wider">
+                      Soon
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {/* The Spaces section — its own heading, with the + that creates one. */}
+      <div className="mb-1 flex items-center gap-1 px-2 py-1.5">
+        <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {SPACES_SECTION_LABEL}
+        </p>
+        <button
+          type="button"
+          aria-label="New space"
+          title="New space"
+          onClick={() => {
+            onNewSpace();
+            onPicked?.();
+          }}
+          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
+        >
+          <Icon name="Plus" className="h-4 w-4" />
+        </button>
+      </div>
+
       <ProjectTree
         roots={roots}
-        selectedId={mine ? null : selectedId}
+        selectedId={app ? null : selectedId}
         onSelect={(project) => {
           onSelect(project);
           onPicked?.();
         }}
         onAddChild={(parent, kind) => {
           onAddChild(parent, kind);
+          onPicked?.();
+        }}
+        onOpenSettings={(space) => {
+          onOpenSettings(space);
           onPicked?.();
         }}
         actions={actions}
@@ -306,7 +387,18 @@ function ProjectsWorkspace() {
   // and a panel offering another project's statuses would offer transitions
   // that do not exist.
   const [panelStatuses, setPanelStatuses] = useState<StatusRow[]>([]);
-  const [mine, setMine] = useState(false);
+  /**
+   * The app-level destination, or null when a space/project is selected
+   * (owner directive 2026-08-31 — the Projects app has its own sidebar
+   * sections now, and My work is one entry in them).
+   *
+   * `mine` stays derived rather than being replaced: it is read in a dozen
+   * places that mean "the personal lens", and turning each into a string
+   * comparison would spread this vocabulary across the file for no gain.
+   */
+  const [app, setApp] = useState<ProjectAppId | null>(null);
+  const mine = app === "my-work";
+  const setMine = (next: boolean) => setApp(next ? "my-work" : null);
   // `null` = nobody has chosen yet, which is a different state from "board":
   // the right default depends on the viewport, and a board of fixed-width
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
@@ -326,6 +418,13 @@ function ProjectsWorkspace() {
   const [newName, setNewName] = useState("");
   const [newTask, setNewTask] = useState("");
   const [treeKey, setTreeKey] = useState(0);
+  // The subtree roll-up for the current selection, and the space whose
+  // settings dialog is open (migration 194). Both null when not applicable.
+  const [summary, setSummary] = useState<NodeSummary | null>(null);
+  const [settingsFor, setSettingsFor] = useState<ProjectRow | null>(null);
+  // Analytics reads the portfolio roll-up — the same shape as a node's, so
+  // one dashboard component draws both.
+  const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
   const toast = useToast();
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
@@ -550,10 +649,102 @@ function ProjectsWorkspace() {
     [toast]
   );
 
+  /**
+   * Commit Space Settings — name, icon and ramp slot in ONE patch
+   * (migration 194).
+   *
+   * One request, not three: the three fields are what the dialog is, so a
+   * partial apply would leave a space wearing half of what was chosen and
+   * no way to tell which half. `selected` is merged rather than replaced,
+   * for `onRename`'s reason above — the response is a bare row and the
+   * snapshot is read elsewhere for its subtree.
+   */
+  async function saveSpaceSettings(
+    space: ProjectRow,
+    values: { name: string; icon: string; icon_slot: number }
+  ) {
+    setSettingsFor(null);
+    await toast.promise(
+      projectsApi.patchProject(space.id, values).then((res) => {
+        setTreeKey((k) => k + 1);
+        setSelected((prev) =>
+          prev && prev.id === space.id ? { ...prev, ...res } : prev
+        );
+        return res;
+      }),
+      {
+        key: `space-settings:${space.id}`,
+        loading: `Saving ${space.name}…`,
+        success: (res) => `Saved “${res.name}”`,
+        error: "Couldn't save the space",
+      }
+    );
+  }
+
   const visibleRoots = useMemo(
     () => filterByCenter(roots, grants, center),
     [roots, grants, center]
   );
+
+  // Which LEVEL the selection occupies, derived from the tree rather than
+  // stored (owner directive 2026-08-31). It decides the whole surface: a
+  // space or a folder shows a dashboard and no views, a project shows its
+  // views with the subtree folded in, a subproject shows only itself.
+  const selectedLevel = useMemo(
+    () => (selected ? levelOf(visibleRoots, selected.id) : "space"),
+    [visibleRoots, selected]
+  );
+  const dashboardOnly =
+    !app && Boolean(selected) && showsDashboard(selectedLevel);
+  /** Any surface that is not a project's board — no views, no composer. */
+  const noProjectChrome = dashboardOnly || app === "analytics";
+
+  // The roll-up behind the dashboard AND behind a parent project's
+  // aggregate header. Fetched for every level: a project with subprojects
+  // needs the same numbers, and one endpoint answering both is what keeps
+  // the two from disagreeing.
+  useEffect(() => {
+    if (!selected || mine) {
+      setSummary(null);
+      return;
+    }
+    let cancelled = false;
+    setSummary(null);
+    projectsApi
+      .summary(selected.id)
+      .then((next) => {
+        if (!cancelled) setSummary(next);
+      })
+      .catch(() => {
+        // A failed roll-up must not blank the board underneath it. The
+        // dashboard shows its own empty state; an aggregate header simply
+        // does not draw.
+        if (!cancelled) setSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id, mine, treeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Analytics' own read. Separate from `summary` because the two answer
+  // different questions and are on screen at different times — sharing one
+  // slot would make switching between them flash the wrong numbers.
+  useEffect(() => {
+    if (app !== "analytics") return;
+    let cancelled = false;
+    setPortfolio(null);
+    projectsApi
+      .portfolio()
+      .then((next) => {
+        if (!cancelled) setPortfolio(next);
+      })
+      .catch(() => {
+        if (!cancelled) setPortfolio(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [app, treeKey]);
 
   // Selecting nothing is a real state (an empty portfolio), so the default is
   // applied only when the current selection has fallen out of the filtered set.
@@ -607,14 +798,19 @@ function ProjectsWorkspace() {
           <ProjectNav
             roots={visibleRoots}
             selectedId={selected?.id ?? null}
-            mine={mine}
-            onMine={() => setMine(true)}
+            app={app}
+            onApp={setApp}
             onSelect={(project) => {
-              setMine(false);
+              setApp(null);
               setSelected(project);
             }}
             onAddChild={(parent, kind) => {
               setCreating({ parent, kind });
+              setNewName("");
+            }}
+            onOpenSettings={setSettingsFor}
+            onNewSpace={() => {
+              setCreating({ parent: null, kind: "project" });
               setNewName("");
             }}
             onPicked={() => setSheet(null)}
@@ -1367,10 +1563,27 @@ function ProjectsWorkspace() {
     </>
   );
 
-  const title = mine ? "My work" : selected?.name ?? "No project selected";
-  const subtitle = mine
-    ? "Assigned to you, plus your own — one store, so finishing here finishes it on the board."
-    : selected?.description ?? null;
+  const title = app
+    ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
+        ?.label ?? "Projects"
+    : selected?.name ?? "No project selected";
+  // A parent project says what it is AGGREGATING (owner directive
+  // 2026-08-31: *"when a project contains sub-projects, selecting the
+  // project will aggregate the sub-project data into the project view"*).
+  // The views already include the subtree — this is the line that tells the
+  // reader those numbers are not this project's alone, which is otherwise
+  // an invisible difference between two identical-looking boards.
+  const aggregateNote =
+    !mine && selectedLevel === "project" && (summary?.children.length ?? 0) > 0
+      ? `Includes ${summary!.projects} subproject${
+          summary!.projects === 1 ? "" : "s"
+        }`
+      : null;
+
+  const subtitle = app
+    ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
+        ?.note ?? null
+    : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
 
   /**
    * WS-27am — which canvas is on screen, in the user's words. It labels the
@@ -1391,7 +1604,53 @@ function ProjectsWorkspace() {
   const canvasKey = `${mine ? "my-work" : selected?.id ?? "none"}:${canvasLabel}`;
 
   /** Everything between the chrome and the canvas, plus the canvas. */
-  const workArea = (
+  const workArea = app === "ai-chat" ? (
+    // Unreachable today — the sidebar disables a `preview` entry. Written
+    // anyway so the destination exists the moment the flag flips, and so
+    // "not built" is a surface rather than a blank pane.
+    renderState("empty", "AI chat is not built yet.")
+  ) : app === "analytics" ? (
+    // Analytics — the portfolio roll-up, drawn by the SAME component a
+    // space uses. One counting rule, one layout, two scopes.
+    <>
+      {error ? renderState("error", error) : null}
+      {portfolio ? (
+        <NodeDashboard
+          summary={portfolio}
+          onOpen={(id) => {
+            const row = flatten(visibleRoots).find((e) => e.node.id === id);
+            if (row) {
+              setApp(null);
+              setSelected(row.node as ProjectRow);
+            }
+          }}
+        />
+      ) : (
+        renderState("loading", "Counting every space…")
+      )}
+    </>
+  ) : dashboardOnly ? (
+    // A SPACE IS NOT A PROJECT (owner directive 2026-08-31). It shows a
+    // roll-up of everything beneath it and none of a project's machinery —
+    // no filter bar, no view tabs, no task composer, no triage rail, no
+    // bulk bar. A folder is the same. Returning early rather than hiding
+    // each piece: six `&&`s would leave the next control somebody adds
+    // showing up here by default, and the default must be "not on a space".
+    <>
+      {error ? renderState("error", error) : null}
+      {summary ? (
+        <NodeDashboard
+          summary={summary}
+          onOpen={(id) => {
+            const row = flatten(visibleRoots).find((e) => e.node.id === id);
+            if (row) setSelected(row.node as ProjectRow);
+          }}
+        />
+      ) : (
+        renderState("loading", "Counting the work below…")
+      )}
+    </>
+  ) : (
     <>
       {error ? renderState("error", error) : null}
 
@@ -1797,39 +2056,26 @@ function ProjectsWorkspace() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {railOpen ? (
           <nav className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
-            <div className="mb-2 flex items-center gap-1 px-2">
-              <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Spaces
-              </p>
-              <button
-                type="button"
-                aria-label="New space"
-                title="New space"
-                onClick={() => {
-                  setCreating({ parent: null, kind: "project" });
-                  setNewName("");
-                }}
-                className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
-              >
-                <Icon name="Plus" className="h-4 w-4" />
-              </button>
-            </div>
-
             {projectForm("mb-2 px-2")}
             <ProjectNav
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
-              mine={mine}
-              onMine={() => setMine(true)}
+              app={app}
+              onApp={setApp}
               onSelect={(project) => {
-                setMine(false);
+                setApp(null);
                 setSelected(project);
               }}
               onAddChild={(parent, kind) => {
                 setCreating({ parent, kind });
                 setNewName("");
               }}
-                actions={projectMenuActions}
+              onOpenSettings={setSettingsFor}
+              onNewSpace={() => {
+                setCreating({ parent: null, kind: "project" });
+                setNewName("");
+              }}
+              actions={projectMenuActions}
             />
           </nav>
         ) : null}
@@ -1849,18 +2095,24 @@ function ProjectsWorkspace() {
             </div>
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
-            <div className="flex items-center gap-1 px-3 pb-2 pt-1.5">
-              {mine ? null : (
-                <ModeSwitch
-                  mode={mode}
-                  layout="toolbar"
-                  onPick={(next) => setChosenMode(next)}
-                />
-              )}
-              <div className="ml-auto flex shrink-0 items-center gap-1">
-                {projectActions(false)}
+            {/* A space and a folder have no views to switch between and no
+                project actions to offer, so the whole action row goes —
+                leaving an empty strip would look like a surface that failed
+                to load. */}
+            {noProjectChrome ? null : (
+              <div className="flex items-center gap-1 px-3 pb-2 pt-1.5">
+                {mine ? null : (
+                  <ModeSwitch
+                    mode={mode}
+                    layout="toolbar"
+                    onPick={(next) => setChosenMode(next)}
+                  />
+                )}
+                <div className="ml-auto flex shrink-0 items-center gap-1">
+                  {projectActions(false)}
+                </div>
               </div>
-            </div>
+            )}
           </header>
 
           {workArea}
@@ -1890,6 +2142,15 @@ function ProjectsWorkspace() {
           </div>
         </div>
       ) : null}
+
+      {/* Space Settings — name, icon, icon colour (migration 194). Mounted
+          at the page root rather than inside the tree: the tree is drawn
+          twice (rail and drawer), and a dialog inside it would be too. */}
+      <SpaceSettings
+        space={settingsFor}
+        onClose={() => setSettingsFor(null)}
+        onSave={(space, values) => void saveSpaceSettings(space, values)}
+      />
 
       {overlays}
     </div>

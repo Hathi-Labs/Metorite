@@ -243,6 +243,83 @@ def node_kind(value: object) -> str:
     return str(value or "project")
 
 
+#: The four LEVELS a node can occupy. A level is derived from kind plus
+#: position — it is never stored, because storing it would let the row and
+#: the tree disagree, and the tree is the fact.
+NODE_LEVELS: tuple[str, ...] = ("space", "folder", "project", "subproject")
+
+#: The levels that own a run state (owner directive 2026-08-31). A space
+#: summarises and a folder groups; neither DOES work, so neither starts,
+#: pauses or stops. `RUN_STATES` still describes the axis itself.
+RUN_STATE_LEVELS: frozenset[str] = frozenset({"project", "subproject"})
+
+
+def node_level(kind: str, generation: int) -> str:
+    """Which of the four levels this node occupies.
+
+    ``generation`` counts PROJECT ancestors including the node itself — the
+    number ``assert_node_grammar`` caps. So generation 1 is a space, 2 a
+    project and 3 a subproject; a folder is a folder wherever it sits.
+    """
+    if node_kind(kind) == "folder":
+        return "folder"
+    if generation <= 1:
+        return "space"
+    return "project" if generation == 2 else "subproject"
+
+
+#: Slots on the categorical ramp (`src/lib/categorical.ts`), 1-based on the
+#: wire. Mirrors migration 194's CHECK — test_projects_space_identity.py
+#: reads the range out of the SQL.
+ICON_SLOT_RANGE: tuple[int, int] = (1, 8)
+
+
+def validate_icon_slot(value: object) -> None:
+    """Refuse a ramp slot the theme has no hue for.
+
+    ⚠️ **Checked HERE and not left to the CHECK constraint.** A value the
+    database rejects arrives as an IntegrityError, which this app answers
+    with a 500 — an input error reported as a server fault, and unactionable
+    to the caller. Measured 2026-08-31: `icon_slot: 9` did exactly that.
+    The constraint stays as the backstop; this is the door.
+    """
+    if value is None:
+        return
+    low, high = ICON_SLOT_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not (
+        low <= value <= high
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"icon_slot must be a whole number from {low} to {high} — "
+                f"a slot on the theme's categorical ramp, not a colour."
+            ),
+        )
+
+
+def assert_run_state_allowed(level: str) -> None:
+    """Only a project or a subproject carries a run state.
+
+    Refused rather than ignored: a PATCH that silently dropped `status`
+    would report 200 and change nothing, which is the shape of bug that
+    takes a week to notice. The menu does not offer the states on these
+    levels either — this is the fence behind that courtesy.
+    """
+    if level in RUN_STATE_LEVELS:
+        return
+    does = "summarises the work below it" if level == "space" else (
+        "groups the projects below it"
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"A {level} has no run state. It {does}, and only a project or "
+            f"a subproject can be started or paused."
+        ),
+    )
+
+
 def assert_node_grammar(
     *,
     kind: str,
@@ -331,6 +408,10 @@ class ProjectModel(BaseModel):
     #: 'project' or 'folder' (migration 193). NULL rows read as 'project' —
     #: resolve through `node_kind`, never `row.kind` directly.
     kind: str | None = None
+    #: Migration 194 — a themed icon NAME and a categorical ramp SLOT (1..8),
+    #: never a colour. Meaningful on a space; NULL = the level's default.
+    icon: str | None = None
+    icon_slot: int | None = None
     task_prefix: str | None = None
     status: str = "active"
     lead: str | None = None
@@ -360,6 +441,9 @@ class ProjectIn(BaseModel):
     # Create-time only: the write path refuses a kind change on PATCH — a
     # folder full of subprojects becoming a project would dodge the grammar.
     kind: str | None = None
+    # Migration 194 — Space Settings writes these two. Root nodes only.
+    icon: str | None = None
+    icon_slot: int | None = None
     task_prefix: str | None = None
     status: str | None = None
     lead: str | None = None
