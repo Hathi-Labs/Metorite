@@ -299,8 +299,8 @@ class TestTheStreamWalk:
     """
 
     def test_a_healthy_first_step_is_the_only_call(self, stream_provider):
-        plan, seen = stream_provider
-        head, source, served = open_stream([step("a/one"), step("b/two")])
+        _, seen = stream_provider
+        head, _, served = open_stream([step("a/one"), step("b/two")])
 
         assert served.model == "a/one"
         assert head == [b"a/one-1"]
@@ -309,7 +309,7 @@ class TestTheStreamWalk:
     def test_a_529_before_any_frame_serves_the_backup(self, stream_provider):
         plan, seen = stream_provider
         plan["a/one"] = {"open": 529}
-        head, source, served = open_stream([step("a/one"), step("b/two")])
+        head, _, served = open_stream([step("a/one"), step("b/two")])
 
         assert served.model == "b/two"
         assert head == [b"b/two-1"]
@@ -331,7 +331,7 @@ class TestTheStreamWalk:
         # outage, and an open-only check would call it a success.
         plan, seen = stream_provider
         plan["a/one"] = {"after_open": 503}
-        head, source, served = open_stream([step("a/one"), step("b/two")])
+        _, _, served = open_stream([step("a/one"), step("b/two")])
 
         assert served.model == "b/two"
         assert seen == ["a/one", "b/two"]
@@ -364,7 +364,7 @@ class TestTheStreamWalk:
         # Walking on would bill a second vendor to repeat one empty answer.
         plan, seen = stream_provider
         plan["a/one"] = {"frames": []}
-        head, source, served = open_stream([step("a/one"), step("b/two")])
+        head, _, served = open_stream([step("a/one"), step("b/two")])
 
         assert head == []
         assert served.model == "a/one"
@@ -375,7 +375,7 @@ class TestTheStreamWalk:
         # ⚠️ The head is already consumed. A caller that replays it and then
         # drains the source must see each chunk once — the two failures this
         # mechanism can have are a duplicated first chunk and a lost one.
-        plan, seen = stream_provider
+        plan, _ = stream_provider
         plan["a/one"] = {"frames": [b"one", b"two", b"three"]}
         head, rest = open_and_drain([step("a/one")])
 
@@ -385,7 +385,7 @@ class TestTheStreamWalk:
 
     def test_a_stream_failover_is_announced_like_any_other(
             self, stream_provider):
-        plan, seen = stream_provider
+        plan, _ = stream_provider
         plan["a/one"] = {"after_open": 429}
         notes: list[tuple[str, str, int | None]] = []
         open_stream(

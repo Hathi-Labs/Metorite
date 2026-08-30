@@ -302,14 +302,23 @@ hand Starlette a body generator, and only then does the 200 status line go out.
 Every failure up to that chunk may fail over. Every failure after it may not.
 
 **The stream path reuses one policy and adds none of its own.**
-`MAX_CHAIN_ATTEMPTS` (`router.py:745`), `TERMINAL_STATUSES` (`router.py:753`)
-and `CREDENTIAL_STATUSES` (`router.py:757`) are read in `walk_chain`
-(`router.py:791`) and in no other function. Both `call_chain`
-(`router.py:841`) and `open_stream_chain` (`router.py:863`) walk through it. A
-second failover policy beside the first is the CLAUDE.md §5 defect, not a
-feature.
+`TERMINAL_STATUSES` (`router.py:753`) and `CREDENTIAL_STATUSES`
+(`router.py:757`) are read in `walk_chain` (`router.py:791`), through
+`is_retryable`, and in no other function. Both `call_chain` (`router.py:841`)
+and `open_stream_chain` (`router.py:863`) walk through it. A second failover
+policy beside the first is the CLAUDE.md §5 defect, not a feature.
 
-*(The three anchors above read `router.py:559-608` until 2026-08-30, and
+⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:745`) is the ONE exception, and it is a
+trap.** `walk_chain` does not read it. Each ROUTE caps its own list before it
+hands the list over, with `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
+(`main.py:4958` chat, `main.py:5375` transcribe).
+
+So a third caller of `walk_chain` that forgets that slice inherits NO ceiling.
+An unbounded chain is an unbounded bill and an unbounded wait. *(This
+paragraph said `walk_chain` reads the constant until 2026-08-31. It does
+not.)*
+
+*(The anchors above read `router.py:559-608` until 2026-08-30, and
 `router.py:617-663` until 2026-08-31. The first range is `relay_stream`, which
 is a different function.)*
 
@@ -1164,12 +1173,18 @@ reaches the client, and it reaches it exactly once.
 #### The boundary — §3.6 states it, and this section builds it
 
 Every failure before the first chunk may fail over. Every failure after it may
-not. The stream path reads `MAX_CHAIN_ATTEMPTS` (`router.py:745`),
-`TERMINAL_STATUSES` (`router.py:753`) and `CREDENTIAL_STATUSES`
-(`router.py:757`) through `walk_chain` (`router.py:791`), the one function
-`call_chain` (`router.py:841`) also walks through. It adds no second policy.
+not. The stream path reads `TERMINAL_STATUSES` (`router.py:753`) and
+`CREDENTIAL_STATUSES` (`router.py:757`) through `walk_chain`
+(`router.py:791`), the one function `call_chain` (`router.py:841`) also walks
+through. It adds no second policy.
 
-*(The three anchors above read `router.py:559-608` until 2026-08-30, and
+⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:745`) does NOT come with it.** The cap
+lives in the route's list slice, `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
+(`main.py:4958`), which the stream branch reuses because it walks the SAME
+`attempts` the buffered branch built. §3.6 records the trap for a future third
+caller.
+
+*(The anchors above read `router.py:559-608` until 2026-08-30, and
 `router.py:617-663` until 2026-08-31. The first range is `relay_stream`.)*
 
 #### Done when — five clauses
@@ -1229,8 +1244,21 @@ they hit.
 | A stream that never starts writes no usage row | `test_customer_console_router.py:745` — the phantom-row fence, unchanged |
 | The head is replayed once, and once only | `test_router_failover.py` — `test_the_head_leaves_the_source_at_the_SECOND_chunk` |
 
-**Verification.** Both suites are database-gated (R8), so start the database
-first.
+**Two observations this slice records and does not fix.**
+
+1. **A client can disconnect while the walk is still running.** The route is
+   `def`, so nothing cancels it when the client goes away. The walk can open a
+   provider stream that nobody reads. `MAX_CHAIN_ATTEMPTS` and the 120-second
+   timeout bound the cost, and `relay_stream` never starts, so no row is
+   written. Nothing recorded this window before 2026-08-31.
+2. **A keepalive comment is never the first chunk.** litellm parses the
+   provider's SSE and yields objects. An SSE comment line stays inside that
+   parser. A provider that keeps a slow stream alive that way still makes
+   `open_stream_chain` wait for a real chunk.
+
+**Verification.** `test_customer_console_router.py` is database-gated (R8), so
+start the database first. `test_router_failover.py` needs no database and runs
+anywhere.
 
 ```bash
 bash scripts/dev_db.sh

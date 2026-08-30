@@ -887,7 +887,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
     def test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream(
             self, client, org_key, db):
         """🔴 The headline. The client must not be able to tell it happened."""
-        slug, key = org_key
+        _, key = org_key
         tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
         seen: list[str] = []
 
@@ -969,7 +969,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         Serving the rest from a second model would splice two different
         completions into one response, which is worse than the error.
         """
-        slug, key = org_key
+        _, key = org_key
         tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
         seen: list[str] = []
 
@@ -987,12 +987,11 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         # The error reaches the client, and that is the CORRECT outcome. A
         # response already committed to one model cannot honestly continue on
         # another.
-        with pytest.raises(RuntimeError):
-            with client.stream(
-                    "POST", "/v1/chat/completions", headers=key, json={
-                        "model": tier, "stream": True,
-                        "messages": [{"role": "user", "content": "x"}]}) as r:
-                b"".join(r.iter_bytes())
+        with pytest.raises(RuntimeError), client.stream(
+                "POST", "/v1/chat/completions", headers=key, json={
+                    "model": tier, "stream": True,
+                    "messages": [{"role": "user", "content": "x"}]}) as r:
+            b"".join(r.iter_bytes())
 
         assert seen == [self.PRIMARY], "a started stream must not fail over"
         assert self.BACKUP not in seen
