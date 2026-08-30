@@ -20,7 +20,7 @@ const MODEL = (over: Partial<CatalogModel> = {}): CatalogModel => ({
   id: "deepseek/chat", label: "DeepSeek", provider: "deepseek",
   kinds: ["chat"], contextWindow: null, maxOutput: null,
   inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
-  description: "", declared: true, priced: false, ...over,
+  description: "", declared: true, ...over,
 });
 
 const CAT = (over: Partial<AiCatalog> = {}): AiCatalog => ({
@@ -97,16 +97,18 @@ describe("step 4 — prices", () => {
     accounts: [ACCOUNT()],
     models: [MODEL({ inputPer1M: 3 })],
     tiers: [{
-      slug: "fast", label: "Fast", blurb: "",
+      slug: "fast", label: "Fast", blurb: "", registered: true,
       jobs: [{ tier: "fast", task: "chat",
         chain: [{ model: "deepseek/chat", rank: 1 }] }],
     }],
   });
 
-  it("🔴 names the bound models that would bill NOTHING", () => {
+  it("🔴 names the bound tier jobs that would bill NOTHING", () => {
+    // D67: the customer buys the TIER, so what goes unpriced is the
+    // (tier, job) pair - the detail names it in those words.
     const s = step(BOUND, "prices");
     expect(s.state).toBe("todo");
-    expect(s.detail).toContain("deepseek/chat");
+    expect(s.detail).toContain("fast (chat)");
     expect(s.detail).toContain("NOTHING");
   });
 
@@ -114,8 +116,8 @@ describe("step 4 — prices", () => {
     const s = step(
       {
         ...BOUND,
-        rates: [{
-          model: "deepseek/chat", task: "chat", unit: "tokens",
+        tierRates: [{
+          tier: "fast", task: "chat", unit: "tokens",
           mode: "absorbed", inputPer1k: "0", outputPer1k: "0",
           cachedInputPer1k: "0", creditsPerUnit: "0",
         }],

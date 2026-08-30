@@ -45,9 +45,39 @@ class CatalogRefused(Exception):
 
 @dataclass(frozen=True)
 class RateProposal:
-    """One proposed rate-card row, before it reaches the database."""
+    """One proposed rate-card row, before it reaches the database.
+
+    ⚠️ Kept for the retired model-keyed endpoint's vocabulary and for the
+    checks below — customer prices are keyed on the TIER since D67, and new
+    writes go through :class:`TierRateProposal`.
+    """
 
     model: str
+    task: str
+    unit: str
+    pricing_mode: str
+    input_per_1k: Decimal = Decimal(0)
+    output_per_1k: Decimal = Decimal(0)
+    cached_input_per_1k: Decimal = Decimal(0)
+    credits_per_unit: Decimal = Decimal(0)
+
+    @property
+    def all_rates_zero(self) -> bool:
+        return not any((
+            self.input_per_1k, self.output_per_1k,
+            self.cached_input_per_1k, self.credits_per_unit,
+        ))
+
+
+@dataclass(frozen=True)
+class TierRateProposal:
+    """One proposed TIER rate — what a customer pays for (tier, task). D67.
+
+    Same fields and rules as :class:`RateProposal` with the subject re-keyed,
+    and :func:`check_rate` validates both — it reads the task, the unit, the
+    mode and the rates, never the subject."""
+
+    tier: str
     task: str
     unit: str
     pricing_mode: str
@@ -89,7 +119,9 @@ def check_streams(task: str, streams: bool) -> bool:
     return streams
 
 
-def check_rate(proposal: RateProposal, *, natural_unit: str) -> RateProposal:
+def check_rate(
+    proposal: RateProposal | TierRateProposal, *, natural_unit: str
+) -> RateProposal | TierRateProposal:
     """Refuse a rate card that cannot mean what it says.
 
     Three refusals, each for a mistake that would otherwise bill somebody:

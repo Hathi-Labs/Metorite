@@ -7842,6 +7842,30 @@ Decimal from the first parse, so trailing zeros never read as drift.
 against a real Postgres (R8). Frontend: `feed.test.ts` inside
 `npx vitest run` in `workbench/operator_console`.
 
+### 6A.12 Tier pricing and the tier slate (D67, 2026-08-30)
+
+**Owner decision, 2026-08-30.** The customer pays for the tier they picked.
+The serving model decides our cost, never their price. And the tier board
+shows every capability we intend to sell, empty slots included.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `tier_catalog` | migration `015` | The registry. Eleven tiers ship. An empty tier now exists |
+| `tier_rate_card` | migration `015` | What a customer pays per `(tier, task)`. INSERT-only, G-4 modes |
+| `video`, `music` tasks | migration `015` | Priced in seconds. No Router verb serves them yet, on purpose |
+| `resolve_tier_rate` + `_rate_completion` | Console | The meter rates the TIER. `served_rank` still records the model |
+| `POST /catalog/tier-rates` | Console | The write. Admin plus an elevation window |
+| `POST /catalog/rates` | Console | **410.** The model card is read-only history (R6 keeps the table) |
+| `/tiers` pricing panel | operator console | Set a price, see the margin against the chain's first model |
+
+Three rules bind it. A rate needs a registered tier, so the Console refuses
+a price for a ghost. An unpriced tier bills zero loudly and keeps the usage
+row. A future `effective_from` does not bill until its date arrives.
+
+**Verification:** `uv run pytest tests/unit/test_customer_console_tier_pricing.py`
+against a real Postgres (R8). Frontend: `npx vitest run` in
+`workbench/operator_console`.
+
 ### Summary — what this means for starting work
 
 | Ticket | Blocked by anything above? |

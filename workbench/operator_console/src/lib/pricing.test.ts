@@ -108,7 +108,7 @@ describe("the assumptions are stored NOWHERE", () => {
     const HERE = join(__dirname);
     const pricing = readFileSync(join(HERE, "pricing.ts"), "utf8");
     const panel = readFileSync(
-      join(HERE, "..", "app", "models", "RateCard.tsx"), "utf8");
+      join(HERE, "..", "app", "tiers", "TierPricing.tsx"), "utf8");
     for (const src of [pricing, panel]) {
       expect(src).not.toContain("localStorage");
       expect(src).not.toContain("sessionStorage");

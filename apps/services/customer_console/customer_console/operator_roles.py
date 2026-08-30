@@ -167,7 +167,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).
+    # The model-keyed route is RETIRED (D67) and answers 410 — the row stays
+    # so the refusal is authenticated, not an anonymous probe's oracle.
     ("POST", "/catalog/rates"): _R(ADMIN, elevated=True),
+    ("POST", "/catalog/tier-rates"): _R(ADMIN, elevated=True),
     ("POST", "/providers/credentials/revoke"): _R(ADMIN, elevated=True),
     # Operator administration — admin only (D64.3), and NOT `elevated`.
     # Adding a colleague is ordinary work an admin does often, and a

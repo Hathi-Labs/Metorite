@@ -182,7 +182,8 @@ class TestTheWriteContractIsInsertOnly:
         decides what they are billed. Both are as sharp as a provider key."""
         from customer_console.operator_roles import MATRIX
 
-        for route in ("/catalog/bindings", "/catalog/rates"):
+        for route in ("/catalog/bindings", "/catalog/rates",
+                      "/catalog/tier-rates"):
             rule = MATRIX[("POST", route)]
             assert rule.elevated is True, route
         # And reading is not a privilege.
@@ -254,9 +255,14 @@ class TestTheCatalogRead:
         body = client.get("/catalog/models", headers=OP).json()
 
         assert {t["slug"] for t in body["tasks"]} == {
-            "chat", "embed", "vision", "transcribe", "speak", "image"}
+            "chat", "embed", "vision", "transcribe", "speak", "image",
+            "video", "music"}  # video and music joined in 015 (D67's slate)
         assert any(c["task"] == "transcribe" for c in body["capabilities"])
         assert any(b["tier"] == "tier-stt" for b in body["bindings"])
+        # The registry (015): the whole slate reaches the console, so an
+        # EMPTY tier can render instead of not existing.
+        assert {t["slug"] for t in body["tier_registry"]} >= {
+            "tier-fast", "tier-video", "tier-music"}
 
     def test_the_seeded_world_has_NO_unserved_binding(self, client):
         """Every seeded binding must name a model that declares the capability.
@@ -353,28 +359,54 @@ class TestTheCatalogWrites:
         assert rows == 2
 
     def test_a_rate_in_the_WRONG_unit_is_refused(self, client):
-        model = f"test/{uuid.uuid4().hex[:8]}"
-        r = client.post("/catalog/rates", headers=OP, json={
-            "model": model, "task": "transcribe", "unit": "tokens",
+        # D67: prices are keyed on the tier. tier-stt ships on the slate.
+        r = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": "tier-stt", "task": "transcribe", "unit": "tokens",
             "pricing_mode": "priced", "input_per_1k": "2"})
         assert r.status_code == 400
         assert "minutes" in r.json()["detail"]
 
-    def test_a_per_minute_rate_is_accepted_and_read_back(self, client):
-        model = f"test/{uuid.uuid4().hex[:8]}"
+    def test_the_model_keyed_price_write_is_GONE(self, client):
+        """D67: the route answers 410 and names its successor — a working
+        write here would store a number nothing bills against."""
         r = client.post("/catalog/rates", headers=OP, json={
-            "model": model, "task": "transcribe", "unit": "minutes",
+            "model": "m", "task": "chat", "unit": "tokens",
+            "pricing_mode": "priced", "input_per_1k": "2"})
+        assert r.status_code == 410
+        assert "tier-rates" in r.json()["detail"]
+
+    def test_a_per_minute_TIER_rate_is_accepted_and_read_back(
+            self, client, db):
+        tier = f"tr-{uuid.uuid4().hex[:8]}"
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO tier_catalog (slug, label) VALUES (:t, :t)"),
+                {"t": tier})
+        r = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": tier, "task": "transcribe", "unit": "minutes",
             "pricing_mode": "priced", "credits_per_unit": "0.4"})
         assert r.status_code == 200, r.text
 
-        rates = client.get("/catalog/models", headers=OP).json()["rates"]
-        mine = [x for x in rates if x["model"] == model]
+        got = client.get("/catalog/models", headers=OP).json()["tier_rates"]
+        mine = [x for x in got if x["tier"] == tier]
         assert mine and mine[0]["unit"] == "minutes"
         assert mine[0]["pricing_mode"] == "priced"
+        with db.begin() as c:
+            c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                      {"t": tier})
+            c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"),
+                      {"t": tier})
+
+    def test_a_rate_for_an_unregistered_tier_is_refused(self, client):
+        r = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": f"ghost-{uuid.uuid4().hex[:8]}", "task": "chat",
+            "unit": "tokens", "pricing_mode": "priced", "input_per_1k": "2"})
+        assert r.status_code == 400
+        assert "tier_catalog" in r.json()["detail"]
 
     def test_priced_at_zero_is_refused_with_a_usable_reason(self, client):
-        r = client.post("/catalog/rates", headers=OP, json={
-            "model": "m", "task": "chat", "unit": "tokens",
+        r = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": "tier-fast", "task": "chat", "unit": "tokens",
             "pricing_mode": "priced"})
         assert r.status_code == 400
         assert "absorbed" in r.json()["detail"]
@@ -385,8 +417,8 @@ class TestTheCatalogWrites:
              {"model": "m", "task": "nope", "invocation": "acompletion"}),
             ("/catalog/bindings",
              {"tier": "t", "task": "nope", "model": "m"}),
-            ("/catalog/rates",
-             {"model": "m", "task": "nope", "unit": "tokens",
+            ("/catalog/tier-rates",
+             {"tier": "tier-fast", "task": "nope", "unit": "tokens",
               "pricing_mode": "unpriced"}),
         ):
             r = client.post(path, headers=OP, json=body)
@@ -394,7 +426,7 @@ class TestTheCatalogWrites:
 
     def test_the_writes_are_operator_gated(self, client):
         for path in ("/catalog/capabilities", "/catalog/bindings",
-                     "/catalog/rates"):
+                     "/catalog/rates", "/catalog/tier-rates"):
             assert client.post(path, json={}).status_code in (401, 403), path
 
 

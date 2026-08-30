@@ -29,7 +29,11 @@ export function singular(unit: string): string {
  * three per-1k rates. Choosing the wrong column shows a number that is real
  * and belongs to something else.
  */
-export function describeRate(row: ModelRate): string {
+export function describeRate(
+  // Structural on purpose: the model-keyed card and the tier card (D67)
+  // share every field this reads, and one describer keeps one phrasing.
+  row: Pick<ModelRate, "mode" | "unit" | "inputPer1k" | "outputPer1k" | "creditsPerUnit">,
+): string {
   if (row.mode === "absorbed") {
     // D19.2: deliberately free, and NOT the same as unpriced. Saying "free"
     // where the card means "nobody has set this yet" is how a draft ships.

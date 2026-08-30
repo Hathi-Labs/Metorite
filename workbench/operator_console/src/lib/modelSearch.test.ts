@@ -38,7 +38,6 @@ const m = (
   cachedInputPer1M: null,
   description: "",
   declared: true,
-  priced: true,
   ...over,
 });
 
@@ -57,8 +56,8 @@ const CATALOG = [
     contextWindow: 200000,
     inputPer1M: 1.1,
   }),
-  m("openai/whisper", ["transcribe"], { priced: false }),
-  m("groq/llama", ["chat"], { declared: false, priced: false, inputPer1M: 0.59 }),
+  m("openai/whisper", ["transcribe"], {}),
+  m("groq/llama", ["chat"], { declared: false, inputPer1M: 0.59 }),
 ];
 
 describe("free text", () => {
@@ -135,13 +134,13 @@ describe("the facet counts", () => {
 });
 
 describe("status", () => {
-  it("🔴 says NOT CONNECTED before it says NO PRICE", () => {
-    // Same order as readiness.ts. Nothing can be priced before it can be
-    // served, and telling somebody to price a model that will never run wastes
-    // an afternoon.
+  it("🔴 says NOT CONNECTED before it says COSTS BLIND", () => {
+    // Same order as readiness.ts. Nothing can be costed before it can be
+    // served — and since D67 the SELLING state lives on the tier board, so
+    // this page only judges supply: declared, and do we know what we pay.
     expect(statusOf(CATALOG[4])).toBe("undeclared");
-    expect(statusOf(CATALOG[3])).toBe("unpriced");
-    expect(statusOf(CATALOG[0])).toBe("ready");
+    expect(statusOf(CATALOG[3])).toBe("costblind");
+    expect(statusOf(CATALOG[0])).toBe("costed");
   });
 });
 

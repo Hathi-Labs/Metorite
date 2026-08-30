@@ -17,7 +17,8 @@ import { describeRate, singular, type ModelRate } from "./catalog";
 
 const SRC = join(__dirname, "..");
 const BROWSER = readFileSync(join(SRC, "app", "models", "ModelBrowser.tsx"), "utf8");
-const RATECARD = readFileSync(join(SRC, "app", "models", "RateCard.tsx"), "utf8");
+// D67: the pricing cockpit lives beside the tiers it prices.
+const RATECARD = readFileSync(join(SRC, "app", "tiers", "TierPricing.tsx"), "utf8");
 const DECLARE = readFileSync(join(SRC, "app", "models", "DeclareModel.tsx"), "utf8");
 const TIERS = readFileSync(join(SRC, "app", "tiers", "TierBoard.tsx"), "utf8");
 const PAGE = readFileSync(join(SRC, "app", "models", "page.tsx"), "utf8");

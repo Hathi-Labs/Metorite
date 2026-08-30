@@ -26,6 +26,7 @@ import type {
   ProviderAccount,
   Task,
   Tier,
+  TierRate,
   VendorFeed,
 } from "./contract";
 
@@ -35,6 +36,8 @@ const TASKS: Task[] = [
   { slug: "transcribe", label: "Write down speech", natural_unit: "minute" },
   { slug: "speak", label: "Read text aloud", natural_unit: "1k characters" },
   { slug: "embed", label: "Build a search index", natural_unit: "1k tokens" },
+  { slug: "video", label: "Make a video", natural_unit: "seconds" },
+  { slug: "music", label: "Make music", natural_unit: "seconds" },
 ];
 
 const M = (
@@ -47,7 +50,6 @@ const M = (
   outP: number | null,
   description: string,
   declared = true,
-  priced = true,
 ): CatalogModel => ({
   id,
   label,
@@ -64,7 +66,6 @@ const M = (
     : id === "openai/gpt-4o" ? 1.25 : null,
   description,
   declared,
-  priced,
 });
 
 const MODELS: CatalogModel[] = [
@@ -76,8 +77,7 @@ const MODELS: CatalogModel[] = [
     "Cheap and quick. Good for short answers and classification, weaker on long reasoning."),
   M("anthropic/claude-opus-4", "Claude Opus 4", ["chat", "vision", "reasoning"],
     200000, 32000, 15, 75,
-    "The strongest and the most expensive. Worth it for hard analysis, wasteful for chat.",
-    true, false),
+    "The strongest and the most expensive. Worth it for hard analysis, wasteful for chat."),
   M("openai/gpt-4o", "GPT-4o", ["chat", "vision"],
     128000, 16384, 2.5, 10,
     "Broad general model. Reads images and is widely tested."),
@@ -92,8 +92,7 @@ const MODELS: CatalogModel[] = [
     "Makes images from a description. Billed per image, not per token."),
   M("openai/whisper-1", "Whisper", ["transcribe"],
     null, null, null, null,
-    "Speech to text. Solid on clean audio, no speaker names.",
-    true, false),
+    "Speech to text. Solid on clean audio, no speaker names."),
   M("openai/tts-1", "OpenAI TTS", ["speak"],
     null, null, null, null,
     "Reads text aloud. Billed per character."),
@@ -111,23 +110,21 @@ const MODELS: CatalogModel[] = [
     "Open weights, served fast. No image reading."),
   M("groq/whisper-large-v3-turbo", "Whisper Large v3 Turbo", ["transcribe"],
     null, null, null, null,
-    "Transcription at several times real time. Billed per minute of audio.",
-    true, false),
+    "Transcription at several times real time. Billed per minute of audio."),
   M("deepseek/deepseek-chat", "DeepSeek V3", ["chat"],
     64000, 8192, 0.27, 1.1,
     "Very cheap per token. Good general chat, no images."),
   M("deepseek/deepseek-reasoner", "DeepSeek R1", ["chat", "reasoning"],
     64000, 8192, 0.55, 2.19,
     "Shows its working. Cheap for a reasoning model.",
-    false, false),
+    false),
   M("assemblyai/universal-2", "AssemblyAI Universal 2", ["transcribe"],
     null, null, null, null,
-    "Names the speakers, handles Hindi and English in one recording.",
-    true, false),
+    "Names the speakers, handles Hindi and English in one recording."),
   M("elevenlabs/eleven-turbo-v2", "ElevenLabs Turbo v2", ["speak"],
     null, null, null, null,
     "The most natural voices here. Billed per character.",
-    false, false),
+    false),
 ];
 
 // ⚠️ **Every row here is a state the DATABASE allows.** An earlier version
@@ -194,52 +191,110 @@ const ACCOUNTS: ProviderAccount[] = [
 //               cannot do the job it is bound to.
 const TIERS: Tier[] = [
   {
-    slug: "fast", label: "Fast",
-    blurb: "Quick answers. The cheapest tier, and the default everywhere.",
+    slug: "tier-fast", label: "Fast", registered: true,
+    blurb: "Quick answers at the lowest price.",
     jobs: [
-      { tier: "fast", task: "chat", chain: [
+      { tier: "tier-fast", task: "chat", chain: [
         { model: "anthropic/claude-haiku-4", rank: 1 },
         { model: "gemini/gemini-2.5-flash", rank: 2 },
         { model: "openai/gpt-4o-mini", rank: 3 },
       ] },
-      { tier: "fast", task: "embed", chain: [
+      { tier: "tier-fast", task: "embed", chain: [
         { model: "openai/text-embedding-3-large", rank: 1 },
       ] },
     ],
   },
   {
-    slug: "balanced", label: "Balanced",
-    blurb: "The everyday setting. Good answers without the top price.",
+    slug: "tier-balanced", label: "Balanced", registered: true,
+    blurb: "The everyday setting - good answers, fair price.",
     jobs: [
-      { tier: "balanced", task: "chat", chain: [
+      { tier: "tier-balanced", task: "chat", chain: [
         { model: "anthropic/claude-sonnet-4", rank: 1 },
         { model: "anthropic/claude-haiku-4", rank: 2 },
       ] },
-      { tier: "balanced", task: "image", chain: [
+      { tier: "tier-balanced", task: "image", chain: [
         { model: "openai/gpt-image-1", rank: 1 },
       ] },
     ],
   },
   {
-    slug: "powerful", label: "Powerful",
-    blurb: "For hard problems. Slower and much more expensive.",
+    slug: "tier-powerful", label: "Powerful", registered: true,
+    blurb: "The strongest models, for hard problems.",
     jobs: [
-      { tier: "powerful", task: "chat", chain: [
+      { tier: "tier-powerful", task: "chat", chain: [
         { model: "anthropic/claude-opus-4", rank: 1 },
       ] },
     ],
   },
   {
-    slug: "media", label: "Media",
-    blurb: "Speech and audio. Customers never pick this one directly.",
+    slug: "tier-code", label: "Code", registered: true,
+    blurb: "Tuned for writing and fixing software.",
     jobs: [
-      { tier: "media", task: "transcribe", chain: [
+      { tier: "tier-code", task: "chat", chain: [
+        { model: "anthropic/claude-sonnet-4", rank: 1 },
+        { model: "openai/gpt-4o", rank: 2 },
+      ] },
+    ],
+  },
+  {
+    slug: "tier-vision", label: "Vision", registered: true,
+    blurb: "Reads and understands images.",
+    jobs: [],
+  },
+  {
+    slug: "tier-image", label: "Image", registered: true,
+    blurb: "Makes images from a description.",
+    jobs: [
+      { tier: "tier-image", task: "image", chain: [
+        { model: "openai/gpt-image-1", rank: 1 },
+      ] },
+    ],
+  },
+  {
+    slug: "tier-stt", label: "Speech to text", registered: true,
+    blurb: "Turns audio into text.",
+    jobs: [
+      { tier: "tier-stt", task: "transcribe", chain: [
         { model: "groq/whisper-large-v3-turbo", rank: 1 },
         { model: "assemblyai/universal-2", rank: 2 },
       ] },
-      { tier: "media", task: "speak", chain: [
+    ],
+  },
+  {
+    slug: "tier-tts", label: "Text to speech", registered: true,
+    blurb: "Reads text aloud.",
+    jobs: [
+      { tier: "tier-tts", task: "speak", chain: [
         { model: "elevenlabs/eleven-turbo-v2", rank: 1 },
         { model: "openai/tts-1", rank: 2 },
+      ] },
+    ],
+  },
+  {
+    slug: "tier-embed", label: "Search index", registered: true,
+    blurb: "Builds the vectors behind search.",
+    jobs: [],
+  },
+  // The two capabilities NOTHING can serve yet: the tier and the price can
+  // exist first, and the day the Router grows the verb nothing else moves.
+  {
+    slug: "tier-video", label: "Video", registered: true,
+    blurb: "Makes video from a description.",
+    jobs: [],
+  },
+  {
+    slug: "tier-music", label: "Music", registered: true,
+    blurb: "Makes music and sound.",
+    jobs: [],
+  },
+  // A GHOST: a hand-typed binding whose tier is not in the registry. It
+  // serves, the board flags it, and it cannot be priced until registered.
+  {
+    slug: "legacy-chat", label: "legacy-chat", registered: false,
+    blurb: "",
+    jobs: [
+      { tier: "legacy-chat", task: "chat", chain: [
+        { model: "openai/gpt-4o-mini", rank: 1 },
       ] },
     ],
   },
@@ -342,6 +397,34 @@ const FEED: VendorFeed = {
   ],
 };
 
+const TIER_RATES: TierRate[] = [
+  {
+    tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
+    inputPer1k: "0.0080", outputPer1k: "0.0400",
+    cachedInputPer1k: "0.0008", creditsPerUnit: "0",
+  },
+  {
+    tier: "tier-balanced", task: "chat", unit: "tokens", mode: "priced",
+    inputPer1k: "0.0300", outputPer1k: "0.1500",
+    cachedInputPer1k: "0.0030", creditsPerUnit: "0",
+  },
+  {
+    tier: "tier-fast", task: "embed", unit: "tokens", mode: "absorbed",
+    inputPer1k: "0", outputPer1k: "0",
+    cachedInputPer1k: "0", creditsPerUnit: "0",
+  },
+  {
+    tier: "tier-stt", task: "transcribe", unit: "minutes", mode: "priced",
+    inputPer1k: "0", outputPer1k: "0",
+    cachedInputPer1k: "0", creditsPerUnit: "0.4000",
+  },
+  {
+    tier: "tier-image", task: "image", unit: "images", mode: "priced",
+    inputPer1k: "0", outputPer1k: "0",
+    cachedInputPer1k: "0", creditsPerUnit: "12.0000",
+  },
+];
+
 export const SAMPLE_CATALOG: AiCatalog = {
   tasks: TASKS,
   models: MODELS,
@@ -350,6 +433,7 @@ export const SAMPLE_CATALOG: AiCatalog = {
   accounts: ACCOUNTS,
   failovers: FAILOVERS,
   feed: FEED,
+  tierRates: TIER_RATES,
 };
 
 /** What the backend still owes each screen, in an operator's words.
@@ -366,8 +450,9 @@ export const OWED = {
     "'Fetch the latest' fills `vendor_price_feed` and this page reads it back.",
   tiers:
     "Chains read and save live, ranks included (migration 011), and the " +
-    "Router walks them (D-AI-6). What is still owed here is nothing — this " +
-    "banner appears only when the Console itself cannot be reached.",
+    "Router walks them (D-AI-6). The registry and the tier prices are " +
+    "migration 015: what a customer pays is keyed on the tier they picked " +
+    "(D67), and a failover changes our cost, never their price.",
   providers:
     "Accounts read live. Health needs a probe that nothing runs yet, which " +
     "is why the cards no longer draw a health chip at all.",

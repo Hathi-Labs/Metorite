@@ -128,18 +128,55 @@ describe("what a model IS", () => {
   });
 });
 
-describe("what is priced", () => {
-  it("counts a card that is absorbed, and not one that is unpriced", () => {
-    // D19.2: `absorbed` is a decision and `unpriced` is an omission. Drawing
-    // them the same is how a draft price ships.
-    const priced = catalogFromWire(
-      WIRE({ rates: [{ model: "anthropic/sonnet", task: "chat", pricing_mode: "absorbed" }] }),
-    ).models[0].priced;
-    const unpriced = catalogFromWire(
-      WIRE({ rates: [{ model: "anthropic/sonnet", task: "chat", pricing_mode: "unpriced" }] }),
-    ).models[0].priced;
-    expect(priced).toBe(true);
-    expect(unpriced).toBe(false);
+describe("the tier registry and the tier rates (015, D67)", () => {
+  it("the registry leads and an EMPTY registered tier renders", () => {
+    const cat = catalogFromWire(WIRE({
+      tier_registry: [
+        { slug: "tier-video", label: "Video", blurb: "b", sort_order: 100 },
+        { slug: "tier-fast", label: "Fast", blurb: "", sort_order: 10 },
+      ],
+    }));
+    const slugs = cat.tiers.map((t) => t.slug);
+    // Sorted by sort_order, present even with no binding at all.
+    expect(slugs.indexOf("tier-fast")).toBeLessThan(slugs.indexOf("tier-video"));
+    const video = cat.tiers.find((t) => t.slug === "tier-video");
+    expect(video?.jobs).toEqual([]);
+    expect(video?.registered).toBe(true);
+    expect(video?.label).toBe("Video");
+  });
+
+  it("🔴 a binding whose tier is NOT registered still renders, as a ghost", () => {
+    // Hiding a thing that serves would be the board lying.
+    const cat = catalogFromWire(WIRE({
+      tier_registry: [
+        { slug: "tier-fast", label: "Fast", blurb: "", sort_order: 10 },
+      ],
+      bindings: [{ tier: "ghost", task: "chat", model: "anthropic/sonnet" }],
+    }));
+    const ghost = cat.tiers.find((t) => t.slug === "ghost");
+    expect(ghost?.registered).toBe(false);
+    expect(ghost?.jobs).toHaveLength(1);
+  });
+
+  it("maps the tier rates with money as STRINGS", () => {
+    const cat = catalogFromWire(WIRE({
+      tier_rates: [{
+        tier: "tier-fast", task: "chat", unit: "tokens",
+        pricing_mode: "priced", input_per_1k: "0.0080",
+        output_per_1k: "0.0400", cached_input_per_1k: "0.0008",
+        credits_per_unit: "0",
+      }],
+    }));
+    expect(cat.tierRates).toEqual([{
+      tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
+      inputPer1k: "0.0080", outputPer1k: "0.0400",
+      cachedInputPer1k: "0.0008", creditsPerUnit: "0",
+    }]);
+  });
+
+  it("a Console without the feature yields empty, not a crash", () => {
+    const cat = catalogFromWire(WIRE({}));
+    expect(cat.tierRates).toEqual([]);
   });
 });
 

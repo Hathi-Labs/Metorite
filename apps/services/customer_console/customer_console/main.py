@@ -128,7 +128,7 @@ from customer_console.router import (
     provider_credential,
     relay_stream,
     resolve_chain,
-    resolve_rate_card,
+    resolve_tier_rate,
     usage_from_response,
 )
 from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
@@ -1004,22 +1004,26 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
 
 
 def _rate_completion(
-    conn, *, model: str, usage: ExtractedUsage, task: str = "chat",
+    conn, *, tier: str, model: str, usage: ExtractedUsage, task: str = "chat",
 ) -> tuple[Decimal, str | None]:
-    """Credits drawn by one completion. **Never raises.**
+    """Credits drawn by one completion — priced by the TIER (D67). **Never
+    raises.**
 
-    An unpriced model bills zero *loudly* rather than failing the call: the
+    🔴 **The customer pays for the tier they PICKED, never for the model
+    that served them.** Until 2026-08-30 this rated against
+    ``model_rate_card``, which made a failover change the customer's price
+    mid-day and made a premium tier impossible on a shared model. The tier
+    card fixes both: a fallback moves OUR cost (recorded separately as
+    ``provider_cost_usd``), and their price holds. ``model`` is kept here
+    for the log line only, because "which model went unpriced" was never
+    the question — "which PRODUCT is unpriced" is.
+
+    An unpriced tier bills zero *loudly* rather than failing the call: the
     completion has already happened and the customer already has it, so the
-    only choice left is whether we also lose the usage row. We do not — the row
-    is the evidence, and CP-6 sets prices against exactly this data.
-    ``002_seed_catalog.sql`` seeds the card at zero on purpose, so this warning
-    is the expected state until the owner prices it (a commercial act, §8).
-
-    ⚠️ **BYOK is not zero-rated here yet.** §3.4 says a BYOK organization is
-    metered but not charged for tokens; today this function does not know which
-    credential served the call, so a priced card would charge them. Harmless
-    while every card is zero, and it must be closed before any real price is
-    set — it is recorded in the spec's CP-6 note rather than left as a surprise.
+    only choice left is whether we also lose the usage row. We do not — the
+    row is the evidence, and pricing happens against exactly this data.
+    Migration 015 seeds NO tier rates on purpose, so this warning is the
+    expected state until the owner prices the slate (a commercial act, H-42).
 
     ⚠️ Returns the UNIT alongside the credits, so the usage row can record
     what the number was measured in. A row that says `0.4` without saying
@@ -1031,11 +1035,12 @@ def _rate_completion(
     # every row written before the owner prices the card records a NULL
     # unit, and the day prices arrive the history cannot be read back.
     try:
-        card = resolve_rate_card(conn, model, task)
+        card = resolve_tier_rate(conn, tier, task)
     except UnpricedModel:
         _log.warning(
-            "router.unpriced_model",
-            extra={"router_model": model, "router_task": task},
+            "router.unpriced_tier",
+            extra={"router_tier": tier, "router_task": task,
+                   "router_model": model},
         )
         return Decimal(0), None
 
@@ -1054,11 +1059,12 @@ def _rate_completion(
             card.unit,
         )
     except UnpricedModel:
-        # `router_model`, not `model`: a stdlib LogRecord already owns several
+        # `router_tier`, not `tier`: a stdlib LogRecord already owns several
         # short names and a collision raises inside the logging call itself.
         _log.warning(
-            "router.unpriced_model",
-            extra={"router_model": model, "router_task": task},
+            "router.unpriced_tier",
+            extra={"router_tier": tier, "router_task": task,
+                   "router_model": model},
         )
         return Decimal(0), card.unit
 
@@ -1585,18 +1591,6 @@ class BindingRequest(BaseModel):
         return out
 
 
-class RateRequest(BaseModel):
-    model: str
-    task: str
-    unit: str
-    pricing_mode: str
-    input_per_1k: Decimal = Decimal(0)
-    output_per_1k: Decimal = Decimal(0)
-    cached_input_per_1k: Decimal = Decimal(0)
-    credits_per_unit: Decimal = Decimal(0)
-    effective_from: datetime | None = None
-
-
 def _catalog_refusal(exc: catalog.CatalogRefused) -> HTTPException:
     """A refused catalog write is a 400 the operator can act on."""
     return HTTPException(status_code=400, detail=str(exc))
@@ -1683,6 +1677,30 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "FROM model_rate_card WHERE effective_from <= now() "
                 "ORDER BY model, task, effective_from DESC"))
         ]
+        # The tier registry (015) — the product slate. A row here is what
+        # lets an EMPTY tier exist: bound to nothing yet, shown anyway,
+        # because the board is the map of what we intend to sell.
+        tier_registry = [
+            {"slug": r[0], "label": r[1], "blurb": r[2],
+             "sort_order": int(r[3])}
+            for r in conn.execute(text(
+                "SELECT slug, label, blurb, sort_order FROM tier_catalog "
+                "ORDER BY sort_order, slug"))
+        ]
+        # What a CUSTOMER pays (D67): the tier card in force per (tier, task).
+        tier_rates = [
+            {"tier": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
+             "input_per_1k": str(r[4]), "output_per_1k": str(r[5]),
+             "cached_input_per_1k": str(r[6]), "credits_per_unit": str(r[7]),
+             "effective_from": _iso(r[8])}
+            for r in conn.execute(text(
+                "SELECT DISTINCT ON (tier, task) tier, task, unit, "
+                "       pricing_mode, input_credits_per_1k, "
+                "       output_credits_per_1k, cached_input_credits_per_1k, "
+                "       credits_per_unit, effective_from "
+                "FROM tier_rate_card WHERE effective_from <= now() "
+                "ORDER BY tier, task, effective_from DESC"))
+        ]
         # Failovers that actually happened (013, slice 12's read half). A
         # served_rank above 1 is a customer request the primary did not
         # answer — the one durable proof a chain earns its keep. Aggregated
@@ -1765,6 +1783,8 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "profiles": profiles,
         "bindings": bindings,
         "rates": rates,
+        "tier_registry": tier_registry,
+        "tier_rates": tier_rates,
         "failovers": failovers,
         "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
         "unserved": catalog.unserved_bindings(cap_pairs, bind_pairs),
@@ -1907,19 +1927,69 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
 
 
 @app.post("/catalog/rates")
-def set_rate(req: RateRequest, staff: Operator) -> dict[str, Any]:
-    """Price one `(model, task)`. **INSERT, never UPDATE.**
+def set_rate(staff: Operator) -> dict[str, Any]:
+    """RETIRED (D67, 2026-08-30). Customer prices are keyed on the TIER.
+
+    🔴 **410, not a silent no-op and not a working write.** A model-keyed
+    price stopped driving billing when `_rate_completion` moved to the tier
+    card, so accepting a write here would store a number nothing reads — a
+    control that looks armed and is not, which is the worst kind. The rows
+    the table already holds stay readable history (R6: the table is not
+    dropped in the release that stops writing it).
+
+    Authenticated BEFORE refusing, like every route: the 410 is not an
+    anonymous probe's oracle.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Customer prices are keyed on the tier since D67 (2026-08-30). "
+            "POST /catalog/tier-rates prices a (tier, task); model_rate_card "
+            "is read-only history."
+        ),
+    )
+
+
+class TierRateRequest(BaseModel):
+    """What a customer pays for one (tier, task) — D67, the H-42 mechanism."""
+
+    tier: str
+    task: str
+    unit: str
+    pricing_mode: str
+    input_per_1k: Decimal = Decimal(0)
+    output_per_1k: Decimal = Decimal(0)
+    cached_input_per_1k: Decimal = Decimal(0)
+    credits_per_unit: Decimal = Decimal(0)
+    #: When the price takes effect. NULL means now. Future-dating a price
+    #: change is the mechanism for "new rates from the 1st".
+    effective_from: datetime | None = None
+
+
+@app.post("/catalog/tier-rates")
+def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
+    """Price one `(tier, task)`. **INSERT, never UPDATE.** (D67)
 
     🔴 **Setting a real price is the OWNER's commercial act** (§8, D19.2, and
-    H-42). This route is the MECHANISM, and building it prices nothing: the
-    ladder still ships every card `unpriced`, and
-    `test_the_rate_card_ships_unpriced` fails if that stops being true.
+    H-42). This route is the MECHANISM, and building it prices nothing:
+    migration 015 seeds no tier rates at all.
 
     ⚠️ The unit must be the task's own. `transcribe` is sold per minute of
     audio, and pricing it per 1k tokens produces a plausible wrong number
     rather than an error — which is why `task_catalog` carries `natural_unit`.
+
+    ⚠️ The tier must exist in `tier_catalog`. A price for a tier that is not
+    on the slate would bill nothing and confuse everybody reading the board.
     """
     with get_engine().begin() as conn:
+        known_tier = conn.execute(
+            text("SELECT 1 FROM tier_catalog WHERE slug = :s"),
+            {"s": req.tier},
+        ).first()
+        if known_tier is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown tier {req.tier!r}; it is not in tier_catalog")
         natural = conn.execute(
             text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
             {"t": req.task},
@@ -1930,8 +2000,8 @@ def set_rate(req: RateRequest, staff: Operator) -> dict[str, Any]:
 
         try:
             catalog.check_rate(
-                catalog.RateProposal(
-                    model=req.model, task=req.task, unit=req.unit,
+                catalog.TierRateProposal(
+                    tier=req.tier, task=req.task, unit=req.unit,
                     pricing_mode=req.pricing_mode,
                     input_per_1k=req.input_per_1k,
                     output_per_1k=req.output_per_1k,
@@ -1945,23 +2015,23 @@ def set_rate(req: RateRequest, staff: Operator) -> dict[str, Any]:
 
         conn.execute(
             text(
-                "INSERT INTO model_rate_card (model, task, unit, "
+                "INSERT INTO tier_rate_card (tier, task, unit, "
                 "    input_credits_per_1k, output_credits_per_1k, "
                 "    cached_input_credits_per_1k, credits_per_unit, "
                 "    pricing_mode, effective_from) "
-                "VALUES (:m, :t, :u, :i, :o, :c, :cpu, :pm, "
+                "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
                 "        COALESCE(:eff, now()))"
             ),
-            {"m": req.model, "t": req.task, "u": req.unit,
+            {"tr": req.tier, "t": req.task, "u": req.unit,
              "i": req.input_per_1k, "o": req.output_per_1k,
              "c": req.cached_input_per_1k, "cpu": req.credits_per_unit,
              "pm": req.pricing_mode, "eff": req.effective_from},
         )
-        _audit(conn, None, "catalog.rate",
-               {"model": req.model, "task": req.task,
+        _audit(conn, None, "catalog.tier_rate",
+               {"tier": req.tier, "task": req.task,
                 "pricing_mode": req.pricing_mode, "unit": req.unit},
                actor=staff.actor)
-    return {"model": req.model, "task": req.task,
+    return {"tier": req.tier, "task": req.task,
             "pricing_mode": req.pricing_mode}
 
 
@@ -4030,7 +4100,8 @@ def _record_completion(
             # inserts nothing also charges nothing. Zero while the card is
             # unpriced, which is the shipped state until the owner prices it.
             billed, unit = _rate_completion(
-                conn, model=resolved.model, usage=usage, task=resolved.task,
+                conn, tier=resolved.tier, model=resolved.model,
+                usage=usage, task=resolved.task,
             )
             if byok:
                 if billed:

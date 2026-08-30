@@ -70,6 +70,20 @@ type WireCatalog = {
     cached_input_per_1k: string;
     credits_per_unit: string;
   }[];
+  // 015 — the tier registry (the product slate) and what customers pay
+  // per (tier, task). Absent from a Console still mid-rollout.
+  tier_registry?: { slug: string; label: string; blurb: string;
+    sort_order: number }[];
+  tier_rates?: {
+    tier: string;
+    task: string;
+    unit: string;
+    pricing_mode: string;
+    input_per_1k: string;
+    output_per_1k: string;
+    cached_input_per_1k: string;
+    credits_per_unit: string;
+  }[];
   // 014 — the vendor feed. Absent from a Console still mid-rollout.
   feed?: {
     synced_at: string | null;
@@ -124,12 +138,6 @@ const KIND_FROM_TASK: Record<string, ModelKind> = {
 };
 
 export function catalogFromWire(w: WireCatalog): AiCatalog {
-  const priced = new Set(
-    w.rates
-      .filter((r) => (r.pricing_mode || "").trim().toLowerCase() !== "unpriced")
-      .map((r) => r.model),
-  );
-
   const kinds = new Map<string, Set<ModelKind>>();
   for (const c of w.capabilities) {
     const k = KIND_FROM_TASK[c.task];
@@ -175,7 +183,6 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         outputPer1M: num(p?.vendor_output_per_1m_usd ?? null),
         description: p?.description ?? "",
         declared: true,
-        priced: priced.has(id),
       };
     });
 
@@ -199,12 +206,33 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     byTier.get(job.tier)?.push(job);
   }
 
-  const tiers: Tier[] = [...byTier.keys()].sort().map((slug) => ({
-    slug,
-    label: slug,
-    blurb: "",
-    jobs: byTier.get(slug) ?? [],
-  }));
+  // The registry leads (015): every registered tier renders, EMPTY included —
+  // the board is the map of what we intend to sell. A binding whose tier is
+  // not registered still renders, flagged as a ghost, because hiding a thing
+  // that serves would be the board lying.
+  const registry = w.tier_registry ?? [];
+  const registered = new Set(registry.map((t) => t.slug));
+  const tiers: Tier[] = [
+    ...[...registry]
+      .sort((x, y) => x.sort_order - y.sort_order || x.slug.localeCompare(y.slug))
+      .map((t) => ({
+        slug: t.slug,
+        label: t.label,
+        blurb: t.blurb,
+        jobs: byTier.get(t.slug) ?? [],
+        registered: true,
+      })),
+    ...[...byTier.keys()]
+      .filter((slug) => !registered.has(slug))
+      .sort()
+      .map((slug) => ({
+        slug,
+        label: slug,
+        blurb: "",
+        jobs: byTier.get(slug) ?? [],
+        registered: false,
+      })),
+  ];
 
   const rates: ModelRate[] = w.rates.map((r) => ({
     model: r.model,
@@ -214,6 +242,19 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     // ⚠️ Passed through as the STRINGS the Console sent. These are money, the
     // ledger is NUMERIC(14,4), and a parsed float re-formatted is how a total
     // stops matching the sum of its rows.
+    inputPer1k: r.input_per_1k,
+    outputPer1k: r.output_per_1k,
+    cachedInputPer1k: r.cached_input_per_1k,
+    creditsPerUnit: r.credits_per_unit,
+  }));
+
+  const tierRates = (w.tier_rates ?? []).map((r) => ({
+    tier: r.tier,
+    task: r.task,
+    unit: r.unit,
+    mode: r.pricing_mode,
+    // The same STRINGS rule as `rates` above — this card is what customers
+    // are billed, and a float round-trip is how a total stops matching.
     inputPer1k: r.input_per_1k,
     outputPer1k: r.output_per_1k,
     cachedInputPer1k: r.cached_input_per_1k,
@@ -253,7 +294,10 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
       }
     : EMPTY_FEED;
 
-  return { tasks: w.tasks, models, rates, tiers, accounts: [], failovers, feed };
+  return {
+    tasks: w.tasks, models, rates, tiers, accounts: [], failovers, feed,
+    tierRates,
+  };
 }
 
 export function accountsFromWire(creds: WireCred[]): ProviderAccount[] {

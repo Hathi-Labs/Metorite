@@ -9,24 +9,28 @@
 
 import type { CatalogModel, ModelKind } from "./contract";
 
-export type ModelStatus = "ready" | "undeclared" | "unpriced";
+export type ModelStatus = "costed" | "undeclared" | "costblind";
 
-/** What stands between this model and serving a paying customer.
+/** The SUPPLY-side state of a model — what we know about calling it.
+ *
+ * 🔴 **"Ready to sell" left this vocabulary with D67.** Selling is priced on
+ * the TIER now, so a model cannot be un-sellable by itself — what it can be
+ * is un-COSTABLE: declared but with no vendor price recorded, which makes
+ * every margin that touches it read as unknown. The tier board owns the
+ * selling states; this page owns the supply ones.
  *
  * ⚠️ **Order matters and it is the same order as `readiness.ts`.** Undeclared
- * outranks unpriced because nothing can be priced before it can be served.
- * Two files agreeing by accident is how a vocabulary splits, so this comment
- * is the note that they are one rule. */
+ * outranks costblind because nothing can be costed before it can be served. */
 export function statusOf(m: CatalogModel): ModelStatus {
   if (!m.declared) return "undeclared";
-  if (!m.priced) return "unpriced";
-  return "ready";
+  if (m.inputPer1M === null) return "costblind";
+  return "costed";
 }
 
 export const STATUS_LABEL: Record<ModelStatus, string> = {
-  ready: "ready to sell",
+  costed: "costed",
   undeclared: "not connected",
-  unpriced: "no price",
+  costblind: "costs blind",
 };
 
 export type Filters = {

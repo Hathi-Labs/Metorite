@@ -27,7 +27,7 @@ const M = (over: Partial<CatalogModel>): CatalogModel => ({
   id: "deepseek/deepseek-chat", label: "DeepSeek Chat", provider: "deepseek",
   kinds: ["chat"], contextWindow: null, maxOutput: null,
   inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
-  description: "", declared: true, priced: false,
+  description: "", declared: true,
   ...over,
 });
 

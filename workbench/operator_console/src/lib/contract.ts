@@ -105,8 +105,6 @@ export type CatalogModel = {
   description: string;
   /** A `model_capability` row exists, so the Router will accept it. */
   declared: boolean;
-  /** A `model_rate_card` row exists with a real mode, so it bills. */
-  priced: boolean;
 };
 
 // ── Tiers: the customer-facing vocabulary, with ORDERED fallback ────────────
@@ -138,6 +136,10 @@ export type Tier = {
   /** What a customer is told this tier is for. Shown in their app, not here. */
   blurb: string;
   jobs: TierJob[];
+  /** In `tier_catalog` (015). A tier can serve while unregistered — a ghost
+   *  from a hand-typed binding — and the board flags it rather than hiding
+   *  it, but only registered tiers can carry a price. */
+  registered: boolean;
 };
 
 // ── What WE charge — the rate card ──────────────────────────────────────────
@@ -146,6 +148,25 @@ export type Tier = {
 // VENDOR charges us. This is what a customer is billed. Reading one as the
 // other inverts a margin, which is why the two live on different types with
 // different units and are labelled differently everywhere they render.
+
+/** 🔴 What a CUSTOMER pays for one (tier, job) — D67, migration 015.
+ *
+ * The tier is the product and the model is supply: a failover moves our
+ * cost, never their price, and two tiers sharing one model can still charge
+ * differently. This is the card billing reads. `ModelRate` below is the
+ * retired model-keyed card, kept as readable history. */
+export type TierRate = {
+  tier: string;
+  task: string;
+  unit: string;
+  /** `priced`, `absorbed` or `unpriced` — same G-4 vocabulary. */
+  mode: string;
+  /** Money as the STRINGS the Console sent. */
+  inputPer1k: string;
+  outputPer1k: string;
+  cachedInputPer1k: string;
+  creditsPerUnit: string;
+};
 
 export type ModelRate = {
   model: string;
@@ -254,9 +275,11 @@ export type AiCatalog = {
   accounts: ProviderAccount[];
   failovers: FailoverEvent[];
   feed: VendorFeed;
+  /** What customers pay, per (tier, job) — D67. The card billing reads. */
+  tierRates: TierRate[];
 };
 
 export const EMPTY_CATALOG: AiCatalog = {
   tasks: [], models: [], rates: [], tiers: [], accounts: [], failovers: [],
-  feed: EMPTY_FEED,
+  feed: EMPTY_FEED, tierRates: [],
 };

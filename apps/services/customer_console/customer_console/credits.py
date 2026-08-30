@@ -32,6 +32,7 @@ __all__ = [
     "RateCard",
     "RunCeiling",
     "SpendDecision",
+    "TierRate",
     "TokenUsage",
     "UnpricedModel",
     "balance_of",
@@ -176,6 +177,50 @@ class RateCard:
         """Deliberately free, and NOT an error. D19.2's embeddings."""
         return self.pricing_mode == "absorbed"
 
+    @property
+    def subject(self) -> str:
+        """What this card prices, for refusal messages. See TierRate's."""
+        return self.model
+
+
+@dataclass(frozen=True)
+class TierRate:
+    """Credits per unit for one (TIER, task) — what a CUSTOMER pays. D67.
+
+    🔴 **The card the metering path bills against since 2026-08-30.** The
+    tier is the product and the model is supply, so the customer's price is
+    keyed on what they PICKED, not on what served them: a failover moves our
+    cost and never their price, and two tiers sharing one model can still
+    charge differently.
+
+    Field names deliberately mirror :class:`RateCard` so
+    :func:`rate_call` prices either card without knowing which it holds.
+    """
+
+    tier: str
+    input_per_1k: Decimal
+    output_per_1k: Decimal
+    cached_input_per_1k: Decimal = Decimal(0)
+    task: str = "chat"
+    unit: str = "tokens"
+    credits_per_unit: Decimal = Decimal(0)
+    pricing_mode: str = "unpriced"
+
+    @property
+    def is_priced(self) -> bool:
+        """`pricing_mode == 'priced'` — see RateCard.is_priced for why."""
+        return self.pricing_mode == "priced"
+
+    @property
+    def is_absorbed(self) -> bool:
+        """Deliberately free, and NOT an error. D19.2's embeddings."""
+        return self.pricing_mode == "absorbed"
+
+    @property
+    def subject(self) -> str:
+        """What this card prices, for refusal messages."""
+        return f"tier {self.tier}"
+
 
 @dataclass(frozen=True)
 class TokenUsage:
@@ -197,7 +242,7 @@ class TokenUsage:
 
 
 def rate_call(
-    card: RateCard,
+    card: RateCard | TierRate,
     usage: TokenUsage,
     *,
     quantity: Decimal | None = None,
@@ -226,7 +271,7 @@ def rate_call(
 
     if not card.is_priced:
         raise UnpricedModel(
-            f"{card.model}/{card.task} has no rate-card price; "
+            f"{card.subject}/{card.task} has no rate-card price; "
             "refusing to bill it as free"
         )
 
@@ -244,7 +289,7 @@ def rate_call(
         # metering caller downgrades this to "bill zero, loudly" — visibly,
         # where somebody can see it.
         raise UnpricedModel(
-            f"{card.model}/{card.task} is priced per {card.unit} "
+            f"{card.subject}/{card.task} is priced per {card.unit} "
             "and no quantity was measured"
         )
 

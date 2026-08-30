@@ -54,12 +54,20 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
   const tierVerdict = tierNextStep(cat.tiers, ctx);
 
   // Priced or absorbed both count as DECIDED. `unpriced` is the omission.
-  const decided = cat.rates.filter((r) => r.mode !== "unpriced");
-  const boundModels = new Set(
-    cat.tiers.flatMap((t) => t.jobs.flatMap((j) => j.chain.map((s) => s.model))),
+  // D67: the price is per (tier, job) — the thing a customer actually buys —
+  // so what needs pricing is every BOUND job, not every bound model.
+  const decidedTier = new Set(
+    cat.tierRates
+      .filter((r) => r.mode !== "unpriced")
+      .map((r) => `${r.tier}::${r.task}`),
   );
-  const boundUndecided = [...boundModels].filter(
-    (m) => !cat.rates.some((r) => r.model === m && r.mode !== "unpriced"),
+  const boundJobs = cat.tiers.flatMap((t) =>
+    t.jobs.filter((j) => j.chain.length > 0).map((j) => ({
+      tier: t.slug, task: j.task,
+    })),
+  );
+  const boundUndecided = boundJobs.filter(
+    (j) => !decidedTier.has(`${j.tier}::${j.task}`),
   );
 
   const steps: GoLiveStep[] = [
@@ -118,31 +126,35 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
     {
       key: "prices",
       n: 4,
-      title: "Price what you sell",
+      title: "Price the tiers",
       state:
-        boundModels.size === 0
+        boundJobs.length === 0
           ? "info"
           : boundUndecided.length === 0
             ? "done"
-            : decided.length === 0
+            : decidedTier.size === 0
               ? "todo"
               : "partial",
       detail:
-        boundModels.size === 0
+        boundJobs.length === 0
           ? "Nothing is bound yet, so there is nothing to price. Come back " +
             "after step 3."
           : boundUndecided.length === 0
-            ? `Every model a tier uses has a decided card (${decided.length} ` +
-              "priced or absorbed)."
-            : `${boundUndecided.length} bound ${
-                boundUndecided.length === 1 ? "model" : "models"
+            ? `Every tier job a customer can call has a decided price ` +
+              `(${decidedTier.size} priced or absorbed). A failover changes ` +
+              "our cost, never theirs (D67)."
+            : `${boundUndecided.length} bound tier ${
+                boundUndecided.length === 1 ? "job" : "jobs"
               } will answer customers and bill NOTHING — ` +
-              `${boundUndecided.slice(0, 3).join(", ")}` +
+              boundUndecided
+                .slice(0, 3)
+                .map((j) => `${j.tier} (${j.task})`)
+                .join(", ") +
               `${boundUndecided.length > 3 ? "…" : ""}. Price them, or mark ` +
               "them absorbed on purpose. What a credit costs in rupees is a " +
               "separate owner decision (H-42).",
-      href: "/models",
-      linkText: "Set prices",
+      href: "/tiers",
+      linkText: "Price the tiers",
     },
     {
       key: "customer",
