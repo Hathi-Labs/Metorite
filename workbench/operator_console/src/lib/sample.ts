@@ -11,7 +11,8 @@
 // everything works is useless for design: the warning states are the ones that
 // need the most care, and a designer who never sees them ships them untested.
 // So this holds a chain with no backup, a chain that is all one provider, a
-// chain pointing at a model with no key, a revoked account and a failing one.
+// chain pointing at a model with no key, and a vendor whose only key was
+// removed. Unhealthy, though — never IMPOSSIBLE. See the note on ACCOUNTS.
 //
 // ⚠️ **Prices are the real published ones as of 2026-08.** Invented numbers get
 // quoted in a meeting. These are checkable.
@@ -122,25 +123,28 @@ const MODELS: CatalogModel[] = [
     false, false),
 ];
 
+// ⚠️ **Every row here is a state the DATABASE allows.** An earlier version
+// held two live platform keys for anthropic ("Main" and "Overflow") and
+// probed health values ("answering", "rate limited twice in the last hour").
+// The first is refused by `provider_credential_live_uniq` — proved against
+// the real schema on 2026-08-30 — and the second is measured by nothing. A
+// designed placeholder may be unhealthy; it must never be impossible,
+// because the owner reads it to learn what the page means.
+//
+// `health: "unknown"` throughout, which is what `accountsFromWire` stamps on
+// every real row until a probe exists.
 const ACCOUNTS: ProviderAccount[] = [
   {
     id: "pa-1", provider: "anthropic", label: "Main billing account",
     apiBase: null, orgSlug: null,
     createdAt: "2026-07-14T09:12:00Z", revokedAt: null,
-    health: "ok", lastCheckedAt: "2026-08-29T06:00:00Z", healthNote: null,
-  },
-  {
-    id: "pa-2", provider: "anthropic", label: "Overflow account",
-    apiBase: null, orgSlug: null,
-    createdAt: "2026-08-02T11:40:00Z", revokedAt: null,
-    health: "degraded", lastCheckedAt: "2026-08-29T06:00:00Z",
-    healthNote: "Rate limited twice in the last hour.",
+    health: "unknown", lastCheckedAt: null, healthNote: null,
   },
   {
     id: "pa-3", provider: "openai", label: "Platform account",
     apiBase: null, orgSlug: null,
     createdAt: "2026-07-14T09:15:00Z", revokedAt: null,
-    health: "ok", lastCheckedAt: "2026-08-29T06:00:00Z", healthNote: null,
+    health: "unknown", lastCheckedAt: null, healthNote: null,
   },
   {
     // ⚠️ `gemini`, not `google`. The Router resolves a vendor as the first
@@ -155,16 +159,19 @@ const ACCOUNTS: ProviderAccount[] = [
     id: "pa-5", provider: "groq", label: "Fast transcription",
     apiBase: null, orgSlug: null,
     createdAt: "2026-08-21T08:30:00Z", revokedAt: null,
-    health: "failing", lastCheckedAt: "2026-08-29T06:00:00Z",
-    healthNote: "401 from the vendor. The key may have been rotated at Groq.",
+    health: "unknown", lastCheckedAt: null, healthNote: null,
   },
   {
+    // BYOK: one customer's own account, beside our platform key for the
+    // same vendor. Legal, and the state the demoted row exists to draw.
     id: "pa-6", provider: "openai", label: "Fracktal's own key",
     apiBase: null, orgSlug: "fracktal",
     createdAt: "2026-08-05T12:00:00Z", revokedAt: null,
-    health: "ok", lastCheckedAt: "2026-08-29T06:00:00Z", healthNote: null,
+    health: "unknown", lastCheckedAt: null, healthNote: null,
   },
   {
+    // A vendor whose ONLY key was removed — the "dropped" card state,
+    // which must not read as "never set up".
     id: "pa-7", provider: "deepseek", label: "Trial key",
     apiBase: null, orgSlug: null,
     createdAt: "2026-06-30T10:00:00Z", revokedAt: "2026-08-11T10:00:00Z",

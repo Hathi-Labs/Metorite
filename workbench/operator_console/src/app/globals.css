@@ -387,6 +387,23 @@ h3 {
   cursor: not-allowed;
 }
 
+/* A destructive link-weight action — Remove on a key row. Red TEXT, not a
+   red fill: `button.danger` would paint the background, and a filled red
+   button beside every key reads as the page's main action. Both selectors
+   are written out so this wins over `button.danger` at equal cascade. */
+.linklike.danger,
+button.linklike.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--border);
+}
+.linklike.danger:hover:not(:disabled),
+button.linklike.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
 /* ── Page head ───────────────────────────────────────────────────────── */
 .pagehead {
   display: flex;
@@ -1499,6 +1516,24 @@ pre.token {
 .keyrow.dead {
   opacity: 0.55;
   background: transparent;
+}
+
+/* A customer's own vendor account, demoted below the platform key. No box:
+   it is an annotation about one customer, not a second key of ours, and
+   drawing it at the platform key's weight is how BYOK gets read as
+   coverage. */
+.byokrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 10px;
+}
+
+.byokrow .linklike {
+  padding: 2px 6px;
+  font-size: 11px;
+  border-color: transparent;
 }
 
 .keymain {

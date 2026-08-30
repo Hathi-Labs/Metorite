@@ -48,12 +48,9 @@ import {
   type ProviderGroup,
   byokOrgs,
   coverageLine,
-  describeScope,
   groupByProvider,
   groupLine,
   groupStatus,
-  healthLabel,
-  healthTone,
   isLive,
   wouldRotate,
 } from "@/lib/providers";
@@ -66,7 +63,7 @@ type Props = { creds: ProviderAccount[] };
  * ⚠️ Keyed on `GroupStatus`, not `string`, so adding a fifth status is a
  * typecheck failure here rather than a card that renders a blank chip. */
 const STATUS: Record<GroupStatus, { word: string; tone: Tone }> = {
-  armed: { word: "armed", tone: "ok" },
+  connected: { word: "connected", tone: "ok" },
   "byok-only": { word: "one org only", tone: "warn" },
   dropped: { word: "revoked", tone: "warn" },
   untouched: { word: "no key", tone: "neutral" },
@@ -105,44 +102,76 @@ type Ctx = {
   cancel: () => void;
 };
 
-/** One held credential. Live rows carry a health chip and a way out. */
-function KeyRow({
+/** The one live platform key.
+ *
+ * ⚠️ **No health chip.** Nothing probes a vendor account, so a chip here could
+ * only ever say "never checked" — a column of nothing on the operator's most
+ * read page. Removed 2026-08-30 by decision; it returns when a probe exists.
+ * What IS shown is only what we hold: the label, where it points, and when it
+ * was added. */
+function PlatformKey({
   c,
   busy,
-  onRevoke,
+  onReplace,
+  onRemove,
 }: {
   c: ProviderAccount;
   busy: boolean;
-  onRevoke: (c: ProviderAccount) => void;
+  onReplace: () => void;
+  onRemove: (c: ProviderAccount) => void;
 }) {
   return (
-    <div className={`keyrow ${isLive(c) ? "" : "dead"}`}>
+    <div className="keyrow">
       <div className="keymain">
-        <span className="keylabel">{c.label ?? describeScope(c)}</span>
+        <span className="keylabel">{c.label ?? "API key"}</span>
         <span className="muted small">
-          {describeScope(c)}
-          {c.apiBase ? ` · ${c.apiBase}` : ""}
-          {c.createdAt ? ` · added ${c.createdAt.slice(0, 10)}` : ""}
+          {c.apiBase ? `${c.apiBase} · ` : ""}
+          {c.createdAt ? `added ${c.createdAt.slice(0, 10)}` : "installed"}
         </span>
-        {c.healthNote && <span className="muted small">{c.healthNote}</span>}
       </div>
-      {isLive(c) ? (
-        <>
-          <span className={chipClass(healthTone(c.health))}>
-            {healthLabel(c.health)}
-          </span>
-          <button
-            type="button"
-            className="linklike"
-            onClick={() => onRevoke(c)}
-            disabled={busy}
-          >
-            Revoke
-          </button>
-        </>
-      ) : (
-        <span className="chip">revoked</span>
-      )}
+      <button type="button" className="linklike" onClick={onReplace} disabled={busy}>
+        Replace
+      </button>
+      <button
+        type="button"
+        className="linklike danger"
+        onClick={() => onRemove(c)}
+        disabled={busy}
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
+/** A customer's own vendor account, demoted below the platform key.
+ *
+ * ⚠️ Smaller and quieter ON PURPOSE. It is an exception for one customer, not
+ * part of our coverage — `armedProviders` does not count it, and drawing it at
+ * the platform key's weight is how it gets read as coverage anyway. */
+function ByokRow({
+  c,
+  busy,
+  onRemove,
+}: {
+  c: ProviderAccount;
+  busy: boolean;
+  onRemove: (c: ProviderAccount) => void;
+}) {
+  return (
+    <div className="byokrow">
+      <span className="muted small">
+        {c.orgSlug} uses their own account
+        {c.createdAt ? ` · since ${c.createdAt.slice(0, 10)}` : ""}
+      </span>
+      <button
+        type="button"
+        className="linklike"
+        onClick={() => onRemove(c)}
+        disabled={busy}
+      >
+        Remove
+      </button>
     </div>
   );
 }
@@ -309,22 +338,32 @@ function Card({
       {vguide && <p className="muted small">{vguide.description}</p>}
       <span className="muted small">{groupLine(g)}</span>
 
-      {[...g.platform, ...g.byok, ...g.revoked].map((c) => (
-        <KeyRow key={c.id} c={c} busy={ctx.busy} onRevoke={onRevoke} />
+      {g.platform && (
+        <PlatformKey
+          c={g.platform}
+          busy={ctx.busy}
+          onReplace={() => onOpen(g.provider)}
+          onRemove={onRevoke}
+        />
+      )}
+      {g.byok.map((c) => (
+        <ByokRow key={c.id} c={c} busy={ctx.busy} onRemove={onRevoke} />
       ))}
 
       {open ? (
         <SetupPanel slug={g.provider} ctx={ctx} />
       ) : (
-        <button
-          type="button"
-          className={status === "armed" ? "linklike add-job" : "setupbtn"}
-          onClick={() => onOpen(g.provider)}
-        >
-          {status === "armed"
-            ? "+ Add another key, or rotate this one"
-            : `Set up ${vendorLabel(g.provider)}`}
-        </button>
+        !g.platform && (
+          <button
+            type="button"
+            className="setupbtn"
+            onClick={() => onOpen(g.provider)}
+          >
+            {status === "byok-only"
+              ? `Add a key for every customer`
+              : `Set up ${vendorLabel(g.provider)}`}
+          </button>
+        )
       )}
     </section>
   );
@@ -354,14 +393,14 @@ export default function ProviderAdmin({ creds }: Props) {
 
   const installed = groups.filter((g) => {
     const s = groupStatus(g);
-    return s === "armed" || s === "byok-only";
+    return s === "connected" || s === "byok-only";
   });
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return groups.filter((g) => {
       const s = groupStatus(g);
-      const isInstalled = s === "armed" || s === "byok-only";
+      const isInstalled = s === "connected" || s === "byok-only";
       if (filter === "installed" && !isInstalled) return false;
       if (filter === "todo" && isInstalled) return false;
       if (!q) return true;

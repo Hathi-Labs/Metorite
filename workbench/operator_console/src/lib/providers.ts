@@ -19,10 +19,16 @@
 // mapping now happens once in `read.ts` and everything downstream speaks one
 // language.
 
-import type { ProviderAccount, ProviderHealth } from "./contract";
-import type { Tone } from "./tone";
+import type { ProviderAccount } from "./contract";
 
 export type { ProviderAccount };
+
+// ⚠️ **The health helpers are GONE, on a decision (2026-08-30), not lost.**
+// `healthTone`/`healthLabel` painted a chip from `ProviderAccount.health`, and
+// nothing on the backend probes a vendor account, so on live data every card
+// wore a grey "never checked" — a column of nothing on the page an operator
+// reads most. The contract keeps the `health` fields as the probe slice's
+// promise; the display returns when something measures.
 
 /** Live means not revoked. Nothing subtler, and nothing is inferred. */
 export function isLive(c: ProviderAccount): boolean {
@@ -100,17 +106,23 @@ export function describeScope(c: ProviderAccount): string {
 
 // ── One card per vendor ─────────────────────────────────────────────────────
 //
-// 🔴 **A vendor can have SEVERAL accounts, and the old flat table hid that.**
-// One platform key plus one BYOK key per organization is already legal today,
-// and a second platform key is how we survive a rate limit or a suspended
-// billing account without touching a tier. A table sorted by provider drew
-// those as unrelated rows.
+// 🔴 **ONE live platform key per vendor. The DATABASE says so, not this
+// file.** `provider_credential_live_uniq` (004) is unique over
+// `(provider, org)` where `revoked_at IS NULL`, and the second insert was
+// tried against the real schema on 2026-08-30 and refused. An earlier version
+// of this comment claimed a second platform key was how we survive a rate
+// limit — that state cannot exist, and the sample data that drew it modelled
+// something impossible. What a vendor CAN legally have beside its one
+// platform key: one BYOK key per organization, and any number of revoked
+// rows.
 
 export type ProviderGroup = {
   provider: string;
-  /** Not revoked, no organization — the ones that serve everybody. */
-  platform: ProviderAccount[];
-  /** Not revoked, scoped to one organization. */
+  /** The live org-less key, or null. ⚠️ Typed SINGULAR because the database
+   *  enforces it — a list here would invite the card to draw a state that
+   *  cannot exist, which is exactly what the sample data did. */
+  platform: ProviderAccount | null;
+  /** Not revoked, scoped to one organization each. */
   byok: ProviderAccount[];
   /** Revoked, of either kind. Kept for the record, drawn quietly. */
   revoked: ProviderAccount[];
@@ -141,38 +153,22 @@ export function groupByProvider(
   ].sort();
   const groups = names.map((provider) => {
     const mine = creds.filter((c) => c.provider === provider);
+    // ⚠️ `[0] ?? null`, deliberately shrugging at a duplicate. The database
+    // makes a second live platform row impossible, so defending against one
+    // here would be code that can never run — and if the read ever DID hand
+    // us two, drawing the first is no worse than any other recovery.
     return {
       provider,
-      platform: mine.filter((c) => isLive(c) && isPlatform(c)),
+      platform: mine.find((c) => isLive(c) && isPlatform(c)) ?? null,
       byok: mine.filter((c) => isLive(c) && !isPlatform(c)),
       revoked: mine.filter((c) => !isLive(c)),
     };
   });
   return groups.sort(
     (a, b) =>
-      Number(b.platform.length > 0) - Number(a.platform.length > 0) ||
+      Number(b.platform !== null) - Number(a.platform !== null) ||
       a.provider.localeCompare(b.provider),
   );
-}
-
-/** The colour of a health dot.
- *
- * 🔴 **`unknown` is NEUTRAL, never green.** Nothing probes a vendor account
- * today, so every live row reports `unknown`. A green dot there would be a
- * claim nobody measured, on the one screen where believing it means not
- * checking. */
-export function healthTone(h: ProviderHealth): Tone {
-  if (h === "ok") return "ok";
-  if (h === "degraded") return "warn";
-  if (h === "failing") return "danger";
-  return "neutral";
-}
-
-export function healthLabel(h: ProviderHealth): string {
-  if (h === "ok") return "answering";
-  if (h === "degraded") return "slow or rate limited";
-  if (h === "failing") return "not answering";
-  return "never checked";
 }
 
 /** Where one vendor stands, in one word. The filter chips count these.
@@ -181,17 +177,17 @@ export function healthLabel(h: ProviderHealth): string {
  * A vendor nobody has set up is a to-do. A vendor whose only key is revoked is
  * a decision somebody took, and drawing it as "not set up" invites the next
  * operator to quietly undo it. */
-export type GroupStatus = "armed" | "byok-only" | "dropped" | "untouched";
+export type GroupStatus = "connected" | "byok-only" | "dropped" | "untouched";
 
 export function groupStatus(g: ProviderGroup): GroupStatus {
-  if (g.platform.length > 0) return "armed";
+  if (g.platform) return "connected";
   if (g.byok.length > 0) return "byok-only";
   return g.revoked.length > 0 ? "dropped" : "untouched";
 }
 
 /** What one vendor card says in its header, in one line. */
 export function groupLine(g: ProviderGroup): string {
-  if (g.platform.length === 0) {
+  if (!g.platform) {
     if (g.byok.length > 0) {
       return `No account for everyone — ${g.byok.length} organization${
         g.byok.length === 1 ? "" : "s"
@@ -199,13 +195,13 @@ export function groupLine(g: ProviderGroup): string {
     }
     // ⚠️ Two different zeroes. See `groupStatus`.
     return g.revoked.length > 0
-      ? "Every key was revoked. Nothing here can be called."
+      ? "The key was removed. Nothing here can be called."
       : "Not set up.";
   }
-  const spare = g.platform.length - 1;
-  const base =
-    spare > 0
-      ? `${g.platform.length} keys for everyone`
-      : "1 key, serving everyone";
-  return g.byok.length > 0 ? `${base} · ${g.byok.length} bring their own` : base;
+  const since = g.platform.createdAt
+    ? `Serving every customer since ${g.platform.createdAt.slice(0, 10)}.`
+    : "Serving every customer.";
+  return g.byok.length > 0
+    ? `${since} ${g.byok.length} bring their own.`
+    : since;
 }
