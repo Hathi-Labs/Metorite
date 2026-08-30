@@ -35,6 +35,7 @@ export default function ModelDetails({ m }: { m: CatalogModel }) {
   const [out, setOut] = useState(m.maxOutput?.toString() ?? "");
   const [vin, setVin] = useState(m.inputPer1M?.toString() ?? "");
   const [vout, setVout] = useState(m.outputPer1M?.toString() ?? "");
+  const [vcached, setVcached] = useState(m.cachedInputPer1M?.toString() ?? "");
   const [description, setDescription] = useState(m.description);
   const [readsImages, setReadsImages] = useState(m.kinds.includes("vision"));
   const [thinksFirst, setThinksFirst] = useState(m.kinds.includes("reasoning"));
@@ -58,6 +59,9 @@ export default function ModelDetails({ m }: { m: CatalogModel }) {
           max_output: numeric(out),
           vendor_input_per_1m_usd: numeric(vin),
           vendor_output_per_1m_usd: numeric(vout),
+          // ⚠️ Without this, a cache-hitting call cannot be COSTED at all —
+          // the metering write refuses to estimate (013).
+          vendor_cached_input_per_1m_usd: numeric(vcached),
           description: description.trim(),
           reads_images: readsImages,
           thinks_first: thinksFirst,
@@ -142,6 +146,16 @@ export default function ModelDetails({ m }: { m: CatalogModel }) {
             value={vout}
             placeholder="15"
             onChange={(e) => setVout(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vc-${m.id}`}>We pay, per 1M cached in</label>
+          <input
+            id={`vc-${m.id}`}
+            inputMode="decimal"
+            value={vcached}
+            placeholder="0.3"
+            onChange={(e) => setVcached(e.target.value)}
           />
         </div>
       </div>

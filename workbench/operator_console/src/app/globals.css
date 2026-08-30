@@ -1699,6 +1699,41 @@ pre.token {
   font-size: 12px;
 }
 
+/* ── The pricing assumptions row ──────────────────────────────────────────
+   Two numbers the operator ASSERTS for this page's arithmetic. Drawn as one
+   quiet row, with the disclaimer beside them rather than in a tooltip —
+   an invented exchange rate that looks official becomes a fact. */
+.assumptions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r);
+}
+
+.assumptions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.assumptions input {
+  width: 72px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+.assumptions .small {
+  flex: 1 1 240px;
+}
+
 .advanced summary {
   cursor: pointer;
   color: var(--muted);

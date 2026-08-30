@@ -46,6 +46,7 @@ type WireCatalog = {
     context_window: number | null;
     max_output: number | null;
     vendor_input_per_1m_usd: string | null;
+    vendor_cached_input_per_1m_usd?: string | null;
     vendor_output_per_1m_usd: string | null;
     description: string;
     reads_images: boolean;
@@ -139,6 +140,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         contextWindow: p?.context_window ?? null,
         maxOutput: p?.max_output ?? null,
         inputPer1M: num(p?.vendor_input_per_1m_usd ?? null),
+        cachedInputPer1M: num(p?.vendor_cached_input_per_1m_usd ?? null),
         outputPer1M: num(p?.vendor_output_per_1m_usd ?? null),
         description: p?.description ?? "",
         declared: true,

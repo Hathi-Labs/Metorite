@@ -35,6 +35,7 @@ const m = (
   maxOutput: null,
   inputPer1M: null,
   outputPer1M: null,
+  cachedInputPer1M: null,
   description: "",
   declared: true,
   priced: true,

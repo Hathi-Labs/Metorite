@@ -57,6 +57,9 @@ describe("what a model IS", () => {
     expect(m.inputPer1M).toBe(3);
     expect(m.outputPer1M).toBe(15);
     expect(m.description).toBe("the workhorse");
+    // 013: absent from this older wire shape → null, never zero. A zero
+    // cached rate would make every cache-hitting call look free to cost.
+    expect(m.cachedInputPer1M).toBeNull();
   });
 
   it("🔴 turns the two profile FLAGS into filterable kinds", () => {
