@@ -392,7 +392,7 @@ def test_a_REFUSAL_is_NOT_reported_as_a_failover(client, db, org, serve):
     reasoned about, because "cannot" is a claim about a NULL comparison and
     only a real server settles one of those.
     """
-    slug, org_id, key = org
+    _slug, org_id, key = org
     tier = f"tier-pt-unbound-{uuid.uuid4().hex[:6]}"
 
     assert _ask(client, key, tier).status_code == 400

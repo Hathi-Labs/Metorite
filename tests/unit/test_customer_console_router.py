@@ -14,6 +14,7 @@ on every run, which means in practice nobody runs it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from decimal import Decimal
@@ -800,6 +801,12 @@ class TestStreaming:
         assert r.json()["detail"]["reason"] == "insufficient_credits"
         assert opened == []
         assert TestMetering._count_served(db, slug) == before
+        # 📌 The POSITIVE half, so this stream-named test carries its own pin
+        # instead of borrowing `TestARefusalReachesTheMeter`'s. The gate
+        # refused before a frame existed, and the meter still recorded the
+        # wall (§8.1). A negative-only assertion stays green on the day the
+        # stream path silently stops metering its refusals.
+        assert TestMetering._refusals(db, slug) == ["insufficient_credits"]
 
     def test_an_unknown_tier_refuses_a_stream_with_400(self, client, org_key):
         # The same refusal the buffered path gives. `stream: true` is not a way
@@ -1472,6 +1479,114 @@ class TestARefusalReachesTheMeter:
             after = c.execute(
                 text("SELECT count(*) FROM usage_event")).scalar_one()
         assert after == before
+
+
+class TestTheThreeBranchesTheRefusalWriterCanTake:
+    """R7 for the three ways `_record_refusal` writes nothing.
+
+    Each branch is a place where a refusal loses its meter row. All three are
+    deliberate, and none of them was pinned until 2026-08-31 — so each one
+    could have been deleted, or could have started firing, with every suite
+    still green.
+    """
+
+    @staticmethod
+    def _refuse_with(monkeypatch, exc):
+        """Make the spend gate return *exc* from `_spend_refusal`.
+
+        Patched at the MODULE attribute, because the route looks the name up
+        at call time. Nothing else about the gate changes, so the refusal
+        travels the real path the 402 and the 403 travel.
+        """
+        from customer_console import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_spend_gate_enabled", lambda: True)
+        monkeypatch.setattr(main_mod, "_spend_refusal",
+                            lambda conn, caller: exc)
+
+    def test_a_FOURTH_slug_is_dropped_and_LOGGED(
+            self, client, org_key, org_id, db, monkeypatch, caplog):
+        """🔴 The guard on the vocabulary, and why the assertion is a LOG line.
+
+        A slug nobody declared would fail migration 020's CHECK. The writer
+        drops it first, so a typo never becomes an IntegrityError on the
+        hottest path in the system.
+
+        ⚠️ **"No row" alone does not fence this.** Delete the guard and the
+        insert fails the CHECK, `_record_refusal` swallows it, and there is
+        still no row — a test asserting only absence stays green. The two log
+        lines are what tell the branches apart, so both are asserted.
+        """
+        from fastapi import HTTPException
+
+        _, key = org_key
+        self._refuse_with(monkeypatch, HTTPException(
+            status_code=402, detail={"reason": "out_of_cheese"}))
+
+        with caplog.at_level(logging.WARNING):
+            r = _complete(client, key)
+
+        # The customer still gets their refusal, unchanged.
+        assert r.status_code == 402, r.text
+        assert r.json()["detail"]["reason"] == "out_of_cheese"
+        assert _refusal_row(db, org_id) is None
+        assert "router.refusal_slug_unknown" in caplog.text
+        assert "router.refusal_metering_failed" not in caplog.text, (
+            "the writer reached the database with an undeclared slug — the "
+            "vocabulary guard is gone"
+        )
+
+    def test_a_METER_failure_never_turns_a_REFUSAL_into_a_500(
+            self, client, org_key, org_id, db, monkeypatch, caplog):
+        """🔴 Best effort, the same rule `_record_completion` follows.
+
+        An unmetered refusal is a reporting gap. A refusal the customer never
+        receives, because the meter fell over, is an outage — and the outage
+        is worse. So the writer swallows its own failure.
+        """
+        from customer_console import store as store_mod
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("the meter is down")
+
+        monkeypatch.setattr(store_mod, "record_usage", _boom)
+        _, key = org_key
+
+        with caplog.at_level(logging.ERROR):
+            r = client.post("/v1/chat/completions", headers=key, json={
+                "model": "tier-imaginary",
+                "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 400, r.text
+        assert "name a tier" in r.json()["detail"]
+        assert _refusal_row(db, org_id) is None
+        assert "router.refusal_metering_failed" in caplog.text
+
+    def test_a_refusal_whose_detail_is_a_STRING_writes_no_row(
+            self, client, org_key, org_id, db, monkeypatch):
+        """Today's behaviour, pinned. It is deliberate and it is narrow.
+
+        The slug must be the word already inside the body the customer reads,
+        and a plain-string detail carries no such word. Minting one from the
+        status code would be the second spelling W3 forbids.
+
+        ⚠️ **Both shipped gate refusals carry a dict** — `decide_spend` and
+        `_spend_refusal` build one each — so nothing in the tree reaches this
+        branch. It is pinned because a future refusal that answers a bare
+        sentence would lose its row SILENTLY, and this test is what turns that
+        into a visible decision.
+        """
+        from fastapi import HTTPException
+
+        _, key = org_key
+        self._refuse_with(monkeypatch, HTTPException(
+            status_code=403, detail="run stopped"))
+
+        r = _complete(client, key)
+
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "run stopped"
+        assert _refusal_row(db, org_id) is None
 
 
 # ── G-3: the CALLER declares the task ───────────────────────────────────────

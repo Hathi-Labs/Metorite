@@ -27,7 +27,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine, text  # noqa: E402
-from sqlalchemy.exc import IntegrityError  # noqa: E402
+from sqlalchemy.exc import IntegrityError
 
 from tests.unit._customer_console_ladder import SECOND_PLAN, apply_ladder  # noqa: E402
 
@@ -794,9 +794,8 @@ class TestARefusalIsNotACall:
         transaction, and the fixture's rollback would then have nothing to roll
         back cleanly.
         """
-        with pytest.raises(IntegrityError):
-            with conn.begin_nested():
-                self._refused(conn, org, reason="out_of_cheese")
+        with pytest.raises(IntegrityError), conn.begin_nested():
+            self._refused(conn, org, reason="out_of_cheese")
 
     def test_all_three_shipped_slugs_are_accepted(self, conn, org):
         for slug in ("insufficient_credits", "run_ceiling_exceeded",

@@ -731,6 +731,21 @@ left all three byte-identical.
 
    ⚠️ The two 503s and the 502 still raise from inside their transactions, on
    purpose. They write nothing, so nothing can roll back.
+
+   🔴 **THE METER IS BEST EFFORT AND NEVER CHANGES THE ANSWER.** A failure
+   inside `_record_refusal` is caught and logged as
+   `router.refusal_metering_failed`, and the customer still receives the 400,
+   the 402 or the 403. An unmetered refusal is a reporting gap. A refusal the
+   customer never receives is an outage, and the outage is worse.
+   `_record_completion` follows the same rule for the served path.
+
+   Two smaller branches write nothing, and both are deliberate. The writer
+   drops a slug outside `_REFUSAL_REASONS` and logs
+   `router.refusal_slug_unknown`, so a typo never becomes an IntegrityError on
+   the hottest path in the system. A refusal whose `detail` is a plain string
+   carries no slug. We do not mint one from the status code, because that is
+   the second spelling W3 forbids. Both shipped gate refusals build a dict, so
+   nothing in the tree takes that branch today.
 4. **The row shape.** ✅ A refusal row carries `billed_credits` 0, `quantity`
    0, the task's unit, the requested tier, `model` NULL and
    `provider_cost_usd` NULL. It mints its own `request_id`, because
@@ -753,6 +768,7 @@ left all three byte-identical.
 | Our own failure writes no usage row | `test_customer_console_router.py` — `test_a_503_credential_failure_writes_NOTHING`, plus `TestFailureShapes::test_a_failed_provider_call_writes_no_usage_row` for the 502 |
 | A refusal draws no credit | `test_customer_console_sql.py` — `run_spend` reads the same before and after a refusal row. `test_customer_console_router.py` — `credit_ledger` stays empty |
 | 🔴 A refusal SURVIVES the raise | `test_customer_console_router.py::TestARefusalReachesTheMeter` — the test DRIVES the HTTP route. A request for an unknown tier returns 400, and `usage_event` then holds exactly one row with `refusal_reason` of `tier_unknown`. A hand-inserted row does not satisfy this fence |
+| 🔴 The meter never changes the answer | `test_customer_console_router.py::TestTheThreeBranchesTheRefusalWriterCanTake` — three tests, one for each branch that writes nothing. A meter failure still answers 400. A fourth slug logs `router.refusal_slug_unknown` and never reaches the CHECK. A plain-string detail writes no row |
 | A refusal keeps a customer visible | `test_customer_console_sql.py` — `last_seen_by_org` moves to the refusal's `created_at` |
 | The failover read never sees one | `test_customer_console_pricing_truth.py::test_a_REFUSAL_is_NOT_reported_as_a_failover` |
 

@@ -4730,6 +4730,13 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # The slug is the word already inside the body the customer reads —
         # `insufficient_credits` or `run_ceiling_exceeded` — never a second
         # spelling minted here. `_record_refusal` drops anything else.
+        #
+        # ⚠️ **A plain-string detail writes NO row, and that is deliberate.**
+        # It carries no slug, and minting one from the status code would be
+        # the second spelling W3 forbids. Both shipped gate refusals build a
+        # dict, so nothing in the tree takes this branch — it is pinned by
+        # `TestTheThreeBranchesTheRefusalWriterCanTake` so that a future
+        # refusal answering a bare sentence loses its row VISIBLY.
         detail = refusal.detail
         if isinstance(detail, dict) and detail.get("reason"):
             _record_refusal(str(detail["reason"]), org_id=org_id, caller=caller,
