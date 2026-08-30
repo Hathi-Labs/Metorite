@@ -101,7 +101,10 @@ export default function Header() {
   return (
     <aside className="sidebar">
       <a href="/" className="brand">
-        Metorite <span>Operator</span>
+        <span className="mark" aria-hidden="true">M</span>
+        <span className="brandname">
+          Metorite <span>Operator</span>
+        </span>
       </a>
 
       <nav aria-label="Sections">

@@ -58,6 +58,15 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-2: 0 6px 20px -6px rgba(0, 0, 0, 0.55);
   --ring: 0 0 0 3px var(--accent-soft);
+  /* The identity pair (mockup adoption, 2026-08-30): a second accent hue
+     for the brand gradient only — never for text, never for a tone. The
+     glow and the gradient read the accent tokens, so both themes move
+     them automatically. */
+  --accent-2: #58d0e8;
+  --brand-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --bg-glow: radial-gradient(1100px 480px at 18% -8%, var(--accent-soft), transparent 62%);
+  --lift: 0 10px 24px -10px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-strong);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -116,6 +125,8 @@
 
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-2: 0 8px 24px -8px rgba(16, 24, 40, 0.18);
+  --accent-2: #0c7fa3;
+  --lift: 0 10px 24px -10px rgba(16, 24, 40, 0.18), 0 0 0 1px var(--border-strong);
   color-scheme: light;
 }
 
@@ -131,7 +142,10 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  /* Atmosphere, not information: a fixed accent wash under everything so
+     the panels have a ground to sit on. */
+  background: var(--bg-glow), var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   font-size: 14px;
@@ -190,14 +204,40 @@ a:hover {
   gap: 4px;
   padding: 18px 12px 14px;
   background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
   border-right: 1px solid var(--border);
   z-index: 20;
 }
 
 .sidebar .brand {
-  display: block;
-  padding: 0 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 16px;
+  font-size: 14.5px;
+}
+.brand .mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid;
+  place-items: center;
   font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 4px 14px -4px var(--accent-line);
+}
+.brand .brandname span {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 .sidebar nav {
@@ -484,7 +524,8 @@ button.linklike.danger:hover:not(:disabled) {
 .bar > i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  border-radius: 2px;
+  background: var(--brand-grad);
 }
 .seatcell {
   min-width: 110px;
@@ -627,6 +668,19 @@ tbody tr:last-child td {
 .chip.warn { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
 .chip.danger { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
 .chip.accent { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+/* A TONE chip reads as a status light. Identity chips (cat-*) carry their
+   glyph box instead, and neutral chips are labels — neither gets a dot. */
+.chip.ok::before,
+.chip.warn::before,
+.chip.danger::before,
+.chip.accent::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
 .chip.mono { font-family: var(--mono); font-size: 11.5px; }
 
 /* ── Panels & forms ──────────────────────────────────────────────────── */
@@ -1185,6 +1239,18 @@ pre.token {
   color: var(--warn);
   font-weight: 600;
 }
+.elevation.elevated::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
 
 .elevation-error {
   color: var(--danger);
@@ -1732,7 +1798,7 @@ pre.token {
   margin-top: 1px;
   border-radius: 50%;
   background: var(--panel-2);
-  color: var(--fg);
+  color: var(--text);
   font-size: 10px;
   font-weight: 700;
   display: inline-flex;
@@ -1810,27 +1876,56 @@ pre.token {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
+  position: relative;
+}
+/* The connector runs UNDER the dots; each dot masks it with a panel ring. */
+.rail::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
 }
 
 .rail-step {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  background: var(--panel-2);
+  gap: 12px;
+  padding: 8px 0;
+  position: relative;
 }
 
 /* A completed step recedes; the next thing to do is what the eye should hit. */
 .rail-step.done {
   opacity: 0.66;
-  background: transparent;
+}
+.rail-step.done strong {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
 }
 
 .rail-step .stepno {
-  margin-top: 2px;
+  margin-top: 0;
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+  border: 2px solid var(--panel);
+  z-index: 1;
+}
+.rail-step.done .stepno {
+  background: var(--ok-soft);
+  color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok-line);
+}
+.rail-step.now .stepno {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
 .railmain {
@@ -1876,4 +1971,44 @@ pre.token {
   cursor: pointer;
   color: var(--muted);
   padding: 2px 0;
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────────
+   One entrance, one curve, and hover lift ONLY on cards that go somewhere
+   or hold controls. Panels holding forms stay still, and an open provider
+   card is excluded — nothing may move while somebody types a secret into
+   it. All of it is optional: reduced motion gets a still console. */
+main.wrap {
+  animation: rise 0.28s var(--ease);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.stat,
+.tier-card,
+.modelcard,
+.provider-card {
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+@media (hover: hover) {
+  .stat:hover,
+  .tier-card:hover,
+  .modelcard:hover,
+  .provider-card:not(.open):hover {
+    transform: translateY(-2px);
+    box-shadow: var(--lift);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
