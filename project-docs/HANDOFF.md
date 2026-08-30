@@ -1257,6 +1257,29 @@ line — never reclaim a number by deleting the other entry.
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session
 
+### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
+- **Check:** read the docstring of `usage_by_org` in
+  `apps/services/customer_console/customer_console/store.py` and the `ORDER BY`
+  under it. An order that still sorts on credits alone means this is open.
+- **Why:** the read LEFT JOINs `organization` to `usage_event` so that an
+  organization with no use appears with zeros. "This customer bought credits
+  and used none" is the most actionable row on the page. The `ORDER BY` then
+  sorts on credits descending, and `SPEND_PAGE_SIZE` cuts the list. So that
+  row sorts LAST and drops off the end. The two rules cancel out.
+- **📌 Measured, not theoretical.** Found on 2026-08-30 against a scratch
+  database of 563 organizations. Dev, CI and production hold 2 organizations,
+  so all three agree the read is fine.
+- **What is already done:** the read returns `total`, and the console says
+  "100 of 563". The truncation is never silent.
+- **What is open:** the ordering itself. An operator wants the biggest
+  spenders **and** the quiet ones. That is two queries or one union, not one
+  `ORDER BY`. Nobody has chosen the shape.
+- **⚠️ The number stands even after the fix.** Handoff ids are never reused.
+  `store.py` cites "HANDOFF H-76" by name.
+- **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
+  `usage_by_org`
+- **Added:** 2026-08-30 · WS-31 spec remediation session
+
 ### H-77 · Set the vendor feed's clock on the box · [OWNER]
 - **Check:** on the box, `grep CUSTOMER_CONSOLE_FEED_SYNC_HOURS /opt/acb/app/.env`.
   No line, or `0`, means the feed only updates when somebody presses the

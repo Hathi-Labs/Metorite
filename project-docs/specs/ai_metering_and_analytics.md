@@ -3,6 +3,15 @@
 **Status: ACTIVE.** Owner directive, 2026-08-29. This specification owns the AI
 tier vocabulary that a customer sees, and every surface that reports AI use.
 
+**Slice state, re-measured 2026-08-30.** Slices 1, 2, 6, 10, 12 and 13 are
+**BUILT**. Slice 6 shipped as `b3ce3a9c` (#163) and slice 12 as `537147b2`
+(#168). **Slice 5 is SPEC ONLY** and §8.1 now holds its contract. §8's table
+carries a Gate column, so a dispatcher reads AGENT-SAFE or OWNER-GATE per row.
+
+⚠️ **This file said the opposite in four places until 2026-08-30.** F7, F9,
+§3.6 and §5 each claimed an unbuilt surface that had shipped. Each one now
+carries the date of its rewrite. Re-verify every anchor at dispatch.
+
 **Owning board row:** WS-31. **Related:** `customer_console.md` §6A owns the
 model catalog. `launch_surface.md` §4 owns the price. This file owns what a
 person **sees** and what the numbers **mean**.
@@ -64,11 +73,12 @@ the live Console database on 2026-08-29.
 | **F4** | 🔴 **Only three capabilities exist**, and all three are for `chat` or `transcribe`. Nothing declares `vision`, `image`, `speak` or `embed`. Those four tasks cannot be served | `model_capability` |
 | **F5** | 🔴 **A rate card names the wrong task.** `groq/whisper-large-v3-turbo` declares `transcribe`, and its only rate card row is `chat`. Whisper bills per minute, and a chat card prices per 1000 tokens | `model_rate_card` |
 | **F6** | 🔴 **Every rate card is `unpriced`.** No AI call bills anything | `model_rate_card` |
-| **F7** | **The operator can grant credits and cannot read use.** `POST /credits/grant` and `GET /credits/balance` exist. No operator read of `usage_event` exists | `main.py` |
+| **F7** | **The operator can grant credits AND read use.** *(Rewritten 2026-08-30 — slice 6 shipped, and this row said the opposite.)* `usage_by_org` (`store.py:700`) feeds `GET /admin/usage/orgs` (`main.py:4952`), beside `POST /credits/grant` and `GET /credits/balance` | `store.py`, `main.py` |
 | **F8** | **The customer can read use by app and by member.** `GET /my/usage/activity` and `GET /my/usage/members` shipped in CP-7 | `main.py` |
-| **F9** | **No time series exists** on either side | `main.py` |
+| **F9** | **The operator time series exists. The customer one does not.** *(Rewritten 2026-08-30.)* `GET /admin/usage/daily` (`main.py:5017`) serves the operator, for the platform or for one organization. C3 has a store function and no route | `main.py` |
 | **F10** | **No per-member budget table exists.** H-73 records why: the member identity arrives in a header the member controls | `information_schema`, HANDOFF |
 | **F11** | **`usage_event` holds 0 rows.** Every surface below ships to an empty table | live query |
+| **F12** | 🔴 **F1's column list is INCOMPLETE, and an agent must not read it as the table.** Four later migrations added columns F1 never names: `run_id` (`003`), `client_ref` (`005`), `served_rank` and `byok_served` (`013`). `001` itself also holds `id`, `request_id` and the three token counters. `010` added the `task`, `quantity` and `unit` that F1 does name. **Read `information_schema`, never this row** | `infra/customer_console/001`, `003`, `005`, `010`, `013` |
 
 ---
 
@@ -178,9 +188,18 @@ is legal, and it is a separate slice.
 ⚠️ **The chain tries at most `MAX_CHAIN_ATTEMPTS` steps.** An unbounded chain
 is an unbounded bill and an unbounded wait.
 
-⚠️ **`usage_event` has no column for the step that served.** A failover writes
-a `router.failover` log line, and nothing else. So the Operator Console cannot
-show a failover history yet, and that page stays sample-only.
+✅ **`usage_event` records the step that ANSWERED.** *(Rewritten 2026-08-30.
+This paragraph said the column did not exist. Slice 12 built it — see §8.3.)*
+
+`served_rank` (migration `013`) holds the position of the step that served.
+Rank 1 is the first choice. A rank above 1 is a failover. NULL predates the
+column, or comes from a caller that does not say. The Operator Console reads
+`served_rank > 1` over 14 days (`main.py:1775-1786`).
+
+⚠️ **The record holds no `from` and no `reason`, and that is deliberate.** The
+step we fell FROM is a join against a re-bindable history, so a chain edited
+tomorrow rewrites what yesterday's row appears to say. The reason lives in the
+`router.failover` log line, where an outage is read.
 
 ---
 
@@ -298,13 +317,15 @@ reads in C1 and C2 already exclude it, and a new read must do the same.
 
 ## 5. Operator surfaces
 
+*(Re-measured 2026-08-30. O2, O3 and O5 shipped in slice 6, `b3ce3a9c`, #163.)*
+
 | # | Surface | State | Blocked by |
 |---|---|---|---|
 | O1 | Grant credits to an organization | **Built** (`POST /credits/grant`) | — |
-| O2 | **Use by organization** | To build | — |
-| O3 | **Use over time** | To build | — |
-| O4 | Drill into one organization by member, app and tier | To build | — |
-| O5 | The analytics in §6 | To build | — |
+| O2 | **Use by organization** | **Built** — `GET /admin/usage/orgs` (`main.py:4952`) over `usage_by_org` (`store.py:700`) | — |
+| O3 | **Use over time** | **Built** — `GET /admin/usage/daily` (`main.py:5017`) over `usage_daily` (`store.py:790`) | — |
+| O4 | Drill into one organization by member, app and tier | ◐ **Half built.** `GET /admin/usage/daily` takes `org_slug`, so the per-organization series exists. **No operator read returns one organization by member, by app or by tier** — only the customer routes in F8 do that | — |
+| O5 | The analytics in §6 | **Built** — `analytics.py` carries A1, A2, A3 and A6, and `GET /admin/usage/orgs` sends them. A4 and A7 stay unbuilt | — |
 
 ---
 
@@ -319,7 +340,7 @@ already answer, and each one names the action it triggers.
 | **A2** | **Credit runway** — the balance divided by the 7-day burn rate | When does this customer run out? | Call them before they stop |
 | **A3** | **A silent customer** — credits granted, and no use for 14 days | Is this customer leaving? | Ask why |
 | **A4** | **Model mix** — the share of calls for each model | Which vendor contract matters? | Negotiate, or move a tier |
-| **A5** | **A refused call** — a 402 for no credit, a 400 for a bad tier | Is a customer hitting a wall? | Support, before they write in |
+| **A5** | **A refused call** — a 402 for no credit, a 400 for an unknown tier, a 403 for the run ceiling. *(This cell named only two of the three until 2026-08-30. `_spend_refusal` raises the 402 and the 403 in one function.)* | Is a customer hitting a wall? | Support, before they write in |
 | **A6** | **A cost spike** — a day above five times the trailing mean | Did something run away? | Investigate the app and the member |
 | **A7** | **Tier efficiency** (customer side) — the share of calls on Powerful | Does this company overpay? | Move an app to Medium |
 
@@ -329,7 +350,36 @@ it.** We record what we pay (`provider_cost_usd`) and what we charge
 and no current surface shows it.
 
 ⚠️ **A5 needs a new column.** `usage_event` records a call that happened. A
-refusal writes no row. See §8, slice 5.
+refusal writes no row. §8.1 holds the contract for slice 5.
+
+### 6.1 Two decisions the build already took
+
+**Both are agent-proposed answers the owner may overrule**, which is the
+D16/D17 convention CP-2b and CP-2c used. Slice 6 shipped them, and this
+section records them so a later agent does not re-take them differently.
+
+**Decision D-AI-8. An unmeasured provider cost reads as UNKNOWN margin, never
+as zero.** `provider_cost_usd` is nullable, and NULL means nobody measured what
+the traffic cost us. `margin_ratio` (`analytics.py:54`) returns `None` on a
+cost of zero or less. `GET /admin/usage/orgs` sends `marginRatio: null`
+(`main.py:4911`), and `marginTone` paints null neutral.
+
+Two rules follow. `usage_by_org` judges margin over the **costed** calls only,
+so all-calls credits over some-calls cost never inflates the ratio. `costedShare`
+(`main.py:4915`) travels beside the ratio and carries the coverage, so an
+operator reads how much of the traffic the number speaks for.
+
+⚠️ **Infinity rendered as "excellent margin" is the failure this refuses.** A
+confident wrong number in an analytics surface costs more than a blank one.
+
+**Decision D-AI-9. Margin is a RATIO, never money.** `billed_credits` and
+`provider_cost_usd` hold different units, and no credit has a rupee price yet
+(H-42). Subtracting one from the other invents an exchange rate nobody chose.
+The rationale is in `analytics.py:10-19`.
+
+So the surface reports credits billed per dollar of provider cost. That number
+is unitless. It compares between organizations and across time. It turns into
+money on the day the owner prices a credit, and not before.
 
 ---
 
@@ -355,21 +405,236 @@ absent and what it costs.** An empty chart reads as a quiet week.
 
 Each slice ships alone and is verifiable alone.
 
-| # | Slice | Delivers |
+**The Gate column, added 2026-08-30.** AGENT-SAFE means an agent builds the
+whole slice and opens a pull request. OWNER-GATE names an act only the owner
+takes. A flag flip and a price are owner acts, and the build in front of one
+is still agent-safe. §7 holds the gates themselves.
+
+| # | Slice | Delivers | Gate |
+|---|---|---|---|
+| **1** | Operator reads: `usage_by_org`, `usage_daily` in `store.py` ✅ | O2, O3 | AGENT-SAFE |
+| **2** | Operator Console `/usage` page ✅ | O2, O3 | AGENT-SAFE |
+| **3** | `tier_catalog` table and the label seam | §3.1, C6 | AGENT-SAFE |
+| **4** | Router image rule | §3.2 | AGENT-SAFE · the serving flip is the owner's (H-69) |
+| **5** | Record a refusal in `usage_event` — **§8.1 holds the contract** | A5 | AGENT-SAFE |
+| **6** | Margin and runway ✅ `b3ce3a9c` (#163) — **§8.2** | A1, A2 | AGENT-SAFE · a priced margin waits on H-42 |
+| **7** | Customer time series | C3 | AGENT-SAFE |
+| **8** | Per-member budget | C5 | 🔴 **OWNER-GATE** — blocked on H-73. Do not build it first and secure it later |
+| **9** | `tier_binding.rank`, and the Console reads and writes a chain | §3.5 | AGENT-SAFE |
+| **10** | The Router walks the chain when a step fails ✅ | §3.5, §3.6 | AGENT-SAFE · the serving flip is the owner's (H-69) |
+| **11** | A stream fails over before its first frame | §3.6 | AGENT-SAFE · the serving flip is the owner's (H-69) |
+| **12** | `usage_event` records the step that served ✅ `537147b2` (#168) — **§8.3** | §3.6 | AGENT-SAFE |
+| **13** | `model_profile` — what a model IS ✅ | §3.7 | AGENT-SAFE |
+
+⚠️ **Row 12 delivered §3.6 and NOT A5.** The cell named A5 until 2026-08-30,
+and that was wrong: `served_rank` records a call that answered, and a refusal
+answers nothing. A5 belongs to slice 5 alone.
+
+### 8.1 Record a refusal in `usage_event` (slice 5, A5) — SPEC ONLY, 2026-08-30
+
+**Nothing below is built.** Every default here is an **agent-proposed answer
+the owner may overrule**, which is the D16/D17 convention CP-2b and CP-2c used.
+Where a name or a number below disagrees with the tree, the tree wins.
+Re-verify every anchor at dispatch.
+
+**The problem.** `usage_event` records a call that happened. A refusal writes
+no row. So A5 cannot answer "is a customer hitting a wall", and six refusal
+shapes in the Router route leave no trace in the meter.
+
+**The answer, in one line.** One nullable column names why we refused. NULL
+means the call served. Every read that counts calls excludes the refusals.
+
+#### The column — migration `020`
+
+⚠️ **Take the migration number at build time, and again at merge (R1).** The
+highest number on disk on 2026-08-30 is `018_credit_ref_unique.sql`.
+`customer_console.md` §6A.11a claims `019` for H-78. So `020` is the number
+today. List `infra/customer_console/` before you name the file.
+
+R6 binds the migration. Add one nullable column. Rename nothing. Drop nothing.
+
+| Column | Type | What it holds |
 |---|---|---|
-| **1** | Operator reads: `usage_by_org`, `usage_daily` in `store.py` | O2, O3 |
-| **2** | Operator Console `/usage` page | O2, O3, O4 |
-| **3** | `tier_catalog` table and the label seam | §3.1, C6 |
-| **4** | Router image rule | §3.2 |
-| **5** | Record a refusal in `usage_event` | A5 |
-| **6** | Margin and runway | A1, A2 |
-| **7** | Customer time series | C3 |
-| **8** | Per-member budget | C5, **after H-73** |
-| **9** | `tier_binding.rank`, and the Console reads and writes a chain | §3.5 |
-| **10** | The Router walks the chain when a step fails ✅ | §3.5, §3.6 |
-| **11** | A stream fails over before its first frame | §3.6 |
-| **12** | `usage_event` records the step that served | §3.6, A5 |
-| **13** | `model_profile` — what a model IS ✅ | §3.7 |
+| `refusal_reason` | `TEXT` NULL | The slug we refused on. NULL means the call served |
+
+The column carries a CHECK: `refusal_reason IS NULL OR refusal_reason IN` the
+three slugs below. A closed vocabulary is the point. An open TEXT column grows
+a fourth spelling of the same wall within a month.
+
+#### The vocabulary — three slugs, closed
+
+| Slug | Status | Where the code raises it |
+|---|---|---|
+| `insufficient_credits` | 402 | `credits.py:397-401`. Copied word for word |
+| `run_ceiling_exceeded` | 403 | `main.py:1017-1020`, inside `_spend_refusal` (`main.py:972-1026`). Copied word for word |
+| `tier_unknown` | 400 | `main.py:4571` raises `TierUnknown`. This section mints the slug |
+
+⚠️ **Two of the three already exist in the body the customer reads.** Copy
+them. Do not mint a second spelling for a wall that has a name. W3 binds this.
+
+#### Which refusal writes a row, and which does not
+
+**A refusal writes a row when the CUSTOMER caused it.** Those three are the
+walls A5 watches for.
+
+| Shape | Anchor | Writes a row |
+|---|---|---|
+| 400 unknown tier | `main.py:4571` | **Yes** |
+| 402 no credit | `credits.py:397-401` | **Yes** |
+| 403 run ceiling | `main.py:1017-1020` | **Yes** |
+| 503 credential unavailable | `main.py:4591` | No |
+| 503 no vendor configured | `main.py:4617` | No |
+| 502 vendor failure | `main.py:4739` | No |
+| 401 bad key | `auth.py:454` | **Cannot** |
+
+**Named non-goal: the two 503s and the 502 are OUR failures, not a customer
+wall.** They belong to the log line and to a later operations surface. One
+table that mixes a customer wall with a broken vendor answers neither
+question. Building that surface is a separate slice, and this one does not
+start it.
+
+🔴 **A 401 CANNOT write a row, and the reason is structural.** `auth.py:454`
+refuses before the code knows the organization. `usage_event.organization_id`
+is `NOT NULL` (`001_customer_console.sql:256`). A row needs a tenant, and at
+401 there is none. **Do not invent a system organization to make it fit.**
+
+**No 413 exists.** The route clamps `max_tokens` to `_MAX_OUTPUT_TOKENS`
+(`main.py:4639-4643`) instead of refusing an oversized request.
+
+#### What a refusal row holds
+
+| Field | Value | Why |
+|---|---|---|
+| `refusal_reason` | one of the three slugs | The wall |
+| `billed_credits` | `0` | We served nothing, so we charge nothing |
+| `quantity` | `0` | The call consumed nothing |
+| `unit` | the task's unit, from `task_catalog` | The row stays readable beside a served row |
+| `tier` | the tier the caller ASKED for | A5 must say which tier the customer wanted |
+| `model` | `NULL` | No model answered |
+| `provider_cost_usd` | `NULL` | No vendor billed us |
+
+⚠️ **`tier` holds the REQUESTED tier, never a resolved one.** At
+`tier_unknown` there is nothing to resolve, and the tier on the request is the
+fact A5 reports.
+
+#### 🔴 The five counting reads MUST exclude a refusal
+
+**This is the defect this slice can ship, and it is silent.** A refusal row
+lands in `usage_event`, and every read that counts rows starts counting a
+refusal as a call. The call counts inflate. The credit sums stay correct,
+because a refusal bills 0. So the two columns disagree and nothing says why.
+
+| # | Read | Anchor | The count | The shape of the fix |
+|---|---|---|---|---|
+| 1 | `usage_by_activity` | `store.py:583` | `COUNT(*) AS calls` | `AND refusal_reason IS NULL` in the WHERE clause |
+| 2 | `usage_by_member` | `store.py:641` | `COUNT(*) AS calls` | `AND refusal_reason IS NULL` in the WHERE clause |
+| 3 | `usage_by_org` | `store.py:700` | `COUNT(u.id) AS calls` | `FILTER (WHERE u.refusal_reason IS NULL)` |
+| 4 | `usage_by_org` | `store.py:700` | `COUNT(DISTINCT u.user_email) AS members` | `FILTER (WHERE u.refusal_reason IS NULL)` |
+| 5 | `usage_daily` | `store.py:790` | `COUNT(u.id) AS calls` | `FILTER (WHERE u.refusal_reason IS NULL)` |
+
+⚠️ **Reads 3, 4 and 5 take a `FILTER` clause, never a WHERE clause and never
+an ON clause.** All three sit on a LEFT JOIN that exists on purpose.
+
+A WHERE clause on the right table turns the LEFT JOIN into an inner join. The
+zero-usage organization `usage_by_org` exists to show then disappears. An ON
+clause keeps the join, and it still hides the refusal from
+`MAX(u.created_at)`. That makes a customer at a wall read as SILENT to A3.
+
+**Two reads stay unchanged, and an agent must not touch them.**
+
+- `run_spend` (`store.py:389`) sums `billed_credits`. A refusal adds 0, so the
+  circuit breaker keeps its meaning with no edit.
+- The failover read (`main.py:1781`) filters `served_rank > 1`. A refusal
+  carries no served rank, so it never reaches that read.
+
+#### Done when — one clause per artefact
+
+1. **The migration.** `020` adds `refusal_reason TEXT` NULL, plus the CHECK on
+   the three slugs. Every column stays nullable (R6).
+2. **The number.** An agent lists `infra/customer_console/` at build time. The
+   merge re-checks it (R1).
+3. **The route writes three, and only three.** The 400, the 402 and the 403
+   each write one `usage_event` row before they raise. The two 503s and the
+   502 write none. The 401 cannot.
+4. **The row shape.** A refusal row carries `billed_credits` 0, `quantity` 0,
+   the task's unit, the requested tier, and `model` NULL.
+5. **The five reads exclude it.** Reads 1 and 2 take a WHERE clause. Reads 3,
+   4 and 5 take a `FILTER` clause, so each LEFT JOIN survives.
+6. **`run_spend` and the failover read carry no diff.**
+7. **The tests.** One refusal row and one served row return `calls` 1 from
+   every one of the five reads.
+
+#### Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| A refusal never counts as a call | `test_customer_console_sql.py` — one refusal and one served call return calls = 1 |
+| Our own failure writes no usage row | `test_customer_console_sql.py` — a 503 and a 502 leave the table empty |
+| A refusal draws no credit | `test_customer_console_sql.py` — `run_spend` reads the same before and after a refusal row |
+
+**Verification.** The suite is database-gated (R8), so start the database
+first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_sql.py \
+  tests/unit/test_router_failover.py \
+  tests/unit/test_customer_console_key_auth.py -q
+```
+
+### 8.2 Margin and runway (slice 6) — BUILT
+
+Merged as `b3ce3a9c` in **#163**. This section records what shipped, because
+§2 and §5 both said it had not.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `margin_ratio` | `analytics.py:45` | Credits billed per dollar of provider cost. `None` on a cost of zero |
+| `runway_days` | `analytics.py:59` | Whole days of credit left at the recent burn rate. `None` on no burn |
+| `BURN_WINDOW_DAYS` | `analytics.py:42` | Seven days, so a Monday-to-Friday customer keeps a rate |
+| `usage_by_org` | `store.py:700` | Calls, credits, members, cost and last seen, for each organization |
+| `credit_balance_by_org` | `store.py:841` | The balance for each organization, summed from the ledger |
+| `GET /admin/usage/orgs` | `main.py:4952` | The board. Money leaves as strings (`main.py:5001`) |
+| `GET /admin/usage/daily` | `main.py:5017` | The series, for the platform or for one organization |
+| `usage.ts`, `UsageBoard.tsx` | operator console | The page and its pure display logic |
+| `test_operator_analytics.py` | tests | 24 tests. `usage.test.ts` fences the frontend |
+
+**Done when** — every clause is met:
+
+1. `GET /admin/usage/orgs` returns `marginRatio` and `runwayDays` for each
+   organization.
+2. A zero provider cost returns a null margin, never a good one (D-AI-8).
+3. A zero burn returns a null runway, never a large number.
+4. `test_operator_analytics.py` passes.
+
+**Verification.** `uv run pytest tests/unit/test_operator_analytics.py -q`.
+Frontend: `npx vitest run src/lib/usage.test.ts` in
+`workbench/operator_console`.
+
+### 8.3 `usage_event` records the step that served (slice 12) — BUILT
+
+Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
+2026-08-30.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `served_rank`, `byok_served` | `013_pricing_truth.sql:26-40` | The two columns, plus the `served_rank >= 1` CHECK |
+| `record_usage` | `store.py:481`, `store.py:515` | Persists both. NULL rank from a caller that does not say |
+| The Router hand-off | `main.py:4487` | Passes the rank the Router walked, from `router.py:85` and `router.py:166` (`tier_binding.rank`) |
+| The failover read | `main.py:1775-1786` | 14 days of `served_rank > 1`, one row per day, tier, task and model |
+| `TierBoard` | operator console | Shows the failovers that happened |
+| `test_customer_console_pricing_truth.py` | tests | `:201`, `:257`, `:298`, `:353` |
+
+**Done when** — every clause is met:
+
+1. A failover writes `served_rank` 2.
+2. A first-choice answer writes `served_rank` 1.
+3. A caller that says nothing writes NULL.
+4. The pricing view returns the failovers, filtered on a rank above 1.
+
+**Verification.** `uv run pytest tests/unit/test_customer_console_pricing_truth.py -q`.
+The suite is database-gated (R8), so run `bash scripts/dev_db.sh` first.
 
 ---
 
@@ -394,6 +659,10 @@ agent breaks it.
 | An unknown measurement is never zero | `test_customer_console_model_profile.py` — the database refuses a window of 0 |
 | A capability flag is never assumed | `read.test.ts` — a profile that says false yields no kind |
 | A per-unit vendor cost parses in the vendor's unit and declares in the task's unit | `test_customer_console_vendor_feed.py` — a per-second feed price declares as ×60 per-minute on the profile, Decimal-exact |
+| A refusal never counts as a call | `test_customer_console_sql.py` — one refusal and one served call return calls = 1 |
+| An unmeasured cost never reads as a good margin | `test_operator_analytics.py::TestMarginRatio` |
+| An operator usage read is Operator-gated | `test_operator_roles.py` |
+| A failover records the step that answered | `test_customer_console_pricing_truth.py` — a rank-2 walk writes `served_rank` = 2 |
 
 ⚠️ **R8 binds every read here.** Verify the SQL against a real database. The
 two reads in slice 1 were verified against the live Console database on
