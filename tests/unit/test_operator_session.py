@@ -138,8 +138,15 @@ def test_the_database_holds_no_usable_session_token(eng):
             {"o": operator_id},
         ).mappings().first()
 
-    _, _, secret = token.rpartition("_")
-    assert secret, "the token has no secret segment"
+    # ⚠️ NOT rpartition("_"): the secret is `token_urlsafe`, whose alphabet
+    # INCLUDES "_" (keys.py says so in terms). rpartition kept only the tail
+    # after the secret's own last underscore — one character, sometimes, and
+    # a one-character "secret" is a substring of nearly any hex digest. This
+    # flaked CI on an unrelated PR (#178, 2026-08-30) exactly that way.
+    parts = token.split("_", 2)
+    assert len(parts) == 3, "token is scheme_prefix_secret"
+    secret = parts[2]
+    assert len(secret) >= 16, "the token has no real secret segment"
     assert secret not in row["key_hash"]
     assert secret not in row["prefix"]
     # And the hash is not reversible by the obvious mistake of storing it raw.
