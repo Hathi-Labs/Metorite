@@ -210,6 +210,18 @@ class TestTheProfileRoute:
         from fastapi.testclient import TestClient
         return TestClient(app)
 
+    def test_a_negative_measurement_is_a_422_not_a_500(self, client):
+        """The route mirrors `model_profile_positive` (012) the way
+        `set_credit_price` mirrors its CHECK: refused at the door, never
+        an IntegrityError stack for the operator to read."""
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}",
+            "vendor_input_per_1m_usd": "-1"})
+        assert r.status_code == 422
+        r2 = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}", "context_window": 0})
+        assert r2.status_code == 422
+
     def test_an_operator_can_actually_save_a_profile(self, client, engine):
         """The owner's live repro, verbatim: assemblyai/best from the feed -
         every fact null, label null. It answered 500 for every operator."""

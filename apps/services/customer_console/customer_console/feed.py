@@ -101,13 +101,16 @@ def _per_1m(entry: dict[str, Any], key: str) -> Decimal | None:
         return None
     try:
         d = Decimal(str(v)) * _PER_1M
+        # is_finite BEFORE the comparison: json.loads admits bare Infinity
+        # and NaN, Decimal carries them, and a NaN COMPARISON raises — one
+        # poisoned entry among 3,000 used to 500 the whole sync, fallback
+        # included. A negative price is upstream garbage the table's CHECK
+        # would refuse the whole batch over. Unknown beats poisoned.
+        if not d.is_finite() or d < 0:
+            return None
+        return d.quantize(_CENT6, rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError, TypeError):
         return None
-    if d < 0:
-        # A negative price is upstream garbage, and the table's CHECK would
-        # refuse the whole batch over it. Unknown beats poisoned.
-        return None
-    return d.quantize(_CENT6, rounding=ROUND_HALF_UP)
 
 
 def _tokens(entry: dict[str, Any], *keys: str) -> int | None:
@@ -116,7 +119,9 @@ def _tokens(entry: dict[str, Any], *keys: str) -> int | None:
         v = entry.get(key)
         try:
             n = int(v)  # litellm mixes int and float for the same field
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: int(float("inf")) — a poisoned window must
+            # skip the field, not kill the sync.
             continue
         if n > 0:
             return n

@@ -848,3 +848,142 @@ def test_whoami_admits_the_break_glass_token_but_names_NOBODY(client):
 
 def test_whoami_refuses_the_anonymous(client):
     assert client.get("/operators/session").status_code in (401, 403)
+
+
+# ── Console-review regressions (2026-08-30): §5's credit rows, the resolve
+# matrix hole, and the audit gaps — all need a REAL session, so they live
+# beside the sign-in harness. ─────────────────────────────────────────────
+
+
+def _mkorg(eng, slug: str) -> None:
+    with eng.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO organization (slug, name) VALUES (:s, :n)"),
+            {"s": slug, "n": slug})
+
+
+def test_a_big_grant_is_elevated_admin_AND_window(client, eng, issuer):
+    """Spec §5: above the threshold a grant is ELEVATED, not merely admin."""
+    email = _email()
+    _register(eng, email, role="admin")
+    issuer["serve"](_payload(email))
+    token = _signin(client).json()["token"]
+    slug = f"gr-{uuid.uuid4().hex[:6]}"
+    _mkorg(eng, slug)
+    big = {"org_slug": slug, "credits": "20000", "reason": "manual",
+           "ref": f"NEFT-{slug}"}
+
+    r = client.post("/credits/grant", json=big, headers=_auth(token))
+    assert r.status_code == 403, "admin with NO window must be refused"
+
+    assert client.post("/operators/elevate", headers=_auth(token), json={
+        "reason": "credit the NEFT transfer (window regression test)",
+    }).status_code == 200
+    r2 = client.post("/credits/grant", json=big, headers=_auth(token))
+    assert r2.status_code == 200, r2.text
+
+
+def test_activation_credits_obey_the_grant_amount_rules(client, eng, issuer):
+    """The OTHER ledger door: an editor refused at /credits/grant must not
+    attach the same quantity to a manual activation instead."""
+    email = _email()
+    _register(eng, email, role="editor")
+    issuer["serve"](_payload(email))
+    token = _signin(client).json()["token"]
+    slug = f"ac-{uuid.uuid4().hex[:6]}"
+    _mkorg(eng, slug)
+    body = {"org_slug": slug, "plan_slug": "core", "seats": 1,
+            "credits": "1000000"}
+
+    r = client.post("/billing/subscriptions/activate", json=body,
+                    headers=_auth(token))
+    assert r.status_code == 403
+    # The refusal unwound the WHOLE activation — no term, no seats.
+    with eng.begin() as conn:
+        n = conn.execute(text(
+            "SELECT count(*) FROM org_subscription os "
+            "JOIN organization o ON o.id = os.organization_id "
+            "WHERE o.slug = :s"), {"s": slug}).scalar_one()
+    assert n == 0
+
+    # A negative "credits to ADD" is refused at the model: corrections are
+    # /credits/grant's negative deltas, where the amount rules apply.
+    r2 = client.post("/billing/subscriptions/activate", headers=_auth(token),
+                     json={**body, "credits": "-5"})
+    assert r2.status_code == 422
+
+
+def test_registry_resolve_admits_a_signed_in_operator(client, eng, issuer):
+    """The matrix row exists. Unmapped, check_route fails CLOSED, so every
+    signed-in operator got 403 here and only break-glass worked — the exact
+    state CP-12 exists to end."""
+    email = _email()
+    _register(eng, email, role="editor")
+    issuer["serve"](_payload(email))
+    token = _signin(client).json()["token"]
+    slug = f"rs-{uuid.uuid4().hex[:6]}"
+    _mkorg(eng, slug)
+
+    r = client.post("/registry/resolve", headers=_auth(token),
+                    json={"org_slug": slug, "email": f"m@{slug}.com"})
+    assert r.status_code != 403, r.text
+
+
+def test_sign_out_writes_an_audit_row(client, eng, issuer):
+    email = _email()
+    _register(eng, email, role="viewer")
+    issuer["serve"](_payload(email))
+    token = _signin(client).json()["token"]
+    assert client.delete("/operators/session",
+                         headers=_auth(token)).status_code == 200
+    with eng.begin() as conn:
+        actor = conn.execute(text(
+            "SELECT actor FROM control_audit "
+            "WHERE action = 'operator.signout' "
+            "ORDER BY created_at DESC LIMIT 1")).scalar()
+    assert actor == email
+
+
+def test_re_adding_an_operator_with_another_role_is_409(client, eng, issuer):
+    """ON CONFLICT DO NOTHING + a 200 echoing the REQUESTED role audited a
+    demotion that never happened. Now the conflict answers 409 with the
+    real role; a same-role re-add stays the idempotent 200."""
+    existing = _email()
+    _register(eng, existing, role="admin")
+    acting = _email()
+    _register(eng, acting, role="admin")
+    issuer["serve"](_payload(acting))
+    token = _signin(client).json()["token"]
+
+    r = client.post("/operators", headers=_auth(token),
+                    json={"email": existing, "role": "viewer"})
+    assert r.status_code == 409
+    assert "already exists as 'admin'" in r.json()["detail"]
+
+    r2 = client.post("/operators", headers=_auth(token),
+                     json={"email": existing, "role": "admin"})
+    assert r2.status_code == 200
+    assert r2.json()["role"] == "admin"
+
+
+def test_the_operator_scheme_names_the_signed_in_person(eng):
+    """The three /registry doors audited the literal string "operator" —
+    `auth._stash` had put the person on the request and the scheme threw
+    it away. Break-glass (actor None) keeps the old label."""
+    from types import SimpleNamespace
+
+    from customer_console import main as m
+
+    slug = f"an-{uuid.uuid4().hex[:6]}"
+    _mkorg(eng, slug)
+    req = m.AdminSchemeRequest(org_slug=slug)
+    with eng.begin() as conn:
+        named = SimpleNamespace(state=SimpleNamespace(
+            staff=SimpleNamespace(actor="alice@fracktal.in")))
+        _, actor = m._admin_scheme_for_operator(conn, req, named)
+        assert actor == "alice@fracktal.in"
+
+        breakglass = SimpleNamespace(state=SimpleNamespace(
+            staff=SimpleNamespace(actor=None)))
+        _, actor2 = m._admin_scheme_for_operator(conn, req, breakglass)
+        assert actor2 == "operator"

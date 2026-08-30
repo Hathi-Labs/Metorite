@@ -3813,3 +3813,35 @@ class TestTheMigrationFile:
         for table in ("payment_order", "payment_event", "discount_code",
                       "discount_redemption"):
             assert f"COMMENT ON TABLE {table}" in source, table
+
+
+def test_a_capture_writes_an_audit_row_like_its_manual_twin(
+    client, fake, db, org,
+):
+    """`GET /activity` showed a manual activation and hid a paid one — the
+    value-granting capture wrote no control_audit row at all."""
+    order = _order(client, org["key"])
+    r = _capture(client, fake, db, order)
+    assert r.status_code == 200 and r.json()["fulfilled"] is True
+    with db.begin() as c:
+        row = c.execute(text(
+            "SELECT actor FROM control_audit "
+            "WHERE action = 'payment.captured' "
+            "AND detail->>'order_id' = :o"), {"o": order["id"]}).first()
+    assert row is not None
+    assert row.actor == "razorpay"
+
+
+def test_scalar_entities_in_a_signed_body_do_not_crash_the_parse():
+    """A signed body carrying `"payment": "x"` raised at `.get` and escaped
+    the function that promises "None when it is unusable" — a 500 the
+    provider retried forever instead of a refusal."""
+    import json as _json
+
+    from customer_console import payments as pay
+
+    raw = _json.dumps({"event": "payment.captured",
+                       "payload": {"payment": "x", "order": 3}}).encode()
+    headers = {"x-razorpay-event-id": "evt_scalar_poison"}
+    evt = pay._parse_event(raw, headers)
+    assert evt is None or getattr(evt, "amount_paise", None) is None

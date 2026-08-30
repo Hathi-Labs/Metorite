@@ -233,3 +233,14 @@ def test_billing_never_reads_the_credit_price(client, db, org, vendor):
                 json={"inr_per_credit": "99000", "usd_to_inr": "88"})
     after = _bill()
     assert before == after == BILL_A
+
+
+def test_the_same_effective_from_twice_answers_409_not_500(client, db):
+    eff = "2030-01-01T00:00:00Z"
+    assert client.post("/catalog/credit-price", headers=OP, json={
+        "inr_per_credit": "3", "usd_to_inr": "90", "effective_from": eff,
+    }).status_code == 200
+    r2 = client.post("/catalog/credit-price", headers=OP, json={
+        "inr_per_credit": "4", "usd_to_inr": "90", "effective_from": eff})
+    assert r2.status_code == 409
+    assert "effective_from" in r2.json()["detail"]

@@ -144,11 +144,23 @@ def annotate_orgs(rows: list[dict[str, Any]], balances: dict[str, Decimal],
     for r in rows:
         slug = str(r.get("slug"))
         balance = Decimal(balances.get(slug, 0))
+        calls = int(r.get("calls") or 0)
+        costed_calls = int(r.get("costed_calls") or 0)
         out.append({
             **r,
             "balance": balance,
+            # Judged over the COSTED calls only: credits from the same rows
+            # the cost came from. The old all-calls numerator made 10
+            # measured calls under 1,000 billed ones read as a 10x margin -
+            # the confident wrong number this module's header forbids.
             "margin_ratio": margin_ratio(
-                Decimal(r.get("credits") or 0), Decimal(r.get("cost_usd") or 0)
+                Decimal(r.get("costed_credits") or 0),
+                Decimal(r.get("cost_usd") or 0),
+            ),
+            "costed_share": (
+                None if calls == 0
+                else (Decimal(costed_calls) / Decimal(calls)
+                      ).quantize(Decimal("0.01"))
             ),
             "runway_days": runway_days(balance, Decimal(burn.get(slug, 0))),
             "silent": is_silent(balance, r.get("last_seen"), now),

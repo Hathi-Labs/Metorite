@@ -343,3 +343,23 @@ def test_catalog_splits_declared_drift_from_connected_available(
     assert undeclared["vendor_input_per_1m_usd"] == "0.280000"
     assert undeclared["task"] == "chat"
     assert undeclared["invocation"] == "acompletion"
+
+
+def test_a_poisoned_entry_is_skipped_never_fatal():
+    """json.loads admits bare Infinity/NaN; a Decimal NaN COMPARISON raises
+    and int(inf) overflows — one poisoned entry among 3,000 used to 500
+    the whole sync, packaged fallback included."""
+    rows = feed.parse_feed({
+        "deepseek/ok": {"litellm_provider": "deepseek", "mode": "chat",
+                        "input_cost_per_token": 1e-7},
+        "bad/inf": {"litellm_provider": "bad", "mode": "chat",
+                    "input_cost_per_token": float("inf"),
+                    "max_input_tokens": float("inf")},
+        "bad/nan": {"litellm_provider": "bad", "mode": "chat",
+                    "output_cost_per_token": float("nan")},
+    })
+    by = {r.model: r for r in rows}
+    assert by["deepseek/ok"].input_per_1m is not None
+    assert by["bad/inf"].input_per_1m is None
+    assert by["bad/inf"].context_window is None
+    assert by["bad/nan"].output_per_1m is None

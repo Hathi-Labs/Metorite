@@ -156,3 +156,70 @@ def test_an_unknown_reason_is_still_refused(client, org):
     r = _grant(client, org, "10", reason="bank-transfer",
                ref=f"UTR-{uuid.uuid4().hex[:8]}")
     assert r.status_code == 422
+
+
+def test_the_reference_fence_has_a_database_edge(client, org):
+    """018: the SELECT-then-INSERT race cannot double-credit any more.
+
+    The route's check reads committed rows only, so two CONCURRENT grants
+    both pass it and both insert (the READ COMMITTED race
+    `store.lock_org_activation` documents one door over). The partial
+    unique index is the half the route cannot provide — proven here at the
+    database edge, where it binds EVERY writer, not only the route.
+    """
+    from decimal import Decimal
+
+    from customer_console import store
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    eng = create_engine(_URL, future=True)
+    try:
+        with eng.begin() as conn:
+            assert conn.execute(text(
+                "SELECT 1 FROM pg_indexes WHERE indexname = "
+                "'credit_ledger_reason_ref_unique'")).first() is not None, \
+                "migration 018 did not land"
+            org_id = conn.execute(
+                text("SELECT id FROM organization WHERE slug = :s"),
+                {"s": org}).scalar_one()
+        with eng.begin() as conn:
+            store.add_credit(conn, org_id=org_id, delta=Decimal("10"),
+                             reason="manual", ref="NEFT-EDGE-1")
+        with pytest.raises(IntegrityError), eng.begin() as conn:
+            store.add_credit(conn, org_id=org_id, delta=Decimal("10"),
+                             reason="manual", ref="NEFT-EDGE-1")
+        # A different REASON citing the same ref stays legal — the
+        # adjustment-corrects-a-manual-row path the route also allows.
+        with eng.begin() as conn:
+            store.add_credit(conn, org_id=org_id, delta=Decimal("-10"),
+                             reason="adjustment", ref="NEFT-EDGE-1")
+    finally:
+        eng.dispose()
+
+
+def test_a_concurrent_duplicate_answers_the_same_409(client, org):
+    """The route converts the index refusal into the sequential repeat's 409.
+
+    Simulated deterministically: the first grant lands, then the second is
+    driven straight at `add_credit` past the route's SELECT — which is
+    exactly the state a true concurrent pair reaches.
+    """
+    r = _grant(client, org, "50", reason="manual", ref="NEFT-RACE-1")
+    assert r.status_code == 200, r.text
+    r2 = _grant(client, org, "50", reason="manual", ref="NEFT-RACE-1")
+    assert r2.status_code == 409
+    assert "already credited" in r2.json()["detail"]
+
+
+def test_a_seat_source_typo_answers_400_not_500(client, org):
+    """`/billing/seats` mirrors seat_assignment's CHECK at the door.
+
+    Lives here for the harness (client + org); the seats suite itself is
+    pure unit tests with no HTTP client.
+    """
+    r = client.post("/billing/seats", headers=OP, json={
+        "org_slug": org, "email": f"s@{org}.com", "plan_slug": "core",
+        "source": "banana"})
+    assert r.status_code == 400
+    assert "seat source" in r.json()["detail"]

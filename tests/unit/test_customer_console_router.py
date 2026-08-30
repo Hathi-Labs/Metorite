@@ -1441,3 +1441,31 @@ class TestTaskRoutingEndToEnd:
         # already carry the quantity, and a second copy is a second thing to
         # disagree with. `quantity` is for the units that have no column.
         assert row[2] is None
+
+
+def test_n_is_capped_like_max_tokens(client, org_key):
+    """`n` MULTIPLIES output cost; uncapped it defeated the 32k ceiling."""
+    _, key = org_key
+    r = client.post("/v1/chat/completions", headers=key, json={
+        "model": "tier-balanced",
+        "messages": [{"role": "user", "content": "hi"}],
+        "n": 50})
+    assert r.status_code == 422
+
+
+def test_a_vendor_auth_failure_answers_502_never_401(client, org_key):
+    """Relayed verbatim, a revoked PLATFORM key told the customer to rotate
+    THEIR key — every OpenAI-compatible SDK reads 401 that way. Our
+    upstream's auth is our outage: 502."""
+    async def _reject(**kwargs):
+        exc = Exception("Unauthorized")
+        exc.status_code = 401
+        raise exc
+
+    router_mod.set_provider_call(_reject)
+    _, key = org_key
+    r = client.post("/v1/chat/completions", headers=key, json={
+        "model": "tier-balanced",
+        "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 502
+    assert r.json()["detail"] == "upstream provider error"
