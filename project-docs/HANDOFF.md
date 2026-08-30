@@ -852,9 +852,11 @@ line — never reclaim a number by deleting the other entry.
   feed can never fill the `music` task. The task row and the `tier-music` tier
   both stay.
   ⚠️ **`video` is a named follow-up, and not part of this entry.** A map of
-  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`, and
-  `015_tier_pricing.sql` refuses a video capability until that verb lands. The
-  follow-up rides with **H-46**.
+  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`
+  (`catalog.py:26`). `check_invocation` (`catalog.py:100`) is the refuser, and
+  it rejects a video capability until that verb lands. *(This entry named
+  `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
+  the refusal, and it enforces nothing.)* The follow-up rides with **H-46**.
   📌 Migration number: list `infra/customer_console/` at build time, and list it
   again at merge (R1). It was `019` on 2026-08-30.
 - **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·

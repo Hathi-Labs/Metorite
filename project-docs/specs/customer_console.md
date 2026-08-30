@@ -604,6 +604,13 @@ build the provider-handler seam. **§6A.11a** gained an addendum, because a
 re-audit found that its clause 5 named a copy seam the tree does not hold.
 **Order: H-78 first, then H-46 with H-47 folded in as its dispatch clause.**
 
+⚠️ **A diff review then corrected SIX statements in those sections, also on
+2026-08-30.** §6A.10a clause 2 and clause 4 each stated as built a behaviour
+no code holds. §6A.11a named the wrong home for the ×60, and the wrong route
+for the capability body. It also gave one spelling to two frontend types, and
+it credited `015_tier_pricing.sql` for a refusal `catalog.py` makes. Each
+correction carries its own date. Re-verify every anchor at dispatch.
+
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
 
@@ -7854,21 +7861,40 @@ call.
    `016_tier_task.sql:34` maps `tier-stt` to the `transcribe` task, so the
    alias declares the task. D61.3 and D60.4 bind this. The Router never
    sniffs the payload to learn what the caller wants.
-2. **Four named non-goals.** No image route. No speak route. No streaming —
-   `catalog.py:36` keeps `transcribe` out of `STREAMABLE_TASKS`, so a body
-   with `stream: true` returns 400. No tenant caller in this slice, per
-   clause 7.
+2. **Four named non-goals.** No image route. No speak route. No streaming.
+   No tenant caller in this slice, per clause 7.
+
+   🔴 **The 400 on a stream request is NEW behaviour THIS SLICE builds.**
+   *(Rewritten 2026-08-30. This clause read the refusal off
+   `STREAMABLE_TASKS`, and that constant cannot serve it.)*
+   `STREAMABLE_TASKS` (`catalog.py:36`) has exactly ONE reader.
+   `check_streams` (`catalog.py:114`) guards the OPERATOR capability write at
+   `main.py:1906`. It never sees a serving request, so it refuses nothing a
+   customer sends.
+
+   ⚠️ **The transcribe body carries no `stream` field at all**, because the
+   body is multipart audio. So the refusal keys on this endpoint's own
+   contract instead. *Agent default:* any `stream` form field with a truthy
+   value returns 400. The route reads that form field. It reads no JSON body,
+   and it reads `STREAMABLE_TASKS` for nothing.
 3. **Quantity: the provider's own duration, divided by 60** *(agent
    default)*. The result is `Decimal` minutes, which is what
    `task_catalog.natural_unit` names for `transcribe`. A provider that
    reports no duration bills **zero** and logs `router.unmeasured_quantity`.
    ⚠️ **A completion never fails on metering.** `main.py:4437` wraps the whole
    metering block in one `try`, and that rule holds here without change.
-4. **The plumbing carries the quantity.** `_rate_completion`
-   (`main.py:1029`) and `_record_completion` (`main.py:4410`) each take a
-   quantity argument. The usage row carries that quantity, and it carries
-   `unit` of `minutes`. `tests/unit/test_customer_console_tasks.py` is the
-   fence.
+4. **THIS SLICE builds the plumbing that carries the quantity.** *(Rewritten
+   2026-08-30. The clause stated the plumbing as a fact, and none of it
+   exists.)* TODAY `_rate_completion` (`main.py:1029`) and
+   `_record_completion` (`main.py:4410`) take no quantity argument at all.
+   `main.py:4481` hard-codes `quantity=None`, and the comment above it
+   (`main.py:4477-4480`) defends that choice for a token-priced call.
+
+   The slice adds a quantity parameter to BOTH functions, and it deletes that
+   hard-coded `None`. A token call keeps NULL, so the defending comment stays
+   true for it. A `transcribe` call carries the minutes instead. The usage row
+   then holds that quantity and a `unit` of `minutes`.
+   `tests/unit/test_customer_console_tasks.py` is the fence.
 5. **Vendor cost reads `model_profile.vendor_per_minute_usd`.** **H-78 builds
    that column, so H-78 LANDS FIRST.** Until a profile holds the price,
    `provider_cost_usd` stays NULL. That is D-AI-7 rule 3 in
@@ -7901,8 +7927,8 @@ call.
 | Rule | Fence |
 |---|---|
 | The `model` field is a tier alias, never a model id | `test_customer_console_tasks.py` — a bare model id returns 400 |
-| A transcribe call never streams | `test_customer_console_catalog.py` — `stream: true` returns 400 |
-| A transcribe usage row records minutes | `test_customer_console_tasks.py` — the row holds `unit` of `minutes` |
+| A transcribe call never streams | `test_customer_console_tasks.py` — the test POSTs the multipart body with a `stream` form field of `true`, and the route returns 400 |
+| A transcribe usage row records the quantity AND the unit | `test_customer_console_tasks.py` — the test DRIVES `POST /v1/audio/transcriptions`, then SELECTs the `usage_event` row that call wrote. It reads `quantity` of the audio minutes and `unit` of `minutes` off that ROW. A hand-inserted row does not satisfy this fence |
 | A missing duration bills zero and does not fail the call | `test_customer_console_tasks.py` — the completion returns 200 and the row bills 0 |
 | An unpriced vendor cost stays NULL | `test_customer_console_tasks.py` — no profile price writes NULL, never 0 |
 
@@ -8128,9 +8154,13 @@ rows keep NULL, and the console draws a dash.
 ⚠️ **Seconds against minutes is the trap, and it is why the two tables
 disagree on purpose.** The litellm map prices transcription per SECOND.
 `task_catalog` prices `transcribe` per MINUTE. The ×60 conversion happens
-ONCE, server-side, at the declare-and-prefill seam that copies a feed row
-onto a profile row. It happens nowhere else, and no other caller multiplies
+ONCE, server-side, inside the FEED READ projection (`_FEED_COLS`,
+`main.py:1821-1826`). It happens nowhere else, and no other caller multiplies
 by 60.
+
+*(This paragraph placed the ×60 "at the declare-and-prefill seam ... nowhere
+else" until 2026-08-30. No such seam exists. "The seam" addendum below owns
+the conversion, and it runs in the feed-read projection.)*
 
 Three rules bind the conversion. The maths stays `Decimal` from the parse
 to the write, with no float on the path. The conversion multiplies by
@@ -8156,10 +8186,16 @@ three fields on a shape it consumes today.
 
 🔴 **Clause 5 named a seam that does not exist.** "The declare-and-prefill
 seam" reads as one server-side function, and there is none. The copy is
-client-side. `prefillFrom` (`feed.ts`) fills the form boxes, and
-`declareBodies` (`feed.ts`) builds the two POST bodies. Both post to
-`POST /catalog/profiles`, which is the only profile write. Nothing on the
-server copies a feed row onto a profile row.
+client-side. `prefillFrom` (`feed.ts:73`) fills the form boxes, and
+`declareBodies` (`feed.ts:95`) returns TWO bodies. Nothing on the server
+copies a feed row onto a profile row.
+
+⚠️ **The two bodies go to two DIFFERENT routes.** `FeedAvailable.tsx:52`
+posts the capability body to `POST /catalog/capabilities`.
+`FeedAvailable.tsx:61` then posts the profile body to
+`POST /catalog/profiles`, which stays the only profile write. ONLY the profile
+body carries the three per-unit fields. *(This read "Both post to
+`POST /catalog/profiles`" until 2026-08-30, and that was wrong.)*
 
 🔴 **And nothing writes the three profile columns.** `ProfileRequest`
 (`main.py:2238`) names ten fields, and the `set_model_profile` INSERT
@@ -8190,11 +8226,19 @@ list. The profile form gains three boxes. No maths happens on this path.
 | `vendor_per_character_usd` | `vendor_per_character_usd` | The feed read, verbatim |
 | `vendor_per_image_usd` | `vendor_per_image_usd` | The feed read, verbatim |
 
-**The frontend types gain the three fields.** `WireFeedModel` (`read.ts:103`)
-and `FeedModel` (`contract.ts:227-251`) each carry `perMinuteUsd`,
-`perCharacterUsd` and `perImageUsd`, typed `string | null`. Strings, because
-that is the money rule on this wire. `prefillFrom` copies them into the form
-boxes. `declareBodies` copies them into the profile body.
+**The frontend types gain three fields EACH, in two different spellings.**
+`WireFeedModel` (`read.ts:103`) mirrors the wire, so it gains
+`vendor_per_minute_usd`, `vendor_per_character_usd` and
+`vendor_per_image_usd` — snake_case, exactly what the server sends.
+`FeedModel` (`contract.ts:227-251`) is the console's own shape, so it gains
+`perMinuteUsd`, `perCharacterUsd` and `perImageUsd`. The `feedModel` mapper
+(`read.ts:280-294`) maps one half onto the other, beside the three token
+prices it maps today. All six fields are `string | null`, because that is the
+money rule on this wire.
+
+`prefillFrom` (`feed.ts:73`) copies the camelCase fields into the form boxes.
+`declareBodies` (`feed.ts:95`) copies them into the profile body, back under
+their snake_case wire names.
 
 **Drift covers the three per-unit fields, and this section says so on
 purpose.** `driftFor` and `fillCount` (`feed.ts:39-69`) each gain the three
@@ -8218,8 +8262,11 @@ section exists to prevent.
   mode `video_generation`. It carries `output_cost_per_second` on 13
   entries and `output_cost_per_video_per_second` on 12. `MODE_MAP` in
   `feed.py` does not map it. A mapping needs a sixth verb in
-  `KNOWN_INVOCATIONS` (`catalog.py`). `015_tier_pricing.sql` refuses a
-  video capability until that verb lands. This slice adds no verb. The
+  `KNOWN_INVOCATIONS` (`catalog.py:26`), which holds five today.
+  **`check_invocation` (`catalog.py:100`) is the refuser**, and it rejects a
+  video capability until that verb lands. *(This named
+  `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
+  the refusal. It enforces nothing.)* This slice adds no verb. The
   follow-up rides with **H-46** (the Router's non-chat endpoints, shape
   decided by D61.1) and with the G-1 line above.
 - **A size-keyed image row informs, and nobody can declare it.** The
@@ -8261,12 +8308,18 @@ section exists to prevent.
    block's three fields as strings, which is the money-as-strings rule.
 7. **The board reads the PROFILE, and drift covers the three.**
    `CatalogModel` gains `perMinuteUsd`, `perCharacterUsd` and `perImageUsd`.
-   Each one reads the profile and nothing else. `WireFeedModel`
-   (`read.ts:103`) and `FeedModel` (`contract.ts:227-251`) gain the same three
-   as `string | null`. `prefillFrom` and `declareBodies` copy them.
-   `driftFor` and `fillCount` (`feed.ts:39-69`) compare them in PROFILE units,
-   with no client-side conversion. `PriceFromCost.tsx` fills the vendor-cost
-   box for an `image`, `transcribe` or `speak` job.
+   Each one reads the profile and nothing else. `PriceFromCost.tsx` fills the
+   vendor-cost box for an `image`, `transcribe` or `speak` job.
+
+   **Name BOTH halves of the frontend, because they do not share a spelling.**
+   `WireFeedModel` (`read.ts:103`) gains `vendor_per_minute_usd`,
+   `vendor_per_character_usd` and `vendor_per_image_usd`, which is the wire
+   spelling. `FeedModel` (`contract.ts:227-251`) gains `perMinuteUsd`,
+   `perCharacterUsd` and `perImageUsd`, which is the console spelling.
+   `read.ts:280-294` maps between them, and all six fields are
+   `string | null`. `prefillFrom` and `declareBodies` copy them. `driftFor`
+   and `fillCount` (`feed.ts:39-69`) compare them in PROFILE units, with no
+   client-side conversion.
 8. **The non-goals hold.** `MODE_MAP` gains no entry. `KNOWN_INVOCATIONS`
    gains no verb. No migration drops the `music` task.
 

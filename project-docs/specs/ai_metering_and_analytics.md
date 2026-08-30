@@ -13,6 +13,13 @@ OWNER-GATE per row.
 AGENT-SAFE. Each contract names its done-when clauses, its fences (R7) and its
 verification command.
 
+**The other three, so that 13 rows add up.** *(Added 2026-08-30 — the two
+paragraphs above accounted for 10 slices and left 3 unnamed.)* Slice 7 is SPEC
+ONLY and holds no contract yet. Slice 8 is OWNER-GATE behind **H-73**. Slice 9
+reads as BUILT, because `011_tier_fallback_chain.sql` and the
+`test_customer_console_fallback_chain.py` fences both exist. It owes one audit
+before anybody marks the row.
+
 ⚠️ **Slice 3's TABLE already shipped.** `tier_catalog` landed in
 `015_tier_pricing.sql` under D67, and `016_tier_task.sql` added its `task`
 column. Slice 3 is now one column plus the read seam. §3.1 carries the
@@ -21,6 +28,12 @@ rewritten build note.
 ⚠️ **This file said the opposite in four places until 2026-08-30.** F7, F9,
 §3.6 and §5 each claimed an unbuilt surface that had shipped. Each one now
 carries the date of its rewrite. Re-verify every anchor at dispatch.
+
+⚠️ **A diff review then corrected four more places, also on 2026-08-30.** §8.1
+clause 3 wrote a refusal row inside the transaction that raises. §8.4 clause 6
+named one label source of the two that exist. §3.6 and §8.6 both cited
+`relay_stream` for the three failover constants. Each correction carries its
+own date.
 
 **Owning board row:** WS-31. **Related:** `customer_console.md` §6A owns the
 model catalog. `launch_surface.md` §4 owns the price. This file owns what a
@@ -288,10 +301,13 @@ awaits the FIRST FRAME before Starlette sends the 200 status line. Every
 failure up to that point may fail over. Every failure after it may not.
 
 **The stream path reuses `call_chain`'s policy and adds none of its own.**
-`TERMINAL_STATUSES`, `CREDENTIAL_STATUSES` and `MAX_CHAIN_ATTEMPTS`
-(`router.py:559-608`) bind the walk before the first frame exactly as they
-bind `call_chain` (`router.py:663-708`). A second failover policy beside the
-first is the CLAUDE.md §5 defect, not a feature.
+`MAX_CHAIN_ATTEMPTS` (`router.py:617`), `TERMINAL_STATUSES` (`router.py:625`)
+and `CREDENTIAL_STATUSES` (`router.py:629`) bind the walk before the first
+frame exactly as they bind `call_chain` (`router.py:663`). A second failover
+policy beside the first is the CLAUDE.md §5 defect, not a feature.
+
+*(The three anchors above read `router.py:559-608` until 2026-08-30. That
+range is `relay_stream`, which is a different function.)*
 
 ⚠️ **`main.py:4715` carries a stale comment, and slice 11 repairs it.** The
 line reads that `usage_event` has *"no column for the step that served"*.
@@ -619,11 +635,13 @@ is `NOT NULL` (`001_customer_console.sql:256`). A row needs a tenant, and at
 
 | Field | Value | Why |
 |---|---|---|
+| `request_id` | a fresh `rtr-<uuid4>` | `001_customer_console.sql:271` makes it NOT NULL UNIQUE. Mint it exactly as the served path does at `main.py:4470` |
 | `refusal_reason` | one of the three slugs | The wall |
 | `billed_credits` | `0` | We served nothing, so we charge nothing |
 | `quantity` | `0` | The call consumed nothing |
 | `unit` | the task's unit, from `task_catalog` | The row stays readable beside a served row |
 | `tier` | the tier the caller ASKED for | A5 must say which tier the customer wanted |
+| `run_id` | `caller.run_id` | A `run_ceiling_exceeded` row without its run is not actionable. `main.py:1007` reads the same field to decide the refusal |
 | `model` | `NULL` | No model answered |
 | `provider_cost_usd` | `NULL` | No vendor billed us |
 
@@ -654,12 +672,18 @@ zero-usage organization `usage_by_org` exists to show then disappears. An ON
 clause keeps the join, and it still hides the refusal from
 `MAX(u.created_at)`. That makes a customer at a wall read as SILENT to A3.
 
-**Two reads stay unchanged, and an agent must not touch them.**
+**Three reads stay unchanged, and an agent must not touch them.**
 
 - `run_spend` (`store.py:389`) sums `billed_credits`. A refusal adds 0, so the
   circuit breaker keeps its meaning with no edit.
 - The failover read (`main.py:1781`) filters `served_rank > 1`. A refusal
   carries no served rank, so it never reaches that read.
+- 🔴 `last_seen_by_org` (`store.py:677-697`) counts nothing. It reads
+  `MAX(u.created_at)` for each organization, and a refusal MUST move that
+  timestamp. A customer at a wall is a customer who is trying. Filtering the
+  refusal out here makes that customer read as SILENT to A3, which is the
+  exact defect H-76 closed. An agent sweeping the file for a refusal filter
+  must skip this read on purpose.
 
 #### Done when — one clause per artefact
 
@@ -668,13 +692,29 @@ clause keeps the join, and it still hides the refusal from
 2. **The number.** An agent lists `infra/customer_console/` at build time. The
    merge re-checks it (R1).
 3. **The route writes three, and only three.** The 400, the 402 and the 403
-   each write one `usage_event` row before they raise. The two 503s and the
-   502 write none. The 401 cannot.
+   each write one `usage_event` row. The two 503s and the 502 write none. The
+   401 cannot.
+
+   🔴 **The refusal write opens its OWN short transaction.** The 400 raises
+   from INSIDE the serving transaction. `main.py:4563` opens
+   `get_engine().begin()`, and `main.py:4574` raises inside that block. A
+   refusal row written on that connection rolls back with the raise, so the
+   meter records nothing.
+
+   Two shapes work. Open a short transaction for the write, after the serving
+   transaction closes. Or write the row before the raise leaves the handler.
+   `_spend_refusal` (`main.py:972-1026`) documents the same hazard, and its
+   docstring (`main.py:975-978`) states the rule. It RETURNS the refusal
+   instead of raising it, so the caller leaves the transaction cleanly.
 4. **The row shape.** A refusal row carries `billed_credits` 0, `quantity` 0,
-   the task's unit, the requested tier, and `model` NULL.
+   the task's unit, the requested tier, and `model` NULL. It mints its own
+   `request_id`, because `001_customer_console.sql:271` is NOT NULL UNIQUE. It
+   carries `caller.run_id`, because a ceiling refusal without its run is not
+   actionable.
 5. **The five reads exclude it.** Reads 1 and 2 take a WHERE clause. Reads 3,
    4 and 5 take a `FILTER` clause, so each LEFT JOIN survives.
-6. **`run_spend` and the failover read carry no diff.**
+6. **The three unchanged reads carry no diff.** `run_spend`, the failover read
+   and `last_seen_by_org` all stay as they are.
 7. **The tests.** One refusal row and one served row return `calls` 1 from
    every one of the five reads.
 
@@ -685,14 +725,17 @@ clause keeps the join, and it still hides the refusal from
 | A refusal never counts as a call | `test_customer_console_sql.py` — one refusal and one served call return calls = 1 |
 | Our own failure writes no usage row | `test_customer_console_sql.py` — a 503 and a 502 leave the table empty |
 | A refusal draws no credit | `test_customer_console_sql.py` — `run_spend` reads the same before and after a refusal row |
+| 🔴 A refusal SURVIVES the raise | `test_customer_console_router.py` — the test DRIVES the HTTP route. A request for an unknown tier returns 400, and `usage_event` then holds exactly one row with `refusal_reason` of `tier_unknown`. A hand-inserted row does not satisfy this fence |
+| A refusal keeps a customer visible | `test_customer_console_sql.py` — `last_seen_by_org` moves to the refusal's `created_at` |
 
-**Verification.** The suite is database-gated (R8), so start the database
+**Verification.** The suites are database-gated (R8), so start the database
 first.
 
 ```bash
 bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_sql.py \
+  tests/unit/test_customer_console_router.py \
   tests/unit/test_router_failover.py \
   tests/unit/test_customer_console_key_auth.py -q
 ```
@@ -778,7 +821,8 @@ see. One customer-authenticated read serves the visible rows with their words.
 | `GET /my/tiers` | Console `main.py` | The customer read. Beside `GET /my/usage/activity` (`main.py:5041`) |
 | The catalog read | `main.py:1742-1748` | The operator read of the registry. It gains the column |
 | `Tier` | `contract.ts:133-148` | The operator console type. It gains the field |
-| The picker | `workbench/control_plane` | It reads the route instead of the hard-coded list |
+| The chat picker | `AgentChat.tsx:46-53` | `MODELS_FALLBACK`, the loading placeholder. Its three labels go |
+| The live model list | `route.ts:79-81` and `route.ts:294` | The SECOND copy of the three labels. Its labels go, its ids stay |
 
 #### Done when — one clause per artefact
 
@@ -794,9 +838,19 @@ see. One customer-authenticated read serves the visible rows with their words.
    It never takes a tenant from request input (R11).
 5. **The read carries no model.** D66 binds it. No model id, no provider name
    and no rate card leaves this route.
-6. **The customer picker reads the route.** The three hard-coded labels at
-   `AgentChat.tsx:48-50` go. D-AI-1 owns the labels, and `tier_catalog` holds
-   them.
+6. **BOTH label sources read the route, and no wire id moves.** Two files
+   hard-code the label of each tier today, and the slice must find both.
+   `AgentChat.tsx:48-50` holds the loading placeholder `MODELS_FALLBACK`
+   (`AgentChat.tsx:46-53`). The LIVE labels come from `route.ts:79-81`, and
+   `route.ts:294` serves them as *"Tier routing aliases — always present"*.
+   D-AI-1 owns the label, and `tier_catalog` holds the words.
+
+   🔴 **This slice replaces the LABEL strings only.** The route serves the ids
+   `tier1-local-qwen3`, `tier2-sonnet` and `tier3-opus`. The Console slugs are
+   `tier-fast`, `tier-balanced` and `tier-powerful`. The two sets do not match,
+   so a rename here changes what a picker saves. A saved raw model id then
+   breaks on the `ROUTER_SERVING_ENABLED` flip, and **H-72** owns that hazard.
+   Change no id on either side.
 7. **The operator catalog read carries the column**, so an operator sees which
    tiers a customer can pick.
 
@@ -807,7 +861,8 @@ see. One customer-authenticated read serves the visible rows with their words.
 | A hidden tier never reaches a customer | `test_customer_console_tier_pricing.py` — a `customer_visible` FALSE row is absent from `GET /my/tiers` |
 | A tier read carries the label, never the slug alone | `test_customer_console_tier_pricing.py` — every row holds `label` and `blurb` |
 | A customer tier read crosses no tenant | `test_customer_console_tier_pricing.py` — organization A reads no row of organization B |
-| The picker holds no hard-coded label | `npx vitest run` in `workbench/control_plane` — the fallback list names no tier label |
+| NEITHER file holds a hard-coded tier label | `npx vitest run` in `workbench/control_plane` — one test reads the source of `AgentChat.tsx` AND of `route.ts`, and fails while either one holds `Tier 1 (fast / cheap)`, `Tier 2 (balanced)` or `Tier 3 (powerful)` |
+| The three wire ids do not move | `npx vitest run` in `workbench/control_plane` — `route.ts` still serves `tier1-local-qwen3`, `tier2-sonnet` and `tier3-opus` |
 
 **Verification.** The suite is database-gated (R8), so start the database
 first.
@@ -904,9 +959,13 @@ goes out, and walk the chain until then.
 #### The boundary — §3.6 states it, and this section builds it
 
 Every failure before the first frame may fail over. Every failure after it may
-not. The stream path reuses `TERMINAL_STATUSES`, `CREDENTIAL_STATUSES` and
-`MAX_CHAIN_ATTEMPTS` (`router.py:559-608`), exactly as `call_chain`
-(`router.py:663-708`) uses them. It adds no second policy.
+not. The stream path reuses `MAX_CHAIN_ATTEMPTS` (`router.py:617`),
+`TERMINAL_STATUSES` (`router.py:625`) and `CREDENTIAL_STATUSES`
+(`router.py:629`), exactly as `call_chain` (`router.py:663`) uses them. It adds
+no second policy.
+
+*(The three anchors above read `router.py:559-608` until 2026-08-30. That
+range is `relay_stream`.)*
 
 #### Done when — four clauses
 
