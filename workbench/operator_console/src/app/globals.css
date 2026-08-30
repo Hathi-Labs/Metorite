@@ -1353,6 +1353,116 @@ pre.token {
    and the second palette is the one that stops matching in light mode.
    ═════════════════════════════════════════════════════════════════════════ */
 
+/* ── The jump palette (Ctrl-K) ────────────────────────────────────────────
+   The trigger sits in the rail; the overlay floats over everything. The
+   list is a real listbox: arrow keys move `aria-selected`, Enter goes. */
+.cmdk {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  color: var(--faint);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cmdk:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--muted);
+  filter: none;
+}
+.cmdk kbd {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 0;
+}
+.palette {
+  width: 100%;
+  max-width: 480px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: rise 0.18s var(--ease);
+}
+.palette input {
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.palette input:focus {
+  outline: none;
+  box-shadow: none;
+}
+.palette ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.palette .hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.palette .hit.sel {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.palette .hit:hover {
+  filter: none;
+}
+.palette .hit-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.palette-empty {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ── Grouped sidebar ──────────────────────────────────────────────────────
    A flat list of seven stopped teaching anything. The groups are three
    different jobs, and an operator with a customer waiting is only ever in the
