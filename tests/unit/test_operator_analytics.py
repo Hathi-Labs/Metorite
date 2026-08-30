@@ -135,10 +135,15 @@ class TestAnnotate:
     def test_it_attaches_all_three_from_one_window(self):
         # Kept as one pass so a surface cannot show a margin from one window
         # and a runway from another — that is how a page disagrees with itself.
+        # The store's current row shape carries the COSTED slice (2026-08-30):
+        # margin is judged over the calls whose cost was measured, never
+        # all-calls credits over some-calls cost.
         rows = [{"slug": "acme", "credits": D(200), "cost_usd": D(100),
+                 "calls": 2, "costed_calls": 2, "costed_credits": D(200),
                  "last_seen": _ago(1)}]
         out = annotate_orgs(rows, {"acme": D(1000)}, {"acme": D(700)}, NOW)
         assert out[0]["margin_ratio"] == D("2.00")
+        assert out[0]["costed_share"] == D("1.00")
         assert out[0]["runway_days"] == 10
         assert out[0]["silent"] is False
         assert out[0]["balance"] == D(1000)

@@ -743,6 +743,15 @@ def usage_by_org(
                    o.name                                AS name,
                    COUNT(u.id)                           AS calls,
                    COALESCE(SUM(u.billed_credits), 0)    AS credits,
+                   -- The COSTED slice: SUM skips NULL cost rows, so a ratio
+                   -- of all-calls credits over some-calls cost overstates
+                   -- the margin. These two keep the numerator honest.
+                   COUNT(u.id) FILTER
+                       (WHERE u.provider_cost_usd IS NOT NULL)
+                                                         AS costed_calls,
+                   COALESCE(SUM(u.billed_credits) FILTER
+                       (WHERE u.provider_cost_usd IS NOT NULL), 0)
+                                                         AS costed_credits,
                    COUNT(DISTINCT u.user_email)          AS members,
                    COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
                    MAX(u.created_at)                     AS last_seen
@@ -763,6 +772,8 @@ def usage_by_org(
             "name": r.name,
             "calls": int(r.calls),
             "credits": Decimal(r.credits),
+            "costed_calls": int(r.costed_calls),
+            "costed_credits": Decimal(r.costed_credits),
             "members": int(r.members),
             "cost_usd": Decimal(r.cost_usd),
             "last_seen": r.last_seen.isoformat() if r.last_seen else None,

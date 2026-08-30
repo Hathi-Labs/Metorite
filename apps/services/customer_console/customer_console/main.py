@@ -60,6 +60,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from customer_console import (
     analytics,
@@ -89,6 +90,7 @@ from customer_console.auth import (
     ResolveCaller,
     SeatAdminCaller,
     SignedWebhook,
+    StaffIdentity,
 )
 from customer_console.credits import (
     CREDIT_QUANTUM,
@@ -258,7 +260,9 @@ class LifecycleRequest(BaseModel):
     reason: str | None = None
     #: Days of export window when moving to `cancelled`. Named here so the
     #: window is an explicit act rather than an implicit default nobody chose.
-    export_window_days: int = Field(default=30, ge=1)
+    #: le: ten years. Uncapped, a huge value passed pydantic and 500ed
+    #: on `interval out of range` — bounds belong at the door.
+    export_window_days: int = Field(default=30, ge=1, le=3650)
 
 
 class OrgPurgeRequest(BaseModel):
@@ -294,6 +298,11 @@ class ResolveRequest(BaseModel):
     org_slug: str | None = None
     email: str
     display_name: str | None = None
+
+
+#: The full set seat_assignment.source's CHECK admits (001:193). The
+#: self-serve door allows its own subset; the staff door allows all four.
+_SEAT_SOURCES = frozenset({"core", "center", "plan", "alacarte"})
 
 
 class SeatWriteRequest(BaseModel):
@@ -389,7 +398,10 @@ class CreditGrantRequest(BaseModel):
     """
 
     org_slug: str
-    credits: Decimal
+    #: Bounded to what `credit_ledger.delta` (NUMERIC(14,4)) can hold —
+    #: beyond it the insert 500s. Negative stays legal: corrections.
+    credits: Decimal = Field(
+        ge=Decimal("-9999999999"), le=Decimal("9999999999"))
     reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
 
@@ -435,7 +447,11 @@ class ManualActivationRequest(BaseModel):
     seats: int = Field(ge=1)
     #: AI credits to add, when the bank transfer included them. Decimal, never
     #: float — the ledger is a customer's dispute evidence (``credits`` doctrine).
-    credits: Decimal | None = None
+    #: ge=0: an "activation" that REMOVES credits is a correction wearing the
+    #: wrong name — corrections are `/credits/grant`'s negative deltas, where
+    #: the amount rules apply. le: `credit_ledger.delta` is NUMERIC(14,4).
+    credits: Decimal | None = Field(
+        default=None, ge=0, le=Decimal("9999999999"))
     #: The subscription term. Defaults to ``payments.SUBSCRIPTION_TERM_MONTHS``
     #: (the one purchased term the checkout path also uses) — the catalog defines
     #: no per-plan term, so there is nothing narrower to read.
@@ -463,7 +479,10 @@ class OrderLineRequest(BaseModel):
     """One basket line. The PRICE is not here — the catalog decides it."""
 
     plan_slug: str
-    quantity: int = Field(ge=1)
+    #: le mirrors what the table can hold (`payment_order_line.quantity` is
+    #: INT) with room to spare — 3e9 used to pass pydantic and 500 on the
+    #: insert. Nobody buys 100k seats in one basket by accident.
+    quantity: int = Field(ge=1, le=100_000)
 
 
 class CreateOrderRequest(BaseModel):
@@ -831,7 +850,11 @@ class CompletionRequest(BaseModel):
 
     temperature: float | None = None
     top_p: float | None = None
-    n: int | None = None
+    #: Completions per request MULTIPLY what one request costs us
+    #: (n x max_tokens on the output side), so the ceiling that caps
+    #: max_tokens caps n too. Four covers best-of sampling; fifty would be
+    #: a 50x draw on the provider account from one zero-balance trial call.
+    n: int | None = Field(default=None, ge=1, le=4)
     stop: Any | None = None
     max_tokens: int | None = Field(default=None, ge=1)
     presence_penalty: float | None = None
@@ -1108,9 +1131,13 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
     who the bearer is, and `operators.admit` then runs all three checks of
     §4.1 against the answer.
 
-    Every refusal is the SAME 403 body, whatever failed. A door that
-    distinguished "wrong directory" from "not on the registry" would tell an
-    attacker which half to work on.
+    Every refusal carries the same MINIMAL body. The status is split on
+    purpose — 401 when the TOKEN was not trusted (fix the sign-in), 403
+    when the person is not an admitted operator (fix the registry) — and
+    the login callback tells a person which problem to fix from exactly
+    that split. This docstring once claimed "the same 403 for everything",
+    which the code, the tests and the UI never did; the split discloses
+    only what the signed-in human is told anyway.
     """
     try:
         identity = operator_signin.introspect(req.access_token)
@@ -1196,6 +1223,8 @@ def operator_sign_out(staff: Operator) -> dict[str, Any]:
         )
     with get_engine().begin() as conn:
         store.operator_session_revoke(conn, staff.session_id)
+        # Sign-IN is audited; the revocation that ends the session was not.
+        _audit(conn, None, "operator.signout", {}, actor=staff.actor)
     return {"revoked": True}
 
 
@@ -1357,9 +1386,23 @@ def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
             conn, email=email, role=req.role,
             added_by=staff.operator_id,
         )
+        row = store.operator_by_email(conn, email)
+        assert row is not None  # just inserted, or already there
+        if row["role"] != req.role:
+            # ON CONFLICT DO NOTHING fired: the person already exists with a
+            # DIFFERENT role. Answering the requested role here audited a
+            # demotion that never happened.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{email} already exists as {row['role']!r} - change "
+                    "a role with PATCH /operators/{operator_id}, not a "
+                    "second add"
+                ),
+            )
         _audit(conn, None, "operator.add",
-               {"email": email, "role": req.role}, actor=staff.actor)
-    return {"id": operator_id, "email": email, "role": req.role}
+               {"email": email, "role": row["role"]}, actor=staff.actor)
+    return {"id": operator_id, "email": email, "role": row["role"]}
 
 
 # ⚠️ THE ELEVATION ROUTES ARE DECLARED ABOVE THIS LINE ON PURPOSE.
@@ -1944,16 +1987,29 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
             {"eff": req.effective_from},
         ).scalar_one()
 
-        for position, model in enumerate(chain, start=1):
-            conn.execute(
-                text(
-                    "INSERT INTO tier_binding "
-                    "    (tier, task, model, rank, effective_from) "
-                    "VALUES (:tier, :task, :model, :rank, :eff)"
+        try:
+            for position, model in enumerate(chain, start=1):
+                conn.execute(
+                    text(
+                        "INSERT INTO tier_binding "
+                        "    (tier, task, model, rank, effective_from) "
+                        "VALUES (:tier, :task, :model, :rank, :eff)"
+                    ),
+                    {"tier": req.tier, "task": req.task, "model": model,
+                     "rank": position, "eff": eff},
+                )
+        except IntegrityError:
+            # An explicit effective_from equal to a saved row's violates the
+            # (tier, task, rank, effective_from) PK — a retried "chain from
+            # the 1st" POST used to 500 here.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a chain for this (tier, task) already exists at that "
+                    "exact effective_from; omit it to save a new row dated "
+                    "now, or pass a later timestamp"
                 ),
-                {"tier": req.tier, "task": req.task, "model": model,
-                 "rank": position, "eff": eff},
-            )
+            ) from None
 
         _audit(conn, None, "catalog.binding",
                {"tier": req.tier, "task": req.task, "chain": chain},
@@ -2053,20 +2109,32 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         except catalog.CatalogRefused as exc:
             raise _catalog_refusal(exc) from exc
 
-        conn.execute(
-            text(
-                "INSERT INTO tier_rate_card (tier, task, unit, "
-                "    input_credits_per_1k, output_credits_per_1k, "
-                "    cached_input_credits_per_1k, credits_per_unit, "
-                "    pricing_mode, effective_from) "
-                "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
-                "        COALESCE(:eff, now()))"
-            ),
-            {"tr": req.tier, "t": req.task, "u": req.unit,
-             "i": req.input_per_1k, "o": req.output_per_1k,
-             "c": req.cached_input_per_1k, "cpu": req.credits_per_unit,
-             "pm": req.pricing_mode, "eff": req.effective_from},
-        )
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO tier_rate_card (tier, task, unit, "
+                    "    input_credits_per_1k, output_credits_per_1k, "
+                    "    cached_input_credits_per_1k, credits_per_unit, "
+                    "    pricing_mode, effective_from) "
+                    "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
+                    "        COALESCE(:eff, now()))"
+                ),
+                {"tr": req.tier, "t": req.task, "u": req.unit,
+                 "i": req.input_per_1k, "o": req.output_per_1k,
+                 "c": req.cached_input_per_1k, "cpu": req.credits_per_unit,
+                 "pm": req.pricing_mode, "eff": req.effective_from},
+            )
+        except IntegrityError:
+            # Explicit effective_from duplicating the PK — a retried POST
+            # used to 500 here instead of answering.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a price for this (tier, task) already exists at that "
+                    "exact effective_from; omit it to save a new row dated "
+                    "now, or pass a later timestamp"
+                ),
+            ) from None
         _audit(conn, None, "catalog.tier_rate",
                {"tier": req.tier, "task": req.task,
                 "pricing_mode": req.pricing_mode, "unit": req.unit},
@@ -2112,13 +2180,23 @@ def set_credit_price(req: CreditPriceRequest,
                 detail=f"{name} must be a positive number up to 100000, "
                        f"got {v}")
     with get_engine().begin() as conn:
-        conn.execute(
-            text("INSERT INTO credit_price (inr_per_credit, usd_to_inr, "
-                 "effective_from) "
-                 "VALUES (:p, :fx, COALESCE(:eff, now()))"),
-            {"p": req.inr_per_credit, "fx": req.usd_to_inr,
-             "eff": req.effective_from},
-        )
+        try:
+            conn.execute(
+                text("INSERT INTO credit_price (inr_per_credit, usd_to_inr, "
+                     "effective_from) "
+                     "VALUES (:p, :fx, COALESCE(:eff, now()))"),
+                {"p": req.inr_per_credit, "fx": req.usd_to_inr,
+                 "eff": req.effective_from},
+            )
+        except IntegrityError:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a credit price already exists at that exact "
+                    "effective_from; omit it to save a new row dated now, "
+                    "or pass a later timestamp"
+                ),
+            ) from None
         _audit(conn, None, "catalog.credit_price",
                {"inr_per_credit": str(req.inr_per_credit),
                 "usd_to_inr": str(req.usd_to_inr)},
@@ -2167,17 +2245,22 @@ class ProfileRequest(BaseModel):
 
     model: str
     label: str | None = None
-    context_window: int | None = None
-    max_output: int | None = None
+    #: ge mirrors `model_profile_positive` (012) and `model_profile_cached_
+    #: positive` (013): a negative window or price used to pass pydantic and
+    #: surface as an IntegrityError 500 — the same class `set_credit_price`
+    #: already converts to a legible refusal.
+    context_window: int | None = Field(default=None, ge=1)
+    max_output: int | None = Field(default=None, ge=1)
     #: 🔴 What the VENDOR charges US, per million tokens. NOT `model_rate_card`,
     #: which is what we charge a customer. Reading one as the other inverts a
     #: margin, which is why the name carries both the payer and the unit.
-    vendor_input_per_1m_usd: Decimal | None = None
-    vendor_output_per_1m_usd: Decimal | None = None
+    vendor_input_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_output_per_1m_usd: Decimal | None = Field(default=None, ge=0)
     #: The vendor's discounted CACHE-READ rate (013). Without it a
     #: cache-hitting call cannot be costed at all — the computation refuses
     #: rather than bill cached reads at the full input price.
-    vendor_cached_input_per_1m_usd: Decimal | None = None
+    vendor_cached_input_per_1m_usd: Decimal | None = Field(
+        default=None, ge=0)
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
@@ -2910,7 +2993,9 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
 
 
 @app.post("/registry/resolve")
-def resolve(req: ResolveRequest, caller: ResolveCaller) -> dict[str, Any]:
+def resolve(
+    req: ResolveRequest, caller: ResolveCaller, request: Request,
+) -> dict[str, Any]:
     """Resolve a person against the registry at sign-in, consuming a Core seat.
 
     **This is what makes the seat cap real.** A person cannot become a user of
@@ -2934,10 +3019,12 @@ def resolve(req: ResolveRequest, caller: ResolveCaller) -> dict[str, Any]:
     """
     if caller is not None:
         return _resolve_for_deployment(req, caller)
-    return _resolve_for_operator(req)
+    return _resolve_for_operator(req, request)
 
 
-def _resolve_for_operator(req: ResolveRequest) -> dict[str, Any]:
+def _resolve_for_operator(
+    req: ResolveRequest, request: Request,
+) -> dict[str, Any]:
     """The shipped operator shape, unchanged (CP-2b clause 3's regression)."""
     if req.org_slug is None:
         # Refused HERE rather than by the model. `org_slug` became optional so
@@ -2983,6 +3070,13 @@ def _resolve_for_operator(req: ResolveRequest) -> dict[str, Any]:
         _allocate_core_seat(
             conn, org_id=org_id, identity_id=identity_id, seats_locked=False,
         )
+        # A staff act that mints an identity and can consume a paid Core
+        # seat — audited like its /billing/seats twin (it never was). The
+        # deployment arm stays unaudited on purpose: it runs on every
+        # product sign-in and belongs to the meter, not the audit trail.
+        staff = getattr(getattr(request, "state", None), "staff", None)
+        _audit(conn, org_id, "registry.resolve", {"email": req.email},
+               actor=getattr(staff, "actor", None) or "operator")
 
         role = conn.execute(
             text(
@@ -3472,6 +3566,11 @@ def activate_subscription_manual(
             quantity=req.seats, reason="manual",
         )
         if req.credits is not None:
+            # The OTHER door that writes the ledger — same amount rules as
+            # /credits/grant (spec §5). Without this, an editor refused a
+            # 15,001-credit grant attached 1,000,000 to an activation.
+            # Raising here rolls the whole activation back: all or nothing.
+            _require_credit_privilege(staff, req.credits)
             store.add_credit(
                 conn, org_id=org_id, delta=req.credits,
                 reason=LEDGER_REASON_MANUAL, ref=req.reference,
@@ -3523,6 +3622,17 @@ def activate_subscription_manual(
 @app.post("/billing/seats")
 def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
     """Assign a seat on a plan. 409 at the cap, with a buy-more payload."""
+    if req.source not in _SEAT_SOURCES:
+        # Mirrors seat_assignment.source's CHECK (001:193) so a typo answers
+        # 400 here, not an IntegrityError 500 at the insert — the rule the
+        # self-serve door already applies to its narrower set.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{req.source!r} is not a seat source; expected one of "
+                f"{sorted(_SEAT_SOURCES)}"
+            ),
+        )
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         state = conn.execute(
@@ -3627,6 +3737,7 @@ def _admin_scheme_context(
     caller: DeploymentCaller | None,
     *,
     roles: frozenset[str],
+    request: Request,
 ) -> tuple[str, str]:
     """Resolve ``(org_id, actor)`` for a customer-admin write — clauses 2-3.
 
@@ -3651,7 +3762,7 @@ def _admin_scheme_context(
     """
     if caller is not None:
         return _admin_scheme_for_deployment(conn, req, caller, roles=roles)
-    return _admin_scheme_for_operator(conn, req)
+    return _admin_scheme_for_operator(conn, req, request)
 
 
 def _admin_scheme_for_deployment(
@@ -3739,7 +3850,9 @@ def _admin_scheme_for_deployment(
     return org_id, req.actor_email
 
 
-def _admin_scheme_for_operator(conn, req: AdminSchemeRequest) -> tuple[str, str]:
+def _admin_scheme_for_operator(
+    conn, req: AdminSchemeRequest, request: Request,
+) -> tuple[str, str]:
     """The operator arm: a cross-org staff act that NAMES the org."""
     if req.actor_email is not None:
         # The operator has no actor — an `actor_email` under this scheme is a
@@ -3755,7 +3868,13 @@ def _admin_scheme_for_operator(conn, req: AdminSchemeRequest) -> tuple[str, str]
             status_code=400,
             detail="org_slug is required under the operator scheme",
         )
-    return _org_id(conn, req.org_slug), "operator"
+    # CP-12c's fix, extended to these doors 2026-08-30: `auth._stash`
+    # put the signed-in identity on the request, and the three /registry
+    # writes discarded it — their audit rows read actor="operator",
+    # indistinguishable from anybody. Break-glass still records "operator".
+    staff = getattr(getattr(request, "state", None), "staff", None)
+    return _org_id(conn, req.org_slug), (getattr(staff, "actor", None)
+                                         or "operator")
 
 
 def _seat_admin_target(conn, *, org_id: str, member_email: str) -> str:
@@ -3788,7 +3907,7 @@ def _seat_admin_target(conn, *, org_id: str, member_email: str) -> str:
 
 @app.post("/registry/seats")
 def assign_seat_admin(
-    req: SeatAdminRequest, caller: SeatAdminCaller
+    req: SeatAdminRequest, caller: SeatAdminCaller, request: Request,
 ) -> dict[str, Any]:
     """Assign a seat under the customer's own admin credential (§6 item (h)).
 
@@ -3825,7 +3944,8 @@ def assign_seat_admin(
         )
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
+            request=request
         )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
@@ -3871,7 +3991,7 @@ def assign_seat_admin(
 
 @app.post("/registry/seats/release")
 def release_seat_admin(
-    req: SeatAdminRequest, caller: SeatAdminCaller
+    req: SeatAdminRequest, caller: SeatAdminCaller, request: Request,
 ) -> dict[str, Any]:
     """Release a seat under the customer's own admin credential (§6 item (h)).
 
@@ -3887,7 +4007,8 @@ def release_seat_admin(
         )
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
+            request=request
         )
         target_id = _seat_admin_target(
             conn, org_id=org_id, member_email=req.member_email
@@ -3911,7 +4032,7 @@ def release_seat_admin(
 
 @app.post("/registry/seats/overview")
 def seat_overview_admin(
-    req: AdminSchemeRequest, caller: SeatAdminCaller
+    req: AdminSchemeRequest, caller: SeatAdminCaller, request: Request,
 ) -> SeatOverviewView:
     """The seat surface's READ under the customer's own admin credential (CP-2h).
 
@@ -3959,7 +4080,8 @@ def seat_overview_admin(
     """
     with get_engine().begin() as conn:
         org_id, _actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
+            request=request
         )
         rows = store.org_members(conn, org_id=org_id)
         seats = store.live_seats_by_email(conn, org_id=org_id)
@@ -3986,7 +4108,7 @@ def seat_overview_admin(
 
 @app.post("/registry/members")
 def add_member_admin(
-    req: MemberAdminRequest, caller: MemberAdminCaller
+    req: MemberAdminRequest, caller: MemberAdminCaller, request: Request,
 ) -> dict[str, Any]:
     """Add a member under the customer's own admin credential (CP-2f, D50.2).
 
@@ -4021,7 +4143,8 @@ def add_member_admin(
     """
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_MEMBER_ADMIN_ROLES
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES,
+            request=request
         )
 
         # The same lifecycle question the seat write asks, and for the same
@@ -4053,6 +4176,35 @@ def add_member_admin(
     return {"created": created, "status": status_now}
 
 
+def _require_credit_privilege(staff: StaffIdentity, credits: Decimal) -> None:
+    """Spec §5's credit rows, in code: at or below the threshold an editor
+    grants; above it the act is **elevated** — ``admin`` AND a live window.
+
+    The rank half is :func:`operator_roles.check_credit_amount`. The WINDOW
+    half was missing until 2026-08-30: a plain admin session could move any
+    quantity while ``/orgs/lifecycle`` — the same "elevated" class in §5 —
+    demanded the window. Only a POSITIVE amount above the threshold needs
+    it, per check_credit_amount's own note on corrections. Break-glass
+    bypasses the matrix by design and logs a WARNING on every use.
+    """
+    if not staff.is_session:
+        return
+    try:
+        operator_roles.check_credit_amount(staff.role, credits)
+    except operator_roles.RoleForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+    if credits <= operator_roles.credit_elevation():
+        return
+    with get_engine().begin() as conn:
+        window = store.operator_elevation_live(conn, staff.operator_id)
+    try:
+        operator_elevation.check_window(window, now=datetime.now(UTC))
+    except operator_elevation.NotElevated:
+        # The same 403 body as a rank refusal (auth._enforce_role's rule):
+        # distinguishing them tells a stolen admin session what to do next.
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+
 @app.post("/credits/grant")
 def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
     """Add credits. Append-only — a correction is another row, never an edit.
@@ -4064,11 +4216,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
     BEFORE the organization is read, so the refusal is identical whether the
     company exists or not.
     """
-    if staff.is_session:
-        try:
-            operator_roles.check_credit_amount(staff.role, req.credits)
-        except operator_roles.RoleForbidden:
-            raise HTTPException(status_code=403, detail="Forbidden") from None
+    _require_credit_privilege(staff, req.credits)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         # 🔴 The manual-payment fence (owner ask, 2026-08-30): the same
@@ -4093,10 +4241,27 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                         "second grant."
                     ),
                 )
-        store.add_credit(
-            conn, org_id=org_id, delta=req.credits,
-            reason=req.reason, ref=ref,
-        )
+        try:
+            store.add_credit(
+                conn, org_id=org_id, delta=req.credits,
+                reason=req.reason, ref=ref,
+            )
+        except IntegrityError:
+            # The SELECT above cannot hold under concurrency: two grants
+            # both read "no prior row" and both insert (the exact race
+            # `store.lock_org_activation` documents one plane over). The
+            # 018 partial unique index makes the second INSERT fail
+            # instead of crediting one transfer twice — answer it like
+            # the sequential repeat.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"reference {ref!r} was already credited as "
+                    f"{req.reason!r} (a concurrent grant landed first). "
+                    "A correction is an 'adjustment' citing the same "
+                    "reference - never a second grant."
+                ),
+            ) from None
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
         _audit(conn, org_id, "credits.grant",
                {"delta": str(req.credits), "reason": req.reason},
@@ -4571,8 +4736,15 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         status = failed.status
         _log.warning("router.provider_error", extra={"upstream_status": status})
         if isinstance(status, int) and 400 <= status < 600:
+            # 401/402/403 from the VENDOR are our credential or our
+            # account, never the customer's key — relayed verbatim, every
+            # SDK tells the customer to rotate THEIR key, and a vendor 402
+            # collides with this API's own top-up 402. 502: our upstream.
             raise HTTPException(
-                status_code=502 if status >= 500 else status,
+                status_code=(
+                    502 if status >= 500 or status in (401, 402, 403)
+                    else status
+                ),
                 detail="upstream provider error",
             ) from failed
         raise HTTPException(
@@ -4596,8 +4768,14 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
 
 @app.get("/me/billing")
-def my_billing(caller: KeyCaller) -> dict[str, Any]:
+def my_billing(caller: PayingCaller) -> dict[str, Any]:
     """The calling organization's OWN billing summary. Read-only.
+
+    Gated on ``can_pay``, not ``can_use_ai`` (moved 2026-08-30, §9.3(5)'s
+    class): a **suspended** customer must be able to READ the bill they are
+    being asked to pay. The old gate shut the billing page on exactly the
+    customer who most needed it — the same defect the seats and members
+    reads were moved off it for.
 
     Exists because the customer's billing page needs this data and the
     workbench must **not** hold the operator token — a tenant deployment
@@ -4637,6 +4815,11 @@ def my_billing(caller: KeyCaller) -> dict[str, Any]:
 
     return {
         "credits": {
+            # ⚠️ floats — the one outlier from the strings-for-money rule.
+            # Exact for NUMERIC(14,4) magnitudes (≤14 significant digits
+            # round-trip float64), and the workbench billing page parses
+            # numbers today, so the string flip is a two-release change:
+            # consumer first (R6). Recorded as H-79.
             "balanceCredits": float(balance),
             "burnThisCycle": float(burn),
             "windowDays": window_days,
@@ -4721,9 +4904,15 @@ class OrgUsageRow(BaseModel):
     costUsd: str
     balance: str
     lastSeen: str | None = None
-    #: Credits billed per dollar of provider cost. NULL when the cost is zero
-    #: — that is "we have not measured it", not "excellent margin".
+    #: Credits billed per dollar of provider cost, judged over the calls
+    #: whose cost was MEASURED — never all-calls credits over some-calls
+    #: cost, which overstated margins 100x when coverage was thin. NULL
+    #: when no cost is measured at all.
     marginRatio: str | None = None
+    #: What fraction of this org's calls carry a measured cost (0..1, as a
+    #: string). The context that stops marginRatio reading as authority it
+    #: does not have. NULL when there are no calls.
+    costedShare: str | None = None
     #: NULL means "no burn to extrapolate from", never "forever".
     runwayDays: int | None = None
     silent: bool = False
@@ -4814,6 +5003,9 @@ def admin_usage_by_org(
                 lastSeen=r["last_seen"],
                 marginRatio=(
                     None if r["margin_ratio"] is None else str(r["margin_ratio"])
+                ),
+                costedShare=(
+                    None if r["costed_share"] is None else str(r["costed_share"])
                 ),
                 runwayDays=r["runway_days"], silent=r["silent"],
             )
@@ -5616,6 +5808,14 @@ def _handle_webhook_event(
         payments.fulfil(
             conn, order_id=order["id"], reference=f"order:{order['id']}",
         )
+        # The capture that grants seats and credits gets an audit row like
+        # its manual twin — `GET /activity` showed a manual activation and
+        # hid a paid one. Actor: the provider, whose verified signature
+        # authorised the act.
+        _audit(conn, order["organization_id"], "payment.captured",
+               {"order_id": order["id"], "event": event.event_id,
+                "amount_paise": event.amount_paise},
+               actor="razorpay")
     except TransitionRefused:
         # ⚠️ **TWO situations reach this arm and only ONE of them is benign**
         # (split 2026-08-19, review P0(b)). Branching on the order's status is

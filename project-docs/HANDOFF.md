@@ -849,6 +849,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `customer_console.md` §6A.11 · §6A.13
 - **Added:** 2026-08-30 · pricing-method session
 
+### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
+- **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`
+  → `1` means the Console still sends floats.
+- **Why:** `GET /me/billing` sends `balanceCredits` and `burnThisCycle` as floats.
+  Every other money read sends strings. The float is exact for `NUMERIC(14,4)`
+  magnitudes, so the defect is latent. But this endpoint is the customer's
+  dispute surface, and one outlier invites the next. The flip takes two
+  releases (R6). Release one: the workbench billing page
+  (`workbench/control_plane/src/app/settings/billing/`) parses both shapes.
+  Release two: the Console sends strings.
+- **Authority:** the strings-for-money rule stated three times in `main.py`
+  (search "reformatted through a float")
+- **Added:** 2026-08-30 · console-review session
+
 ### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
 - **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
   `configure_litellm` mean the tenant path still writes process-global credentials.

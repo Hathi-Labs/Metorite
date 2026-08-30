@@ -32,9 +32,13 @@ _MAIN = (
 )
 
 #: The dependency names that mark a route as operator-reachable.
+#: ⚠️ EVERY dual-arm gate belongs here. ResolveCaller was missing until
+#: 2026-08-30, so this fence passed green while `/registry/resolve` had no
+#: matrix row and every signed-in operator got 403 on it — the exact
+#: "mystery 403" class the module docstring describes.
 _GATES = (
     "Operator", "ProvisionCaller", "SeatAdminCaller", "MemberAdminCaller",
-    "CatalogCaller",
+    "CatalogCaller", "ResolveCaller",
 )
 
 _ROUTE = re.compile(

@@ -389,14 +389,22 @@ def _parse_event(
     if not isinstance(body, dict):
         return None
 
-    payment = (
-        body.get("payload", {}).get("payment", {}).get("entity", {})
-        if isinstance(body.get("payload"), dict) else {}
-    )
-    order = (
-        body.get("payload", {}).get("order", {}).get("entity", {})
-        if isinstance(body.get("payload"), dict) else {}
-    )
+    def _entity(kind: str) -> dict[str, Any]:
+        # Guarded at EVERY level: a signed body carrying `"payment": "x"`
+        # used to raise at `.get` and escape the function that promises
+        # "None when it is unusable" — a 500 the provider retries forever
+        # instead of the designed 400.
+        payload = body.get("payload")
+        if not isinstance(payload, dict):
+            return {}
+        wrapper = payload.get(kind)
+        if not isinstance(wrapper, dict):
+            return {}
+        entity = wrapper.get("entity")
+        return entity if isinstance(entity, dict) else {}
+
+    payment = _entity("payment")
+    order = _entity("order")
     amount = payment.get("amount", order.get("amount"))
     return WebhookEvent(
         event_id=event_id,

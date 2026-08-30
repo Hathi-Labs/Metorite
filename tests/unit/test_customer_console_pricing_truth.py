@@ -444,3 +444,43 @@ def test_a_quiet_funded_customer_below_the_cap_is_still_reported(
         "would pass without proving anything"
     )
     assert slug in view["silentSlugs"]
+
+
+def test_margin_is_judged_over_the_COSTED_calls_only(client, db):
+    """All-calls credits over some-calls cost overstated the margin: 10
+    measured calls under 1,000 billed ones read as a 10× ratio. The ratio
+    now uses the costed slice, and costedShare says how much that covers."""
+    from customer_console import store as store_mod
+
+    slug = f"pm-{uuid.uuid4().hex[:8]}"
+    with db.begin() as c:
+        org = str(c.execute(text(
+            "INSERT INTO organization (slug, name) VALUES (:s, 'N') "
+            "RETURNING id"), {"s": slug}).scalar_one())
+        store_mod.record_usage(
+            conn=c, org_id=org, request_id=f"pm-blind-{slug}",
+            billed_credits=Decimal("100"), model="m", tier="t")
+        store_mod.record_usage(
+            conn=c, org_id=org, request_id=f"pm-costed-{slug}",
+            billed_credits=Decimal("2"), model="m", tier="t",
+            provider_cost_usd=Decimal("1"))
+
+    # Through the STORE, uncapped: the page keeps its 100-row cap and the
+    # shared dev database holds residue orgs that can crowd this one off.
+    from datetime import UTC, datetime
+
+    from customer_console import analytics
+
+    with db.begin() as c:
+        rows = store_mod.usage_by_org(c, days=30, limit=1_000_000)["rows"]
+    mine = next(r for r in rows if r["slug"] == slug)
+    ann = analytics.annotate_orgs(
+        [mine], {slug: Decimal("0")}, {}, datetime.now(UTC))[0]
+    # 102 credits billed in total — but only the costed call's 2 credits
+    # face the $1. The old numerator answered "102.00".
+    assert str(ann["margin_ratio"]) == "2.00"
+    assert str(ann["costed_share"]) == "0.50"
+
+    # And the wire carries the coverage for every row it does show.
+    view = client.get("/admin/usage/orgs", headers=OP).json()
+    assert all("costedShare" in r for r in view["rows"][:3])

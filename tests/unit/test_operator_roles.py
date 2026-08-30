@@ -268,17 +268,25 @@ def test_an_editor_may_not_grant_above_the_threshold(client, eng):
     assert r.status_code == 403, r.text
 
 
-def test_an_admin_may_grant_above_the_threshold(client, eng):
+def test_an_admin_grant_above_the_threshold_needs_the_WINDOW(client, eng):
+    """Spec §5: "Grant credits above the threshold" is **elevated** - admin
+    AND a live window. Until 2026-08-30 this test asserted plain-admin 200,
+    encoding the exact weakening the console review caught."""
     from customer_console import operator_roles
 
     slug = _org(eng)
     over = operator_roles.credit_elevation() + 1
-    r = client.post(
-        "/credits/grant",
-        headers=_auth(_token(eng, "admin")),
-        json={"org_slug": slug, "credits": str(over), "reason": "manual"},
-    )
-    assert r.status_code == 200, r.text
+    token = _token(eng, "admin")
+    body = {"org_slug": slug, "credits": str(over), "reason": "manual"}
+
+    r = client.post("/credits/grant", headers=_auth(token), json=body)
+    assert r.status_code == 403, "admin with NO window must be refused"
+
+    assert client.post("/operators/elevate", headers=_auth(token), json={
+        "reason": "window for the above-threshold grant test",
+    }).status_code == 200
+    r2 = client.post("/credits/grant", headers=_auth(token), json=body)
+    assert r2.status_code == 200, r2.text
 
 
 def test_a_large_NEGATIVE_grant_is_a_correction_not_an_escalation(client, eng):

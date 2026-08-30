@@ -128,6 +128,13 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("POST", "/billing/seats"): _R(EDITOR),
     ("POST", "/billing/seats/release"): _R(EDITOR),
     ("POST", "/registry/seats"): _R(EDITOR),
+    # The dual-arm resolve door. It mints identities and consumes Core
+    # seats like the seat doors above, so the same rank. It had NO row
+    # until 2026-08-30 — check_route fails CLOSED, so every signed-in
+    # operator got 403 and only the break-glass token worked, the exact
+    # state CP-12 exists to end. The fence missed it because ResolveCaller
+    # was absent from its _GATES tuple; both are fixed together.
+    ("POST", "/registry/resolve"): _R(EDITOR),
     ("POST", "/registry/seats/release"): _R(EDITOR),
     ("POST", "/registry/members"): _R(EDITOR),
     # ⚠️ Editor covers a grant AT OR BELOW the threshold only. The amount is in

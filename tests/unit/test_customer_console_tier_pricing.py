@@ -365,3 +365,21 @@ def test_an_uncategorised_tier_keeps_the_old_freedom(client, db, vendor):
     with db.begin() as c:
         c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
                   {"t": tier})
+
+
+def test_the_same_effective_from_twice_answers_409_not_500(client, db):
+    """A retried "price from the 1st" POST violated the PK and 500ed."""
+    eff = "2030-01-02T00:00:00Z"
+    body = {"tier": "tier-music", "task": "music", "unit": "seconds",
+            "pricing_mode": "priced", "credits_per_unit": "0.9",
+            "effective_from": eff}
+    assert client.post("/catalog/tier-rates", headers=OP,
+                       json=body).status_code == 200
+    r2 = client.post("/catalog/tier-rates", headers=OP, json=body)
+    assert r2.status_code == 409
+    assert "effective_from" in r2.json()["detail"]
+    # Clean the probe out of the REUSED dev database: the slate test reads
+    # whole-table state, and a leftover priced row from a past run breaks it.
+    with db.begin() as c:
+        c.execute(text("DELETE FROM tier_rate_card WHERE effective_from = :e"),
+                  {"e": eff})

@@ -125,12 +125,25 @@ def test_an_admin_adds_an_operator(client, eng):
 
 
 def test_adding_the_same_person_twice_is_not_a_duplicate(client, eng):
+    """A SAME-role repeat is idempotent; a DIFFERENT role answers 409.
+
+    This test once accepted a 200 for the different-role repeat — the
+    exact shape the 2026-08-30 review flagged: that 200 echoed the
+    REQUESTED role and audited a demotion that never happened. The role
+    still never changes silently; now the refusal says so out loud.
+    """
     _, _, admin = _make(eng, "admin")
     first = client.post("/operators", headers=_auth(admin),
                         json={"email": "dup@fracktal.in", "role": "viewer"})
-    second = client.post("/operators", headers=_auth(admin),
-                         json={"email": "DUP@fracktal.in", "role": "admin"})
-    assert first.json()["id"] == second.json()["id"]
+    again = client.post("/operators", headers=_auth(admin),
+                        json={"email": "DUP@fracktal.in", "role": "viewer"})
+    assert again.status_code == 200
+    assert first.json()["id"] == again.json()["id"]
+
+    reroled = client.post("/operators", headers=_auth(admin),
+                          json={"email": "DUP@fracktal.in", "role": "admin"})
+    assert reroled.status_code == 409
+    assert "already exists as 'viewer'" in reroled.json()["detail"]
     assert _status(eng, first.json()["id"])[0] == "viewer", (
         "a repeat add silently re-roled somebody"
     )
