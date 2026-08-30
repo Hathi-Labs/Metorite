@@ -18,6 +18,7 @@ R8: every test below runs against a real Postgres.
 from __future__ import annotations
 
 import os
+import typing
 import uuid
 
 import pytest
@@ -198,7 +199,8 @@ class TestWhatItIsNotTiedTo:
 
 class TestTheProfileRoute:
     TOKEN = "test-operator-token"
-    OP = {"Authorization": f"Bearer {TOKEN}"}
+    OP: typing.ClassVar[dict[str, str]] = {
+        "Authorization": f"Bearer {TOKEN}"}
 
     @pytest.fixture
     def client(self, monkeypatch):
