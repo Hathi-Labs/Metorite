@@ -27,6 +27,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from tests.unit._customer_console_ladder import SECOND_PLAN, apply_ladder  # noqa: E402
 
@@ -746,3 +747,186 @@ class TestOperatorSpendReads:
         # An off-by-one in `days - 1` inside generate_series is invisible on a
         # 30-day window and obvious on a 1-day one.
         assert len(store.usage_daily(conn, days=1)) == 1
+
+
+# ── A5 slice 5: a refusal is recorded, and it is not a call ─────────────────
+#
+# Spec: `ai_metering_and_analytics.md` §8.1 · migration 020.
+#
+# 🔴 **The defect this slice can ship is SILENT.** A refusal row lands in
+# `usage_event`, every read that counts rows starts counting it as a call, the
+# call counts inflate and the credit sums stay right — because a refusal bills
+# 0. So two columns on one page disagree and nothing says why. Each test below
+# writes ONE refusal beside ONE served call and demands the answer 1.
+#
+# R8 binds all of it: the CHECK, the FILTER-versus-WHERE distinction and the
+# LEFT JOIN survival are things only a real server can answer.
+
+class TestARefusalIsNotACall:
+    def _served(self, conn, org, **fields):
+        assert store.record_usage(
+            conn, org_id=org, request_id=f"req-{uuid.uuid4().hex}",
+            billed_credits=fields.pop("credits", Decimal("1")), **fields,
+        ) is True
+
+    def _refused(self, conn, org, reason="tier_unknown", **fields):
+        assert store.record_usage(
+            conn, org_id=org, request_id=f"rtr-{uuid.uuid4().hex}",
+            billed_credits=Decimal(0), refusal_reason=reason,
+            quantity=0, unit="tokens", **fields,
+        ) is True
+
+    # ── The column and its closed vocabulary ────────────────────────────────
+
+    def test_a_served_row_carries_NULL_and_that_is_what_NULL_MEANS(
+            self, conn, org):
+        self._served(conn, org, agent="a")
+        assert conn.execute(
+            text("SELECT count(*) FROM usage_event WHERE organization_id = :o "
+                 "AND refusal_reason IS NULL"), {"o": org},
+        ).scalar_one() == 1
+
+    def test_the_CHECK_refuses_a_fourth_slug(self, conn, org):
+        """An open TEXT column grows a second spelling of one wall inside a
+        month, and the two then read as two different walls.
+
+        ⚠️ Inside a SAVEPOINT: a failed statement aborts the surrounding
+        transaction, and the fixture's rollback would then have nothing to roll
+        back cleanly.
+        """
+        with pytest.raises(IntegrityError):
+            with conn.begin_nested():
+                self._refused(conn, org, reason="out_of_cheese")
+
+    def test_all_three_shipped_slugs_are_accepted(self, conn, org):
+        for slug in ("insufficient_credits", "run_ceiling_exceeded",
+                     "tier_unknown"):
+            self._refused(conn, org, reason=slug)
+        assert conn.execute(
+            text("SELECT count(*) FROM usage_event WHERE organization_id = :o "
+                 "AND refusal_reason IS NOT NULL"), {"o": org},
+        ).scalar_one() == 3
+
+    # ── The five counting reads ─────────────────────────────────────────────
+
+    def test_usage_by_activity_counts_one(self, conn, org):
+        self._served(conn, org, agent="a")
+        self._refused(conn, org, agent="a")
+
+        rows = store.usage_by_activity(conn, org_id=org)
+
+        assert [(r["activity"], r["calls"]) for r in rows] == [("a", 1)]
+
+    def test_usage_by_member_counts_one(self, conn, org):
+        self._served(conn, org, user_email="alice@corp.com")
+        self._refused(conn, org, user_email="alice@corp.com")
+
+        rows = store.usage_by_member(conn, org_id=org)
+
+        assert [(r["member"], r["calls"]) for r in rows] \
+            == [("alice@corp.com", 1)]
+
+    def test_usage_by_org_counts_one_call_and_one_member(self, conn, org):
+        # ⚠️ Two DIFFERENT addresses. A member who only hit a wall made no
+        # call, so the DISTINCT count must drop them — with one address the
+        # unfiltered and filtered counts agree and the test proves nothing.
+        self._served(conn, org, user_email="alice@corp.com")
+        self._refused(conn, org, user_email="bob@corp.com")
+
+        mine = self._row_for(conn, org)
+
+        assert mine["calls"] == 1
+        assert mine["members"] == 1
+
+    def test_usage_daily_counts_one(self, conn, org):
+        self._served(conn, org)
+        self._refused(conn, org)
+
+        rows = store.usage_daily(conn, days=3, org_id=org)
+
+        assert sum(r["calls"] for r in rows) == 1
+
+    # ── Why a FILTER clause, and never a WHERE clause ───────────────────────
+
+    def test_an_org_with_ONLY_refusals_still_appears_in_usage_by_org(
+            self, conn, org):
+        """🔴 The regression a WHERE clause would cause.
+
+        A WHERE on the right-hand table turns the LEFT JOIN into an inner
+        join, and "this customer bought credits and used none" — the single
+        most actionable row on the page — disappears. A customer stuck at a
+        wall is exactly that customer.
+        """
+        self._refused(conn, org, reason="insufficient_credits")
+
+        mine = self._row_for(conn, org)
+
+        assert mine["calls"] == 0
+        assert mine["credits"] == Decimal(0)
+
+    def test_usage_daily_keeps_every_day_when_only_refusals_exist(
+            self, conn, org):
+        # The gap fill is the whole function. A WHERE on `u` drops the days
+        # that hold only refusals, and the chart draws a straight line across
+        # them as if usage were steady.
+        self._refused(conn, org)
+
+        rows = store.usage_daily(conn, days=3, org_id=org)
+
+        assert len(rows) == 3
+        assert all(r["calls"] == 0 for r in rows)
+
+    def _row_for(self, conn, org) -> dict:
+        """This organization's row from the UNCAPPED operator page.
+
+        ⚠️ Uncapped on purpose: the default page sorts by credits and a
+        zero-usage organization sorts LAST, so asserting against it would test
+        the pagination instead.
+        """
+        slug = conn.execute(
+            text("SELECT slug FROM organization WHERE id = :i"), {"i": org},
+        ).scalar_one()
+        page = store.usage_by_org(conn, days=30, limit=10_000)
+        mine = [r for r in page["rows"] if r["slug"] == slug]
+        assert mine, "the LEFT JOIN must keep this organization on the page"
+        return mine[0]
+
+    # ── The three reads that must NOT change ────────────────────────────────
+
+    def test_a_refusal_keeps_a_walled_customer_VISIBLE(self, conn, org):
+        """🔴 `last_seen_by_org` takes no filter, and that is deliberate.
+
+        A customer at a wall is a customer who is trying. Filtering the
+        refusal out here makes them read as SILENT to A3, which is the exact
+        defect H-76 closed.
+        """
+        slug = conn.execute(
+            text("SELECT slug FROM organization WHERE id = :i"), {"i": org},
+        ).scalar_one()
+        assert store.last_seen_by_org(conn)[slug] is None
+
+        self._refused(conn, org, reason="insufficient_credits")
+
+        assert store.last_seen_by_org(conn)[slug] is not None
+
+    def test_run_spend_reads_the_same_before_and_after_a_refusal(
+            self, conn, org):
+        # The breaker sums `billed_credits`, and a refusal adds 0 — so it
+        # keeps its meaning with no edit at all.
+        self._served(conn, org, run_id="run-x", credits=Decimal("7"))
+        before = store.run_spend(conn, org_id=org, run_id="run-x")
+
+        self._refused(conn, org, reason="run_ceiling_exceeded", run_id="run-x")
+
+        assert store.run_spend(conn, org_id=org, run_id="run-x") == before \
+            == Decimal("7")
+
+    def test_the_failover_read_never_sees_a_refusal(self, conn, org):
+        # It filters `served_rank > 1`. A refusal carries no served rank, so
+        # it cannot reach that read — asserted rather than assumed, because
+        # "cannot" is a claim about a NULL comparison.
+        self._refused(conn, org)
+        assert conn.execute(
+            text("SELECT count(*) FROM usage_event WHERE organization_id = :o "
+                 "AND served_rank > 1"), {"o": org},
+        ).scalar_one() == 0

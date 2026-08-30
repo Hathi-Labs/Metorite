@@ -384,6 +384,28 @@ def test_the_catalog_reports_the_failover_that_happened(
     assert mine[0]["requests"] >= 1
 
 
+def test_a_REFUSAL_is_NOT_reported_as_a_failover(client, db, org, serve):
+    """§8.1: the failover read is one of three that take NO refusal filter.
+
+    It selects ``served_rank > 1``, and a refusal carries no served rank at
+    all — so it cannot reach this read. Driven through the route rather than
+    reasoned about, because "cannot" is a claim about a NULL comparison and
+    only a real server settles one of those.
+    """
+    slug, org_id, key = org
+    tier = f"tier-pt-unbound-{uuid.uuid4().hex[:6]}"
+
+    assert _ask(client, key, tier).status_code == 400
+
+    with db.begin() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM usage_event "
+            "WHERE organization_id = :o AND refusal_reason IS NOT NULL"),
+            {"o": org_id}).scalar_one() == 1
+    catalog = client.get("/catalog/models", headers=OP).json()
+    assert [f for f in catalog["failovers"] if f["tier"] == tier] == []
+
+
 def test_a_primary_answer_is_NOT_reported_as_a_failover(
         client, db, org, vendor, serve):
     # Rank 1 is the system working. Reporting it would bury the real rows.

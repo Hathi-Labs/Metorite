@@ -988,9 +988,21 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         assert ("redeem_discount_code",
                 ("main.redeem_discount_code", "main._apply_redemption",
                  "payments.fulfil", "store.grant_seats")) in found, found
-        assert ("chat_completions",
-                ("main.chat_completions", "main._record_completion",
-                 "store.record_usage", "store.add_credit")) in found, found
+        # ⚠️ **The METERING helper is named by SHAPE, not by identity.**
+        # `chat_completions` now has two of them: `_record_completion` writes
+        # the call that served, and `_record_refusal` (§8.1, slice 5) writes
+        # the wall the customer hit. Both reach `store.add_credit` through
+        # `store.record_usage`, and the walk marks a node seen — so it reports
+        # whichever it popped first, which is an ordering detail and not the
+        # depth this fence is about.
+        metering = [
+            path for route, path in found
+            if route == "chat_completions"
+            and path[0] == "main.chat_completions"
+            and path[1] in ("main._record_completion", "main._record_refusal")
+            and path[2:] == ("store.record_usage", "store.add_credit")
+        ]
+        assert metering, found
         assert found, "the licensed edges must reappear once nothing is allowed"
         assert min(len(path) for _route, path in found) >= 3, (
             "every finding here is reached through an intermediate; a "

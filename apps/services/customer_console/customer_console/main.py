@@ -2086,10 +2086,7 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         # the same reason the binding is - it could never bill anything the
         # tier serves.
         _check_tier_task(conn, tier=req.tier, task=req.task)
-        natural = conn.execute(
-            text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
-            {"t": req.task},
-        ).scalar_one_or_none()
+        natural = _task_unit(conn, req.task)
         if natural is None:
             raise HTTPException(
                 status_code=400, detail=f"unknown task {req.task!r}")
@@ -2209,6 +2206,18 @@ def _task_exists(conn, task: str) -> bool:
     return conn.execute(
         text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
     ).first() is not None
+
+
+def _task_unit(conn, task: str) -> str | None:
+    """What this task is measured in (``task_catalog.natural_unit``).
+
+    ``None`` for a task the catalog does not carry. A refusal on an unknown
+    task therefore records no unit, which is honest — nobody ever measured it.
+    """
+    return conn.execute(
+        text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
+        {"t": task},
+    ).scalar_one_or_none()
 
 
 def _check_tier_task(conn, *, tier: str, task: str) -> None:
@@ -4491,6 +4500,118 @@ def _record_completion(
         _log.exception("router.metering_failed")
 
 
+def _chain_credentials(
+    conn, chain: list[ResolvedTier], *, org_id: str,
+) -> dict[str, router_mod.Credential | None]:
+    """One credential per VENDOR named in the chain, read in the caller's
+    transaction.
+
+    A vendor appears once however many steps it holds — the second step on the
+    same vendor reuses the first step's key rather than paying for a second
+    lookup on the hottest path in the system.
+
+    ⚠️ **The 503 raises from INSIDE the caller's transaction, on purpose.** A
+    missing or rotated encryption key is OUR failure and not a customer wall,
+    so it writes no `usage_event` row (§8.1). Only the three customer refusals
+    leave the block before they are raised.
+    """
+    credentials: dict[str, router_mod.Credential | None] = {}
+    for step in chain:
+        vendor = step.model.split("/", 1)[0]
+        if vendor in credentials:
+            continue
+        try:
+            credentials[vendor] = provider_credential(
+                conn, provider=vendor, org_id=org_id
+            )
+        except Exception:
+            # A missing or rotated encryption key must fail CLOSED with the
+            # same 503 shape the other secrets use — not a 500 that reads
+            # as a bug.
+            _log.exception("router.credential_unavailable")
+            raise HTTPException(
+                status_code=503, detail="provider credentials unavailable")
+    return credentials
+
+
+# ── A5: the meter records the WALL as well as the call (§8.1, migration 020) ─
+
+#: The slug for the 400. Minted by §8.1, because this refusal carries a
+#: sentence rather than a machine-readable reason.
+REFUSAL_TIER_UNKNOWN = "tier_unknown"
+
+#: Every slug migration 020's CHECK admits. Two of them are copied WORD FOR
+#: WORD from the body the customer already reads — ``decide_spend`` writes
+#: ``insufficient_credits`` and :func:`_spend_refusal` writes
+#: ``run_ceiling_exceeded`` — so the meter and the refusal say one thing.
+#:
+#: ⚠️ Named here as well as in the database on purpose. The CHECK is the fence,
+#: and this set makes the writer refuse a fourth spelling BEFORE it becomes an
+#: IntegrityError on the hottest path in the system.
+_REFUSAL_REASONS = frozenset({
+    "insufficient_credits",
+    "run_ceiling_exceeded",
+    REFUSAL_TIER_UNKNOWN,
+})
+
+
+def _record_refusal(
+    reason: str, *, org_id: str, caller: Any, tier: str, task: str,
+) -> None:
+    """Write the one ``usage_event`` row that says we refused (A5).
+
+    🔴 **It opens its OWN short transaction, and that is the design.** The 400
+    raises from INSIDE the serving transaction, so a refusal row written on
+    that connection rolls back with the raise and the meter records nothing.
+    :func:`_spend_refusal` answers the same hazard the other way — it RETURNS
+    the refusal so the caller leaves the transaction cleanly — and the route
+    now carries both refusals out of the block before it calls this.
+
+    ⚠️ **Best effort, exactly like :func:`_record_completion`.** An unmetered
+    refusal is a reporting gap. A refusal the customer never receives because
+    the meter fell over is an outage, and the outage is worse.
+
+    ⚠️ **``tier`` is the tier the caller ASKED for, never a resolved one.** At
+    ``tier_unknown`` there is nothing to resolve, and the requested tier is the
+    fact A5 reports.
+
+    ⚠️ **Only a CUSTOMER wall reaches here.** The two 503s and the 502 are OUR
+    failures and write no usage row at all — one table that mixes a customer
+    wall with a broken vendor answers neither question.
+    """
+    if reason not in _REFUSAL_REASONS:
+        # A slug nobody declared would fail the CHECK. Say so in the log rather
+        # than raise on a path whose whole job is to deliver a refusal.
+        _log.warning("router.refusal_slug_unknown",
+                     extra={"router_refusal": reason})
+        return
+    try:
+        with get_engine().begin() as conn:
+            store.record_usage(
+                conn, org_id=org_id,
+                # SERVER-generated, exactly as the served path mints it.
+                # `request_id` is NOT NULL UNIQUE (001:271).
+                request_id=f"rtr-{uuid.uuid4().hex}",
+                # We served nothing, so we charge nothing and the row draws no
+                # ledger line — `record_usage` skips the draw on a zero charge.
+                billed_credits=Decimal(0),
+                refusal_reason=reason,
+                user_email=caller.member, agent=caller.agent,
+                module_slug=caller.module_slug,
+                # A `run_ceiling_exceeded` row without its run is not
+                # actionable, and the breaker reads the same field.
+                run_id=caller.run_id,
+                tier=tier, task=task,
+                # The call consumed nothing, and the task's own unit keeps the
+                # row readable beside a served one.
+                quantity=0, unit=_task_unit(conn, task),
+                # No model answered, and no vendor billed us.
+                model=None, provider_cost_usd=None,
+            )
+    except Exception:
+        _log.exception("router.refusal_metering_failed")
+
+
 async def _streamed_completion(
     call_kwargs: dict[str, Any],
     *,
@@ -4560,6 +4681,16 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     """
     org_id = caller.organization_id
 
+    # 🔴 **A CUSTOMER refusal leaves this block before it is raised** (§8.1
+    # clause 3). The meter has to record the wall, and a row written on the
+    # serving connection rolls back with the raise — so the 400 is CARRIED out
+    # of the transaction rather than thrown through it. `_spend_refusal`
+    # already works this way, and its docstring states the rule.
+    unknown_tier: HTTPException | None = None
+    refusal: HTTPException | None = None
+    chain: list[ResolvedTier] = []
+    credentials: dict[str, router_mod.Credential | None] = {}
+
     with get_engine().begin() as conn:
         try:
             # 🔴 **The whole chain, not one model (D-AI-5).** Every step is
@@ -4571,7 +4702,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         except TierUnknown:
             # 400, not a silent coercion to a default. A misconfigured agent
             # must be visible rather than quietly billed (D32.7).
-            raise HTTPException(
+            unknown_tier = HTTPException(
                 status_code=400,
                 detail=(
                     f"no binding for tier {req.model!r} on task "
@@ -4579,30 +4710,30 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 ),
             )
 
-        credentials: dict[str, router_mod.Credential | None] = {}
-        for step in chain:
-            vendor = step.model.split("/", 1)[0]
-            if vendor in credentials:
-                continue
-            try:
-                credentials[vendor] = provider_credential(
-                    conn, provider=vendor, org_id=org_id
-                )
-            except Exception:
-                # A missing or rotated encryption key must fail CLOSED with the
-                # same 503 shape the other secrets use — not a 500 that reads
-                # as a bug.
-                _log.exception("router.credential_unavailable")
-                raise HTTPException(
-                    status_code=503, detail="provider credentials unavailable")
+        if unknown_tier is None:
+            credentials = _chain_credentials(conn, chain, org_id=org_id)
 
-        # CP-6. BEFORE the provider call, which is the only place a refusal is
-        # worth anything: after it we have already spent the money. Metering
-        # afterwards stays best-effort and never fails a completion — the GATE
-        # may refuse, the METER may not.
-        refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            # CP-6. BEFORE the provider call, which is the only place a refusal
+            # is worth anything: after it we have already spent the money.
+            # Metering afterwards stays best-effort and never fails a
+            # completion — the GATE may refuse, the METER may not.
+            refusal = (
+                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            )
+
+    if unknown_tier is not None:
+        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
+                        tier=req.model, task=req.task)
+        raise unknown_tier
 
     if refusal is not None:
+        # The slug is the word already inside the body the customer reads —
+        # `insufficient_credits` or `run_ceiling_exceeded` — never a second
+        # spelling minted here. `_record_refusal` drops anything else.
+        detail = refusal.detail
+        if isinstance(detail, dict) and detail.get("reason"):
+            _record_refusal(str(detail["reason"]), org_id=org_id, caller=caller,
+                            tier=req.model, task=req.task)
         raise refusal
 
     # ⚠️ **A step we hold no key for is not a step.** It cannot be tried at all,
