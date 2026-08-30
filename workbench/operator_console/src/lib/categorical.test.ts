@@ -83,4 +83,26 @@ describe("the glyph", () => {
     expect(providerGlyph("")).toBe("?");
     expect(providerGlyph("   ")).toBe("?");
   });
+
+  // 🔴 The bug this fences: `.glyph` painted `background: currentColor`
+  // while also setting `color: var(--panel)` — and currentColor resolves
+  // against the element's OWN color, not the parent chip's hue. Result:
+  // a panel-on-panel box, i.e. a blank tile on every vendor card, invisible
+  // to every unit test because no renderer runs here. The fix routes the
+  // parent's hue through `--hue`, which each cat slot must therefore define.
+  it("takes its box colour from --hue, never from currentColor", () => {
+    const glyph = RULES.slice(RULES.indexOf(".chip .glyph"));
+    const rule = glyph.slice(0, glyph.indexOf("}"));
+    expect(rule).toContain("background: var(--hue");
+    expect(rule).not.toContain("background: currentColor");
+  });
+
+  it("every cat slot defines the --hue the glyph consumes", () => {
+    for (let i = 0; i < CAT_SLOTS; i++) {
+      const at = RULES.indexOf(`.chip.cat-${i} `);
+      expect(at).toBeGreaterThan(-1);
+      const rule = RULES.slice(at, RULES.indexOf("}", at));
+      expect(rule).toContain("--hue: var(--cat-");
+    }
+  });
 });
