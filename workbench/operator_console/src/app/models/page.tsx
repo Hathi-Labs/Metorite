@@ -31,6 +31,16 @@ export default async function ModelsPage() {
 
   const catalog = await readAiCatalog({ authToken: session.authToken });
 
+  // Live AND platform, both — the same rule the tiers page applies: a
+  // revoked row and a BYOK row each look like coverage, and neither is.
+  const armed = [
+    ...new Set(
+      catalog.data.accounts
+        .filter((a) => !a.revokedAt && !a.orgSlug)
+        .map((a) => a.provider),
+    ),
+  ];
+
   return (
     <Shell
       title="Models"
@@ -41,7 +51,7 @@ export default async function ModelsPage() {
       {/* D67: the pricing cockpit moved to /tiers — the customer buys a
           tier, so the price lives beside the tiers it prices. This page is
           the SUPPLY side: what exists, what it can do, what WE pay. */}
-      <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} />
+      <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} armed={armed} />
       <DeclareModel tasks={catalog.data.tasks} accounts={catalog.data.accounts} />
     </Shell>
   );

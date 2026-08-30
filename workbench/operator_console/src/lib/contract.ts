@@ -140,6 +140,11 @@ export type Tier = {
    *  from a hand-typed binding — and the board flags it rather than hiding
    *  it, but only registered tiers can carry a price. */
   registered: boolean;
+  /** The ONE kind of job this tier serves (D68) — `chat` for the quality
+   *  bands, the capability for the rest. NULL/absent = uncategorised (a
+   *  ghost, or a pre-016 row): the board groups it separately and the
+   *  Console's mismatch refusals do not fire. */
+  task?: string | null;
 };
 
 // ── What WE charge — the rate card ──────────────────────────────────────────

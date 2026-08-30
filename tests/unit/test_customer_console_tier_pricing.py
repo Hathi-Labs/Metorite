@@ -318,3 +318,50 @@ def test_a_model_card_row_no_longer_bills_anybody(client, db, org, vendor,
         c.execute(text("DELETE FROM model_rate_card WHERE model = :m"),
                   {"m": model})
     assert Decimal(row.billed_credits) == 0
+
+
+# ---- D68: a tier serves ONE kind of job -----------------------------------
+
+def test_the_slate_is_categorised(db):
+    with db.begin() as c:
+        tasks = {r[0]: r[1] for r in c.execute(
+            text("SELECT slug, task FROM tier_catalog "
+                 "WHERE slug = ANY(:slate)"), {"slate": list(SLATE)})}
+    assert tasks["tier-fast"] == "chat"
+    assert tasks["tier-code"] == "chat"
+    assert tasks["tier-stt"] == "transcribe"
+    assert tasks["tier-video"] == "video"
+    assert all(v is not None for v in tasks.values())
+
+
+def test_a_rate_for_the_wrong_kind_of_job_is_refused(client):
+    r = client.post("/catalog/tier-rates", headers=OP, json={
+        "tier": "tier-stt", "task": "chat", "unit": "tokens",
+        "pricing_mode": "priced", "input_per_1k": "2"})
+    assert r.status_code == 400
+    assert "serves 'transcribe'" in r.json()["detail"]
+
+
+def test_a_rate_for_the_tier_own_kind_still_lands(client, db):
+    r = client.post("/catalog/tier-rates", headers=OP, json={
+        "tier": "tier-music", "task": "music", "unit": "seconds",
+        "pricing_mode": "priced", "credits_per_unit": "0.9"})
+    assert r.status_code == 200, r.text
+    with db.begin() as c:
+        c.execute(text(
+            "DELETE FROM tier_rate_card WHERE tier = 'tier-music'"))
+
+
+def test_an_uncategorised_tier_keeps_the_old_freedom(client, db, vendor):
+    """A test-registered tier has task NULL - the mismatch check must not
+    fire, or every existing suite's staged tier breaks."""
+    tier = f"tier-tp-{uuid.uuid4().hex[:6]}"
+    model = f"{vendor}/tp-{uuid.uuid4().hex[:6]}"
+    _stage(db, tier=tier, models=[model])  # registers with task NULL
+    r = client.post("/catalog/tier-rates", headers=OP, json={
+        "tier": tier, "task": "chat", "unit": "tokens",
+        "pricing_mode": "priced", "input_per_1k": "1"})
+    assert r.status_code == 200, r.text
+    with db.begin() as c:
+        c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                  {"t": tier})

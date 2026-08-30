@@ -73,7 +73,7 @@ type WireCatalog = {
   // 015 — the tier registry (the product slate) and what customers pay
   // per (tier, task). Absent from a Console still mid-rollout.
   tier_registry?: { slug: string; label: string; blurb: string;
-    sort_order: number }[];
+    sort_order: number; task?: string | null }[];
   tier_rates?: {
     tier: string;
     task: string;
@@ -221,6 +221,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         blurb: t.blurb,
         jobs: byTier.get(t.slug) ?? [],
         registered: true,
+        task: t.task ?? null,
       })),
     ...[...byTier.keys()]
       .filter((slug) => !registered.has(slug))
@@ -231,6 +232,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         blurb: "",
         jobs: byTier.get(slug) ?? [],
         registered: false,
+        task: null,
       })),
   ];
 

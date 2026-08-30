@@ -333,12 +333,24 @@ class TestTheCatalogWrites:
         assert r.status_code == 400
 
     def test_a_binding_to_an_INCAPABLE_model_is_refused(self, client):
-        """Without this the Router resolves a model and cannot pick a verb."""
+        """Without this the Router resolves a model and cannot pick a verb.
+
+        An UNREGISTERED tier on purpose: a slate tier would be refused one
+        check earlier (D68, wrong kind of job) and never reach this one."""
+        r = client.post("/catalog/bindings", headers=OP, json={
+            "tier": f"tier-{uuid.uuid4().hex[:6]}", "task": "image",
+            "model": f"test/{uuid.uuid4().hex[:8]}"})
+        assert r.status_code == 400
+        assert "capability" in r.json()["detail"]
+
+    def test_the_wrong_KIND_of_job_on_a_slate_tier_is_refused(self, client):
+        """D68: tier-fast serves chat. Image on it is a mis-click, stopped
+        here rather than on a customer's first call."""
         r = client.post("/catalog/bindings", headers=OP, json={
             "tier": "tier-fast", "task": "image",
             "model": f"test/{uuid.uuid4().hex[:8]}"})
         assert r.status_code == 400
-        assert "capability" in r.json()["detail"]
+        assert "serves 'chat'" in r.json()["detail"]
 
     def test_binding_APPENDS_and_the_newest_wins(self, client, db):
         model = f"test/{uuid.uuid4().hex[:8]}"

@@ -62,11 +62,7 @@ export default function TierBoard({
   const [drafts, setDrafts] = useState<Record<string, string[]>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [pick, setPick] = useState("");
-  // Jobs opened on a tier but not yet saved - a registered tier starts EMPTY
-  // (015) and grows a job here; the first saved chain makes it real.
-  const [extraJobs, setExtraJobs] = useState<Record<string, string[]>>({});
-  const [addingJob, setAddingJob] = useState<string | null>(null);
-  const [taskPick, setTaskPick] = useState("");
+
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -102,13 +98,15 @@ export default function TierBoard({
     [tierRates],
   );
 
-  /** Saved jobs plus the ones opened locally and not yet saved. */
+  /** The tier's jobs. D68: a categorised tier has exactly its OWN kind of
+   *  job, so an empty one synthesizes it — the chain editor appears with
+   *  no "which job?" question, because the tier's name already answered
+   *  it. Saved jobs always render, a mismatched legacy one included. */
   function jobsFor(t: Tier): TierJob[] {
-    const have = new Set(t.jobs.map((j) => j.task));
-    const extras = (extraJobs[t.slug] ?? [])
-      .filter((task) => !have.has(task))
-      .map((task) => ({ tier: t.slug, task, chain: [] }));
-    return [...t.jobs, ...extras];
+    if (t.task && !t.jobs.some((j) => j.task === t.task)) {
+      return [...t.jobs, { tier: t.slug, task: t.task, chain: [] }];
+    }
+    return t.jobs;
   }
 
   /** Save one chain, whole.
@@ -182,6 +180,12 @@ export default function TierBoard({
       <div className="job">
         <div className="job-head">
           <span className="job-name">{taskLabel(job.task)}</span>
+          {tier.task != null && job.task !== tier.task && (
+            <span className={chipClass("warn")}
+              title="A pre-D68 binding: this tier is categorised for a different job. It still serves; move it to the right tier when convenient.">
+              wrong kind for this tier
+            </span>
+          )}
           <span className={chipClass(tone)}>{chainLabel(shown, problems)}</span>
           {(() => {
             // What this job BILLS (D67). "no price" warns because the job
@@ -374,81 +378,69 @@ export default function TierBoard({
           </p>
         </div>
       ) : (
-        <div className="tier-grid">
-          {tiers.map((t) => {
-            const jobs = jobsFor(t);
-            const openTasks = tasks
-              .map((x) => x.slug)
-              .filter((slug) => !jobs.some((j) => j.task === slug));
-            return (
-              <section className="tier-card" key={t.slug}>
-                <header>
-                  <h3>{t.label}</h3>
-                  {!t.registered && (
-                    <span className={chipClass("warn")}
-                      title="A binding names this tier but tier_catalog does not. It serves, and it cannot be priced until registered.">
-                      not in the registry
-                    </span>
-                  )}
-                  <span className="muted small">
-                    {jobs.length === 0
-                      ? "nothing set"
-                      : `${jobs.length} job${jobs.length === 1 ? "" : "s"}`}
-                  </span>
-                </header>
-                {t.blurb && <p className="muted small">{t.blurb}</p>}
-                {jobs.length === 0 && (
-                  <p className="muted small">
-                    Nothing bound yet. This tier serves nothing and sells
-                    nothing until a job points at a model.
-                  </p>
-                )}
-                {jobs.map((j) => (
-                  <Job key={j.task} tier={t} job={j} />
-                ))}
-                {addingJob === t.slug ? (
-                  <div className="job-edit">
-                    <label htmlFor={`addjob-${t.slug}`}>Which job?</label>
-                    <select
-                      id={`addjob-${t.slug}`}
-                      value={taskPick}
-                      onChange={(e) => setTaskPick(e.target.value)}
-                    >
-                      <option value="">Choose a job&hellip;</option>
-                      {openTasks.map((slug) => (
-                        <option key={slug} value={slug}>{taskLabel(slug)}</option>
+        // D68: the board is organised by what each tier IS. The chat bands
+        // are quality settings of one job; every other capability has its
+        // own tier; anything the registry cannot place comes last, flagged.
+        [
+          {
+            key: "chat",
+            title: "Chat — the quality bands",
+            lede: "Four settings of the same job. A customer picks one; the price and the models differ, the job does not.",
+            rows: tiers.filter((t) => t.registered && t.task === "chat"),
+          },
+          {
+            key: "caps",
+            title: "One tier per capability",
+            lede: "Each of these IS its job — bind models and price it, and the app reaches it by name.",
+            rows: tiers.filter((t) => t.registered && t.task && t.task !== "chat"),
+          },
+          {
+            key: "loose",
+            title: "Outside the registry",
+            lede: "Bindings that name a tier the registry does not know, or rows with no category. They serve — and they cannot be priced until registered.",
+            rows: tiers.filter((t) => !t.registered || !t.task),
+          },
+        ]
+          .filter((g) => g.rows.length > 0)
+          .map((g) => (
+            <section key={g.key} className="tiersection">
+              <div className="panel-head">
+                <h2>{g.title}</h2>
+                <p>{g.lede}</p>
+              </div>
+              <div className="tier-grid">
+                {g.rows.map((t) => {
+                  const jobs = jobsFor(t);
+                  return (
+                    <section className="tier-card" key={t.slug}>
+                      <header>
+                        <h3>{t.label}</h3>
+                        {t.task && (
+                          <span className="chip">{taskLabel(t.task)}</span>
+                        )}
+                        {!t.registered && (
+                          <span className={chipClass("warn")}
+                            title="A binding names this tier but tier_catalog does not. It serves, and it cannot be priced until registered.">
+                            not in the registry
+                          </span>
+                        )}
+                      </header>
+                      {t.blurb && <p className="muted small">{t.blurb}</p>}
+                      {jobs.length === 0 && (
+                        <p className="muted small">
+                          Nothing bound yet. This tier serves nothing and
+                          sells nothing until it points at a model.
+                        </p>
+                      )}
+                      {jobs.map((j) => (
+                        <Job key={j.task} tier={t} job={j} />
                       ))}
-                    </select>
-                    <div className="job-actions">
-                      <button type="button" disabled={!taskPick}
-                        onClick={() => {
-                          setExtraJobs({
-                            ...extraJobs,
-                            [t.slug]: [...(extraJobs[t.slug] ?? []), taskPick],
-                          });
-                          setAddingJob(null);
-                          setTaskPick("");
-                        }}>
-                        Add
-                      </button>
-                      <button type="button" className="linklike"
-                        onClick={() => setAddingJob(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  openTasks.length > 0 && (
-                    <button type="button" className="linklike add-job"
-                      onClick={() => { setAddingJob(t.slug); setTaskPick(""); }}>
-                      + Add a job
-                    </button>
-                  )
-                )}
-              </section>
-            );
-          })}
-        </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </section>
+          ))
       )}
 
       {/* ⚠️ A `note`, not a banner. Nothing here is broken — it is capacity we

@@ -9,7 +9,7 @@
 
 import type { CatalogModel, ModelKind } from "./contract";
 
-export type ModelStatus = "costed" | "undeclared" | "costblind";
+export type ModelStatus = "costed" | "undeclared" | "nokey" | "costblind";
 
 /** The SUPPLY-side state of a model — what we know about calling it.
  *
@@ -19,10 +19,19 @@ export type ModelStatus = "costed" | "undeclared" | "costblind";
  * every margin that touches it read as unknown. The tier board owns the
  * selling states; this page owns the supply ones.
  *
- * ⚠️ **Order matters and it is the same order as `readiness.ts`.** Undeclared
- * outranks costblind because nothing can be costed before it can be served. */
-export function statusOf(m: CatalogModel): ModelStatus {
+ * 🔴 **`nokey` exists because the seed proved it must (owner report,
+ * 2026-08-30).** The product ships tier-stt bound to a groq model, so
+ * `groq/whisper-large-v3-turbo` is DECLARED on every fresh install — and
+ * with no groq key it read as merely "costs blind", underselling "every
+ * call to this fails". A declared model whose vendor holds no live
+ * platform key now says so, in red.
+ *
+ * ⚠️ **Order matters.** Undeclared outranks nokey (nothing can be called
+ * before it exists), nokey outranks costblind (a model we cannot call at
+ * all has a worse problem than an unknown price). */
+export function statusOf(m: CatalogModel, armed: string[]): ModelStatus {
   if (!m.declared) return "undeclared";
+  if (!armed.includes(m.provider)) return "nokey";
   if (m.inputPer1M === null) return "costblind";
   return "costed";
 }
@@ -30,6 +39,7 @@ export function statusOf(m: CatalogModel): ModelStatus {
 export const STATUS_LABEL: Record<ModelStatus, string> = {
   costed: "costed",
   undeclared: "not connected",
+  nokey: "no key installed",
   costblind: "costs blind",
 };
 
@@ -73,7 +83,12 @@ export function matchesKinds(m: CatalogModel, kinds: ModelKind[]): boolean {
   return kinds.every((k) => m.kinds.includes(k));
 }
 
-export function filterModels(models: CatalogModel[], f: Filters): CatalogModel[] {
+export function filterModels(
+  models: CatalogModel[],
+  f: Filters,
+  /** Providers with a live platform key - `statusOf`'s context. */
+  armed: string[] = [],
+): CatalogModel[] {
   const providers = new Set(f.providers.map((p) => p.toLowerCase()));
   const statuses = new Set(f.statuses);
   return models.filter(
@@ -81,7 +96,7 @@ export function filterModels(models: CatalogModel[], f: Filters): CatalogModel[]
       matchesQuery(m, f.query) &&
       matchesKinds(m, f.kinds) &&
       (providers.size === 0 || providers.has(m.provider.toLowerCase())) &&
-      (statuses.size === 0 || statuses.has(statusOf(m))),
+      (statuses.size === 0 || statuses.has(statusOf(m, armed))),
   );
 }
 
@@ -123,18 +138,21 @@ export type Facet<T> = { value: T; count: number };
  * number of rows you get by clicking it. */
 export function kindFacets(
   models: CatalogModel[], f: Filters, kinds: ModelKind[],
+  armed: string[] = [],
 ): Facet<ModelKind>[] {
   return kinds.map((k) => ({
     value: k,
-    count: filterModels(models, { ...f, kinds: [...f.kinds, k] }).length,
+    count: filterModels(models, { ...f, kinds: [...f.kinds, k] }, armed).length,
   }));
 }
 
-export function providerFacets(models: CatalogModel[], f: Filters): Facet<string>[] {
+export function providerFacets(
+  models: CatalogModel[], f: Filters, armed: string[] = [],
+): Facet<string>[] {
   const all = [...new Set(models.map((m) => m.provider))].sort();
   return all.map((p) => ({
     value: p,
-    count: filterModels(models, { ...f, providers: [p] }).length,
+    count: filterModels(models, { ...f, providers: [p] }, armed).length,
   }));
 }
 

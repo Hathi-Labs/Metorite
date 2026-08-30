@@ -3644,6 +3644,29 @@ by D15/D16) — read their banners before citing either.
   4. **Pricing moved to `/tiers` in the console.** `/models` keeps the
      supply side only: what a model is, and what WE pay for it.
 
+- **D68 — A tier serves ONE kind of job, and the registry says which.**
+  *(owner call, 2026-08-30, on sight of the per-tier job dropdown. Owning
+  spec: **`specs/customer_console.md`** §6A.12. Migration:
+  `016_tier_task.sql`.)*
+
+  **What forced it.** The slate (D67) already dedicates a tier to each
+  capability. The board still asked "which job?" on every tier, so an
+  operator could bind speech-to-text onto "Fast" by mis-click, and the
+  question re-asked what the tier's own name had answered.
+
+  1. **`tier_catalog.task` is the tier's category.** The chat bands say
+     `chat`. Each capability tier says its capability. NULL means
+     uncategorised, and the checks below do not fire for it.
+  2. **The binding and tier-rate writes refuse a mismatch** with a 400
+     that names the tier's own kind. Ghost tiers keep the old freedom.
+  3. **The board asks nothing.** An empty categorised tier shows its one
+     job's chain editor directly, and the page groups by kind: chat
+     bands, one tier per capability, then whatever the registry cannot
+     place. A pre-D68 job of the wrong kind renders flagged, never
+     hidden.
+  4. **The call grammar (D60) is untouched.** This narrows what an
+     operator can CONFIGURE, never what a call can name.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |

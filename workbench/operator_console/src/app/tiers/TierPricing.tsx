@@ -48,10 +48,9 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   const [inrPerCredit, setInrPerCredit] = useState("");
   const [inrPerUsd, setInrPerUsd] = useState("");
 
-  // The price form.
+  // The price form. D68: the tier decides its ONE job — no job picker.
   const [formOpen, setFormOpen] = useState(false);
   const [tier, setTier] = useState("");
-  const [task, setTask] = useState("chat");
   const [mode, setMode] = useState("priced");
   const [inP, setInP] = useState("");
   const [outP, setOutP] = useState("");
@@ -90,13 +89,16 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
     return [...primaryOf.keys()].filter((k) => !decided.has(k));
   }, [tierRates, primaryOf]);
 
-  // ⚠️ Only REGISTERED tiers are priceable — the Console refuses a rate for
-  // a tier outside `tier_catalog`, so the picker never offers one.
+  // ⚠️ Only REGISTERED, CATEGORISED tiers are priceable — the Console
+  // refuses both a ghost and the wrong kind of job (D68), so the picker
+  // never offers either.
   const priceable = useMemo(
-    () => tiers.filter((t) => t.registered).map((t) => t.slug),
+    () => tiers.filter((t) => t.registered && t.task),
     [tiers],
   );
 
+  // D68: the tier's category IS the job being priced.
+  const task = priceable.find((t) => t.slug === tier)?.task ?? "chat";
   const primary = modelById.get(primaryOf.get(`${tier}::${task}`) ?? "");
   const unit = tasks.find((t) => t.slug === task)?.natural_unit ?? "tokens";
   const tokenPriced = unit.includes("token");
@@ -254,20 +256,10 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
                 onChange={(e) => setTier(e.target.value)}
               >
                 <option value="">— pick a tier —</option>
-                {priceable.map((slug) => (
-                  <option key={slug} value={slug}>{slug}</option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="rate-task">Job</label>
-              <select
-                id="rate-task"
-                value={task}
-                onChange={(e) => setTask(e.target.value)}
-              >
-                {tasks.map((t) => (
-                  <option key={t.slug} value={t.slug}>{t.label}</option>
+                {priceable.map((t) => (
+                  <option key={t.slug} value={t.slug}>
+                    {t.slug} — {tasks.find((x) => x.slug === t.task)?.label ?? t.task}
+                  </option>
                 ))}
               </select>
             </div>
