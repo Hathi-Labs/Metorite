@@ -98,6 +98,10 @@
   --cat-6: hsl(182 85% 34%);
   --cat-7: hsl(324 85% 61%);
   --cat-8: hsl(66 85% 32%);
+  --cat-9: hsl(104 85% 33%);
+  --cat-10: hsl(240 85% 70%);
+  --cat-11: hsl(292 85% 64%);
+  --cat-12: hsl(46 85% 38%);
 
   --radius: 0.75rem;
 
@@ -159,6 +163,10 @@
   --cat-6: hsl(182 85% 26%);
   --cat-7: hsl(324 85% 43%);
   --cat-8: hsl(66 85% 24%);
+  --cat-9: hsl(104 85% 25%);
+  --cat-10: hsl(240 85% 56%);
+  --cat-11: hsl(292 85% 42%);
+  --cat-12: hsl(46 85% 28%);
 
   /* Sidebar — light */
   --sidebar-background: hsl(0 0% 98%);
@@ -207,6 +215,10 @@
   --color-cat-6: var(--cat-6);
   --color-cat-7: var(--cat-7);
   --color-cat-8: var(--cat-8);
+  --color-cat-9: var(--cat-9);
+  --color-cat-10: var(--cat-10);
+  --color-cat-11: var(--cat-11);
+  --color-cat-12: var(--cat-12);
   --color-sidebar: var(--sidebar-background);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);

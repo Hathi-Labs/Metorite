@@ -47,9 +47,21 @@ export type CategoricalToken =
   | "cat-5"
   | "cat-6"
   | "cat-7"
-  | "cat-8";
+  | "cat-8"
+  | "cat-9"
+  | "cat-10"
+  | "cat-11"
+  | "cat-12";
 
-/** The ramp's slots, in order. The length IS the number of slots. */
+/**
+ * The ramp's slots, in order. The length IS the number of slots.
+ *
+ * Slots 9–12 were added 2026-08-31 (owner ask: more colour choices for a
+ * space's marker). They are CHOICE-ONLY: `hashSlot` still takes its modulus
+ * over the first eight (`HASH_SLOTS` in `src/lib/categorical.ts`), because
+ * widening the modulus would silently repaint every hash-assigned @context
+ * and tag — the exact repaint the "never reorder" rule exists to prevent.
+ */
 export const CATEGORICAL_TOKENS = [
   "cat-1",
   "cat-2",
@@ -59,6 +71,10 @@ export const CATEGORICAL_TOKENS = [
   "cat-6",
   "cat-7",
   "cat-8",
+  "cat-9",
+  "cat-10",
+  "cat-11",
+  "cat-12",
 ] as const satisfies readonly CategoricalToken[];
 
 /**

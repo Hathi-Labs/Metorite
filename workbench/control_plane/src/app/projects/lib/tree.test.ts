@@ -360,13 +360,16 @@ describe("spaceMarker — a name and a SLOT, never a colour", () => {
   });
 
   it("ignores a slot outside the ramp rather than emitting a dead class", () => {
-    // `bg-cat-9` has no custom property behind it, and a declaration that
-    // resolves to nothing takes the whole rule with it.
-    for (const bad of [0, 9, -1, 99]) {
+    // `bg-cat-13` has no custom property behind it, and a declaration that
+    // resolves to nothing takes the whole rule with it. (9-12 became REAL
+    // slots when the ramp widened, 2026-08-31 — choice-only, so a stored
+    // choice may use them and the hash never does.)
+    for (const bad of [0, 13, -1, 99]) {
       expect(spaceMarker({ name: "X", icon_slot: bad }).slot).toBe(
         hashSlot("X")
       );
     }
+    expect(spaceMarker({ name: "X", icon_slot: 12 }).slot).toBe(11);
   });
 
   it("every offered icon exists in the themed registry", () => {

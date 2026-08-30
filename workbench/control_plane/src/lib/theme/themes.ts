@@ -25,9 +25,9 @@ const SYSTEM_FALLBACK = "system-ui, -apple-system, BlinkMacSystemFont, sans-seri
 const MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 /**
- * The categorical ramp — `--cat-1` … `--cat-8`.
+ * The categorical ramp — `--cat-1` … `--cat-12`.
  *
- * Every theme below carries all eight slots in both modes. They share one hue
+ * Every theme below carries all twelve slots in both modes. They share one hue
  * sequence so a slot means the same *family* everywhere (cat-3 is always the
  * green one), and differ in saturation so the ramp belongs to its theme:
  * RapidTool vivid, Fluent clean, Material softened toward M3's tonal
@@ -36,6 +36,19 @@ const MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
  *   slot  1     2      3      4       5     6     7       8
  *   hue   215   27     142    264     358   182   324     66
  *         blue  orange green  violet  red   teal  magenta olive
+ *
+ *   slot  9     10      11      12
+ *   hue   104   240     292     46
+ *         lime  indigo  purple  amber
+ *
+ * Slots 9–12 (2026-08-31) are CHOICE-ONLY: `hashSlot` never lands on them
+ * (its modulus is frozen at 8 — see `HASH_SLOTS`), so nothing already
+ * assigned repaints. They exist for the hand-picked case, a space's marker
+ * in Space Settings, where the owner asked for more choices. The min-ΔE
+ * claim below was measured for the FIRST EIGHT; the four additions sit in
+ * the wheel's largest gaps but weaken worst-pair separation, which is the
+ * accepted price of choice. Contrast (AA on card and background) is still
+ * measured for all twelve — `contrast.test.ts` iterates the token list.
  *
  * The hues are not evenly spaced round the wheel, because even spacing in HSL
  * degrees is not even spacing to an eye: they were picked by maximising the
@@ -138,6 +151,10 @@ const rapidtool: Theme = {
       "cat-6": "hsl(182 85% 34%)",
       "cat-7": "hsl(324 85% 61%)",
       "cat-8": "hsl(66 85% 32%)",
+      "cat-9": "hsl(104 85% 33%)",
+      "cat-10": "hsl(240 85% 70%)",
+      "cat-11": "hsl(292 85% 64%)",
+      "cat-12": "hsl(46 85% 38%)",
       sidebarBackground: "hsl(220 13% 9%)",
       sidebarForeground: "hsl(210 40% 98%)",
       sidebarPrimary: "hsl(198 89% 50%)",
@@ -179,6 +196,10 @@ const rapidtool: Theme = {
       "cat-6": "hsl(182 85% 26%)",
       "cat-7": "hsl(324 85% 43%)",
       "cat-8": "hsl(66 85% 24%)",
+      "cat-9": "hsl(104 85% 25%)",
+      "cat-10": "hsl(240 85% 56%)",
+      "cat-11": "hsl(292 85% 42%)",
+      "cat-12": "hsl(46 85% 28%)",
       sidebarBackground: "hsl(0 0% 98%)",
       sidebarForeground: "hsl(222.2 84% 4.9%)",
       sidebarPrimary: "hsl(198 89% 45%)",
@@ -272,6 +293,10 @@ const fluent: Theme = {
       "cat-6": "hsl(182 80% 40%)",
       "cat-7": "hsl(324 80% 69%)",
       "cat-8": "hsl(66 80% 37%)",
+      "cat-9": "hsl(104 80% 38%)",
+      "cat-10": "hsl(240 80% 75%)",
+      "cat-11": "hsl(292 80% 70%)",
+      "cat-12": "hsl(46 80% 43%)",
       sidebarBackground: "hsl(0 0% 15%)",
       sidebarAccent: "hsl(0 0% 21%)",
       sidebarBorder: "hsl(0 0% 22%)",
@@ -312,6 +337,10 @@ const fluent: Theme = {
       "cat-6": "hsl(182 80% 25%)",
       "cat-7": "hsl(324 80% 41%)",
       "cat-8": "hsl(66 80% 23%)",
+      "cat-9": "hsl(104 80% 24%)",
+      "cat-10": "hsl(240 80% 54%)",
+      "cat-11": "hsl(292 80% 40%)",
+      "cat-12": "hsl(46 80% 27%)",
       sidebarBackground: "hsl(0 0% 98%)",
       sidebarAccent: "hsl(0 0% 92%)",
       sidebarBorder: "hsl(0 0% 88%)",
@@ -397,6 +426,10 @@ const material: Theme = {
       "cat-6": "hsl(182 58% 42%)",
       "cat-7": "hsl(324 58% 65%)",
       "cat-8": "hsl(66 58% 39%)",
+      "cat-9": "hsl(104 58% 40%)",
+      "cat-10": "hsl(240 58% 70%)",
+      "cat-11": "hsl(292 58% 66%)",
+      "cat-12": "hsl(46 58% 44%)",
       sidebarBackground: "hsl(270 8% 12%)",
       sidebarAccent: "hsl(263 8% 22%)",
       sidebarBorder: "hsl(266 8% 24%)",
@@ -433,6 +466,10 @@ const material: Theme = {
       "cat-6": "hsl(182 58% 29%)",
       "cat-7": "hsl(324 58% 45%)",
       "cat-8": "hsl(66 58% 27%)",
+      "cat-9": "hsl(104 58% 28%)",
+      "cat-10": "hsl(240 58% 52%)",
+      "cat-11": "hsl(292 58% 42%)",
+      "cat-12": "hsl(46 58% 31%)",
       sidebarBackground: "hsl(280 43% 96%)",
       sidebarAccent: "hsl(270 27% 92%)",
       sidebarBorder: "hsl(266 16% 84%)",
@@ -519,6 +556,10 @@ const graphite: Theme = {
       "cat-6": "hsl(182 45% 43%)",
       "cat-7": "hsl(324 45% 61%)",
       "cat-8": "hsl(66 45% 40%)",
+      "cat-9": "hsl(104 45% 41%)",
+      "cat-10": "hsl(240 45% 66%)",
+      "cat-11": "hsl(292 45% 62%)",
+      "cat-12": "hsl(46 45% 44%)",
       sidebarBackground: "hsl(0 0% 9%)",
       sidebarAccent: "hsl(0 0% 14%)",
       sidebarBorder: "hsl(0 0% 17%)",
@@ -555,6 +596,10 @@ const graphite: Theme = {
       "cat-6": "hsl(182 45% 32%)",
       "cat-7": "hsl(324 45% 47%)",
       "cat-8": "hsl(66 45% 30%)",
+      "cat-9": "hsl(104 45% 31%)",
+      "cat-10": "hsl(240 45% 52%)",
+      "cat-11": "hsl(292 45% 44%)",
+      "cat-12": "hsl(46 45% 33%)",
       sidebarBackground: "hsl(0 0% 97%)",
       sidebarAccent: "hsl(0 0% 94%)",
       sidebarBorder: "hsl(0 0% 89%)",

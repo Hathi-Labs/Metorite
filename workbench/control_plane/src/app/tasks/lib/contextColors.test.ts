@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CATEGORICAL_SLOTS } from "@/lib/categorical";
+import { CATEGORICAL_SLOTS, HASH_SLOTS } from "@/lib/categorical";
 
 import { contextAccent, contextSlot } from "./contextColors";
 
@@ -64,7 +64,9 @@ describe("contextSlot", () => {
     const common = ["@computer", "@agenda", "@home", "@errands", "@calls", "@email", "@office", "@read"];
     const slots = common.map(contextSlot);
     expect(new Set(slots).size).toBe(common.length);
-    expect(new Set(slots).size).toBe(CATEGORICAL_SLOTS);
+    // HASH_SLOTS, not the full ramp: contexts hash, and the hash is frozen
+    // at eight so nothing repaints — slots 9-12 are choice-only.
+    expect(new Set(slots).size).toBe(HASH_SLOTS);
   });
 
   it("puts an unknown context somewhere on the ramp", () => {
@@ -94,6 +96,6 @@ describe("contextAccent", () => {
         (n) => contextAccent(n).chip,
       ),
     );
-    expect(chips.size).toBe(CATEGORICAL_SLOTS);
+    expect(chips.size).toBe(HASH_SLOTS);
   });
 });

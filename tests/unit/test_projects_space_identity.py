@@ -35,14 +35,31 @@ MIGRATIONS = Path(__file__).resolve().parents[2] / "infra" / "postgres"
 
 
 def _identity_migration() -> Path:
-    """The migration adding ``icon_slot``, whatever it ends up numbered."""
+    """The migration ADDING the columns, whatever it ends up numbered."""
     adds = [
         path for path in sorted(MIGRATIONS.glob("*.sql"))
         if path.name != "schema.generated.sql"
-        and "pm_projects_icon_slot_check" in path.read_text(encoding="utf-8")
+        and "ADD COLUMN IF NOT EXISTS icon_slot" in path.read_text(encoding="utf-8")
     ]
     assert len(adds) == 1, f"expected exactly one migration to add it, got {adds}"
     return adds[0]
+
+
+def _check_migration() -> Path:
+    """The migration whose CHECK is CURRENT — the last to (re)define it.
+
+    Migration 195 widened 194's range (drop, then re-add), so the range of
+    record is the highest-numbered file naming the constraint. Applying the
+    files in order lands exactly there.
+    """
+    defines = [
+        path for path in sorted(MIGRATIONS.glob("*.sql"))
+        if path.name != "schema.generated.sql"
+        and "ADD CONSTRAINT pm_projects_icon_slot_check"
+        in path.read_text(encoding="utf-8")
+    ]
+    assert defines, "no migration defines pm_projects_icon_slot_check"
+    return defines[-1]
 
 
 # ── The mirror ──────────────────────────────────────────────────────────────
@@ -59,22 +76,23 @@ def test_the_columns_are_r6_shaped():
     assert "NOT NULL" not in ddl
 
 
-def test_the_slot_range_matches_the_eight_slot_ramp():
-    """The CHECK is 1..8 — the ramp `src/lib/categorical.ts` declares.
+def test_the_slot_range_matches_the_twelve_slot_ramp():
+    """The CHECK is 1..12 — the ramp `src/lib/categorical.ts` declares.
 
-    A ninth slot accepted here would store a value whose class
-    (`bg-cat-9`) has no custom property behind it. That declaration
+    A thirteenth slot accepted here would store a value whose class
+    (`bg-cat-13`) has no custom property behind it. That declaration
     resolves to nothing and takes the whole rule with it, so the icon would
-    silently lose its colour rather than fail.
+    silently lose its colour rather than fail. (1..8 until migration 195
+    widened it — slots 9..12 are choice-only, the hash stays modulo 8.)
     """
-    sql = _identity_migration().read_text(encoding="utf-8")
+    sql = _check_migration().read_text(encoding="utf-8")
     match = re.search(
         r"CHECK \(icon_slot IS NULL OR "
         r"\(icon_slot >= (\d+) AND icon_slot <= (\d+)\)\)",
         sql,
     )
     assert match, "the icon_slot range CHECK is not in the migration"
-    assert (int(match.group(1)), int(match.group(2))) == (1, 8)
+    assert (int(match.group(1)), int(match.group(2))) == (1, 12)
 
 
 def test_a_colour_is_never_stored():
@@ -143,19 +161,19 @@ def test_a_slot_outside_the_ramp_is_refused_at_the_door():
     IntegrityError and was answered as a server fault — an input error the
     caller could do nothing with.
     """
-    for bad in (0, 9, -1, 99, "3", 2.5, True):
+    for bad in (0, 13, -1, 99, "3", 2.5, True):
         with pytest.raises(HTTPException) as err:
             validate_icon_slot(bad)
         assert err.value.status_code == 422
     # NULL is "not chosen", and every good slot passes.
     validate_icon_slot(None)
-    for good in range(1, 9):
+    for good in range(1, 13):
         validate_icon_slot(good)
 
 
 def test_the_validator_and_the_migration_agree_on_the_range():
     """A hand-written range beside a CHECK needs a test that reads the SQL."""
-    sql = _identity_migration().read_text(encoding="utf-8")
+    sql = _check_migration().read_text(encoding="utf-8")
     match = re.search(
         r"\(icon_slot >= (\d+) AND icon_slot <= (\d+)\)", sql,
     )

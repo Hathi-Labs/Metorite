@@ -19,6 +19,7 @@ import { CATEGORICAL_TOKENS } from "@/lib/theme/types";
 import {
   CATEGORICAL_ACCENTS,
   CATEGORICAL_SLOTS,
+  HASH_SLOTS,
   accentForSlot,
   categoricalAccent,
   hashSlot,
@@ -46,7 +47,7 @@ describe("the ramp's class vocabulary", () => {
     // survive a theme switch while the surface around them moves.
     for (const { chip, dot } of CATEGORICAL_ACCENTS) {
       for (const cls of `${chip} ${dot}`.split(" ")) {
-        expect(cls, cls).toMatch(/^(?:border|bg|text)-cat-[1-8](?:\/\d+)?$/);
+        expect(cls, cls).toMatch(/^(?:border|bg|text)-cat-(?:[1-9]|1[0-2])(?:\/\d+)?$/);
       }
     }
   });
@@ -91,21 +92,26 @@ describe("hashSlot", () => {
     expect(hashSlot("marketing")).toBe(hashSlot("MARKETING"));
   });
 
-  it("never lands outside the ramp", () => {
+  it("never lands outside the HASH range — slots 9-12 are choice-only", () => {
+    // The freeze this pins: `hash % HASH_SLOTS`, with HASH_SLOTS at the
+    // original eight. Widening the modulus repaints every hash-assigned
+    // @context and tag at once, silently. A choice-only slot is reachable
+    // through `accentForSlot`, never through a hash.
+    expect(HASH_SLOTS).toBe(8);
     for (let i = 0; i < 1000; i++) {
       const slot = hashSlot(`label-${i}`);
       expect(slot).toBeGreaterThanOrEqual(0);
-      expect(slot).toBeLessThan(CATEGORICAL_SLOTS);
+      expect(slot).toBeLessThan(HASH_SLOTS);
     }
   });
 
-  it("uses the whole ramp, and roughly evenly", () => {
+  it("uses the whole hash range, and roughly evenly", () => {
     // A hash collapsing onto two slots would pass every test above while
     // making categories indistinguishable. 400 names over 8 slots averages 50;
     // anything under 20 is a real skew, not sampling noise.
-    const counts = new Array(CATEGORICAL_SLOTS).fill(0);
+    const counts = new Array(HASH_SLOTS).fill(0);
     for (let i = 0; i < 400; i++) counts[hashSlot(`label-${i}`)]++;
-    expect(counts.filter((n) => n > 0)).toHaveLength(CATEGORICAL_SLOTS);
+    expect(counts.filter((n) => n > 0)).toHaveLength(HASH_SLOTS);
     expect(Math.min(...counts)).toBeGreaterThan(20);
   });
 });
@@ -115,6 +121,6 @@ describe("categoricalAccent", () => {
     const accents = new Set(
       Array.from({ length: 200 }, (_, i) => categoricalAccent(`label-${i}`).chip),
     );
-    expect(accents.size).toBe(CATEGORICAL_SLOTS);
+    expect(accents.size).toBe(HASH_SLOTS);
   });
 });

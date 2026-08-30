@@ -11,7 +11,7 @@
  *
  * ⚠️ **A NAME and a SLOT, never a colour** (DESIGN_SYSTEM rule 7). The
  * picker below writes an icon name into the themed registry and an index
- * into the `--cat-1..8` ramp, so the active theme decides both which pack
+ * into the `--cat-1..12` ramp, so the active theme decides both which pack
  * draws the glyph and what the hue actually is, in light and in dark. A
  * colour picker offering hex values would be the one thing rule 1 refuses,
  * and it would be unreachable by any later re-theme.
@@ -105,7 +105,7 @@ export default function SpaceSettings({
           <div
             role="radiogroup"
             aria-label="Space icon"
-            className="grid grid-cols-9 gap-1"
+            className="grid max-h-44 grid-cols-8 gap-1 overflow-y-auto pr-1"
           >
             {SPACE_ICON_CHOICES.map((choice) => (
               <button
@@ -129,9 +129,9 @@ export default function SpaceSettings({
 
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-muted-foreground">Colour</p>
-          {/* Eight themed slots, never a hex field. Each swatch draws in the
-              hue the ACTIVE theme gives that slot, so what you pick here is
-              what every theme will honour. */}
+          {/* Twelve themed slots, never a hex field. Each swatch draws in
+              the hue the ACTIVE theme gives that slot, so what you pick here
+              is what every theme will honour. */}
           <div
             role="radiogroup"
             aria-label="Icon colour"

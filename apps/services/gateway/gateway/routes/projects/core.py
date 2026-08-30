@@ -269,9 +269,9 @@ def node_level(kind: str, generation: int) -> str:
 
 
 #: Slots on the categorical ramp (`src/lib/categorical.ts`), 1-based on the
-#: wire. Mirrors migration 194's CHECK — test_projects_space_identity.py
-#: reads the range out of the SQL.
-ICON_SLOT_RANGE: tuple[int, int] = (1, 8)
+#: wire. Mirrors migration 195's CHECK (194 widened by 195) —
+#: test_projects_space_identity.py reads the range out of the SQL.
+ICON_SLOT_RANGE: tuple[int, int] = (1, 12)
 
 
 def validate_icon_slot(value: object) -> None:

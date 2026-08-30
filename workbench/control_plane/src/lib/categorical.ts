@@ -68,10 +68,25 @@ export const CATEGORICAL_ACCENTS: CategoricalAccent[] = [
   { chip: "border-cat-6/30 bg-cat-6/10 text-cat-6", dot: "bg-cat-6", text: "text-cat-6" },
   { chip: "border-cat-7/30 bg-cat-7/10 text-cat-7", dot: "bg-cat-7", text: "text-cat-7" },
   { chip: "border-cat-8/30 bg-cat-8/10 text-cat-8", dot: "bg-cat-8", text: "text-cat-8" },
+  { chip: "border-cat-9/30 bg-cat-9/10 text-cat-9", dot: "bg-cat-9", text: "text-cat-9" },
+  { chip: "border-cat-10/30 bg-cat-10/10 text-cat-10", dot: "bg-cat-10", text: "text-cat-10" },
+  { chip: "border-cat-11/30 bg-cat-11/10 text-cat-11", dot: "bg-cat-11", text: "text-cat-11" },
+  { chip: "border-cat-12/30 bg-cat-12/10 text-cat-12", dot: "bg-cat-12", text: "text-cat-12" },
 ];
 
-/** How many slots the ramp has. Callers take the modulus against this. */
+/** How many slots the ramp has — the range an explicit CHOICE may use. */
 export const CATEGORICAL_SLOTS = CATEGORICAL_ACCENTS.length;
+
+/**
+ * How many slots a HASH may land on — frozen at the original eight.
+ *
+ * ⚠️ Never raise this. `hash % HASH_SLOTS` is what makes an auto-assignment
+ * stable, so changing the modulus repaints every @context, tag and label
+ * that was ever hash-coloured — the silent repaint the "never reorder the
+ * slots" rule exists to prevent. Slots 9–12 (2026-08-31) are reachable only
+ * through an explicit choice, e.g. a space's `icon_slot`.
+ */
+export const HASH_SLOTS = 8;
 
 // The literal list above and the ramp must stay the same length: `hash %
 // CATEGORICAL_SLOTS` is what makes an assignment stable, so a ninth token added
@@ -101,7 +116,7 @@ function hash(value: string): number {
  * necessarily the same thing to their owners.
  */
 export function hashSlot(name: string): number {
-  return hash(name.trim().toLowerCase()) % CATEGORICAL_SLOTS;
+  return hash(name.trim().toLowerCase()) % HASH_SLOTS;
 }
 
 /** The accent for a slot. Total: any integer lands somewhere on the ramp. */

@@ -67,10 +67,13 @@ export function showsDashboard(level: NodeLevel): boolean {
 /**
  * What Space Settings offers as an icon (migration 194).
  *
- * A curated list, not the whole 283-name registry: a picker showing every
- * glyph is a picker nobody reads to the end, and every name here is
- * verified present in the themed registry — a missing name renders as a
- * hole, and the theme system has no way to warn about one.
+ * A curated list, not the whole registry: a picker showing every glyph is a
+ * picker nobody reads to the end, and every name here is verified present
+ * in the themed registry — a missing name renders as a hole, and the theme
+ * system has no way to warn about one. Listed four to a source line and
+ * grouped by domain; the picker draws eight to a row, two domains a line.
+ * Widened from 26 on the owner's ask (2026-08-31) — every addition is
+ * registry-checked by `tree.test.ts`.
  */
 export const SPACE_ICON_CHOICES: readonly string[] = [
   "Boxes", "Layers", "LayoutGrid", "Package",
@@ -79,7 +82,16 @@ export const SPACE_ICON_CHOICES: readonly string[] = [
   "Cpu", "Code", "Wrench", "Zap",
   "Palette", "Camera", "Megaphone", "ShoppingCart",
   "BookOpen", "Lightbulb", "Shield", "Truck",
-  "Headphones", "Coffee",
+  "Headphones", "Coffee", "Gem", "Puzzle",
+  "Factory", "FlaskConical", "Printer", "Hammer",
+  "Cog", "Database", "Server", "Cloud",
+  "Home", "Landmark", "Mountain", "Waves",
+  "Wallet", "CreditCard", "TrendingUp", "Activity",
+  "Mail", "Phone", "MessageSquare", "Video",
+  "Radio", "Mic", "PenTool", "Newspaper",
+  "Calendar", "Clock", "Timer", "Sun",
+  "Moon", "Flame", "Car", "Stethoscope",
+  "Bot", "Brain", "Sparkles", "Monitor",
 ];
 
 /** The default glyph for a level, when a space has chosen no icon. */
