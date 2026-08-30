@@ -583,12 +583,19 @@ class TestTheUsageRowCarriesTheQuantityAndTheUnit:
                          "message": {"role": "assistant", "content": "hi"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 2},
         }
-        with create_engine(_URL, future=True).begin() as c:
+        # 🔴 **Scoped to THIS organization, never to the platform.**
+        # `test_customer_console_router.py` owns the live PLATFORM DeepSeek
+        # row and asserts on its secret. Writing one here with
+        # `ON CONFLICT DO NOTHING` left that suite reading OUR secret and
+        # turned it red — measured 2026-08-31, on a shared scratch database.
+        # An organization-scoped row wins the `NULLS LAST` order for this org
+        # alone, so the sibling suite sees exactly what it wrote.
+        with db.begin() as c:
             c.execute(text(
                 "INSERT INTO provider_credential (provider, secret_enc, "
-                " label) VALUES ('deepseek', :s, 'platform') "
-                "ON CONFLICT DO NOTHING"),
-                {"s": router_mod.encrypt_secret("sk-deepseek")})
+                " label, organization_id) "
+                "VALUES ('deepseek', :s, 'tasks-suite', CAST(:o AS uuid))"),
+                {"s": router_mod.encrypt_secret("sk-deepseek"), "o": org_id})
         answer = client.post("/v1/chat/completions", headers=key, json={
             "model": "tier-balanced",
             "messages": [{"role": "user", "content": "hi"}]})
