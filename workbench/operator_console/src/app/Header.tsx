@@ -29,6 +29,7 @@
 
 import { usePathname } from "next/navigation";
 
+import CommandJump from "./CommandJump";
 import Elevation from "./Elevation";
 import Identity from "./Identity";
 import ThemeToggle from "./ThemeToggle";
@@ -107,6 +108,8 @@ export default function Header() {
           Metorite <span>Operator</span>
         </span>
       </a>
+
+      <CommandJump />
 
       <nav aria-label="Sections">
         {NAV.map((group) => (
