@@ -703,6 +703,44 @@ half: `childCreationOptions`, `levelOf`, `hasRunState`, `showsDashboard` and
 `spaceMarker`. It also asserts that every icon the picker offers is present
 in the themed registry.
 
+#### 5.1a Amendments of 2026-08-31 — owner directives, patterned on Plane
+
+The owner asked for six changes on 2026-08-31. Each shape below follows a
+named surface in Plane (github.com/makeplane/plane at commit `effd0c5`).
+The colours and controls stay ours: every hue resolves through
+`statusAccent` or the categorical ramp, never a hex value.
+
+**The ramp holds twelve slots, and the hash uses eight.** Migration 195
+widens the `icon_slot` CHECK to 1..12. Slots 9 to 12 are for an explicit
+choice only. `hashSlot` keeps its modulus at 8, so no hash-assigned
+context, tag or label repaints. The fence is "never lands outside the HASH
+range" in `categorical.test.ts`. The icon picker offers 64 names, and
+`tree.test.ts` checks every name against the themed registry.
+
+**A project can show the dashboard beside its views.** `overview` joined
+the view modes. It draws the same `NodeDashboard` a space shows, from the
+same summary endpoint. It is never the default canvas. The filter bar, the
+composer, the bulk bar and the triage rail hide on it.
+
+**Analytics is a KPI strip over a per-space table.** One row for each
+space, one column for each lane, an overdue column, and a totals footer.
+The table reads the same `/summary` endpoint as the dashboards, so the two
+surfaces cannot disagree. Plane's created-vs-resolved chart needs a time
+series the endpoint does not carry, so `AnalyticsView.tsx` records it as
+future work instead of drawing invented data.
+
+**"My work" left the Projects sidebar.** `/tasks` is the personal lens
+over the one store (D52 to D54). A second door inside Projects taught the
+split that the D-PM-6 revision removed. The `my/*` gateway routes stay,
+and `/tasks` serves them.
+
+**The header holds view controls and one overflow menu.** Custom fields,
+Tags and Lifecycle open from the overflow menu, not from three buttons
+beside the view switcher. The composer bar shows only on the timeline
+canvas, which has no in-place capture, and when the assign-work pre-fill
+needs a visible place to land. Every other canvas captures in place
+through `QuickAdd`, which inherits the group it sits in.
+
 ---
 
 ### 5.x The standalone app groups by Center (D22 amendment, 2026-08-10)
