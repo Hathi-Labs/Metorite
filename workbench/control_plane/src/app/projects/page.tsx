@@ -409,6 +409,14 @@ function ProjectsWorkspace() {
   // both, and survives a resize.
   const [chosenMode, setChosenMode] = useState<ViewMode | null>(null);
   const mode: ViewMode = chosenMode ?? (isMobile ? "list" : "board");
+  /**
+   * The Overview canvas (owner ask 2026-08-31): the SAME dashboard a space
+   * shows, offered beside a project's task views. It reads `summary`, which
+   * is already fetched for every selected node, so choosing it costs no
+   * extra request. The filter bar, composer, bulk bar and triage rail all
+   * hide — none of them acts on a roll-up.
+   */
+  const overview = mode === "overview";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1121,7 +1129,12 @@ function ProjectsWorkspace() {
     try {
       const created = await projectsApi.createView(selected.id, {
         name,
-        view_type: mode,
+        // Clamped: the gateway (and migration 146's CHECK) accept only
+        // 'list' and 'board', so saving from table/calendar/timeline sent a
+        // view_type the server refused — a 422 on a working Save button. A
+        // saved view stores FILTERS; the canvas it was saved from is not
+        // part of what it restores, so 'list' is the honest fallback.
+        view_type: mode === "board" ? "board" : "list",
         config: toConfig(filters, groupBy, lanes, shownFields),
         // Above the seeded pair, so the drag handler keeps writing its order
         // into the project's original board rather than into a saved filter.
@@ -1665,7 +1678,7 @@ function ProjectsWorkspace() {
     <>
       {error ? renderState("error", error) : null}
 
-      {selected ? (
+      {selected && !overview ? (
         <FilterBar
           filters={filters}
           onFilters={changeFilters}
@@ -1708,7 +1721,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && picked.size > 0 ? (
+      {selected && !overview && picked.size > 0 ? (
         <BulkBar
           count={picked.size}
           statuses={statuses}
@@ -1723,7 +1736,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && nodeKind(selected) !== "folder" ? (
+      {selected && !overview && nodeKind(selected) !== "folder" ? (
         // Capture-first here too: a title and Enter. Everything else about a
         // task — status, assignee, subtasks — is set from the panel once it
         // exists, because a create form that asks six questions is a create
@@ -1765,7 +1778,7 @@ function ProjectsWorkspace() {
 
       {/* WS-27u — the front door. Renders nothing when the queue is empty;
           a ruling reloads the board because an accept just added a card. */}
-      {selected ? (
+      {selected && !overview ? (
         <TriageRail
           projectId={selected.id}
           statuses={statuses}
@@ -1782,6 +1795,18 @@ function ProjectsWorkspace() {
             renderState(
               "empty",
               "Nothing here yet. Projects appear once a space is granted to you."
+            )
+          ) : mode === "overview" ? (
+            summary ? (
+              <NodeDashboard
+                summary={summary}
+                onOpen={(id) => {
+                  const row = flatten(visibleRoots).find((e) => e.node.id === id);
+                  if (row) setSelected(row.node as ProjectRow);
+                }}
+              />
+            ) : (
+              renderState("loading", "Counting the work below…")
             )
           ) : mode === "timeline" ? (
             <TimelineView

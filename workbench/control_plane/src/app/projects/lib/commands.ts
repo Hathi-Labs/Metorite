@@ -43,6 +43,12 @@ import type { Hit } from "./search";
  * that reads as a bug.
  */
 export const VIEW_MODES = [
+  // Overview leads: it is the project's summary, the same dashboard a
+  // space shows, drawn from the one roll-up endpoint (owner ask
+  // 2026-08-31, patterned on Plane's project analytics surfaces). The
+  // DEFAULT canvas stays board/list — Overview is a place you go, not
+  // where work lands.
+  { id: "overview", icon: "LayoutDashboard", key: "o" },
   { id: "board", icon: "Kanban", key: "b" },
   { id: "list", icon: "List", key: "l" },
   { id: "table", icon: "Table", key: "t" },
