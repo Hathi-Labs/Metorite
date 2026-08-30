@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
+import SectionTabs from "../SectionTabs";
 import Shell, { Unconfigured } from "../Shell";
 import DeclareModel from "./DeclareModel";
 import ModelBrowser from "./ModelBrowser";
@@ -48,9 +49,11 @@ export default async function ModelsPage() {
       origin={catalog.origin}
       note={catalog.note}
     >
-      {/* D67: the pricing cockpit moved to /tiers — the customer buys a
-          tier, so the price lives beside the tiers it prices. This page is
-          the SUPPLY side: what exists, what it can do, what WE pay. */}
+      <SectionTabs current="/models" />
+      {/* The pricing cockpit lives on /pricing — D67 keyed the customer's
+          price on the tier, and the owner's IA pass gave money its own
+          page. This page is the SUPPLY side: what exists, what it can do,
+          what WE pay. */}
       <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} armed={armed} />
       <DeclareModel tasks={catalog.data.tasks} accounts={catalog.data.accounts} />
     </Shell>

@@ -854,6 +854,22 @@ button:disabled {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+/* Page-level tabs are LINKS (SectionTabs.tsx) — the same look as the
+   button tabs, keyed on aria-current so the URL stays the state. */
+.tabs a {
+  padding: 8px 14px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tabs.pagetabs { margin: 2px 0 6px; }
 
 /* ── Categorical ramp ────────────────────────────────────────────────────
    Eight mutually distinguishable slots for IDENTITY — which provider, which

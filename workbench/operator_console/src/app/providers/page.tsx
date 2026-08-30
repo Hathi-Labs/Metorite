@@ -2,12 +2,17 @@ import { redirect } from "next/navigation";
 
 import { readAccounts } from "@/lib/read";
 import { staffSession } from "@/lib/session";
+import SectionTabs from "../SectionTabs";
 import Shell, { Unconfigured } from "../Shell";
 import ProviderAdmin from "./ProviderAdmin";
 
 export const dynamic = "force-dynamic";
 
 // Our provider accounts — WS-31 CP-10 slice 4. Spec §6A · §6B.2 · D57.7.
+//
+// ⚠️ **A TAB of the Models section since 2026-08-30** (owner directive): one
+// sidebar entry, two tabs, both URLs kept. The account we call WITH and the
+// models we call are one question, split by which half is being configured.
 //
 // ⚠️ **This is the last hand-run step in the AI chain.** The Console has had
 // `GET/POST /providers/credentials` and revoke since CP-10 slice 1, and no
@@ -39,11 +44,12 @@ export default async function ProvidersPage() {
 
   return (
     <Shell
-      title="Providers"
+      title="Models"
       lede="The vendor accounts the Router calls on. Installing one here is what arms AI for every customer who has not brought their own."
       origin={accounts.origin}
       note={accounts.note}
     >
+      <SectionTabs current="/providers" />
       <ProviderAdmin creds={accounts.data} />
     </Shell>
   );
