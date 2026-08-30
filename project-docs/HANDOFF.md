@@ -923,9 +923,14 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
+- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
+  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
+  `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
+  endpoint and H-47's handler seam are what is left. Keep this entry until
+  those three land.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → only `/v1/chat/completions` means the Router still serves exactly one of D60's six
-  tasks and the shape is still undecided.
+  → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
+  endpoint and the speak endpoint are still not built.
 - **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
   **nowhere to serve them**. The fork is real and is an owner call because it is a public
   wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints

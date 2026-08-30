@@ -16,6 +16,7 @@ no route could call it. The last section of this file DRIVES
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import uuid
@@ -24,6 +25,7 @@ from decimal import Decimal
 import pytest
 
 pytest.importorskip("fastapi")
+from customer_console import catalog
 from customer_console import router as router_mod
 from customer_console.credits import UnpricedModel
 from customer_console.router import TierUnknown, resolve_invocation, resolve_rate_card, resolve_tier
@@ -728,6 +730,57 @@ class TestARefusedCallWritesOneRow:
             data={"model": "tier-stt"})
         assert answer.status_code == 401
         assert _count_all(db) == before
+
+
+class TestTheProviderCallDispatchesOnTheCapabilityVerb:
+    """Clause 6, tested where the stub cannot reach.
+
+    🔴 **Every fence above replaces the WHOLE provider call**, so not one of
+    them ever runs the litellm dispatch. A defect there would ship green and
+    then answer audio from a chat verb in production, which is D60.2.
+    """
+
+    def test_an_unserved_verb_raises_rather_than_defaulting(self):
+        """Guessing `acompletion` is how audio reaches a chat endpoint. The
+        capability table can legally name a verb no route serves yet."""
+        with pytest.raises(router_mod.UnservableInvocation):
+            asyncio.run(router_mod._litellm_call(invocation="aspeech"))
+
+    def test_the_named_verb_is_the_one_called(self, monkeypatch):
+        import litellm
+        seen: dict = {}
+
+        async def _fake(**kwargs):
+            seen.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(litellm, "atranscription", _fake, raising=False)
+        answer = asyncio.run(
+            router_mod._litellm_call(invocation="atranscription", model="m"))
+
+        assert answer == "ok"
+        # The Router's own instruction never reaches litellm or the vendor.
+        assert seen == {"model": "m"}
+
+    def test_a_caller_that_names_nothing_gets_acompletion(self, monkeypatch):
+        """Every chat call made this exact request before `invocation`
+        existed, and the default keeps that path unchanged."""
+        import litellm
+        called: list = []
+
+        async def _fake(**kwargs):
+            called.append(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(litellm, "acompletion", _fake, raising=False)
+        asyncio.run(router_mod._litellm_call(model="m"))
+        assert called == [{"model": "m"}]
+
+    def test_the_operator_vocabulary_is_wider_than_the_serving_one(self):
+        """§6A.9 rule 3: capability is not availability. `KNOWN_INVOCATIONS`
+        is what an operator may WRITE, and this slice added nothing to it."""
+        assert router_mod.SERVING_INVOCATIONS < catalog.KNOWN_INVOCATIONS
+        assert "atranscription" in router_mod.SERVING_INVOCATIONS
 
 
 class TestTheEndpointHasNoTenantCaller:

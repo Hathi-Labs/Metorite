@@ -597,14 +597,16 @@ unique index and the cap against a real database). Line anchors re-derived
 in session). D15, D19.2, D19.3, D22, D23, D24 are carried unchanged and must not
 be re-litigated here.
 
-🆕 **Three sections gained a build contract on 2026-08-30, and all three are
-SPEC ONLY.** **§6A.10a** holds H-46's ten clauses, which build
-`POST /v1/audio/transcriptions`. **§6A.10b** holds H-47's seven clauses, which
-build the provider-handler seam. **§6A.11a** gained an addendum, because a
-re-audit found that its clause 5 named a copy seam the tree does not hold.
+🆕 **Three sections gained a build contract on 2026-08-30. ONE of the three
+is now BUILT, and TWO stay SPEC ONLY.** **§6A.10a** held H-46's ten clauses,
+which build `POST /v1/audio/transcriptions`. **H-46 landed on 2026-08-31.**
+**§6A.10b** holds H-47's seven clauses, which build the provider-handler seam.
+**§6A.11a** gained an addendum, because a re-audit found that its clause 5
+named a copy seam the tree does not hold.
+
 **Order: we prefer H-78 first, then H-46 with H-47 folded in as its dispatch
-clause.** §6A.10a clause 5 holds that preference, and H-46 can land ahead of
-H-78.
+clause.** §6A.10a clause 5 holds that preference. H-46 landed ahead of H-78,
+which clause 5 permits.
 
 ⚠️ **A diff review then corrected SIX statements in those sections, also on
 2026-08-30.** §6A.10a clause 2 and clause 4 each stated as built a behaviour
@@ -7846,12 +7848,19 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ---
 
-### 6A.10a The transcribe endpoint (H-46) — SPEC ONLY, re-audited 2026-08-31
+### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**, which is the D16/D17 convention CP-2b and CP-2c
-used. Where a name or a number below disagrees with the tree, the tree wins.
-Re-verify every anchor at dispatch.
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
+`main.py::audio_transcriptions`, and all ten clauses below hold.
+`tests/unit/test_customer_console_tasks.py` carries the seven fences.
+The clause text stays as the audit wrote it, because it is the contract the
+build answers. Match a `main.py` anchor by handler name, because the route
+moved every line number below it.
+
+⚠️ **The build added two agent defaults, and the owner may overrule both.**
+The route refuses an upload above 25 MB with a 413, which is the ceiling the
+OpenAI Whisper API states. It also holds the audio in memory, so a failover
+step can send the same bytes a second time.
 
 📌 **The audit measured every `main.py` anchor below on branch
 `ws-31-slice5-refusals`**, because this build stacks on the slice-5 base. That
@@ -8869,6 +8878,17 @@ gates only how WS-30 wires it, not whether):
    credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
    goes red the day the draw moves, so the exemption is deleted rather than
    inherited either way.
+
+   ⚠️ **The exemption grew to TWO ROUTES on 2026-08-31, and the owner has
+   still not ratified it.** H-46 built `POST /v1/audio/transcriptions`, and
+   §6A.10a clause 4 and clause 10 both send it through `store.record_usage`.
+   So the constant now names `chat_completions` and `audio_transcriptions`.
+   **This is the same argument on a second door, and it is NOT a third
+   argument.** Both routes take a customer key, and our own infrastructure
+   decides both amounts. So what the owner ratifies or overrules is the
+   RULE, not the count. An amended §9.3(4) should read "one carve-out plus
+   the Router's own serving routes". The image endpoint and the speak
+   endpoint will each add one more.
 7. ✅ **RESOLVED 2026-08-21 (owner call) — the GATEWAY TIER carries the customer
    seat WRITE; the deployment key stays gateway-side.** *(Opened 2026-08-21 with
    WS-31 `ws-31-seat-assign`; not commercial, and it gates the WS-30 "manage
