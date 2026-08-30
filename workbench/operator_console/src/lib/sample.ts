@@ -314,12 +314,14 @@ export const OWED = {
     "reasoning chips come from `model_profile` (migration 012) — a model with " +
     "no profile row yet shows a dash, which is true rather than guessed.",
   tiers:
-    "Ordered fallback needs a `rank` column on `tier_binding`, and the Router " +
-    "needs to catch a vendor error and try the next step.",
+    "Chains read and save live, ranks included (migration 011), and the " +
+    "Router walks them (D-AI-6). What is still owed here is nothing — this " +
+    "banner appears only when the Console itself cannot be reached.",
   providers:
-    "Accounts read live. Health needs a probe that nothing runs yet, so every " +
-    "row would say `unknown`.",
+    "Accounts read live. Health needs a probe that nothing runs yet, which " +
+    "is why the cards no longer draw a health chip at all.",
   failovers:
-    "`usage_event` has no column for the step that served, so no failover can " +
-    "be proven.",
+    "Live since migration 013: `served_rank` above 1 on a usage row is the " +
+    "proof. This sample shows the SHAPE of the table; the real one starts " +
+    "empty and that is good news.",
 } as const;
