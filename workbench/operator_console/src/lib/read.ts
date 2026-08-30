@@ -18,14 +18,16 @@
 import type {
   AiCatalog,
   CatalogModel,
+  FeedModel,
   ModelKind,
   ModelRate,
   ProviderAccount,
   Task,
   Tier,
   TierJob,
+  VendorFeed,
 } from "./contract";
-import { EMPTY_CATALOG } from "./contract";
+import { EMPTY_CATALOG, EMPTY_FEED } from "./contract";
 import {
   ConsoleUnconfigured,
   listProviderCreds,
@@ -68,6 +70,30 @@ type WireCatalog = {
     cached_input_per_1k: string;
     credits_per_unit: string;
   }[];
+  // 014 — the vendor feed. Absent from a Console still mid-rollout.
+  feed?: {
+    synced_at: string | null;
+    source: string | null;
+    models: number;
+    rows?: WireFeedModel[];
+    available?: WireFeedModel[];
+  };
+};
+
+type WireFeedModel = {
+  model: string;
+  provider: string;
+  mode: string;
+  task: string | null;
+  invocation: string | null;
+  context_window: number | null;
+  max_output: number | null;
+  vendor_input_per_1m_usd: string | null;
+  vendor_output_per_1m_usd: string | null;
+  vendor_cached_input_per_1m_usd: string | null;
+  reads_images: boolean;
+  thinks_first: boolean;
+  deprecated_on: string | null;
 };
 
 type WireCred = {
@@ -199,7 +225,35 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     tier: f.tier, task: f.task, model: f.model,
     rank: f.rank ?? 2, requests: f.requests ?? 0,
   }));
-  return { tasks: w.tasks, models, rates, tiers, accounts: [], failovers };
+
+  // 014 — upstream facts, STRINGS kept as strings: these values get POSTED
+  // back into profiles, and a float round-trip would write its own noise.
+  const feedModel = (r: WireFeedModel): FeedModel => ({
+    id: r.model,
+    provider: r.provider,
+    mode: r.mode,
+    task: r.task,
+    invocation: r.invocation,
+    contextWindow: r.context_window,
+    maxOutput: r.max_output,
+    inputPer1M: r.vendor_input_per_1m_usd,
+    outputPer1M: r.vendor_output_per_1m_usd,
+    cachedInputPer1M: r.vendor_cached_input_per_1m_usd,
+    readsImages: r.reads_images,
+    thinksFirst: r.thinks_first,
+    deprecatedOn: r.deprecated_on,
+  });
+  const feed: VendorFeed = w.feed
+    ? {
+        syncedAt: w.feed.synced_at,
+        source: w.feed.source,
+        models: w.feed.models,
+        rows: (w.feed.rows ?? []).map(feedModel),
+        available: (w.feed.available ?? []).map(feedModel),
+      }
+    : EMPTY_FEED;
+
+  return { tasks: w.tasks, models, rates, tiers, accounts: [], failovers, feed };
 }
 
 export function accountsFromWire(creds: WireCred[]): ProviderAccount[] {

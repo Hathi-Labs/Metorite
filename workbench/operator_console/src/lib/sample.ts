@@ -21,10 +21,12 @@ import type {
   AiCatalog,
   CatalogModel,
   FailoverEvent,
+  FeedModel,
   ModelRate,
   ProviderAccount,
   Task,
   Tier,
+  VendorFeed,
 } from "./contract";
 
 const TASKS: Task[] = [
@@ -294,6 +296,52 @@ const RATES: ModelRate[] = [
   },
 ];
 
+// ⚠️ The feed sample models the three states the page must draw:
+//   * a DRIFT — deepseek-chat's profile says $0.27/1M in, upstream now says
+//     $0.28 (the real move, 2026-08). The card must warn;
+//   * an AVAILABLE model with everything known — one click declares it;
+//   * an available model in a mode we cannot serve — shown, not declarable.
+const FM = (
+  id: string, mode: string, task: string | null, invocation: string | null,
+  ctx: number | null, out: number | null,
+  inP: string | null, outP: string | null, cached: string | null,
+  over: Partial<FeedModel> = {},
+): FeedModel => ({
+  id, provider: id.split("/")[0], mode, task, invocation,
+  contextWindow: ctx, maxOutput: out,
+  inputPer1M: inP, outputPer1M: outP, cachedInputPer1M: cached,
+  readsImages: false, thinksFirst: false, deprecatedOn: null,
+  ...over,
+});
+
+const FEED: VendorFeed = {
+  syncedAt: "2026-08-30T06:00:00Z",
+  source: "github",
+  models: 2716,
+  rows: [
+    // Upstream's claim about a DECLARED model, prices moved under us.
+    FM("deepseek/deepseek-chat", "chat", "chat", "acompletion",
+      131072, 8192, "0.280000", "0.420000", "0.070000"),
+    // And one that agrees exactly — no chip, nothing to do.
+    FM("anthropic/claude-sonnet-4", "chat", "chat", "acompletion",
+      200000, 64000, "3.000000", "15.000000", "0.300000",
+      { readsImages: true, thinksFirst: true }),
+  ],
+  available: [
+    FM("deepseek/deepseek-reasoner", "chat", "chat", "acompletion",
+      65536, 8192, "0.550000", "2.190000", "0.140000",
+      { thinksFirst: true }),
+    FM("groq/whisper-large-v3", "audio_transcription", "transcribe",
+      "atranscription", null, null, null, null, null),
+    // A mode the Router has no verb for: visible, never declarable.
+    FM("groq/rerank-english-v3", "rerank", null, null,
+      null, null, "0.100000", null, null),
+    FM("gemini/gemini-2.5-flash-lite", "chat", "chat", "acompletion",
+      1048576, 65536, "0.100000", "0.400000", "0.025000",
+      { readsImages: true }),
+  ],
+};
+
 export const SAMPLE_CATALOG: AiCatalog = {
   tasks: TASKS,
   models: MODELS,
@@ -301,6 +349,7 @@ export const SAMPLE_CATALOG: AiCatalog = {
   tiers: TIERS,
   accounts: ACCOUNTS,
   failovers: FAILOVERS,
+  feed: FEED,
 };
 
 /** What the backend still owes each screen, in an operator's words.
@@ -312,7 +361,9 @@ export const OWED = {
   models:
     "The catalog reads live. Context window, vendor price and the image and " +
     "reasoning chips come from `model_profile` (migration 012) — a model with " +
-    "no profile row yet shows a dash, which is true rather than guessed.",
+    "no profile row yet shows a dash, which is true rather than guessed. " +
+    "Vendor facts fetch live from litellm's price map (migration 014); " +
+    "'Fetch the latest' fills `vendor_price_feed` and this page reads it back.",
   tiers:
     "Chains read and save live, ranks included (migration 011), and the " +
     "Router walks them (D-AI-6). What is still owed here is nothing — this " +

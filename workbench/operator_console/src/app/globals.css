@@ -1298,6 +1298,41 @@ pre.token {
   gap: 12px;
 }
 
+/* ── The vendor feed (migration 014) ─────────────────────────────────────
+   The strip is one line of status plus its button; the available section
+   reuses panel, toolbar and table styles wholesale — the feed is data on
+   the same surface, not a surface of its own. */
+.feedstrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.feedstrip .result.err {
+  width: 100%;
+  margin: 0;
+}
+.feedvendor {
+  margin-top: 16px;
+}
+.feedvendor h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+}
+.feedvendor td .chip {
+  margin-left: 8px;
+}
+/* The drift alert sits directly under the card header. A <p> so it can wrap,
+   margin zeroed so the card's own gap does the spacing. */
+.modelcard > p.chip {
+  margin: 0;
+  align-self: flex-start;
+}
+
 .modelcard {
   display: flex;
   flex-direction: column;

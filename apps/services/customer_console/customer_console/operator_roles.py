@@ -159,6 +159,11 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # elevation teaches people to reach for the break-glass token for routine
     # work, which is the opposite of what this matrix is for.
     ("POST", "/catalog/profiles"): _R(EDITOR),
+    # The vendor feed (014) is the same severity as a profile: reference
+    # data, nothing billing reads, and a bad sync is one more sync away
+    # from fixed. EDITOR, no window — gating "fetch the current prices"
+    # behind elevation would teach people the break-glass token.
+    ("POST", "/catalog/feed/sync"): _R(EDITOR),
     ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).

@@ -24,8 +24,11 @@ import {
   KIND_LABEL,
   MODEL_KINDS,
   type CatalogModel,
+  type FeedModel,
   type ModelKind,
+  type VendorFeed,
 } from "@/lib/contract";
+import { driftFor, feedById } from "@/lib/feed";
 import {
   NO_FILTERS,
   STATUS_LABEL,
@@ -42,6 +45,8 @@ import {
   toggle,
 } from "@/lib/modelSearch";
 import { chipClass, type Tone } from "@/lib/tone";
+import FeedAvailable from "./FeedAvailable";
+import FeedStrip from "./FeedStrip";
 import ModelDetails from "./ModelDetails";
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = {
@@ -57,8 +62,11 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "cheapest", label: "Cheapest" },
 ];
 
-function Card({ m }: { m: CatalogModel }) {
+function Card({ m, f }: { m: CatalogModel; f: FeedModel | undefined }) {
   const status = statusOf(m);
+  // The vendor moved a price under a typed profile (014). The chip is the
+  // ALERT; the numbers and the copy button live in "Edit details".
+  const drift = driftFor(m, f);
   return (
     <article className="modelcard">
       <header>
@@ -70,6 +78,14 @@ function Card({ m }: { m: CatalogModel }) {
           {STATUS_LABEL[status]}
         </span>
       </header>
+
+      {drift.length > 0 && (
+        <p className="chip warn" title={drift
+          .map((d) => `${d.label}: we say $${d.ours}, the vendor says $${d.upstream}`)
+          .join(" · ")}>
+          the vendor moved {drift.length === 1 ? "a price" : `${drift.length} prices`}
+        </p>
+      )}
 
       {m.description && <p className="modeldesc">{m.description}</p>}
 
@@ -108,35 +124,51 @@ function Card({ m }: { m: CatalogModel }) {
         </div>
       </dl>
 
-      <ModelDetails m={m} />
+      <ModelDetails m={m} feedRow={f} />
     </article>
   );
 }
 
-export default function ModelBrowser({ models }: { models: CatalogModel[] }) {
+export default function ModelBrowser({
+  models,
+  feed,
+}: {
+  models: CatalogModel[];
+  feed: VendorFeed;
+}) {
   const [f, setF] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<SortKey>("name");
 
   const shown = useMemo(() => sortModels(filterModels(models, f), sort), [models, f, sort]);
   const kinds = useMemo(() => kindFacets(models, f, MODEL_KINDS), [models, f]);
   const providers = useMemo(() => providerFacets(models, f), [models, f]);
+  const byId = useMemo(() => feedById(feed), [feed]);
   const dirty =
     f.query.trim() !== "" || f.kinds.length + f.providers.length + f.statuses.length > 0;
 
   if (models.length === 0) {
+    // ⚠️ The feed pieces still render — a fresh install with keys but no
+    // declarations is EXACTLY when "available from your vendors" earns its
+    // keep: the first declare should be a click, not a form.
     return (
-      <div className="empty">
-        <h2>No models yet</h2>
-        <p className="muted">
-          Nothing has been declared, so no tier can point at anything and every
-          AI request fails. Add a model below, then set up a tier.
-        </p>
-      </div>
+      <>
+        <FeedStrip feed={feed} />
+        <div className="empty">
+          <h2>No models yet</h2>
+          <p className="muted">
+            Nothing has been declared, so no tier can point at anything and
+            every AI request fails. Add one from your vendors below, or
+            declare one by hand.
+          </p>
+        </div>
+        <FeedAvailable feed={feed} />
+      </>
     );
   }
 
   return (
     <>
+      <FeedStrip feed={feed} />
       <div className="toolbar">
         <input
           className="search"
@@ -229,9 +261,11 @@ export default function ModelBrowser({ models }: { models: CatalogModel[] }) {
 
       <div className="modelgrid">
         {shown.map((m) => (
-          <Card key={m.id} m={m} />
+          <Card key={m.id} m={m} f={byId.get(m.id)} />
         ))}
       </div>
+
+      <FeedAvailable feed={feed} />
     </>
   );
 }

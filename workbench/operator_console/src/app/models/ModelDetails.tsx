@@ -18,7 +18,8 @@
 
 import { useState } from "react";
 
-import type { CatalogModel } from "@/lib/contract";
+import type { CatalogModel, FeedModel } from "@/lib/contract";
+import { driftFor, prefillFrom } from "@/lib/feed";
 
 /** Blank, or not a number, becomes null. Zero is refused by the database. */
 function numeric(raw: string): number | null {
@@ -28,7 +29,15 @@ function numeric(raw: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export default function ModelDetails({ m }: { m: CatalogModel }) {
+export default function ModelDetails({
+  m,
+  feedRow,
+}: {
+  m: CatalogModel;
+  /** Upstream's claim about this model (014). Absent when the feed has
+   *  never been fetched or does not know the model. */
+  feedRow?: FeedModel;
+}) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState(m.label === m.id ? "" : m.label);
   const [ctx, setCtx] = useState(m.contextWindow?.toString() ?? "");
@@ -81,12 +90,48 @@ export default function ModelDetails({ m }: { m: CatalogModel }) {
     );
   }
 
+  // The feed PREFILLS, the operator SAVES — the click below only fills the
+  // boxes, and the write is still the same Save it always was.
+  const drift = driftFor(m, feedRow);
+
+  function copyFromFeed() {
+    if (!feedRow) return;
+    const v = prefillFrom(feedRow);
+    setCtx(v.ctx);
+    setOut(v.out);
+    setVin(v.vin);
+    setVout(v.vout);
+    setVcached(v.vcached);
+    setReadsImages(v.readsImages);
+    setThinksFirst(v.thinksFirst);
+  }
+
   return (
     <div className="job-edit">
       <p className="field-hint">
         Leave a box empty for &ldquo;we do not know&rdquo;. It shows as a dash,
         which is true — a zero would read as a broken model.
       </p>
+
+      {feedRow && (
+        <p className={drift.length > 0 ? "field-hint warn" : "field-hint"}>
+          {drift.length > 0 ? (
+            <>
+              The vendor&apos;s published price moved:{" "}
+              {drift
+                .map((d) => `${d.label} is now $${d.upstream} (we say $${d.ours})`)
+                .join(", ")}
+              .{" "}
+            </>
+          ) : (
+            <>Upstream knows this model. </>
+          )}
+          <button type="button" className="linklike" onClick={copyFromFeed}>
+            Copy the vendor&apos;s facts into the boxes
+          </button>{" "}
+          — then check and save.
+        </p>
+      )}
 
       <label htmlFor={`lbl-${m.id}`}>Name</label>
       <input
