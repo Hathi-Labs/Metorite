@@ -183,13 +183,16 @@ def test_the_secret_is_encrypted_at_rest(client, eng):
 
 
 def test_an_api_base_travels_to_the_router(client, eng):
+    # ⚠️ The credential grew a third field on 2026-08-30: `byok`, which §3.4's
+    # zero-rating turns on. A platform install reads False.
     from customer_console.router import provider_credential
 
     token = _admin(eng)
     _install(client, token, api_base="https://proxy.example/v1")
     with eng.begin() as conn:
         found = provider_credential(conn, provider="anthropic")
-    assert found == (SECRET, "https://proxy.example/v1")
+    assert found == (SECRET, "https://proxy.example/v1", False)
+    assert found.byok is False
 
 
 def test_a_byok_credential_wins_over_the_platform_one(client, eng):

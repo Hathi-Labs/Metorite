@@ -1604,11 +1604,14 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
              # parsed float re-formatted is how a number stops matching itself.
              "vendor_input_per_1m_usd": None if r[4] is None else str(r[4]),
              "vendor_output_per_1m_usd": None if r[5] is None else str(r[5]),
+             "vendor_cached_input_per_1m_usd":
+                 None if r[9] is None else str(r[9]),
              "description": r[6], "reads_images": r[7], "thinks_first": r[8]}
             for r in conn.execute(text(
                 "SELECT model, label, context_window, max_output, "
                 "       vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
-                "       description, reads_images, thinks_first "
+                "       description, reads_images, thinks_first, "
+                "       vendor_cached_input_per_1m_usd "
                 "FROM model_profile ORDER BY model"))
         ]
         rates = [
@@ -1828,6 +1831,10 @@ class ProfileRequest(BaseModel):
     #: margin, which is why the name carries both the payer and the unit.
     vendor_input_per_1m_usd: Decimal | None = None
     vendor_output_per_1m_usd: Decimal | None = None
+    #: The vendor's discounted CACHE-READ rate (013). Without it a
+    #: cache-hitting call cannot be costed at all — the computation refuses
+    #: rather than bill cached reads at the full input price.
+    vendor_cached_input_per_1m_usd: Decimal | None = None
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
@@ -1866,9 +1873,10 @@ def set_model_profile(req: ProfileRequest, staff: CatalogCaller) -> dict[str, An
                 INSERT INTO model_profile (
                     model, label, context_window, max_output,
                     vendor_input_per_1m_usd, vendor_output_per_1m_usd,
+                    vendor_cached_input_per_1m_usd,
                     description, reads_images, thinks_first, updated_at
                 ) VALUES (
-                    :model, :label, :ctx, :out, :vin, :vout,
+                    :model, :label, :ctx, :out, :vin, :vout, :vcached,
                     :descr, :imgs, :think, now()
                 )
                 ON CONFLICT (model) DO UPDATE SET
@@ -1877,6 +1885,8 @@ def set_model_profile(req: ProfileRequest, staff: CatalogCaller) -> dict[str, An
                     max_output = EXCLUDED.max_output,
                     vendor_input_per_1m_usd = EXCLUDED.vendor_input_per_1m_usd,
                     vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
+                    vendor_cached_input_per_1m_usd =
+                        EXCLUDED.vendor_cached_input_per_1m_usd,
                     description = EXCLUDED.description,
                     reads_images = EXCLUDED.reads_images,
                     thinks_first = EXCLUDED.thinks_first,
@@ -1890,6 +1900,7 @@ def set_model_profile(req: ProfileRequest, staff: CatalogCaller) -> dict[str, An
                 "out": req.max_output,
                 "vin": req.vendor_input_per_1m_usd,
                 "vout": req.vendor_output_per_1m_usd,
+                "vcached": req.vendor_cached_input_per_1m_usd,
                 "descr": (req.description or "").strip(),
                 "imgs": req.reads_images,
                 "think": req.thinks_first,
@@ -3807,6 +3818,26 @@ def whoami(caller: KeyCaller) -> dict[str, Any]:
     }
 
 
+def _vendor_prices(conn, model: str) -> dict[str, Decimal | None]:
+    """The vendor's prices for one model, from the operator's own record.
+
+    Read at metering time and applied to THIS call only, so a later profile
+    edit never rewrites what a past call cost (012's effective-dating
+    argument, honoured by snapshotting instead of by history).
+    """
+    row = conn.execute(
+        text(
+            "SELECT vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
+            "vendor_cached_input_per_1m_usd FROM model_profile "
+            "WHERE model = :m"
+        ),
+        {"m": model},
+    ).first()
+    if row is None:
+        return {"input": None, "output": None, "cached": None}
+    return {"input": row[0], "output": row[1], "cached": row[2]}
+
+
 def _record_completion(
     usage: ExtractedUsage,
     *,
@@ -3814,6 +3845,7 @@ def _record_completion(
     caller: Any,
     resolved: Any,
     client_ref: str | None,
+    byok: bool = False,
 ) -> None:
     """Write ONE usage row and draw the credits for it. Never raises.
 
@@ -3822,6 +3854,16 @@ def _record_completion(
     checked. Metering is best-effort and never fails a completion: an unmetered
     completion is a revenue problem, a failed completion is a product problem,
     and the product problem is worse.
+
+    ⚠️ **``resolved`` is the step that ANSWERED**, so both facts recorded here
+    are about the call that actually ran: the cost is priced at the served
+    model's vendor prices, and ``served_rank`` above 1 is the durable evidence
+    a fallback earned its keep (migration 013).
+
+    🔴 **``byok`` zero-rates the bill, not the meter.** §3.4: an organization
+    on its own vendor account is metered but not charged for tokens. The unit
+    is still recorded — the history must stay readable — and our provider
+    cost is zero because we paid the vendor nothing.
     """
     try:
         with get_engine().begin() as conn:
@@ -3832,6 +3874,25 @@ def _record_completion(
             billed, unit = _rate_completion(
                 conn, model=resolved.model, usage=usage, task=resolved.task,
             )
+            if byok:
+                if billed:
+                    # Loud, because this is the difference between §3.4 and a
+                    # mischarge: the card HAS a price and this call is not
+                    # paying it, on purpose.
+                    _log.info(
+                        "router.byok_unbilled",
+                        extra={"byok_credits_waived": str(billed)},
+                    )
+                billed = Decimal(0)
+                cost = Decimal(0)
+            else:
+                prices = _vendor_prices(conn, resolved.model)
+                cost = router_mod.vendor_cost_usd(
+                    usage,
+                    input_per_1m=prices["input"],
+                    output_per_1m=prices["output"],
+                    cached_per_1m=prices["cached"],
+                )
             store.record_usage(
                 conn, org_id=org_id,
                 # SERVER-generated. The caller's id is correlation only — see
@@ -3852,6 +3913,9 @@ def _record_completion(
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 cached_tokens=usage.cached_tokens,
+                provider_cost_usd=cost,
+                served_rank=getattr(resolved, "rank", 1),
+                byok_served=byok,
             )
     except Exception:
         _log.exception("router.metering_failed")
@@ -3864,6 +3928,7 @@ async def _streamed_completion(
     caller: Any,
     resolved: Any,
     client_ref: str | None,
+    byok: bool = False,
 ) -> AsyncIterator[bytes]:
     """Open the provider stream and relay it, metering the result exactly once.
 
@@ -3882,7 +3947,7 @@ async def _streamed_completion(
             return
         _record_completion(
             usage, org_id=org_id, caller=caller,
-            resolved=resolved, client_ref=client_ref,
+            resolved=resolved, client_ref=client_ref, byok=byok,
         )
 
     try:
@@ -3944,7 +4009,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 ),
             )
 
-        credentials: dict[str, tuple[str, str | None] | None] = {}
+        credentials: dict[str, router_mod.Credential | None] = {}
         for step in chain:
             vendor = step.model.split("/", 1)[0]
             if vendor in credentials:
@@ -3995,7 +4060,8 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         that multiply our cost are clamped. `api_base` is ours alone — a caller
         can neither set it nor see it.
         """
-        secret, api_base = credentials[step.model.split("/", 1)[0]]  # type: ignore[misc]
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
         passthrough = {
             k: v for k, v in req.model_dump(exclude_none=True).items()
             if k in _FORWARDABLE
@@ -4008,15 +4074,20 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         out: dict[str, Any] = {
             **passthrough,
             "model": step.model,
-            "api_key": secret,
+            "api_key": cred.secret,
             # Bounded explicitly rather than left to litellm's defaults, so one
             # request cannot become fifty provider calls.
             "num_retries": 1,
             "timeout": 120,
         }
-        if api_base:
-            out["api_base"] = api_base
+        if cred.api_base:
+            out["api_base"] = cred.api_base
         return out
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        """Whose account ran this step. §3.4 turns on exactly this bit."""
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
 
     resolved = attempts[0]
 
@@ -4048,6 +4119,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 caller=caller,
                 resolved=resolved,
                 client_ref=req.client_ref,
+                byok=_byok_served(resolved),
             ),
             media_type="text/event-stream",
             headers={
@@ -4109,6 +4181,10 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         usage_from_response(response),
         org_id=org_id, caller=caller,
         resolved=resolved, client_ref=req.client_ref,
+        # ⚠️ Judged on the step that ANSWERED, not the primary. A chain can
+        # legally mix a BYOK vendor with a platform one, and §3.4's zero-rating
+        # follows whichever account the tokens actually ran on.
+        byok=_byok_served(resolved),
     )
 
     return response

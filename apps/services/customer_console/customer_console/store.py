@@ -435,12 +435,12 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
-                 task, quantity, unit)
+                 task, quantity, unit, served_rank, byok_served)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
-                 :task, :quantity, :unit)
+                 :task, :quantity, :unit, :served_rank, :byok_served)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -466,6 +466,11 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             "task": fields.get("task"),
             "quantity": fields.get("quantity"),
             "unit": fields.get("unit"),
+            # Migration 013. `served_rank` NULL from a caller that does not
+            # say — the internal `/usage/record` route reports no chain, and
+            # its rows must not claim rank-1 service nobody observed.
+            "served_rank": fields.get("served_rank"),
+            "byok_served": bool(fields.get("byok_served", False)),
         },
     ).first()
 
