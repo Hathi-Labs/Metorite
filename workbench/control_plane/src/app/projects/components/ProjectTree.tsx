@@ -27,7 +27,7 @@ import {
   childCreationOptions,
   effectiveState,
   hasRunState,
-  type NodeKind,
+  type ChildOption,
   type NodeLevel,
   nodeKind,
   nodeLevel,
@@ -133,11 +133,18 @@ interface Props {
   selectedId: string | null;
   onSelect: (project: ProjectRow) => void;
   /**
-   * Start creating a child of `kind` under this node. What each row offers
-   * comes from `childCreationOptions` — the grammar's UI half (migration
-   * 193). Omitted = read-only tree.
+   * Start creating a child under this node. What each row offers comes from
+   * `childCreationOptions` — the grammar's UI half (migration 193).
+   *
+   * The whole OPTION travels, not just its kind: the option carries the
+   * word for the LEVEL ("New subproject"), and the kind alone cannot
+   * reconstruct it — a project and a subproject are both `kind: "project"`.
+   * Passing only the kind is why the create form used to say "New project"
+   * while creating a subproject inside a folder.
+   *
+   * Omitted = read-only tree.
    */
-  onAddChild?: (parent: ProjectRow, kind: NodeKind) => void;
+  onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
   onOpenSettings?: (space: ProjectRow) => void;
   /** WS-27bg — right-click actions. Omitted = a read-only tree, no menu. */
@@ -165,7 +172,7 @@ function Node({
   parentGen: number;
   selectedId: string | null;
   onSelect: (project: ProjectRow) => void;
-  onAddChild?: (parent: ProjectRow, kind: NodeKind) => void;
+  onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   onOpenSettings?: (space: ProjectRow) => void;
   /** The effective state of this node's PARENT; absent at a root. */
   inheritedState?: string | null;
@@ -326,7 +333,7 @@ function Node({
             title={addOptions.map((o) => o.label).join(" / ")}
             onClick={(e) => {
               if (addOptions.length === 1) {
-                onAddChild(node, addOptions[0].kind);
+                onAddChild(node, addOptions[0]);
                 return;
               }
               const rect = e.currentTarget.getBoundingClientRect();
@@ -346,7 +353,7 @@ function Node({
             kind: "item" as const,
             label: option.label,
             icon: themedIcon(option.kind === "folder" ? "Folder" : "Plus"),
-            onSelect: () => onAddChild(node, option.kind),
+            onSelect: () => onAddChild(node, option),
           }))}
           onClose={() => setAddMenu(null)}
         />

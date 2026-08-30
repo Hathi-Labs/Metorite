@@ -105,6 +105,7 @@ import {
 } from "./lib/selection";
 import { fetchAccess } from "@/lib/access";
 import {
+  type ChildOption,
   filterByCenter,
   flatten,
   levelOf,
@@ -192,7 +193,7 @@ function ProjectNav({
   app: ProjectAppId | null;
   onApp: (id: ProjectAppId) => void;
   onSelect: (project: ProjectRow) => void;
-  onAddChild: (parent: ProjectRow, kind: NodeKind) => void;
+  onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
   onOpenSettings: (space: ProjectRow) => void;
   /** The + on the Spaces heading. */
@@ -282,8 +283,8 @@ function ProjectNav({
           onSelect(project);
           onPicked?.();
         }}
-        onAddChild={(parent, kind) => {
-          onAddChild(parent, kind);
+        onAddChild={(parent, option) => {
+          onAddChild(parent, option);
           onPicked?.();
         }}
         onOpenSettings={(space) => {
@@ -413,7 +414,7 @@ function ProjectsWorkspace() {
   // grammar's two questions, held together so they cannot disagree
   // (migration 193: folders exist, and a + may offer either kind).
   const [creating, setCreating] = useState<
-    { parent: ProjectRow | null; kind: NodeKind } | undefined
+    { parent: ProjectRow | null; kind: NodeKind; label: string } | undefined
   >(undefined);
   const [newName, setNewName] = useState("");
   const [newTask, setNewTask] = useState("");
@@ -784,7 +785,7 @@ function ProjectsWorkspace() {
               type="button"
               aria-label="New space"
               onClick={() => {
-                setCreating({ parent: null, kind: "project" });
+                setCreating({ parent: null, kind: "project", label: "New space" });
                 setNewName("");
                 setSheet(null);
               }}
@@ -804,13 +805,13 @@ function ProjectsWorkspace() {
               setApp(null);
               setSelected(project);
             }}
-            onAddChild={(parent, kind) => {
-              setCreating({ parent, kind });
+            onAddChild={(parent, option) => {
+              setCreating({ parent, kind: option.kind, label: option.label });
               setNewName("");
             }}
             onOpenSettings={setSettingsFor}
             onNewSpace={() => {
-              setCreating({ parent: null, kind: "project" });
+              setCreating({ parent: null, kind: "project", label: "New space" });
               setNewName("");
             }}
             onPicked={() => setSheet(null)}
@@ -1502,12 +1503,15 @@ function ProjectsWorkspace() {
           onKeyDown={(e) => {
             if (e.key === "Escape") setCreating(undefined);
           }}
+          // The label comes from the OPTION the user clicked, so the form
+          // echoes the word the menu promised. Deriving it from `kind` here
+          // is what made a subproject created inside a folder announce
+          // itself as "New project": both are `kind: "project"`, and only
+          // the option knows the level.
           placeholder={
-            !creating.parent
-              ? "New space"
-              : creating.kind === "folder"
-                ? `New folder in ${creating.parent.name}`
-                : `New project in ${creating.parent.name}`
+            creating.parent
+              ? `${creating.label} in ${creating.parent.name}`
+              : creating.label
           }
           aria-label="Project name"
           className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
@@ -2066,13 +2070,13 @@ function ProjectsWorkspace() {
                 setApp(null);
                 setSelected(project);
               }}
-              onAddChild={(parent, kind) => {
-                setCreating({ parent, kind });
+              onAddChild={(parent, option) => {
+                setCreating({ parent, kind: option.kind, label: option.label });
                 setNewName("");
               }}
               onOpenSettings={setSettingsFor}
               onNewSpace={() => {
-                setCreating({ parent: null, kind: "project" });
+                setCreating({ parent: null, kind: "project", label: "New space" });
                 setNewName("");
               }}
               actions={projectMenuActions}

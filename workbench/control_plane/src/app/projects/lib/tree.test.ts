@@ -231,6 +231,39 @@ describe("childCreationOptions — the grammar's UI half (migration 193)", () =>
   it("a folder at the floor offers nothing, same as the server refuses", () => {
     expect(childCreationOptions("folder", 3)).toEqual([]);
   });
+
+  it("a folder's option is named for the LEVEL, not the kind", () => {
+    // The defect this pins (2026-08-31): a folder under a project creates a
+    // SUBPROJECT, but both levels are `kind: "project"`, so a create form
+    // that derived its wording from the kind announced "New project". The
+    // label is the only thing that knows the level, which is why the whole
+    // option travels to the form rather than just its kind.
+    const underSpace = childCreationOptions("folder", 1);
+    const underProject = childCreationOptions("folder", 2);
+    expect(underSpace[0].kind).toBe(underProject[0].kind);
+    expect(underSpace[0].label).toBe("New project");
+    expect(underProject[0].label).toBe("New subproject");
+  });
+
+  it("every option a row offers is one the grammar would accept", () => {
+    // The UI table and `assert_node_grammar` must not disagree: an option
+    // offered where the server refuses it is a button that always errors.
+    for (const kind of ["project", "folder"] as const) {
+      for (const generation of [1, 2, 3]) {
+        for (const option of childCreationOptions(kind, generation)) {
+          // A folder child is transparent and keeps its parent's count; a
+          // project child is one generation deeper, whichever kind holds
+          // it. Three is the floor, so no offer may exceed it.
+          const childGen =
+            option.kind === "folder" ? generation : generation + 1;
+          expect(
+            childGen,
+            `${kind} at generation ${generation} offered "${option.label}"`
+          ).toBeLessThanOrEqual(3);
+        }
+      }
+    }
+  });
 });
 
 describe("nodeKind — NULL reads as project (R6)", () => {
