@@ -130,12 +130,11 @@ const BOUNDARY = "components/LayoutBoundary.tsx";
 const PAGE = "app/projects/page.tsx";
 
 /**
- * Every canvas `/projects` can put on screen. Five view modes plus the personal
- * lens — `lib/commands.VIEW_MODES` is the five, and `MyWork` is the sixth
- * surface the same scroll region renders.
+ * Every canvas `/projects` can put on screen — `lib/commands.VIEW_MODES` is
+ * the five. (`MyWork` was the sixth until 2026-08-31: /tasks is the personal
+ * lens, so the entry left with the surface.)
  */
 const CANVASES = [
-  "MyWork",
   "TimelineView",
   "CalendarView",
   "TableView",

@@ -61,8 +61,6 @@ export interface CommandContext {
   isRoot: boolean;
   /** Something is filtering, so "clear filters" would do something. */
   filtered: boolean;
-  /** The personal lens is up; the canvas is `MyWork`, not a mode. */
-  mine: boolean;
   /** A task panel is open, so the panel-width commands mean something. */
   panelOpen: boolean;
   panelMode: PanelMode;
@@ -75,7 +73,6 @@ export interface CommandActions {
   navigate(href: string): void;
   setMode(mode: ViewMode): void;
   setPanelMode(mode: PanelMode): void;
-  showMyWork(mine: boolean): void;
   clearFilters(): void;
   toggleRail(): void;
   manage(what: "fields" | "tags" | "lifecycle"): void;
@@ -142,7 +139,7 @@ function goCommands(): Command[] {
   return out;
 }
 
-/** `v <letter>` → a canvas. Hidden on My work, which is not one of the five. */
+/** `v <letter>` → a canvas. */
 function viewCommands(): Command[] {
   return VIEW_MODES.map((entry) => ({
     id: `view.${entry.id}`,
@@ -151,7 +148,7 @@ function viewCommands(): Command[] {
     keywords: ["view", "canvas", "layout", entry.id],
     icon: entry.icon,
     sequence: ["v", entry.key],
-    when: (ctx: CommandContext) => ctx.hasProject && !ctx.mine,
+    when: (ctx: CommandContext) => ctx.hasProject,
     run: (actions: CommandActions) => actions.setMode(entry.id),
   }));
 }
@@ -177,25 +174,9 @@ const PANEL_COMMANDS: Command[] = [
   },
 ];
 
+// "My work" and its return command were REMOVED (owner directive
+// 2026-08-31): /tasks is the personal lens (D52-D54), reachable as `g t`.
 const PROJECT_COMMANDS: Command[] = [
-  {
-    id: "project.mywork",
-    label: "My work",
-    section: "Project",
-    keywords: ["mine", "assigned", "personal"],
-    icon: "UserCheck",
-    when: (ctx) => !ctx.mine,
-    run: (actions) => actions.showMyWork(true),
-  },
-  {
-    id: "project.board",
-    label: "Back to the project",
-    section: "Project",
-    keywords: ["board", "leave", "my work"],
-    icon: "FolderKanban",
-    when: (ctx) => ctx.mine,
-    run: (actions) => actions.showMyWork(false),
-  },
   {
     id: "project.clearFilters",
     label: "Clear the filters",
@@ -220,7 +201,7 @@ const PROJECT_COMMANDS: Command[] = [
     section: "Project",
     keywords: ["columns", "properties", "custom"],
     icon: "SlidersHorizontal",
-    when: (ctx) => ctx.hasProject && !ctx.mine,
+    when: (ctx) => ctx.hasProject,
     run: (actions) => actions.manage("fields"),
   },
   {
@@ -229,7 +210,7 @@ const PROJECT_COMMANDS: Command[] = [
     section: "Project",
     keywords: ["labels", "registry"],
     icon: "Tag",
-    when: (ctx) => ctx.hasProject && !ctx.mine,
+    when: (ctx) => ctx.hasProject,
     run: (actions) => actions.manage("tags"),
   },
   {
@@ -240,7 +221,7 @@ const PROJECT_COMMANDS: Command[] = [
     icon: "Archive",
     // The gateway 422s a child project: the policy is a root setting the whole
     // subtree inherits, so offering it on a subproject would offer a refusal.
-    when: (ctx) => ctx.hasProject && ctx.isRoot && !ctx.mine,
+    when: (ctx) => ctx.hasProject && ctx.isRoot,
     run: (actions) => actions.manage("lifecycle"),
   },
 ];

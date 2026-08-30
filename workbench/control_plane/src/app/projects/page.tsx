@@ -37,7 +37,6 @@ import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
-import { MyWork } from "./components/MyWork";
 import { NotificationBell } from "./components/NotificationBell";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
@@ -214,10 +213,9 @@ function ProjectNav({
   return (
     <>
       {/* The app's own destinations, in the main sidebar's grammar (owner
-          directive 2026-08-31). My work stays HERE rather than in a
-          section of its own: the personal lens is a view of the same
-          store, and separating it would re-teach the split D-PM-6 was
-          revised to remove. */}
+          directive 2026-08-31). "My work" is deliberately NOT here — /tasks
+          is the personal lens over the one store (D52-D54), and a second
+          door to it inside Projects was removed the same day. */}
       {PROJECT_APP_SECTIONS.map((section) => (
         <div key={section.id} className="mb-2">
           {section.label ? (
@@ -395,22 +393,16 @@ function ProjectsWorkspace() {
     writePanelMode(next);
   }, []);
   // The panel's statuses are held apart from the selected project's, because a
-  // task opened from My work can belong to a project that is not selected —
+  // task opened from a deep link can belong to a project that is not selected —
   // and a panel offering another project's statuses would offer transitions
   // that do not exist.
   const [panelStatuses, setPanelStatuses] = useState<StatusRow[]>([]);
   /**
    * The app-level destination, or null when a space/project is selected
    * (owner directive 2026-08-31 — the Projects app has its own sidebar
-   * sections now, and My work is one entry in them).
-   *
-   * `mine` stays derived rather than being replaced: it is read in a dozen
-   * places that mean "the personal lens", and turning each into a string
-   * comparison would spread this vocabulary across the file for no gain.
+   * sections now).
    */
   const [app, setApp] = useState<ProjectAppId | null>(null);
-  const mine = app === "my-work";
-  const setMine = (next: boolean) => setApp(next ? "my-work" : null);
   // `null` = nobody has chosen yet, which is a different state from "board":
   // the right default depends on the viewport, and a board of fixed-width
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
@@ -722,7 +714,7 @@ function ProjectsWorkspace() {
   // needs the same numbers, and one endpoint answering both is what keeps
   // the two from disagreeing.
   useEffect(() => {
-    if (!selected || mine) {
+    if (!selected) {
       setSummary(null);
       return;
     }
@@ -742,7 +734,7 @@ function ProjectsWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, mine, treeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected?.id, treeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Analytics' own read. Separate from `summary` because the two answer
   // different questions and are on screen at different times — sharing one
@@ -849,7 +841,7 @@ function ProjectsWorkspace() {
         )}
       </div>,
     );
-  }, [isMobile, sheet, mode, mine, selected, visibleRoots, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, mode, selected, visibleRoots, openDrawer, closeDrawer]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -1193,8 +1185,8 @@ function ProjectsWorkspace() {
   }
 
   // Opening a task always resolves ITS project's statuses. From the board that
-  // is the set already loaded; from My work it may be any project the member
-  // is assigned into, so it is fetched.
+  // is the set already loaded; from a deep link it may be any project the
+  // member can reach, so it is fetched.
   const openWithStatuses = useCallback(
     async (task: TaskRow) => {
       setOpenTask(task);
@@ -1267,7 +1259,6 @@ function ProjectsWorkspace() {
       navigate: (href) => router.push(href),
       setMode: (next) => setChosenMode(next),
       setPanelMode,
-      showMyWork: (next) => setMine(next),
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
       manage: (what) => {
@@ -1285,7 +1276,6 @@ function ProjectsWorkspace() {
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
-    mine,
     panelOpen: Boolean(openTask),
     panelMode,
     // A phone reaches the tree through the shell drawer; there is no rail to
@@ -1545,7 +1535,7 @@ function ProjectsWorkspace() {
           board WS-39 S1). Metorite is the project-management system of
           record — there is no workspace to import from, so an affordance
           here would be a button that cannot succeed. */}
-      {selected && !mine ? (
+      {selected ? (
         <Button
           variant="ghost"
           size={compact ? "icon-sm" : "sm"}
@@ -1557,7 +1547,7 @@ function ProjectsWorkspace() {
           {compact ? null : "Fields"}
         </Button>
       ) : null}
-      {selected && !mine ? (
+      {selected ? (
         <Button
           variant="ghost"
           size={compact ? "icon-sm" : "sm"}
@@ -1569,7 +1559,7 @@ function ProjectsWorkspace() {
           {compact ? null : "Tags"}
         </Button>
       ) : null}
-      {selected && !mine && !selected.parent_project_id ? (
+      {selected && !selected.parent_project_id ? (
         <Button
           variant="ghost"
           size={compact ? "icon-sm" : "sm"}
@@ -1595,7 +1585,7 @@ function ProjectsWorkspace() {
   // reader those numbers are not this project's alone, which is otherwise
   // an invisible difference between two identical-looking boards.
   const aggregateNote =
-    !mine && selectedLevel === "project" && (summary?.children.length ?? 0) > 0
+    selectedLevel === "project" && (summary?.children.length ?? 0) > 0
       ? `Includes ${summary!.projects} subproject${
           summary!.projects === 1 ? "" : "s"
         }`
@@ -1611,7 +1601,7 @@ function ProjectsWorkspace() {
    * error boundary's fallback, so a failure says *which* view stopped rendering
    * rather than "Projects broke".
    */
-  const canvasLabel = mine ? "My work" : !selected ? "Projects" : mode;
+  const canvasLabel = !selected ? "Projects" : mode;
 
   /**
    * …and its identity, which is what actually makes the boundary recoverable.
@@ -1622,7 +1612,7 @@ function ProjectsWorkspace() {
    * offers ("switch view or pick another project") really do clear it, because
    * either one mounts a boundary React has never seen.
    */
-  const canvasKey = `${mine ? "my-work" : selected?.id ?? "none"}:${canvasLabel}`;
+  const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
   /** Everything between the chrome and the canvas, plus the canvas. */
   const workArea = app === "ai-chat" ? (
@@ -1675,7 +1665,7 @@ function ProjectsWorkspace() {
     <>
       {error ? renderState("error", error) : null}
 
-      {!mine && selected ? (
+      {selected ? (
         <FilterBar
           filters={filters}
           onFilters={changeFilters}
@@ -1718,7 +1708,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {!mine && selected && picked.size > 0 ? (
+      {selected && picked.size > 0 ? (
         <BulkBar
           count={picked.size}
           statuses={statuses}
@@ -1733,7 +1723,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {!mine && selected && nodeKind(selected) !== "folder" ? (
+      {selected && nodeKind(selected) !== "folder" ? (
         // Capture-first here too: a title and Enter. Everything else about a
         // task — status, assignee, subtasks — is set from the panel once it
         // exists, because a create form that asks six questions is a create
@@ -1775,7 +1765,7 @@ function ProjectsWorkspace() {
 
       {/* WS-27u — the front door. Renders nothing when the queue is empty;
           a ruling reloads the board because an accept just added a card. */}
-      {!mine && selected ? (
+      {selected ? (
         <TriageRail
           projectId={selected.id}
           statuses={statuses}
@@ -1788,9 +1778,7 @@ function ProjectsWorkspace() {
 
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={canvasKey} layout={canvasLabel}>
-          {mine ? (
-            <MyWork onSelect={(task) => void openWithStatuses(task)} />
-          ) : !selected ? (
+          {!selected ? (
             renderState(
               "empty",
               "Nothing here yet. Projects appear once a space is granted to you."
@@ -2124,13 +2112,11 @@ function ProjectsWorkspace() {
                 to load. */}
             {noProjectChrome ? null : (
               <div className="flex items-center gap-1 px-3 pb-2 pt-1.5">
-                {mine ? null : (
-                  <ModeSwitch
-                    mode={mode}
-                    layout="toolbar"
-                    onPick={(next) => setChosenMode(next)}
-                  />
-                )}
+                <ModeSwitch
+                  mode={mode}
+                  layout="toolbar"
+                  onPick={(next) => setChosenMode(next)}
+                />
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
                 </div>

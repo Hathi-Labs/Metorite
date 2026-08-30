@@ -88,8 +88,8 @@ describe("a retry", () => {
   ]);
 
   it("does NOT blank the message while it is in flight", () => {
-    // Deliberate, and the same rule `MyWork.tsx` writes out for its reload:
-    // clearing on entry hides the failure at the moment it is being read, and
+    // Deliberate: clearing on entry hides the failure at the moment it is
+    // being read, and
     // the row would show a spinner over an explanation-shaped hole.
     const retrying = rowsReducer(failed, { kind: "start", id: "a" });
     expect(isPending(retrying, "a")).toBe(true);

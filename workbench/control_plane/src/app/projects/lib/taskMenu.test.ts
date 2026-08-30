@@ -2,7 +2,7 @@
  * Projects · the task context-menu registry (WS-27bd item 5).
  *
  * Three classes of defect, each of which ships green without a test here:
- * an entry offered on a surface that cannot perform it (My work has no status
+ * an entry offered on a surface that cannot perform it (one with no status
  * axis and no bulk selection); a separator opening or closing the menu once
  * `when` filtered a group away; and the drift this whole ticket exists to stop
  * — the card growing a second name for something the palette already does.
@@ -57,8 +57,8 @@ const board = (over: Partial<TaskMenuContext> = {}): TaskMenuContext => ({
   ...over,
 });
 
-/** My work's card: a personal lens over many projects — neither of those. */
-const myWork = (over: Partial<TaskMenuContext> = {}): TaskMenuContext => ({
+/** A card on a surface with no status axis and no bulk selection. */
+const bare = (over: Partial<TaskMenuContext> = {}): TaskMenuContext => ({
   task: task(),
   statuses: [],
   canSelect: false,
@@ -93,12 +93,12 @@ describe("what a right-click offers", () => {
     ]);
   });
 
-  it("My work's card offers neither a status block nor a selection", () => {
+  it("a statusless card offers neither a status block nor a selection", () => {
     // The defect this pins: a menu drawn from the board's assumptions on a
     // surface that has no status axis draws a "Change status" heading with
     // nothing under it and a Select that adds a row to a selection nothing
     // renders.
-    const entries = taskMenuItems(myWork());
+    const entries = taskMenuItems(bare());
     expect(ids(entries)).toEqual(["task.open", "task.copyLink"]);
     expect(entries.some((e) => e.kind === "label")).toBe(false);
     expect(entries.some((e) => e.kind === "sep")).toBe(false);
@@ -151,7 +151,7 @@ describe("what a right-click offers", () => {
   });
 
   it("no separator opens or closes the menu, and none doubles up", () => {
-    for (const ctx of [board(), myWork(), board({ statuses: [] }), board({ canSelect: false })]) {
+    for (const ctx of [board(), bare(), board({ statuses: [] }), board({ canSelect: false })]) {
       const entries = taskMenuItems(ctx);
       expect(entries.at(0)?.kind, JSON.stringify(ids(entries))).not.toBe("sep");
       expect(entries.at(-1)?.kind).not.toBe("sep");
@@ -215,7 +215,7 @@ describe("the registry itself", () => {
     // the `<kind>:<discriminator>` grammar is what keeps the status block ONE
     // declared thing instead of N anonymous ones.
     const declared = new Set(TASK_MENU_ACTIONS.map((a) => a.id));
-    for (const ctx of [board(), myWork(), board({ selected: true })]) {
+    for (const ctx of [board(), bare(), board({ selected: true })]) {
       for (const id of ids(taskMenuItems(ctx))) {
         expect(declared, `${id} is not declared in TASK_MENU_ACTIONS`).toContain(
           taskMenuKind(id),
@@ -255,8 +255,9 @@ describe("the registry itself", () => {
 /**
  * ── One registry per scope, and no overlap between them ──────────────────
  *
- * The ticket's words are "one registry, two surfaces". The two surfaces are
- * `TaskBoard` and `MyWork`, both reading `TASK_MENU_ACTIONS`. The half that
+ * The ticket's words are "one registry, two surfaces". `TaskBoard` reads
+ * `TASK_MENU_ACTIONS` (`MyWork` was the second reader until it was removed
+ * on 2026-08-31). The half that
  * needs a *test* is the other one: that this registry does not quietly become
  * a second spelling of the palette's.
  *

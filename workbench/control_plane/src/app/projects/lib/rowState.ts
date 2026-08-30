@@ -19,8 +19,7 @@
  *
  * 1. **A retry does not clear the previous error on entry.** It clears it on
  *    SUCCESS. Blanking the message the moment the retry starts hides the
- *    failure at exactly the moment somebody is reading it — the rule
- *    `MyWork.tsx` already writes out for its own reload effect.
+ *    failure at exactly the moment somebody is reading it.
  * 2. **A row that has gone away takes its state with it.** `prune` is what
  *    stops a spinner or a message outliving the row it was attributed to;
  *    without it an unlink that fails, then succeeds on retry, leaves an error

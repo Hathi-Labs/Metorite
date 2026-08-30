@@ -40,7 +40,6 @@ const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   hasProject: true,
   isRoot: true,
   filtered: false,
-  mine: false,
   panelOpen: false,
   panelMode: "side",
   canToggleRail: true,
@@ -55,7 +54,6 @@ function spyActions(): CommandActions & { calls: string[] } {
     navigate: (href) => calls.push(`navigate:${href}`),
     setMode: (mode) => calls.push(`setMode:${mode}`),
     setPanelMode: (mode) => calls.push(`setPanelMode:${mode}`),
-    showMyWork: (mine) => calls.push(`showMyWork:${mine}`),
     clearFilters: () => calls.push("clearFilters"),
     toggleRail: () => calls.push("toggleRail"),
     manage: (what) => calls.push(`manage:${what}`),
@@ -161,11 +159,10 @@ describe("the registry itself", () => {
 });
 
 describe("what is offered where", () => {
-  it("hides the canvases while My work is up", () => {
-    const ids = availableCommands(ctx({ mine: true })).map((c) => c.id);
-    expect(ids.some((id) => id.startsWith("view."))).toBe(false);
-    expect(ids).toContain("project.board");
+  it("offers no My work entry — /tasks is the personal lens (D52-D54)", () => {
+    const ids = COMMANDS.map((c) => c.id);
     expect(ids).not.toContain("project.mywork");
+    expect(ids).not.toContain("project.board");
   });
 
   it("hides everything project-scoped when no project is selected", () => {
@@ -242,8 +239,8 @@ describe("matching a typed query", () => {
   });
 
   it("is case-insensitive", () => {
-    expect(matchCommands(all, "MY WORK").map((c) => c.id)).toContain(
-      "project.mywork",
+    expect(matchCommands(all, "CHEATSHEET").map((c) => c.id)).toContain(
+      "help.shortcuts",
     );
   });
 
@@ -287,9 +284,9 @@ describe("key sequences", () => {
   });
 
   it("only runs sequences whose command is applicable here", () => {
-    const onMyWork = availableCommands(ctx({ mine: true }));
-    expect(stepSequence(["v"], "b", onMyWork).command).toBeNull();
-    expect(stepSequence([], "v", onMyWork).claimed).toBe(false);
+    const noProject = availableCommands(ctx({ hasProject: false }));
+    expect(stepSequence(["v"], "b", noProject).command).toBeNull();
+    expect(stepSequence([], "v", noProject).claimed).toBe(false);
   });
 
   it("takes single characters without Meta/Ctrl/Alt, and Shift is fine", () => {

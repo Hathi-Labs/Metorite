@@ -19,7 +19,7 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "my-work" | "analytics" | "ai-chat";
+export type ProjectAppId = "analytics" | "ai-chat";
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -43,15 +43,9 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
   {
     id: "workspace",
     items: [
-      {
-        id: "my-work",
-        label: "My work",
-        icon: "User",
-        // The personal lens over the SAME store (D-PM-6). Not a second app,
-        // which is why it sits here rather than in its own section.
-        note: "Assigned to you",
-        launch: "live",
-      },
+      // "My work" was REMOVED here (owner directive 2026-08-31): /tasks IS
+      // the personal lens over the one store (D52-D54), so an entry for it
+      // inside Projects was a second door to the same room.
       {
         id: "analytics",
         label: "Analytics",

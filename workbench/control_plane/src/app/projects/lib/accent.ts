@@ -17,7 +17,6 @@ import { statusAccent, type StatusAccent } from "@/lib/statusAccent";
 
 import type { StatusRow } from "./api";
 import type { GroupBy } from "./grouping";
-import { LANE_LABELS } from "./mywork";
 
 /**
  * The accent for one status.
@@ -67,38 +66,6 @@ export function accentForGroup(
   return statusAccent({ index, total });
 }
 
-/**
- * The accent for a **My Work** disposition (S4).
- *
- * The personal lens has no statuses — a row's state there is its GTD
- * disposition — so this is the fact it hands the shared vocabulary. Written as
- * hue NAMES fed through `statusAccent`, never as classes: a `Record` of
- * tailwind strings here would be the second palette `sharedTaskUi.test.ts`
- * exists to forbid.
- *
- * **The map agrees with the name-keyword route wherever that route has an
- * opinion** — `Inbox` is gray and `Waiting on` is amber by keyword, so those
- * two are pinned to what /tasks would draw for a stage of the same name
- * (AGENTS.md rule 5; `accent.test.ts` asserts the agreement rather than
- * trusting it). `NEXT` and `SOMEDAY` are free choices because no keyword
- * matches them: blue is this UI's "active" tone, which is what a next action
- * is, and violet is the one remaining distinct hue.
- *
- * An unmapped disposition — `PROJECT`, `REFERENCE`, anything the server grows
- * later — falls through to the name route rather than throwing, so a new value
- * renders quietly instead of taking the pane down.
- */
-const DISPOSITION_HUES: Record<string, string> = {
-  INBOX: "gray",
-  NEXT: "blue",
-  WAITING: "amber",
-  SOMEDAY: "violet",
-  OTHER: "gray",
-};
-
-export function accentForDisposition(disposition: string): StatusAccent {
-  return statusAccent({
-    color: DISPOSITION_HUES[disposition] ?? null,
-    name: LANE_LABELS[disposition] ?? disposition,
-  });
-}
+// `accentForDisposition` (S4, the My Work disposition lanes) left with the
+// My work surface on 2026-08-31 — /tasks colours its own lanes through
+// `app/tasks/lib/stageColors.ts`.

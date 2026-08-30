@@ -109,7 +109,7 @@ interface Props {
   onDeleteView: (view: ViewRow) => void;
   /** WS-27ab — write what is on screen into the view that is applied. */
   onUpdateView: (view: ViewRow) => void;
-  /** Saving needs a project to hang the view off; My work has none. */
+  /** Saving needs a project to hang the view off. */
   canSave: boolean;
   /**
    * WS-27ae — export the filter that is on screen, with the columns it shows.

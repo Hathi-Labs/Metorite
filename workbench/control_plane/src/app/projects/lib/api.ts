@@ -529,55 +529,9 @@ export const projectsApi = {
     }),
 };
 
-/**
- * The personal lens (WS-27e).
- *
- * Same store, same rows, same proxy — there is no second task API, because
- * there is no second task table. Identity comes from the session on the server
- * side, so nothing here takes a member parameter: no request can be shaped to
- * read or write somebody else's practice.
- */
-export const myWorkApi = {
-  inbox: (params: Record<string, string | boolean | undefined> = {}) => {
-    const qs = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== "") qs.set(key, String(value));
-    }
-    const query = qs.toString();
-    return call<{ rows: MyTaskApiRow[]; total: number }>(
-      `my/inbox${query ? `?${query}` : ""}`
-    );
-  },
-
-  contexts: () =>
-    call<{ rows: Array<{ context: string; total: number }>; total: number }>(
-      "my/contexts"
-    ),
-
-  capture: (payload: {
-    title: string;
-    next_action?: string | null;
-    context?: string | null;
-    due_at?: string | null;
-  }) => call<TaskRow>("my/tasks", { method: "POST", body: JSON.stringify(payload) }),
-
-  setPersonal: (taskId: string, payload: Record<string, unknown>) =>
-    call<Record<string, unknown>>(`tasks/${taskId}/personal`, {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }),
-
-  // Completion moves the task's SHARED status — the cohesion the one-store
-  // design buys. Ticking something off here ticks it off on the team's board.
-  complete: (taskId: string) =>
-    call<TaskRow>(`tasks/${taskId}/complete`, { method: "POST", body: "{}" }),
-
-  defer: (taskId: string, until: string) =>
-    call<Record<string, unknown>>(`tasks/${taskId}/defer`, {
-      method: "POST",
-      body: JSON.stringify({ until }),
-    }),
-};
+// `myWorkApi` (WS-27e, the personal lens) was REMOVED with the My work
+// surface (owner directive 2026-08-31). /tasks is the personal lens, and
+// the gateway's `my/*` routes still serve it there.
 
 export interface AttachmentRow {
   attachment_id: string;
@@ -624,16 +578,6 @@ export const attachmentsApi = {
       method: "DELETE",
     }),
 };
-
-/** What `/my/inbox` returns: the task row with this member's overlay merged on. */
-export interface MyTaskApiRow extends TaskRow {
-  disposition: string;
-  is_triaged: boolean;
-  next_action?: string | null;
-  context?: string | null;
-  energy?: string | null;
-  is_two_minute?: boolean;
-}
 
 export interface NotificationRow {
   id: string;
