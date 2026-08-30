@@ -81,6 +81,15 @@ _CENT6 = Decimal("0.000001")
 #: future model to zero.
 _UNIT10 = Decimal("0.0000000001")
 
+#: The ceiling the COLUMN imposes, restated where the parser can enforce it.
+#: NUMERIC(18, 10) keeps ten digits after the point, so eight remain in front
+#: of it and 1E8 is the first value that will not fit. A wider value raises
+#: NumericValueOutOfRange at the upsert, and `_UPSERT` is one executemany —
+#: so Postgres discards EVERY row in the batch over one poisoned entry. That
+#: is the same all-or-nothing failure the is_finite check below prevents, and
+#: it deserves the same answer: unknown beats poisoned.
+_UNIT_MAX = Decimal("1E8")
+
 
 class FeedRow(NamedTuple):
     """One model's upstream facts, in this system's vocabulary."""
@@ -100,7 +109,12 @@ class FeedRow(NamedTuple):
     deprecated_on: date | None
     # ⚠️ The vendor's own unit, unconverted (019, §6A.11a). Per SECOND, not
     # per minute: `task_catalog` prices `transcribe` per minute, and the x60
-    # conversion belongs to the declare-and-prefill seam alone.
+    # conversion belongs to the FEED-READ projection alone (`_FEED_COLS` in
+    # main.py, which §6A.11a clauses 5 to 7 build). Nothing on this path
+    # multiplies by 60, and neither does the browser.
+    # (This named "the declare-and-prefill seam" until 2026-08-31. No such
+    # seam exists — §6A.11a retracted it. The copy to a profile is
+    # client-side, and it converts nothing.)
     per_second: Decimal | None = None
     per_character: Decimal | None = None
     per_image: Decimal | None = None
@@ -137,6 +151,22 @@ def _per_unit(entry: dict[str, Any], *keys: str) -> Decimal | None:
     or ``input_cost_per_image``, and the first one the entry CARRIES decides.
     Summing is the whisper-1 trap one field up: two fields that both describe
     the same price charge twice when they are added.
+
+    ⚠️ Two guards the per-million path does not need, because the per-unit
+    column is narrower at one end and finer at the other.
+
+    * **Too big** — at or above :data:`_UNIT_MAX` the value cannot fit
+      ``NUMERIC(18, 10)``, and the upsert would roll the WHOLE batch back.
+    * **Too small to survive quantizing** — a nonzero price under 5E-11
+      rounds to ``Decimal('0E-10')``, and a stored zero reads as FREE. §9's
+      fence says an unknown measurement is never zero, so it answers NULL.
+
+    ⚠️ **A source of exactly zero still parses to zero, and that is on
+    purpose.** A vendor can publish a free model, `019`'s header admits it,
+    and the CHECK allows it. Only a nonzero price that COLLAPSES to zero is a
+    lie the reader cannot see, so only that case answers unknown. (The
+    whisper-1 ``output_cost_per_second`` of 0.0 never reaches here — the
+    transcribe rule reads the input field alone.)
     """
     for key in keys:
         v = entry.get(key)
@@ -144,9 +174,12 @@ def _per_unit(entry: dict[str, Any], *keys: str) -> Decimal | None:
             continue
         try:
             d = Decimal(str(v))
-            if not d.is_finite() or d < 0:
+            if not d.is_finite() or d < 0 or d >= _UNIT_MAX:
                 return None
-            return d.quantize(_UNIT10, rounding=ROUND_HALF_UP)
+            q = d.quantize(_UNIT10, rounding=ROUND_HALF_UP)
+            if q == 0 and d != 0:
+                return None
+            return q
         except (InvalidOperation, ValueError, TypeError):
             return None
     return None

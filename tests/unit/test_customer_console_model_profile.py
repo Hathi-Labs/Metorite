@@ -140,8 +140,12 @@ class TestThePerUnitCosts:
 
     ⚠️ The profile holds the TASK's natural unit, and the feed holds the
     VENDOR's. litellm prices transcription per second, `task_catalog` prices
-    `transcribe` per minute, and the x60 conversion happens once at the
-    declare-and-prefill seam. Nothing here converts anything.
+    `transcribe` per minute, and the x60 conversion happens once inside the
+    FEED-READ projection (`_FEED_COLS`, which §6A.11a clauses 5 to 7 build).
+    Nothing here converts anything.
+
+    (This named "the declare-and-prefill seam" until 2026-08-31. §6A.11a
+    retracted that seam — it does not exist, and the copy is client-side.)
     """
 
     def test_all_three_are_nullable_and_default_to_unknown(self, conn, model):

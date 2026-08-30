@@ -11,8 +11,12 @@
 -- vendor's own number in the vendor's own unit, unconverted. litellm prices
 -- transcription per SECOND. `task_catalog` (010) prices `transcribe` per
 -- MINUTE, so `model_profile` stores per minute. The x60 conversion happens
--- ONCE, server-side, at the declare-and-prefill seam. Nothing else
--- multiplies by 60.
+-- ONCE, server-side, inside the FEED-READ projection (`_FEED_COLS` in
+-- main.py, which §6A.11a clauses 5 to 7 build). Nothing else multiplies by
+-- 60, and the browser converts nothing.
+-- (This named "the declare-and-prefill seam" until 2026-08-31. §6A.11a
+-- retracted that seam: it does not exist, and the copy to a profile is
+-- client-side.)
 --
 -- ⚠️ **NUMERIC(18, 10), wider than either table's token columns.** A
 -- per-million-token price is a dollar-scale number. A raw per-unit price is
@@ -81,7 +85,9 @@ ALTER TABLE model_profile
 COMMENT ON COLUMN model_profile.vendor_per_minute_usd IS
     'USD per MINUTE of audio that the vendor charges us, for a transcribe '
     'model. task_catalog prices transcribe in minutes and litellm prices it '
-    'in seconds, so the copy from vendor_price_feed multiplies by 60 once.';
+    'in seconds, so the FEED-READ projection multiplies by 60 once before '
+    'anything copies a price onto this column. The write itself converts '
+    'nothing.';
 
 COMMENT ON COLUMN model_profile.vendor_per_character_usd IS
     'USD per character of input text that the vendor charges us, for a speak '

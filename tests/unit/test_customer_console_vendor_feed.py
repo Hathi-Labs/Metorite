@@ -171,8 +171,9 @@ def test_the_packaged_snapshot_carries_the_same_two_per_second_prices():
     assert by["openai/whisper-1"].per_second == Decimal("0.0001")
     assert by["assemblyai/best"].per_second == Decimal("0.00003333")
     # And the vendor's own unit stays SECONDS in the feed. task_catalog
-    # prices transcribe per minute, and the x60 belongs to the one
-    # declare-and-prefill seam.
+    # prices transcribe per minute, and the x60 belongs to the FEED-READ
+    # projection alone (§6A.11a clauses 5 to 7 build it). This named "the
+    # declare-and-prefill seam" until 2026-08-31, and no such seam exists.
     assert by["openai/whisper-1"].per_second < Decimal("0.001")
 
 
@@ -269,6 +270,47 @@ def test_a_zero_per_unit_price_survives_as_zero():
     })
     (r,) = rows
     assert r.per_second == Decimal(0)
+
+
+def test_an_absurd_per_unit_price_is_unknown_not_stored():
+    """🔴 NUMERIC(18, 10) holds eight digits in front of the point, so 1e9
+    does not fit. `_UPSERT` is ONE executemany, so the overflow Postgres
+    raises discards every row in the batch — 3,000 good models lost to one
+    poisoned entry, which is exactly what the is_finite check exists to
+    stop. The guard belongs in the parser, where one field can fail alone."""
+    rows = feed.parse_feed({
+        "huge": {"litellm_provider": "x", "mode": "image_generation",
+                 "output_cost_per_image": 1e9},
+        "edge": {"litellm_provider": "x", "mode": "image_generation",
+                 "output_cost_per_image": 99_999_999.5},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/huge"].per_image is None
+    # And the widest value that DOES fit still lands.
+    assert by["x/edge"].per_image == Decimal("99999999.5")
+
+
+def test_a_price_too_small_to_store_is_unknown_never_free():
+    """🔴 §9's fence: an unknown measurement is never zero. A nonzero price
+    below 5e-11 quantizes to `Decimal('0E-10')`, and a stored zero reads as
+    FREE — `019`'s own header says so. Unknown is the honest answer.
+
+    ⚠️ A source of EXACTLY zero is different, and it survives as zero. A
+    vendor can publish a free model. Only a real price that collapses to
+    zero is a lie."""
+    rows = feed.parse_feed({
+        "tiny": {"litellm_provider": "x", "mode": "audio_speech",
+                 "input_cost_per_character": 4e-11},
+        "free": {"litellm_provider": "x", "mode": "audio_speech",
+                 "input_cost_per_character": 0.0},
+        "small": {"litellm_provider": "x", "mode": "audio_speech",
+                  "input_cost_per_character": 6e-11},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/tiny"].per_character is None
+    assert by["x/free"].per_character == Decimal(0)
+    # Just above the rounding floor, so it keeps a real value.
+    assert by["x/small"].per_character == Decimal("0.0000000001")
 
 
 def test_every_invocation_the_feed_can_emit_is_one_we_know():
@@ -438,6 +480,66 @@ def test_a_negative_per_unit_price_is_REFUSED_by_the_database(db, vendor):
     with pytest.raises(Exception) as exc:
         _insert()
     assert "vendor_price_feed_sane" in str(exc.value)
+
+
+@pytestmark_db
+def test_one_absurd_price_never_rolls_the_whole_batch_back(db, vendor):
+    """🔴 The magnitude guard earns its place against a REAL Postgres. Take
+    the guard out and this test reports NumericValueOutOfRange, with the
+    healthy row missing too — because `_UPSERT` is one executemany and the
+    server discards the batch whole. R8: a hermetic fake would agree with
+    whatever SQL it was handed and never show this."""
+    rows = feed.parse_feed({
+        "absurd": {"litellm_provider": vendor, "mode": "image_generation",
+                   "output_cost_per_image": 1e9},
+        "sane": {"litellm_provider": vendor, "mode": "image_generation",
+                 "output_cost_per_image": 0.04},
+    })
+    with db.begin() as conn:
+        feed.sync(conn, rows, "github", datetime.now(UTC))
+
+    with db.begin() as conn:
+        got = dict(conn.execute(text(
+            "SELECT model, vendor_per_image_usd FROM vendor_price_feed "
+            "WHERE provider = :v"), {"v": vendor}).fetchall())
+    # The healthy row survived, which is the whole point.
+    assert got[f"{vendor}/sane"] == Decimal("0.04")
+    # And the poisoned one landed as unknown rather than as a number.
+    assert got[f"{vendor}/absurd"] is None
+
+
+@pytestmark_db
+def test_a_dropped_per_unit_field_overwrites_the_old_price_with_NULL(
+        db, vendor):
+    """🔴 The feed is a CACHE OF UPSTREAM CLAIMS, so it must forget on
+    command. A model litellm still ships, minus a price it used to carry,
+    reads NULL here — never the stale number.
+
+    ⚠️ This is the LIMIT of `sync`'s upsert-never-delete rule. That rule
+    protects a model litellm DROPS. It must not preserve a FIELD litellm
+    drops, because a price nobody publishes any more is not a fact."""
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "tts",
+            per_second=Decimal("0.0001"),
+            per_character=Decimal("0.000015"),
+        )], "github", datetime.now(UTC))
+        before = conn.execute(text(
+            "SELECT vendor_per_character_usd FROM vendor_price_feed "
+            "WHERE model = :m"), {"m": f"{vendor}/tts"}).scalar()
+    assert before == Decimal("0.000015")
+
+    # The same model comes back, and upstream no longer prices it.
+    with db.begin() as conn:
+        feed.sync(conn, [_row(vendor, "tts", per_second=Decimal("0.0001"))],
+                  "github", datetime.now(UTC))
+        after = conn.execute(text(
+            "SELECT vendor_per_character_usd, vendor_per_second_usd "
+            "FROM vendor_price_feed WHERE model = :m"),
+            {"m": f"{vendor}/tts"}).fetchone()
+    assert after[0] is None, "a dropped field must not keep a stale price"
+    # The field upstream still carries is untouched.
+    assert after[1] == Decimal("0.0001")
 
 
 @pytestmark_db
