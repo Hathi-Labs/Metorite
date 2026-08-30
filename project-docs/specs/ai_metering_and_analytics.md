@@ -173,13 +173,27 @@ the caller, and `CompletionRequest.task` (`main.py:834-852`) carries it today.
 The Router still picks WHICH MODEL answers, and the four steps below are that
 choice.)*
 
-⚠️ **Step 0, and it did not move** *(added 2026-08-31 with the build)*. A
-chosen tier that binds NO chat model meets the `TierUnknown` wall this route
-already had. The detail still says *"name a tier, not a model"*, and the
-refusal row names the tier the CALLER asked for. D-AI-2 changes nothing here,
-because there is no chat model on which to read a flag.
+🔴 **Step 0.5. A TIER THAT BINDS THE DECLARED TASK SERVES IT DIRECTLY. The
+image rule runs only for a tier that does not.** This rule names the declared
+TASK and not one slug. So a second vision tier an operator adds tomorrow
+serves itself, with no Router change.
 
-**On a call that declares `task: vision`, the Router does this:**
+*(Added 2026-08-31. The build read the chat binding first, and a verifier
+measured the result. A caller who named `tier-vision` with `task: vision` got
+the answer `no binding for tier 'tier-vision' on task 'vision'`. That tier
+binds `vision` and binds no chat model, so the sentence is FALSE. The same
+call returned 200 before the slice.)*
+
+**D16 marker:** step 0.5 is an agent-proposed repair the owner may overrule.
+
+⚠️ **Step 0, and it did not move.** A chosen tier that binds NEITHER the
+declared task NOR a chat model meets the `TierUnknown` wall this route already
+had. The detail still says *"name a tier, not a model"*, and the refusal row
+names the tier the CALLER asked for. D-AI-2 changes nothing here, because
+there is no chat model on which to read a flag.
+
+**On a call that declares `task: vision` for a tier that binds no `vision`
+model of its own, the Router does this:**
 
 1. Read the model bound to the chosen tier for the `chat` task.
 2. If `model_profile.reads_images` is TRUE for that model, send the image to
@@ -1081,14 +1095,24 @@ it.
 **Gate: AGENT-SAFE.** The serving flip stays the owner's act (H-69), and the
 build in front of it is agent work.
 
-⚠️ **Nothing about this slice is observable yet, and that is the launch
-state.** Nothing populates `model_profile.reads_images` (§3.7 rule 4 seeds no
-row at all), and nothing binds `tier-vision` (F3). So every `task: vision` call
-today reads the flag as FALSE, falls, and answers the 400 of clause 3.
+⚠️ **What a customer sees today, stated exactly.** Three clauses hold it.
 
-Two operator acts change that. Somebody runs the vendor feed, which ships the
-flag populated (§6A.11). Somebody binds `tier-vision`. Slice 4 changes no
-behaviour a customer can see until one of those happens.
+*(Corrected 2026-08-31. The first draft said the slice "changes no behaviour a
+customer can see until an operator acts". A verifier showed that the change
+lands AT the operator's first act.)*
+
+1. **A tier that binds the declared task is UNCHANGED, now and after any
+   operator act.** §3.2 step 0.5 serves it directly, so a caller who names a
+   bound `tier-vision` gets the 200 they always got.
+2. **A tier that binds no `vision` model answers the 400 of clause 3 today.**
+   Nothing populates `model_profile.reads_images` (§3.7 rule 4 seeds no row at
+   all), and nothing binds `tier-vision` (F3). So the flag reads FALSE, the
+   call falls, and the fall finds nothing. That 400 is what the route answered
+   before this slice as well, with a different sentence.
+3. **The LIFT is the part that waits on an operator.** It appears the moment
+   somebody runs the vendor feed, which ships the flag populated (§6A.11). The
+   fall to a working vision model appears the moment somebody binds
+   `tier-vision`. Neither act is ours (H-69).
 
 **The problem this closed.** `POST /v1/chat/completions` resolved one chain for
 the task the caller declared. A `vision` task therefore reached `tier-vision`
@@ -1096,14 +1120,20 @@ or it reached a 400. Nothing read `model_profile.reads_images`
 (`012_model_profile.sql:60`), so a chat model that already reads images was
 never used, and every image call cost a second call.
 
-**The answer, in one line.** Read the flag first. Use the chat model when the
-flag is TRUE. Fall to the `tier-vision` chain when it is FALSE.
+**The answer, in one line.** Serve the tier's own `vision` binding when it has
+one. Otherwise read the flag, use the chat model when it is TRUE, and fall to
+the `tier-vision` chain when it is FALSE.
 
 **No migration.** `reads_images` shipped in `012`. `tier_rate_card` shipped in
 `015`. This slice adds a read, and it adds no column.
 
 #### Done when — one clause per artefact
 
+0. **A tier that binds the declared task serves it.** §3.2 step 0.5. A
+   `task: vision` call on a tier that binds `vision` reaches that binding.
+   The image rule does not run. Two fences hold it. One drives a bound
+   `tier-vision`, and one drives a second vision tier whose slug the Router
+   has never heard of.
 1. **One model on a TRUE flag.** Take a tier whose chat model sets
    `reads_images`. A `task: vision` call on it calls exactly one model. That
    model is the tier's own chat binding. **The test writes its own
@@ -1145,15 +1175,33 @@ flag is TRUE. Fall to the `tier-vision` chain when it is FALSE.
    tasks, and step 2 is a lift rather than a degradation. §3.2 records the
    reconciliation.
 
-⚠️ **The flag is read on the FIRST STEP of the chat chain.** §3.2 step 1 says
-*the model bound to the chosen tier*, and that is rank 1. A chain whose rank-2
-step disagrees with its rank-1 step is a warning the Console owes an operator.
-It is not a second resolution rule, and nothing here builds one.
+🔴 **A KNOWN WRONG ANSWER RIDES ON THE LIFT, AND IT IS NOT CLOSED** *(a
+verifier drove it on 2026-08-31)*. The flag is read on the RANK-1 step of the
+chat chain, because §3.2 step 1 says *the model bound to the chosen tier*.
+Nothing then checks the steps behind it.
+
+**The outcome, stated as it happens.** Rank 1 reads images. Rank 1 fails, so
+the chain fails over. Rank 2 is blind. The blind model answers about text it
+cannot see. The customer gets a confident 200, and the meter files the turn as
+`vision`.
+
+**This is the exact harm §3.2 cites when it refuses to answer 200 at the image
+wall.** A silent drop of the image makes the answer look correct.
+
+**The fix shape, and it is a SECOND resolution rule.** Filter the lift chain to
+the steps that set `reads_images`. An empty result then falls to `tier-vision`,
+exactly as a FALSE rank-1 flag does.
+
+**Slice 4 does not build it.** §3.2 records no decision about what a mixed
+chain means. Inventing one here is the second rule CLAUDE.md §5 forbids an
+agent to mint alone. A follow-up owns it, and `HANDOFF.md` carries the action
+under H-46.
 
 #### Fences (R7)
 
 | Rule | Fence |
 |---|---|
+| A tier that binds the declared task serves it directly | `test_customer_console_router.py` — a `task: vision` call on a bound `tier-vision` is a 200, and a second vision tier with an unheard-of slug serves itself too |
 | A chat model that reads images serves the image itself | `test_customer_console_router.py` — `TestTheRouterImageRule`, a TRUE flag calls exactly one model |
 | A chat model that reads no image falls to `tier-vision` | `test_customer_console_router.py` — a FALSE flag, and an ABSENT profile row, both call the `tier-vision` chain |
 | An image refusal names the reason | `test_customer_console_router.py` — a missing `tier-vision` returns 400, calls no provider, and writes no completion |
@@ -1305,6 +1353,7 @@ agent breaks it.
 | Money leaves the API as a string | `test_customer_console_key_auth.py` — no float in a spend body |
 | A tier slug never changes | `test_index_completeness.py` sibling — the slug set is append-only |
 | An image refusal names the reason | `test_customer_console_router.py` — a missing `tier-vision` returns 400, never a text-only answer |
+| A tier that binds the declared task serves it | `test_customer_console_router.py` — a `task: vision` call on a bound `tier-vision` is a 200, and the image rule does not run |
 | A chat model that reads images costs ONE call | `test_customer_console_router.py` — a `task: vision` call on a TRUE flag calls exactly one model |
 | The meter says what the CUSTOMER asked for | `test_customer_console_router.py` — a lifted vision call writes `task = vision` and bills the `chat` pair |
 | Every step of a chain shares one date | `test_customer_console_fallback_chain.py` — two dates resolve as two chains, and the first choice disappears |

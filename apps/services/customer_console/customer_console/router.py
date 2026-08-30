@@ -240,29 +240,50 @@ def resolve_vision_chain(
     ``messages`` — inferring the task from an ``image_url`` part is exactly the
     inference D32.7 is hostile to.
 
-    Two answers, and the money is the whole reason for the first one:
+    🔴 **A TIER THAT BINDS THE DECLARED TASK SERVES IT DIRECTLY** (§3.2 step
+    0.5). The image rule runs only for a tier that does not. This is the first
+    read below, and it is not an optimisation: a caller that names
+    :data:`VISION_TIER` itself, or any second vision tier an operator adds,
+    binds ``vision`` and binds no ``chat`` model at all. Reading the chat
+    binding first told that caller *"no binding for tier 'tier-vision' on task
+    'vision'"*, which is FALSE — the binding it names is right there. Measured
+    on 2026-08-31, and it was a 200 before this slice.
 
-    1. The chosen tier's CHAT chain, when its primary model sets
+    Three answers, and the money is the reason for the second one:
+
+    1. The chosen tier's own ``vision`` chain, when the tier binds one. The
+       call bills (chosen tier, ``vision``), exactly as it did before D-AI-2.
+    2. The chosen tier's CHAT chain, when its rank-1 model sets
        ``reads_images``. One model answers, and the call bills the (chosen
        tier, ``chat``) pair. A second call to a vision model would cost a
        second call.
-    2. The :data:`VISION_TIER` chain otherwise, billing (``tier-vision``,
+    3. The :data:`VISION_TIER` chain otherwise, billing (``tier-vision``,
        ``vision``). This is a capability LIFT and not a degradation, so §6A.9
        rule 1 does not forbid it: the tier the customer picked does not drop,
        and every chat turn beside it stays where it was.
 
-    ⚠️ **The flag is read on the PRIMARY chat binding**, which is *the model
-    bound to the chosen tier* that §3.2 step 1 names. A chain whose BACKUP
-    disagrees with its primary is an operator warning the Console owes, not a
-    second resolution rule here.
+    ⚠️ **The flag is read on the RANK-1 chat binding**, which is *the model
+    bound to the chosen tier* that §3.2 step 1 names. A chain whose rank-2 step
+    disagrees with its rank-1 step is an operator warning the Console owes, and
+    §8.5 names the wrong answer that gap produces. It is not a second
+    resolution rule, and this function does not build one.
 
     Raises:
-        TierUnknown: the chosen tier binds no chat model at all (§3.2 step 0).
-            The caller answers this with the wall it already had, unchanged.
+        TierUnknown: the chosen tier binds neither ``vision`` nor ``chat``
+            (§3.2 step 0). The caller answers this with the wall it already
+            had, unchanged.
         VisionUnbound: the chat model reads no image and nothing binds
             :data:`VISION_TIER`. Both halves are down, and the sentence names
             both.
     """
+    try:
+        return resolve_chain(conn, tier, VISION_TASK)
+    except TierUnknown:
+        # The tier serves no vision task of its own, so D-AI-2 decides. Handled
+        # here rather than re-raised, because the chat binding below may still
+        # answer and a `raise` would end the resolution on a wall that is not
+        # yet a wall.
+        pass
     chat_chain = resolve_chain(conn, tier, CHAT_TASK)
     if reads_images(conn, chat_chain[0].model):
         return chat_chain

@@ -928,6 +928,24 @@ line — never reclaim a number by deleting the other entry.
   `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
   endpoint and H-47's handler seam are what is left. Keep this entry until
   those three land.
+- 🔴 **A SECOND finding rides here, from WS-31 slice 4 (D-AI-2), 2026-08-31.**
+  **A mixed lift chain answers about an image it never saw.**
+  `resolve_vision_chain` reads `model_profile.reads_images` on the RANK-1 step
+  of the chosen tier's chat chain, and nothing checks the steps behind it.
+  So rank 1 reads images, rank 1 fails, and the chain falls over to a blind
+  rank 2. The customer then gets a confident 200 about a picture that model
+  never saw. The meter files the turn as `vision`. This is the exact harm §3.2
+  names when it refuses to answer 200 at the image wall.
+  **Check:** `rg -n 'reads_images' apps/services/customer_console/customer_console/router.py`
+  → a single read, on `chat_chain[0].model`, means nobody has filtered the
+  chain yet.
+  **The fix shape:** keep only the steps that set `reads_images`, and fall to
+  `tier-vision` when none remain. It is a SECOND resolution rule, so §3.2 owes
+  the decision first — slice 4 did not mint one alone (CLAUDE.md §5).
+  **Not urgent, and say why:** nothing populates `reads_images` today and
+  nothing binds `tier-vision`, so the lift cannot fire. It becomes reachable
+  on the same day an operator runs the vendor feed. **Fix it before H-69.**
+  **Authority:** `ai_metering_and_analytics.md` §8.5 (the ⚠️ that states it).
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
   → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
   endpoint and the speak endpoint are still not built.
@@ -958,7 +976,8 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
   `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
 - **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
-  done-when section and the H-78 order
+  done-when section and the H-78 order · **amended 2026-08-31** with the
+  mixed-lift-chain finding from WS-31 slice 4
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present

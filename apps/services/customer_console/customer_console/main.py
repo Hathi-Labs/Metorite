@@ -4712,9 +4712,17 @@ def _record_refusal(
     refusal is a reporting gap. A refusal the customer never receives because
     the meter fell over is an outage, and the outage is worse.
 
-    ⚠️ **``tier`` is the tier the caller ASKED for, never a resolved one.** At
-    ``tier_unknown`` there is nothing to resolve, and the requested tier is the
-    fact A5 reports.
+    ⚠️ **``tier`` is the tier the caller can ACT on, and never a served one.**
+    A5 asks *"which wall did this customer hit"*, so the cell has to name the
+    thing somebody goes and repairs. At three of the four walls that is the
+    tier the caller ASKED for, because nothing resolved and the request itself
+    is the fact. At D-AI-2's image wall it is ``tier-vision``: the tier the
+    caller named binds a working chat model, the missing binding is the vision
+    one, and reporting the caller's tier there would send an operator to look
+    at a tier with nothing wrong with it. ``_resolve_serving_chain`` decides
+    which of the two travels, and this function never resolves anything itself.
+    *(This read "the tier the caller ASKED for, never a resolved one" until
+    2026-08-31, when the image wall made that sentence false.)*
 
     ⚠️ **Only a CUSTOMER wall reaches here.** The two 503s and the 502 are OUR
     failures and write no usage row at all — one table that mixes a customer
@@ -4810,9 +4818,10 @@ class _TierWall:
     """
 
     error: HTTPException | None
-    #: The tier a refusal row names. The one the CALLER asked for, except at
-    #: the image wall — there the missing binding is `tier-vision`, and that
-    #: is the fact A5 has to report.
+    #: The tier a refusal row names — the one the caller can ACT on.
+    #: :func:`_record_refusal` holds the rule and the reason. It is the tier
+    #: the CALLER asked for at every wall but the image one, where the missing
+    #: binding is `tier-vision` and the caller's own tier is not broken.
     tier: str
     #: The task a refusal row names, read the same way.
     task: str

@@ -2106,6 +2106,53 @@ class TestTheRouterImageRule:
     CHAT_MODEL = "deepseek/sees-images"
     BLIND_MODEL = "deepseek/reads-text-only"
 
+    # ── §3.2 step 0.5: a tier that binds the declared task serves it ──
+    def test_a_caller_that_NAMES_a_vision_tier_is_served_by_it(
+            self, client, org_key, db, calls, vision_bound):
+        """🔴 The regression this rule exists to stop.
+
+        `tier-vision` binds `vision` and binds NO chat model. A resolution
+        that reads the chat binding first answers *"no binding for tier
+        'tier-vision' on task 'vision'"*, which is false — the binding the
+        caller named is right there. That call was a 200 before D-AI-2, and it
+        stays one.
+        """
+        slug, key = org_key
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-vision", "task": "vision",
+            "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+        row = _last_row(db, slug)
+        # No lift and no fall. The tier the caller picked serves and bills.
+        assert row.tier == "tier-vision"
+        assert row.task == "vision"
+
+    def test_a_SECOND_vision_tier_serves_ITSELF_too(
+            self, client, org_key, db, calls):
+        """The rule reads the declared TASK, never a list of slugs.
+
+        An operator who adds a second vision tier tomorrow must not have to
+        edit the Router. This is why step 0.5 is stated about the task.
+        """
+        slug, key = org_key
+        tier = f"tier-eyes-{uuid.uuid4().hex[:8]}"
+        model = "deepseek/second-eyes"
+        with db.begin() as c:
+            c.execute(
+                text("INSERT INTO tier_binding (tier, task, model, rank, "
+                     "effective_from) VALUES (:t, 'vision', :m, 1, now())"),
+                {"t": tier, "m": model})
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [model]
+        assert _last_row(db, slug).tier == tier
+
     # ── clause 1: one model on a TRUE flag ──
     def test_a_chat_model_that_reads_images_serves_the_image_ITSELF(
             self, client, org_key, db, calls):
