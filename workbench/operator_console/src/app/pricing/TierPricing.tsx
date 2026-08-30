@@ -1,59 +1,36 @@
 "use client";
 
-// The pricing cockpit — what a CUSTOMER pays, per tier. D67, migration 015.
+// Set a price BY HAND — the manual lane of /pricing. D67, migration 015.
 //
-// 🔴 **This panel is the /pricing page's heart** (owner IA directive,
-// 2026-08-30 — it lived on /models, then /tiers, as the price key moved).
-// The customer buys a TIER; the model is our supply. /tiers answers "what
-// serves"; this page answers "what do we charge, and what do we keep".
+// 🔴 **Slimmed on the owner's read of the page (2026-08-30).** This panel
+// used to carry what-if assumption boxes and its own margin table, and
+// with the saved credit price (017), the price list and the price-from-
+// cost board above, both had become echoes — the owner's exact words were
+// "is this section repeated?". What is left is the ONE thing only this
+// form can do: name any price yourself, or mark a job absorbed (free on
+// purpose) or unpriced — the modes the method board never writes.
 //
-// ⚠️ **The two assumption boxes seed from the SAVED credit price (017)
-// and then belong to the operator.** Overtyping them is a what-if:
-// component state, dead on reload, never in a fetch body —
-// `pricing.test.ts` fences it. Saving a new FACT is the CreditPrice
-// panel's explicit POST, never a side effect of exploring here.
-//
-// ⚠️ **Margin is judged against the PRIMARY model of the chain.** The tier's
-// price holds while a failover serves a different model, so the margin on a
-// failover day differs from the number shown here — usually in our favour,
-// and /usage carries the per-call truth either way.
+// ⚠️ **All arithmetic runs on the SAVED credit price.** No local boxes:
+// one frame, saved once, read everywhere — exploring is the margin knob
+// above. The margin hints here judge the input leg of the chain's PRIMARY
+// model (D67): a failover moves our cost, never the customer's price.
 
 import { useMemo, useState } from "react";
 
-import { describeRate } from "@/lib/catalog";
-import type { AiCatalog, TierRate } from "@/lib/contract";
+import type { AiCatalog } from "@/lib/contract";
+import { savedAssumptions } from "@/lib/priceboard";
 import {
   type Assumptions,
   marginFraction,
   marginLabelPct,
-  parseAssumption,
   priceForMargin,
   roundCredits,
   usable,
   vendorCostCreditsPer1k,
 } from "@/lib/pricing";
-import { chipClass, pricingTone, type Tone } from "@/lib/tone";
-
-/** The colour a margin wears. Negative sells below cost and must shout. */
-function marginTone(f: number | null): Tone {
-  if (f === null) return "neutral";
-  if (f < 0) return "danger";
-  if (f < 0.3) return "warn";
-  return "ok";
-}
-
-/** "1.500000" → "1.5" — the wire is exact, the input box is for humans. */
-function seed(s: string | undefined): string {
-  return (s ?? "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
-}
 
 export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
-  const { tiers, tierRates, tasks, models, creditPrice } = catalog;
-  // Open by default: on its own page, the price table IS the page.
-  const [open, setOpen] = useState(true);
-  const [inrPerCredit, setInrPerCredit] = useState(
-    seed(creditPrice?.inrPerCredit));
-  const [inrPerUsd, setInrPerUsd] = useState(seed(creditPrice?.usdToInr));
+  const { tiers, tasks, models, creditPrice } = catalog;
 
   // The price form. D68: the tier decides its ONE job — no job picker.
   const [formOpen, setFormOpen] = useState(false);
@@ -66,10 +43,9 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const a: Assumptions = {
-    inrPerCredit: parseAssumption(inrPerCredit),
-    inrPerUsd: parseAssumption(inrPerUsd),
-  };
+  // The SAVED frame or nothing — hints go quiet rather than guessing.
+  const a: Assumptions =
+    savedAssumptions(creditPrice) ?? { inrPerCredit: null, inrPerUsd: null };
 
   const modelById = useMemo(
     () => new Map(models.map((m) => [m.id, m])),
@@ -87,15 +63,6 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
     return m;
   }, [tiers]);
 
-  // Bound jobs with no decided price: they answer customers and bill NOTHING.
-  const boundUnpriced = useMemo(() => {
-    const decided = new Set(
-      tierRates.filter((r) => r.mode !== "unpriced")
-        .map((r) => `${r.tier}::${r.task}`),
-    );
-    return [...primaryOf.keys()].filter((k) => !decided.has(k));
-  }, [tierRates, primaryOf]);
-
   // ⚠️ Only REGISTERED, CATEGORISED tiers are priceable — the Console
   // refuses both a ghost and the wrong kind of job (D68), so the picker
   // never offers either.
@@ -109,16 +76,6 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   const primary = modelById.get(primaryOf.get(`${tier}::${task}`) ?? "");
   const unit = tasks.find((t) => t.slug === task)?.natural_unit ?? "tokens";
   const tokenPriced = unit.includes("token");
-
-  /** The margin cell for one card row, judged on the input leg of the
-   *  chain's PRIMARY model. One number an operator can compare down the
-   *  column; the output leg usually carries a similar or better ratio. */
-  function rowMargin(r: TierRate): number | null {
-    if (r.mode !== "priced") return null;
-    const m = modelById.get(primaryOf.get(`${r.tier}::${r.task}`) ?? "");
-    if (!m) return null;
-    return marginFraction(Number(r.inputPer1k) || null, m.inputPer1M, a);
-  }
 
   function suggest(vendorPer1M: number | null): string {
     return roundCredits(priceForMargin(vendorPer1M, a, 0.7));
@@ -157,102 +114,16 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>What we charge</h2>
+        <h2>Set a price by hand</h2>
         <p>
-          The customer&apos;s price, in credits, per unit of each job —{" "}
-          not what the vendor charges us. It is keyed on the{" "}
-          <strong>tier they picked</strong>, never on the model that served
-          them (D67): a failover changes our cost, not their price. Setting a
-          number is a commercial decision, and it needs an elevated admin
-          session.
+          The manual lane: name the customer&apos;s price yourself —{" "}
+          not what the vendor charges us — or mark a job{" "}
+          <strong>absorbed</strong> (free on purpose) or{" "}
+          <strong>unpriced</strong>, which the board above never writes. The
+          price stays keyed on the tier they picked (D67), and saving needs
+          an elevated admin session.
         </p>
       </div>
-
-      {/* ── The operator's assumptions, for arithmetic only ── */}
-      <div className="assumptions">
-        <label>
-          One credit is ₹
-          <input
-            inputMode="decimal"
-            value={inrPerCredit}
-            onChange={(e) => setInrPerCredit(e.target.value)}
-            placeholder="1"
-          />
-        </label>
-        <label>
-          One dollar is ₹
-          <input
-            inputMode="decimal"
-            value={inrPerUsd}
-            onChange={(e) => setInrPerUsd(e.target.value)}
-            placeholder="88"
-          />
-        </label>
-        <span className="muted small">
-          {creditPrice
-            ? "Seeded from the saved credit price. Overtyping is a " +
-              "what-if: it moves the margins on this page and nothing else."
-            : "No credit price is saved yet (H-42) — save one above. " +
-              "Until then these hand-typed figures drive the margins, " +
-              "and they are stored nowhere."}
-        </span>
-      </div>
-
-      {boundUnpriced.length > 0 && (
-        <p className="resultline">
-          {boundUnpriced.length} bound{" "}
-          {boundUnpriced.length === 1 ? "job has" : "jobs have"} no price.
-          They will answer customers and charge nothing.
-        </p>
-      )}
-
-      {tierRates.length > 0 && (
-        <>
-          {open && (
-            <div style={{ overflowX: "auto" }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Tier</th>
-                    <th>Job</th>
-                    <th>State</th>
-                    <th>Charged</th>
-                    <th>Primary pays (in, $/1M)</th>
-                    <th>Margin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tierRates.map((r) => {
-                    const m = modelById.get(
-                      primaryOf.get(`${r.tier}::${r.task}`) ?? "");
-                    const frac = rowMargin(r);
-                    return (
-                      <tr key={`${r.tier}/${r.task}`}>
-                        <td className="mono">{r.tier}</td>
-                        <td>{tasks.find((t) => t.slug === r.task)?.label ?? r.task}</td>
-                        <td>
-                          <span className={chipClass(pricingTone(r.mode))}>{r.mode}</span>
-                        </td>
-                        <td>{describeRate(r)}</td>
-                        <td>{m?.inputPer1M ?? "—"}</td>
-                        <td>
-                          <span className={chipClass(marginTone(frac))}>
-                            {marginLabelPct(frac)}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          <button type="button" className="linklike" onClick={() => setOpen(!open)}>
-            {open ? "Hide the prices" : "Show the prices"}
-          </button>
-        </>
-      )}
 
       {/* ── Set a price ── */}
       {formOpen ? (

@@ -136,10 +136,11 @@ describe("rendering", () => {
   });
 });
 
-describe("the assumptions are stored NOWHERE", () => {
-  it("🔴 neither this module nor the rate panel persists them", () => {
-    // An invented exchange rate that SURVIVES becomes a fact. State only:
-    // gone on reload, asserted on the page as "used only here".
+describe("assumptions are the SAVED frame, stored by no surface", () => {
+  it("🔴 neither this module nor the hand form persists or retypes them", () => {
+    // The consolidation (owner read, 2026-08-30): the hand form lost its
+    // what-if boxes, so the saved credit price is the ONE frame — no
+    // local copy to disagree with it, nothing persisted from a page.
     const HERE = join(__dirname);
     const pricing = readFileSync(join(HERE, "pricing.ts"), "utf8");
     const panel = readFileSync(
@@ -149,8 +150,8 @@ describe("the assumptions are stored NOWHERE", () => {
       expect(src).not.toContain("sessionStorage");
       expect(src).not.toContain("document.cookie");
     }
-    // And no fetch carries them: the POST body is built from named rate
-    // fields, so the assumption names never appear near a body build.
+    expect(panel).toContain("savedAssumptions(");
+    expect(panel).not.toContain("setInrPerCredit");
     expect(panel).not.toMatch(/body:[\s\S]{0,400}inrPer/);
   });
 });
@@ -175,10 +176,13 @@ describe("the /pricing page wiring", () => {
     expect(header).toContain('label: "Pricing"');
   });
 
-  it("the price table starts OPEN on its own page", () => {
-    // On /tiers it was collapsed so the board stayed the page. Here the
-    // table IS the page — hiding it would leave the page empty.
-    expect(read("../app/pricing/TierPricing.tsx")).toContain("useState(true)");
+  it("the hand form carries no second price table and no what-if boxes", () => {
+    // The price list and the method board own reading; this panel only
+    // WRITES. A second table or a second pair of ₹ boxes is the echo the
+    // owner flagged ("is this section repeated?").
+    const panel = read("../app/pricing/TierPricing.tsx");
+    expect(panel).not.toContain("Show the prices");
+    expect(panel).not.toContain("assumptions");
   });
 
   it("🔴 the credit price panel sits ABOVE the cockpit it seeds (017)", () => {
@@ -188,11 +192,8 @@ describe("the /pricing page wiring", () => {
       page.indexOf("<TierPricing"));
   });
 
-  it("the cockpit seeds its assumptions from the SAVED price", () => {
-    // Seeded, not hardwired: the operator can still overtype a what-if,
-    // and the storage fence above proves the what-if goes nowhere.
+  it("the hand form's hints read the SAVED price, nothing local", () => {
     const panel = read("../app/pricing/TierPricing.tsx");
-    expect(panel).toContain("creditPrice?.inrPerCredit");
-    expect(panel).toContain("creditPrice?.usdToInr");
+    expect(panel).toContain("savedAssumptions(creditPrice)");
   });
 });

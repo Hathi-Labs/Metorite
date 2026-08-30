@@ -154,8 +154,10 @@ export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
                               `${sugg.in1k} in / ${sugg.out1k} out per 1k`
                             ) : (
                               <span className="muted small">
-                                vendor price unknown — record it on the
-                                Models page
+                                vendor price unknown —{" "}
+                                <a href="/models">fetch the vendor feed</a>{" "}
+                                and copy its facts onto the model, or type
+                                them by hand
                               </span>
                             )
                           ) : (
