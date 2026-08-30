@@ -301,6 +301,9 @@ class TestTheMigrationIsR6Safe:
 TOKEN = "test-operator-token"
 OP = {"Authorization": f"Bearer {TOKEN}"}
 
+#: The Router's own token — the only credential that may write the meter.
+INT = {"Authorization": "Bearer internal"}
+
 #: The same constant every Console suite uses. `provider_credential` decrypts
 #: with the env key at READ time, so a suite that minted its row under a
 #: different key would 503 here.
@@ -434,22 +437,57 @@ def gate_on(monkeypatch):
     monkeypatch.setenv("CUSTOMER_CONSOLE_SPEND_GATE", "1")
 
 
-def _transcribe(client, key, *, model="tier-stt", **fields):
+def _transcribe(client, key, *, model="tier-stt", audio=AUDIO,
+                filename="meeting.wav", headers=None, **fields):
     return client.post(
-        "/v1/audio/transcriptions", headers=key,
-        files={"file": ("meeting.wav", AUDIO, "audio/wav")},
+        "/v1/audio/transcriptions", headers={**key, **(headers or {})},
+        files={"file": (filename, audio, "audio/wav")},
         data={"model": model, **fields},
     )
+
+
+def _grant(client, slug: str, credits: str):
+    return client.post("/credits/grant", headers=OP,
+                       json={"org_slug": slug, "credits": credits})
+
+
+def _charge(client, org_id: str, credits: str, run_id: str):
+    """Draw a RUN down through the REAL metering path, never by editing it.
+
+    The internal token is the Router's own, and a customer key deliberately
+    cannot reach it. Seeding the run this way asserts the ceiling rather than
+    the test's patience — 500 credits is 388 stubbed completions.
+    """
+    return client.post("/usage/record", headers=INT, json={
+        "organization_id": org_id,
+        "request_id": f"seed-{uuid.uuid4().hex}",
+        "billed_credits": credits, "run_id": run_id, "model": "m"})
+
+
+_ROW_COLUMNS = (
+    "SELECT task, tier, model, quantity, unit, billed_credits, "
+    "       provider_cost_usd, refusal_reason, run_id "
+    "FROM usage_event WHERE organization_id = CAST(:o AS uuid)"
+)
 
 
 def _rows(db, org_id: str) -> list:
     """Every `usage_event` this organization has. A fresh org has none, so
     the count is a real assertion rather than a filter."""
     with db.begin() as c:
-        return c.execute(text(
-            "SELECT task, tier, model, quantity, unit, billed_credits, "
-            "       provider_cost_usd, refusal_reason "
-            "FROM usage_event WHERE organization_id = CAST(:o AS uuid)"),
+        return c.execute(text(_ROW_COLUMNS), {"o": org_id}).all()
+
+
+def _refusals(db, org_id: str) -> list:
+    """Only the rows that record a WALL.
+
+    ⚠️ Needed where the test SEEDS spend through `/usage/record`, which
+    writes a served row of its own. Counting every row would then count the
+    seed and say nothing about the refusal writer.
+    """
+    with db.begin() as c:
+        return c.execute(
+            text(_ROW_COLUMNS + " AND refusal_reason IS NOT NULL"),
             {"o": org_id}).all()
 
 
@@ -719,6 +757,33 @@ class TestARefusedCallWritesOneRow:
         assert rows[0].refusal_reason == "insufficient_credits"
         assert rows[0].unit == "minutes"
 
+    def test_the_403_writes_a_run_ceiling_row_in_minutes(
+            self, client, db, org_key, org_id, gate_on):
+        """The THIRD wall clause 10 names. §4.4's circuit breaker.
+
+        The balance is deliberately not the issue — 10,000 credits granted,
+        so a 402 here would be the wrong refusal. The RUN is spent to its
+        ceiling instead, which is the tripwire on one loop.
+        """
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        answer = _transcribe(client, key, headers={"X-CC-Run": "run-hot"})
+
+        assert answer.status_code == 403, answer.text
+        assert answer.json()["detail"]["reason"] == "run_ceiling_exceeded"
+
+        rows = _refusals(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "run_ceiling_exceeded"
+        assert rows[0].task == "transcribe"
+        assert rows[0].unit == "minutes"
+        # A `run_ceiling_exceeded` row without its run is not actionable, and
+        # the breaker reads the same field.
+        assert rows[0].run_id == "run-hot"
+        assert rows[0].billed_credits == Decimal(0)
+
     def test_a_refused_call_never_reaches_the_provider(
             self, client, org_key, gate_on, provider):
         _, key = org_key
@@ -737,6 +802,90 @@ class TestARefusedCallWritesOneRow:
             data={"model": "tier-stt"})
         assert answer.status_code == 401
         assert _count_all(db) == before
+
+
+class TestTheUploadCeilingAndTheEmptyFile:
+    """What the route does with the BODY, measured rather than assumed.
+
+    ⚠️ **The 413 bounds what we SEND, not what we accept.** Starlette parses
+    the whole multipart body into the `UploadFile` dependency before this
+    handler runs, and it spools above 1 MB to disk. So an over-large body is
+    read in full and then refused. §6A.10a records that bound and names the
+    acceptance-side cap as follow-up work for the owner.
+    """
+
+    def test_an_empty_file_is_forwarded_and_not_refused(
+            self, client, org_key, provider):
+        """🔴 DELIBERATE, and pinned so a change is visible.
+
+        The provider answers for empty audio, and the meter bills the zero
+        duration it reports. The Router does not decode audio, so refusing
+        here would mean guessing what is inside a file we never read.
+        """
+        _, key = org_key
+        answer = _transcribe(client, key, audio=b"", filename="silence.wav")
+
+        assert answer.status_code == 200
+        assert provider["calls"][-1]["file"].read() == b""
+
+    def test_an_empty_file_bills_the_duration_the_provider_reports(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        provider["reply"] = {"text": "", "usage": {"type": "duration",
+                                                   "seconds": 0}}
+        _, key = org_key
+        assert _transcribe(client, key, audio=b"").status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal(0)
+        assert rows[0].billed_credits == Decimal(0)
+
+    def test_an_oversize_upload_is_refused_413(
+            self, client, org_key, monkeypatch, provider):
+        from customer_console import main as main_mod
+        # The ceiling is lowered rather than a 26 MB body sent, because the
+        # subject is the REFUSAL and not the parser's throughput.
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        answer = _transcribe(client, key)
+
+        assert answer.status_code == 413
+        assert "is refused" in answer.json()["detail"]
+        assert provider["calls"] == []
+
+    def test_the_413_writes_no_usage_row(
+            self, client, db, org_key, org_id, monkeypatch):
+        """Migration 020's CHECK holds three slugs. A fourth spelling minted
+        for this wall is the thing §8.1 forbids."""
+        from customer_console import main as main_mod
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 413
+        assert _rows(db, org_id) == []
+
+    def test_the_body_read_comes_BEFORE_the_stream_check(
+            self, client, org_key, monkeypatch):
+        """📌 The ORDER, pinned. An over-large `stream=true` request answers
+        413 and never 400, because the handler cannot see the form field
+        until the body it rides on is already parsed."""
+        from customer_console import main as main_mod
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        answer = _transcribe(client, key, stream="true")
+
+        assert answer.status_code == 413
+
+    def test_a_body_under_the_ceiling_but_over_the_spool_still_serves(
+            self, client, org_key, provider):
+        """Starlette spools above 1 MB to disk, and the route reads it back.
+        A cap that only worked in memory would refuse real audio."""
+        _, key = org_key
+        big = b"x" * (2 * 1024 * 1024)
+        assert _transcribe(client, key, audio=big).status_code == 200
+        assert len(provider["calls"][-1]["file"].read()) == len(big)
 
 
 class TestTheProviderCallDispatchesOnTheCapabilityVerb:

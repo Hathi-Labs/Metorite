@@ -7857,10 +7857,38 @@ The clause text stays as the audit wrote it, because it is the contract the
 build answers. Match a `main.py` anchor by handler name, because the route
 moved every line number below it.
 
-⚠️ **The build added two agent defaults, and the owner may overrule both.**
-The route refuses an upload above 25 MB with a 413, which is the ceiling the
-OpenAI Whisper API states. It also holds the audio in memory, so a failover
-step can send the same bytes a second time.
+⚠️ **The build measured three things about the BODY. The owner may overrule
+the first, and the third is a deliberate non-wall.**
+
+1. **The route refuses an upload above 25 MB with a 413.** 25 MB is the
+   ceiling the OpenAI Whisper API states. A larger file buys a round trip and
+   a vendor refusal.
+
+   🔴 **That 413 bounds what we SEND, and NOT what we accept.** Measured on
+   Starlette 1.1.0. Starlette parses the whole multipart body into the
+   `UploadFile` dependency before the handler runs. It spools above 1 MB to
+   disk. So a 60 MB chunked body is read in full, written to disk, and only
+   then refused.
+
+   ⚠️ **Per-request memory, recorded as a KNOWN BOUND.** The route holds up
+   to 25 MB, and it copies those bytes again for each failover step it tries.
+   So one request in flight can hold about 50 MB. FastAPI's threadpool
+   defaults to 40 workers, and no global ceiling stands above that.
+
+   📌 **The acceptance-side cap is FOLLOW-UP WORK.** A body limit belongs in
+   the proxy in front of the service. That is deployment configuration, and
+   the owner owns it. Nothing added to `main.py` can refuse a body that
+   Starlette has already read.
+
+2. **The ORDER is body, then stream, then tier.** A handler cannot read a
+   form field until the body it rides on is parsed. So an over-large
+   `stream=true` request answers 413, and never the clause 2 400.
+
+3. **An empty file SERVES, and it is not a wall.** The provider answers for
+   empty audio, and the meter bills the zero duration it reports. The Router
+   never decodes audio. A refusal here would guess at what is inside a file
+   we did not read. `test_customer_console_tasks.py` pins the behaviour, so a
+   change to it stays visible.
 
 📌 **The audit measured every `main.py` anchor below on branch
 `ws-31-slice5-refusals`**, because this build stacks on the slice-5 base. That
@@ -7944,6 +7972,16 @@ call.
    true for it. A `transcribe` call carries the minutes instead. The usage row
    then holds that quantity and a `unit` of `minutes`.
    `tests/unit/test_customer_console_tasks.py` is the fence.
+
+   ⚠️ **`unit` lands NULL while NO `tier_rate_card` row exists for the
+   pair.** `_rate_completion` reads the unit off the CARD, and it returns
+   `(0, None)` when it finds none. That behaviour predates this slice, and
+   the slice did not change it. Migration 015 seeds no tier rates, so a NULL
+   unit is the SHIPPED state until the owner prices `tier-stt` (H-42, a
+   commercial act). The fence proves the plumbing against a priced fixture
+   card. Do not read it as a production guarantee.
+   📌 **An absent card does not touch `quantity`.** The route measures the
+   minutes, and the row records them whether or not a card exists.
 5. **Vendor cost reads `model_profile.vendor_per_minute_usd`.** H-78 builds
    that column. **The order is a PREFERENCE, not a condition.** *(Resolved
    2026-08-31. The clause held two arms that disagreed — one made H-78 a
