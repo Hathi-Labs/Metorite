@@ -4,6 +4,7 @@ import {
   catalog,
   billingSummary,
   listKeys,
+  creditLedger,
   ConsoleUnconfigured,
 } from "@/lib/console";
 import { staffSession } from "@/lib/session";
@@ -17,8 +18,11 @@ import {
   lifecycleHint,
   readMembers,
   readKeys,
+  readLedger,
+  ledgerAdds,
   type MemberRow,
   type KeyRow,
+  type LedgerRow,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -60,6 +64,13 @@ type Loaded = {
    * states the same way would tell an operator a leaked key does not exist.
    */
   keysError: string | null;
+  /** The credit ledger, newest first - the rows a bank transfer is verified
+   *  against BEFORE granting. Empty = none arrived. */
+  ledger: LedgerRow[];
+  /** Why the ledger is empty, or null when it arrived. A Console predating
+   *  the read answers 404; that is "this build cannot show it", never
+   *  "no entries". */
+  ledgerError: string | null;
   error: string | null;
 };
 
@@ -72,11 +83,12 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     // reach the Console as `breakglass` — past the role matrix, and logged
     // as a break-glass event on every page view.
     const d = { authToken };
-    const [listRes, catRes, sumRes, keysRes] = await Promise.all([
+    const [listRes, catRes, sumRes, keysRes, ledgerRes] = await Promise.all([
       listOrganizations(d),
       catalog(d),
       billingSummary(slug, d),
       listKeys(slug, d),
+      creditLedger(slug, d),
     ]);
     if (listRes.status !== 200) {
       return {
@@ -87,6 +99,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         membersError: null,
         keys: [],
         keysError: null,
+        ledger: [],
+        ledgerError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -126,6 +140,18 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       }
     }
 
+    let ledger: LedgerRow[] = [];
+    let ledgerError: string | null = null;
+    if (ledgerRes.status !== 200) {
+      ledgerError = `The ledger read returned ${ledgerRes.status}.`;
+    } else {
+      try {
+        ledger = readLedger(JSON.parse(ledgerRes.body));
+      } catch {
+        ledgerError = "The ledger read could not be parsed.";
+      }
+    }
+
     return {
       org,
       plans,
@@ -134,6 +160,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       membersError,
       keys,
       keysError,
+      ledger,
+      ledgerError,
       error: null,
     };
   } catch (e) {
@@ -145,6 +173,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       membersError: null,
       keys: [],
       keysError: null,
+      ledger: [],
+      ledgerError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -163,8 +193,10 @@ export default async function CustomerDetailPage({
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
-  const { org, plans, plansError, members, membersError, keys, keysError, error } =
-    await loadOrg(slug, gate.authToken);
+  const {
+    org, plans, plansError, members, membersError, keys, keysError,
+    ledger, ledgerError, error,
+  } = await loadOrg(slug, gate.authToken);
 
   if (error) {
     return (
@@ -313,6 +345,45 @@ export default async function CustomerDetailPage({
           access still work below.
         </div>
       )}
+
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Credit ledger</h2>
+        <p className="muted">
+          Every addition and draw, newest first. Verify a bank transfer HERE
+          before granting - a reference already on this list is already
+          credited, and the grant form will refuse it.
+        </p>
+        {ledgerError ? (
+          <p className="muted small">{ledgerError}</p>
+        ) : ledger.length === 0 ? (
+          <p className="muted small">
+            No entries yet. The first grant starts the history.
+          </p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Change</th>
+                <th>Reason</th>
+                <th>Reference</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ledger.map((row, i) => (
+                <tr key={`${row.created_at}-${i}`}>
+                  <td className="muted small">{formatDate(row.created_at)}</td>
+                  <td className={ledgerAdds(row) ? "ok-t" : ""}>
+                    {ledgerAdds(row) ? `+${row.delta}` : row.delta}
+                  </td>
+                  <td>{row.reason}</td>
+                  <td className="mono small">{row.ref ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       <Actions
         slug={org.slug}

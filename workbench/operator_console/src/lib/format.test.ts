@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   formatPaise,
   seatsDigest,
@@ -18,6 +20,8 @@ import {
   memberTally,
   readMembers,
   readKeys,
+  readLedger,
+  ledgerAdds,
   liveKeys,
   type SeatRow,
 } from "./format";
@@ -424,5 +428,47 @@ describe("liveKeys", () => {
 
   it("returns an empty list rather than throwing on no keys", () => {
     expect(liveKeys([])).toEqual([]);
+  });
+});
+
+describe("the credit ledger read (manual payments)", () => {
+  it("parses entries and keeps money as the STRINGS the Console sent", () => {
+    const rows = readLedger({
+      entries: [
+        { delta: "500.0000", reason: "manual", ref: "UTR-1",
+          created_at: "2026-08-30T10:00:00Z" },
+        { delta: "-1.2900", reason: "usage", ref: null,
+          created_at: "2026-08-30T11:00:00Z" },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].delta).toBe("500.0000");
+    expect(rows[1].ref).toBeNull();
+  });
+
+  it("a Console predating the read yields empty, not a crash", () => {
+    expect(readLedger({})).toEqual([]);
+    expect(readLedger(null)).toEqual([]);
+    expect(readLedger({ entries: "nope" })).toEqual([]);
+  });
+
+  it("ledgerAdds reads the sign, and only the sign", () => {
+    expect(ledgerAdds({ delta: "500.0000", reason: "manual", ref: null,
+      created_at: "" })).toBe(true);
+    expect(ledgerAdds({ delta: "-1.2900", reason: "usage", ref: null,
+      created_at: "" })).toBe(false);
+  });
+
+  it("the wiring: the page reads the ledger, the form demands a reference for manual", () => {
+    // No renderer runs here, so the wiring is fenced by source scan - the
+    // same idiom as catalog.test.ts. An unverifiable manual grant must not
+    // be one click away.
+    const page = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
+    expect(page).toContain("creditLedger");
+    expect(page).toContain("Credit ledger");
+    const actions = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
+    expect(actions).toContain('reason === "manual" && !ref.trim()');
   });
 });

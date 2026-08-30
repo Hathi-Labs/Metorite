@@ -3945,9 +3945,31 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
             raise HTTPException(status_code=403, detail="Forbidden") from None
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
+        # 🔴 The manual-payment fence (owner ask, 2026-08-30): the same
+        # (reason, ref) is refused with the FIRST row as evidence. A bank
+        # transfer's reference typed twice is the same money credited twice,
+        # and the operator finds out from a dispute unless it is refused
+        # here. An `adjustment` citing the same ref passes - different
+        # reason, and correcting a row is what it is for.
+        ref = (req.ref or "").strip() or None
+        if ref is not None:
+            prior = store.credit_ref_row(
+                conn, org_id=org_id, reason=req.reason, ref=ref)
+            if prior is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"reference {ref!r} was already credited as "
+                        f"{req.reason!r} on "
+                        f"{prior.created_at.date().isoformat()} "
+                        f"({prior.delta} credits). A correction is an "
+                        "'adjustment' citing the same reference - never a "
+                        "second grant."
+                    ),
+                )
         store.add_credit(
             conn, org_id=org_id, delta=req.credits,
-            reason=req.reason, ref=req.ref,
+            reason=req.reason, ref=ref,
         )
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
         _audit(conn, org_id, "credits.grant",
@@ -3955,6 +3977,34 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                actor=staff.actor)
 
     return {"balance": str(balance)}
+
+
+@app.get("/credits/ledger")
+def credit_ledger(org_slug: str, _: Operator, limit: int = 50) -> dict[str, Any]:
+    """The newest ledger rows - the evidence an operator verifies against.
+
+    ⚠️ VIEWER, the same argument as the balance and the audit trail: the
+    ledger is what a customer reads in a dispute, and an operator checking
+    "was this bank transfer already credited?" must not need a privilege to
+    look. It discloses no secret - deltas, reasons, references and dates.
+    """
+    limit = max(1, min(int(limit), 200))
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, org_slug)
+        rows = store.credit_ledger_rows(conn, org_id=org_id, limit=limit)
+    return {
+        "entries": [
+            {
+                # ⚠️ Money as STRINGS - NUMERIC(14,4) reformatted through a
+                # float is how a ledger stops summing to its balance.
+                "delta": str(r.delta),
+                "reason": r.reason,
+                "ref": r.ref,
+                "created_at": _iso(r.created_at),
+            }
+            for r in rows
+        ],
+    }
 
 
 @app.get("/credits/balance")

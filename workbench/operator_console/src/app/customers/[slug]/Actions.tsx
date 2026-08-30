@@ -399,16 +399,40 @@ function CreditsPanel({ slug }: { slug: string }) {
       <label>Reason</label>
       <select value={reason} onChange={(e) => setReason(e.target.value)}>
         <option value="grant">grant — included with their plan</option>
-        <option value="manual">manual — they bought a top-up</option>
+        <option value="manual">manual — they paid (bank transfer / offline)</option>
         <option value="adjustment">adjustment — correcting a mistake</option>
       </select>
-      <label>Reference (optional)</label>
+      <label>
+        {reason === "manual"
+          ? "Payment reference (required)"
+          : "Reference (optional)"}
+      </label>
       <input
         value={ref}
-        placeholder="invoice / note"
+        placeholder={reason === "manual" ? "UTR / bank reference" : "invoice / note"}
         onChange={(e) => setRef(e.target.value)}
       />
-      <button type="submit" disabled={busy || !credits.trim()}>
+      {/* ⚠️ The reference is the dedupe key: the Console refuses the same
+          (reason, reference) twice, naming the first row. A manual payment
+          WITHOUT a reference cannot be verified later, so the form will not
+          send one. */}
+      {reason === "manual" && (
+        <p className="muted small">
+          The Console refuses a reference it has already credited, so the
+          same transfer cannot be entered twice. Check the credit ledger
+          above if unsure. A correction is an{" "}
+          <i>adjustment</i> citing the same reference.
+        </p>
+      )}
+      <p className="muted small">
+        Grants above 15,000 credits need an elevated admin session.
+      </p>
+      <button
+        type="submit"
+        disabled={
+          busy || !credits.trim() || (reason === "manual" && !ref.trim())
+        }
+      >
         {busy ? "Adding…" : "Add credits"}
       </button>
       <ResultLine result={result} />

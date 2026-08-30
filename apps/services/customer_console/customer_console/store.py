@@ -32,6 +32,8 @@ __all__ = [
     "count_redemptions",
     "create_order",
     "credit_deltas",
+    "credit_ledger_rows",
+    "credit_ref_row",
     "cross_org_summary",
     "current_placement",
     "deployment_by_label",
@@ -404,6 +406,47 @@ def add_credit(conn: Connection, *, org_id: str, delta: Decimal,
         ),
         {"org": org_id, "delta": delta, "reason": reason, "ref": ref},
     )
+
+
+def credit_ref_row(conn: Connection, *, org_id: str, reason: str,
+                   ref: str) -> Any:
+    """The EARLIEST ledger row carrying this (reason, ref), or None.
+
+    🔴 The manual-payment fence: an operator crediting a bank transfer types
+    its reference, and typing the same reference twice is almost always the
+    same transfer entered twice. The grant route refuses the second write
+    and names this row, so the refusal carries its own evidence.
+
+    Keyed on (reason, ref) rather than ref alone, deliberately — an
+    `adjustment` correcting a `manual` row legitimately cites the SAME
+    reference, and must not be blocked by it.
+    """
+    return conn.execute(
+        text(
+            "SELECT delta, created_at FROM credit_ledger "
+            "WHERE organization_id = :org AND reason = :reason AND ref = :ref "
+            "ORDER BY created_at LIMIT 1"
+        ),
+        {"org": org_id, "reason": reason, "ref": ref},
+    ).first()
+
+
+def credit_ledger_rows(conn: Connection, *, org_id: str,
+                       limit: int = 50) -> list[Any]:
+    """The newest ledger rows, for the customer page's history panel.
+
+    ⚠️ Deltas leave here as they are stored — the caller stringifies. This
+    is the table a customer reads in a dispute, and the operator's view of
+    it must be the rows, not a reformatting of them.
+    """
+    return list(conn.execute(
+        text(
+            "SELECT delta, reason, ref, created_at FROM credit_ledger "
+            "WHERE organization_id = :org "
+            "ORDER BY created_at DESC, id LIMIT :lim"
+        ),
+        {"org": org_id, "lim": limit},
+    ))
 
 
 def record_usage(conn: Connection, *, org_id: str, request_id: str,
