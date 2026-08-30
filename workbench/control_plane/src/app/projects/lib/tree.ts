@@ -12,9 +12,57 @@ export interface ProjectNode {
   id: string;
   name: string;
   parent_project_id?: string | null;
+  kind?: string | null;
   status?: string | null;
   lead?: string | null;
   children?: ProjectNode[];
+}
+
+export type NodeKind = "project" | "folder";
+
+/** A row's kind. Absent/null reads as 'project' (R6 — migration 193). */
+export function nodeKind(node: Pick<ProjectNode, "kind">): NodeKind {
+  return node.kind === "folder" ? "folder" : "project";
+}
+
+export interface ChildOption {
+  kind: NodeKind;
+  label: string;
+}
+
+/**
+ * What the + on a row may create (owner directive 2026-08-31):
+ *
+ *     space (root) → [folder] → project → [folder] → subproject
+ *
+ * `generation` counts PROJECT levels at the node, itself included — a space
+ * is 1, a project 2, a subproject 3; a folder reports its parent's count
+ * (folders are transparent to depth). The server enforces the same grammar
+ * in `assert_node_grammar`; this table only decides which buttons exist,
+ * and the words on them.
+ */
+export function childCreationOptions(
+  kind: NodeKind,
+  generation: number
+): ChildOption[] {
+  if (kind === "folder") {
+    if (generation === 1) return [{ kind: "project", label: "New project" }];
+    if (generation === 2) return [{ kind: "project", label: "New subproject" }];
+    return [];
+  }
+  if (generation === 1) {
+    return [
+      { kind: "project", label: "New project" },
+      { kind: "folder", label: "New folder" },
+    ];
+  }
+  if (generation === 2) {
+    return [
+      { kind: "project", label: "New subproject" },
+      { kind: "folder", label: "New folder" },
+    ];
+  }
+  return [];
 }
 
 export interface ProjectGrant {

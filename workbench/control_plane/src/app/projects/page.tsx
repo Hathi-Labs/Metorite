@@ -103,7 +103,7 @@ import {
   visibleIds,
 } from "./lib/selection";
 import { fetchAccess } from "@/lib/access";
-import { filterByCenter, flatten } from "./lib/tree";
+import { filterByCenter, flatten, type NodeKind, nodeKind } from "./lib/tree";
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -174,7 +174,7 @@ function ProjectNav({
   mine: boolean;
   onMine: () => void;
   onSelect: (project: ProjectRow) => void;
-  onAddChild: (parent: ProjectRow) => void;
+  onAddChild: (parent: ProjectRow, kind: NodeKind) => void;
   /** Called after any navigation, so the phone's drawer can close. */
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
@@ -205,8 +205,8 @@ function ProjectNav({
           onSelect(project);
           onPicked?.();
         }}
-        onAddChild={(parent) => {
-          onAddChild(parent);
+        onAddChild={(parent, kind) => {
+          onAddChild(parent, kind);
           onPicked?.();
         }}
         actions={actions}
@@ -316,13 +316,13 @@ function ProjectsWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Creating a project: `undefined` = not creating, `null` = a new department
-  // at the root, a row = a subproject under it. Three states in one because
-  // "which parent" is the only question, and a separate boolean would let the
-  // two disagree.
-  const [creatingUnder, setCreatingUnder] = useState<ProjectRow | null | undefined>(
-    undefined
-  );
+  // Creating a node: `undefined` = not creating; otherwise the parent row
+  // (`null` = a new space at the root) plus WHAT to create there — the
+  // grammar's two questions, held together so they cannot disagree
+  // (migration 193: folders exist, and a + may offer either kind).
+  const [creating, setCreating] = useState<
+    { parent: ProjectRow | null; kind: NodeKind } | undefined
+  >(undefined);
   const [newName, setNewName] = useState("");
   const [newTask, setNewTask] = useState("");
   const [treeKey, setTreeKey] = useState(0);
@@ -583,17 +583,17 @@ function ProjectsWorkspace() {
       <div className="p-2">
         <div className="mb-2 flex items-center gap-1 px-2">
           <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {sheet === "tree" ? "Departments" : "View"}
+            {sheet === "tree" ? "Spaces" : "View"}
           </p>
           {sheet === "tree" ? (
-            // The rail's + button has to exist here too, or a new department
+            // The rail's + button has to exist here too, or a new space
             // is a thing you can only create on a desktop. The form itself
             // opens under the title row — see `projectForm`.
             <button
               type="button"
-              aria-label="New department"
+              aria-label="New space"
               onClick={() => {
-                setCreatingUnder(null);
+                setCreating({ parent: null, kind: "project" });
                 setNewName("");
                 setSheet(null);
               }}
@@ -613,8 +613,8 @@ function ProjectsWorkspace() {
               setMine(false);
               setSelected(project);
             }}
-            onAddChild={(parent) => {
-              setCreatingUnder(parent);
+            onAddChild={(parent, kind) => {
+              setCreating({ parent, kind });
               setNewName("");
             }}
             onPicked={() => setSheet(null)}
@@ -1164,15 +1164,18 @@ function ProjectsWorkspace() {
     try {
       const created = await projectsApi.createProject({
         name,
-        parent_project_id: creatingUnder ? creatingUnder.id : null,
+        parent_project_id: creating?.parent ? creating.parent.id : null,
+        // Sent only when it says something: omitted = 'project', and an old
+        // gateway mid-deploy (R6) never sees a field it does not know.
+        ...(creating?.kind === "folder" ? { kind: "folder" } : {}),
       });
       setNewName("");
-      setCreatingUnder(undefined);
+      setCreating(undefined);
       setTreeKey((k) => k + 1);
       // A subproject is not selectable until the refreshed tree carries it, so
       // only a new root is selected here — selecting a stale row would show an
       // empty board and read as a failed create.
-      if (!creatingUnder) {
+      if (!creating?.parent) {
         setMine(false);
         setSelected(created);
       }
@@ -1294,17 +1297,21 @@ function ProjectsWorkspace() {
    *  row on a phone, because a controlled input inside the shell's drawer
    *  would be re-injected on every keystroke. */
   const projectForm = (className: string) =>
-    creatingUnder === undefined ? null : (
+    creating === undefined ? null : (
       <form onSubmit={submitProject} className={className}>
         <input
           autoFocus
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") setCreatingUnder(undefined);
+            if (e.key === "Escape") setCreating(undefined);
           }}
           placeholder={
-            creatingUnder ? `Subproject of ${creatingUnder.name}` : "New department"
+            !creating.parent
+              ? "New space"
+              : creating.kind === "folder"
+                ? `New folder in ${creating.parent.name}`
+                : `New project in ${creating.parent.name}`
           }
           aria-label="Project name"
           className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
@@ -1446,11 +1453,13 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {!mine && selected ? (
+      {!mine && selected && nodeKind(selected) !== "folder" ? (
         // Capture-first here too: a title and Enter. Everything else about a
         // task — status, assignee, subtasks — is set from the panel once it
         // exists, because a create form that asks six questions is a create
-        // form people work around.
+        // form people work around. A FOLDER offers no composer at all: it
+        // holds projects, not tasks (migration 193), and the server refuses
+        // the write — the missing form says so before the 422 has to.
         <form onSubmit={submitTask} className="border-b border-border px-3 py-2">
           {prefillAssignee ? (
             // §6.4: the pre-fill is VISIBLE and dismissible — silently
@@ -1504,7 +1513,7 @@ function ProjectsWorkspace() {
           ) : !selected ? (
             renderState(
               "empty",
-              "Nothing here yet. Projects appear once a department is granted to you."
+              "Nothing here yet. Projects appear once a space is granted to you."
             )
           ) : mode === "timeline" ? (
             <TimelineView
@@ -1769,7 +1778,7 @@ function ProjectsWorkspace() {
         {/* The page's <h1>. The project name below is an <h2>, as it was. */}
         <h1 className="shrink-0 text-xs font-medium text-muted-foreground">Projects</h1>
         <span className="min-w-0 truncate text-xs text-muted-foreground">
-          {center ? `${center} Center's slice` : "Every department you can see"}
+          {center ? `${center} Center's slice` : "Every space you can see"}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button
@@ -1790,14 +1799,14 @@ function ProjectsWorkspace() {
           <nav className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
             <div className="mb-2 flex items-center gap-1 px-2">
               <p className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Departments
+                Spaces
               </p>
               <button
                 type="button"
-                aria-label="New department"
-                title="New department"
+                aria-label="New space"
+                title="New space"
                 onClick={() => {
-                  setCreatingUnder(null);
+                  setCreating({ parent: null, kind: "project" });
                   setNewName("");
                 }}
                 className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
@@ -1816,8 +1825,8 @@ function ProjectsWorkspace() {
                 setMine(false);
                 setSelected(project);
               }}
-              onAddChild={(parent) => {
-                setCreatingUnder(parent);
+              onAddChild={(parent, kind) => {
+                setCreating({ parent, kind });
                 setNewName("");
               }}
                 actions={projectMenuActions}

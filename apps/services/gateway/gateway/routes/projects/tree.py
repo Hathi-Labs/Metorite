@@ -29,8 +29,11 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     LIFECYCLE_FIELDS,
+    NODE_KINDS,
     PROJECT_SOURCES,
     RUN_STATES,
+    assert_node_grammar,
+    node_kind,
     GrantModel,
     ProjectIn,
     ProjectModel,
@@ -88,6 +91,52 @@ def _refuse_lifecycle_on_child(values: dict, parent_project_id: object) -> None:
                 f"policy governs its whole subtree. Set them on the root."
             ),
         )
+
+async def _project_generation(db, node_id: str) -> int:
+    """How many PROJECT generations sit at *node_id*, itself included.
+
+    Folders are transparent: a folder reports its nearest project
+    ancestor's count. A space is 1, a project 2, a subproject 3 — the
+    numbers `assert_node_grammar` caps (migration 193).
+    """
+    return int((await db.execute(
+        text(
+            "WITH RECURSIVE anc AS ("
+            "  SELECT id, parent_project_id, kind FROM pm_projects"
+            "    WHERE id = CAST(:pid AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, p.parent_project_id, p.kind FROM pm_projects p"
+            "    JOIN anc a ON p.id = a.parent_project_id"
+            ") SELECT count(*) FROM anc"
+            "   WHERE coalesce(kind, 'project') = 'project'"
+        ),
+        {"pid": node_id},
+    )).scalar() or 0)
+
+
+async def _subtree_project_depth(db, node_id: str) -> int:
+    """The longest PROJECT chain inside *node_id*'s subtree, itself included.
+
+    Folders contribute nothing to any chain. A lone project is 1, a lone
+    folder 0, a project with subprojects 2. A move re-checks the grammar
+    with this number, because a subtree keeps its internal shape wherever
+    it lands.
+    """
+    return int((await db.execute(
+        text(
+            "WITH RECURSIVE sub AS ("
+            "  SELECT id, CASE WHEN coalesce(kind, 'project') = 'project'"
+            "    THEN 1 ELSE 0 END AS d"
+            "  FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, s.d + CASE WHEN coalesce(p.kind, 'project')"
+            "    = 'project' THEN 1 ELSE 0 END"
+            "  FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
+            ") SELECT coalesce(max(d), 0) FROM sub"
+        ),
+        {"pid": node_id},
+    )).scalar() or 0)
+
 
 #: Seeded on every ROOT project. The owner reshapes these in the app; they exist
 #: so a new project has a working board on its first render rather than an empty
@@ -252,19 +301,38 @@ async def create_node(
     # POST /nodes/{id}/archive.
     validate_choice(values.get("status"), RUN_STATES, "project status")
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
+    validate_choice(values.get("kind"), NODE_KINDS, "node kind")
     validate_lifecycle_settings(values)
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
+    kind = node_kind(values.get("kind"))
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         parent_id = values.get("parent_project_id")
+        parent_row = None
         if parent_id:
             # Creating INSIDE a project requires seeing it — otherwise a caller
             # could graft a subtree onto another department by guessing an id,
             # and inherit that department's grants for it.
-            await load_visible_project(db, vis, str(parent_id))
+            parent_row = await load_visible_project(db, vis, str(parent_id))
+
+        # The tree grammar (migration 193): space → [folder] → project →
+        # [folder] → subproject, and stop. Checked before the org resolve so
+        # a bad shape is refused as a shape, not as a permission.
+        assert_node_grammar(
+            kind=kind,
+            parent_kind=(
+                node_kind(getattr(parent_row, "kind", None))
+                if parent_row is not None else None
+            ),
+            parent_generation=(
+                await _project_generation(db, str(parent_id))
+                if parent_id else 0
+            ),
+            subtree_depth=1 if kind == "project" else 0,
+        )
 
         # WS-29a. This is the ONE place in the package that decides a tenant:
         # `pm_projects` is the root of every other `pm_*` row, and migration
@@ -324,6 +392,14 @@ async def patch_node(
             status_code=422,
             detail="Use POST /projects/nodes/{id}/move to re-parent a project.",
         )
+    # A kind is set at creation and never changes: a folder becoming a
+    # project (or back) would re-shape the tree without passing the grammar,
+    # and every rule in `assert_node_grammar` could be dodged that way.
+    if "kind" in values:
+        raise HTTPException(
+            status_code=422,
+            detail="A node's kind is set at creation and cannot change.",
+        )
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -364,11 +440,28 @@ async def move_node(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        moved = await load_visible_project(db, vis, project_id)
         new_parent = payload.parent_project_id
+        parent_row = None
         if new_parent:
-            await load_visible_project(db, vis, str(new_parent))
+            parent_row = await load_visible_project(db, vis, str(new_parent))
         await assert_no_project_cycle(db, project_id, new_parent)
+
+        # The grammar holds through a move, with the subtree's own shape in
+        # the sum: a project that carries subprojects cannot land under a
+        # project, and a folder cannot land under a folder (migration 193).
+        assert_node_grammar(
+            kind=node_kind(getattr(moved, "kind", None)),
+            parent_kind=(
+                node_kind(getattr(parent_row, "kind", None))
+                if parent_row is not None else None
+            ),
+            parent_generation=(
+                await _project_generation(db, str(new_parent))
+                if new_parent else 0
+            ),
+            subtree_depth=await _subtree_project_depth(db, project_id),
+        )
 
         values: dict[str, Any] = {"parent_project_id": new_parent}
         if payload.position is not None:

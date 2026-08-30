@@ -121,6 +121,14 @@ export function projectMenuItems(
     items.push({ kind: "sep" });
   }
 
+  // A folder has no run state of its own (migration 193): it groups, and
+  // its children inherit state from the nearest PROJECT ancestor. Offering
+  // the list would write `status` onto a row nothing reads it from.
+  if (project.kind === "folder") {
+    items.push(...archiveItems(project, handlers, archived));
+    return items;
+  }
+
   items.push({ kind: "label", label: "Run state" });
 
   for (const state of PROJECT_STATE_ORDER) {
@@ -138,10 +146,23 @@ export function projectMenuItems(
   }
 
   items.push({ kind: "sep" });
+  items.push(...archiveItems(project, handlers, archived));
 
-  // The other axis (D-PM-25): filing is not a run state, so it is not in the
-  // list above. Exactly one of the two is ever offered.
-  items.push(
+  return items;
+}
+
+/**
+ * The other axis (D-PM-25): filing is not a run state, so it is not in the
+ * state list. Exactly one of the two is ever offered — and it is offered on
+ * folders too, because filing a grouping node files its subtree, which is
+ * exactly what grouping is for.
+ */
+function archiveItems(
+  project: ProjectRow,
+  handlers: ProjectMenuHandlers,
+  archived: boolean
+): ProjectMenuItem[] {
+  return [
     archived
       ? {
           kind: "item",
@@ -154,8 +175,6 @@ export function projectMenuItems(
           label: "Archive",
           icon: "Archive",
           onSelect: () => handlers.onArchive(project),
-        }
-  );
-
-  return items;
+        },
+  ];
 }

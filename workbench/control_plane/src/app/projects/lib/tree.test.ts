@@ -10,10 +10,12 @@ import { describe, expect, it } from "vitest";
 import {
   type ProjectNode,
   canMoveUnder,
+  childCreationOptions,
   effectiveState,
   filterByCenter,
   flatten,
   moreRestrictive,
+  nodeKind,
   ownState,
   pathTo,
   subtreeIds,
@@ -181,5 +183,50 @@ describe("effective run state", () => {
       state: "on_hold",
       inherited: true,
     });
+  });
+});
+
+describe("childCreationOptions — the grammar's UI half (migration 193)", () => {
+  // space (root) → [folder] → project → [folder] → subproject, and stop.
+  // The server refuses what these rows never offer (assert_node_grammar);
+  // this table decides which buttons exist and the words on them.
+
+  it("a space offers a project and a folder", () => {
+    expect(childCreationOptions("project", 1)).toEqual([
+      { kind: "project", label: "New project" },
+      { kind: "folder", label: "New folder" },
+    ]);
+  });
+
+  it("a project offers a subproject and a folder", () => {
+    expect(childCreationOptions("project", 2)).toEqual([
+      { kind: "project", label: "New subproject" },
+      { kind: "folder", label: "New folder" },
+    ]);
+  });
+
+  it("a subproject offers NOTHING — it is the floor", () => {
+    expect(childCreationOptions("project", 3)).toEqual([]);
+  });
+
+  it("a folder offers only the one kind its level holds", () => {
+    expect(childCreationOptions("folder", 1)).toEqual([
+      { kind: "project", label: "New project" },
+    ]);
+    expect(childCreationOptions("folder", 2)).toEqual([
+      { kind: "project", label: "New subproject" },
+    ]);
+  });
+
+  it("a folder at the floor offers nothing, same as the server refuses", () => {
+    expect(childCreationOptions("folder", 3)).toEqual([]);
+  });
+});
+
+describe("nodeKind — NULL reads as project (R6)", () => {
+  it("resolves absent, null and unknown to project", () => {
+    expect(nodeKind({})).toBe("project");
+    expect(nodeKind({ kind: null })).toBe("project");
+    expect(nodeKind({ kind: "folder" })).toBe("folder");
   });
 });

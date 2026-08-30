@@ -209,7 +209,7 @@ const PROJECT_COMMANDS: Command[] = [
     id: "project.rail",
     label: "Show or hide the project tree",
     section: "Project",
-    keywords: ["sidebar", "rail", "departments", "collapse"],
+    keywords: ["sidebar", "rail", "spaces", "departments", "collapse"],
     icon: "PanelLeftClose",
     when: (ctx) => ctx.canToggleRail,
     run: (actions) => actions.toggleRail(),

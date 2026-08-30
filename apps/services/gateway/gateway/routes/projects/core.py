@@ -227,6 +227,71 @@ ACTIVITY_TYPES: tuple[str, ...] = (
 PROJECT_SOURCES: tuple[str, ...] = ("manual", "import", "agent")
 TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
 
+#: Node kinds in the projects tree (migration 193). Mirrors the CHECK the
+#: migration adds — test_projects_node_kind.py reads the SQL file, because a
+#: hand-mirrored constraint without that test is a comment claiming to be an
+#: invariant (the migration-150 lesson).
+NODE_KINDS: tuple[str, ...] = ("project", "folder")
+
+#: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
+#: Folders are transparent to this count and never extend it.
+MAX_PROJECT_GENERATIONS = 3
+
+
+def node_kind(value: object) -> str:
+    """Resolve a row's kind. NULL reads as 'project' (R6 expand)."""
+    return str(value or "project")
+
+
+def assert_node_grammar(
+    *,
+    kind: str,
+    parent_kind: str | None,
+    parent_generation: int,
+    subtree_depth: int = 1,
+) -> None:
+    """The tree grammar, as one pure function (owner directive 2026-08-31).
+
+    space (root) → [folder] → project → [folder] → subproject — and stop.
+
+    ``parent_kind`` is None at a root. ``parent_generation`` counts the
+    parent's PROJECT ancestors, itself included (a folder reports its
+    nearest project ancestor's count). ``subtree_depth`` is the longest
+    project chain inside the node being placed, itself included — 1 for a
+    new project, 0 for a new folder, larger when a move carries a subtree.
+
+    Pure on purpose: create and move both call it, and the hermetic suite
+    can exercise every refusal without a database (R8 stays honest — the
+    SQL that FEEDS these numbers is proven against a real ladder).
+    """
+    if kind == "folder":
+        if parent_kind is None:
+            raise HTTPException(
+                status_code=422,
+                detail="A folder cannot be a space. Create it inside a "
+                       "space or a project.",
+            )
+        if parent_kind == "folder":
+            raise HTTPException(
+                status_code=422, detail="A folder cannot hold another folder.",
+            )
+        # max(_, 1): an EMPTY folder still reserves one generation for the
+        # children it exists to hold — a folder under a subproject could
+        # legally contain nothing, which is a refusal, not a placement.
+        if parent_generation + max(subtree_depth, 1) > MAX_PROJECT_GENERATIONS:
+            raise HTTPException(
+                status_code=422,
+                detail="Too deep: a folder here could only hold nodes below "
+                       "the subproject level, and subprojects are the floor.",
+            )
+        return
+    if parent_generation + subtree_depth > MAX_PROJECT_GENERATIONS:
+        raise HTTPException(
+            status_code=422,
+            detail="A subproject is the lowest level — it cannot contain "
+                   "projects. Break the work down with tasks and subtasks.",
+        )
+
 #: The one system task type. Its only rule — an Epic cannot have a parent —
 #: makes it structurally the root level (§3.4). There is deliberately no
 #: 'Subtask' type: a subtask is a task with a parent.
@@ -263,6 +328,9 @@ class ProjectModel(BaseModel):
     name: str
     description: str | None = None
     parent_project_id: str | None = None
+    #: 'project' or 'folder' (migration 193). NULL rows read as 'project' —
+    #: resolve through `node_kind`, never `row.kind` directly.
+    kind: str | None = None
     task_prefix: str | None = None
     status: str = "active"
     lead: str | None = None
@@ -289,6 +357,9 @@ class ProjectIn(BaseModel):
     name: str | None = None
     description: str | None = None
     parent_project_id: str | None = None
+    # Create-time only: the write path refuses a kind change on PATCH — a
+    # folder full of subprojects becoming a project would dodge the grammar.
+    kind: str | None = None
     task_prefix: str | None = None
     status: str | None = None
     lead: str | None = None

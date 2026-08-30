@@ -22,6 +22,11 @@ export interface ProjectRow {
   name: string;
   description?: string | null;
   parent_project_id?: string | null;
+  /**
+   * 'project' | 'folder' (migration 193). Absent/null reads as 'project' —
+   * resolve through `nodeKind()` in lib/tree.ts, never directly.
+   */
+  kind?: string | null;
   status?: string | null;
   lead?: string | null;
   // ⚠️ Provenance of rows imported BEFORE the 2026-08-24 retirement (D52).
