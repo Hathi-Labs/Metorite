@@ -314,6 +314,19 @@ verification once** and rebuilt (see its ticket) ·
 **CP-7 ◐ SLICE 1 BUILT 2026-08-28** — the two spend READS. The cap ENGINE
 stays unwired, because the member identity it would rest on is a request
 header (**H-73**) · CP-8 spec only ·
+**⚠️ THE MIGRATION LADDER AND THE §6A SECTIONS, REFRESHED 2026-08-30.**
+`infra/customer_console/` holds **001–018**. The next free number is **019**.
+R1 says list the directory at build time and re-check at merge. `014` is the
+vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
+`tier_rate_card`, the eleven-tier slate and the `video` and `music` task rows
+(§6A.12, D67). `016` adds `tier_catalog.task` (D68). `017` adds `credit_price`,
+the rupee side of H-42 (§6A.13). `018` adds the credit-reference unique index.
+Three §6A sections carry the 2026-08-30 work: **§6A.11** the vendor feed,
+**§6A.12** tier pricing and the slate, and **§6A.13** the credit's own price.
+**§6A.11a is SPEC ONLY.** It holds the per-unit vendor costs (H-78), written
+2026-08-30 as agent-proposed defaults the owner may overrule (D16/D17). ⚠️ The
+sentence further down that reads *"the ladder is 001–007 … the next free number
+is 008"* was true on 2026-08-18. This line supersedes it. ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
 half of CP-4's done-when that was never met (`stream: true` returned 501).
 The 501 and its two fences are gone, and CP-4's ✅ now stands whole ·
@@ -7841,6 +7854,191 @@ Decimal from the first parse, so trailing zeros never read as drift.
 **Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py`
 against a real Postgres (R8). Frontend: `feed.test.ts` inside
 `npx vitest run` in `workbench/operator_console`.
+
+⚠️ **The feed stores TOKEN prices only, and §6A.11a is the ticket that
+widens it.** `014` holds three per-million-token columns and no per-second,
+per-character or per-image column. So an `image`, `transcribe` or `speak`
+job has no cost source. H-78 is that gap, and §6A.11a below carries its
+rules and its done-when.
+
+### 6A.11a The per-unit vendor costs (H-78) — SPEC ONLY, 2026-08-30
+
+**Nothing below is built.** Every default here is an **agent-proposed
+answer the owner may overrule**, which is the D16/D17 convention CP-2b and
+CP-2c used. Where a name or a number below disagrees with the tree, the
+tree wins. Re-verify every anchor at dispatch.
+
+**The problem.** The "Price from cost" panel (§6A.13) reads a job's cost
+from the first model of its chain. That model carries token prices and
+nothing else. So an `image`, `transcribe` or `speak` job shows no cost, and
+the operator types the vendor's dollar price by hand.
+
+**The answer, in one line.** The feed stores the vendor's per-unit price in
+the vendor's own unit. The profile stores the same price in the task's
+natural unit. The board reads the profile.
+
+#### The feed columns — migration `019`
+
+⚠️ **Take the migration number at build time, and again at merge (R1).**
+The highest number on disk on 2026-08-30 is `018_credit_ref_unique.sql`, so
+`019` is free today. List `infra/customer_console/` before you name the
+file.
+
+R6 binds the migration. Add nullable columns. Rename nothing. Drop nothing.
+
+`vendor_price_feed` (`014`) gains three columns:
+
+| Column | Type | What it holds |
+|---|---|---|
+| `vendor_per_second_usd` | `NUMERIC(18, 10)` | USD per second of audio, verbatim from upstream |
+| `vendor_per_character_usd` | `NUMERIC(18, 10)` | USD per character of input text, verbatim |
+| `vendor_per_image_usd` | `NUMERIC(18, 10)` | USD per generated image, verbatim |
+
+Three rules bind the three columns. NULL means litellm does not know, and
+NULL never means zero. The `vendor_price_feed_sane` CHECK gains one
+`>= 0` clause per column. The feed stores the vendor's own number in the
+vendor's own unit, unconverted, because the feed is a cache of upstream
+claims.
+
+⚠️ **The width is wider than `014`'s on purpose.** `014` sizes its money
+columns for a per-MILLION token price, which is a dollar-scale number. A
+raw per-unit price is much smaller. `input_cost_per_character` measures
+`0.000015` on OpenAI text-to-speech today. Ten decimal places keep a
+cheaper future model from rounding to zero.
+
+#### The parse rules — one litellm field per task
+
+`feed.py` reads exactly one field per task. The counts come from the
+packaged litellm snapshot, measured on 2026-08-30.
+
+| Task | litellm `mode` | Field the parser reads | Why this field |
+|---|---|---|---|
+| `transcribe` | `audio_transcription` | `input_cost_per_second` | 45 of 57 entries carry it |
+| `speak` | `audio_speech` | `input_cost_per_character` | 21 of 27 entries carry it |
+| `image` | `image_generation` | `output_cost_per_image`, then `input_cost_per_image` | 90 entries carry the first, 60 the second |
+
+⚠️ **`transcribe` reads the input field alone and ignores the output
+field.** `whisper-1` sets `input_cost_per_second` and
+`output_cost_per_second` to the same `0.0001`, so a sum charges twice.
+`assemblyai/best` sets the output field to `0.0`, so a sum is right for one
+vendor and wrong for the other. One field is the only rule that holds for
+both.
+
+**The image order is a fallback, not a sum.** The parser takes
+`output_cost_per_image` when the entry carries it. It falls back to
+`input_cost_per_image`. It stops there.
+
+⚠️ **Named non-goal: a pixel-priced or token-priced image model stays
+NULL.** 45 entries price by `input_cost_per_pixel` and 38 by
+`output_cost_per_pixel`. 60 entries carry no per-image field at all, and
+that set holds every `azure/*/gpt-image-1`. A pixel price needs an image
+size before it becomes a price per image, and the feed holds no size. Those
+rows keep NULL, and the console draws a dash.
+
+#### The profile columns — the task's natural unit
+
+`model_profile` (`012`) gains three columns. Each one carries the unit
+`task_catalog` (`010`) names for that task.
+
+| Column | Type | Task | `task_catalog.natural_unit` |
+|---|---|---|---|
+| `vendor_per_minute_usd` | `NUMERIC(18, 10)` | `transcribe` | `minutes` |
+| `vendor_per_character_usd` | `NUMERIC(18, 10)` | `speak` | `characters` |
+| `vendor_per_image_usd` | `NUMERIC(18, 10)` | `image` | `images` |
+
+⚠️ **Seconds against minutes is the trap, and it is why the two tables
+disagree on purpose.** The litellm map prices transcription per SECOND.
+`task_catalog` prices `transcribe` per MINUTE. The ×60 conversion happens
+ONCE, server-side, at the declare-and-prefill seam that copies a feed row
+onto a profile row. It happens nowhere else, and no other caller multiplies
+by 60.
+
+Three rules bind the conversion. The maths stays `Decimal` from the parse
+to the write, with no float on the path. The conversion multiplies by
+`Decimal(60)` and quantizes to the column. A test pins one per-second feed
+price to its exact per-minute profile value.
+
+`model_profile_positive` gains one `>= 0` clause per new column. NULL keeps
+the meaning `012` gave it: nobody has told us.
+
+#### What reads what
+
+The console board and the `/models` cards read the PROFILE for cost. They
+never read the feed for cost. The feed surface stays what §6A.11 made it:
+`rows` for drift, and `available` for the connected vendors.
+
+The principle does not change. Billing cost reads `model_profile`, and only
+a staff write changes that table. The feed makes that write a one-click
+copy. `read.ts` already builds `catalog.models` out of `model_profile`, and
+`PriceFromCost.tsx` already reads `catalog.models`. So the board gains
+three fields on a shape it consumes today.
+
+#### Non-goals — four, each named
+
+- **`music` gets no data from this source.** litellm has no `music` mode.
+  The `music` task row that `015_tier_pricing.sql` created stays in
+  `task_catalog`, and `tier-music` stays on the slate. A tier with no cost
+  source is honest. A parse rule for a mode that does not exist is not.
+- **`video_generation` waits for a Router verb.** The litellm map names the
+  mode `video_generation`. It carries `output_cost_per_second` on 13
+  entries and `output_cost_per_video_per_second` on 12. `MODE_MAP` in
+  `feed.py` does not map it. A mapping needs a sixth verb in
+  `KNOWN_INVOCATIONS` (`catalog.py`). `015_tier_pricing.sql` refuses a
+  video capability until that verb lands. This slice adds no verb. The
+  follow-up rides with **H-46** (the Router's non-chat endpoints, shape
+  decided by D61.1) and with the G-1 line above.
+- **A size-keyed image row informs, and nobody can declare it.** The
+  litellm map keys many image entries by size and quality, such as
+  `1024-x-1024/dall-e-2`. `feed.py` normalises that key to
+  `openai/1024-x-1024/dall-e-2`. No Router grammar and no `tier_binding`
+  can use that id. Rows of that shape sit in the table today. This slice
+  records the structural gap and changes nothing. A parse rule that lifts
+  the size out of the key is a separate ticket.
+- **The Router stays token-only in this slice.** No per-second,
+  per-character or per-image cost maths lands in the Router.
+  `usage_event.provider_cost_usd` keeps its token maths. Nothing needs the
+  change yet, because **H-46** has built no non-chat endpoint. So no
+  non-chat call can reach the meter.
+
+#### Done when — one clause per artefact
+
+1. **The migration.** `019` adds the three feed columns and the three
+   profile columns named above. Every new column is nullable. Each table's
+   CHECK gains one `>= 0` clause per new column.
+2. **The number.** An agent lists `infra/customer_console/` at build time.
+   The merge re-checks it (R1).
+3. **`feed.py` parses.** `FeedRow` carries the three new fields.
+   `parse_feed` fills them per the table above. `transcribe` reads
+   `input_cost_per_second` alone. The upsert writes all three columns.
+4. **`feed.py` refuses garbage the same way.** A negative, a NaN, an
+   Infinity or a non-number leaves the field NULL. That is `_per_1m`'s
+   rule today.
+5. **The declare-and-prefill seam converts once.** The one server-side copy
+   multiplies the per-second price by `Decimal(60)`. It writes
+   `vendor_per_minute_usd`. The other two fields copy across unchanged.
+6. **`GET /catalog/models` carries them.** The profile block sends the
+   three new fields as strings. That is the money-as-strings rule.
+7. **`read.ts` and the board.** `CatalogModel` gains `perMinuteUsd`,
+   `perCharacterUsd` and `perImageUsd`. Each one reads the profile and
+   nothing else. `PriceFromCost.tsx` fills the vendor-cost box for an
+   `image`, `transcribe` or `speak` job.
+8. **The non-goals hold.** `MODE_MAP` gains no entry. `KNOWN_INVOCATIONS`
+   gains no verb. No migration drops the `music` task.
+
+#### Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| A per-unit vendor cost parses in the vendor's unit and declares in the task's unit | `test_customer_console_vendor_feed.py` — a per-second feed price declares as ×60 per-minute on the profile, Decimal-exact |
+| `transcribe` never sums the two per-second fields | `test_customer_console_vendor_feed.py` — `whisper-1` parses to `0.0001`, not `0.0002` |
+| An image entry prefers the output field | `test_customer_console_vendor_feed.py` — an entry carrying both fields takes `output_cost_per_image` |
+| A pixel-priced image model declares no cost | `test_customer_console_vendor_feed.py` — an `azure/*/gpt-image-1` entry leaves the per-image column NULL |
+| A small per-character price survives the round trip | `test_customer_console_vendor_feed.py` — `0.000015` reads back exact |
+| The board reads the profile, never the feed | `read.test.ts` — a feed row with a cost and no profile row yields no cost |
+
+**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py`
+against a real Postgres (R8). Frontend: `npx vitest run` in
+`workbench/operator_console`.
 
 ### 6A.12 Tier pricing and the tier slate (D67, 2026-08-30)
 

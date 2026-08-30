@@ -839,15 +839,28 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `grep -c "cost_per_image" apps/services/customer_console/customer_console/feed.py`
   → `0` means the feed still reads only the three per-token columns.
 - **Why:** The "Price from cost" board on `/pricing` suggests a charge from the
-  chain's first model and its vendor price. For token jobs the cost comes from the feed.
-  For image, video, music and speech the litellm map carries per-unit columns
-  (`output_cost_per_image`, `input_cost_per_second`, and more) that
-  `vendor_price_feed` (014) does not store. Until it does, the operator types
-  the vendor's dollar price into the board by hand. The extension is a new
-  migration with nullable columns, a `MODE_MAP`-adjacent read in `feed.py`,
-  and the board reading the new fields. R6 applies.
-- **Authority:** `customer_console.md` §6A.11 · §6A.13
-- **Added:** 2026-08-30 · pricing-method session
+  chain's first model and its vendor price. For a token job the cost comes from
+  the feed. For `image`, `transcribe` and `speak` the litellm map carries
+  per-unit fields that `vendor_price_feed` (`014`) does not store. Until it
+  does, the operator types the vendor's dollar price into the board by hand.
+  The work is a new migration with nullable columns, a read in `feed.py`,
+  matching columns on `model_profile`, and a board that reads the profile.
+  R6 applies.
+- **Done when:** `customer_console.md` **§6A.11a** holds the eight clauses.
+  Build to that section, and to nothing written in this entry.
+  ⚠️ **`music` is struck from this entry.** litellm has no `music` mode, so the
+  feed can never fill the `music` task. The task row and the `tier-music` tier
+  both stay.
+  ⚠️ **`video` is a named follow-up, and not part of this entry.** A map of
+  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`, and
+  `015_tier_pricing.sql` refuses a video capability until that verb lands. The
+  follow-up rides with **H-46**.
+  📌 Migration number: list `infra/customer_console/` at build time, and list it
+  again at merge (R1). It was `019` on 2026-08-30.
+- **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·
+  §6A.13 · `ai_metering_and_analytics.md` §3.7 · §9
+- **Added:** 2026-08-30 · pricing-method session · **amended 2026-08-30** after a
+  dispatch audit returned NO-GO on scope, on acceptance and on a stale header
 
 ### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
 - **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`

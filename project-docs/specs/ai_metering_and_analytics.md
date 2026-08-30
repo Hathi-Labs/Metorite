@@ -215,6 +215,12 @@ inverts. So the column name carries the payer and the unit.
 ⚠️ **`reads_images` and `thinks_first` are not tasks.** No tier binds them.
 They are properties of a chat model, and D-AI-2 turns on the first one.
 
+⚠️ **Three per-unit vendor costs join this table under H-78, and nobody has
+built them yet.** `model_profile` gains `vendor_per_minute_usd`,
+`vendor_per_character_usd` and `vendor_per_image_usd`, each in the task's
+natural unit. `customer_console.md` §6A.11a owns the columns, the parse rules
+and the ×60 conversion. This section does not repeat them.
+
 ⚠️ **`editor`, and no elevation window.** This is the only catalog write that
 demands neither. It changes nothing about what runs or what we charge. A
 description edit behind an elevation window teaches an operator to reach for
@@ -387,6 +393,7 @@ agent breaks it.
 | The customer pays for what ANSWERED | `test_router_failover.py` — the walk returns the step that replied |
 | An unknown measurement is never zero | `test_customer_console_model_profile.py` — the database refuses a window of 0 |
 | A capability flag is never assumed | `read.test.ts` — a profile that says false yields no kind |
+| A per-unit vendor cost parses in the vendor's unit and declares in the task's unit | `test_customer_console_vendor_feed.py` — a per-second feed price declares as ×60 per-minute on the profile, Decimal-exact |
 
 ⚠️ **R8 binds every read here.** Verify the SQL against a real database. The
 two reads in slice 1 were verified against the live Console database on
