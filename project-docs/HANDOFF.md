@@ -928,6 +928,19 @@ line — never reclaim a number by deleting the other entry.
   `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
   endpoint and H-47's handler seam are what is left. Keep this entry until
   those three land.
+- **⚠️ Three review findings ride with the next half (recorded 2026-08-31):**
+  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
+     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
+     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
+     which reads as "upstream provider error". The family branch belongs in
+     H-47's handler seam.
+  2. An unmeasured transcription writes `quantity` 0, and a silent file also
+     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
+     does not. Decide one way when a reader of `quantity` exists.
+  3. A capability row with a wrong verb (for example `aspeech` on a
+     transcribe pair) burns the failover walk and answers 502 "upstream
+     provider error" for OUR configuration error. `_nothing_to_try` shows the
+     precise-503 shape the refusal should copy.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
   → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
   endpoint and the speak endpoint are still not built.
