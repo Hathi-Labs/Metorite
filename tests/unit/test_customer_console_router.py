@@ -32,6 +32,11 @@ from tests.unit._customer_console_ladder import (  # noqa: E402
     ensure_deployment,
 )
 
+#: 📌 IMPORTED, never re-declared. `Wrapper` is the litellm-shaped source the
+#: close fences need at both ends of the stream path — the walk's loser and the
+#: route's winner — and two copies of it would drift.
+from tests.unit.test_router_failover import Wrapper
+
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
@@ -887,7 +892,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
     def test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream(
             self, client, org_key, db):
         """🔴 The headline. The client must not be able to tell it happened."""
-        slug, key = org_key
+        _, key = org_key
         tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
         seen: list[str] = []
 
@@ -969,7 +974,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         Serving the rest from a second model would splice two different
         completions into one response, which is worse than the error.
         """
-        slug, key = org_key
+        _, key = org_key
         tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
         seen: list[str] = []
 
@@ -987,15 +992,109 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         # The error reaches the client, and that is the CORRECT outcome. A
         # response already committed to one model cannot honestly continue on
         # another.
-        with pytest.raises(RuntimeError):
-            with client.stream(
-                    "POST", "/v1/chat/completions", headers=key, json={
-                        "model": tier, "stream": True,
-                        "messages": [{"role": "user", "content": "x"}]}) as r:
-                b"".join(r.iter_bytes())
+        with pytest.raises(RuntimeError), client.stream(
+                "POST", "/v1/chat/completions", headers=key, json={
+                    "model": tier, "stream": True,
+                    "messages": [{"role": "user", "content": "x"}]}) as r:
+            b"".join(r.iter_bytes())
 
         assert seen == [self.PRIMARY], "a started stream must not fail over"
         assert self.BACKUP not in seen
+
+
+class TestTheWinningStreamIsCLOSED:
+    """§8.6 — the socket the walk WON is released, whatever the client does.
+
+    🔴 **This window is new, and the walk moving earlier is what opened it.**
+    Starlette 1.1.0 never calls `aclose` on a body iterator, and the provider
+    stream is now open before the response exists. So a client that goes away
+    used to cost nothing and would now cost one held connection for the life
+    of the process.
+
+    ⚠️ **The source here is WRAPPER-shaped, not a bare async generator.** The
+    loop's own finaliser closes an abandoned generator whatever the Router
+    does, so a leak test written against one stays green after somebody
+    deletes the close. `router_failover.Wrapper` is the shape litellm returns.
+    """
+
+    @staticmethod
+    def _caller(org_id: str):
+        from customer_console.auth import Caller
+        return Caller(organization_id=org_id, key_prefix="cc_live_fence")
+
+    @staticmethod
+    def _drive(head, source, org_id, *, read):
+        """Run `_streamed_completion` the way Starlette would, then stop.
+
+        `read` decides how the client behaves: ``"one"`` takes a frame and
+        walks away, ``"all"`` reads to the end or to the provider's error.
+        """
+        from customer_console.main import _streamed_completion
+
+        async def _run():
+            gen = _streamed_completion(
+                head, source,
+                org_id=org_id,
+                caller=TestTheWinningStreamIsCLOSED._caller(org_id),
+                resolved=router_mod.ResolvedTier(
+                    tier="tier-balanced", model="deepseek/x", task="chat"),
+                client_ref=None,
+            )
+            got = []
+            if read == "one":
+                async for frame in gen:
+                    got.append(frame)
+                    break          # the client stops reading here
+                await gen.aclose()  # and Starlette drops the iterator
+            else:
+                with pytest.raises(RuntimeError):
+                    async for frame in gen:
+                        got.append(frame)
+            return got
+
+        return asyncio.run(_run())
+
+    def test_a_stream_read_to_the_END_is_closed(self, client, org_key, db):
+        # The ordinary exit. `aclose` on a finished stream is a no-op, so the
+        # route closes on every path rather than reasoning about which it took.
+        _, key = org_key
+        made: list[Wrapper] = []
+
+        async def _stub(**kwargs):
+            made.append(Wrapper(frames=list(PROVIDER_FRAMES)))
+            return made[-1]
+
+        router_mod.set_provider_call(_stub)
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        # Byte-identity survives the close, and the close happened once.
+        assert body == b"".join(PROVIDER_FRAMES)
+        assert made[0].closed == 1
+
+    def test_an_ABANDONED_stream_is_closed(self, org_id):
+        """🔴 The headline. The client left, and the socket still goes back.
+
+        Driven directly, because the HTTP layer cannot be made to abandon a
+        response deterministically — the same reason `TestTheRelayItself`
+        gives for its own direct drive.
+        """
+        source = Wrapper(frames=list(PROVIDER_FRAMES[1:]))
+        got = self._drive([PROVIDER_FRAMES[0]], source, org_id, read="one")
+
+        assert got == [PROVIDER_FRAMES[0]], "the head still reached the client"
+        assert source.closed == 1, "an abandoned stream held its connection"
+
+    def test_a_stream_that_DIES_mid_relay_is_closed(self, org_id):
+        # The provider, not the client, ends it. The socket is still ours.
+        source = Wrapper(raise_first=RuntimeError("provider dropped it"))
+        got = self._drive([PROVIDER_FRAMES[0]], source, org_id, read="all")
+
+        assert got == [PROVIDER_FRAMES[0]]
+        assert source.closed == 1
 
 
 class TestTheRelayItself:

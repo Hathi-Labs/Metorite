@@ -75,6 +75,29 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-80 · Give the stream walk its own thread budget, off the shared 40 · [AGENT]
+- **Check:** `grep -n "CapacityLimiter\|Semaphore" apps/services/customer_console/customer_console/main.py`.
+  No hit inside `_open_stream_chain` means this entry is still real.
+- **Why:** WS-31 slice 11 moved the provider stream open into the route. So a
+  `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
+  length of the walk — up to `3 × 120` seconds. And litellm's `asyncify`
+  (`asyncify.py:57`) passes `limiter=None`, which borrows from that SAME
+  default pool. Put 40 concurrent stream walks beside one asyncify-bound
+  model, and nothing recovers. Every token sits in a walk, and each walk waits
+  for a token that no walk will release. Measured 2026-08-31 — the stream path
+  borrows 1 of 40, and seven litellm call sites share the limiter. Two of them
+  serve requests: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
+  (`sagemaker/completion/handler.py:428`, `:499`).
+- 📌 **Latent, and one row from live.** Every model bound today (deepseek,
+  groq) reaches httpx and borrows no thread. A vendor swap is one
+  `tier_binding` row, which is an operator act that no code review sees.
+- 📌 **The fix shape:** a dedicated `anyio.CapacityLimiter` for stream walks,
+  or a bounded semaphore in front of `_open_stream_chain`, sized well under 40.
+  Not a rewrite of the route to `async def`.
+- **Authority:** `ai_metering_and_analytics.md` §8.6 "The threadpool hazard"
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 slice 11 review round 2
+
 ### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
 - **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
   owner decided and this entry is dead.

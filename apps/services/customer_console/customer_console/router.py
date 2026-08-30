@@ -982,6 +982,31 @@ async def call_chain(
     return await walk_chain(attempts, _attempt, on_failover)
 
 
+async def aclose_quietly(source: Any) -> None:
+    """Close one provider stream, and never raise while doing it.
+
+    🔴 **The ONE close in the streaming path.** The walk closes a LOSER here,
+    and the route closes the WINNER through the same function. Two spellings
+    of "let go of a socket" is how one of them ends up forgotten.
+
+    ⚠️ **Degrades when ``aclose`` is absent.** A source is whatever the
+    provider SDK handed back. litellm's ``CustomStreamWrapper`` has one, and a
+    plain async generator has one, but a future SDK shape may not — and a
+    missing cleanup hook must not become an AttributeError on the serving
+    path.
+
+    ⚠️ **Safe on a stream that is already finished.** ``CustomStreamWrapper.
+    aclose`` clears its inner stream and no-ops the second time, and an
+    exhausted async generator returns at once. So the caller may close on
+    every exit rather than reasoning about which exit it took.
+    """
+    aclose = getattr(source, "aclose", None)
+    if aclose is None:
+        return
+    with contextlib.suppress(Exception):
+        await aclose()
+
+
 async def open_stream_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
@@ -1018,10 +1043,7 @@ async def open_stream_chain(
         except BaseException:
             # The socket is ours the moment the open succeeds. A step we walk
             # away from must not leave a provider connection behind it.
-            aclose = getattr(iterator, "aclose", None)
-            if aclose is not None:
-                with contextlib.suppress(Exception):
-                    await aclose()
+            await aclose_quietly(iterator)
             raise
 
     (head, source), step = await walk_chain(attempts, _attempt, on_failover)
