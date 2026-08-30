@@ -211,6 +211,15 @@ export const provisionOrg = (body: unknown, d?: Deps) =>
 // hash, so the response is the only moment the secret exists anywhere. It is not
 // recoverable — a lost key is replaced, never looked up. Any caller that
 // discards this response has destroyed the key.
+// The ledger history behind the balance — what an operator verifies a bank
+// transfer against before granting (the dedupe fence's read half).
+export const creditLedger = (orgSlug: string, d?: Deps) =>
+  callConsole(
+    `/credits/ledger?org_slug=${encodeURIComponent(orgSlug)}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
 export const listKeys = (orgSlug: string, d?: Deps) =>
   callConsole(
     `/keys?org_slug=${encodeURIComponent(orgSlug)}`,

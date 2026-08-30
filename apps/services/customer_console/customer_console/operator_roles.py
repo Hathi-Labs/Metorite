@@ -92,6 +92,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     ("GET", "/billing/summary"): _R(VIEWER),
     ("GET", "/billing/catalog"): _R(VIEWER),
     ("GET", "/credits/balance"): _R(VIEWER),
+    # The ledger history behind that balance. Same argument: the rows are
+    # what a customer reads in a dispute, and "was this bank transfer
+    # already credited?" must not need a privilege to answer.
+    ("GET", "/credits/ledger"): _R(VIEWER),
     # Key PREFIXES only. `keys.py` states in its own docstring that a prefix is
     # "stored in the clear, indexed, and safe to show or log", so listing them
     # discloses nothing a viewer may not see. The SECRET never leaves `POST`.

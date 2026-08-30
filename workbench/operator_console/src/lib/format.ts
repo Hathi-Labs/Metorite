@@ -96,6 +96,34 @@ export type KeyRow = {
  * which, and one malformed row is dropped rather than white-screening a surface
  * an operator is using to revoke a leaked credential.
  */
+export type LedgerRow = {
+  /** The STRING the Console sent — NUMERIC(14,4), never re-formatted. */
+  delta: string;
+  reason: string;
+  ref: string | null;
+  created_at: string;
+};
+
+/** The ledger entries, tolerant of a Console predating the read. */
+export function readLedger(body: unknown): LedgerRow[] {
+  const raw = (body as { entries?: unknown } | null)?.entries;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is LedgerRow => typeof (e as LedgerRow)?.delta === "string")
+    .map((e) => ({
+      delta: e.delta,
+      reason: typeof e.reason === "string" ? e.reason : "",
+      ref: typeof e.ref === "string" ? e.ref : null,
+      created_at: typeof e.created_at === "string" ? e.created_at : "",
+    }));
+}
+
+/** Whether a ledger row ADDS credits. `Number()` only to compare — what
+ *  renders stays the string the Console sent. */
+export function ledgerAdds(row: LedgerRow): boolean {
+  return Number(row.delta) > 0;
+}
+
 export function readKeys(body: unknown): KeyRow[] {
   const raw = (body as { keys?: unknown } | null)?.keys;
   if (!Array.isArray(raw)) return [];
