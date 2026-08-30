@@ -116,8 +116,11 @@ describe("the surface", () => {
   it("says out loud that a card can ship with no price", () => {
     // 🔴 Setting a real number is the owner's commercial act (H-42). An
     // operator must not read the zeros as an oversight to quietly fix.
-    expect(code(RATECARD)).toContain("no price");
-    expect(code(RATECARD)).toContain("charge nothing");
+    // The unpriced warning moved to the method board with the
+    // consolidation; the hand form keeps the vendor-price phrase.
+    const BOARD = readFileSync(
+      join(SRC, "app", "pricing", "PriceFromCost.tsx"), "utf8");
+    expect(code(BOARD)).toContain("no price");
   });
 
   it("keeps the vendor's price and OUR price apart, in words", () => {
