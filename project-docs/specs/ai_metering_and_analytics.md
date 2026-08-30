@@ -364,11 +364,13 @@ inverts. So the column name carries the payer and the unit.
 ⚠️ **`reads_images` and `thinks_first` are not tasks.** No tier binds them.
 They are properties of a chat model, and D-AI-2 turns on the first one.
 
-⚠️ **Three per-unit vendor costs join this table under H-78, and nobody has
-built them yet.** `model_profile` gains `vendor_per_minute_usd`,
+⚠️ **Migration `019` added the three per-unit vendor costs to this table, and
+nothing fills them yet.** The columns are `vendor_per_minute_usd`,
 `vendor_per_character_usd` and `vendor_per_image_usd`, each in the task's
-natural unit. `customer_console.md` §6A.11a owns the columns, the parse rules
-and the ×60 conversion. This section does not repeat them.
+natural unit. H-78 clause 1 built them, and clauses 5 to 7 build the seam that
+writes them. Nobody has built that seam, so all three columns hold NULL today.
+`customer_console.md` §6A.11a owns the columns, the parse rules and the ×60
+conversion. This section does not repeat them.
 
 ⚠️ **`editor`, and no elevation window.** This is the only catalog write that
 demands neither. It changes nothing about what runs or what we charge. A
