@@ -1029,7 +1029,7 @@ agent breaks it.
 | The customer pays for what ANSWERED | `test_router_failover.py` — the walk returns the step that replied |
 | An unknown measurement is never zero | `test_customer_console_model_profile.py` — the database refuses a window of 0 |
 | A capability flag is never assumed | `read.test.ts` — a profile that says false yields no kind |
-| A per-unit vendor cost parses in the vendor's unit and declares in the task's unit | `test_customer_console_vendor_feed.py` — a per-second feed price declares as ×60 per-minute on the profile, Decimal-exact |
+| A per-unit vendor cost parses in the vendor's unit and declares in the task's unit | `test_customer_console_vendor_feed.py` — a per-second feed price declares as ×60 per-minute on the profile, Decimal-exact. ⚠️ **Nobody has built this fence yet. It lands with `customer_console.md` §6A.11a clauses 5 to 7**, which own the ×60 conversion |
 | A refusal never counts as a call | `test_customer_console_sql.py` — one refusal and one served call return calls = 1 |
 | An unmeasured cost never reads as a good margin | `test_operator_analytics.py::TestMarginRatio` |
 | An operator usage read is Operator-gated | `test_operator_roles.py` |

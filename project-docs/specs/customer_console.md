@@ -315,16 +315,21 @@ verification once** and rebuilt (see its ticket) ·
 stays unwired, because the member identity it would rest on is a request
 header (**H-73**) · CP-8 spec only ·
 **⚠️ THE MIGRATION LADDER AND THE §6A SECTIONS, REFRESHED 2026-08-30.**
-`infra/customer_console/` holds **001–018**. The next free number is **019**.
-R1 says list the directory at build time and re-check at merge. `014` is the
-vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
+`infra/customer_console/` holds **001–019** on this branch. The next free
+number is **020**. ⚠️ **§8.1 (slice 5) of `ai_metering_and_analytics.md`
+claims 020**, and a sibling branch builds it. Re-check at merge (R1). R1 also
+says an agent lists the directory at build time. `014` is
+the vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
 `tier_rate_card`, the eleven-tier slate and the `video` and `music` task rows
 (§6A.12, D67). `016` adds `tier_catalog.task` (D68). `017` adds `credit_price`,
 the rupee side of H-42 (§6A.13). `018` adds the credit-reference unique index.
-Three §6A sections carry the 2026-08-30 work: **§6A.11** the vendor feed,
-**§6A.12** tier pricing and the slate, and **§6A.13** the credit's own price.
-**§6A.11a is SPEC ONLY.** It holds the per-unit vendor costs (H-78), written
-2026-08-30 as agent-proposed defaults the owner may overrule (D16/D17). ⚠️ The
+`019` adds the six columns for per-unit vendor cost (§6A.11a).
+Four §6A sections carry the 2026-08-30 work. They are **§6A.11** the vendor
+feed, **§6A.11a** the per-unit vendor costs, **§6A.12** tier pricing and the
+slate, and **§6A.13** the credit's own price.
+**§6A.11a is HALF BUILT.** It holds the per-unit vendor costs (H-78). Clauses
+1 to 4 and clause 8 are built. Clauses 5 to 7 are not built. Each remaining
+default stays an agent-proposed answer the owner may overrule (D16/D17). ⚠️ The
 sentence further down that reads *"the ladder is 001–007 … the next free number
 is 008"* was true on 2026-08-18. This line supersedes it. ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
