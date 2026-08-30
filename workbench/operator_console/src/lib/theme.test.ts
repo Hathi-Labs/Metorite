@@ -134,3 +134,21 @@ describe("the light palette exists and is not an inversion", () => {
     expect(RULES).toContain("color-scheme: light");
   });
 });
+
+describe("the chrome (mockup adoption, 2026-08-30)", () => {
+  it("draws the body glow from tokens, in both themes by construction", () => {
+    // One definition: the glow reads var(--accent-soft), so the light
+    // block re-colours it by re-colouring the accent — no second copy.
+    expect(RULES).toContain("--bg-glow:");
+    expect(RULES).toMatch(/body\s*\{[^}]*var\(--bg-glow\)/);
+  });
+
+  it("builds the brand gradient FROM the accent pair, never a third hue", () => {
+    expect(RULES).toMatch(/--brand-grad:[^;]*var\(--accent\)/);
+    expect(RULES).toMatch(/--brand-grad:[^;]*var\(--accent-2\)/);
+  });
+
+  it("🔴 goes still when the OS asks for reduced motion", () => {
+    expect(RULES).toContain("prefers-reduced-motion");
+  });
+});

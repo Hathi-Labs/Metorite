@@ -22,6 +22,11 @@ const WORD = {
 export default function GoLiveRail({ catalog }: { catalog: AiCatalog }) {
   const steps = goLiveSteps(catalog);
   const summary = railSummary(steps);
+  // The step the eye should land on: the first one still open. `info`
+  // steps are the owner's and are never "next" for the console.
+  const nowKey = steps.find(
+    (s) => s.state === "todo" || s.state === "partial",
+  )?.key;
 
   if (summary) {
     return (
@@ -44,8 +49,13 @@ export default function GoLiveRail({ catalog }: { catalog: AiCatalog }) {
       </div>
       <ol className="rail">
         {steps.map((s) => (
-          <li key={s.key} className={`rail-step ${s.state}`}>
-            <span className="stepno">{s.n}</span>
+          <li
+            key={s.key}
+            className={`rail-step ${s.state}${s.key === nowKey ? " now" : ""}`}
+          >
+            <span className="stepno" aria-hidden="true">
+              {s.state === "done" ? "\u2713" : s.n}
+            </span>
             <div className="railmain">
               <div className="railhead">
                 <strong>{s.title}</strong>
