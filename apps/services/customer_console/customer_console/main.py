@@ -1682,10 +1682,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # because the board is the map of what we intend to sell.
         tier_registry = [
             {"slug": r[0], "label": r[1], "blurb": r[2],
-             "sort_order": int(r[3])}
+             "sort_order": int(r[3]), "task": r[4]}
             for r in conn.execute(text(
-                "SELECT slug, label, blurb, sort_order FROM tier_catalog "
-                "ORDER BY sort_order, slug"))
+                "SELECT slug, label, blurb, sort_order, task "
+                "FROM tier_catalog ORDER BY sort_order, slug"))
         ]
         # What a CUSTOMER pays (D67): the tier card in force per (tier, task).
         tier_rates = [
@@ -1879,6 +1879,12 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
             raise HTTPException(
                 status_code=400, detail=f"unknown task {req.task!r}")
 
+        # D68: a tier serves ONE kind of job, and the registry says which.
+        # tier-stt IS speech-to-text; binding chat onto it is a mis-click,
+        # and this is where the mis-click stops. A NULL registry task (a
+        # ghost or a pre-016 row) keeps the old freedom.
+        _check_tier_task(conn, tier=req.tier, task=req.task)
+
         # ⚠️ **EVERY step is checked, not just the primary.** An unchecked
         # backup is worse than no backup: it is only reached after the primary
         # has already failed, so the 500 arrives during an outage, when nobody
@@ -1990,6 +1996,10 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
             raise HTTPException(
                 status_code=400,
                 detail=f"unknown tier {req.tier!r}; it is not in tier_catalog")
+        # D68: a price for the wrong KIND of job on this tier is refused for
+        # the same reason the binding is - it could never bill anything the
+        # tier serves.
+        _check_tier_task(conn, tier=req.tier, task=req.task)
         natural = conn.execute(
             text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
             {"t": req.task},
@@ -2039,6 +2049,29 @@ def _task_exists(conn, task: str) -> bool:
     return conn.execute(
         text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
     ).first() is not None
+
+
+def _check_tier_task(conn, *, tier: str, task: str) -> None:
+    """Refuse a write that puts the wrong KIND of job on a tier (D68).
+
+    Fires only when the registry categorises the tier - a ghost tier has no
+    row and keeps the old freedom, and hiding a thing that serves is worse
+    than the mismatch.
+    """
+    registered = conn.execute(
+        text("SELECT task FROM tier_catalog WHERE slug = :s"), {"s": tier}
+    ).first()
+    if registered is None or registered[0] is None:
+        return
+    if registered[0] != task:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"tier {tier!r} serves {registered[0]!r}, not {task!r} "
+                "(D68). Use the tier made for this job, or register a "
+                "new one."
+            ),
+        )
 
 
 

@@ -134,13 +134,37 @@ describe("the facet counts", () => {
 });
 
 describe("status", () => {
+  // Every provider in the fixture holds a key, except where a test says so.
+  const ARMED = ["anthropic", "openai", "groq"];
+
   it("🔴 says NOT CONNECTED before it says COSTS BLIND", () => {
     // Same order as readiness.ts. Nothing can be costed before it can be
     // served — and since D67 the SELLING state lives on the tier board, so
-    // this page only judges supply: declared, and do we know what we pay.
-    expect(statusOf(CATALOG[4])).toBe("undeclared");
-    expect(statusOf(CATALOG[3])).toBe("costblind");
-    expect(statusOf(CATALOG[0])).toBe("costed");
+    // this page only judges supply: declared, keyed, and do we know what
+    // we pay.
+    expect(statusOf(CATALOG[4], ARMED)).toBe("undeclared");
+    expect(statusOf(CATALOG[3], ARMED)).toBe("costblind");
+    expect(statusOf(CATALOG[0], ARMED)).toBe("costed");
+  });
+
+  it("🔴 a declared model of a KEYLESS vendor says NO KEY, in red", () => {
+    // The seed proved the state real: it ships tier-stt on a groq model,
+    // so groq/whisper is DECLARED on every fresh install — and with no
+    // groq key it read as merely "costs blind", underselling "every call
+    // fails" (owner report, 2026-08-30).
+    expect(statusOf(CATALOG[3], ["anthropic"])).toBe("nokey");
+    // Undeclared still outranks it: nothing can be called before it exists.
+    expect(statusOf(CATALOG[4], [])).toBe("undeclared");
+  });
+
+  it("the no-key state is filterable and counted like any other", () => {
+    const hit = filterModels(
+      CATALOG,
+      { ...NO_FILTERS, statuses: ["nokey"] },
+      ["anthropic"],
+    );
+    expect(hit.length).toBeGreaterThan(0);
+    expect(hit.every((m) => m.provider !== "anthropic" && m.declared)).toBe(true);
   });
 });
 

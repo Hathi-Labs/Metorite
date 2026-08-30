@@ -143,6 +143,7 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     expect(video?.jobs).toEqual([]);
     expect(video?.registered).toBe(true);
     expect(video?.label).toBe("Video");
+    expect(video?.task ?? null).toBeNull();
   });
 
   it("🔴 a binding whose tier is NOT registered still renders, as a ghost", () => {
@@ -156,6 +157,7 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     const ghost = cat.tiers.find((t) => t.slug === "ghost");
     expect(ghost?.registered).toBe(false);
     expect(ghost?.jobs).toHaveLength(1);
+    expect(ghost?.task).toBeNull();
   });
 
   it("maps the tier rates with money as STRINGS", () => {

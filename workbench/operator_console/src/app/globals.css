@@ -930,6 +930,15 @@ button:disabled {
    either produced a binding that looked fine and served nothing. The card
    picks the model from the capabilities already declared, so an unservable
    binding cannot be created by hand at all. */
+/* D68: the board is grouped by what each tier IS - chat bands, one tier
+   per capability, and whatever the registry cannot place. */
+.tiersection {
+  margin-top: 26px;
+}
+.tiersection > .panel-head {
+  margin-bottom: 12px;
+}
+
 .tier-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));

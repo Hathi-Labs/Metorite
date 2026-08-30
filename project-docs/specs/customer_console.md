@@ -7857,6 +7857,8 @@ shows every capability we intend to sell, empty slots included.
 | `POST /catalog/tier-rates` | Console | The write. Admin plus an elevation window |
 | `POST /catalog/rates` | Console | **410.** The model card is read-only history (R6 keeps the table) |
 | `/tiers` pricing panel | operator console | Set a price, see the margin against the chain's first model |
+| `tier_catalog.task` | migration `016` | D68: the tier's ONE kind of job. Binding and rate writes refuse a mismatch |
+| The grouped board | operator console | Chat bands, then one tier per capability. No job dropdown - the tier's name answers it |
 
 Three rules bind it. A rate needs a registered tier, so the Console refuses
 a price for a ghost. An unpriced tier bills zero loudly and keeps the usage

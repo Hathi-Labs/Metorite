@@ -191,7 +191,7 @@ const ACCOUNTS: ProviderAccount[] = [
 //               cannot do the job it is bound to.
 const TIERS: Tier[] = [
   {
-    slug: "tier-fast", label: "Fast", registered: true,
+    slug: "tier-fast", label: "Fast", registered: true, task: "chat",
     blurb: "Quick answers at the lowest price.",
     jobs: [
       { tier: "tier-fast", task: "chat", chain: [
@@ -199,13 +199,10 @@ const TIERS: Tier[] = [
         { model: "gemini/gemini-2.5-flash", rank: 2 },
         { model: "openai/gpt-4o-mini", rank: 3 },
       ] },
-      { tier: "tier-fast", task: "embed", chain: [
-        { model: "openai/text-embedding-3-large", rank: 1 },
-      ] },
     ],
   },
   {
-    slug: "tier-balanced", label: "Balanced", registered: true,
+    slug: "tier-balanced", label: "Balanced", registered: true, task: "chat",
     blurb: "The everyday setting - good answers, fair price.",
     jobs: [
       { tier: "tier-balanced", task: "chat", chain: [
@@ -218,7 +215,7 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-powerful", label: "Powerful", registered: true,
+    slug: "tier-powerful", label: "Powerful", registered: true, task: "chat",
     blurb: "The strongest models, for hard problems.",
     jobs: [
       { tier: "tier-powerful", task: "chat", chain: [
@@ -227,7 +224,7 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-code", label: "Code", registered: true,
+    slug: "tier-code", label: "Code", registered: true, task: "chat",
     blurb: "Tuned for writing and fixing software.",
     jobs: [
       { tier: "tier-code", task: "chat", chain: [
@@ -237,12 +234,12 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-vision", label: "Vision", registered: true,
+    slug: "tier-vision", label: "Vision", registered: true, task: "vision",
     blurb: "Reads and understands images.",
     jobs: [],
   },
   {
-    slug: "tier-image", label: "Image", registered: true,
+    slug: "tier-image", label: "Image", registered: true, task: "image",
     blurb: "Makes images from a description.",
     jobs: [
       { tier: "tier-image", task: "image", chain: [
@@ -251,7 +248,7 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-stt", label: "Speech to text", registered: true,
+    slug: "tier-stt", label: "Speech to text", registered: true, task: "transcribe",
     blurb: "Turns audio into text.",
     jobs: [
       { tier: "tier-stt", task: "transcribe", chain: [
@@ -261,7 +258,7 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-tts", label: "Text to speech", registered: true,
+    slug: "tier-tts", label: "Text to speech", registered: true, task: "speak",
     blurb: "Reads text aloud.",
     jobs: [
       { tier: "tier-tts", task: "speak", chain: [
@@ -271,26 +268,30 @@ const TIERS: Tier[] = [
     ],
   },
   {
-    slug: "tier-embed", label: "Search index", registered: true,
+    slug: "tier-embed", label: "Search index", registered: true, task: "embed",
     blurb: "Builds the vectors behind search.",
-    jobs: [],
+    jobs: [
+      { tier: "tier-embed", task: "embed", chain: [
+        { model: "openai/text-embedding-3-large", rank: 1 },
+      ] },
+    ],
   },
   // The two capabilities NOTHING can serve yet: the tier and the price can
   // exist first, and the day the Router grows the verb nothing else moves.
   {
-    slug: "tier-video", label: "Video", registered: true,
+    slug: "tier-video", label: "Video", registered: true, task: "video",
     blurb: "Makes video from a description.",
     jobs: [],
   },
   {
-    slug: "tier-music", label: "Music", registered: true,
+    slug: "tier-music", label: "Music", registered: true, task: "music",
     blurb: "Makes music and sound.",
     jobs: [],
   },
   // A GHOST: a hand-typed binding whose tier is not in the registry. It
   // serves, the board flags it, and it cannot be priced until registered.
   {
-    slug: "legacy-chat", label: "legacy-chat", registered: false,
+    slug: "legacy-chat", label: "legacy-chat", registered: false, task: null,
     blurb: "",
     jobs: [
       { tier: "legacy-chat", task: "chat", chain: [
@@ -409,7 +410,7 @@ const TIER_RATES: TierRate[] = [
     cachedInputPer1k: "0.0030", creditsPerUnit: "0",
   },
   {
-    tier: "tier-fast", task: "embed", unit: "tokens", mode: "absorbed",
+    tier: "tier-embed", task: "embed", unit: "tokens", mode: "absorbed",
     inputPer1k: "0", outputPer1k: "0",
     cachedInputPer1k: "0", creditsPerUnit: "0",
   },

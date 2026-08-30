@@ -52,6 +52,10 @@ import ModelDetails from "./ModelDetails";
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = {
   costed: "ok",
   undeclared: "danger",
+  // A vendor we hold no live key for: every call to this model fails. The
+  // seed proved the state real - it ships tier-stt on a groq model no
+  // fresh install has a key for (owner report, 2026-08-30).
+  nokey: "danger",
   // Costs-blind serves fine — but every margin that touches it reads as
   // unknown, so it warns until the vendor price is recorded (or fetched).
   costblind: "warn",
@@ -64,8 +68,12 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "cheapest", label: "Cheapest" },
 ];
 
-function Card({ m, f }: { m: CatalogModel; f: FeedModel | undefined }) {
-  const status = statusOf(m);
+function Card({
+  m, f, armed,
+}: {
+  m: CatalogModel; f: FeedModel | undefined; armed: string[];
+}) {
+  const status = statusOf(m, armed);
   // The vendor moved a price under a typed profile (014). The chip is the
   // ALERT; the numbers and the copy button live in "Edit details".
   const drift = driftFor(m, f);
@@ -134,16 +142,24 @@ function Card({ m, f }: { m: CatalogModel; f: FeedModel | undefined }) {
 export default function ModelBrowser({
   models,
   feed,
+  armed,
 }: {
   models: CatalogModel[];
   feed: VendorFeed;
+  /** Providers with a live platform key — decides the `nokey` state. */
+  armed: string[];
 }) {
   const [f, setF] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<SortKey>("name");
 
-  const shown = useMemo(() => sortModels(filterModels(models, f), sort), [models, f, sort]);
-  const kinds = useMemo(() => kindFacets(models, f, MODEL_KINDS), [models, f]);
-  const providers = useMemo(() => providerFacets(models, f), [models, f]);
+  const shown = useMemo(
+    () => sortModels(filterModels(models, f, armed), sort),
+    [models, f, armed, sort],
+  );
+  const kinds = useMemo(
+    () => kindFacets(models, f, MODEL_KINDS, armed), [models, f, armed]);
+  const providers = useMemo(
+    () => providerFacets(models, f, armed), [models, f, armed]);
   const byId = useMemo(() => feedById(feed), [feed]);
   const dirty =
     f.query.trim() !== "" || f.kinds.length + f.providers.length + f.statuses.length > 0;
@@ -237,7 +253,7 @@ export default function ModelBrowser({
 
         <div className="facetrow">
           <span className="facetlabel">State</span>
-          {(["costed", "costblind", "undeclared"] as const).map((s) => (
+          {(["costed", "costblind", "nokey", "undeclared"] as const).map((s) => (
             <button
               key={s}
               type="button"
@@ -247,7 +263,7 @@ export default function ModelBrowser({
             >
               {STATUS_LABEL[s]}
               <span className="count">
-                {filterModels(models, { ...f, statuses: [s] }).length}
+                {filterModels(models, { ...f, statuses: [s] }, armed).length}
               </span>
             </button>
           ))}
@@ -263,7 +279,7 @@ export default function ModelBrowser({
 
       <div className="modelgrid">
         {shown.map((m) => (
-          <Card key={m.id} m={m} f={byId.get(m.id)} />
+          <Card key={m.id} m={m} f={byId.get(m.id)} armed={armed} />
         ))}
       </div>
 
