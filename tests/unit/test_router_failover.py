@@ -266,6 +266,61 @@ def stream_provider():
     set_provider_call(_refuse)
 
 
+class Wrapper:
+    """A source shaped like litellm's ``CustomStreamWrapper``.
+
+    ⚠️ **Not a bare async generator, on purpose.** The event loop's own
+    finaliser closes an abandoned generator whatever the Router does, so a
+    leak test written against one passes even after somebody deletes the
+    close. This shape — ``__aiter__`` returning self, plus a real ``aclose`` —
+    is what the provider hands back, and it closes only when somebody closes
+    it.
+    """
+
+    def __init__(self, frames=(), raise_first=None):
+        self._frames = list(frames)
+        self._raise_first = raise_first
+        self.closed = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._raise_first is not None:
+            exc, self._raise_first = self._raise_first, None
+            raise exc
+        if not self._frames:
+            raise StopAsyncIteration
+        return self._frames.pop(0)
+
+    async def aclose(self):
+        self.closed += 1
+
+
+@pytest.fixture
+def wrapper_provider():
+    """A stub that answers with :class:`Wrapper` objects, and keeps each one."""
+    plan: dict[str, Any] = {}
+    made: dict[str, Wrapper] = {}
+
+    async def _call(**kwargs: Any) -> Any:
+        model = kwargs["model"]
+        outcome = plan.get(model, {})
+        made[model] = Wrapper(
+            frames=outcome.get("frames", [f"{model}-1".encode()]),
+            raise_first=outcome.get("raise_first"),
+        )
+        return made[model]
+
+    set_provider_call(_call)
+    yield plan, made
+
+    async def _refuse(**kwargs: Any) -> Any:  # pragma: no cover
+        raise AssertionError("provider call escaped its test")
+
+    set_provider_call(_refuse)
+
+
 def open_stream(attempts, notes=None):
     def kwargs_for(s: ResolvedTier) -> dict[str, Any]:
         return {"model": s.model}
@@ -394,3 +449,39 @@ class TestTheStreamWalk:
         )
 
         assert notes == [("a/one", "b/two", 429)]
+
+
+class TestTheLoserStreamIsCLOSED:
+    """A step we walk away from must not keep a provider socket.
+
+    🔴 **The open SUCCEEDED, so the connection is ours.** Only the chunk pull
+    failed. Walking on without closing leaks one connection per failover, and
+    a vendor having a bad hour is exactly when failovers are frequent.
+    """
+
+    def test_a_step_that_dies_after_opening_has_its_stream_closed(
+            self, wrapper_provider):
+        plan, made = wrapper_provider
+        plan["a/one"] = {"raise_first": Upstream(529)}
+        _, _, served = open_stream([step("a/one"), step("b/two")])
+
+        assert served.model == "b/two"
+        assert made["a/one"].closed == 1, "the loser's stream was left open"
+
+    def test_the_WINNER_is_not_closed_by_the_walk(self, wrapper_provider):
+        # The route owns the winner from here. Closing it in the walk would
+        # hand the client an empty stream.
+        plan, made = wrapper_provider
+        plan["a/one"] = {"raise_first": Upstream(529)}
+        open_stream([step("a/one"), step("b/two")])
+
+        assert made["b/two"].closed == 0
+
+    def test_the_LAST_step_is_closed_too_when_it_dies(self, wrapper_provider):
+        # No step remains, so the walk raises. The socket still has to go.
+        plan, made = wrapper_provider
+        plan["a/one"] = {"raise_first": Upstream(500)}
+        with pytest.raises(UpstreamFailed):
+            open_stream([step("a/one")])
+
+        assert made["a/one"].closed == 1

@@ -4851,6 +4851,18 @@ async def _streamed_completion(
     never runs. The row is impossible rather than merely unwritten. That is the
     phantom-row defect which produced the 501, closed by construction
     (done-when 4).
+
+    🔴 **The ``finally`` CLOSES THE WINNER, and the walk moving earlier is why
+    it has to.** Starlette 1.1.0 never calls ``aclose`` on a body iterator, and
+    a client that goes away leaves this generator to the loop's async-generator
+    finalizer. That raises ``GeneratorExit`` at the ``yield`` below, so the
+    ``finally`` runs and the provider socket is released. Without it an
+    abandoned stream held a connection until the process ended.
+
+    ⚠️ **One window stays open, and no code here can close it.** If Starlette
+    never pulls a single item — the client vanishes between the route returning
+    and ``http.response.start`` — this generator never starts, so no
+    ``finally`` of ours exists to run. §8.6 records it.
     """
     def _on_finish(usage: ExtractedUsage, started: bool) -> None:
         if not started:
@@ -4866,8 +4878,14 @@ async def _streamed_completion(
         async for chunk in source:
             yield chunk
 
-    async for frame in relay_stream(_replayed(), on_finish=_on_finish):
-        yield frame
+    try:
+        async for frame in relay_stream(_replayed(), on_finish=_on_finish):
+            yield frame
+    finally:
+        # Every exit: the last frame, a client that left, a provider that
+        # died. `aclose_quietly` is the ONE close, shared with the walk's
+        # loser path, and it is safe on a stream that already finished.
+        await router_mod.aclose_quietly(source)
 
 
 @app.post("/v1/chat/completions")

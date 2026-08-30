@@ -297,7 +297,7 @@ is half answered. A retry would join two different completions into one
 response, which is worse than the error. §8.6 holds the contract.
 
 **The boundary, stated once.** The route walks the chain, opens each step and
-pulls its FIRST CHUNK (`open_stream_chain`, `router.py:863`). Only then does it
+pulls its FIRST CHUNK (`open_stream_chain`, `router.py:888`). Only then does it
 hand Starlette a body generator, and only then does the 200 status line go out.
 Every failure up to that chunk may fail over. Every failure after it may not.
 
@@ -305,13 +305,13 @@ Every failure up to that chunk may fail over. Every failure after it may not.
 `TERMINAL_STATUSES` (`router.py:753`) and `CREDENTIAL_STATUSES`
 (`router.py:757`) are read in `walk_chain` (`router.py:791`), through
 `is_retryable`, and in no other function. Both `call_chain` (`router.py:841`)
-and `open_stream_chain` (`router.py:863`) walk through it. A second failover
+and `open_stream_chain` (`router.py:888`) walk through it. A second failover
 policy beside the first is the CLAUDE.md §5 defect, not a feature.
 
 ⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:745`) is the ONE exception, and it is a
 trap.** `walk_chain` does not read it. Each ROUTE caps its own list before it
 hands the list over, with `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
-(`main.py:4958` chat, `main.py:5375` transcribe).
+(`main.py:4976` chat, `main.py:5393` transcribe).
 
 So a third caller of `walk_chain` that forgets that slice inherits NO ceiling.
 An unbounded chain is an unbounded bill and an unbounded wait. *(This
@@ -1146,7 +1146,7 @@ goes out, and walk the chain until then.
 
 #### The mechanism — where the walk lives, and why it cannot live elsewhere
 
-1. **The route walks.** `open_stream_chain` (`router.py:863`) opens each step
+1. **The route walks.** `open_stream_chain` (`router.py:888`) opens each step
    and pulls ONE chunk from it. The route calls this at `main.py:5066`, in
    place of the old `resolved = attempts[0]`.
 2. **The generator replays.** `_streamed_completion` (`main.py:4829`) yields
@@ -1170,6 +1170,45 @@ three-frame source: the client received frame one and nothing else.
 a fresh provider stream. Only the first chunk of the step that SUCCEEDED
 reaches the client, and it reaches it exactly once.
 
+⚠️ **A stream that opens and yields NOTHING is an ANSWER.** Zero chunks give
+an empty `head`, and the walk stops there. The provider completed with no
+content, so it served the request. Paying a second vendor to repeat it would
+bill twice for one empty answer. `relay_stream` never sets `started`, so the
+meter writes no row either. Fence:
+`test_an_EMPTY_stream_is_an_answer_and_not_a_failure`.
+
+⚠️ **The Router CLOSES every provider stream, at both ends of the walk.**
+`router.aclose_quietly` (`router.py:863`) is the one close. The walk closes a
+LOSER before it moves on, because the open already succeeded and the socket is
+ours. The route closes the WINNER in `_streamed_completion`'s `finally`,
+because Starlette 1.1.0 never calls `aclose` on a body iterator. Both fences
+are mutation-proved.
+
+#### The threadpool hazard — recorded, NOT fixed (H-80)
+
+🔴 **The stream open now holds one of 40 shared threadpool tokens for up to
+`3 × 120` seconds.** The route is `def`, so FastAPI runs it through
+`anyio.to_thread.run_sync` on the DEFAULT `CapacityLimiter`, which holds 40
+tokens. Before this slice the route returned as soon as it built the response.
+It now blocks until the walk finds a chunk.
+
+🔴 **litellm borrows from the SAME limiter.** `asyncify` (`asyncify.py:57`)
+calls `anyio.to_thread.run_sync` with `limiter=None`, so it takes the default
+one. Seven call sites do this. Two are on serving paths: Vertex AI's token
+fetch (`vertex_llm_base.py:718`) and SageMaker's request preparation
+(`sagemaker/completion/handler.py:428` and `:499`).
+
+⚠️ **So 40 concurrent stream walks plus one asyncify-bound model is a
+deadlock that does not recover.** All 40 tokens sit in stream walks. Each walk
+waits on a provider call that needs a 41st token to make progress. Nothing
+releases.
+
+**Latent today, and one row from being live.** Every bound model reaches
+httpx, which never borrows a thread. A vendor swap is one `tier_binding` row,
+and that row is an operator act with no code review. **H-80** holds the fix
+shape: a dedicated `CapacityLimiter` for stream walks, or a bounded semaphore
+in front of them. This slice does not build it.
+
 #### The boundary — §3.6 states it, and this section builds it
 
 Every failure before the first chunk may fail over. Every failure after it may
@@ -1180,7 +1219,7 @@ through. It adds no second policy.
 
 ⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:745`) does NOT come with it.** The cap
 lives in the route's list slice, `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
-(`main.py:4958`), which the stream branch reuses because it walks the SAME
+(`main.py:4976`), which the stream branch reuses because it walks the SAME
 `attempts` the buffered branch built. §3.6 records the trap for a future third
 caller.
 
@@ -1243,14 +1282,26 @@ they hit.
 | The row records the step that answered | `test_customer_console_router.py` — a streamed rank-2 walk writes `served_rank` = 2 |
 | A stream that never starts writes no usage row | `test_customer_console_router.py:745` — the phantom-row fence, unchanged |
 | The head is replayed once, and once only | `test_router_failover.py` — `test_the_head_leaves_the_source_at_the_SECOND_chunk` |
+| An empty stream is an answer, not a failure | `test_router_failover.py` — `test_an_EMPTY_stream_is_an_answer_and_not_a_failure` |
+| The walk closes the LOSER's stream | `test_router_failover.py::TestTheLoserStreamIsCLOSED` — a step that opens then 529s has `aclose` called, and the winner does not |
+| The route closes the WINNER's stream | `test_customer_console_router.py::TestTheWinningStreamIsCLOSED` — read to the end, abandoned, or died mid-relay, each closes once |
 
-**Two observations this slice records and does not fix.**
+**Two observations this slice records.**
 
 1. **A client can disconnect while the walk is still running.** The route is
    `def`, so nothing cancels it when the client goes away. The walk can open a
-   provider stream that nobody reads. `MAX_CHAIN_ATTEMPTS` and the 120-second
-   timeout bound the cost, and `relay_stream` never starts, so no row is
-   written. Nothing recorded this window before 2026-08-31.
+   provider stream that nobody reads. Three things bound that, and they bound
+   different halves. `MAX_CHAIN_ATTEMPTS` and the 120-second timeout bound the
+   WALK — how long it runs and how many steps it tries. Neither of them
+   touches an abandoned WINNER. `_streamed_completion`'s `finally` bounds
+   that one, and it closes the source on every exit. `relay_stream` never
+   starts, so no row is written.
+
+   ⚠️ **One window stays open.** The client can vanish between the route
+   returning and Starlette's `http.response.start`. The body generator then
+   never starts, so its `finally` never runs and nothing closes the winner.
+   Starlette 1.1.0 calls `aclose` on a body iterator nowhere, so no code in
+   this repository reaches that case.
 2. **A keepalive comment is never the first chunk.** litellm parses the
    provider's SSE and yields objects. An SSE comment line stays inside that
    parser. A provider that keeps a slow stream alive that way still makes
