@@ -28,9 +28,10 @@ import base64
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable
+from decimal import Decimal
+from typing import Any, NamedTuple
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -39,6 +40,7 @@ from customer_console.credits import RateCard, UnpricedModel
 
 __all__ = [
     "SSE_DONE",
+    "Credential",
     "ResolvedTier",
     "TierUnknown",
     "call_provider",
@@ -47,12 +49,13 @@ __all__ = [
     "frame_of",
     "provider_credential",
     "relay_stream",
-    "resolve_rate_card",
     "resolve_invocation",
+    "resolve_rate_card",
     "resolve_tier",
     "set_provider_call",
     "usage_from_frame",
     "usage_from_response",
+    "vendor_cost_usd",
 ]
 
 
@@ -74,6 +77,11 @@ class ResolvedTier:
     #: Which task this binding serves. Resolution is two steps as of
     #: D60: (task, tier) -> model, then (model, task) -> invocation.
     task: str = "chat"
+    #: Position in the fallback chain. 1 is the primary. Carried so the step
+    #: that ANSWERS can be recorded as evidence (migration 013) — deriving it
+    #: later by joining `tier_binding` history breaks the day a chain is
+    #: re-bound, which is exactly when somebody reads the history.
+    rank: int = 1
 
 
 def resolve_tier(
@@ -153,7 +161,10 @@ def resolve_chain(
     ).all()
     if not rows:
         raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
-    return [ResolvedTier(tier=tier, model=r[0], task=task) for r in rows]
+    return [
+        ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1]))
+        for r in rows
+    ]
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────
@@ -265,9 +276,27 @@ def decrypt_secret(ciphertext: str) -> str:
     return _fernet().decrypt(ciphertext.encode()).decode()
 
 
+class Credential(NamedTuple):
+    """One resolved provider credential, and WHOSE account it is.
+
+    ⚠️ A NamedTuple rather than a dataclass so the callers that index
+    ``cred[0]``/``cred[1]`` (several tests, and the previous tuple shape)
+    keep working. New code reads the names.
+    """
+
+    secret: str
+    api_base: str | None
+    #: TRUE when the row is the ORGANIZATION'S own vendor account. §3.4: such
+    #: a call is metered but billed zero, and our provider cost for it is
+    #: zero — we paid the vendor nothing. The rater cannot honour either rule
+    #: without this bit, which is why it travels WITH the secret rather than
+    #: being re-derived at metering time from a table that may have rotated.
+    byok: bool
+
+
 def provider_credential(conn: Connection, *, provider: str,
-                        org_id: str | None = None) -> tuple[str, str | None] | None:
-    """The live credential for a provider. Returns ``(secret, api_base)``.
+                        org_id: str | None = None) -> Credential | None:
+    """The live credential for a provider, with whose account it is.
 
     Prefers the organization's OWN credential when it has one — that is BYOK
     (§3.4): a customer insisting on their own provider account is metered but
@@ -277,7 +306,8 @@ def provider_credential(conn: Connection, *, provider: str,
     row = conn.execute(
         text(
             """
-            SELECT secret_enc, api_base FROM provider_credential
+            SELECT secret_enc, api_base, organization_id IS NOT NULL
+            FROM provider_credential
             WHERE provider = :provider AND revoked_at IS NULL
               AND (organization_id = CAST(:org AS uuid) OR organization_id IS NULL)
             ORDER BY organization_id NULLS LAST
@@ -288,7 +318,7 @@ def provider_credential(conn: Connection, *, provider: str,
     ).first()
     if row is None:
         return None
-    return decrypt_secret(row[0]), row[1]
+    return Credential(decrypt_secret(row[0]), row[1], bool(row[2]))
 
 
 # ── The provider call, behind a seam ────────────────────────────────────────
@@ -322,6 +352,61 @@ class ExtractedUsage:
     completion_tokens: int = 0
     cached_tokens: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def vendor_cost_usd(
+    usage: ExtractedUsage,
+    *,
+    input_per_1m: Decimal | None,
+    output_per_1m: Decimal | None,
+    cached_per_1m: Decimal | None,
+) -> Decimal | None:
+    """What THIS call cost us at the vendor, or ``None`` for "we cannot say".
+
+    🔴 **The missing half of margin (A1).** ``usage_event.provider_cost_usd``
+    existed for twelve migrations with no writer, so every margin read "not
+    measured". The prices come from ``model_profile`` — the operator's own
+    record of what each vendor charges — read at metering time, so a later
+    profile edit never rewrites what a past call cost.
+
+    ⚠️ **``None`` means UNKNOWN and is the answer whenever any NEEDED price is
+    missing.** A call with cached tokens and no cached price is not costed at
+    the input rate — that overstates the cost, understates the margin, and a
+    wrong number in the safe direction is still a wrong number that someone
+    will renegotiate a contract on. Prices for token kinds this call did not
+    consume are not needed and their absence costs nothing.
+
+    ⚠️ **A call with zero tokens everywhere is also ``None``.** Extraction is
+    best-effort, and all-zero counts usually mean the provider's shape was not
+    recognised — recording $0 for a call we could not read would be a
+    measurement nobody made.
+    """
+    prompt = max(usage.prompt_tokens, 0)
+    completion = max(usage.completion_tokens, 0)
+    # The extractor records cached reads as a subset of prompt_tokens. Clamp,
+    # so a provider that double-reports cannot produce a negative uncached
+    # count and with it a negative cost.
+    cached = min(max(usage.cached_tokens, 0), prompt)
+
+    if prompt == 0 and completion == 0:
+        return None
+
+    uncached = prompt - cached
+    total = Decimal(0)
+    if uncached > 0:
+        if input_per_1m is None:
+            return None
+        total += Decimal(uncached) * input_per_1m
+    if cached > 0:
+        if cached_per_1m is None:
+            return None
+        total += Decimal(cached) * cached_per_1m
+    if completion > 0:
+        if output_per_1m is None:
+            return None
+        total += Decimal(completion) * output_per_1m
+
+    return (total / Decimal(1_000_000)).quantize(Decimal("0.00000001"))
 
 
 def usage_from_response(response: Any) -> ExtractedUsage:
