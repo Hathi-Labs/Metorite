@@ -1303,6 +1303,10 @@ line — never reclaim a number by deleting the other entry.
   `store.py` cites "HANDOFF H-76" by name.
 - **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
   `usage_by_org`
+- **⚠️ Widened 2026-08-31 by slice 5.** A walled organization bills 0, so it
+  also sorts last. The `walled` flag rides the capped table, and only `silent`
+  has the cap-proof banner. Above `SPEND_PAGE_SIZE` organizations, a walled
+  customer appears nowhere. The fix for the sort must cover both classes.
 - **Added:** 2026-08-30 · WS-31 spec remediation session
 
 ### H-77 · Set the vendor feed's clock on the box · [OWNER]
