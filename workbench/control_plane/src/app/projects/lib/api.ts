@@ -59,6 +59,9 @@ export interface SummaryChild {
   kind: string;
   status?: string | null;
   archived: boolean;
+  /** A space's chosen marker (migration 194) — portfolio children only. */
+  icon?: string | null;
+  icon_slot?: number | null;
   /** Tasks in this child's WHOLE subtree, visible to the caller. */
   tasks: number;
   overdue: number;

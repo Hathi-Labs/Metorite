@@ -372,6 +372,11 @@ async def get_portfolio_summary(
                 "kind": node_kind(getattr(root, "kind", None)),
                 "status": root.status,
                 "archived": root.archived_at is not None,
+                # The space's chosen marker (migration 194), so Analytics
+                # draws the same identity the sidebar does. NULL falls back
+                # client-side to the level glyph and a name-hashed slot.
+                "icon": getattr(root, "icon", None),
+                "icon_slot": getattr(root, "icon_slot", None),
                 **{
                     k: per_space.get(str(root.id), {}).get(k, v)
                     for k, v in (

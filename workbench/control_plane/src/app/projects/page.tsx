@@ -114,6 +114,7 @@ import {
   nodeKind,
   showsDashboard,
 } from "./lib/tree";
+import AnalyticsView from "./components/AnalyticsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
@@ -1686,12 +1687,13 @@ function ProjectsWorkspace() {
     // "not built" is a surface rather than a blank pane.
     renderState("empty", "AI chat is not built yet.")
   ) : app === "analytics" ? (
-    // Analytics — the portfolio roll-up, drawn by the SAME component a
-    // space uses. One counting rule, one layout, two scopes.
+    // Analytics — the portfolio roll-up in Plane's shape: a KPI strip over
+    // a per-space state matrix (see AnalyticsView's header for sources).
+    // Same endpoint as the dashboards, so the two cannot disagree.
     <>
       {error ? renderState("error", error) : null}
       {portfolio ? (
-        <NodeDashboard
+        <AnalyticsView
           summary={portfolio}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
