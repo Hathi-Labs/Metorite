@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   type Assumptions,
+  chargeForMargin,
+  creditsPerUnitFromUsd,
   marginFraction,
   marginLabelPct,
   parseAssumption,
@@ -61,6 +63,39 @@ describe("the margin on a price", () => {
 
   it("refuses when the vendor price is unknown", () => {
     expect(marginFraction(1, null, A)).toBeNull();
+  });
+});
+
+describe("a NON-token unit's cost, in credits", () => {
+  it("converts a per-image dollar price through both assumptions", () => {
+    // $0.04/image at Rs 90/$ and Rs 1/credit = 3.6 credits per image.
+    expect(creditsPerUnitFromUsd(0.04, A)).toBeCloseTo(3.6, 10);
+  });
+
+  it("🔴 refuses to guess without assumptions or with garbage", () => {
+    expect(creditsPerUnitFromUsd(0.04, NONE)).toBeNull();
+    expect(creditsPerUnitFromUsd(null, A)).toBeNull();
+    expect(creditsPerUnitFromUsd(-1, A)).toBeNull();
+    expect(creditsPerUnitFromUsd(Number.POSITIVE_INFINITY, A)).toBeNull();
+  });
+});
+
+describe("the one margin formula", () => {
+  it("charge = cost / (1 - margin), in whatever unit the cost came in", () => {
+    expect(chargeForMargin(3.6, 0.7)).toBeCloseTo(12, 10);
+    expect(chargeForMargin(0.27, 0.7)).toBeCloseTo(0.9, 10);
+  });
+
+  it("refuses an impossible target or a missing cost", () => {
+    expect(chargeForMargin(null, 0.7)).toBeNull();
+    expect(chargeForMargin(3.6, 1)).toBeNull();
+    expect(chargeForMargin(3.6, -0.1)).toBeNull();
+  });
+
+  it("the token path IS this formula — no second copy to drift", () => {
+    expect(priceForMargin(3, A, 0.7)).toBe(
+      chargeForMargin(vendorCostCreditsPer1k(3, A), 0.7),
+    );
   });
 });
 

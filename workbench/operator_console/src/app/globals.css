@@ -2031,6 +2031,66 @@ pre.token {
   font-size: 12px;
 }
 
+/* ── The price list (what a customer pays today) ──────────────────────────
+   Plain rows, one per tier: the reading surface, not a control. */
+.pricegroup h3 {
+  margin: 14px 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.pricelist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pricelist li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.pricelist li:last-child {
+  border-bottom: none;
+}
+.pl-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pl-price {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The per-unit vendor-price prompt inside the suggestion table. */
+.unitsugg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.unitsugg label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.unitsugg input {
+  width: 76px;
+  padding: 3px 7px;
+}
+
 /* ── The pricing assumptions row ──────────────────────────────────────────
    Two numbers the operator ASSERTS for this page's arithmetic. Drawn as one
    quiet row, with the disclaimer beside them rather than in a tooltip —

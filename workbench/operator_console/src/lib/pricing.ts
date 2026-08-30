@@ -64,19 +64,42 @@ export function marginFraction(
   return (chargePer1k - cost) / chargePer1k;
 }
 
-/** The per-1k credit price that yields a target margin over the vendor cost.
+/** What ONE natural unit (an image, a minute, a second…) costs us, in
+ * credits, from the vendor's per-unit dollar price. Same conversion as the
+ * token path, without the /1000. Null in, null out. */
+export function creditsPerUnitFromUsd(
+  usdPerUnit: number | null,
+  a: Assumptions,
+): number | null {
+  if (usdPerUnit === null || !usable(a)) return null;
+  if (usdPerUnit < 0 || !Number.isFinite(usdPerUnit)) return null;
+  return (usdPerUnit * (a.inrPerUsd as number)) / (a.inrPerCredit as number);
+}
+
+/** The charge that yields a target margin over a cost, in the SAME unit.
  *
  * charge = cost / (1 − margin). A 100 %-or-more target asks for an infinite
- * price and answers null instead. */
+ * price and answers null instead — so does a missing cost. */
+export function chargeForMargin(
+  costCredits: number | null,
+  targetMarginFraction: number,
+): number | null {
+  if (costCredits === null) return null;
+  if (targetMarginFraction >= 1 || targetMarginFraction < 0) return null;
+  return costCredits / (1 - targetMarginFraction);
+}
+
+/** The per-1k credit price that yields a target margin over the vendor cost.
+ *  The token-unit face of `chargeForMargin` — one formula, two units. */
 export function priceForMargin(
   vendorPer1M: number | null,
   a: Assumptions,
   targetMarginFraction: number,
 ): number | null {
-  const cost = vendorCostCreditsPer1k(vendorPer1M, a);
-  if (cost === null) return null;
-  if (targetMarginFraction >= 1 || targetMarginFraction < 0) return null;
-  return cost / (1 - targetMarginFraction);
+  return chargeForMargin(
+    vendorCostCreditsPer1k(vendorPer1M, a),
+    targetMarginFraction,
+  );
 }
 
 /** Draw a fraction as a whole percent the operator can read at a glance. */

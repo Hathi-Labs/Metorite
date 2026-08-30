@@ -4,6 +4,8 @@ import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
 import CreditPrice from "./CreditPrice";
+import PriceFromCost from "./PriceFromCost";
+import PriceList from "./PriceList";
 import TierPricing from "./TierPricing";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +41,8 @@ export default async function PricingPage() {
       note={catalog.note}
     >
       <CreditPrice price={catalog.data.creditPrice} />
+      <PriceList catalog={catalog.data} />
+      <PriceFromCost catalog={catalog.data} />
       <TierPricing catalog={catalog.data} />
       <p className="note">
         New here? The go-live rail on the{" "}

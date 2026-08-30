@@ -835,6 +835,20 @@ line — never reclaim a number by deleting the other entry.
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
 
+### H-78 · Teach the vendor feed the per-unit costs (image, second, character) · [AGENT]
+- **Check:** `grep -c "cost_per_image" apps/services/customer_console/customer_console/feed.py`
+  → `0` means the feed still reads only the three per-token columns.
+- **Why:** The "Price from cost" board on `/pricing` suggests a charge from the
+  chain's first model and its vendor price. For token jobs the cost comes from the feed.
+  For image, video, music and speech the litellm map carries per-unit columns
+  (`output_cost_per_image`, `input_cost_per_second`, and more) that
+  `vendor_price_feed` (014) does not store. Until it does, the operator types
+  the vendor's dollar price into the board by hand. The extension is a new
+  migration with nullable columns, a `MODE_MAP`-adjacent read in `feed.py`,
+  and the board reading the new fields. R6 applies.
+- **Authority:** `customer_console.md` §6A.11 · §6A.13
+- **Added:** 2026-08-30 · pricing-method session
+
 ### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
 - **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
   `configure_litellm` mean the tenant path still writes process-global credentials.
