@@ -25,6 +25,7 @@ means in practice nobody tests it.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -787,16 +788,19 @@ class UpstreamFailed(Exception):
         self.status = status
 
 
-async def call_chain(
+async def walk_chain(
     attempts: Sequence[ResolvedTier],
-    kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
+    attempt: Callable[[ResolvedTier], Awaitable[Any]],
     on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
     | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Try each step in order and return the first answer, and who gave it.
 
-    🔴 **This is D-AI-5 actually doing something.** Until it existed the chain
-    was configuration the Router stored and never read.
+    🔴 **The ONE failover policy in the product.** Both serving shapes walk
+    through here — the buffered call (:func:`call_chain`) and the stream
+    (:func:`open_stream_chain`). `TERMINAL_STATUSES`, `CREDENTIAL_STATUSES` and
+    `is_retryable` are read in this function and in no other, so a stream can
+    never grow a second opinion about what a vendor 500 means.
 
     ⚠️ **Returns the step that ANSWERED, and the caller must bill from it.** An
     Opus request that fell over to Haiku costs Haiku. Pricing the intended step
@@ -806,10 +810,9 @@ async def call_chain(
     Every model from that vendor presents the same key of ours, so trying a
     second one spends a round trip to learn what we already know.
 
-    Lives here, not in the route, because a route needs FastAPI and a test of
-    failover ORDER should not. `kwargs_for` is a callable for the same reason:
-    building a provider call needs the request, the credential and the clamp,
-    and none of that is this function's business.
+    `attempt` is a callable because the two shapes differ in what "an answer"
+    is: a response body for one, an open stream plus its first chunk for the
+    other. The POLICY does not differ, so it is written once.
     """
     dead_vendors: set[str] = set()
     for position, step in enumerate(attempts):
@@ -817,7 +820,7 @@ async def call_chain(
         if vendor in dead_vendors:
             continue
         try:
-            return await call_provider(**kwargs_for(step)), step
+            return await attempt(step), step
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             if status in CREDENTIAL_STATUSES:
@@ -833,3 +836,71 @@ async def call_chain(
     # Unreachable while `attempts` is non-empty: the loop either returns or
     # raises. Kept so a future edit that empties it fails loudly.
     raise UpstreamFailed(None)
+
+
+async def call_chain(
+    attempts: Sequence[ResolvedTier],
+    kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
+    | None = None,
+) -> tuple[Any, ResolvedTier]:
+    """Walk the chain for a BUFFERED completion.
+
+    🔴 **This is D-AI-5 actually doing something.** Until it existed the chain
+    was configuration the Router stored and never read.
+
+    Lives here, not in the route, because a route needs FastAPI and a test of
+    failover ORDER should not. `kwargs_for` is a callable for the same reason:
+    building a provider call needs the request, the credential and the clamp,
+    and none of that is this function's business.
+    """
+    async def _attempt(step: ResolvedTier) -> Any:
+        return await call_provider(**kwargs_for(step))
+
+    return await walk_chain(attempts, _attempt, on_failover)
+
+
+async def open_stream_chain(
+    attempts: Sequence[ResolvedTier],
+    kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
+    | None = None,
+) -> tuple[list[Any], Any, ResolvedTier]:
+    """Open a provider STREAM, pull its first chunk, and walk while doing it.
+
+    Returns ``(head, source, step)``. ``head`` holds the first chunk, or
+    nothing at all. ``source`` is the rest of the stream, already open.
+
+    🔴 **Pulling the first chunk HERE is what makes a stream fail over.** An
+    attempt that only opened the stream would call the next step for a refused
+    connection and not for a provider that accepts the socket and then dies —
+    which is the common outage shape. The first chunk is the earliest proof
+    that a step will answer.
+
+    ⚠️ **The caller must replay ``head``, exactly once.** It has left the
+    provider and no second attempt can produce it again. The client is owed it
+    and is owed it one time.
+
+    ⚠️ **A stream that opens and yields NOTHING is an ANSWER, not a failure.**
+    ``StopAsyncIteration`` returns an empty ``head`` rather than walking on. A
+    provider that completed with no content has served the request, and paying
+    a second vendor to repeat it would bill twice for one empty answer.
+    """
+    async def _attempt(step: ResolvedTier) -> tuple[list[Any], Any]:
+        source = await call_provider(**kwargs_for(step))
+        iterator = aiter(source)
+        try:
+            return [await anext(iterator)], iterator
+        except StopAsyncIteration:
+            return [], iterator
+        except BaseException:
+            # The socket is ours the moment the open succeeds. A step we walk
+            # away from must not leave a provider connection behind it.
+            aclose = getattr(iterator, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
+            raise
+
+    (head, source), step = await walk_chain(attempts, _attempt, on_failover)
+    return head, source, step

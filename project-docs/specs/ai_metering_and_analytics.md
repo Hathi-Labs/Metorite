@@ -3,16 +3,17 @@
 **Status: ACTIVE.** Owner directive, 2026-08-29. This specification owns the AI
 tier vocabulary that a customer sees, and every surface that reports AI use.
 
-**Slice state, re-measured 2026-08-31.** Slices 1, 2, 5, 6, 10, 12 and 13 are
-**BUILT**. Slice 6 shipped as `b3ce3a9c` (#163) and slice 12 as `537147b2`
+**Slice state, re-measured 2026-08-31.** Slices 1, 2, 5, 6, 10, 11, 12 and 13
+are **BUILT**. Slice 6 shipped as `b3ce3a9c` (#163) and slice 12 as `537147b2`
 (#168). **Slice 5 shipped on 2026-08-31** as `020_usage_refusal.sql` plus the
-Router and store changes §8.1 records. §8's table carries a Gate column, so a
-dispatcher reads AGENT-SAFE or OWNER-GATE per row.
+Router and store changes §8.1 records. **Slice 11 shipped on 2026-08-31** as
+the stream walk §8.6 records. §8's table carries a Gate column, so a dispatcher
+reads AGENT-SAFE or OWNER-GATE per row.
 
-**Three slices are SPEC ONLY, and each one holds a contract.** Slice 3 is
-§8.4, slice 4 is §8.5 and slice 11 is §8.6. All three are AGENT-SAFE. Each
-contract names its done-when clauses, its fences (R7) and its verification
-command. Slice 5 held the fourth contract, and §8.1 is now its build record.
+**Two slices are SPEC ONLY, and each one holds a contract.** Slice 3 is §8.4
+and slice 4 is §8.5. Both are AGENT-SAFE. Each contract names its done-when
+clauses, its fences (R7) and its verification command. Slices 5 and 11 held
+two more contracts, and §8.1 and §8.6 are now their build records.
 
 **The other three, so that 13 rows add up.** *(Added 2026-08-30 — the two
 paragraphs above accounted for 10 slices and left 3 unnamed.)* Slice 7 is SPEC
@@ -290,31 +291,35 @@ walk the chain. Slice 10 adds that.
 3. **The customer pays for the step that ANSWERED.** A request that falls over
    from an expensive model to a cheap one costs the cheap one.
 
-⚠️ **A stream does not fail over TODAY, and slice 11 moves the line.** After
-the first frame reaches the client, the request is half answered. A retry
-would join two different completions into one response, which is worse than
-the error. Failover *before* the first frame is legal, and §8.6 holds its
-contract.
+✅ **A stream fails over BEFORE its first frame, and never after it** *(slice
+11, built 2026-08-31)*. After the first frame reaches the client, the request
+is half answered. A retry would join two different completions into one
+response, which is worse than the error. §8.6 holds the contract.
 
-**The boundary, stated once (agent default, 2026-08-30).** The Router opens
-the provider stream inside `_streamed_completion` (`main.py:4494-4536`) and
-awaits the FIRST FRAME before Starlette sends the 200 status line. Every
-failure up to that point may fail over. Every failure after it may not.
+**The boundary, stated once.** The route walks the chain, opens each step and
+pulls its FIRST CHUNK (`open_stream_chain`, `router.py:863`). Only then does it
+hand Starlette a body generator, and only then does the 200 status line go out.
+Every failure up to that chunk may fail over. Every failure after it may not.
 
-**The stream path reuses `call_chain`'s policy and adds none of its own.**
-`MAX_CHAIN_ATTEMPTS` (`router.py:617`), `TERMINAL_STATUSES` (`router.py:625`)
-and `CREDENTIAL_STATUSES` (`router.py:629`) bind the walk before the first
-frame exactly as they bind `call_chain` (`router.py:663`). A second failover
-policy beside the first is the CLAUDE.md §5 defect, not a feature.
+**The stream path reuses one policy and adds none of its own.**
+`MAX_CHAIN_ATTEMPTS` (`router.py:745`), `TERMINAL_STATUSES` (`router.py:753`)
+and `CREDENTIAL_STATUSES` (`router.py:757`) are read in `walk_chain`
+(`router.py:791`) and in no other function. Both `call_chain`
+(`router.py:841`) and `open_stream_chain` (`router.py:863`) walk through it. A
+second failover policy beside the first is the CLAUDE.md §5 defect, not a
+feature.
 
-*(The three anchors above read `router.py:559-608` until 2026-08-30. That
-range is `relay_stream`, which is a different function.)*
+*(The three anchors above read `router.py:559-608` until 2026-08-30, and
+`router.py:617-663` until 2026-08-31. The first range is `relay_stream`, which
+is a different function.)*
 
-⚠️ **`main.py:4715` carries a stale comment, and slice 11 repairs it.** The
-line reads that `usage_event` has *"no column for the step that served"*.
-Slice 12 built `served_rank` in `013_pricing_truth.sql:26-40`, so the comment
-is now false. This is a finding for slice 11 to fix in the code it already
-touches. It is not a separate ticket.
+✅ **`_note_failover` says WHY, and the row says WHICH** *(the stale comment in
+the code, repaired by slice 11)*. That callback read *"`usage_event` has no
+column for the step that served"*. Slice 12 built `served_rank` in
+`013_pricing_truth.sql:26-40`, so the sentence was false. The callback
+(`main.py:5021`) now states the split: the row carries the step, the log line
+carries the reason. The route declares it ABOVE the stream branch and both
+branches use it, so the chat route holds one copy and not two.
 
 ⚠️ **The chain tries at most `MAX_CHAIN_ATTEMPTS` steps.** An unbounded chain
 is an unbounded bill and an unbounded wait.
@@ -325,7 +330,7 @@ This paragraph said the column did not exist. Slice 12 built it — see §8.3.)*
 `served_rank` (migration `013`) holds the position of the step that served.
 Rank 1 is the first choice. A rank above 1 is a failover. NULL predates the
 column, or comes from a caller that does not say. The Operator Console reads
-`served_rank > 1` over 14 days (`main.py:1775-1785`).
+`served_rank > 1` over 14 days (`main.py:1789-1804`).
 
 ⚠️ **The record holds no `from` and no `reason`, and that is deliberate.** The
 step we fell FROM is a join against a re-bindable history, so a chain edited
@@ -553,7 +558,7 @@ is still agent-safe. §7 holds the gates themselves.
 | **8** | Per-member budget | C5 | 🔴 **OWNER-GATE** — blocked on H-73. Do not build it first and secure it later |
 | **9** | `tier_binding.rank`, and the Console reads and writes a chain | §3.5 | AGENT-SAFE |
 | **10** | The Router walks the chain when a step fails ✅ | §3.5, §3.6 | AGENT-SAFE · the serving flip is the owner's (H-69) |
-| **11** | A stream fails over before its first frame — **§8.6 holds the contract** | §3.6 | AGENT-SAFE · the serving flip is the owner's (H-69) |
+| **11** | A stream fails over before its first frame ✅ — **§8.6** | §3.6 | AGENT-SAFE · the serving flip is the owner's (H-69) |
 | **12** | `usage_event` records the step that served ✅ `537147b2` (#168) — **§8.3** | §3.6 | AGENT-SAFE |
 | **13** | `model_profile` — what a model IS ✅ | §3.7 | AGENT-SAFE |
 
@@ -874,8 +879,8 @@ Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
 |---|---|---|
 | `served_rank`, `byok_served` | `013_pricing_truth.sql:26-40` | The two columns, plus the `served_rank >= 1` CHECK |
 | `record_usage` | `store.py:487`, `store.py:522` | Persists both. NULL rank from a caller that does not say |
-| The Router hand-off | `main.py:4487` | Passes the rank the Router walked, from `router.py:85` and `router.py:166` (`tier_binding.rank`) |
-| The failover read | `main.py:1775-1785` | 14 days of `served_rank > 1`, one row per day, tier, task and model |
+| The Router hand-off | `main.py:4481` | Passes the rank the Router walked, from `router.py:85` and `router.py:166` (`tier_binding.rank`) |
+| The failover read | `main.py:1789-1804` | 14 days of `served_rank > 1`, one row per day, tier, task and model |
 | `TierBoard` | operator console | Shows the failovers that happened |
 | `test_customer_console_pricing_truth.py` | tests | `:201`, `:257`, `:298`, `:353` |
 
@@ -1115,67 +1120,114 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_router.py -q
 ```
 
-### 8.6 A stream fails over before its first frame (slice 11, §3.6) — SPEC ONLY, 2026-08-30
-
-**Nothing below is built.** `main.py:4664-4700` says so in its own comment.
-Every default here is an **agent-proposed answer the owner may overrule**,
-which is the D16/D17 convention CP-2b and CP-2c used. Where a name or a number
-below disagrees with the tree, the tree wins. Re-verify every anchor at
-dispatch.
+### 8.6 A stream fails over before its first frame (slice 11, §3.6) — BUILT, 2026-08-31
 
 **Gate: AGENT-SAFE.** The serving flip stays the owner's act (H-69).
 
-**The problem.** A streamed request takes step 1 of the chain and stops there.
-`_streamed_completion` (`main.py:4494-4536`) catches the open failure, logs
-`router.stream_open_failed`, and sends the `[DONE]` sentinel. So a provider
-that is down costs the customer their request, and the chain the operator
-configured does nothing.
+**The problem this closed.** A streamed request took step 1 of the chain and
+stopped there. `_streamed_completion` caught the open failure, logged
+`router.stream_open_failed`, and sent the `[DONE]` sentinel. So a provider that
+was down cost the customer their request, and the chain the operator configured
+did nothing.
 
-**The answer, in one line.** Await the first frame before the 200 status line
+**The answer, in one line.** Pull the first chunk before the 200 status line
 goes out, and walk the chain until then.
 
 **No migration.** `served_rank` shipped in `013`.
 
+#### The mechanism — where the walk lives, and why it cannot live elsewhere
+
+1. **The route walks.** `open_stream_chain` (`router.py:863`) opens each step
+   and pulls ONE chunk from it. The route calls this at `main.py:5066`, in
+   place of the old `resolved = attempts[0]`.
+2. **The generator replays.** `_streamed_completion` (`main.py:4829`) yields
+   the chunk the route already holds, then relays the rest of the same open
+   stream. `relay_stream` sees one unbroken source, so byte-identity, the
+   single usage row and the `[DONE]` sentinel all keep working unchanged.
+
+⚠️ **The walk CANNOT move into the body generator.** Starlette sends the
+`http.response.start` message before it pulls the first item. So the 200
+status line has gone out by the time a body iterator runs. The code has said
+so since CP-4b. A generator has no failover left to express.
+
+⚠️ **The route runs the walk on the SERVING loop, through
+`anyio.from_thread.run`** (`_open_stream_chain`, `main.py:4784`). The route is
+`def`, so FastAPI runs it in an anyio worker thread. `asyncio.run` would build
+a private loop, and closing that loop calls `shutdown_asyncgens()` — which
+throws `GeneratorExit` into the stream just opened. Measured 2026-08-31 on a
+three-frame source: the client received frame one and nothing else.
+
+⚠️ **An OUTPUT frame never crosses from one try to the next.** Each retry opens
+a fresh provider stream. Only the first chunk of the step that SUCCEEDED
+reaches the client, and it reaches it exactly once.
+
 #### The boundary — §3.6 states it, and this section builds it
 
-Every failure before the first frame may fail over. Every failure after it may
-not. The stream path reuses `MAX_CHAIN_ATTEMPTS` (`router.py:617`),
-`TERMINAL_STATUSES` (`router.py:625`) and `CREDENTIAL_STATUSES`
-(`router.py:629`), exactly as `call_chain` (`router.py:663`) uses them. It adds
-no second policy.
+Every failure before the first chunk may fail over. Every failure after it may
+not. The stream path reads `MAX_CHAIN_ATTEMPTS` (`router.py:745`),
+`TERMINAL_STATUSES` (`router.py:753`) and `CREDENTIAL_STATUSES`
+(`router.py:757`) through `walk_chain` (`router.py:791`), the one function
+`call_chain` (`router.py:841`) also walks through. It adds no second policy.
 
-*(The three anchors above read `router.py:559-608` until 2026-08-30. That
-range is `relay_stream`.)*
+*(The three anchors above read `router.py:559-608` until 2026-08-30, and
+`router.py:617-663` until 2026-08-31. The first range is `relay_stream`.)*
 
-#### Done when — four clauses
+#### Done when — five clauses
 
-1. **A retryable failure before any frame fails over.** A 529 on step 1
-   serves step 2, and the client sees one clean stream.
+1. **A retryable failure before any chunk fails over.** A 529 on step 1 serves
+   step 2, and the client sees one clean stream.
 2. **A terminal failure stops the walk.** A 400 on step 1 calls no step 2.
 3. **The usage row records the step that answered.** It carries that step's
-   `served_rank`, the same way `_record_completion` (`main.py:4487`) does for
-   a non-streamed call.
+   `served_rank`, the same way `_record_completion` (`main.py:4481`) does for
+   a non-streamed call. The route passes the answering step as `resolved`.
 4. **A chain that fails at every step writes NO usage row.** This preserves
-   `test_customer_console_router.py:715`, which is the phantom-row fence.
+   `test_customer_console_router.py:745`
+   (`test_a_stream_that_never_starts_writes_no_usage_row`), the phantom-row
+   fence.
+5. **An exhausted chain still answers 200 with `data: [DONE]`.**
+   `_stream_closed` (`main.py:4809`) sends the sentinel and nothing else. That
+   keeps the body assertion at `test_customer_console_router.py:759` true.
 
-#### Two repairs this slice carries
+⚠️ **Clause 5's 200 is a CHOICE now, and it was a constraint before.** While
+the open lived inside the body generator, the status line had gone out and a
+502 could not be expressed. This slice moved the walk into the route, so that
+502 became reachable. It stays a 200, because what a streaming caller is
+answered WITH is a response-shape decision and not a failover one. **No
+decision records the alternative.** A later slice may prefer a 502 for an
+exhausted streamed chain, and it would edit the fence at
+`test_customer_console_router.py:759`.
 
-1. **`main.py:4715`'s comment is stale.** It reads that `usage_event` has *"no
+⚠️ **`_REFUSAL_REASONS` (`main.py:4661`) stays CLOSED.** An exhausted chain
+writes no refusal row and mints no new reason slug. The three reasons in §8.1
+are customer walls — no credits, the run ceiling, an unknown tier. An upstream
+outage is our supplier failing, and not the customer meeting a limit. A refusal
+row would put a vendor's bad night into the customer's own record of the walls
+they hit.
+
+#### The repairs this slice carried
+
+1. **The `_note_failover` comment.** It read that `usage_event` has *"no
    column for the step that served"*. Slice 12 built `served_rank`
-   (`013_pricing_truth.sql:26-40`). Correct the comment in the code this slice
-   already touches.
-2. **`main.py:4671-4677`'s comment describes the old rule.** It states that a
-   stream does not fail over and that the change is a separate slice. This is
-   that slice, so the comment states the boundary instead.
+   (`013_pricing_truth.sql:26-40`), so the sentence was false. It now states
+   the split: the row carries the step, the log line carries the reason.
+2. **The stream-branch comment.** It read *"A STREAM DOES NOT FAIL OVER"* and
+   named the change as a separate slice. This was that slice, so the comment
+   now states the boundary.
+3. **One `_note_failover` for the chat route.** The route declares it above
+   the stream branch and both branches use it. The transcribe route keeps its
+   own, because it names its own task.
 
 #### Fences (R7)
 
 | Rule | Fence |
 |---|---|
-| A stream fails over before its first frame | `test_router_failover.py` — a 529 on step 1 serves step 2 as one clean stream |
-| A stream never fails over after its first frame | `test_customer_console_router.py` — a mid-stream failure calls no second model |
-| A bad request stops a streamed walk | `test_router_failover.py` — a 400 on step 1 calls no step 2 |
-| A stream that never starts writes no usage row | `test_customer_console_router.py:715` — the phantom-row fence, unchanged |
+| A stream fails over before its first frame | `test_customer_console_router.py` — `test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream`, on exact bytes |
+| The walk pulls a chunk, and does not only open | `test_router_failover.py` — `test_a_stream_that_OPENS_and_then_dies_still_fails_over` |
+| A stream never fails over after its first frame | `test_customer_console_router.py` — `test_a_failure_AFTER_the_first_frame_does_NOT_fail_over` calls no second model |
+| A bad request stops a streamed walk | `test_customer_console_router.py` — a 400 on step 1 calls no step 2 |
+| The row records the step that answered | `test_customer_console_router.py` — a streamed rank-2 walk writes `served_rank` = 2 |
+| A stream that never starts writes no usage row | `test_customer_console_router.py:745` — the phantom-row fence, unchanged |
+| The head is replayed once, and once only | `test_router_failover.py` — `test_the_head_leaves_the_source_at_the_SECOND_chunk` |
 
 **Verification.** Both suites are database-gated (R8), so start the database
 first.
@@ -1214,7 +1266,8 @@ agent breaks it.
 | An unmeasured cost never reads as a good margin | `test_operator_analytics.py::TestMarginRatio` |
 | An operator usage read is Operator-gated | `test_operator_roles.py` |
 | A failover records the step that answered | `test_customer_console_pricing_truth.py` — a rank-2 walk writes `served_rank` = 2 |
-| A stream fails over before its first frame | `test_router_failover.py` — a 529 on step 1 serves step 2 as one clean stream |
+| A stream fails over before its first frame | `test_customer_console_router.py` — a 529 on step 1 serves step 2 as one clean stream, on exact bytes |
+| A streamed walk pulls a chunk, and does not only open | `test_router_failover.py` — a step that opens and then dies still falls over |
 | A stream never fails over after its first frame | `test_customer_console_router.py` — a mid-stream failure calls no second model |
 | A hidden tier never reaches a customer | `test_customer_console_tier_pricing.py` — a `customer_visible` FALSE row is absent from `GET /my/tiers` |
 

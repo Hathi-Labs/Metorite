@@ -57,6 +57,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any, NoReturn
 
+import anyio
 from fastapi import (
     FastAPI,
     File,
@@ -133,7 +134,6 @@ from customer_console.router import (
     ExtractedUsage,
     ResolvedTier,
     TierUnknown,
-    call_provider,
     encrypt_secret,
     provider_credential,
     relay_stream,
@@ -4781,8 +4781,54 @@ def _raise_spend_refusal(
     raise refusal
 
 
+def _open_stream_chain(
+    attempts: list[ResolvedTier],
+    kwargs_for: Any,
+    on_failover: Any,
+) -> tuple[list[Any], Any, ResolvedTier]:
+    """Walk the chain and open the winning stream ON THE SERVING LOOP.
+
+    🔴 **``anyio.from_thread.run``, and NOT ``asyncio.run``.** This route is
+    ``def``, so FastAPI runs it in an anyio worker thread. ``asyncio.run`` would
+    create a private loop, and closing that loop calls
+    ``shutdown_asyncgens()`` — which throws ``GeneratorExit`` into the provider
+    stream we just opened. Measured 2026-08-31 on a three-frame source: the
+    client received frame one and nothing else. ``from_thread.run`` runs the
+    coroutine on the loop Starlette will iterate the body on, so the open, the
+    first chunk and every later ``__anext__`` share one live loop.
+
+    ⚠️ **The walk cannot move into the body generator.** Starlette sends the
+    ``http.response.start`` message before it pulls the first item, so by the
+    time a body iterator runs the 200 status line has gone out and no failover
+    is expressible any more.
+    """
+    return anyio.from_thread.run(
+        router_mod.open_stream_chain, attempts, kwargs_for, on_failover)
+
+
+async def _stream_closed() -> AsyncIterator[bytes]:
+    """Every step refused before a frame existed. Close cleanly, meter nothing.
+
+    A client that never sees the sentinel waits for its own timeout, so it
+    gets the sentinel and nothing else.
+
+    ⚠️ **The 200 here is a CHOICE now, and it was a constraint before.** While
+    the open lived inside the body generator the status line had already gone
+    out, and a 502 could not be expressed at all. The walk moved into the
+    route, so that 502 became reachable — and this slice still does not raise
+    it, because changing what a streaming caller is answered WITH is not a
+    failover change. ``test_a_stream_that_never_starts_writes_no_usage_row``
+    pins the 200 and the sentinel.
+
+    ⚠️ **No usage row, and no refusal row either.** The wall was the vendor's,
+    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1).
+    """
+    yield SSE_DONE
+
+
 async def _streamed_completion(
-    call_kwargs: dict[str, Any],
+    head: list[Any],
+    source: Any,
     *,
     org_id: str,
     caller: Any,
@@ -4790,17 +4836,21 @@ async def _streamed_completion(
     client_ref: str | None,
     byok: bool = False,
 ) -> AsyncIterator[bytes]:
-    """Open the provider stream and relay it, metering the result exactly once.
+    """Replay the first chunk, relay the rest, and meter the result once.
 
-    ⚠️ **The provider call happens HERE, not in the route.** ``asyncio.run``
-    closes the loop it creates, so a stream opened that way is dead before its
-    first frame. Starlette iterates this generator on its own running loop, so
-    the call and every ``__anext__`` share one loop.
+    ⚠️ **The stream is ALREADY OPEN when this runs**, and its first chunk is
+    already in hand. The route pulled it while walking the chain, because
+    failover has to happen before the 200 status line goes out.
 
-    A failure BEFORE the first frame writes no usage row. ``relay_stream`` never
-    starts, so its ``finally`` never runs, and the row is impossible rather than
-    merely unwritten. That is the phantom-row defect which produced the 501 this
-    replaces, closed by construction (done-when 4).
+    ⚠️ **``head`` is replayed exactly once and is never re-fetched.** It left
+    the provider and no retry can produce it again. A second failover from here
+    would splice two completions into one response.
+
+    A chain that failed at every step never reaches this generator, so it
+    writes no usage row: ``relay_stream`` never starts and its ``finally``
+    never runs. The row is impossible rather than merely unwritten. That is the
+    phantom-row defect which produced the 501, closed by construction
+    (done-when 4).
     """
     def _on_finish(usage: ExtractedUsage, started: bool) -> None:
         if not started:
@@ -4810,18 +4860,13 @@ async def _streamed_completion(
             resolved=resolved, client_ref=client_ref, byok=byok,
         )
 
-    try:
-        source = await call_provider(**call_kwargs)
-    except Exception as exc:
-        status = getattr(exc, "status_code", None)
-        _log.warning("router.stream_open_failed", extra={"upstream_status": status})
-        # The status line is already 200 by the time a body iterator runs, so we
-        # cannot turn this into a 502. Close the stream cleanly instead. A
-        # client that never sees the sentinel waits for its own timeout.
-        yield SSE_DONE
-        return
+    async def _replayed() -> AsyncIterator[Any]:
+        for chunk in head:
+            yield chunk
+        async for chunk in source:
+            yield chunk
 
-    async for frame in relay_stream(source, on_finish=_on_finish):
+    async for frame in relay_stream(_replayed(), on_finish=_on_finish):
         yield frame
 
 
@@ -4959,44 +5004,6 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
 
     resolved = attempts[0]
 
-    if req.stream:
-        # CP-4b. Everything above this line has already run: the tier
-        # resolved, the credential loaded, and CP-6's balance gate and
-        # breaker either refused or did not. A refusal delivered inside an
-        # SSE frame is one every client renders as CONTENT, so the gate has
-        # to be behind us before the stream opens (done-when 5).
-        #
-        # 🔴 **A STREAM DOES NOT FAIL OVER, and it must not.** Once the first
-        # frame has reached the client the request is half-answered; retrying
-        # on another model would splice two different completions into one
-        # response, which is worse than the error. Failing over *before* the
-        # first frame is legitimate and is a separate slice — it needs the
-        # generator to attempt the call eagerly, which changes when the
-        # response headers are sent.
-        call_kwargs = _kwargs_for(resolved)
-        call_kwargs["stream"] = True
-        # Ask for the usage frame. Without it an OpenAI-compatible provider
-        # reports no counts on a stream at all, and we would be metering a
-        # guess. A provider that ignores the option costs us nothing here —
-        # `relay_stream` keeps the last counts it saw, which stay zero.
-        call_kwargs["stream_options"] = {"include_usage": True}
-        return StreamingResponse(
-            _streamed_completion(
-                call_kwargs,
-                org_id=org_id,
-                caller=caller,
-                resolved=resolved,
-                client_ref=req.client_ref,
-                byok=_byok_served(resolved),
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                # Proxies that buffer turn a stream into one late blob.
-                "X-Accel-Buffering": "no",
-            },
-        )
-
     # ── Walk the chain ──────────────────────────────────────────────────────
     #
     # ⚠️ **`resolved` is reassigned to the step that ANSWERED**, and that is not
@@ -5004,19 +5011,85 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # Opus request that actually fell over to Haiku at Opus rates would
     # overcharge the customer for a model they did not get.
     #
-    # The walk lives in `router.call_chain` rather than here: a route needs
-    # FastAPI, and a test of failover ORDER should not.
+    # The walk lives in `router.walk_chain` rather than here: a route needs
+    # FastAPI, and a test of failover ORDER should not. Both shapes below walk
+    # through that one function, so the stream carries no second policy.
+    #
+    # 📌 Declared ABOVE the stream branch on purpose. Both branches announce a
+    # failover the same way, and a second copy of this callback is two places
+    # to change the day the log line grows a field.
     def _note_failover(
         frm: ResolvedTier, to: ResolvedTier, status: int | None
     ) -> None:
-        # 📌 The only evidence a chain ever earned its keep. `usage_event` has
-        # no column for the step that served, so this line is the record.
+        # 📌 WHY a chain moved, which the row does not carry. `served_rank`
+        # (migration 013) records WHICH step served. The reason lives here,
+        # because it is read during an outage rather than during a bill.
         _log.warning(
             "router.failover",
             extra={
                 "fo_from": frm.model, "fo_to": to.model,
                 "fo_status": status, "fo_tier": frm.tier, "fo_task": frm.task,
             },
+        )
+
+    if req.stream:
+        # CP-4b. Everything above this line has already run: the tier
+        # resolved, the credential loaded, and CP-6's balance gate and
+        # breaker either refused or did not. A refusal delivered inside an
+        # SSE frame is one every client renders as CONTENT, so the gate has
+        # to be behind us before the stream opens (done-when 5).
+        #
+        # 🔴 **THE BOUNDARY (§8.6). A stream fails over BEFORE its first
+        # frame, and never after it.** The walk below opens each step and
+        # pulls one chunk. Once that chunk is in hand the client is committed
+        # to this step: a later retry would splice two different completions
+        # into one response, which is worse than the error. The walk therefore
+        # lives here and not in the body generator — Starlette sends the 200
+        # status line before it pulls the first item, so a generator has no
+        # failover left to express.
+        def _stream_kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+            out = _kwargs_for(step)
+            out["stream"] = True
+            # Ask for the usage frame. Without it an OpenAI-compatible provider
+            # reports no counts on a stream at all, and we would be metering a
+            # guess. A provider that ignores the option costs us nothing here —
+            # `relay_stream` keeps the last counts it saw, which stay zero.
+            out["stream_options"] = {"include_usage": True}
+            return out
+
+        headers = {
+            "Cache-Control": "no-cache",
+            # Proxies that buffer turn a stream into one late blob.
+            "X-Accel-Buffering": "no",
+        }
+        try:
+            head, source, resolved = _open_stream_chain(
+                attempts, _stream_kwargs_for, _note_failover)
+        except router_mod.UpstreamFailed as failed:
+            # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
+            # raises. `_stream_closed` holds the reason this stayed a 200 once
+            # the walk moved out of the body generator and made a 502
+            # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
+            # stays closed: an upstream outage is not a customer wall (§8.1).
+            _log.warning("router.stream_open_failed",
+                         extra={"upstream_status": failed.status})
+            return StreamingResponse(
+                _stream_closed(),
+                media_type="text/event-stream", headers=headers)
+
+        return StreamingResponse(
+            _streamed_completion(
+                head,
+                source,
+                org_id=org_id,
+                caller=caller,
+                # The step that ANSWERED, so the row carries its `served_rank`
+                # and its BYOK bit — exactly as the buffered path does.
+                resolved=resolved,
+                client_ref=req.client_ref,
+                byok=_byok_served(resolved),
+            ),
+            media_type="text/event-stream", headers=headers,
         )
 
     try:

@@ -29,6 +29,7 @@ from customer_console.router import (
     UpstreamFailed,
     call_chain,
     is_retryable,
+    open_stream_chain,
     set_provider_call,
 )
 
@@ -223,3 +224,173 @@ class TestTheRecord:
             lambda frm, to, st: notes.append((frm.model, to.model, st)),
         )
         assert notes == [("a/one", "b/three", 401)]
+
+
+# ── The STREAM walk (§8.6, slice 11) ────────────────────────────────────────
+
+
+@pytest.fixture
+def stream_provider():
+    """A stub whose call returns an async iterator of frames, per model.
+
+    Each model gets a plan: ``frames`` to emit, ``open`` to raise on the call
+    itself, or ``after_open`` to raise on the first ``__anext__``. The last is
+    the outage shape a plain open check cannot see.
+    """
+    plan: dict[str, Any] = {}
+    seen: list[str] = []
+
+    async def _call(**kwargs: Any) -> Any:
+        model = kwargs["model"]
+        seen.append(model)
+        outcome = plan.get(model, {})
+        if "open" in outcome:
+            raise Upstream(outcome["open"])
+        frames = outcome.get("frames", [f"{model}-1".encode()])
+        after = outcome.get("after_open")
+
+        async def _gen():
+            if after is not None:
+                raise Upstream(after)
+            for f in frames:
+                yield f
+
+        return _gen()
+
+    set_provider_call(_call)
+    yield plan, seen
+
+    async def _refuse(**kwargs: Any) -> Any:  # pragma: no cover
+        raise AssertionError("provider call escaped its test")
+
+    set_provider_call(_refuse)
+
+
+def open_stream(attempts, notes=None):
+    def kwargs_for(s: ResolvedTier) -> dict[str, Any]:
+        return {"model": s.model}
+
+    return asyncio.run(open_stream_chain(attempts, kwargs_for, notes))
+
+
+def open_and_drain(attempts) -> tuple[list[Any], list[Any]]:
+    """Open the stream and read the REST of it, on ONE event loop.
+
+    ⚠️ **Two `asyncio.run` calls would report a lie here.** Closing a loop runs
+    `shutdown_asyncgens()`, which throws `GeneratorExit` into the provider
+    stream — so a second call would find an exhausted source and the test would
+    read as "no chunks after the head". The route has the same constraint, and
+    answers it with `anyio.from_thread.run` onto the serving loop.
+    """
+    async def _go():
+        head, source, _ = await open_stream_chain(
+            attempts, lambda s: {"model": s.model})
+        return head, [chunk async for chunk in source]
+
+    return asyncio.run(_go())
+
+
+class TestTheStreamWalk:
+    """A stream fails over before its first frame, and by the SAME policy.
+
+    🔴 **The subject is the boundary.** Every failure up to the first frame may
+    fail over. The first frame is the commitment, because the 200 status line
+    goes out with it and no retry after that can be spliced in honestly.
+    """
+
+    def test_a_healthy_first_step_is_the_only_call(self, stream_provider):
+        plan, seen = stream_provider
+        head, source, served = open_stream([step("a/one"), step("b/two")])
+
+        assert served.model == "a/one"
+        assert head == [b"a/one-1"]
+        assert seen == ["a/one"], "a working chain must not open its backup"
+
+    def test_a_529_before_any_frame_serves_the_backup(self, stream_provider):
+        plan, seen = stream_provider
+        plan["a/one"] = {"open": 529}
+        head, source, served = open_stream([step("a/one"), step("b/two")])
+
+        assert served.model == "b/two"
+        assert head == [b"b/two-1"]
+        assert seen == ["a/one", "b/two"]
+
+    def test_a_400_before_any_frame_stops_the_walk_dead(self, stream_provider):
+        plan, seen = stream_provider
+        plan["a/one"] = {"open": 400}
+        with pytest.raises(UpstreamFailed) as exc:
+            open_stream([step("a/one"), step("b/two")])
+
+        assert exc.value.status == 400
+        assert seen == ["a/one"], "a 400 must not be retried on the backup"
+
+    def test_a_stream_that_OPENS_and_then_dies_still_fails_over(
+            self, stream_provider):
+        # 🔴 The reason the walk pulls a frame instead of only opening. A
+        # provider that accepts the socket and then falls over is the common
+        # outage, and an open-only check would call it a success.
+        plan, seen = stream_provider
+        plan["a/one"] = {"after_open": 503}
+        head, source, served = open_stream([step("a/one"), step("b/two")])
+
+        assert served.model == "b/two"
+        assert seen == ["a/one", "b/two"]
+
+    def test_a_401_strikes_off_the_WHOLE_vendor_here_too(self, stream_provider):
+        # The SAME policy, not a second one. `CREDENTIAL_STATUSES` is read in
+        # one function and both shapes walk through it.
+        plan, seen = stream_provider
+        plan["a/one"] = {"open": 401}
+        _, _, served = open_stream(
+            [step("a/one"), step("a/two"), step("b/three")])
+
+        assert seen == ["a/one", "b/three"]
+        assert served.model == "b/three"
+
+    def test_every_step_failing_raises_with_the_LAST_status(
+            self, stream_provider):
+        plan, seen = stream_provider
+        plan["a/one"] = {"open": 500}
+        plan["b/two"] = {"after_open": 503}
+        with pytest.raises(UpstreamFailed) as exc:
+            open_stream([step("a/one"), step("b/two")])
+
+        assert exc.value.status == 503
+        assert seen == ["a/one", "b/two"]
+
+    def test_an_EMPTY_stream_is_an_answer_and_not_a_failure(
+            self, stream_provider):
+        # ⚠️ A provider that completed with no content has served the request.
+        # Walking on would bill a second vendor to repeat one empty answer.
+        plan, seen = stream_provider
+        plan["a/one"] = {"frames": []}
+        head, source, served = open_stream([step("a/one"), step("b/two")])
+
+        assert head == []
+        assert served.model == "a/one"
+        assert seen == ["a/one"]
+
+    def test_the_head_leaves_the_source_at_the_SECOND_chunk(
+            self, stream_provider):
+        # ⚠️ The head is already consumed. A caller that replays it and then
+        # drains the source must see each chunk once — the two failures this
+        # mechanism can have are a duplicated first chunk and a lost one.
+        plan, seen = stream_provider
+        plan["a/one"] = {"frames": [b"one", b"two", b"three"]}
+        head, rest = open_and_drain([step("a/one")])
+
+        assert head == [b"one"]
+        assert rest == [b"two", b"three"]
+        assert head + rest == [b"one", b"two", b"three"]
+
+    def test_a_stream_failover_is_announced_like_any_other(
+            self, stream_provider):
+        plan, seen = stream_provider
+        plan["a/one"] = {"after_open": 429}
+        notes: list[tuple[str, str, int | None]] = []
+        open_stream(
+            [step("a/one"), step("b/two")],
+            lambda frm, to, st: notes.append((frm.model, to.model, st)),
+        )
+
+        assert notes == [("a/one", "b/two", 429)]

@@ -820,6 +820,184 @@ class TestStreaming:
         assert "name a tier" in r.json()["detail"]
 
 
+def _stream_chain(db, models: list[str]) -> str:
+    """Bind ONE chat chain of `models`, in order, at one timestamp.
+
+    Returns the tier alias. A fresh alias per test, so a fence here never
+    edits the seeded `tier-balanced` row another suite reads.
+    """
+    tier = f"tier-sf-{uuid.uuid4().hex[:8]}"
+    with db.begin() as c:
+        eff = c.execute(text("SELECT now()")).scalar_one()
+        for rank, model in enumerate(models, start=1):
+            c.execute(
+                text("INSERT INTO tier_binding (tier, task, model, rank, "
+                     "effective_from) VALUES (:t, 'chat', :m, :r, :eff)"),
+                {"t": tier, "m": model, "r": rank, "eff": eff})
+    return tier
+
+
+def _served(db, slug: str):
+    """The newest usage row for this org, as (model, served_rank)."""
+    with db.begin() as c:
+        return c.execute(text(
+            "SELECT model, served_rank FROM usage_event u JOIN organization o "
+            "ON o.id = u.organization_id WHERE o.slug = :s "
+            "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+
+
+class TestAStreamFailsOverBeforeItsFirstFrame:
+    """§8.6 — the boundary, and the four clauses that fix where it sits.
+
+    🔴 **What this suite exists to prove.** A streamed request used to take
+    step 1 of the chain and stop there, so a provider being down cost the
+    customer their request while the chain the operator configured did
+    nothing. The line is now drawn at the FIRST FRAME: the route pulls it
+    while walking, and only then does the 200 status line go out.
+
+    ⚠️ **Both models are the SAME vendor on purpose.** A 529 does not strike
+    a vendor off, and the shared `deepseek` platform credential is the one
+    `org_key` provisions — so these fences test the WALK, not credential
+    plumbing.
+    """
+
+    PRIMARY = "deepseek/sf-primary"
+    BACKUP = "deepseek/sf-backup"
+
+    @staticmethod
+    def _provider(seen: list[str], *, primary_fails, backup_frames=None):
+        """Step 1 raises what the test asks for. Step 2 streams normally."""
+        frames = PROVIDER_FRAMES if backup_frames is None else backup_frames
+
+        async def _stub(**kwargs):
+            model = kwargs["model"]
+            seen.append(model)
+            if model == TestAStreamFailsOverBeforeItsFirstFrame.PRIMARY:
+                raise primary_fails
+
+            async def _gen():
+                for f in frames:
+                    yield f
+
+            return _gen()
+
+        return _stub
+
+    # ── done-when 1 ──
+    def test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream(
+            self, client, org_key, db):
+        """🔴 The headline. The client must not be able to tell it happened."""
+        slug, key = org_key
+        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        seen: list[str] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_Overloaded("busy")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            assert r.status_code == 200
+            body = b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY, self.BACKUP]
+        # ⚠️ EXACT BYTES, not a substring. The first frame is pulled by the
+        # route and replayed by the generator, so the two failures this
+        # mechanism can have are a DUPLICATED first frame and a MISSING one.
+        # Only equality catches both.
+        assert body == b"".join(PROVIDER_FRAMES)
+
+    def test_the_row_records_the_step_that_ANSWERED(
+            self, client, org_key, db):
+        # done-when 3. The customer pays for the model they got.
+        slug, key = org_key
+        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        router_mod.set_provider_call(
+            self._provider([], primary_fails=_Overloaded("busy")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        row = _served(db, slug)
+        assert row is not None
+        assert row.model == self.BACKUP
+        assert row.served_rank == 2
+
+    # ── done-when 2 ──
+    def test_a_400_before_any_frame_calls_NO_second_step(
+            self, client, org_key, db):
+        # Every step fails a malformed request identically, so walking the
+        # chain spends money to learn nothing.
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        seen: list[str] = []
+
+        class _BadRequest(Exception):
+            status_code = 400
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_BadRequest("malformed")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY]
+        # Clause 5: a walk that ends with nothing still closes cleanly, and
+        # writes no row. `_REFUSAL_REASONS` stays closed — this wall was the
+        # vendor's, not the customer's.
+        assert body == b"data: [DONE]\n\n"
+        assert TestMetering._count(db, slug) == before
+
+    # ── the other side of the boundary ──
+    def test_a_failure_AFTER_the_first_frame_does_NOT_fail_over(
+            self, client, org_key, db):
+        """The half of §3.6 that did not move, pinned at the ROUTE.
+
+        Once a frame has reached the client the request is half answered.
+        Serving the rest from a second model would splice two different
+        completions into one response, which is worse than the error.
+        """
+        slug, key = org_key
+        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        seen: list[str] = []
+
+        async def _stub(**kwargs):
+            seen.append(kwargs["model"])
+
+            async def _gen():
+                yield PROVIDER_FRAMES[0]
+                raise RuntimeError("provider dropped the connection")
+
+            return _gen()
+
+        router_mod.set_provider_call(_stub)
+
+        # The error reaches the client, and that is the CORRECT outcome. A
+        # response already committed to one model cannot honestly continue on
+        # another.
+        with pytest.raises(RuntimeError):
+            with client.stream(
+                    "POST", "/v1/chat/completions", headers=key, json={
+                        "model": tier, "stream": True,
+                        "messages": [{"role": "user", "content": "x"}]}) as r:
+                b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY], "a started stream must not fail over"
+        assert self.BACKUP not in seen
+
+
 class TestTheRelayItself:
     """done-when 3, and the generator mechanics the HTTP tests cannot reach.
 
