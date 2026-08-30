@@ -108,7 +108,7 @@ describe("the assumptions are stored NOWHERE", () => {
     const HERE = join(__dirname);
     const pricing = readFileSync(join(HERE, "pricing.ts"), "utf8");
     const panel = readFileSync(
-      join(HERE, "..", "app", "tiers", "TierPricing.tsx"), "utf8");
+      join(HERE, "..", "app", "pricing", "TierPricing.tsx"), "utf8");
     for (const src of [pricing, panel]) {
       expect(src).not.toContain("localStorage");
       expect(src).not.toContain("sessionStorage");
@@ -117,5 +117,32 @@ describe("the assumptions are stored NOWHERE", () => {
     // And no fetch carries them: the POST body is built from named rate
     // fields, so the assumption names never appear near a body build.
     expect(panel).not.toMatch(/body:[\s\S]{0,400}inrPer/);
+  });
+});
+
+describe("the /pricing page wiring", () => {
+  const HERE = join(__dirname);
+  const read = (p: string) => readFileSync(join(HERE, p), "utf8");
+
+  it("🔴 /pricing mounts the cockpit, and /tiers no longer does", () => {
+    // The move is only real if the old page LOST the panel. Two mounts
+    // would be two places to set a price, and they would drift.
+    expect(read("../app/pricing/page.tsx")).toContain("<TierPricing");
+    const tiersPage = read("../app/tiers/page.tsx");
+    expect(tiersPage).not.toContain("TierPricing");
+    // The board still tells the operator where prices went.
+    expect(tiersPage).toContain("/pricing");
+  });
+
+  it("the sidebar reaches it", () => {
+    const header = read("../app/Header.tsx");
+    expect(header).toContain('href: "/pricing"');
+    expect(header).toContain('label: "Pricing"');
+  });
+
+  it("the price table starts OPEN on its own page", () => {
+    // On /tiers it was collapsed so the board stayed the page. Here the
+    // table IS the page — hiding it would leave the page empty.
+    expect(read("../app/pricing/TierPricing.tsx")).toContain("useState(true)");
   });
 });

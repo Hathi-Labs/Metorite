@@ -4,7 +4,6 @@ import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
 import TierBoard from "./TierBoard";
-import TierPricing from "./TierPricing";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +44,11 @@ export default async function TiersPage() {
       note={catalog.note}
     >
       <TierBoard catalog={catalog.data} armed={armed} />
-      <TierPricing catalog={catalog.data} />
+      <p className="note">
+        What each job CHARGES is set on the <a href="/pricing">Pricing</a>{" "}
+        page. The chips above show the card in force — a job with no card
+        answers customers and bills nothing.
+      </p>
     </Shell>
   );
 }

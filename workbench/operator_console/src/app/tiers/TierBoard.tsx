@@ -201,7 +201,7 @@ export default function TierBoard({
             }
             return (
               <span className={chipClass(pricingTone(r.mode))}
-                title="What a customer pays. Set below, in the pricing panel.">
+                title="What a customer pays. Set on the Pricing page.">
                 {r.mode === "priced" ? describeRate(r) : r.mode}
               </span>
             );

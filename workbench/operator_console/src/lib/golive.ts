@@ -153,7 +153,7 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
               `${boundUndecided.length > 3 ? "…" : ""}. Price them, or mark ` +
               "them absorbed on purpose. What a credit costs in rupees is a " +
               "separate owner decision (H-42).",
-      href: "/tiers",
+      href: "/pricing",
       linkText: "Price the tiers",
     },
     {

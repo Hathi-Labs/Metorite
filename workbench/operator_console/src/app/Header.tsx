@@ -32,7 +32,14 @@ import { usePathname } from "next/navigation";
 import Elevation from "./Elevation";
 import ThemeToggle from "./ThemeToggle";
 
-type NavItem = { href: string; label: string; icon: React.ReactNode };
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+  /** Extra paths this entry stays lit for — a tab of this section that
+   *  keeps its own URL (SectionTabs.tsx). */
+  covers?: string[];
+};
 type NavGroup = { title: string; items: NavItem[] };
 
 const I = (d: string) => (
@@ -54,9 +61,13 @@ export const NAV: NavGroup[] = [
   {
     title: "The AI we sell",
     items: [
-      { href: "/providers", label: "Providers", icon: I("M15 7h3a5 5 0 0 1 0 10h-3m-6 0H6A5 5 0 0 1 6 7h3M8 12h8") },
-      { href: "/models", label: "Models", icon: I("M12 2 2 7l10 5 10-5-10-5ZM2 17l10 5 10-5M2 12l10 5 10-5") },
+      // One entry for the whole Models section — /providers is its second
+      // TAB (owner directive 2026-08-30), so `covers` keeps this entry lit
+      // while the operator is on the Providers tab.
+      { href: "/models", label: "Models", covers: ["/providers"], icon: I("M12 2 2 7l10 5 10-5-10-5ZM2 17l10 5 10-5M2 12l10 5 10-5") },
       { href: "/tiers", label: "Tiers & backups", icon: I("M4 20h4V10H4v10ZM10 20h4V4h-4v16ZM16 20h4v-7h-4v7Z") },
+      // Money got its own page: what a customer pays, and the margin left.
+      { href: "/pricing", label: "Pricing", icon: I("M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83ZM7 7h.01") },
     ],
   },
   {
@@ -101,7 +112,12 @@ export default function Header() {
               <a
                 key={item.href}
                 href={item.href}
-                aria-current={isCurrent(item.href, pathname) ? "page" : undefined}
+                aria-current={
+                  [item.href, ...(item.covers ?? [])].some((h) =>
+                    isCurrent(h, pathname))
+                    ? "page"
+                    : undefined
+                }
               >
                 {item.icon}
                 <span>{item.label}</span>

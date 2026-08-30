@@ -220,13 +220,18 @@ describe("the secret never crosses a read path", () => {
 });
 
 describe("the surface", () => {
-  it("is reachable from the sidebar", () => {
-    // ⚠️ Two facts, not one object literal — see the note in catalog.test.ts.
-    expect(HEADER).toContain('href: "/providers"');
-    expect(HEADER).toContain('label: "Providers"');
+  it("🔴 is a TAB of the Models section, and the nav entry covers it", () => {
+    // One sidebar entry for the whole section (owner directive 2026-08-30).
+    // /providers keeps its URL, reached through the tab bar — and `covers`
+    // keeps the Models entry lit while the operator is on this tab.
+    const TABS = readFileSync(join(SRC, "app", "SectionTabs.tsx"), "utf8");
+    expect(TABS).toContain('href: "/providers"');
+    expect(PAGE).toContain('<SectionTabs current="/providers"');
+    expect(HEADER).toContain('covers: ["/providers"]');
+    expect(HEADER).not.toContain('label: "Providers"');
   });
 
-  it("so are the other two AI pages, in the same group", () => {
+  it("the other AI pages stay in the same group", () => {
     expect(HEADER).toContain('href: "/models"');
     expect(HEADER).toContain('href: "/tiers"');
   });

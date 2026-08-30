@@ -2,10 +2,10 @@
 
 // The pricing cockpit — what a CUSTOMER pays, per tier. D67, migration 015.
 //
-// 🔴 **Moved here from /models when the price key moved.** The customer buys
-// a TIER; the model is our supply. So the price lives beside the tiers it
-// prices, /models keeps only the supply side ("we pay"), and the two numbers
-// can no longer be read as one.
+// 🔴 **This panel is the /pricing page's heart** (owner IA directive,
+// 2026-08-30 — it lived on /models, then /tiers, as the price key moved).
+// The customer buys a TIER; the model is our supply. /tiers answers "what
+// serves"; this page answers "what do we charge, and what do we keep".
 //
 // ⚠️ **The two assumptions are typed in, used for arithmetic, and STORED
 // NOWHERE.** There is no credit price in this system (H-42 is the owner's
@@ -44,7 +44,8 @@ function marginTone(f: number | null): Tone {
 
 export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   const { tiers, tierRates, tasks, models } = catalog;
-  const [open, setOpen] = useState(false);
+  // Open by default: on its own page, the price table IS the page.
+  const [open, setOpen] = useState(true);
   const [inrPerCredit, setInrPerCredit] = useState("");
   const [inrPerUsd, setInrPerUsd] = useState("");
 
