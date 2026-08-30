@@ -2069,8 +2069,19 @@ class ProfileRequest(BaseModel):
 
 
 @app.post("/catalog/profiles")
-def set_model_profile(req: ProfileRequest, staff: CatalogCaller) -> dict[str, Any]:
+def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
     """Record what a model IS. **UPSERT, and that is deliberate.**
+
+    🔴 **`Operator`, and it was `CatalogCaller` until 2026-08-30 - a live
+    500 on every staff save.** `customer_or_operator` returns None on the
+    OPERATOR arm by design (it exists for the plan-catalog read, which binds
+    `_`), so `staff.actor` below crashed for every operator, session and
+    break-glass alike - the owner hit it adding assemblyai/best from the
+    feed, and no profile had ever been saved through the console. The same
+    door also admitted a CUSTOMER key (`can_pay`) to write OUR reference
+    data, which D66 forbids in spirit: the customer never brings a model.
+    One dependency fixes both. The §5 matrix row (EDITOR) was already
+    right; the door just did not match it.
 
     ⚠️ **The only catalog write that is not insert-only**, and the difference is
     the point. A tier binding and a rate card are commercial decisions, so a
