@@ -662,6 +662,14 @@ label {
   opacity: 0.85;
 }
 
+/* A hint that is a WARNING, not an explanation. It says the thing you are
+   about to save will not work yet — and it must not read as the same grey
+   note as the sentence above it. */
+.field-hint.warn {
+  color: var(--warn);
+  opacity: 1;
+}
+
 input,
 select {
   width: 100%;

@@ -12,7 +12,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { capableModelsFor, providerOf } from "./readiness";
+import type { ProviderAccount } from "./contract";
+import { capableModelsFor, providerOf, vendorWarning } from "./readiness";
 
 describe("which vendor a model belongs to", () => {
   it("reads the part before the first slash", () => {
@@ -68,5 +69,65 @@ describe("which models may be offered for a job", () => {
 
   it("returns nothing for a task nothing can do, rather than everything", () => {
     expect(capableModelsFor(CAPS, "speak")).toEqual([]);
+  });
+});
+
+describe("the vendor half of a model id, checked before it is saved", () => {
+  // 🔴 The declare form takes free text. A model declared under a vendor we
+  // hold no key for is accepted, binds to a tier happily, and answers 503 on
+  // the first customer request — four steps after the mistake was made.
+  const ARMED: ProviderAccount[] = [
+    {
+      id: "c1", provider: "anthropic", label: null, apiBase: null,
+      orgSlug: null, createdAt: null, revokedAt: null, health: "unknown",
+      lastCheckedAt: null, healthNote: null,
+    },
+  ];
+
+  it("says nothing while the box is empty", () => {
+    expect(vendorWarning("", ARMED)).toBeNull();
+    expect(vendorWarning("   ", ARMED)).toBeNull();
+  });
+
+  it("says nothing when we hold a live key for that vendor", () => {
+    expect(vendorWarning("anthropic/claude-sonnet-4", ARMED)).toBeNull();
+  });
+
+  it("🔴 warns for a vendor we know but hold no key for", () => {
+    const w = vendorWarning("gemini/gemini-2.5-flash", ARMED);
+    expect(w).toContain("Google Gemini");
+    expect(w).toContain("503");
+  });
+
+  it("🔴 warns HARDER for a vendor nobody has heard of", () => {
+    // This is the `google` and `together` case. The word looks right, the
+    // form accepts it, and no card on the providers page will ever match.
+    const w = vendorWarning("google/gemini-2.5-flash", ARMED);
+    expect(w).toContain("litellm");
+  });
+
+  it("warns when the id names no vendor at all", () => {
+    expect(vendorWarning("gpt-4o", ARMED)).toContain("no vendor");
+  });
+
+  it("🔴 does not count a REVOKED key as coverage", () => {
+    const dead: ProviderAccount[] = [
+      { ...ARMED[0], revokedAt: "2026-08-01T00:00:00Z" },
+    ];
+    expect(vendorWarning("anthropic/claude-sonnet-4", dead)).not.toBeNull();
+  });
+
+  it("🔴 does not count a BYOK key as coverage", () => {
+    // A key scoped to one organization leaves every other tenant with no AI,
+    // and reads exactly like coverage in a list.
+    const byok: ProviderAccount[] = [{ ...ARMED[0], orgSlug: "acme" }];
+    expect(vendorWarning("anthropic/claude-sonnet-4", byok)).not.toBeNull();
+  });
+
+  it("reads the vendor from the FIRST slash", () => {
+    // `openrouter/anthropic/claude-3` is one OpenRouter model, not an
+    // Anthropic one, and the credential it needs is OpenRouter's.
+    expect(vendorWarning("openrouter/anthropic/claude-3", ARMED))
+      .toContain("OpenRouter");
   });
 });
