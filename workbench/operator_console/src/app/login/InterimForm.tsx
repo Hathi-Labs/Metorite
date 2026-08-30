@@ -21,17 +21,25 @@ export default function InterimForm() {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/operator/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret }),
-    });
-    setBusy(false);
-    if (res.ok) {
-      window.location.href = "/";
-    } else {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? `Sign-in failed (${res.status})`);
+    try {
+      const res = await fetch("/api/operator/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret }),
+      });
+      if (res.ok) {
+        window.location.href = "/";
+        return;
+      }
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        detail?: string;
+      };
+      setError(body.error ?? body.detail ?? `Sign-in failed (${res.status})`);
+    } catch {
+      setError("No answer from the server — check the network and try again.");
+    } finally {
+      setBusy(false);
     }
   }
 

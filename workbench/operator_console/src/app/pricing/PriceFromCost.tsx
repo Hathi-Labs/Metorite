@@ -69,6 +69,11 @@ export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
           : `The Console refused: ${text}`,
       });
       if (res.ok) router.refresh();
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. The price did not save — check the network and try again.",
+      });
     } finally {
       setBusy(null);
     }
@@ -154,10 +159,10 @@ export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
                               `${sugg.in1k} in / ${sugg.out1k} out per 1k`
                             ) : (
                               <span className="muted small">
-                                vendor price unknown —{" "}
-                                <a href="/models">fetch the vendor feed</a>{" "}
-                                and copy its facts onto the model, or type
-                                them by hand
+                                no usable vendor price (unknown, or listed
+                                at $0) — <a href="/models">fetch the vendor
+                                feed</a> and copy its facts onto the model,
+                                or price the job in the hand form below
                               </span>
                             )
                           ) : (

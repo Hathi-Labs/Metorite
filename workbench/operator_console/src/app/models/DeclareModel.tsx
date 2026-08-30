@@ -25,9 +25,13 @@ const VERBS = [
 export default function DeclareModel({
   tasks,
   accounts = [],
+  accountsKnown = true,
 }: {
   tasks: Task[];
   accounts?: ProviderAccount[];
+  /** False when the credential read failed — the no-key warning would then
+   *  be a claim from absent evidence, so it stays quiet. */
+  accountsKnown?: boolean;
 }) {
   const [model, setModel] = useState("");
   const [task, setTask] = useState(tasks[0]?.slug ?? "chat");
@@ -36,7 +40,7 @@ export default function DeclareModel({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const warning = vendorWarning(model, accounts);
+  const warning = accountsKnown ? vendorWarning(model, accounts) : null;
 
   async function declare() {
     setBusy(true);
@@ -49,6 +53,11 @@ export default function DeclareModel({
       });
       setResult({ ok: res.ok, text: await res.text() });
       if (res.ok) setModel("");
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. Nothing declared — check the network and try again.",
+      });
     } finally {
       setBusy(false);
     }

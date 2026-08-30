@@ -19,9 +19,10 @@
 // it, believe they were covered, and find out during an outage.
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { categoricalChip, providerGlyph } from "@/lib/categorical";
-import type { AiCatalog, Tier, TierJob } from "@/lib/contract";
+import type { AiCatalog, Tier, TierJob, TierRate } from "@/lib/contract";
 import {
   type ChainContext,
   chainLabel,
@@ -47,6 +48,183 @@ function Provider({ model }: { model: string }) {
   );
 }
 
+const chainKey = (tier: string, task: string) => `${tier}::${task}`;
+
+/** One job, and the chain the Router walks for it.
+ *
+ * 🔴 **A chain is edited locally and saved WHOLE.** The Console writes every
+ * step at one `effective_from` (migration 011), so "remove a step" is "send
+ * the chain you want" — there is no delete. Saving on every click would work
+ * and would fill the audit trail with half-finished chains, so the draft
+ * lives here until somebody means it.
+ *
+ * ⚠️ Module scope, never inside TierBoard: a component declared during
+ * a render is a NEW type every render, so React remounts it on every
+ * keystroke and focus dies. ProviderAdmin's header states the rule.
+ */
+function Job({
+  tier, job, ctx, models, rateFor, taskLabel, drafts, setDrafts,
+  adding, setAdding, pick, setPick, busy, saveChain,
+}: {
+  tier: Tier;
+  job: TierJob;
+  ctx: ChainContext;
+  models: AiCatalog["models"];
+  rateFor: Map<string, TierRate>;
+  taskLabel: (slug: string) => string;
+  drafts: Record<string, string[]>;
+  setDrafts: (d: Record<string, string[]>) => void;
+  adding: string | null;
+  setAdding: (k: string | null) => void;
+  pick: string;
+  setPick: (p: string) => void;
+  busy: boolean;
+  saveChain: (tier: string, task: string, models: string[]) => void;
+}) {
+  const saved = orderedChain(job).map((s) => s.model);
+  const k = chainKey(tier.slug, job.task);
+  const chain = drafts[k] ?? saved;
+  // Element by element, with no separator at all. A joined comparison
+  // needs a character that cannot appear in a model id, and picking one
+  // is a bug waiting for the first id that contains it.
+  const dirty =
+    chain.length !== saved.length || chain.some((m, i) => m !== saved[i]);
+
+  // ⚠️ Judged on the DRAFT, not on what is saved. An operator adding a
+  // second Anthropic model should be told it is not a real backup before
+  // they save it, not after.
+  const shown: TierJob = { ...job, chain: chain.map((m, i) => ({ model: m, rank: i + 1 })) };
+  const problems = chainProblems(shown, ctx);
+  const tone = chainTone(problems);
+
+  const options = capableModelsFor(
+    models.flatMap((m) => m.kinds.map((kind) => ({ model: m.id, task: kind }))),
+    job.task,
+  ).filter((m) => !chain.includes(m));
+
+  const setChain = (next: string[]) => setDrafts({ ...drafts, [k]: next });
+
+  function move(from: number, to: number) {
+    if (to < 0 || to >= chain.length) return;
+    const next = [...chain];
+    const [s] = next.splice(from, 1);
+    next.splice(to, 0, s);
+    setChain(next);
+  }
+
+  return (
+    <div className="job">
+      <div className="job-head">
+        <span className="job-name">{taskLabel(job.task)}</span>
+        {tier.task != null && job.task !== tier.task && (
+          <span className={chipClass("warn")}
+            title="A pre-D68 binding: this tier is categorised for a different job. It still serves; move it to the right tier when convenient.">
+            wrong kind for this tier
+          </span>
+        )}
+        <span className={chipClass(tone)}>{chainLabel(shown, problems)}</span>
+        {(() => {
+          // What this job BILLS (D67). "no price" warns because the job
+          // answers customers and charges nothing - loudly, like the rail.
+          const r = rateFor.get(k);
+          if (!r || r.mode === "unpriced") {
+            return (
+              <span className={chipClass("warn")}
+                title="Answers customers and bills nothing until priced">
+                no price
+              </span>
+            );
+          }
+          return (
+            <span className={chipClass(pricingTone(r.mode))}
+              title="What a customer pays. Set on the Pricing page.">
+              {r.mode === "priced" ? describeRate(r) : r.mode}
+            </span>
+          );
+        })()}
+      </div>
+
+      <ol className="chain">
+        {chain.map((model, i) => (
+          <li key={`${model}-${i}`}>
+            <span className="rank" aria-hidden="true">{i + 1}</span>
+            <div className="chainbody">
+              <span className="job-model">{model}</span>
+              <Provider model={model} />
+            </div>
+            <div className="stepactions">
+              <button type="button" className="linklike" aria-label={`Move ${model} up`}
+                disabled={i === 0} onClick={() => move(i, i - 1)}>↑</button>
+              <button type="button" className="linklike" aria-label={`Move ${model} down`}
+                disabled={i === chain.length - 1} onClick={() => move(i, i + 1)}>↓</button>
+              <button type="button" className="linklike" aria-label={`Remove ${model}`}
+                onClick={() => setChain(chain.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      {problems.length > 0 && (
+        <ul className="problems">
+          {problems.map((p) => (
+            <li key={p.label}>
+              <span className={chipClass(p.tone)}>{p.label}</span>
+              <span className="muted small">{p.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {adding === k ? (
+        <div className="job-edit">
+          <label htmlFor={`add-${k}`}>
+            {chain.length === 0 ? "First choice" : "Try this next"}
+          </label>
+          <select id={`add-${k}`} value={pick} onChange={(e) => setPick(e.target.value)}>
+            <option value="">Choose a model…</option>
+            {options.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+          {options.length === 0 && (
+            <p className="field-hint">
+              Every model that can do this job is already in the list. Add
+              another on the Models page first.
+            </p>
+          )}
+          <div className="job-actions">
+            <button type="button" disabled={!pick}
+              onClick={() => { setChain([...chain, pick]); setAdding(null); setPick(""); }}>
+              Add
+            </button>
+            <button type="button" className="linklike" onClick={() => setAdding(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="linklike add-job"
+          onClick={() => { setAdding(k); setPick(""); }}>
+          {chain.length === 0 ? "+ Choose a model" : "+ Add a backup"}
+        </button>
+      )}
+
+      {dirty && (
+        <div className="job-actions">
+          <button type="button" disabled={busy || chain.length === 0}
+            onClick={() => saveChain(tier.slug, job.task, chain)}>
+            Save this order
+          </button>
+          <button type="button" className="linklike"
+            onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
+            Undo
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TierBoard({
   catalog,
   armed,
@@ -63,6 +241,7 @@ export default function TierBoard({
   const [adding, setAdding] = useState<string | null>(null);
   const [pick, setPick] = useState("");
 
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -88,8 +267,6 @@ export default function TierBoard({
 
   const taskLabel = (slug: string) =>
     tasks.find((t) => t.slug === slug)?.label ?? slug;
-
-  const key = (t: string, task: string) => `${t}::${task}`;
 
   // What the customer PAYS for each (tier, job) - D67. Read-only here; the
   // pricing panel below the board owns the writes.
@@ -125,169 +302,23 @@ export default function TierBoard({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ tier, task, models }),
       });
-      setResult({ ok: res.ok, text: await res.text() });
-      if (res.ok) {
-        const d = { ...drafts };
-        delete d[`${tier}::${task}`];
-        setDrafts(d);
-      }
+      const text = await res.text();
+      setResult({ ok: res.ok, text: res.ok ? "" : `The Console refused: ${text}` });
+      // ⚠️ Keep the draft: it IS the state just saved. Deleting it here
+      // rolled the board back to the stale server props, so a saved backup
+      // vanished and read as a failed save. refresh() re-reads the props,
+      // and once they land the draft and the truth agree.
+      if (res.ok) router.refresh();
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. The chain did not save — check the network and try again.",
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  /** One job, and the chain the Router walks for it.
-   *
-   * 🔴 **A chain is edited locally and saved WHOLE.** The Console writes every
-   * step at one `effective_from` (migration 011), so "remove a step" is "send
-   * the chain you want" — there is no delete. Saving on every click would work
-   * and would fill the audit trail with half-finished chains, so the draft
-   * lives here until somebody means it.
-   */
-  function Job({ tier, job }: { tier: Tier; job: TierJob }) {
-    const saved = orderedChain(job).map((s) => s.model);
-    const k = key(tier.slug, job.task);
-    const chain = drafts[k] ?? saved;
-    // Element by element, with no separator at all. A joined comparison
-    // needs a character that cannot appear in a model id, and picking one
-    // is a bug waiting for the first id that contains it.
-    const dirty =
-      chain.length !== saved.length || chain.some((m, i) => m !== saved[i]);
-
-    // ⚠️ Judged on the DRAFT, not on what is saved. An operator adding a
-    // second Anthropic model should be told it is not a real backup before
-    // they save it, not after.
-    const shown: TierJob = { ...job, chain: chain.map((m, i) => ({ model: m, rank: i + 1 })) };
-    const problems = chainProblems(shown, ctx);
-    const tone = chainTone(problems);
-
-    const options = capableModelsFor(
-      models.flatMap((m) => m.kinds.map((kind) => ({ model: m.id, task: kind }))),
-      job.task,
-    ).filter((m) => !chain.includes(m));
-
-    const setChain = (next: string[]) => setDrafts({ ...drafts, [k]: next });
-
-    function move(from: number, to: number) {
-      if (to < 0 || to >= chain.length) return;
-      const next = [...chain];
-      const [s] = next.splice(from, 1);
-      next.splice(to, 0, s);
-      setChain(next);
-    }
-
-    return (
-      <div className="job">
-        <div className="job-head">
-          <span className="job-name">{taskLabel(job.task)}</span>
-          {tier.task != null && job.task !== tier.task && (
-            <span className={chipClass("warn")}
-              title="A pre-D68 binding: this tier is categorised for a different job. It still serves; move it to the right tier when convenient.">
-              wrong kind for this tier
-            </span>
-          )}
-          <span className={chipClass(tone)}>{chainLabel(shown, problems)}</span>
-          {(() => {
-            // What this job BILLS (D67). "no price" warns because the job
-            // answers customers and charges nothing - loudly, like the rail.
-            const r = rateFor.get(k);
-            if (!r || r.mode === "unpriced") {
-              return (
-                <span className={chipClass("warn")}
-                  title="Answers customers and bills nothing until priced">
-                  no price
-                </span>
-              );
-            }
-            return (
-              <span className={chipClass(pricingTone(r.mode))}
-                title="What a customer pays. Set on the Pricing page.">
-                {r.mode === "priced" ? describeRate(r) : r.mode}
-              </span>
-            );
-          })()}
-        </div>
-
-        <ol className="chain">
-          {chain.map((model, i) => (
-            <li key={`${model}-${i}`}>
-              <span className="rank" aria-hidden="true">{i + 1}</span>
-              <div className="chainbody">
-                <span className="job-model">{model}</span>
-                <Provider model={model} />
-              </div>
-              <div className="stepactions">
-                <button type="button" className="linklike" aria-label={`Move ${model} up`}
-                  disabled={i === 0} onClick={() => move(i, i - 1)}>↑</button>
-                <button type="button" className="linklike" aria-label={`Move ${model} down`}
-                  disabled={i === chain.length - 1} onClick={() => move(i, i + 1)}>↓</button>
-                <button type="button" className="linklike" aria-label={`Remove ${model}`}
-                  onClick={() => setChain(chain.filter((_, j) => j !== i))}>Remove</button>
-              </div>
-            </li>
-          ))}
-        </ol>
-
-        {problems.length > 0 && (
-          <ul className="problems">
-            {problems.map((p) => (
-              <li key={p.label}>
-                <span className={chipClass(p.tone)}>{p.label}</span>
-                <span className="muted small">{p.detail}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {adding === k ? (
-          <div className="job-edit">
-            <label htmlFor={`add-${k}`}>
-              {chain.length === 0 ? "First choice" : "Try this next"}
-            </label>
-            <select id={`add-${k}`} value={pick} onChange={(e) => setPick(e.target.value)}>
-              <option value="">Choose a model…</option>
-              {options.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            {options.length === 0 && (
-              <p className="field-hint">
-                Every model that can do this job is already in the list. Add
-                another on the Models page first.
-              </p>
-            )}
-            <div className="job-actions">
-              <button type="button" disabled={!pick}
-                onClick={() => { setChain([...chain, pick]); setAdding(null); setPick(""); }}>
-                Add
-              </button>
-              <button type="button" className="linklike" onClick={() => setAdding(null)}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button type="button" className="linklike add-job"
-            onClick={() => { setAdding(k); setPick(""); }}>
-            {chain.length === 0 ? "+ Choose a model" : "+ Add a backup"}
-          </button>
-        )}
-
-        {dirty && (
-          <div className="job-actions">
-            <button type="button" disabled={busy || chain.length === 0}
-              onClick={() => saveChain(tier.slug, job.task, chain)}>
-              Save this order
-            </button>
-            <button type="button" className="linklike"
-              onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
-              Undo
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  }
 
   return (
     <>
@@ -303,7 +334,7 @@ export default function TierBoard({
         <p className={result.ok ? "result ok" : "result err"}>
           {result.ok
             ? "Saved. The old model stays on record, so an old invoice still shows what it charged."
-            : `The Console refused: ${result.text}`}
+            : result.text}
         </p>
       )}
 
@@ -433,7 +464,12 @@ export default function TierBoard({
                         </p>
                       )}
                       {jobs.map((j) => (
-                        <Job key={j.task} tier={t} job={j} />
+                        <Job key={j.task} tier={t} job={j} ctx={ctx}
+                          models={models} rateFor={rateFor}
+                          taskLabel={taskLabel} drafts={drafts}
+                          setDrafts={setDrafts} adding={adding}
+                          setAdding={setAdding} pick={pick} setPick={setPick}
+                          busy={busy} saveChain={saveChain} />
                       ))}
                     </section>
                   );

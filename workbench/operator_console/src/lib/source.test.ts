@@ -188,3 +188,14 @@ describe("nothing under src/app can reach the sample directly", () => {
     }
   });
 });
+
+describe("live data with a warning note", () => {
+  it("🔴 is NOT silent — absence of evidence must not render as fact", () => {
+    const b = provenanceBanner("live", "the credential list did not load");
+    expect(b).toEqual({
+      tone: "warn",
+      text: "the credential list did not load",
+    });
+    expect(provenanceBanner("live")).toBeNull();
+  });
+});

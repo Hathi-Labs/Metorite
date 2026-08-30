@@ -192,3 +192,25 @@ describe("the wiring", () => {
     expect(src.match(/fetch\(/g)).toHaveLength(1);
   });
 });
+
+describe("a $0-listed vendor price", () => {
+  it("🔴 arms nothing: free is the hand form's decision, not the board's", () => {
+    // charge = 0 ÷ (1 − m) = 0, and a "priced" card at 0 is the absorbed
+    // decision in disguise. The board once rendered a blank-but-armed
+    // Apply here and POSTed "" into a Decimal — a 422 nobody could read.
+    expect(tokenSuggestion(
+      { inputPer1M: 0, outputPer1M: 9, cachedInputPer1M: null }, A, 0.7,
+    )).toBeNull();
+    expect(tokenSuggestion(
+      { inputPer1M: 3, outputPer1M: 0, cachedInputPer1M: null }, A, 0.7,
+    )).toBeNull();
+  });
+
+  it("a cached leg LISTED at $0 prices 0 explicitly while in/out bill", () => {
+    const s = tokenSuggestion(
+      { inputPer1M: 3, outputPer1M: 15, cachedInputPer1M: 0 }, A, 0.7);
+    expect(s).not.toBeNull();
+    expect(s?.cached1k).toBe("0");
+    expect(Number(s?.in1k)).toBeGreaterThan(0);
+  });
+});

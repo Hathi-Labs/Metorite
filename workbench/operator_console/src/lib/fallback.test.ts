@@ -4,6 +4,9 @@
 // and wrong is worse than no chain, because somebody stopped worrying about it.
 // Each test below is one way that happens.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { CatalogModel, Tier, TierJob } from "./contract";
@@ -360,5 +363,24 @@ describe("capacity we are not selling", () => {
       },
     ];
     expect(unusedModels(tiers, MODELS)).not.toContain("openai/gpt-4o");
+  });
+});
+
+describe("TierBoard structure", () => {
+  const src = readFileSync(
+    join(__dirname, "..", "app", "tiers", "TierBoard.tsx"), "utf8");
+
+  it("🔴 no component is declared inside TierBoard", () => {
+    // A component declared during a render is a NEW type on every render:
+    // React remounts the subtree and focus dies on each keystroke.
+    // ProviderAdmin's header states the rule; Job broke it once.
+    expect(src).not.toMatch(/\n  function [A-Z]/);
+  });
+
+  it("a saved chain stays on the board", () => {
+    // Deleting the draft on success rolled the board back to the stale
+    // server props — the saved backup vanished and read as a failed save.
+    expect(src).toContain("if (res.ok) router.refresh();");
+    expect(src).not.toMatch(/delete d\[`\$\{tier\}::\$\{task\}`\]/);
   });
 });

@@ -32,6 +32,8 @@ export default function FeedStrip({ feed }: { feed: VendorFeed }) {
         return;
       }
       router.refresh();
+    } catch {
+      setErr("The Console did not answer. The feed did not refresh — check the network and try again.");
     } finally {
       setBusy(false);
     }

@@ -241,6 +241,20 @@ describe("statusHelp", () => {
     }
     expect(statusHelp("something-new")).toBe("");
   });
+
+  it("🔴 suspended tells lifecycle.py's truth: sign-in works, features lock", () => {
+    // suspended keeps LOGIN working (so they can pay) while locking
+    // features — the exact distinction the backend's module note calls the
+    // one people get wrong. Three surfaces said the opposite once.
+    expect(statusHelp("suspended")).toContain("Sign-in still works");
+    expect(statusHelp("suspended")).not.toContain("refused");
+    const page = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
+    expect(page).toContain("Sign-in still works so they can pay");
+    const actions = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
+    expect(actions).toContain("Sign-in KEEPS working so they can pay");
+  });
 });
 
 describe("suggestSlug", () => {

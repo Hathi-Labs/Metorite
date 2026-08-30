@@ -71,7 +71,10 @@ export function provenanceBanner(
   origin: Origin,
   note?: string,
 ): { tone: "info" | "warn" | "danger"; text: string } | null {
-  if (origin === "live") return null;
+  // Live data is the one silent case — UNLESS the read itself attached a
+  // warning (a secondary read failed under a working primary). Silence there
+  // would present absence of evidence as a fact.
+  if (origin === "live") return note ? { tone: "warn", text: note } : null;
   if (origin === "sample") {
     return {
       tone: "warn",
@@ -109,7 +112,13 @@ export function resolve<T>(
   },
   env: Record<string, string | undefined> = process.env,
 ): Sourced<T> {
-  if (result.ok && result.data !== undefined) return live(result.data);
+  if (result.ok && result.data !== undefined) {
+    // A live read can still carry a WARNING (a secondary read failed under
+    // it); the note travels so the banner can say so.
+    return result.note
+      ? { data: result.data, origin: "live", note: result.note }
+      : live(result.data);
+  }
   // A refusal outranks everything. The endpoint exists and said no, and that
   // is never "not built yet".
   if (result.note) return failed(opts.empty, result.note);

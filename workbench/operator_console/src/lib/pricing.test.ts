@@ -127,6 +127,29 @@ describe("rendering", () => {
     expect(Number(s)).toBeGreaterThan(0);
   });
 
+  it("🔴 a whole-number price keeps every digit (1000 is not 1)", () => {
+    // Shipped bug: toPrecision(4) + a dot-optional zero-strip regex turned
+    // "1000" into "1" — a 100× underprice, one Apply click from billing.
+    expect(roundCredits(1000)).toBe("1000");
+    expect(roundCredits(8800)).toBe("8800");
+    expect(roundCredits(1200)).toBe("1200");
+    expect(roundCredits(999.96)).toBe("1000");
+  });
+
+  it("never ships exponent notation, at either end", () => {
+    expect(roundCredits(10000)).toBe("10000");
+    expect(roundCredits(12340)).toBe("12340");
+    expect(roundCredits(0.0000008)).toBe("0.0000008");
+  });
+
+  it("no string at all for nothing, zero, or fiction", () => {
+    expect(roundCredits(null)).toBe("");
+    expect(roundCredits(0)).toBe("");
+    expect(roundCredits(-3)).toBe("");
+    expect(roundCredits(Number.NaN)).toBe("");
+    expect(roundCredits(1e16)).toBe("");
+  });
+
   it("parses assumptions strictly", () => {
     expect(parseAssumption(" 90 ")).toBe(90);
     expect(parseAssumption("")).toBeNull();
@@ -183,6 +206,22 @@ describe("the /pricing page wiring", () => {
     const panel = read("../app/pricing/TierPricing.tsx");
     expect(panel).not.toContain("Show the prices");
     expect(panel).not.toContain("assumptions");
+  });
+
+  it("🔴 a priced card refuses BLANK boxes — 0 is typed, never assumed", () => {
+    // The form once coerced every blank to "0", so a skipped cached box
+    // billed cache hits FREE. Unknown never bills as free; free is typed.
+    const panel = read("../app/pricing/TierPricing.tsx");
+    expect(panel).toContain("a blank box is not a decision");
+    expect(panel.indexOf("a blank box is not a decision"))
+      .toBeLessThan(panel.indexOf("await fetch("));
+  });
+
+  it("the hand form refreshes the page it claims to change", () => {
+    // "The card takes effect now" while the price list above still showed
+    // the old card was a lie of staleness.
+    const panel = read("../app/pricing/TierPricing.tsx");
+    expect(panel).toContain("if (res.ok) router.refresh();");
   });
 
   it("🔴 the credit price panel sits ABOVE the cockpit it seeds (017)", () => {

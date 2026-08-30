@@ -87,15 +87,22 @@ export function tokenSuggestion(
 ): { in1k: string; out1k: string; cached1k: string } | null {
   const inC = chargeForMargin(vendorCostCreditsPer1k(m.inputPer1M, a), margin);
   const outC = chargeForMargin(vendorCostCreditsPer1k(m.outputPer1M, a), margin);
-  if (inC === null || outC === null) return null;
+  // A $0-listed leg is a KNOWN cost, but its charge is 0 — and 0 is the
+  // absorbed DECISION, which only the hand form writes. Unknown and free
+  // both step aside here, so the board never arms a blank Apply.
+  if (inC === null || outC === null || inC <= 0 || outC <= 0) return null;
   const cachedC = chargeForMargin(
     vendorCostCreditsPer1k(m.cachedInputPer1M, a), margin);
   return {
     in1k: roundCredits(inC),
     out1k: roundCredits(outC),
     // No cached price recorded → charge the full input rate for cached
-    // tokens rather than 0: unknown must never bill as free.
-    cached1k: cachedC === null ? roundCredits(inC) : roundCredits(cachedC),
+    // tokens rather than 0: unknown must never bill as free. A vendor that
+    // LISTS cached at $0 is different — that is a fact, and the card says
+    // "0" explicitly while the in/out legs still bill.
+    cached1k: cachedC === null ? roundCredits(inC)
+      : cachedC <= 0 ? "0"
+        : roundCredits(cachedC),
   };
 }
 

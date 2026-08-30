@@ -349,7 +349,13 @@ export function statusHelp(status: string): string {
     case "trial":
       return "Trying Metorite for free. Activate a paid plan once they subscribe.";
     case "suspended":
-      return "Every sign-in for this customer is refused until you resume them.";
+      // ⚠️ Matches lifecycle.py's truth table: suspended keeps LOGIN working
+      // (so they can pay) while locking features. "Blocks sign-in" was the
+      // exact misread the backend's own module note warns about.
+      return (
+        "Sign-in still works so they can pay. AI and seat changes are " +
+        "locked until you resume them."
+      );
     case "past_due":
       return "Payment is overdue — access continues while you follow up.";
     case "cancelled":

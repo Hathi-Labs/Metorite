@@ -73,20 +73,36 @@ export default function OperatorAdmin({ rows }: { rows: OperatorRow[] }) {
   ) {
     setBusy(key);
     setMessage(null);
-    const res = await fetch(url, {
-      headers: { "content-type": "application/json" },
-      ...init,
-    });
-    setBusy(null);
-    const body = (await res.json().catch(() => ({}))) as { detail?: string };
-    if (res.ok) {
-      setMessage({ ok: true, text: okText });
-      // A full reload rather than local state: the guards can change more than
-      // the row that was touched (deactivating somebody drops their sessions),
-      // and a table that showed a stale count would be lying about access.
-      window.location.reload();
-    } else {
-      setMessage({ ok: false, text: explain(res.status, body.detail ?? "") });
+    try {
+      const res = await fetch(url, {
+        headers: { "content-type": "application/json" },
+        ...init,
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        error?: string;
+      };
+      if (res.ok) {
+        setMessage({ ok: true, text: okText });
+        // A full reload rather than local state: the guards can change more than
+        // the row that was touched (deactivating somebody drops their sessions),
+        // and a table that showed a stale count would be lying about access.
+        window.location.reload();
+      } else {
+        // The BFF gate speaks in `error`, the Console in `detail` — read
+        // both, or a signed-out 401 degrades to a generic status line.
+        setMessage({
+          ok: false,
+          text: explain(res.status, body.detail ?? body.error ?? ""),
+        });
+      }
+    } catch {
+      setMessage({
+        ok: false,
+        text: "The Console did not answer. Nothing changed — check the network and try again.",
+      });
+    } finally {
+      setBusy(null);
     }
   }
 

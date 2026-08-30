@@ -10,6 +10,7 @@ import {
   billingSummary,
   provisionOrg,
   ConsoleUnconfigured,
+  exchangeSession,
   type FetchLike,
 } from "./console";
 
@@ -184,5 +185,20 @@ describe("the token never reaches a client bundle", () => {
         /from\s+["'].*lib\/tenantDoor["']/,
       );
     }
+  });
+});
+
+describe("the sign-in exchange (CP-12f2)", () => {
+  it("🔴 carries NO credential of ours and needs no shared token", async () => {
+    // The exchange's body is the whole proof. Requiring the operator token
+    // here made H-56's end-state (that token deleted) a total lockout —
+    // and put the break-glass secret on the wire of every sign-in.
+    const { calls, fetchImpl } = captureFetch({ status: 200, body: "{}" });
+    await exchangeSession("supabase-jwt", {
+      env: readConsoleEnv({ CUSTOMER_CONSOLE_URL: "https://console.internal" }),
+      fetchImpl,
+    });
+    expect(calls).toHaveLength(1);
+    expect("Authorization" in calls[0].init.headers).toBe(false);
   });
 });

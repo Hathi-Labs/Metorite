@@ -303,8 +303,8 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     : EMPTY_FEED;
 
   return {
-    tasks: w.tasks, models, rates, tiers, accounts: [], failovers, feed,
-    tierRates,
+    tasks: w.tasks, models, rates, tiers, accounts: [], accountsKnown: true,
+    failovers, feed, tierRates,
     creditPrice: w.credit_price
       ? {
           inrPerCredit: w.credit_price.inr_per_credit,
@@ -367,8 +367,27 @@ export async function readAiCatalog(deps: Deps): Promise<Sourced<AiCatalog>> {
   // ⚠️ **The catalog decides the origin, not the accounts.** They are two
   // endpoints and one screen. Letting the second downgrade the first would
   // hide a working catalog behind a provider read that happened to fail.
+  //
+  // ⚠️ But a FAILED credential read must never render as the fact "no
+  // credential is installed" — that is a claim about production readiness.
+  // So the failure rides along: `accountsKnown: false` for the judgements,
+  // and a warn note the page banner shows over the (still live) catalog.
+  const credsFailed = cat.ok && !creds.ok;
   const merged: Attempt<AiCatalog> = cat.ok
-    ? { ok: true, data: { ...(cat.data as AiCatalog), accounts: creds.data ?? [] } }
+    ? {
+        ok: true,
+        data: {
+          ...(cat.data as AiCatalog),
+          accounts: creds.data ?? [],
+          accountsKnown: creds.ok,
+        },
+        note: credsFailed
+          ? "The vendor credential list did not load — " +
+            (creds.note ?? "the Console is not configured for it") +
+            " Every armed / needs-key / no-key mark below is UNVERIFIED; " +
+            "open Providers to see the refusal itself."
+          : undefined,
+      }
     : cat;
 
   return resolve(merged, {

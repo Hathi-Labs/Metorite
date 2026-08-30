@@ -261,8 +261,9 @@ export default async function CustomerDetailPage({
 
       {org.status === "suspended" && (
         <div className="banner danger">
-          <strong>Suspended.</strong> Every sign-in for this customer is refused.
-          Use “Resume access” below to restore it.
+          <strong>Suspended.</strong> Sign-in still works so they can pay —
+          AI and seat changes are locked. Use “Resume access” below to
+          restore them.
         </div>
       )}
       {org.status === "trial" && (

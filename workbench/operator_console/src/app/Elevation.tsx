@@ -105,6 +105,8 @@ export default function Elevation() {
       setReason("");
       setReference("");
       await load();
+    } catch {
+      setError("The Console did not answer. No window opened — check the network and try again.");
     } finally {
       setBusy(false);
     }
@@ -115,6 +117,8 @@ export default function Elevation() {
     try {
       await fetch("/api/operator/elevate", { method: "DELETE" });
       await load();
+    } catch {
+      setError("The Console did not answer. The window may still be open — reload to see.");
     } finally {
       setBusy(false);
     }

@@ -102,7 +102,9 @@ export default function UsageBoard({
             <div className="lbl">Calls</div>
           </div>
           <div className="stat">
-            <div className="num">{totals.credits}</div>
+            {/* toFixed: a float SUM of "0.0300"-style strings carries binary
+                noise, and 12.100000000000001 is not a money figure. */}
+            <div className="num">{totals.credits.toFixed(2)}</div>
             <div className="lbl">Credits billed</div>
           </div>
           <div className="stat">

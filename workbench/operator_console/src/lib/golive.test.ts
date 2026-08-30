@@ -170,3 +170,13 @@ describe("tones", () => {
     expect(stepTone("info")).toBe("neutral");
   });
 });
+
+describe("an unreadable credential list", () => {
+  it("🔴 says UNKNOWN — never 'every AI call fails' from absent evidence", () => {
+    const step = goLiveSteps({ ...EMPTY_CATALOG, accountsKnown: false })
+      .find((s) => s.key === "keys");
+    expect(step?.state).toBe("todo");
+    expect(step?.detail).toContain("UNKNOWN");
+    expect(step?.detail).not.toContain("every AI call fails");
+  });
+});

@@ -498,6 +498,8 @@ export default function ProviderAdmin({ creds }: Props) {
         setNote(`Revoked ${what}.`);
         router.refresh();
       }
+    } catch {
+      setError("The request did not complete. The key may still be armed — reload to see.");
     } finally {
       setBusy(false);
     }

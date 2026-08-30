@@ -10,7 +10,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { accountsFromWire, catalogFromWire } from "./read";
+import { readConsoleEnv, type FetchLike } from "./console";
+import { accountsFromWire, catalogFromWire, readAiCatalog } from "./read";
 
 const TASKS = [{ slug: "chat", label: "Answer questions", natural_unit: "1k tokens" }];
 
@@ -269,5 +270,37 @@ describe("provider accounts", () => {
     ]);
     expect(platform.orgSlug).toBeNull();
     expect(byok.orgSlug).toBe("acme");
+  });
+});
+
+describe("a failed credential read under a working catalog", () => {
+  const ENV = {
+    CUSTOMER_CONSOLE_URL: "https://console.internal",
+    CUSTOMER_CONSOLE_OPERATOR_TOKEN: "op-secret-token",
+  };
+  const split = (credStatus: number): FetchLike => async (url) =>
+    String(url).includes("/providers/credentials")
+      ? { status: credStatus, text: async () => "boom" }
+      : { status: 200, text: async () => JSON.stringify(WIRE()) };
+
+  it("🔴 reads as UNKNOWN with a warning — never as 'no credential installed'", async () => {
+    // An empty list by absence of evidence is not the fact "nothing is
+    // installed" — the go-live rail once asserted "every AI call fails"
+    // from exactly this state.
+    const r = await readAiCatalog({ env: readConsoleEnv(ENV), fetchImpl: split(500) });
+    expect(r.origin).toBe("live");
+    expect(r.data.accountsKnown).toBe(false);
+    expect(r.data.accounts).toEqual([]);
+    expect(r.note).toContain("UNVERIFIED");
+  });
+
+  it("a working credential read stays known and silent", async () => {
+    const ok: FetchLike = async (url) =>
+      String(url).includes("/providers/credentials")
+        ? { status: 200, text: async () => JSON.stringify({ credentials: [] }) }
+        : { status: 200, text: async () => JSON.stringify(WIRE()) };
+    const r = await readAiCatalog({ env: readConsoleEnv(ENV), fetchImpl: ok });
+    expect(r.data.accountsKnown).toBe(true);
+    expect(r.note).toBeUndefined();
   });
 });
