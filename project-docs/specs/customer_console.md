@@ -7855,18 +7855,27 @@ Decimal from the first parse, so trailing zeros never read as drift.
 against a real Postgres (R8). Frontend: `feed.test.ts` inside
 `npx vitest run` in `workbench/operator_console`.
 
-⚠️ **The feed stores TOKEN prices only, and §6A.11a is the ticket that
-widens it.** `014` holds three per-million-token columns and no per-second,
-per-character or per-image column. So an `image`, `transcribe` or `speak`
-job has no cost source. H-78 is that gap, and §6A.11a below carries its
-rules and its done-when.
+⚠️ **The feed also stores PER-UNIT prices since migration `019`, and
+§6A.11a owns them.** `014` held three per-million-token columns alone, so
+an `image`, `transcribe` or `speak` job had no cost source. H-78 is that
+gap. The feed half is built. The board half is not, so §6A.11a below
+carries the rest of the rules and the done-when.
 
-### 6A.11a The per-unit vendor costs (H-78) — SPEC ONLY, 2026-08-30
+### 6A.11a The per-unit vendor costs (H-78) — HALF BUILT, 2026-08-30
 
-**Nothing below is built.** Every default here is an **agent-proposed
-answer the owner may overrule**, which is the D16/D17 convention CP-2b and
-CP-2c used. Where a name or a number below disagrees with the tree, the
-tree wins. Re-verify every anchor at dispatch.
+**Status: done-when clauses 1, 2, 3, 4 and 8 are BUILT.** Migration
+`019_per_unit_vendor_costs.sql` adds the six columns and widens the two
+CHECK constraints. `feed.py` parses the three per-unit prices, and the
+upsert writes them.
+
+**Clauses 5, 6 and 7 are NOT built.** No seam converts a per-second price
+to a per-minute one. `GET /catalog/models` sends no new field. The board
+reads no per-unit cost, so the operator still types it.
+
+Each remaining default is an **agent-proposed answer the owner may
+overrule**, which is the D16/D17 convention CP-2b and CP-2c used. Where a
+name or a number below disagrees with the tree, the tree wins. Re-verify
+every anchor at dispatch.
 
 **The problem.** The "Price from cost" panel (§6A.13) reads a job's cost
 from the first model of its chain. That model carries token prices and
@@ -7879,10 +7888,10 @@ natural unit. The board reads the profile.
 
 #### The feed columns — migration `019`
 
-⚠️ **Take the migration number at build time, and again at merge (R1).**
-The highest number on disk on 2026-08-30 is `018_credit_ref_unique.sql`, so
-`019` is free today. List `infra/customer_console/` before you name the
-file.
+⚠️ **An agent took the number at build time, and the merge re-checks it (R1).**
+The file is `019_per_unit_vendor_costs.sql`. A renumber at merge changes
+the name and nothing else, because every suite reads the ladder off the
+directory.
 
 R6 binds the migration. Add nullable columns. Rename nothing. Drop nothing.
 
