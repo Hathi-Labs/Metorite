@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import typing
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -66,9 +67,11 @@ UPSERT = text(
     INSERT INTO model_profile (
         model, label, context_window, max_output,
         vendor_input_per_1m_usd, vendor_output_per_1m_usd,
+        vendor_per_minute_usd, vendor_per_character_usd, vendor_per_image_usd,
         description, reads_images, thinks_first, updated_at
     ) VALUES (
-        :model, :label, :ctx, :out, :vin, :vout, :descr, :imgs, :think, now()
+        :model, :label, :ctx, :out, :vin, :vout,
+        :vmin, :vchar, :vimg, :descr, :imgs, :think, now()
     )
     ON CONFLICT (model) DO UPDATE SET
         label = EXCLUDED.label,
@@ -76,6 +79,9 @@ UPSERT = text(
         max_output = EXCLUDED.max_output,
         vendor_input_per_1m_usd = EXCLUDED.vendor_input_per_1m_usd,
         vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
+        vendor_per_minute_usd = EXCLUDED.vendor_per_minute_usd,
+        vendor_per_character_usd = EXCLUDED.vendor_per_character_usd,
+        vendor_per_image_usd = EXCLUDED.vendor_per_image_usd,
         description = EXCLUDED.description,
         reads_images = EXCLUDED.reads_images,
         thinks_first = EXCLUDED.thinks_first,
@@ -88,6 +94,7 @@ def save(conn, model: str, **over):
     row = {
         "model": model, "label": None, "ctx": None, "out": None,
         "vin": None, "vout": None, "descr": "", "imgs": False, "think": False,
+        "vmin": None, "vchar": None, "vimg": None,
     }
     row.update(over)
     conn.execute(UPSERT, row)
@@ -126,6 +133,54 @@ class TestUnknownIsNotZero:
         # vendor's free tier — and refusing zero here would make it unrecordable.
         save(conn, model, vin=0, vout=0)
         assert read(conn, model)["vendor_input_per_1m_usd"] == 0
+
+
+class TestThePerUnitCosts:
+    """H-78 (§6A.11a): the three per-unit columns migration 019 adds.
+
+    ⚠️ The profile holds the TASK's natural unit, and the feed holds the
+    VENDOR's. litellm prices transcription per second, `task_catalog` prices
+    `transcribe` per minute, and the x60 conversion happens once at the
+    declare-and-prefill seam. Nothing here converts anything.
+    """
+
+    def test_all_three_are_nullable_and_default_to_unknown(self, conn, model):
+        save(conn, model)
+        row = read(conn, model)
+        assert row["vendor_per_minute_usd"] is None
+        assert row["vendor_per_character_usd"] is None
+        assert row["vendor_per_image_usd"] is None
+
+    def test_a_negative_per_minute_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vmin=-1)
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_negative_per_character_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vchar="-0.000015")
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_negative_per_image_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vimg=-1)
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_small_price_survives_the_round_trip(self, conn, model):
+        # 🔴 NUMERIC(18, 10), wider than the token columns on purpose. OpenAI
+        # text-to-speech charges 0.000015 per character today, and four
+        # decimals would store that as zero — a free model on the card.
+        save(conn, model, vchar="0.000015", vimg="0.04", vmin="0.006")
+        row = read(conn, model)
+        assert row["vendor_per_character_usd"] == Decimal("0.000015")
+        assert row["vendor_per_image_usd"] == Decimal("0.04")
+        assert row["vendor_per_minute_usd"] == Decimal("0.006")
+
+    def test_a_price_of_zero_is_ALLOWED(self, conn, model):
+        # The CHECK reads `>= 0`, like the token columns. A free model is a
+        # real thing, and only NULL says "nobody has told us".
+        save(conn, model, vmin=0, vchar=0, vimg=0)
+        assert read(conn, model)["vendor_per_image_usd"] == 0
 
 
 class TestSavingTwice:
