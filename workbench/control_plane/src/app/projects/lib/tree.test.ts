@@ -203,15 +203,15 @@ describe("childCreationOptions — the grammar's UI half (migration 193)", () =>
 
   it("a space offers a project and a folder", () => {
     expect(childCreationOptions("project", 1)).toEqual([
-      { kind: "project", label: "New project" },
-      { kind: "folder", label: "New folder" },
+      { kind: "project", label: "New project", level: "project" },
+      { kind: "folder", label: "New folder", level: "folder" },
     ]);
   });
 
   it("a project offers a subproject and a folder", () => {
     expect(childCreationOptions("project", 2)).toEqual([
-      { kind: "project", label: "New subproject" },
-      { kind: "folder", label: "New folder" },
+      { kind: "project", label: "New subproject", level: "subproject" },
+      { kind: "folder", label: "New folder", level: "folder" },
     ]);
   });
 
@@ -221,10 +221,10 @@ describe("childCreationOptions — the grammar's UI half (migration 193)", () =>
 
   it("a folder offers only the one kind its level holds", () => {
     expect(childCreationOptions("folder", 1)).toEqual([
-      { kind: "project", label: "New project" },
+      { kind: "project", label: "New project", level: "project" },
     ]);
     expect(childCreationOptions("folder", 2)).toEqual([
-      { kind: "project", label: "New subproject" },
+      { kind: "project", label: "New subproject", level: "subproject" },
     ]);
   });
 

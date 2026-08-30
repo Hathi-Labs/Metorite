@@ -121,7 +121,15 @@ export function spaceMarker(
 
 export interface ChildOption {
   kind: NodeKind;
+  /** The LEVEL's own word — "New subproject", never "New project". */
   label: string;
+  /**
+   * The level the child will occupy. Carried rather than re-derived by the
+   * caller: `kind` cannot express it (a project and a subproject are both
+   * `kind: "project"`), and this function is the only place that already
+   * knows the generation.
+   */
+  level: NodeLevel;
 }
 
 /**
@@ -139,24 +147,19 @@ export function childCreationOptions(
   kind: NodeKind,
   generation: number
 ): ChildOption[] {
-  if (kind === "folder") {
-    if (generation === 1) return [{ kind: "project", label: "New project" }];
-    if (generation === 2) return [{ kind: "project", label: "New subproject" }];
-    return [];
-  }
-  if (generation === 1) {
-    return [
-      { kind: "project", label: "New project" },
-      { kind: "folder", label: "New folder" },
-    ];
-  }
-  if (generation === 2) {
-    return [
-      { kind: "project", label: "New subproject" },
-      { kind: "folder", label: "New folder" },
-    ];
-  }
-  return [];
+  const project: ChildOption =
+    generation === 1
+      ? { kind: "project", label: "New project", level: "project" }
+      : { kind: "project", label: "New subproject", level: "subproject" };
+  const folder: ChildOption = {
+    kind: "folder",
+    label: "New folder",
+    level: "folder",
+  };
+
+  if (generation > 2) return [];
+  // A folder offers only the one level it holds; it cannot hold a folder.
+  return kind === "folder" ? [project] : [project, folder];
 }
 
 export interface ProjectGrant {

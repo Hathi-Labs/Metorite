@@ -27,7 +27,9 @@ import {
   childCreationOptions,
   effectiveState,
   hasRunState,
+  LEVEL_ICONS,
   type ChildOption,
+  type NodeKind,
   type NodeLevel,
   nodeKind,
   nodeLevel,
@@ -128,6 +130,96 @@ function LevelGlyph({
   );
 }
 
+/** What is being created, and where. `parentId: null` = a new space. */
+export interface CreatingDraft {
+  parentId: string | null;
+  kind: NodeKind;
+  /** The level's own word — "New subproject", not "New project". */
+  label: string;
+  /** The level the new node will occupy, for its glyph. */
+  level: NodeLevel;
+}
+
+/**
+ * The row a node is being named ON, at the position it will occupy.
+ *
+ * ⚠️ **In place, never above the tree.** The field used to sit at the top of
+ * the sidebar, detached from the row it belonged to: you clicked + on
+ * "Firmware" and a box appeared four rows away saying "New folder in
+ * Firmware", so the app had to NAME the parent because the position could
+ * no longer show it. Owner, 2026-08-31: *"why do I need to go up and have
+ * another space where we are setting up the name?"*
+ *
+ * The platform answer is Finder's, and Xcode's, and every tree that gets
+ * this right: the new item appears where it will live, already selected,
+ * and you type over it. The indentation states the parent, so no sentence
+ * has to. Enter commits, Escape cancels, and blurring with a name commits
+ * — Finder's exact contract.
+ */
+function DraftRow({
+  draft,
+  depth,
+  onCommit,
+  onCancel,
+}: {
+  draft: CreatingDraft;
+  depth: number;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  // One commit path for Enter and for blur, so the two cannot diverge.
+  const commit = () => {
+    const trimmed = name.trim();
+    if (trimmed) onCommit(trimmed);
+    else onCancel();
+  };
+  return (
+    <li>
+      <div
+        className="flex items-center gap-1 rounded-md px-2 py-1.5 text-sm"
+        style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      >
+        <span className="w-[18px] shrink-0" />
+        <Icon
+          name={LEVEL_ICONS[draft.level]}
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+        />
+        <form
+          className="min-w-0 flex-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            commit();
+          }}
+        >
+          <Input
+            autoFocus
+            inputSize="sm"
+            value={name}
+            // The placeholder is the level's word ALONE. It does not name
+            // the parent, because the row's indentation already does — and
+            // a label that restates the position is the tell that the
+            // position stopped being visible.
+            placeholder={draft.label}
+            aria-label={draft.label}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              // The substrate binds Escape on `document`, above React's
+              // root — an unstopped key would also dismiss the drawer this
+              // tree is drawn inside on a phone. Same rule the rename
+              // field records.
+              e.stopPropagation();
+              onCancel();
+            }}
+          />
+        </form>
+      </div>
+    </li>
+  );
+}
+
 interface Props {
   roots: ProjectRow[];
   selectedId: string | null;
@@ -147,6 +239,10 @@ interface Props {
   onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
   onOpenSettings?: (space: ProjectRow) => void;
+  /** The node being named, drawn in place. Null = nothing is being created. */
+  creating?: CreatingDraft | null;
+  onCommitCreate?: (name: string) => void;
+  onCancelCreate?: () => void;
   /** WS-27bg — right-click actions. Omitted = a read-only tree, no menu. */
   actions?: ProjectMenuHandlers;
 }
@@ -159,6 +255,9 @@ function Node({
   onSelect,
   onAddChild,
   onOpenSettings,
+  creating,
+  onCommitCreate,
+  onCancelCreate,
   inheritedState,
   actions,
 }: {
@@ -174,6 +273,9 @@ function Node({
   onSelect: (project: ProjectRow) => void;
   onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   onOpenSettings?: (space: ProjectRow) => void;
+  creating?: CreatingDraft | null;
+  onCommitCreate?: (name: string) => void;
+  onCancelCreate?: () => void;
   /** The effective state of this node's PARENT; absent at a root. */
   inheritedState?: string | null;
   /** Omitted = a read-only tree, and no menu is offered at all. */
@@ -208,6 +310,10 @@ function Node({
     ? effectiveState(node, inheritedState)
     : { state: inheritedState ?? "active", inherited: Boolean(inheritedState) };
   const addOptions = onAddChild ? childCreationOptions(kind, gen) : [];
+  // Is the row being named a child of THIS node? If so this node opens,
+  // whatever its own fold state said — you cannot name what you cannot see.
+  const draftHere = creating != null && creating.parentId === node.id;
+  const expanded = open || draftHere;
 
   return (
     <li>
@@ -227,14 +333,16 @@ function Node({
             : undefined
         }
       >
-        {children.length > 0 ? (
+        {children.length > 0 || draftHere ? (
           <button
             type="button"
-            aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`}
+            aria-label={
+              expanded ? `Collapse ${node.name}` : `Expand ${node.name}`
+            }
             onClick={() => setOpen((v) => !v)}
             className="shrink-0 rounded p-0.5 hover:bg-background/60"
           >
-            {open ? (
+            {expanded ? (
               <Icon name="ChevronDown" className="h-3.5 w-3.5" />
             ) : (
               <Icon name="ChevronRight" className="h-3.5 w-3.5" />
@@ -389,7 +497,10 @@ function Node({
           onClose={() => setMenu(null)}
         />
       ) : null}
-      {open && children.length > 0 ? (
+      {/* Children, plus the draft row when this node is the one being
+          added to. `expanded`, not `open`: a collapsed node must open to
+          show what you are naming, or the field appears nowhere. */}
+      {expanded && (children.length > 0 || draftHere) ? (
         <ul>
           {children.map((child) => (
             <Node
@@ -401,10 +512,22 @@ function Node({
               onSelect={onSelect}
               onAddChild={onAddChild}
               onOpenSettings={onOpenSettings}
+              creating={creating}
+              onCommitCreate={onCommitCreate}
+              onCancelCreate={onCancelCreate}
               inheritedState={run.state}
               actions={actions}
             />
           ))}
+          {/* LAST, so the new row lands where a new row lands. */}
+          {draftHere && onCommitCreate && onCancelCreate ? (
+            <DraftRow
+              draft={creating!}
+              depth={depth + 1}
+              onCommit={onCommitCreate}
+              onCancel={onCancelCreate}
+            />
+          ) : null}
         </ul>
       ) : null}
     </li>
@@ -417,9 +540,16 @@ export function ProjectTree({
   onSelect,
   onAddChild,
   onOpenSettings,
+  creating,
+  onCommitCreate,
+  onCancelCreate,
   actions,
 }: Props) {
-  if (roots.length === 0) {
+  const draftAtRoot = creating != null && creating.parentId === null;
+
+  // The empty state yields to the draft: a first space being named must not
+  // sit under a line telling you to create one.
+  if (roots.length === 0 && !draftAtRoot) {
     return (
       <div className="px-2 py-6">
         <p className="text-sm text-muted-foreground">
@@ -440,9 +570,20 @@ export function ProjectTree({
           onSelect={onSelect}
           onAddChild={onAddChild}
           onOpenSettings={onOpenSettings}
+          creating={creating}
+          onCommitCreate={onCommitCreate}
+          onCancelCreate={onCancelCreate}
           actions={actions}
         />
       ))}
+      {draftAtRoot && onCommitCreate && onCancelCreate ? (
+        <DraftRow
+          draft={creating!}
+          depth={0}
+          onCommit={onCommitCreate}
+          onCancel={onCancelCreate}
+        />
+      ) : null}
     </ul>
   );
 }

@@ -39,7 +39,7 @@ import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
 import { MyWork } from "./components/MyWork";
 import { NotificationBell } from "./components/NotificationBell";
-import { ProjectTree } from "./components/ProjectTree";
+import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
 import { SearchPalette } from "./components/SearchPalette";
@@ -110,6 +110,7 @@ import {
   flatten,
   levelOf,
   type NodeKind,
+  type NodeLevel,
   nodeKind,
   showsDashboard,
 } from "./lib/tree";
@@ -184,6 +185,9 @@ function ProjectNav({
   onAddChild,
   onOpenSettings,
   onNewSpace,
+  creating,
+  onCommitCreate,
+  onCancelCreate,
   onPicked,
   actions,
 }: {
@@ -198,6 +202,10 @@ function ProjectNav({
   onOpenSettings: (space: ProjectRow) => void;
   /** The + on the Spaces heading. */
   onNewSpace: () => void;
+  /** The row being named, drawn in place by the tree. */
+  creating?: CreatingDraft | null;
+  onCommitCreate: (name: string) => void;
+  onCancelCreate: () => void;
   /** Called after any navigation, so the phone's drawer can close. */
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
@@ -291,6 +299,9 @@ function ProjectNav({
           onOpenSettings(space);
           onPicked?.();
         }}
+        creating={creating}
+        onCommitCreate={onCommitCreate}
+        onCancelCreate={onCancelCreate}
         actions={actions}
       />
     </>
@@ -414,9 +425,15 @@ function ProjectsWorkspace() {
   // grammar's two questions, held together so they cannot disagree
   // (migration 193: folders exist, and a + may offer either kind).
   const [creating, setCreating] = useState<
-    { parent: ProjectRow | null; kind: NodeKind; label: string } | undefined
+    | {
+        parent: ProjectRow | null;
+        kind: NodeKind;
+        label: string;
+        /** The level the new node will occupy — it picks the row's glyph. */
+        level: NodeLevel;
+      }
+    | undefined
   >(undefined);
-  const [newName, setNewName] = useState("");
   const [newTask, setNewTask] = useState("");
   const [treeKey, setTreeKey] = useState(0);
   // The subtree roll-up for the current selection, and the space whose
@@ -778,15 +795,14 @@ function ProjectsWorkspace() {
             {sheet === "tree" ? "Spaces" : "View"}
           </p>
           {sheet === "tree" ? (
-            // The rail's + button has to exist here too, or a new space
-            // is a thing you can only create on a desktop. The form itself
-            // opens under the title row — see `projectForm`.
+            // The rail's + button has to exist here too, or a new space is
+            // a thing you can only create on a desktop. The field itself
+            // opens as a ROW in the tree below — see `DraftRow`.
             <button
               type="button"
               aria-label="New space"
               onClick={() => {
-                setCreating({ parent: null, kind: "project", label: "New space" });
-                setNewName("");
+                setCreating({ parent: null, kind: "project", label: "New space", level: "space" });
                 setSheet(null);
               }}
               className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
@@ -806,14 +822,18 @@ function ProjectsWorkspace() {
               setSelected(project);
             }}
             onAddChild={(parent, option) => {
-              setCreating({ parent, kind: option.kind, label: option.label });
-              setNewName("");
+              setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
             }}
             onOpenSettings={setSettingsFor}
             onNewSpace={() => {
-              setCreating({ parent: null, kind: "project", label: "New space" });
-              setNewName("");
+              setCreating({
+                parent: null, kind: "project",
+                label: "New space", level: "space",
+              });
             }}
+            creating={treeDraft}
+            onCommitCreate={(name) => void submitProject(name)}
+            onCancelCreate={() => setCreating(undefined)}
             onPicked={() => setSheet(null)}
             actions={projectMenuActions}
           />
@@ -1353,30 +1373,37 @@ function ProjectsWorkspace() {
     };
   }, []);
 
-  async function submitProject(event: React.FormEvent) {
-    event.preventDefault();
-    const name = newName.trim();
-    if (!name) return;
+  /**
+   * Commit the row being named IN the tree (owner directive 2026-08-31).
+   *
+   * The name arrives from the draft row rather than from page state: the
+   * field lives on the row now, so the page has no business holding its
+   * keystrokes — and a shared `newName` was what let the old detached form
+   * keep a half-typed value after a cancel.
+   */
+  async function submitProject(name: string) {
+    if (!creating) return;
     setError(null);
     try {
       const created = await projectsApi.createProject({
         name,
-        parent_project_id: creating?.parent ? creating.parent.id : null,
+        parent_project_id: creating.parent ? creating.parent.id : null,
         // Sent only when it says something: omitted = 'project', and an old
         // gateway mid-deploy (R6) never sees a field it does not know.
-        ...(creating?.kind === "folder" ? { kind: "folder" } : {}),
+        ...(creating.kind === "folder" ? { kind: "folder" } : {}),
       });
-      setNewName("");
       setCreating(undefined);
       setTreeKey((k) => k + 1);
-      // A subproject is not selectable until the refreshed tree carries it, so
-      // only a new root is selected here — selecting a stale row would show an
-      // empty board and read as a failed create.
-      if (!creating?.parent) {
-        setMine(false);
+      // A child is not selectable until the refreshed tree carries it, so
+      // only a new root is selected here — selecting a stale row would show
+      // an empty board and read as a failed create.
+      if (!creating.parent) {
+        setApp(null);
         setSelected(created);
       }
     } catch (err) {
+      // The draft row is KEPT on failure, so the typing is not lost and the
+      // refusal is visible beside the thing it refused.
       setError(String((err as Error).message));
     }
   }
@@ -1490,34 +1517,24 @@ function ProjectsWorkspace() {
   // codebases. What genuinely differs is chrome — a rail versus a drawer, a
   // docked panel versus a full-screen one — and only that is written twice.
 
-  /** The create-project form. In the rail on desktop; a strip under the title
-   *  row on a phone, because a controlled input inside the shell's drawer
-   *  would be re-injected on every keystroke. */
-  const projectForm = (className: string) =>
-    creating === undefined ? null : (
-      <form onSubmit={submitProject} className={className}>
-        <input
-          autoFocus
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setCreating(undefined);
-          }}
-          // The label comes from the OPTION the user clicked, so the form
-          // echoes the word the menu promised. Deriving it from `kind` here
-          // is what made a subproject created inside a folder announce
-          // itself as "New project": both are `kind: "project"`, and only
-          // the option knows the level.
-          placeholder={
-            creating.parent
-              ? `${creating.label} in ${creating.parent.name}`
-              : creating.label
-          }
-          aria-label="Project name"
-          className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-        />
-      </form>
-    );
+  /**
+   * The draft handed to the tree, which draws it AS A ROW at the position
+   * the new node will occupy (owner directive 2026-08-31).
+   *
+   * ⚠️ There used to be a `projectForm` here — a detached input pinned
+   * above the tree, saying "New folder in Firmware" because it sat four
+   * rows away from Firmware and had to name the parent in words. The row
+   * knows its own parent by being indented under it, so the sentence is
+   * unnecessary, and the field belongs where the thing will be.
+   */
+  const treeDraft = creating
+    ? {
+        parentId: creating.parent?.id ?? null,
+        kind: creating.kind,
+        label: creating.label,
+        level: creating.level,
+      }
+    : null;
 
   /** What the *selected project* offers — the action half of the old header.
    *  `compact` drops the labels for the phone's title row; the set is the same
@@ -2002,7 +2019,6 @@ function ProjectsWorkspace() {
           </div>
         </div>
 
-        {projectForm("border-b border-border px-3 py-2")}
         {workArea}
 
         {taskPanel ? (
@@ -2060,7 +2076,6 @@ function ProjectsWorkspace() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {railOpen ? (
           <nav className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
-            {projectForm("mb-2 px-2")}
             <ProjectNav
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
@@ -2071,14 +2086,18 @@ function ProjectsWorkspace() {
                 setSelected(project);
               }}
               onAddChild={(parent, option) => {
-                setCreating({ parent, kind: option.kind, label: option.label });
-                setNewName("");
+                setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
               }}
               onOpenSettings={setSettingsFor}
               onNewSpace={() => {
-                setCreating({ parent: null, kind: "project", label: "New space" });
-                setNewName("");
+                setCreating({
+                  parent: null, kind: "project",
+                  label: "New space", level: "space",
+                });
               }}
+              creating={treeDraft}
+              onCommitCreate={(name) => void submitProject(name)}
+              onCancelCreate={() => setCreating(undefined)}
               actions={projectMenuActions}
             />
           </nav>
