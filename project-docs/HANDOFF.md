@@ -852,9 +852,11 @@ line — never reclaim a number by deleting the other entry.
   feed can never fill the `music` task. The task row and the `tier-music` tier
   both stay.
   ⚠️ **`video` is a named follow-up, and not part of this entry.** A map of
-  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`, and
-  `015_tier_pricing.sql` refuses a video capability until that verb lands. The
-  follow-up rides with **H-46**.
+  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`
+  (`catalog.py:26`). `check_invocation` (`catalog.py:100`) is the refuser, and
+  it rejects a video capability until that verb lands. *(This entry named
+  `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
+  the refusal, and it enforces nothing.)* The follow-up rides with **H-46**.
   📌 Migration number: list `infra/customer_console/` at build time, and list it
   again at merge (R1). It was `019` on 2026-08-30.
 - **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·
@@ -941,14 +943,27 @@ line — never reclaim a number by deleting the other entry.
   mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
   ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
   measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Authority:** `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10a** holds the nine clauses.
+  Build to that section, and to nothing written in this entry.
+  📌 **H-78 lands FIRST.** Clause 5 reads `model_profile.vendor_per_minute_usd`,
+  and H-78 builds that column. Until a profile holds the price,
+  `provider_cost_usd` stays NULL (D-AI-7 rule 3).
+  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
+  WITH its first caller (D57.3). §6A.10b clause 7 says so.
+- **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
+  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and the H-78 order
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
-  and still STT-only means the generalisation has not happened. If a *second* dispatch
-  abstraction appears elsewhere (e.g. a `resolve_provider` in `customer_console/`), that is
-  the defect this entry exists to prevent, not progress.
+  and still STT-only means the generalisation has not happened.
+  ⚠️ **Repaired 2026-08-30. This Check read two things as one.** A DATA READ of
+  `model_capability.invocation` is **ALLOWED**. `resolve_invocation`
+  (`customer_console/router.py:269`) is that read, and §6A.10a clause 6 gives it
+  its first caller on the serving path. The defect this entry guards is a second
+  handler-OBJECT seam — a second provider hierarchy beside `acb_stt`'s. Read the
+  two apart before you call a hit a defect.
 - **Why:** D60 originally said the capability row carries *"the litellm verb"*. **That is
   wrong** — `acb_stt` exists because AssemblyAI's batch API is submit-then-poll and, in the
   package's own words, *"can't be expressed as a LiteLLM `atranscription` call"*. So
@@ -962,9 +977,19 @@ line — never reclaim a number by deleting the other entry.
   in the one place this design has been most careful to avoid it.
   ⚠️ Consequence for G-5: `invocation` values are an **allowlist the Router knows**, never
   free text — an operator must not be able to bind a handler that does not exist.
-- **Authority:** `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
-  G-2 / G-5** · CLAUDE.md §5
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10b** holds the seven clauses.
+  Build to that section, and to nothing written in this entry.
+  📌 **This entry gets NO dispatch of its own.** §6A.10b clause 7 folds it into
+  H-46's build order as that entry's dispatch clause. The seam lands with its
+  first caller, and never before it (D57.3).
+  📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
+  tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
+  rejected `acb_provider` alternative.
+- **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
+  `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
+  G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and a repaired Check
 
 
 ### H-54 · Configure the Supabase staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
@@ -1256,6 +1281,29 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session
+
+### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
+- **Check:** read the docstring of `usage_by_org` in
+  `apps/services/customer_console/customer_console/store.py` and the `ORDER BY`
+  under it. An order that still sorts on credits alone means this is open.
+- **Why:** the read LEFT JOINs `organization` to `usage_event` so that an
+  organization with no use appears with zeros. "This customer bought credits
+  and used none" is the most actionable row on the page. The `ORDER BY` then
+  sorts on credits descending, and `SPEND_PAGE_SIZE` cuts the list. So that
+  row sorts LAST and drops off the end. The two rules cancel out.
+- **📌 Measured, not theoretical.** Found on 2026-08-30 against a scratch
+  database of 563 organizations. Dev, CI and production hold 2 organizations,
+  so all three agree the read is fine.
+- **What is already done:** the read returns `total`, and the console says
+  "100 of 563". The truncation is never silent.
+- **What is open:** the ordering itself. An operator wants the biggest
+  spenders **and** the quiet ones. That is two queries or one union, not one
+  `ORDER BY`. Nobody has chosen the shape.
+- **⚠️ The number stands even after the fix.** Handoff ids are never reused.
+  `store.py` cites "HANDOFF H-76" by name.
+- **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
+  `usage_by_org`
+- **Added:** 2026-08-30 · WS-31 spec remediation session
 
 ### H-77 · Set the vendor feed's clock on the box · [OWNER]
 - **Check:** on the box, `grep CUSTOMER_CONSOLE_FEED_SYNC_HOURS /opt/acb/app/.env`.
