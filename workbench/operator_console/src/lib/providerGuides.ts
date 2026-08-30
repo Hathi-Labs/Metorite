@@ -28,9 +28,12 @@
 // completed. A card that cannot be finished is worse than no card.
 //
 // ⚠️ URLs go stale. The eleven original entries were checked on 2026-08-29.
-// The six added on 2026-08-30 — xai, cohere, perplexity, cerebras,
-// fireworks_ai, github — were written from the vendor's documented console
-// path and re-checked by request on the same day.
+// The twelve URLs of the six vendors added on 2026-08-30 — xai, cohere,
+// perplexity, cerebras, fireworks_ai, github — were each requested on that
+// day. Ten answered 200. `console.x.ai` and Perplexity's key page answered
+// 403, which is a vendor console refusing a non-browser rather than a wrong
+// path. None answered 404. That is the whole of the check: it proves the path
+// resolves, and it does not prove the page still says what it said.
 
 /** What we would USE a vendor for. Matches `task_catalog.slug`, plus `vision`,
  *  which is a property of a chat model rather than a job a tier binds. */
