@@ -349,3 +349,95 @@ def test_a_caller_that_names_no_rank_leaves_it_NULL(db, org):
             {"o": org_id}).first()
     assert row.served_rank is None
     assert row.byok_served is False
+
+
+# ── Slice 12's read half: the catalog carries the failovers ─────────────────
+
+def test_the_catalog_reports_the_failover_that_happened(
+        client, db, org, vendor, serve):
+    """🔴 The one durable proof a chain earns its keep, on the tiers page."""
+    slug, org_id, key = org
+    tier = f"tier-pt-{uuid.uuid4().hex[:6]}"
+    primary = f"{vendor}/pt-a-{uuid.uuid4().hex[:6]}"
+    backup = f"{vendor}/pt-b-{uuid.uuid4().hex[:6]}"
+    _stage(db, tier=tier, models=[primary, backup], profile=None)
+
+    class _Down(Exception):
+        status_code = 503
+
+    async def _flaky(**kwargs):
+        if kwargs["model"] == primary:
+            raise _Down("down")
+        return dict(RESPONSE)
+
+    router_mod.set_provider_call(_flaky)
+    assert _ask(client, key, tier).status_code == 200
+
+    catalog = client.get("/catalog/models", headers=OP).json()
+    mine = [f for f in catalog["failovers"] if f["tier"] == tier]
+    assert mine, "the failover that just happened is not in the catalog"
+    assert mine[0]["model"] == backup
+    assert mine[0]["rank"] == 2
+    assert mine[0]["requests"] >= 1
+
+
+def test_a_primary_answer_is_NOT_reported_as_a_failover(
+        client, db, org, vendor, serve):
+    # Rank 1 is the system working. Reporting it would bury the real rows.
+    slug, org_id, key = org
+    tier = f"tier-pt-{uuid.uuid4().hex[:6]}"
+    _stage(db, tier=tier, models=[f"{vendor}/pt-{uuid.uuid4().hex[:6]}"],
+           profile=None)
+    assert _ask(client, key, tier).status_code == 200
+    catalog = client.get("/catalog/models", headers=OP).json()
+    assert [f for f in catalog["failovers"] if f["tier"] == tier] == []
+
+
+# ── H-76's second half: silence judged over EVERY organization ──────────────
+
+def test_a_quiet_funded_customer_below_the_cap_is_still_reported(
+        client, db, org, monkeypatch):
+    """🔴 The cap hid the exact row A3 exists to find.
+
+    The page sorts by spend and keeps `limit` rows, so a funded organization
+    with NO usage — "somebody paid and never arrived" — fell off first. The
+    silent list is now judged over every organization, uncapped. Proved the
+    honest way: more organizations than the page holds, and the quiet one
+    must appear in `silentSlugs` while absent from `rows`.
+
+    📌 **First run of this test found a SECOND truncation**: 
+    `credit_balance_by_org` carried `LIMIT 100` with no ORDER BY, so above a
+    hundred organizations an ARBITRARY hundred had balances and everyone else
+    read 0 — nondeterministically. The silent judgement below exercises that
+    read for an org the cap would have dropped, so this test now fences both.
+    """
+    slug, org_id, _ = org
+    # Fund the quiet org so A3's both-halves rule applies.
+    r = client.post("/credits/grant", headers=OP,
+                    json={"org_slug": slug, "credits": "500",
+                          "reason": "grant"})
+    assert r.status_code == 200, r.text
+
+    # Crowd it off the page: the endpoint's cap is SPEND_PAGE_SIZE (100).
+    # 105 organizations, each with one billed call TODAY, all louder than
+    # the quiet org's zero.
+    from customer_console import store as store_mod
+    with db.begin() as c:
+        for i in range(105):
+            other = str(c.execute(
+                text("INSERT INTO organization (slug, name) "
+                     "VALUES (:s, 'N') RETURNING id"),
+                {"s": f"loud-{uuid.uuid4().hex[:10]}"},
+            ).scalar_one())
+            store_mod.record_usage(
+                conn=c, org_id=other,
+                request_id=f"pt-loud-{uuid.uuid4().hex}",
+                billed_credits=Decimal("5"), model="m", tier="t")
+
+    view = client.get("/admin/usage/orgs", headers=OP).json()
+    shown = {row["slug"] for row in view["rows"]}
+    assert slug not in shown, (
+        "the fixture failed to push the quiet org off the page — the test "
+        "would pass without proving anything"
+    )
+    assert slug in view["silentSlugs"]

@@ -365,6 +365,52 @@ export default function TierBoard({
         </p>
       )}
 
+      {/* ── What the chains actually DID (013, slice 12) ── */}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Failovers, last 14 days</h2>
+          <p>
+            Days on which a backup answered instead of the first choice. This
+            reads the meter itself, so every row is a customer request the
+            primary did not serve.
+          </p>
+        </div>
+        {catalog.failovers.length === 0 ? (
+          <p className="muted">
+            None. The first choice answered everything — or nothing has run
+            yet, which the usage page can tell apart.
+          </p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Day</th>
+                  <th>Tier</th>
+                  <th>Job</th>
+                  <th>Served by</th>
+                  <th>Requests</th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalog.failovers.map((f) => (
+                  <tr key={`${f.day}/${f.tier}/${f.task}/${f.model}/${f.rank}`}>
+                    <td>{f.day}</td>
+                    <td>{f.tier}</td>
+                    <td>{tasks.find((t) => t.slug === f.task)?.label ?? f.task}</td>
+                    <td>
+                      <span className="mono">{f.model}</span>{" "}
+                      <span className="muted small">backup #{f.rank}</span>
+                    </td>
+                    <td>{f.requests}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <p className="note">
         Changing a model keeps the old one on record, so an old invoice still
         shows what it charged. You need an open elevation window to save.
