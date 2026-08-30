@@ -166,20 +166,24 @@ export type ModelRate = {
 
 // ── The routing record: what the Router actually did ────────────────────────
 //
-// ⚠️ **This is the evidence that a fallback worked.** A chain nobody can prove
-// fired is a chain nobody trusts. `usage_event` needs a column for the step
-// that served, and until it has one this stays sample-only.
+// 🔴 **LIVE since migration 013.** `usage_event.served_rank` records the
+// position of the step that answered, and rank above 1 is a customer request
+// the primary did not serve. The shape below is exactly what the database can
+// PROVE — the earlier draft carried `from` and `reason`, which the row does
+// not hold (the primary at that moment is a join against re-bindable history,
+// and the reason lives in the `router.failover` log line). A field the data
+// cannot back is a story, not a record.
 
 export type FailoverEvent = {
-  at: string;
+  /** The day, ISO. Aggregated per day so a bad afternoon is one row. */
+  day: string;
   tier: string;
   task: string;
-  /** The step that was tried and failed. */
-  from: string;
-  /** The step that answered. NULL means the whole chain failed. */
-  to: string | null;
-  reason: string;
-  /** How many customer requests this affected. */
+  /** The step that ANSWERED. */
+  model: string;
+  /** Its position in the chain. Always 2 or more here. */
+  rank: number;
+  /** How many customer requests that step carried that day. */
   requests: number;
 };
 

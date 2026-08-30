@@ -43,6 +43,7 @@ export default async function UsagePage() {
 
   let rows: OrgUsageRow[] = [];
   let total = 0;
+  let silentSlugs: string[] = [];
   let days: UsageDay[] = [];
   let spikes: string[] = [];
   let error: string | null = null;
@@ -57,8 +58,10 @@ export default async function UsagePage() {
       const body = JSON.parse(orgs.body) as {
         rows: OrgUsageRow[];
         total?: number;
+        silentSlugs?: string[];
       };
       rows = body.rows;
+      silentSlugs = body.silentSlugs ?? [];
       // ⚠️ The page is capped and the rows sort by spend, so the customers
       // that fall off are the QUIET ones — the exact rows the read LEFT JOINs
       // to include. Carrying the total is what stops the table looking whole.
@@ -100,7 +103,7 @@ export default async function UsagePage() {
         {error ? (
           <div className="banner danger">{error}</div>
         ) : (
-          <UsageBoard rows={rows} days={days} spikes={spikes} total={total} />
+          <UsageBoard rows={rows} days={days} spikes={spikes} total={total} silentSlugs={silentSlugs} />
         )}
       </main>
     </>

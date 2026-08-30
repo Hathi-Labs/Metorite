@@ -1734,6 +1734,77 @@ pre.token {
   flex: 1 1 240px;
 }
 
+/* ── The go-live rail ─────────────────────────────────────────────────────
+   Six steps, one line each. The number chip reuses `.stepno`; the state chip
+   reuses the tone vocabulary — nothing here invents a colour. */
+.rail {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rail-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+/* A completed step recedes; the next thing to do is what the eye should hit. */
+.rail-step.done {
+  opacity: 0.66;
+  background: transparent;
+}
+
+.rail-step .stepno {
+  margin-top: 2px;
+}
+
+.railmain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.railmain .small {
+  margin: 1px 0 0;
+}
+
+.railhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.rail-step .linklike {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* The rail once everything derivable is green: one quiet line. */
+.rail-done {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--ok-line);
+  border-radius: var(--r);
+  background: var(--ok-soft);
+}
+
+.rail-done p {
+  margin: 0;
+  font-size: 13px;
+}
+
 .advanced summary {
   cursor: pointer;
   color: var(--muted);
