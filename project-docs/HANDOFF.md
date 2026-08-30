@@ -941,14 +941,27 @@ line — never reclaim a number by deleting the other entry.
   mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
   ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
   measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Authority:** `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10a** holds the nine clauses.
+  Build to that section, and to nothing written in this entry.
+  📌 **H-78 lands FIRST.** Clause 5 reads `model_profile.vendor_per_minute_usd`,
+  and H-78 builds that column. Until a profile holds the price,
+  `provider_cost_usd` stays NULL (D-AI-7 rule 3).
+  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
+  WITH its first caller (D57.3). §6A.10b clause 7 says so.
+- **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
+  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and the H-78 order
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
-  and still STT-only means the generalisation has not happened. If a *second* dispatch
-  abstraction appears elsewhere (e.g. a `resolve_provider` in `customer_console/`), that is
-  the defect this entry exists to prevent, not progress.
+  and still STT-only means the generalisation has not happened.
+  ⚠️ **Repaired 2026-08-30. This Check read two things as one.** A DATA READ of
+  `model_capability.invocation` is **ALLOWED**. `resolve_invocation`
+  (`customer_console/router.py:269`) is that read, and §6A.10a clause 6 gives it
+  its first caller on the serving path. The defect this entry guards is a second
+  handler-OBJECT seam — a second provider hierarchy beside `acb_stt`'s. Read the
+  two apart before you call a hit a defect.
 - **Why:** D60 originally said the capability row carries *"the litellm verb"*. **That is
   wrong** — `acb_stt` exists because AssemblyAI's batch API is submit-then-poll and, in the
   package's own words, *"can't be expressed as a LiteLLM `atranscription` call"*. So
@@ -962,9 +975,19 @@ line — never reclaim a number by deleting the other entry.
   in the one place this design has been most careful to avoid it.
   ⚠️ Consequence for G-5: `invocation` values are an **allowlist the Router knows**, never
   free text — an operator must not be able to bind a handler that does not exist.
-- **Authority:** `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
-  G-2 / G-5** · CLAUDE.md §5
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10b** holds the seven clauses.
+  Build to that section, and to nothing written in this entry.
+  📌 **This entry gets NO dispatch of its own.** §6A.10b clause 7 folds it into
+  H-46's build order as that entry's dispatch clause. The seam lands with its
+  first caller, and never before it (D57.3).
+  📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
+  tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
+  rejected `acb_provider` alternative.
+- **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
+  `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
+  G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and a repaired Check
 
 
 ### H-54 · Configure the Supabase staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
