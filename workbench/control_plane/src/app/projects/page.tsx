@@ -15,6 +15,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { PROJECT_STATES } from "@/lib/statusAccent";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 import { LayoutBoundary } from "@/components/LayoutBoundary";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -477,6 +478,24 @@ function ProjectsWorkspace() {
   // WS-27z — the lifecycle-policy dialog. Root projects only: the policy is a
   // root setting the whole subtree inherits, and the gateway 422s a child.
   const [managingLifecycle, setManagingLifecycle] = useState(false);
+  // The header's one overflow menu (owner ask 2026-08-31, Plane's header
+  // discipline): management dialogs open from HERE, not from a row of
+  // always-visible buttons beside the view switcher.
+  const [manageOpen, setManageOpen] = useState(false);
+  const manageRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!manageOpen) return;
+    // NotificationBell's exact dismissal wiring — the one popover walker.
+    const away = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (shouldDismiss(target, domClickWalk(manageRef.current))) {
+        setManageOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [manageOpen]);
 
   // WS-27n — multi-select. `anchor` is the last card clicked without shift,
   // which is what a shift-click measures its range from.
@@ -1542,50 +1561,83 @@ function ProjectsWorkspace() {
   /** What the *selected project* offers — the action half of the old header.
    *  `compact` drops the labels for the phone's title row; the set is the same
    *  on both, so nothing is quietly unreachable on a phone. */
-  const projectActions = (compact: boolean) => (
-    <>
-      {/* ⚠️ The "Import from ClickUp" action was REMOVED 2026-08-24 (D52,
-          board WS-39 S1). Metorite is the project-management system of
-          record — there is no workspace to import from, so an affordance
-          here would be a button that cannot succeed. */}
-      {selected ? (
+  /**
+   * The header's action cluster — ONE overflow menu (owner ask 2026-08-31).
+   *
+   * Plane's header keeps management out of the view chrome entirely: its
+   * topbar is breadcrumb, layout switcher, filters, display, one primary
+   * action — Fields/Tags/Lifecycle-style dialogs live behind menus and
+   * settings (`apps/web/core/components/issues/header.tsx` at effd0c5 is
+   * the pattern). Three always-visible ghost buttons beside the view
+   * switcher were the junk drawer that rule exists to prevent. All three
+   * remain one palette command away (`project.fields` / `project.tags` /
+   * `project.lifecycle`).
+   *
+   * ⚠️ The "Import from ClickUp" action was REMOVED 2026-08-24 (D52, board
+   * WS-39 S1). Metorite is the system of record — nothing to import from.
+   */
+  const projectActions = (compact: boolean) =>
+    selected ? (
+      <div ref={manageRef} className="relative">
         <Button
           variant="ghost"
           size={compact ? "icon-sm" : "sm"}
-          icon="SlidersHorizontal"
-          aria-label="Custom fields"
-          title="Custom fields"
-          onClick={() => setManagingFields(true)}
-        >
-          {compact ? null : "Fields"}
-        </Button>
-      ) : null}
-      {selected ? (
-        <Button
-          variant="ghost"
-          size={compact ? "icon-sm" : "sm"}
-          icon="Tag"
-          aria-label="Tags"
-          title="Tags"
-          onClick={() => setManagingTags(true)}
-        >
-          {compact ? null : "Tags"}
-        </Button>
-      ) : null}
-      {selected && !selected.parent_project_id ? (
-        <Button
-          variant="ghost"
-          size={compact ? "icon-sm" : "sm"}
-          icon="Archive"
-          aria-label="Lifecycle policy"
-          title="Auto-archive and auto-close policy for this project's subtree"
-          onClick={() => setManagingLifecycle(true)}
-        >
-          {compact ? null : "Lifecycle"}
-        </Button>
-      ) : null}
-    </>
-  );
+          icon="MoreHorizontal"
+          aria-label="Manage this project"
+          aria-expanded={manageOpen}
+          title="Custom fields, tags and lifecycle"
+          onClick={() => setManageOpen((open) => !open)}
+        />
+        {manageOpen ? (
+          <div
+            className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-border bg-popover p-1 shadow-md"
+            role="menu"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setManageOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+              onClick={() => {
+                setManageOpen(false);
+                setManagingFields(true);
+              }}
+            >
+              <Icon name="SlidersHorizontal" className="h-3.5 w-3.5 text-muted-foreground" />
+              Custom fields
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+              onClick={() => {
+                setManageOpen(false);
+                setManagingTags(true);
+              }}
+            >
+              <Icon name="Tag" className="h-3.5 w-3.5 text-muted-foreground" />
+              Tags
+            </button>
+            {!selected.parent_project_id ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+                onClick={() => {
+                  setManageOpen(false);
+                  setManagingLifecycle(true);
+                }}
+              >
+                <Icon name="Archive" className="h-3.5 w-3.5 text-muted-foreground" />
+                Lifecycle policy
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    ) : null;
 
   const title = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
