@@ -140,6 +140,9 @@ def _stage(db, *, tier: str, models: list[str], profile: dict | None):
     """Declare, bind one chain at one timestamp, and optionally profile."""
     with db.begin() as c:
         eff = c.execute(text("SELECT now()")).scalar_one()
+        c.execute(
+            text("INSERT INTO tier_catalog (slug, label) VALUES (:t, :t) "
+                 "ON CONFLICT DO NOTHING"), {"t": tier})
         for rank, m in enumerate(models, start=1):
             c.execute(
                 text("INSERT INTO model_capability (model, task, invocation) "
@@ -279,11 +282,11 @@ def test_byok_is_metered_and_billed_zero(client, db, org, vendor, serve):
             {"v": vendor, "o": org_id,
              "s": router_mod.encrypt_secret("sk-their-own-key")})
         c.execute(
-            text("INSERT INTO model_rate_card (model, task, "
+            text("INSERT INTO tier_rate_card (tier, task, "
                  "input_credits_per_1k, output_credits_per_1k, "
                  "cached_input_credits_per_1k, pricing_mode, effective_from) "
-                 "VALUES (:m, 'chat', 2, 6, 0.5, 'priced', now())"),
-            {"m": model})
+                 "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now())"),
+            {"t": tier})
         before = c.execute(
             text("SELECT COALESCE(SUM(delta), 0) FROM credit_ledger "
                  "WHERE organization_id = CAST(:o AS uuid)"),
@@ -301,8 +304,8 @@ def test_byok_is_metered_and_billed_zero(client, db, org, vendor, serve):
                  "WHERE organization_id = CAST(:o AS uuid)"),
             {"o": org_id}).scalar_one()
         # Fixture hygiene: this suite's card row, not the seed's.
-        c.execute(text("DELETE FROM model_rate_card WHERE model = :m"),
-                  {"m": model})
+        c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                  {"t": tier})
     assert after == before, "a BYOK call moved the ledger"
 
 
@@ -315,17 +318,17 @@ def test_a_platform_call_on_a_priced_card_still_bills(
     _stage(db, tier=tier, models=[model], profile=None)
     with db.begin() as c:
         c.execute(
-            text("INSERT INTO model_rate_card (model, task, "
+            text("INSERT INTO tier_rate_card (tier, task, "
                  "input_credits_per_1k, output_credits_per_1k, "
                  "cached_input_credits_per_1k, pricing_mode, effective_from) "
-                 "VALUES (:m, 'chat', 2, 6, 0.5, 'priced', now())"),
-            {"m": model})
+                 "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now())"),
+            {"t": tier})
 
     assert _ask(client, key, tier).status_code == 200
     row = _row(db, org_id)
     with db.begin() as c:
-        c.execute(text("DELETE FROM model_rate_card WHERE model = :m"),
-                  {"m": model})
+        c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                  {"t": tier})
     assert row.byok_served is False
     # 300 uncached × 2/1k + 900 cached × 0.5/1k + 40 out × 6/1k
     assert Decimal(row.billed_credits) == Decimal("1.29")

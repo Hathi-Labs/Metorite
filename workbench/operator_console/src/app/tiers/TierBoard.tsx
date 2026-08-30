@@ -33,8 +33,9 @@ import {
   tierNextStep,
   unusedModels,
 } from "@/lib/fallback";
+import { describeRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
-import { chipClass } from "@/lib/tone";
+import { chipClass, pricingTone } from "@/lib/tone";
 
 function Provider({ model }: { model: string }) {
   const p = model.includes("/") ? model.slice(0, model.indexOf("/")) : model;
@@ -53,7 +54,7 @@ export default function TierBoard({
   catalog: AiCatalog;
   armed: string[];
 }) {
-  const { tiers, tasks, models } = catalog;
+  const { tiers, tasks, models, tierRates } = catalog;
   const ctx: ChainContext = useMemo(() => ({ models, armed }), [models, armed]);
 
   const [down, setDown] = useState<string[]>([]);
@@ -61,6 +62,11 @@ export default function TierBoard({
   const [drafts, setDrafts] = useState<Record<string, string[]>>({});
   const [adding, setAdding] = useState<string | null>(null);
   const [pick, setPick] = useState("");
+  // Jobs opened on a tier but not yet saved - a registered tier starts EMPTY
+  // (015) and grows a job here; the first saved chain makes it real.
+  const [extraJobs, setExtraJobs] = useState<Record<string, string[]>>({});
+  const [addingJob, setAddingJob] = useState<string | null>(null);
+  const [taskPick, setTaskPick] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -88,6 +94,22 @@ export default function TierBoard({
     tasks.find((t) => t.slug === slug)?.label ?? slug;
 
   const key = (t: string, task: string) => `${t}::${task}`;
+
+  // What the customer PAYS for each (tier, job) - D67. Read-only here; the
+  // pricing panel below the board owns the writes.
+  const rateFor = useMemo(
+    () => new Map(tierRates.map((r) => [`${r.tier}::${r.task}`, r])),
+    [tierRates],
+  );
+
+  /** Saved jobs plus the ones opened locally and not yet saved. */
+  function jobsFor(t: Tier): TierJob[] {
+    const have = new Set(t.jobs.map((j) => j.task));
+    const extras = (extraJobs[t.slug] ?? [])
+      .filter((task) => !have.has(task))
+      .map((task) => ({ tier: t.slug, task, chain: [] }));
+    return [...t.jobs, ...extras];
+  }
 
   /** Save one chain, whole.
    *
@@ -161,6 +183,25 @@ export default function TierBoard({
         <div className="job-head">
           <span className="job-name">{taskLabel(job.task)}</span>
           <span className={chipClass(tone)}>{chainLabel(shown, problems)}</span>
+          {(() => {
+            // What this job BILLS (D67). "no price" warns because the job
+            // answers customers and charges nothing - loudly, like the rail.
+            const r = rateFor.get(k);
+            if (!r || r.mode === "unpriced") {
+              return (
+                <span className={chipClass("warn")}
+                  title="Answers customers and bills nothing until priced">
+                  no price
+                </span>
+              );
+            }
+            return (
+              <span className={chipClass(pricingTone(r.mode))}
+                title="What a customer pays. Set below, in the pricing panel.">
+                {r.mode === "priced" ? describeRate(r) : r.mode}
+              </span>
+            );
+          })()}
         </div>
 
         <ol className="chain">
@@ -334,22 +375,79 @@ export default function TierBoard({
         </div>
       ) : (
         <div className="tier-grid">
-          {tiers.map((t) => (
-            <section className="tier-card" key={t.slug}>
-              <header>
-                <h3>{t.label}</h3>
-                <span className="muted small">
-                  {t.jobs.length === 0
-                    ? "nothing set"
-                    : `${t.jobs.length} job${t.jobs.length === 1 ? "" : "s"}`}
-                </span>
-              </header>
-              {t.blurb && <p className="muted small">{t.blurb}</p>}
-              {t.jobs.map((j) => (
-                <Job key={j.task} tier={t} job={j} />
-              ))}
-            </section>
-          ))}
+          {tiers.map((t) => {
+            const jobs = jobsFor(t);
+            const openTasks = tasks
+              .map((x) => x.slug)
+              .filter((slug) => !jobs.some((j) => j.task === slug));
+            return (
+              <section className="tier-card" key={t.slug}>
+                <header>
+                  <h3>{t.label}</h3>
+                  {!t.registered && (
+                    <span className={chipClass("warn")}
+                      title="A binding names this tier but tier_catalog does not. It serves, and it cannot be priced until registered.">
+                      not in the registry
+                    </span>
+                  )}
+                  <span className="muted small">
+                    {jobs.length === 0
+                      ? "nothing set"
+                      : `${jobs.length} job${jobs.length === 1 ? "" : "s"}`}
+                  </span>
+                </header>
+                {t.blurb && <p className="muted small">{t.blurb}</p>}
+                {jobs.length === 0 && (
+                  <p className="muted small">
+                    Nothing bound yet. This tier serves nothing and sells
+                    nothing until a job points at a model.
+                  </p>
+                )}
+                {jobs.map((j) => (
+                  <Job key={j.task} tier={t} job={j} />
+                ))}
+                {addingJob === t.slug ? (
+                  <div className="job-edit">
+                    <label htmlFor={`addjob-${t.slug}`}>Which job?</label>
+                    <select
+                      id={`addjob-${t.slug}`}
+                      value={taskPick}
+                      onChange={(e) => setTaskPick(e.target.value)}
+                    >
+                      <option value="">Choose a job&hellip;</option>
+                      {openTasks.map((slug) => (
+                        <option key={slug} value={slug}>{taskLabel(slug)}</option>
+                      ))}
+                    </select>
+                    <div className="job-actions">
+                      <button type="button" disabled={!taskPick}
+                        onClick={() => {
+                          setExtraJobs({
+                            ...extraJobs,
+                            [t.slug]: [...(extraJobs[t.slug] ?? []), taskPick],
+                          });
+                          setAddingJob(null);
+                          setTaskPick("");
+                        }}>
+                        Add
+                      </button>
+                      <button type="button" className="linklike"
+                        onClick={() => setAddingJob(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  openTasks.length > 0 && (
+                    <button type="button" className="linklike add-job"
+                      onClick={() => { setAddingJob(t.slug); setTaskPick(""); }}>
+                      + Add a job
+                    </button>
+                  )
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
 

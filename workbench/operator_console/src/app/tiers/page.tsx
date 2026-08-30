@@ -4,6 +4,7 @@ import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
 import TierBoard from "./TierBoard";
+import TierPricing from "./TierPricing";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,7 @@ export default async function TiersPage() {
       note={catalog.note}
     >
       <TierBoard catalog={catalog.data} armed={armed} />
+      <TierPricing catalog={catalog.data} />
     </Shell>
   );
 }

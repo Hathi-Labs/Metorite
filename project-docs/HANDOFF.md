@@ -810,9 +810,12 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-42 · Price the AI rate card, then flip the spend gate — in that order · [OWNER]
 - **Check:** on the Console database,
-  `SELECT count(*) FROM model_rate_card WHERE input_credits_per_1k > 0;` → `0` means the
+  `SELECT count(*) FROM tier_rate_card WHERE pricing_mode = 'priced';` → `0` means the
   card is still unpriced and nothing draws credits down. Then
   `env | grep -c CUSTOMER_CONSOLE_SPEND_GATE` on the box.
+  *(D67, 2026-08-30: the card billing reads is `tier_rate_card`, keyed on
+  the tier. `model_rate_card` is read-only history. The console's /tiers
+  page sets the price and shows the margin live.)*
 - **Why:** Credit **assignment** works end to end already (§6B.1) — but a granted credit
   is currently a number that nothing consumes, because the shipped rate card is **all
   zero** and `test_the_rate_card_ships_unpriced` refuses a priced ladder by design.

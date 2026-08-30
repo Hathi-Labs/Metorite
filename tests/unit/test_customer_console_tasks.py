@@ -71,9 +71,11 @@ def conn():
 # ── The task allowlist (G-5) ────────────────────────────────────────────────
 
 class TestTheTaskAllowlist:
-    def test_the_six_tasks_are_seeded(self, conn):
+    def test_the_eight_tasks_are_seeded(self, conn):
+        # video and music joined in 015 (D67's slate), priced in seconds.
         slugs = {r[0] for r in conn.execute(text("SELECT slug FROM task_catalog"))}
-        assert slugs == {"chat", "embed", "vision", "transcribe", "speak", "image"}
+        assert slugs == {"chat", "embed", "vision", "transcribe", "speak",
+                         "image", "video", "music"}
 
     def test_each_task_records_the_unit_it_is_priced_in(self, conn):
         """An operator must not be able to price `transcribe` per 1k tokens."""

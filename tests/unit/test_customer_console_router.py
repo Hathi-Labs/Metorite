@@ -157,25 +157,24 @@ def priced_card(db):
     ``test_customer_console_credits.py`` rates against, so the arithmetic in one
     place can be checked against the other.
     """
-    model = "deepseek/deepseek-v4-pro"
+    # D67: the price is keyed on the TIER the customer picked. The rating
+    # tests below bill through `tier-balanced`, so that is what gets a card.
+    tier = "tier-balanced"
     with db.begin() as c:
         c.execute(text(
-            # CP-10 slice 2: `pricing_mode` is what makes a card billable,
-            # not the numbers — a zero cannot carry three meanings (G-4).
-            # The conflict target is TARGETLESS because the primary key is
-            # now (model, task, effective_from).
-            "INSERT INTO model_rate_card (model, input_credits_per_1k, "
+            "INSERT INTO tier_rate_card (tier, task, input_credits_per_1k, "
             " output_credits_per_1k, cached_input_credits_per_1k, "
             " pricing_mode, effective_from) "
-            "VALUES (:m, 2, 6, 0.5, 'priced', now()) "
-            "ON CONFLICT DO NOTHING"), {"m": model})
-    yield model
+            "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now()) "
+            "ON CONFLICT DO NOTHING"), {"t": tier})
+    yield tier
     with db.begin() as c:
-        # Only the fixture's row: the seed is priced at zero and stays.
+        # Only the fixture's row: migration 015 seeds NO tier rates, and
+        # the ships-unpriced idea holds for the slate.
         c.execute(text(
-            "DELETE FROM model_rate_card WHERE model = :m "
+            "DELETE FROM tier_rate_card WHERE tier = :t "
             "  AND (input_credits_per_1k <> 0 OR output_credits_per_1k <> 0)"),
-            {"m": model})
+            {"t": tier})
 
 
 @pytest.fixture
@@ -1372,35 +1371,38 @@ class TestTaskRoutingEndToEnd:
         from customer_console.main import _rate_completion
         from customer_console.router import ExtractedUsage
 
-        model = f"test/{uuid.uuid4().hex[:8]}"
+        tier = f"tier-test-{uuid.uuid4().hex[:8]}"
         with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO tier_catalog (slug, label) VALUES (:t, :t)"),
+                {"t": tier})
             # chat FIRST, image SECOND. The wrong lookup takes the newest.
             c.execute(text(
-                "INSERT INTO model_rate_card (model, task, unit, "
+                "INSERT INTO tier_rate_card (tier, task, unit, "
                 " input_credits_per_1k, output_credits_per_1k, pricing_mode, "
                 " effective_from) VALUES "
-                "(:m, 'chat', 'tokens', 2, 6, 'priced', now() - interval '1 h')"),
-                {"m": model})
+                "(:t, 'chat', 'tokens', 2, 6, 'priced', now() - interval '1 h')"),
+                {"t": tier})
             c.execute(text(
-                "INSERT INTO model_rate_card (model, task, unit, "
+                "INSERT INTO tier_rate_card (tier, task, unit, "
                 " input_credits_per_1k, output_credits_per_1k, "
                 " credits_per_unit, pricing_mode, effective_from) VALUES "
-                "(:m, 'image', 'images', 0, 0, 999, 'priced', now())"),
-                {"m": model})
+                "(:t, 'image', 'images', 0, 0, 999, 'priced', now())"),
+                {"t": tier})
 
         with db.begin() as c:
             chat_billed, chat_unit = _rate_completion(
-                c, model=model,
+                c, tier=tier, model="x/irrelevant",
                 usage=ExtractedUsage(prompt_tokens=1000, completion_tokens=500),
                 task="chat",
             )
             # ⚠️ The IMAGE call is what distinguishes the two lookups.
-            # `resolve_rate_card` defaults its task to "chat", so
-            # dropping the argument is a NO-OP on a chat call and a
-            # chat-only fixture proves nothing. Measured: the mutation
+            # `resolve_tier_rate` has no task default, but the CALLER does —
+            # a chat-only fixture proves nothing. Measured: the mutation
             # survived twice before this line existed.
             img_billed, img_unit = _rate_completion(
-                c, model=model, usage=ExtractedUsage(), task="image",
+                c, tier=tier, model="x/irrelevant",
+                usage=ExtractedUsage(), task="image",
             )
 
         # 1000 fresh input @2 + 500 output @6 = 2 + 3 = 5 credits.
@@ -1413,11 +1415,13 @@ class TestTaskRoutingEndToEnd:
         )
 
         with db.begin() as c:
-            c.execute(text("DELETE FROM model_rate_card WHERE model = :m"),
-                      {"m": model})
+            c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                      {"t": tier})
+            c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"),
+                      {"t": tier})
 
     def test_the_usage_row_records_the_task_and_the_unit(
-            self, client, org_key, db):
+            self, client, org_key, db, priced_card):
         """A row that says `0.4` without saying `minutes` cannot be checked."""
         slug, key = org_key
         client.post("/v1/chat/completions", headers=key, json={

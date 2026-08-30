@@ -36,7 +36,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from customer_console.credits import RateCard, UnpricedModel
+from customer_console.credits import RateCard, TierRate, UnpricedModel
 
 __all__ = [
     "SSE_DONE",
@@ -52,6 +52,7 @@ __all__ = [
     "resolve_invocation",
     "resolve_rate_card",
     "resolve_tier",
+    "resolve_tier_rate",
     "set_provider_call",
     "usage_from_frame",
     "usage_from_response",
@@ -218,6 +219,51 @@ def resolve_rate_card(
         credits_per_unit=row[4],
         pricing_mode=row[5],
     )
+
+
+def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
+    """The TIER rate card in force, as of now — what the customer pays (D67).
+
+    Same idiom as :func:`resolve_rate_card`, re-keyed: newest row whose
+    ``effective_from`` has passed. The customer's price is keyed on the tier
+    they PICKED, never on the model that served them, so a failover moves our
+    cost and not their bill.
+
+    Raises:
+        UnpricedModel: no row is in effect for this (tier, task). The
+            metering caller downgrades this to "bill zero, loudly" — a
+            completion the customer already has must never fail on rating.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT input_credits_per_1k, output_credits_per_1k,
+                   cached_input_credits_per_1k,
+                   unit, credits_per_unit, pricing_mode
+            FROM tier_rate_card
+            WHERE tier = :tier AND task = :task AND effective_from <= now()
+            ORDER BY effective_from DESC
+            LIMIT 1
+            """
+        ),
+        {"tier": tier, "task": task},
+    ).first()
+    if row is None:
+        raise UnpricedModel(
+            f"tier {tier!r} has no rate-card row in effect for task "
+            f"{task!r}; refusing to bill it as free"
+        )
+    return TierRate(
+        tier=tier,
+        input_per_1k=row[0],
+        output_per_1k=row[1],
+        cached_input_per_1k=row[2],
+        task=task,
+        unit=row[3],
+        credits_per_unit=row[4],
+        pricing_mode=row[5],
+    )
+
 
 
 def resolve_invocation(conn: Connection, model: str, task: str) -> str:

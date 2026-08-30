@@ -50,9 +50,11 @@ import FeedStrip from "./FeedStrip";
 import ModelDetails from "./ModelDetails";
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = {
-  ready: "ok",
+  costed: "ok",
   undeclared: "danger",
-  unpriced: "warn",
+  // Costs-blind serves fine — but every margin that touches it reads as
+  // unknown, so it warns until the vendor price is recorded (or fetched).
+  costblind: "warn",
 };
 
 const SORTS: { key: SortKey; label: string }[] = [
@@ -235,7 +237,7 @@ export default function ModelBrowser({
 
         <div className="facetrow">
           <span className="facetlabel">State</span>
-          {(["ready", "unpriced", "undeclared"] as const).map((s) => (
+          {(["costed", "costblind", "undeclared"] as const).map((s) => (
             <button
               key={s}
               type="button"

@@ -151,7 +151,12 @@ describe("nothing under src/app can reach the sample directly", () => {
     // ⚠️ A designer who only ever sees green ships the red states untested.
     expect(SAMPLE_CATALOG.accounts.some((a) => a.revokedAt)).toBe(true);
     expect(SAMPLE_CATALOG.models.some((m) => !m.declared)).toBe(true);
-    expect(SAMPLE_CATALOG.models.some((m) => !m.priced)).toBe(true);
+    // D67: "unpriced" is a TIER state now - the sample must hold a bound
+    // job with no decided tier rate, so the no-price chip renders.
+    expect(SAMPLE_CATALOG.tiers.some((t) => t.registered && t.jobs.length > 0
+      && t.jobs.some((j) => !SAMPLE_CATALOG.tierRates.some(
+        (r) => r.tier === t.slug && r.task === j.task && r.mode !== "unpriced",
+      )))).toBe(true);
     expect(SAMPLE_CATALOG.tiers.some((t) => t.jobs.some((j) => j.chain.length === 1)))
       .toBe(true);
   });

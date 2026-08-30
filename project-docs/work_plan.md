@@ -3620,6 +3620,30 @@ by D15/D16) — read their banners before citing either.
      (**H-68**), because a usage view that omits most traffic is worse than
      none.
 
+- **D67 — The customer's price is keyed on the TIER, and the tier slate is
+  the whole product surface.** *(owner call, 2026-08-30, made in the
+  operator-console session. Owning spec: **`specs/customer_console.md`**
+  §6A.12. Board: **WS-31**. Migration: `015_tier_pricing.sql`.)*
+
+  **What forced it.** `model_rate_card` priced `(model, task)`. So the
+  customer paid whatever the SERVING model cost. A failover changed their
+  price mid-day. Two tiers on one model could not differ in price, so a
+  premium tier needed a premium model. The owner asked for per-tier prices
+  and for tiers that cover every capability we intend to sell.
+
+  1. **`tier_rate_card` is the card billing reads.** Keyed
+     `(tier, task, effective_from)`, INSERT-only, same G-4 modes. The meter
+     rates the tier the customer picked. A failover moves our cost, never
+     their price. `test_customer_console_tier_pricing.py` proves both.
+  2. **`model_rate_card` is retired as a billing input.** The table stays
+     (R6). `POST /catalog/rates` answers 410 and names the successor.
+  3. **`tier_catalog` is the registry.** Eleven tiers ship, and an empty
+     tier now EXISTS on the board. `video` and `music` join `task_catalog`,
+     priced in seconds. No Router verb serves them yet, on purpose - the
+     tier, the task and the price can exist first.
+  4. **Pricing moved to `/tiers` in the console.** `/models` keeps the
+     supply side only: what a model is, and what WE pay for it.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 | Work | Owner | Mirrors (link-only after §5) |

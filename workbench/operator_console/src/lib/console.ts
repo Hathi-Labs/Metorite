@@ -291,6 +291,11 @@ export const bindTier = (body: unknown, d?: Deps) =>
 export const setModelRate = (body: unknown, d?: Deps) =>
   callConsole("/catalog/rates", { method: "POST", body }, d ?? {});
 
+// D67: what a CUSTOMER pays is keyed on the tier they picked. Admin plus an
+// elevation window, same as the model-keyed card it replaces.
+export const setTierRate = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/tier-rates", { method: "POST", body }, d ?? {});
+
 // What a model IS (migration 012). ⚠️ The only catalog write that is an UPSERT
 // rather than an insert, and the only one gated at `editor` without an
 // elevation window — a context window is a fact about the world, not a

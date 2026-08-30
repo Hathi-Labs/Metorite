@@ -5,7 +5,6 @@ import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
 import DeclareModel from "./DeclareModel";
 import ModelBrowser from "./ModelBrowser";
-import RateCard from "./RateCard";
 
 export const dynamic = "force-dynamic";
 
@@ -39,8 +38,10 @@ export default async function ModelsPage() {
       origin={catalog.origin}
       note={catalog.note}
     >
+      {/* D67: the pricing cockpit moved to /tiers — the customer buys a
+          tier, so the price lives beside the tiers it prices. This page is
+          the SUPPLY side: what exists, what it can do, what WE pay. */}
       <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} />
-      <RateCard rates={catalog.data.rates} tasks={catalog.data.tasks} models={catalog.data.models} />
       <DeclareModel tasks={catalog.data.tasks} accounts={catalog.data.accounts} />
     </Shell>
   );
