@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
+import CreditPrice from "./CreditPrice";
 import TierPricing from "./TierPricing";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,7 @@ export default async function PricingPage() {
       origin={catalog.origin}
       note={catalog.note}
     >
+      <CreditPrice price={catalog.data.creditPrice} />
       <TierPricing catalog={catalog.data} />
       <p className="note">
         New here? The go-live rail on the{" "}

@@ -305,6 +305,11 @@ export const setModelRate = (body: unknown, d?: Deps) =>
 export const setTierRate = (body: unknown, d?: Deps) =>
   callConsole("/catalog/tier-rates", { method: "POST", body }, d ?? {});
 
+// The credit's own rupee price (017) — the other half of H-42. Admin plus
+// an elevation window; billing never reads what it writes.
+export const setCreditPrice = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/credit-price", { method: "POST", body }, d ?? {});
+
 // What a model IS (migration 012). ⚠️ The only catalog write that is an UPSERT
 // rather than an insert, and the only one gated at `editor` without an
 // elevation window — a context window is a fact about the world, not a

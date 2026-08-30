@@ -131,7 +131,11 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
         boundJobs.length === 0
           ? "info"
           : boundUndecided.length === 0
-            ? "done"
+            // Tier rates alone are half the answer: until the credit has
+            // its rupee price, a bank transfer has no official conversion.
+            ? cat.creditPrice
+              ? "done"
+              : "partial"
             : decidedTier.size === 0
               ? "todo"
               : "partial",
@@ -141,8 +145,12 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
             "after step 3."
           : boundUndecided.length === 0
             ? `Every tier job a customer can call has a decided price ` +
-              `(${decidedTier.size} priced or absorbed). A failover changes ` +
-              "our cost, never theirs (D67)."
+              `(${decidedTier.size} priced or absorbed). ` +
+              (cat.creditPrice
+                ? "A failover changes our cost, never theirs (D67)."
+                : "One gap: the credit itself has no rupee price - save " +
+                  "it on the Pricing page (H-42), or a bank transfer has " +
+                  "no official credit conversion.")
             : `${boundUndecided.length} bound tier ${
                 boundUndecided.length === 1 ? "job" : "jobs"
               } will answer customers and bill NOTHING — ` +
@@ -151,8 +159,8 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
                 .map((j) => `${j.tier} (${j.task})`)
                 .join(", ") +
               `${boundUndecided.length > 3 ? "…" : ""}. Price them, or mark ` +
-              "them absorbed on purpose. What a credit costs in rupees is a " +
-              "separate owner decision (H-42).",
+              "them absorbed on purpose. What a credit costs in rupees is " +
+              "saved on the same page (H-42).",
       href: "/pricing",
       linkText: "Price the tiers",
     },

@@ -1701,6 +1701,14 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "FROM tier_rate_card WHERE effective_from <= now() "
                 "ORDER BY tier, task, effective_from DESC"))
         ]
+        # The credit's own price (017) — what one credit SELLS for, in
+        # rupees, plus the planning rate margins convert dollars with.
+        # ⚠️ Billing never reads this: a call bills CREDITS and the tier
+        # card owns how many. This row prices the credits themselves.
+        price_row = conn.execute(text(
+            "SELECT inr_per_credit, usd_to_inr, effective_from "
+            "FROM credit_price WHERE effective_from <= now() "
+            "ORDER BY effective_from DESC LIMIT 1")).fetchone()
         # Failovers that actually happened (013, slice 12's read half). A
         # served_rank above 1 is a customer request the primary did not
         # answer — the one durable proof a chain earns its keep. Aggregated
@@ -1785,6 +1793,12 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "rates": rates,
         "tier_registry": tier_registry,
         "tier_rates": tier_rates,
+        "credit_price": None if price_row is None else {
+            # ⚠️ Money as STRINGS, same rule as every price on this wire.
+            "inr_per_credit": str(price_row[0]),
+            "usd_to_inr": str(price_row[1]),
+            "effective_from": _iso(price_row[2]),
+        },
         "failovers": failovers,
         "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
         "unserved": catalog.unserved_bindings(cap_pairs, bind_pairs),
@@ -2043,6 +2057,58 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
                actor=staff.actor)
     return {"tier": req.tier, "task": req.task,
             "pricing_mode": req.pricing_mode}
+
+
+class CreditPriceRequest(BaseModel):
+    """What one credit sells for — the other half of H-42 (migration 017)."""
+
+    inr_per_credit: Decimal
+    #: INR per USD — the PLANNING rate margins convert vendor bills with,
+    #: not a live FX feed. Saved so every operator reads the same margins.
+    usd_to_inr: Decimal
+    #: When the price takes effect. NULL means now. Future-dating a price
+    #: change is the mechanism for "new price from the 1st".
+    effective_from: datetime | None = None
+
+
+@app.post("/catalog/credit-price")
+def set_credit_price(req: CreditPriceRequest,
+                     staff: Operator) -> dict[str, Any]:
+    """Price the credit itself. **INSERT, never UPDATE** — history stays.
+
+    🔴 **The NUMBER is the owner's commercial act (H-42)**; this route is the
+    mechanism, and building it prices nothing — migration 017 seeds no row.
+
+    🔴 **Billing never reads what this writes.** A call bills credits; the
+    tier card (D67) owns how many. This price sells the credits themselves:
+    a bank transfer of Rs N buys N / inr_per_credit credits, granted on the
+    customer's page. The fence is test_customer_console_credit_price.py::
+    test_billing_never_reads_the_credit_price.
+
+    ⚠️ Bounds mirror the table's own CHECK so the operator reads a named
+    refusal instead of an IntegrityError's stack trace.
+    """
+    for name, v in (("inr_per_credit", req.inr_per_credit),
+                    ("usd_to_inr", req.usd_to_inr)):
+        if not v.is_finite() or v <= 0 or v > 100_000:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} must be a positive number up to 100000, "
+                       f"got {v}")
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("INSERT INTO credit_price (inr_per_credit, usd_to_inr, "
+                 "effective_from) "
+                 "VALUES (:p, :fx, COALESCE(:eff, now()))"),
+            {"p": req.inr_per_credit, "fx": req.usd_to_inr,
+             "eff": req.effective_from},
+        )
+        _audit(conn, None, "catalog.credit_price",
+               {"inr_per_credit": str(req.inr_per_credit),
+                "usd_to_inr": str(req.usd_to_inr)},
+               actor=staff.actor)
+    return {"inr_per_credit": str(req.inr_per_credit),
+            "usd_to_inr": str(req.usd_to_inr)}
 
 
 def _task_exists(conn, task: str) -> bool:

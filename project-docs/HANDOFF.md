@@ -812,10 +812,13 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** on the Console database,
   `SELECT count(*) FROM tier_rate_card WHERE pricing_mode = 'priced';` → `0` means the
   card is still unpriced and nothing draws credits down. Then
+  `SELECT count(*) FROM credit_price;` → `0` means the credit itself has no
+  rupee price, so a bank transfer has no official conversion. Then
   `env | grep -c CUSTOMER_CONSOLE_SPEND_GATE` on the box.
   *(D67, 2026-08-30: the card billing reads is `tier_rate_card`, keyed on
-  the tier. `model_rate_card` is read-only history. The console's /tiers
-  page sets the price and shows the margin live.)*
+  the tier. `model_rate_card` is read-only history. The console's /pricing
+  page sets both numbers and shows the margin live. Migration `017` added
+  `credit_price` for the rupee side.)*
 - **Why:** Credit **assignment** works end to end already (§6B.1) — but a granted credit
   is currently a number that nothing consumes, because the shipped rate card is **all
   zero** and `test_the_rate_card_ships_unpriced` refuses a priced ladder by design.

@@ -435,6 +435,10 @@ export const SAMPLE_CATALOG: AiCatalog = {
   failovers: FAILOVERS,
   feed: FEED,
   tierRates: TIER_RATES,
+  creditPrice: {
+    inrPerCredit: "1", usdToInr: "88",
+    effectiveFrom: "2026-08-20T00:00:00Z",
+  },
 };
 
 /** What the backend still owes each screen, in an operator's words.

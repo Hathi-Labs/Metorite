@@ -1,13 +1,12 @@
 // Pricing arithmetic — margins, suggestions, and the honesty rules for both.
 //
-// 🔴 **THERE IS NO CREDIT PRICE IN THIS SYSTEM** (`analytics.py` says the same,
-// and H-42 is the owner's act that will change it). `launch_surface.md` §4
-// sells "₹500/user/month + AI credits" and never says what a credit costs, so
-// nothing stored anywhere can convert credits to money. Everything here
-// therefore runs on TWO ASSUMPTIONS THE OPERATOR TYPES IN — rupees per credit
-// and rupees per dollar — which live in component state, are labelled as
-// assumptions on the page, and are STORED NOWHERE. `pricing.test.ts` fences
-// that this module never touches storage.
+// 🔴 **The credit's REAL price lives in `credit_price` (migration 017),
+// saved from the Pricing page — H-42's mechanism.** This module still runs
+// on ASSUMPTIONS handed to it: the page seeds them from the saved price
+// when one exists, and the operator can overtype them to explore a
+// what-if. The module itself touches no storage and no network
+// (`pricing.test.ts` fences it), so a what-if never becomes a fact by
+// accident — saving the fact is the CreditPrice panel's explicit POST.
 //
 // ⚠️ **Every function answers null before it guesses.** A margin computed from
 // a missing vendor price, a zero credit price, or an unparsable number is not
@@ -15,7 +14,7 @@
 //
 // ⚠️ Units, written once so nobody re-derives them wrong:
 //   vendor price   USD per 1,000,000 tokens   (model_profile, "we pay")
-//   rate card      credits per 1,000 tokens   (model_rate_card, "we charge")
+//   rate card      credits per 1,000 tokens   (tier_rate_card, "we charge")
 //   assumptions    ₹ per credit · ₹ per USD
 
 /** The two numbers the operator asserts. Both must be positive to be usable. */

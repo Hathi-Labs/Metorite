@@ -7856,7 +7856,7 @@ shows every capability we intend to sell, empty slots included.
 | `resolve_tier_rate` + `_rate_completion` | Console | The meter rates the TIER. `served_rank` still records the model |
 | `POST /catalog/tier-rates` | Console | The write. Admin plus an elevation window |
 | `POST /catalog/rates` | Console | **410.** The model card is read-only history (R6 keeps the table) |
-| `/tiers` pricing panel | operator console | Set a price, see the margin against the chain's first model |
+| `/pricing` cockpit | operator console | Set a price, see the margin against the chain's first model. Moved off `/tiers` 2026-08-30 |
 | `tier_catalog.task` | migration `016` | D68: the tier's ONE kind of job. Binding and rate writes refuse a mismatch |
 | The grouped board | operator console | Chat bands, then one tier per capability. No job dropdown - the tier's name answers it |
 
@@ -7867,6 +7867,29 @@ row. A future `effective_from` does not bill until its date arrives.
 **Verification:** `uv run pytest tests/unit/test_customer_console_tier_pricing.py`
 against a real Postgres (R8). Frontend: `npx vitest run` in
 `workbench/operator_console`.
+
+### 6A.13 The credit's own price (migration `017`, the second half of H-42)
+
+Customers buy credits in rupees. Calls burn credits per the tier card
+(§6A.12). Before `017` the rupee side lived nowhere, so each operator
+typed their own conversion and read different margins. The `credit_price`
+table is the single saved answer.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `credit_price` | migration `017` | One ruling row: `inr_per_credit`, plus the `usd_to_inr` planning rate. INSERT-only |
+| `POST /catalog/credit-price` | Console | The write. Admin plus an elevation window. The migration seeds no row |
+| `GET /catalog/models` | Console | Carries the ruling row as `credit_price`, money as strings |
+| "What a credit costs" panel | operator console | `/pricing` shows the frame, seeds the margin cockpit, converts a transfer |
+
+Two rules bind it. **Billing never reads the table** - a call bills
+credits, and the tier card owns how many. The fence is
+`test_customer_console_credit_price.py::test_billing_never_reads_the_credit_price`.
+And the number stays the owner's act (H-42), so the migration seeds
+nothing.
+
+**Verification:** `uv run pytest tests/unit/test_customer_console_credit_price.py`
+against a real Postgres (R8).
 
 ### Summary — what this means for starting work
 

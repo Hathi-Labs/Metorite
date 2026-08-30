@@ -7,11 +7,11 @@
 // The customer buys a TIER; the model is our supply. /tiers answers "what
 // serves"; this page answers "what do we charge, and what do we keep".
 //
-// ⚠️ **The two assumptions are typed in, used for arithmetic, and STORED
-// NOWHERE.** There is no credit price in this system (H-42 is the owner's
-// commercial act), so margins shown here run on the operator's own ₹/credit
-// and ₹/$ figures. They live in component state, die on reload, never reach a
-// fetch body, and the page says so beside them. `pricing.test.ts` fences it.
+// ⚠️ **The two assumption boxes seed from the SAVED credit price (017)
+// and then belong to the operator.** Overtyping them is a what-if:
+// component state, dead on reload, never in a fetch body —
+// `pricing.test.ts` fences it. Saving a new FACT is the CreditPrice
+// panel's explicit POST, never a side effect of exploring here.
 //
 // ⚠️ **Margin is judged against the PRIMARY model of the chain.** The tier's
 // price holds while a failover serves a different model, so the margin on a
@@ -42,12 +42,18 @@ function marginTone(f: number | null): Tone {
   return "ok";
 }
 
+/** "1.500000" → "1.5" — the wire is exact, the input box is for humans. */
+function seed(s: string | undefined): string {
+  return (s ?? "").replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
 export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
-  const { tiers, tierRates, tasks, models } = catalog;
+  const { tiers, tierRates, tasks, models, creditPrice } = catalog;
   // Open by default: on its own page, the price table IS the page.
   const [open, setOpen] = useState(true);
-  const [inrPerCredit, setInrPerCredit] = useState("");
-  const [inrPerUsd, setInrPerUsd] = useState("");
+  const [inrPerCredit, setInrPerCredit] = useState(
+    seed(creditPrice?.inrPerCredit));
+  const [inrPerUsd, setInrPerUsd] = useState(seed(creditPrice?.usdToInr));
 
   // The price form. D68: the tier decides its ONE job — no job picker.
   const [formOpen, setFormOpen] = useState(false);
@@ -183,9 +189,12 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
           />
         </label>
         <span className="muted small">
-          Used only for the margins on this page. Stored nowhere, sent
-          nowhere — the real credit price is a separate commercial decision
-          (H-42).
+          {creditPrice
+            ? "Seeded from the saved credit price. Overtyping is a " +
+              "what-if: it moves the margins on this page and nothing else."
+            : "No credit price is saved yet (H-42) — save one above. " +
+              "Until then these hand-typed figures drive the margins, " +
+              "and they are stored nowhere."}
         </span>
       </div>
 
