@@ -1199,6 +1199,22 @@ def operator_sign_out(staff: Operator) -> dict[str, Any]:
     return {"revoked": True}
 
 
+@app.get("/operators/session")
+def read_operator_session(staff: Operator) -> dict[str, Any]:
+    """Who is signed in here, and as what role?
+
+    The sidebar's identity row shows the answer, so an operator always
+    knows which name their next write is audited under (§5) and which
+    matrix rank judges it. **The break-glass token names NOBODY** — it
+    carries no person and no role, and inventing either here would teach
+    the team to trust a name the audit log cannot back. The surface
+    renders nothing for it, the elevation control's own discipline.
+    """
+    if not staff.is_session:
+        return {"method": "breakglass", "actor": None, "role": None}
+    return {"method": "session", "actor": staff.actor, "role": staff.role}
+
+
 @app.post("/operators/elevate")
 def open_elevation(req: ElevateRequest, staff: Operator) -> dict[str, Any]:
     """Open an elevation window for the CALLING operator.
