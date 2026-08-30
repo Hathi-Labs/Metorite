@@ -7,8 +7,10 @@ import {
   type OrgList,
   type OrgRow,
 } from "@/lib/format";
+import { readAiCatalog } from "@/lib/read";
 import { rosterTotals } from "@/lib/roster";
 import CustomerTable from "./CustomerTable";
+import GoLiveRail from "./GoLiveRail";
 import NewCustomer from "./NewCustomer";
 import Header from "./Header";
 
@@ -67,6 +69,11 @@ export default async function CustomersPage() {
   // collapsed section at the bottom.
   const { roster: rows, purged } = partitionRoster(all);
 
+  // The go-live rail judges the AI pipeline from the same read its pages
+  // use. Its origin note is not repeated here — the rail is orientation, and
+  // the sample banner belongs to the pages that show sample DATA.
+  const aiCatalog = await readAiCatalog({ authToken: gate.authToken });
+
   const totals = rosterTotals(rows, new Date());
 
   return (
@@ -84,6 +91,8 @@ export default async function CustomersPage() {
       </div>
 
       {error && <div className="banner">{error}</div>}
+
+      <GoLiveRail catalog={aiCatalog.data} />
 
       {!error && rows.length > 0 && (
         <div className="stats">

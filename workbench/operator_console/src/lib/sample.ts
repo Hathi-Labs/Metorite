@@ -245,19 +245,16 @@ const TIERS: Tier[] = [
 
 const FAILOVERS: FailoverEvent[] = [
   {
-    at: "2026-08-29T04:12:00Z", tier: "fast", task: "chat",
-    from: "anthropic/claude-haiku-4", to: "gemini/gemini-2.5-flash",
-    reason: "529 overloaded", requests: 412,
+    day: "2026-08-29", tier: "fast", task: "chat",
+    model: "gemini/gemini-2.5-flash", rank: 2, requests: 412,
   },
   {
-    at: "2026-08-28T19:40:00Z", tier: "media", task: "transcribe",
-    from: "groq/whisper-large-v3-turbo", to: "assemblyai/universal-2",
-    reason: "401 unauthorized", requests: 27,
+    day: "2026-08-28", tier: "media", task: "transcribe",
+    model: "assemblyai/universal-2", rank: 2, requests: 27,
   },
   {
-    at: "2026-08-28T19:38:00Z", tier: "powerful", task: "chat",
-    from: "anthropic/claude-opus-4", to: null,
-    reason: "429 rate limited, and no backup is set", requests: 9,
+    day: "2026-08-27", tier: "fast", task: "chat",
+    model: "groq/llama-3.3-70b", rank: 3, requests: 3,
   },
 ];
 
@@ -317,12 +314,14 @@ export const OWED = {
     "reasoning chips come from `model_profile` (migration 012) — a model with " +
     "no profile row yet shows a dash, which is true rather than guessed.",
   tiers:
-    "Ordered fallback needs a `rank` column on `tier_binding`, and the Router " +
-    "needs to catch a vendor error and try the next step.",
+    "Chains read and save live, ranks included (migration 011), and the " +
+    "Router walks them (D-AI-6). What is still owed here is nothing — this " +
+    "banner appears only when the Console itself cannot be reached.",
   providers:
-    "Accounts read live. Health needs a probe that nothing runs yet, so every " +
-    "row would say `unknown`.",
+    "Accounts read live. Health needs a probe that nothing runs yet, which " +
+    "is why the cards no longer draw a health chip at all.",
   failovers:
-    "`usage_event` has no column for the step that served, so no failover can " +
-    "be proven.",
+    "Live since migration 013: `served_rank` above 1 on a usage row is the " +
+    "proof. This sample shows the SHAPE of the table; the real one starts " +
+    "empty and that is good news.",
 } as const;

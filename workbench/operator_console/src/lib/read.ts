@@ -53,6 +53,11 @@ type WireCatalog = {
     thinks_first: boolean;
   }[];
   bindings: { tier: string; task: string; model: string; rank?: number }[];
+  // 013, slice 12's read half. Absent from a Console still mid-rollout.
+  failovers?: {
+    day: string; tier: string; task: string; model: string;
+    rank?: number; requests?: number;
+  }[];
   rates: {
     model: string;
     task: string;
@@ -189,7 +194,12 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     creditsPerUnit: r.credits_per_unit,
   }));
 
-  return { tasks: w.tasks, models, rates, tiers, accounts: [], failovers: [] };
+  const failovers = (w.failovers ?? []).map((f) => ({
+    day: (f.day ?? "").slice(0, 10),
+    tier: f.tier, task: f.task, model: f.model,
+    rank: f.rank ?? 2, requests: f.requests ?? 0,
+  }));
+  return { tasks: w.tasks, models, rates, tiers, accounts: [], failovers };
 }
 
 export function accountsFromWire(creds: WireCred[]): ProviderAccount[] {

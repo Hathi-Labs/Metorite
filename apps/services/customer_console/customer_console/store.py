@@ -631,6 +631,29 @@ def usage_by_member(
 USAGE_MAX_DAYS = 365
 
 
+def last_seen_by_org(conn: Connection) -> dict[str, Any]:
+    """Every organization's last AI call, UNCAPPED. slug -> timestamp.
+
+    🔴 **This read exists because the silent-customer flag was computed over
+    the capped page** (H-76's second half). The page sorts by spend and keeps
+    the top rows, so the quiet-but-funded customer A3 exists to find was the
+    exact row the cap removed — silently, above SPEND_PAGE_SIZE
+    organizations. One aggregate over the whole table costs one index scan
+    and cannot lose anybody.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug, MAX(u.created_at) AS last_seen
+            FROM organization o
+            LEFT JOIN usage_event u ON u.organization_id = o.id
+            GROUP BY o.slug
+            """
+        )
+    )
+    return {r.slug: r.last_seen for r in rows}
+
+
 def usage_by_org(
     conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
     limit: int = SPEND_PAGE_SIZE,
@@ -772,6 +795,13 @@ def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
     ⚠️ An organization with no ledger row returns 0, not a missing key. The
     caller renders every organization, and a `KeyError` inside a page that
     lists all of them is a blank page rather than a missing cell.
+
+    🔴 **UNCAPPED, since 2026-08-30 — this carried `LIMIT 100` with no ORDER
+    BY.** Above a hundred organizations, an ARBITRARY hundred had balances and
+    every other org silently read 0: a funded, visible customer could render a
+    zero balance, a None runway and no silent flag, differently on each
+    request. Found by the H-76 test that crowds the page past its cap. A page
+    may be capped; the FACTS a page is judged from may not.
     """
     rows = conn.execute(
         text(
@@ -781,10 +811,8 @@ def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
             FROM organization o
             LEFT JOIN credit_ledger l ON l.organization_id = o.id
             GROUP BY o.id, o.slug
-            LIMIT :lim
             """
-        ),
-        {"lim": SPEND_PAGE_SIZE},
+        )
     )
     return {r.slug: Decimal(r.balance) for r in rows}
 

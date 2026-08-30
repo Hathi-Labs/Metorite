@@ -1627,6 +1627,22 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "FROM model_rate_card WHERE effective_from <= now() "
                 "ORDER BY model, task, effective_from DESC"))
         ]
+        # Failovers that actually happened (013, slice 12's read half). A
+        # served_rank above 1 is a customer request the primary did not
+        # answer — the one durable proof a chain earns its keep. Aggregated
+        # by day so a bad afternoon reads as one row, not four hundred.
+        failovers = [
+            {"day": _iso(r[0]), "tier": r[1], "task": r[2], "model": r[3],
+             "rank": int(r[4]), "requests": int(r[5])}
+            for r in conn.execute(text(
+                "SELECT date_trunc('day', created_at) AS day, tier, task, "
+                "       model, served_rank, COUNT(*) "
+                "FROM usage_event "
+                "WHERE served_rank > 1 "
+                "  AND created_at >= now() - INTERVAL '14 days' "
+                "GROUP BY 1, tier, task, model, served_rank "
+                "ORDER BY 1 DESC, tier, task LIMIT 50"))
+        ]
 
     cap_pairs = [(c["model"], c["task"]) for c in caps]
     bind_pairs = [(b["model"], b["task"]) for b in bindings]
@@ -1636,6 +1652,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "profiles": profiles,
         "bindings": bindings,
         "rates": rates,
+        "failovers": failovers,
         "unbound": catalog.unbound_capabilities(cap_pairs, bind_pairs),
         "unserved": catalog.unserved_bindings(cap_pairs, bind_pairs),
     }
@@ -4336,6 +4353,11 @@ class OrgUsageView(BaseModel):
     total: int = 0
     shown: int = 0
     rows: list[OrgUsageRow]
+    #: 🔴 Silent customers judged over EVERY organization, not the capped
+    #: page (H-76). The page sorts by spend, so the funded-and-quiet customer
+    #: A3 exists to find is the exact row the cap removes. Slugs only — the
+    #: row data for the visible ones is already in `rows`.
+    silentSlugs: list[str] = []
 
 
 class UsageDayRow(BaseModel):
@@ -4367,13 +4389,26 @@ def admin_usage_by_org(
         balances = store.credit_balance_by_org(conn)
         # The burn window is its own read rather than a slice of the first —
         # a 30-day total cannot answer "what is the recent rate".
+        # ⚠️ Uncapped on purpose: this dict is a FACT the page's rows are
+        # judged from, and the 7-day spend ordering does not match the 30-day
+        # one, so a page-sized burn read starves an edge of visible rows of
+        # their runway — the same truncation class as H-76, one seam over.
         burn = {
             r["slug"]: r["credits"]
-            for r in store.usage_by_org(conn, days=analytics.BURN_WINDOW_DAYS)["rows"]
+            for r in store.usage_by_org(
+                conn, days=analytics.BURN_WINDOW_DAYS,
+                limit=max(page["total"], 1),
+            )["rows"]
         }
+        last_seen = store.last_seen_by_org(conn)
 
-    annotated = analytics.annotate_orgs(
-        rows, balances, burn, datetime.now(UTC),
+    now = datetime.now(UTC)
+    annotated = analytics.annotate_orgs(rows, balances, burn, now)
+    # A3 over EVERYBODY. The per-row flag survives for the visible page;
+    # this list is what stops the cap from hiding the quiet-but-funded.
+    silent_slugs = sorted(
+        slug for slug, bal in balances.items()
+        if analytics.is_silent(bal, last_seen.get(slug), now)
     )
     return OrgUsageView(
         windowDays=days,
@@ -4382,6 +4417,7 @@ def admin_usage_by_org(
         # removes. The console says "100 of 563" rather than looking complete.
         total=page["total"],
         shown=page["shown"],
+        silentSlugs=silent_slugs,
         rows=[
             OrgUsageRow(
                 slug=r["slug"], name=r["name"], calls=r["calls"],

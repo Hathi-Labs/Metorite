@@ -43,7 +43,7 @@ function Spark({ days }: { days: UsageDay[] }) {
 }
 
 export default function UsageBoard({
-  rows, days, spikes, total,
+  rows, days, spikes, total, silentSlugs = [],
 }: {
   rows: OrgUsageRow[];
   days: UsageDay[];
@@ -51,6 +51,9 @@ export default function UsageBoard({
   /** How many organizations EXIST. Differs from `rows.length` once the page
    *  is capped, and the ones missing are the quiet ones. */
   total: number;
+  /** 🔴 Silent customers judged over EVERY organization (H-76), so the ones
+   *  the spend-sorted cap pushed off the page still reach a reader. */
+  silentSlugs?: string[];
 }) {
   // ⚠️ Purged organizations arrive from the Console on purpose — their usage
   // rows survive the purge as billing history. The roster already owns the
@@ -61,6 +64,13 @@ export default function UsageBoard({
   const live = rows.filter((r) => !TOMBSTONE.test(r.slug));
   const shown = showPurged ? rows : live;
 
+  // The silent customers the CAP hid: judged over every organization on
+  // the server, minus the ones already visible as rows (their own silent
+  // chip covers those).
+  const hiddenSilent = silentSlugs.filter(
+    (slug) => !rows.some((r) => r.slug === slug) && !TOMBSTONE.test(slug),
+  );
+
   const totals = useMemo(() => {
     const calls = live.reduce((n, r) => n + r.calls, 0);
     const credits = live.reduce((n, r) => n + (Number(r.credits) || 0), 0);
@@ -70,6 +80,16 @@ export default function UsageBoard({
 
   return (
     <>
+      {hiddenSilent.length > 0 && (
+        <div className="banner">
+          {hiddenSilent.length} funded{" "}
+          {hiddenSilent.length === 1 ? "customer is" : "customers are"} silent
+          and below this page&apos;s cap: {hiddenSilent.slice(0, 8).join(", ")}
+          {hiddenSilent.length > 8 ? "…" : ""}. They hold credits and have not
+          called in two weeks — ask why before they leave.
+        </div>
+      )}
+
       <section className="panel">
         <div className="panel-head">
           <h2>Across every customer</h2>
