@@ -26,6 +26,7 @@ import {
   describeScope,
   groupByProvider,
   groupLine,
+  groupStatus,
   healthLabel,
   healthTone,
   isLive,
@@ -151,10 +152,25 @@ describe("the secret never crosses a read path", () => {
     expect(ADMIN).not.toContain("/api/operator/providers?");
   });
 
-  it("the secret field is a password input and clears on success", () => {
-    expect(ADMIN).toContain('type="password"');
+  it("the secret field is MASKED BY DEFAULT and clears on success", () => {
+    // ⚠️ **This test used to read `type="password"` literally, and the field
+    // is now revealable.** The reveal is deliberate — a key typed by hand into
+    // a masked box is unverifiable, and the retry costs a second visit to the
+    // vendor's console. So the property worth pinning moved: not "always
+    // masked", but "masked unless somebody asks, and never asking by default".
+    expect(ADMIN).toContain("useState(false)");
+    expect(ADMIN).toContain('showSecret ? "text" : "password"');
     expect(ADMIN).toContain('setSecret("")');
     expect(ADMIN).toContain('autoComplete="off"');
+  });
+
+  it("🔴 the reveal does not survive the save, or the panel closing", () => {
+    // A revealed key left on screen outlives the reason it was revealed. Both
+    // exits put it back behind the mask before anything else happens.
+    const success = ADMIN.slice(ADMIN.indexOf("A key left in a field survives"));
+    expect(success).toContain("setShowSecret(false)");
+    const closer = ADMIN.slice(ADMIN.indexOf("function close()"));
+    expect(closer.slice(0, 400)).toContain("setShowSecret(false)");
   });
 
   it("the page reads server-side and surfaces a failure", () => {
@@ -166,6 +182,36 @@ describe("the secret never crosses a read path", () => {
     expect(PAGE).toContain("readAccounts");
     expect(READ).toContain("listProviderCreds");
     expect(READ).toContain("The Console answered");
+  });
+
+  it("🔴 the free-text card's sentinel can never be a real vendor", () => {
+    // ⚠️ `openFor` holds a slug, and one value of it means "the card that is
+    // not a vendor". If a vendor could ever be spelled that way, opening its
+    // card would blank the vendor field and the operator would install a key
+    // under whatever they typed next. The Console's own regex rules it out:
+    // a slug must start with [a-z0-9], and this starts with an underscore.
+    const sentinel = ADMIN.match(/const OTHER = "([^"]*)";/)?.[1];
+    expect(sentinel).toBeDefined();
+    expect(sentinel).not.toMatch(/^[a-z0-9][a-z0-9_.-]{1,39}$/);
+    // And it must be plain ASCII. A sentinel written as a leading space once
+    // reached disk as a NUL byte, which git then classified as binary while
+    // every test and the typechecker passed on it.
+    expect(sentinel).toMatch(/^[\x21-\x7e]+$/);
+  });
+
+  it("🔴 declares NO component inside the component", () => {
+    // A component declared in `ProviderAdmin`'s body is a new function object
+    // on every render, so React sees a different element type and REMOUNTS it.
+    // The setup panel holds the secret field: typing one character calls
+    // `setSecret`, re-renders, remounts the panel, and the caret is gone —
+    // making the one field this page exists for unusable, one character at a
+    // time. It typechecks, and every other test here passes on it.
+    const body = ADMIN.slice(ADMIN.indexOf("export default function ProviderAdmin"));
+    expect(body).not.toMatch(/\n {2}function [A-Z]/);
+    // And the two that were inside must be at module scope, where their
+    // identity is stable across renders.
+    expect(ADMIN).toMatch(/\nfunction SetupPanel\(/);
+    expect(ADMIN).toMatch(/\nfunction Card\(/);
   });
 
   it("relays a refusal VERBATIM", () => {
@@ -235,6 +281,63 @@ describe("one card per vendor", () => {
   it("counts the spare rather than saying 'ok'", () => {
     const g = groupByProvider(ROWS).find((x) => x.provider === "anthropic");
     expect(groupLine(g!)).toContain("2 keys");
+  });
+
+  // ── The catalogue, not the receipt ──────────────────────────────────────
+  //
+  // 🔴 The page's whole job is getting the FIRST key installed, and with no
+  // keys it drew nothing at all. These four pin the fix.
+
+  it("🔴 draws a card for a vendor we hold NO key for", () => {
+    const g = groupByProvider([], ["anthropic", "groq"]);
+    expect(g.map((x) => x.provider)).toEqual(["anthropic", "groq"]);
+    expect(g[0].platform).toHaveLength(0);
+  });
+
+  it("🔴 still draws a vendor we hold a key for that is not on the list", () => {
+    // Hiding a live credential because somebody forgot to add its guide is
+    // how a key gets forgotten — and it is our vendor bill.
+    const held = [CRED({ provider: "acme-llm" })];
+    expect(groupByProvider(held, ["anthropic"]).map((x) => x.provider))
+      .toContain("acme-llm");
+  });
+
+  it("lists each vendor ONCE when it is both held and known", () => {
+    const held = [CRED({ provider: "anthropic" })];
+    const names = groupByProvider(held, ["anthropic", "groq"])
+      .map((x) => x.provider);
+    expect(names.filter((n) => n === "anthropic")).toHaveLength(1);
+  });
+
+  it("keeps armed vendors above the ones still to do", () => {
+    const held = [CRED({ provider: "openai" })];
+    expect(groupByProvider(held, ["anthropic", "openai"])[0].provider)
+      .toBe("openai");
+  });
+});
+
+describe("where a vendor stands, in one word", () => {
+  it("🔴 separates 'never set up' from 'we revoked it'", () => {
+    // ⚠️ The second is a decision somebody took. Drawing it as "not set up"
+    // invites the next operator to quietly undo it.
+    const untouched = groupByProvider([], ["mistral"])[0];
+    const dropped = groupByProvider(
+      [CRED({ provider: "mistral", revokedAt: "2026-08-01T00:00:00Z" })],
+    )[0];
+    expect(groupStatus(untouched)).toBe("untouched");
+    expect(groupStatus(dropped)).toBe("dropped");
+    expect(groupLine(untouched)).toBe("Not set up.");
+    expect(groupLine(dropped)).toContain("revoked");
+  });
+
+  it("does not call a BYOK-only vendor armed", () => {
+    const g = groupByProvider([CRED({ provider: "groq", orgSlug: "acme" })])[0];
+    expect(groupStatus(g)).toBe("byok-only");
+  });
+
+  it("calls a vendor with a live platform key armed", () => {
+    expect(groupStatus(groupByProvider([CRED({ provider: "groq" })])[0]))
+      .toBe("armed");
   });
 });
 

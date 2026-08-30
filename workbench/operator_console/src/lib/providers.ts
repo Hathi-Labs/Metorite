@@ -122,9 +122,23 @@ export type ProviderGroup = {
  * call is the one that needs attention, but it is also the one an operator is
  * least likely to be looking for — putting it at the top would bury the
  * working accounts under whatever was abandoned longest ago. The banner above
- * carries the alarm instead. */
-export function groupByProvider(creds: ProviderAccount[]): ProviderGroup[] {
-  const names = [...new Set(creds.map((c) => c.provider))].sort();
+ * carries the alarm instead.
+ *
+ * 🔴 **`include` is what makes the page a CATALOGUE rather than a receipt.**
+ * With no argument this returns only vendors we already hold a key for — which
+ * on a fresh install is nothing at all, so the page that exists to get a key
+ * installed showed an empty state and a row of pills. Passing the known vendor
+ * list draws a card for every vendor whether or not it has a key, so
+ * installing one is a click on the thing you were already looking at. A vendor
+ * in `creds` but not in `include` still appears: we hold its key, and hiding a
+ * live credential because it is not on a list is how a key gets forgotten. */
+export function groupByProvider(
+  creds: ProviderAccount[],
+  include: readonly string[] = [],
+): ProviderGroup[] {
+  const names = [
+    ...new Set([...creds.map((c) => c.provider), ...include]),
+  ].sort();
   const groups = names.map((provider) => {
     const mine = creds.filter((c) => c.provider === provider);
     return {
@@ -161,14 +175,32 @@ export function healthLabel(h: ProviderHealth): string {
   return "never checked";
 }
 
+/** Where one vendor stands, in one word. The filter chips count these.
+ *
+ * ⚠️ **`untouched` and `dropped` are different facts and must not merge.**
+ * A vendor nobody has set up is a to-do. A vendor whose only key is revoked is
+ * a decision somebody took, and drawing it as "not set up" invites the next
+ * operator to quietly undo it. */
+export type GroupStatus = "armed" | "byok-only" | "dropped" | "untouched";
+
+export function groupStatus(g: ProviderGroup): GroupStatus {
+  if (g.platform.length > 0) return "armed";
+  if (g.byok.length > 0) return "byok-only";
+  return g.revoked.length > 0 ? "dropped" : "untouched";
+}
+
 /** What one vendor card says in its header, in one line. */
 export function groupLine(g: ProviderGroup): string {
   if (g.platform.length === 0) {
-    return g.byok.length > 0
-      ? `No account for everyone — ${g.byok.length} organization${
-          g.byok.length === 1 ? "" : "s"
-        } bring their own.`
-      : "No live key. Nothing here can be called.";
+    if (g.byok.length > 0) {
+      return `No account for everyone — ${g.byok.length} organization${
+        g.byok.length === 1 ? "" : "s"
+      } bring their own.`;
+    }
+    // ⚠️ Two different zeroes. See `groupStatus`.
+    return g.revoked.length > 0
+      ? "Every key was revoked. Nothing here can be called."
+      : "Not set up.";
   }
   const spare = g.platform.length - 1;
   const base =

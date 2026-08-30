@@ -92,10 +92,10 @@ const MODELS: CatalogModel[] = [
   M("openai/text-embedding-3-large", "Embedding 3 Large", ["embed"],
     8191, null, 0.13, null,
     "Turns text into vectors for search. Not a chat model."),
-  M("google/gemini-2.5-pro", "Gemini 2.5 Pro", ["chat", "vision", "reasoning"],
+  M("gemini/gemini-2.5-pro", "Gemini 2.5 Pro", ["chat", "vision", "reasoning"],
     1048576, 65536, 1.25, 10,
     "A million-token window. The one to reach for when the input is a whole repository."),
-  M("google/gemini-2.5-flash", "Gemini 2.5 Flash", ["chat", "vision"],
+  M("gemini/gemini-2.5-flash", "Gemini 2.5 Flash", ["chat", "vision"],
     1048576, 65536, 0.3, 2.5,
     "Very cheap for the window it carries. A strong default backup."),
   M("groq/llama-3.3-70b", "Llama 3.3 70B", ["chat"],
@@ -143,7 +143,10 @@ const ACCOUNTS: ProviderAccount[] = [
     health: "ok", lastCheckedAt: "2026-08-29T06:00:00Z", healthNote: null,
   },
   {
-    id: "pa-4", provider: "google", label: null,
+    // ⚠️ `gemini`, not `google`. The Router resolves a vendor as the first
+    // path segment of the model id, and litellm's id for Gemini is `gemini`.
+    // Sample data that models the wrong slug teaches the wrong slug.
+    id: "pa-4", provider: "gemini", label: null,
     apiBase: null, orgSlug: null,
     createdAt: "2026-08-20T15:02:00Z", revokedAt: null,
     health: "unknown", lastCheckedAt: null, healthNote: null,
@@ -182,7 +185,7 @@ const TIERS: Tier[] = [
     jobs: [
       { tier: "fast", task: "chat", chain: [
         { model: "anthropic/claude-haiku-4", rank: 1 },
-        { model: "google/gemini-2.5-flash", rank: 2 },
+        { model: "gemini/gemini-2.5-flash", rank: 2 },
         { model: "openai/gpt-4o-mini", rank: 3 },
       ] },
       { tier: "fast", task: "embed", chain: [
@@ -231,7 +234,7 @@ const TIERS: Tier[] = [
 const FAILOVERS: FailoverEvent[] = [
   {
     at: "2026-08-29T04:12:00Z", tier: "fast", task: "chat",
-    from: "anthropic/claude-haiku-4", to: "google/gemini-2.5-flash",
+    from: "anthropic/claude-haiku-4", to: "gemini/gemini-2.5-flash",
     reason: "529 overloaded", requests: 412,
   },
   {
