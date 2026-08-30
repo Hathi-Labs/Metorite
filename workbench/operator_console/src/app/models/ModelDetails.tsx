@@ -21,12 +21,19 @@ import { useState } from "react";
 import type { CatalogModel, FeedModel } from "@/lib/contract";
 import { driftFor, prefillFrom } from "@/lib/feed";
 
-/** Blank, or not a number, becomes null. Zero is refused by the database. */
-function numeric(raw: string): number | null {
+/** Blank means UNKNOWN and travels as null. A typed value travels as the
+ *  TRIMMED STRING, verbatim — the wire rule for money ("0.280000" must not
+ *  come back as 0.28) — and pydantic parses it into an exact number. */
+function blankToNull(raw: string): string | null {
   const t = raw.trim();
-  if (!t) return null;
-  const n = Number(t);
-  return Number.isFinite(n) ? n : null;
+  return t === "" ? null : t;
+}
+
+/** Typed but not a number. Refused HERE, loudly: Number() once turned
+ *  "3,50" into null silently, and a green "Saved." un-costed the model. */
+function badNumber(raw: string): boolean {
+  const t = raw.trim();
+  return t !== "" && !Number.isFinite(Number(t));
 }
 
 export default function ModelDetails({
@@ -55,6 +62,21 @@ export default function ModelDetails({
     m.contextWindow !== null || m.inputPer1M !== null || m.description !== "";
 
   async function save() {
+    const boxes: [string, string][] = [
+      ["context window", ctx],
+      ["max output", out],
+      ["$ per 1M in", vin],
+      ["$ per 1M out", vout],
+      ["$ per 1M cached", vcached],
+    ];
+    const bad = boxes.find(([, v]) => badNumber(v));
+    if (bad) {
+      setResult({
+        ok: false,
+        text: `"${bad[1].trim()}" is not a number (${bad[0]}). Fix the box or clear it — blank means unknown.`,
+      });
+      return;
+    }
     setBusy(true);
     setResult(null);
     try {
@@ -64,19 +86,24 @@ export default function ModelDetails({
         body: JSON.stringify({
           model: m.id,
           label: label.trim() || null,
-          context_window: numeric(ctx),
-          max_output: numeric(out),
-          vendor_input_per_1m_usd: numeric(vin),
-          vendor_output_per_1m_usd: numeric(vout),
+          context_window: blankToNull(ctx),
+          max_output: blankToNull(out),
+          vendor_input_per_1m_usd: blankToNull(vin),
+          vendor_output_per_1m_usd: blankToNull(vout),
           // ⚠️ Without this, a cache-hitting call cannot be COSTED at all —
           // the metering write refuses to estimate (013).
-          vendor_cached_input_per_1m_usd: numeric(vcached),
+          vendor_cached_input_per_1m_usd: blankToNull(vcached),
           description: description.trim(),
           reads_images: readsImages,
           thinks_first: thinksFirst,
         }),
       });
       setResult({ ok: res.ok, text: await res.text() });
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. Nothing saved — check the network and try again.",
+      });
     } finally {
       setBusy(false);
     }

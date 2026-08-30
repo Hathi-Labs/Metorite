@@ -65,26 +65,34 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
       if (action) q.set("action", action);
       if (org.trim()) q.set("org_slug", org.trim());
       if (next) q.set("cursor", next);
-      const res = await fetch(`/api/operator/activity?${q.toString()}`);
-      setBusy(false);
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          detail?: string;
+      try {
+        const res = await fetch(`/api/operator/activity?${q.toString()}`);
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as {
+            detail?: string;
+            error?: string;
+          };
+          setError(
+            res.status === 500
+              ? "The Console answered 500. On a newly deployed box this is " +
+                "usually migration 009 not applied yet (H-64)."
+              // The BFF gate speaks in `error`, the Console in `detail` —
+              // read both, or a signed-out 401 loses its one useful sentence.
+              : body.detail ?? body.error ?? `The Console answered ${res.status}.`,
+          );
+          return;
+        }
+        const body = (await res.json()) as {
+          activity: Row[];
+          next_cursor: string | null;
         };
-        setError(
-          res.status === 500
-            ? "The Console answered 500. On a newly deployed box this is " +
-              "usually migration 009 not applied yet (H-64)."
-            : body.detail ?? `The Console answered ${res.status}.`,
-        );
-        return;
+        setRows((prev) => (append ? [...prev, ...body.activity] : body.activity));
+        setCursor(body.next_cursor);
+      } catch {
+        setError("The Console did not answer — check the network and reload.");
+      } finally {
+        setBusy(false);
       }
-      const body = (await res.json()) as {
-        activity: Row[];
-        next_cursor: string | null;
-      };
-      setRows((prev) => (append ? [...prev, ...body.activity] : body.activity));
-      setCursor(body.next_cursor);
     },
     [actor, action, org],
   );

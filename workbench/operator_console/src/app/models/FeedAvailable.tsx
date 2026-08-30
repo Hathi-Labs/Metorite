@@ -72,6 +72,12 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
         return;
       }
       router.refresh();
+    } catch {
+      setErr(
+        `The Console did not answer while adding ${f.id} — check the ` +
+        "network, then look at its card: the declare may have landed " +
+        "without its facts.",
+      );
     } finally {
       setBusy(null);
     }

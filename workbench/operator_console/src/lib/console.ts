@@ -79,6 +79,21 @@ export function sessionHeaders(
   };
 }
 
+// The sign-in exchange's headers: NO credential of ours at all. The token in
+// the BODY is the whole proof, and the Console's exchange route ignores an
+// Authorization header. Requiring the shared operator token here once made
+// the documented end-state (H-56 deletes that token) a total lockout — every
+// sign-in would 503 on a box configured exactly as the runbook says.
+function bareHeaders(env: ConsoleEnv): Record<string, string> {
+  if (!env.url) {
+    throw new ConsoleUnconfigured(
+      "CUSTOMER_CONSOLE_URL must be set server-side before the operator " +
+        "console can reach the Console",
+    );
+  }
+  return { "Content-Type": "application/json" };
+}
+
 // ⚠️ **CP-12g: whose credential goes on the wire.**
 //
 // `authToken` is the SIGNED-IN OPERATOR's `cc_sess_` session. When it is
@@ -95,12 +110,20 @@ export function sessionHeaders(
 export async function callConsole(
   path: string,
   init: { method: string; body?: unknown },
-  deps: { env?: ConsoleEnv; fetchImpl?: FetchLike; authToken?: string } = {},
+  deps: {
+    env?: ConsoleEnv;
+    fetchImpl?: FetchLike;
+    authToken?: string;
+    /** The sign-in exchange only: no credential of ours at all. */
+    bare?: boolean;
+  } = {},
 ): Promise<ConsoleResult> {
   const env = deps.env ?? readConsoleEnv();
-  const headers = deps.authToken
-    ? sessionHeaders(env, deps.authToken)
-    : operatorHeaders(env);
+  const headers = deps.bare
+    ? bareHeaders(env)
+    : deps.authToken
+      ? sessionHeaders(env, deps.authToken)
+      : operatorHeaders(env);
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
   const res = await fetchImpl(`${env.url}${path}`, {
     method: init.method,
@@ -235,14 +258,15 @@ export const revokeKey = (body: unknown, d?: Deps) =>
 
 // ── CP-12: operator identity ────────────────────────────────────────────────
 
-// The sign-in exchange (CP-12f2). ⚠️ This one carries NO credential of ours.
+// The sign-in exchange (CP-12f2). ⚠️ This one carries NO credential of ours —
+// `bare`, so it neither requires nor transmits the shared operator token.
 // The Supabase access token in the body is the whole of the proof, and the
 // Console verifies it with the issuer before it mints anything.
 export const exchangeSession = (accessToken: string, d?: Deps) =>
   callConsole(
     "/operators/session",
     { method: "POST", body: { access_token: accessToken } },
-    d ?? {},
+    { ...(d ?? {}), bare: true },
   );
 
 export const revokeSession = (d?: Deps) =>

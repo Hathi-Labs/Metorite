@@ -96,7 +96,12 @@ export default function Header() {
     // On the session path this REVOKES the row server-side before the cookie
     // is cleared, so the token is dead everywhere rather than just forgotten
     // by this browser.
-    await fetch("/api/operator/session", { method: "DELETE" });
+    try {
+      await fetch("/api/operator/session", { method: "DELETE" });
+    } catch {
+      // The revoke did not reach the server — still leave. /login's gate
+      // treats the cookie as dead, and the row expires on its own clock.
+    }
     window.location.href = "/login";
   }
 

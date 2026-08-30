@@ -115,5 +115,16 @@ export function marginLabelPct(fraction: number | null): string {
  * of zero reads as "free is fine". */
 export function roundCredits(value: number | null): string {
   if (value === null || !Number.isFinite(value) || value <= 0) return "";
-  return value.toPrecision(4).replace(/\.?0+$/, "");
+  // Above 1e15 a float stops carrying exact digits, and no real credit
+  // price lives there — no suggestion beats a fabricated one.
+  if (value >= 1e15) return "";
+  // ⚠️ Never strip zeros from the string: "1000" has no dot, and a regex
+  // that eats its zeros turns a 1000-credit price into 1 (shipped bug,
+  // caught 2026-08-30). Number() drops trailing decimals exactly.
+  const n = Number(value.toPrecision(4));
+  const s = n.toString();
+  if (!s.includes("e")) return s;
+  // DeepSeek-class tiny values: expand the exponent by hand — the wire
+  // and the operator both read plain decimals, never "8e-7".
+  return n.toFixed(20).replace(/0+$/, "").replace(/\.$/, "");
 }

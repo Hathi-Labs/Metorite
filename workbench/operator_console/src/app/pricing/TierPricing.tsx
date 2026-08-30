@@ -16,6 +16,7 @@
 // model (D67): a failover moves our cost, never the customer's price.
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type { AiCatalog } from "@/lib/contract";
 import { savedAssumptions } from "@/lib/priceboard";
@@ -31,6 +32,7 @@ import {
 
 export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   const { tiers, tasks, models, creditPrice } = catalog;
+  const router = useRouter();
 
   // The price form. D68: the tier decides its ONE job — no job picker.
   const [formOpen, setFormOpen] = useState(false);
@@ -82,6 +84,25 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
   }
 
   async function save() {
+    // ⚠️ A blank box is NOT a zero. This form once coerced every blank to
+    // "0", so a skipped cached leg silently billed cache hits free — the
+    // opposite of the "unknown never bills as free" rule. A priced card
+    // must state every leg; typing 0 is the explicit free-on-purpose act.
+    if (mode === "priced") {
+      const blank = tokenPriced
+        ? [inP, outP, cachedP].some((v) => !v.trim())
+        : !perUnit.trim();
+      if (blank) {
+        setResult({
+          ok: false,
+          text:
+            "Every box needs a number. Type 0 to bill that leg free on " +
+            "purpose — a blank box is not a decision. Cached leg unknown? " +
+            "Charge the full input rate.",
+        });
+        return;
+      }
+    }
     setBusy(true);
     setResult(null);
     try {
@@ -105,6 +126,14 @@ export default function TierPricing({ catalog }: { catalog: AiCatalog }) {
         text: res.ok
           ? "Priced. The card takes effect now; past calls stay on the card they were rated by."
           : `The Console refused: ${text}`,
+      });
+      // The price list and the method board above read this card — a save
+      // that claims "takes effect now" must show its effect now.
+      if (res.ok) router.refresh();
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. The price did not save — check the network and try again.",
       });
     } finally {
       setBusy(false);

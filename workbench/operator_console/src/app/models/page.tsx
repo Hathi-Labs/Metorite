@@ -55,7 +55,11 @@ export default async function ModelsPage() {
           page. This page is the SUPPLY side: what exists, what it can do,
           what WE pay. */}
       <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} armed={armed} />
-      <DeclareModel tasks={catalog.data.tasks} accounts={catalog.data.accounts} />
+      <DeclareModel
+        tasks={catalog.data.tasks}
+        accounts={catalog.data.accounts}
+        accountsKnown={catalog.data.accountsKnown}
+      />
     </Shell>
   );
 }

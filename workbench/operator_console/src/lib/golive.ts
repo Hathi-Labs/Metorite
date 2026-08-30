@@ -75,9 +75,15 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
       key: "keys",
       n: 1,
       title: "Install a vendor key",
-      state: armed.length > 0 ? "done" : "todo",
-      detail:
-        armed.length > 0
+      state: cat.accountsKnown && armed.length > 0 ? "done" : "todo",
+      // ⚠️ A failed credential READ is not the fact "no credential exists".
+      // Asserting "every AI call fails" from absent evidence sent operators
+      // hunting a fault that may not exist — say UNKNOWN and point at the
+      // refusal instead.
+      detail: !cat.accountsKnown
+        ? "The credential list did not load, so whether vendor keys are " +
+          "armed is UNKNOWN — open Providers to see the Console's refusal."
+        : armed.length > 0
           ? `Armed for ${armed.join(", ")}. Every customer without their own ` +
             "key runs on these accounts."
           : "No platform credential is installed, so every AI call fails. " +

@@ -61,6 +61,11 @@ export default function CreditPrice({ price }: { price: Price | null }) {
           : `The Console refused: ${text}`,
       });
       if (res.ok) router.refresh();
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. The price did not save — check the network and try again.",
+      });
     } finally {
       setBusy(false);
     }

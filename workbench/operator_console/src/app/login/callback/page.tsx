@@ -45,27 +45,36 @@ export default function CallbackPage() {
     }
 
     void (async () => {
-      const res = await fetch("/api/operator/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ access_token: token }),
-      });
-      if (res.ok) {
-        window.location.href = "/";
-        return;
+      try {
+        const res = await fetch("/api/operator/session", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ access_token: token }),
+        });
+        if (res.ok) {
+          window.location.href = "/";
+          return;
+        }
+        // The Console's own refusal, relayed verbatim by the BFF. 403 means the
+        // person is not on the registry, which is a different problem from a
+        // token we could not verify, and the message must say which.
+        const body = (await res.json().catch(() => ({}))) as {
+          detail?: string;
+          error?: string;
+        };
+        const detail =
+          res.status === 403
+            ? "You are not on the operator registry. Ask an admin to add you."
+            : body.detail ?? body.error ?? `Sign-in failed (${res.status}).`;
+        window.location.href = `/login?error=${encodeURIComponent(detail)}`;
+      } catch {
+        // A dropped exchange must not strand "Signing you in…" forever.
+        window.location.href =
+          "/login?error=" +
+          encodeURIComponent(
+            "The sign-in exchange did not complete — check the network and try again.",
+          );
       }
-      // The Console's own refusal, relayed verbatim by the BFF. 403 means the
-      // person is not on the registry, which is a different problem from a
-      // token we could not verify, and the message must say which.
-      const body = (await res.json().catch(() => ({}))) as {
-        detail?: string;
-        error?: string;
-      };
-      const detail =
-        res.status === 403
-          ? "You are not on the operator registry. Ask an admin to add you."
-          : body.detail ?? body.error ?? `Sign-in failed (${res.status}).`;
-      window.location.href = `/login?error=${encodeURIComponent(detail)}`;
     })();
   }, []);
 

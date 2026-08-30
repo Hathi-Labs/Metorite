@@ -223,3 +223,17 @@ describe("the wiring fences", () => {
     }
   });
 });
+
+describe("ModelDetails posts the wire's own strings", () => {
+  it("🔴 typed vendor prices travel as trimmed STRINGS, garbage is refused", () => {
+    // The feed's one-click path posts the feed's strings verbatim; the
+    // hand-edit path once posted Number() floats and silently nulled
+    // "3,50" under a green "Saved." One wire, one rule.
+    const src = readFileSync(
+      join(__dirname, "..", "app", "models", "ModelDetails.tsx"), "utf8");
+    expect(src).toContain("vendor_input_per_1m_usd: blankToNull(vin)");
+    expect(src).toContain("vendor_cached_input_per_1m_usd: blankToNull(vcached)");
+    expect(src).not.toMatch(/function numeric\(/);
+    expect(src).toContain("badNumber");
+  });
+});

@@ -291,6 +291,11 @@ export type AiCatalog = {
   rates: ModelRate[];
   tiers: Tier[];
   accounts: ProviderAccount[];
+  /** ⚠️ False when the credential read FAILED while the catalog read worked.
+   *  `accounts` is then `[]` by absence of evidence, not by fact — and an
+   *  empty list must not be presented as "no credential is installed". The
+   *  page banner and the go-live rail read this and say UNKNOWN instead. */
+  accountsKnown: boolean;
   failovers: FailoverEvent[];
   feed: VendorFeed;
   /** What customers pay, per (tier, job) — D67. The card billing reads. */
@@ -300,6 +305,7 @@ export type AiCatalog = {
 };
 
 export const EMPTY_CATALOG: AiCatalog = {
-  tasks: [], models: [], rates: [], tiers: [], accounts: [], failovers: [],
-  feed: EMPTY_FEED, tierRates: [], creditPrice: null,
+  tasks: [], models: [], rates: [], tiers: [], accounts: [],
+  accountsKnown: true, failovers: [], feed: EMPTY_FEED, tierRates: [],
+  creditPrice: null,
 };

@@ -432,6 +432,7 @@ export const SAMPLE_CATALOG: AiCatalog = {
   rates: RATES,
   tiers: TIERS,
   accounts: ACCOUNTS,
+  accountsKnown: true,
   failovers: FAILOVERS,
   feed: FEED,
   tierRates: TIER_RATES,

@@ -24,13 +24,24 @@ import {
 type Result = { ok: boolean; text: string } | null;
 
 async function post(path: string, body: unknown): Promise<Result> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { ok: res.ok, text };
+  // ⚠️ This helper must not THROW. Every caller sets a busy flag before the
+  // await and clears it after — a rejected fetch used to skip the clear and
+  // leave the button on "…ing…" forever, with no message. A network drop is
+  // an answer like any other: ok false, and the operator reads why.
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { ok: res.ok, text };
+  } catch {
+    return {
+      ok: false,
+      text: "no answer — the network dropped before the Console replied. Nothing was changed for certain; reload and check before retrying.",
+    };
+  }
 }
 
 // A refusal is relayed VERBATIM (the Console is the authority); the framing
@@ -451,8 +462,9 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
   // misread the export window exists to prevent.
   const CONFIRMS: Record<string, string> = {
     suspended:
-      `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused ` +
-      `until you resume them. Their data is untouched.`,
+      `Suspend ${slug}?\n\nSign-in KEEPS working so they can pay. AI and ` +
+      `seat changes are locked until you resume them. Their data is ` +
+      `untouched.`,
     cancelled:
       `Cancel ${slug}?\n\nThis opens their export window: sign-in keeps ` +
       `working so they can export, features are locked, and NO data is ` +
@@ -483,8 +495,9 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
       <h2 style={{ marginTop: 0 }}>Access</h2>
       <p className="muted">
         Whether this customer&apos;s account is live. Activating takes them off
-        trial; suspending blocks every sign-in (e.g. non-payment). Their data is
-        kept either way, and resuming restores access instantly.
+        trial. Suspending (e.g. non-payment) locks AI and seat changes while
+        sign-in keeps working, so they can still pay. Their data is kept
+        either way, and resuming restores access instantly.
       </p>
       <p className="muted">
         Separate from their subscription — activating a plan records the money
