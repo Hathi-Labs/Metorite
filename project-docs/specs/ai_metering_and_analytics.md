@@ -793,7 +793,7 @@ Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
 **Verification.** `uv run pytest tests/unit/test_customer_console_pricing_truth.py -q`.
 The suite is database-gated (R8), so run `bash scripts/dev_db.sh` first.
 
-### 8.4 The label seam (slice 3, C6) — SPEC ONLY, 2026-08-30
+### 8.4 The label seam (slice 3, C6) — BACKEND BUILT 2026-08-31. Clause 6 stays SPEC ONLY
 
 **The table is built. The seam is not.** Every default here is an
 **agent-proposed answer the owner may overrule**, which is the D16/D17

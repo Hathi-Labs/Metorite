@@ -72,8 +72,12 @@ type WireCatalog = {
   }[];
   // 015 — the tier registry (the product slate) and what customers pay
   // per (tier, task). Absent from a Console still mid-rollout.
+  // `customer_visible` arrived with 021. Optional for the same reason the
+  // whole block is: a Console that predates it sends nothing, and the column
+  // it stands for defaults to TRUE.
   tier_registry?: { slug: string; label: string; blurb: string;
-    sort_order: number; task?: string | null }[];
+    sort_order: number; task?: string | null;
+    customer_visible?: boolean }[];
   tier_rates?: {
     tier: string;
     task: string;
@@ -228,6 +232,10 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         jobs: byTier.get(t.slug) ?? [],
         registered: true,
         task: t.task ?? null,
+        // Absent means the Console predates 021, and the column it stands
+        // for defaults to TRUE. Reading absent as "hidden" would make the
+        // board report every tier as hidden during a rollout.
+        customerVisible: t.customer_visible ?? true,
       })),
     ...[...byTier.keys()]
       .filter((slug) => !registered.has(slug))
@@ -239,6 +247,8 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         jobs: byTier.get(slug) ?? [],
         registered: false,
         task: null,
+        // A ghost has no registry row, so no customer picker can offer it.
+        customerVisible: false,
       })),
   ];
 

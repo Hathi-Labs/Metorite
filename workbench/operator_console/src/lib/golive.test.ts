@@ -97,7 +97,7 @@ describe("step 4 — prices", () => {
     accounts: [ACCOUNT()],
     models: [MODEL({ inputPer1M: 3 })],
     tiers: [{
-      slug: "fast", label: "Fast", blurb: "", registered: true,
+      slug: "fast", label: "Fast", blurb: "", registered: true, customerVisible: true,
       jobs: [{ tier: "fast", task: "chat",
         chain: [{ model: "deepseek/chat", rank: 1 }] }],
     }],

@@ -159,6 +159,27 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     expect(ghost?.registered).toBe(false);
     expect(ghost?.jobs).toHaveLength(1);
     expect(ghost?.task).toBeNull();
+    // A picker cannot offer what the registry does not hold.
+    expect(ghost?.customerVisible).toBe(false);
+  });
+
+  it("carries customer_visible through, and reads absent as TRUE (021)", () => {
+    // The column defaults to TRUE. A Console that predates 021 sends no
+    // field at all, and reading that as "hidden" would report every tier as
+    // hidden for the length of a rollout.
+    const cat = catalogFromWire(WIRE({
+      tier_registry: [
+        { slug: "tier-stt", label: "Speech to text", blurb: "b",
+          sort_order: 70, customer_visible: false },
+        { slug: "tier-fast", label: "Fast", blurb: "", sort_order: 10,
+          customer_visible: true },
+        { slug: "tier-old", label: "Old", blurb: "", sort_order: 20 },
+      ],
+    }));
+    const by = (slug: string) => cat.tiers.find((t) => t.slug === slug);
+    expect(by("tier-stt")?.customerVisible).toBe(false);
+    expect(by("tier-fast")?.customerVisible).toBe(true);
+    expect(by("tier-old")?.customerVisible).toBe(true);
   });
 
   it("maps the tier rates with money as STRINGS", () => {

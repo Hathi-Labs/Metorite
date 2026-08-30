@@ -455,6 +455,12 @@ export default function TierBoard({
                             not in the registry
                           </span>
                         )}
+                        {t.registered && !t.customerVisible && (
+                          <span className={chipClass("neutral")}
+                            title="customer_visible is FALSE, so no customer picker offers this tier. The Router or the app selects it, and usage still records it.">
+                            not in the picker
+                          </span>
+                        )}
                       </header>
                       {t.blurb && <p className="muted small">{t.blurb}</p>}
                       {jobs.length === 0 && (

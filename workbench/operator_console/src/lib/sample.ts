@@ -193,6 +193,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-fast", label: "Fast", registered: true, task: "chat",
     blurb: "Quick answers at the lowest price.",
+    customerVisible: true,
     jobs: [
       { tier: "tier-fast", task: "chat", chain: [
         { model: "anthropic/claude-haiku-4", rank: 1 },
@@ -204,6 +205,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-balanced", label: "Balanced", registered: true, task: "chat",
     blurb: "The everyday setting - good answers, fair price.",
+    customerVisible: true,
     jobs: [
       { tier: "tier-balanced", task: "chat", chain: [
         { model: "anthropic/claude-sonnet-4", rank: 1 },
@@ -217,6 +219,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-powerful", label: "Powerful", registered: true, task: "chat",
     blurb: "The strongest models, for hard problems.",
+    customerVisible: true,
     jobs: [
       { tier: "tier-powerful", task: "chat", chain: [
         { model: "anthropic/claude-opus-4", rank: 1 },
@@ -226,6 +229,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-code", label: "Code", registered: true, task: "chat",
     blurb: "Tuned for writing and fixing software.",
+    customerVisible: true,
     jobs: [
       { tier: "tier-code", task: "chat", chain: [
         { model: "anthropic/claude-sonnet-4", rank: 1 },
@@ -236,11 +240,13 @@ const TIERS: Tier[] = [
   {
     slug: "tier-vision", label: "Vision", registered: true, task: "vision",
     blurb: "Reads and understands images.",
+    customerVisible: false,
     jobs: [],
   },
   {
     slug: "tier-image", label: "Image", registered: true, task: "image",
     blurb: "Makes images from a description.",
+    customerVisible: true,
     jobs: [
       { tier: "tier-image", task: "image", chain: [
         { model: "openai/gpt-image-1", rank: 1 },
@@ -250,6 +256,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-stt", label: "Speech to text", registered: true, task: "transcribe",
     blurb: "Turns audio into text.",
+    customerVisible: false,
     jobs: [
       { tier: "tier-stt", task: "transcribe", chain: [
         { model: "groq/whisper-large-v3-turbo", rank: 1 },
@@ -260,6 +267,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-tts", label: "Text to speech", registered: true, task: "speak",
     blurb: "Reads text aloud.",
+    customerVisible: false,
     jobs: [
       { tier: "tier-tts", task: "speak", chain: [
         { model: "elevenlabs/eleven-turbo-v2", rank: 1 },
@@ -270,6 +278,7 @@ const TIERS: Tier[] = [
   {
     slug: "tier-embed", label: "Search index", registered: true, task: "embed",
     blurb: "Builds the vectors behind search.",
+    customerVisible: false,
     jobs: [
       { tier: "tier-embed", task: "embed", chain: [
         { model: "openai/text-embedding-3-large", rank: 1 },
@@ -281,11 +290,13 @@ const TIERS: Tier[] = [
   {
     slug: "tier-video", label: "Video", registered: true, task: "video",
     blurb: "Makes video from a description.",
+    customerVisible: false,
     jobs: [],
   },
   {
     slug: "tier-music", label: "Music", registered: true, task: "music",
     blurb: "Makes music and sound.",
+    customerVisible: false,
     jobs: [],
   },
   // A GHOST: a hand-typed binding whose tier is not in the registry. It
@@ -293,6 +304,7 @@ const TIERS: Tier[] = [
   {
     slug: "legacy-chat", label: "legacy-chat", registered: false, task: null,
     blurb: "",
+    customerVisible: false,
     jobs: [
       { tier: "legacy-chat", task: "chat", chain: [
         { model: "openai/gpt-4o-mini", rank: 1 },
