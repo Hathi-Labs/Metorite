@@ -203,10 +203,14 @@ model of its own, the Router does this:**
 4. If nothing binds `tier-vision`, refuse with HTTP 400 and name the reason.
 
 ⚠️ **ONE source for the flag, and it is `model_profile.reads_images`
-(`012_model_profile.sql`).** The vendor feed ships the flag populated, so an
-operator types nothing (§6A.11). `model_capability` holds no `vision` row for
+(`012_model_profile.sql`).** `model_capability` holds no `vision` row for
 any model today (F4), so a capability read answers nothing. Two sources for
 one fact is how the two start to disagree.
+
+⚠️ **The feed PREFILLS the flag. It does not populate it** *(corrected
+2026-08-31)*. `feed.sync` writes `vendor_price_feed` alone, so an operator
+types nothing (§6A.11) but must still SAVE each model. `POST /catalog/profiles`
+is the one writer of `model_profile`, and §8.5 names the two acts.
 
 ⚠️ **Step 2 is the money.** A second call to a vision model costs a second
 call. A chat model that already reads images costs one.
@@ -1109,10 +1113,17 @@ lands AT the operator's first act.)*
    all), and nothing binds `tier-vision` (F3). So the flag reads FALSE, the
    call falls, and the fall finds nothing. That 400 is what the route answered
    before this slice as well, with a different sentence.
-3. **The LIFT is the part that waits on an operator.** It appears the moment
-   somebody runs the vendor feed, which ships the flag populated (§6A.11). The
-   fall to a working vision model appears the moment somebody binds
-   `tier-vision`. Neither act is ours (H-69).
+3. **The LIFT is the part that waits on an operator, and it takes TWO acts.**
+   *(Corrected 2026-08-31. This named the vendor feed alone, and the feed is
+   only half of it.)* `feed.sync` writes `vendor_price_feed` and writes
+   nothing to `model_profile`. The ONE writer of `model_profile.reads_images`
+   is `POST /catalog/profiles` (`main.py:2296`), which the console reaches per
+   MODEL through the declare click (`declareBodies`,
+   `workbench/operator_console/src/lib/feed.ts:95-110`).
+
+   So arming the lift takes a feed sync AND a per-model profile save. Arming
+   the FALL is a third act, separate from both: bind `tier-vision`. None of
+   the three is ours (H-69).
 
 **The problem this closed.** `POST /v1/chat/completions` resolved one chain for
 the task the caller declared. A `vision` task therefore reached `tier-vision`

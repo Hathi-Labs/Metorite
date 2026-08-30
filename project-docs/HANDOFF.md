@@ -936,16 +936,29 @@ line — never reclaim a number by deleting the other entry.
   rank 2. The customer then gets a confident 200 about a picture that model
   never saw. The meter files the turn as `vision`. This is the exact harm §3.2
   names when it refuses to answer 200 at the image wall.
+  ⚠️ **It needs NO failover at all, which is the wider half** *(reviewer,
+  2026-08-31)*. The route drops every step it holds no key for, before it
+  tries anything. So an UNKEYED rank 1 makes the blind rank 2 the FIRST step
+  the Router tries. One missing credential then gives the wrong answer, with
+  nothing having failed.
   **Check:** `rg -n 'reads_images' apps/services/customer_console/customer_console/router.py`
   → a single read, on `chat_chain[0].model`, means nobody has filtered the
   chain yet.
   **The fix shape:** keep only the steps that set `reads_images`, and fall to
-  `tier-vision` when none remain. It is a SECOND resolution rule, so §3.2 owes
-  the decision first — slice 4 did not mint one alone (CLAUDE.md §5).
+  `tier-vision` when none remain. One filter closes both shapes, because the
+  blind step never enters the chain in either. It is a SECOND resolution rule,
+  so §3.2 owes the decision first — slice 4 did not mint one alone
+  (CLAUDE.md §5).
   **Not urgent, and say why:** nothing populates `reads_images` today and
-  nothing binds `tier-vision`, so the lift cannot fire. It becomes reachable
-  on the same day an operator runs the vendor feed. **Fix it before H-69.**
-  **Authority:** `ai_metering_and_analytics.md` §8.5 (the ⚠️ that states it).
+  nothing binds `tier-vision`, so the lift cannot fire.
+  ⚠️ **Arming the lift takes TWO acts, not one** *(corrected 2026-08-31 — this
+  said "runs the vendor feed")*. `feed.sync` writes `vendor_price_feed` alone.
+  `model_profile.reads_images` has ONE writer, `POST /catalog/profiles`
+  (`main.py:2296`), which the console reaches per MODEL through the declare
+  click (`declareBodies`, `workbench/operator_console/src/lib/feed.ts:95-110`).
+  So this becomes reachable on the day somebody syncs the feed AND saves a
+  profile. **Fix it before H-69.**
+  **Authority:** `ai_metering_and_analytics.md` §8.5 (the 🔴 that states it).
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
   → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
   endpoint and the speak endpoint are still not built.
