@@ -110,6 +110,9 @@ workbench/control_plane/test-results/
 # Code discovers skills HERE and not in .github/skills, so a doctrine skill kept
 # out of this directory is a skill nobody loads.
 !.claude/skills/ste/
+# Vendored from github.com/dickwu/apple-design-skill @ d0bac1e (owner ask,
+# 2026-08-31): the HIG design-review skill every checkout must load.
+!.claude/skills/apple-design/
 skill-observations/
 
 # Runtime caches / secrets / junk that must never be committed (foundation audit F2).
