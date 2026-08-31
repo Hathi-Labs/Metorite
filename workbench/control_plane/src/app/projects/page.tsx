@@ -32,6 +32,7 @@ import {
   type NodeSummary,
   type ViewRow,
   projectsApi,
+  projectsKey,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
@@ -95,6 +96,9 @@ import {
 } from "./lib/grouping";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
+import { peek, read } from "@/lib/dataCache";
+import { useCachedResource } from "@/lib/useCachedResource";
+import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
 import { useUndoScope } from "@/components/UndoProvider";
 import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
@@ -154,6 +158,16 @@ type Sheet = "tree" | "views" | null;
 const LOADING_COPY = "Loading projects…";
 
 /**
+ * Stable empties.
+ *
+ * A fresh `[]` is a new identity every render, and both of these are effect
+ * dependencies — a literal here re-runs the grants fan-out on every render,
+ * which is one request per root project per keystroke.
+ */
+const NO_ROOTS: ProjectRow[] = [];
+const NO_GRANTS: GrantRow[] = [];
+
+/**
  * ── SEAM (WS-27ag) ─────────────────────────────────────────────────────────
  * The ONE place this page renders a non-canvas state. Loading, "nothing here
  * yet" and a failed fetch were three inline paragraphs in three places, two of
@@ -165,7 +179,16 @@ const LOADING_COPY = "Loading projects…";
  * through here. **Advisory:** this tree has no structural or layout test, so
  * nothing fails if a fifth state is written inline instead of added here.
  */
-function renderState(kind: "loading" | "empty" | "error", message: string) {
+function renderState(
+  kind: "loading" | "empty" | "error",
+  message: string,
+  /**
+   * Which shape to draw while waiting. `text` stays the old paragraph, for the
+   * small in-place waits ("Counting the work below…") where a skeleton would
+   * be louder than the thing it stands in for.
+   */
+  shape: "page" | "board" | "tree" | "text" = "text"
+) {
   if (kind === "error") {
     return (
       <p
@@ -176,6 +199,31 @@ function renderState(kind: "loading" | "empty" | "error", message: string) {
       </p>
     );
   }
+  /**
+   * ⚠️ A skeleton is a PERFORMANCE feature, not decoration — it reads as
+   * roughly twice as fast as this paragraph at identical latency, because the
+   * eye gets structure to settle on and nothing jumps when the rows land.
+   * `message` still travels, for the screen reader, on the primitive's
+   * `role="status"`.
+   */
+  if (kind === "loading" && shape === "page") {
+    /**
+     * The COLD load, which replaces the whole page — so it has to carry the
+     * rail as well as the canvas. A skeleton at the wrong geometry is worse
+     * than none: it promises one layout and then hands over another, and the
+     * jump is the thing that reads as slow.
+     */
+    return (
+      <div className="flex h-full overflow-hidden">
+        <div className="hidden w-64 shrink-0 border-r border-border md:block">
+          <SkeletonTree />
+        </div>
+        <SkeletonBoard columns={4} className="flex-1" />
+      </div>
+    );
+  }
+  if (kind === "loading" && shape === "board") return <SkeletonBoard columns={4} />;
+  if (kind === "loading" && shape === "tree") return <SkeletonTree />;
   return <p className="p-6 text-sm text-muted-foreground">{message}</p>;
 }
 
@@ -382,7 +430,20 @@ function ProjectsWorkspace() {
   /** Phone only: which sheet the bottom bar has pushed into the shell drawer. */
   const [sheet, setSheet] = useState<Sheet>(null);
 
-  const [roots, setRoots] = useState<ProjectRow[]>([]);
+  /**
+   * ── The tree, read through the shared cache ────────────────────────────
+   *
+   * `useCachedResource` paints the last known tree on the FIRST frame when we
+   * have been here before, then revalidates underneath. Navigating away and
+   * back used to re-run the whole waterfall from zero against a database a
+   * ~124 ms round trip away, behind "Loading projects…" the entire time.
+   *
+   * `roots` is memoised off `tree.data` because the grants effect below takes
+   * it as a dependency, and a fresh `[]` on every render would re-fetch every
+   * root's grants on every render.
+   */
+  const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
+  const roots = useMemo(() => tree.data?.rows ?? NO_ROOTS, [tree.data]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
@@ -426,8 +487,29 @@ function ProjectsWorkspace() {
    * hide — none of them acts on a roll-up.
    */
   const overview = mode === "overview";
-  const [loading, setLoading] = useState(true);
+  /**
+   * ⚠️ `loading` means NOTHING TO SHOW — it is not "a request is running".
+   *
+   * That distinction is the whole fix. The old flag went true on every mount,
+   * so a revisit blanked a page that already had its answer. `tree.refreshing`
+   * is the other half: a read in flight OVER content, which must never blank
+   * anything.
+   */
+  const loading = tree.loading;
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The one error line, from either source.
+   *
+   * DERIVED, not copied into state by an effect — a copy is a second place the
+   * truth lives, and it goes stale the moment one of the two clears. The
+   * page's own failures still win: `error` is what the actions set, and it is
+   * the more specific message when both are present.
+   *
+   * ⚠️ `tree.error` never replaces the rows. A failed revalidation over a good
+   * tree leaves the tree on screen and puts the message beside it — see
+   * `useCachedResource`'s `applyError`.
+   */
+  const shownError = error ?? tree.error;
 
   // Creating a node: `undefined` = not creating; otherwise the parent row
   // (`null` = a new space at the root) plus WHAT to create there — the
@@ -594,32 +676,71 @@ function ProjectsWorkspace() {
   // The tree, plus every root's grants — the grants are what the Center filter
   // reads, and fetching them per root keeps `filterByCenter` a pure function
   // over data the page already holds.
+  /**
+   * ⚠️ GRANTS NO LONGER BLOCK THE FIRST PAINT.
+   *
+   * This used to be the tail of the tree read: `await` the tree, then `await`
+   * one `grants` call PER ROOT, and only then drop the loading flag. Two
+   * serial waves against a database ~124 ms away, with the whole page held
+   * behind both — to decorate rows with permission chips.
+   *
+   * The tree is what the page IS. Grants are an annotation on it. So the tree
+   * paints as soon as it lands and the chips fill in when they arrive, which
+   * is roughly half the wait for the thing the reader actually came for.
+   *
+   * Each call still swallows its own failure: one unreadable root's grants
+   * must not cost the other roots theirs.
+   */
+  /**
+   * ⚠️ Keyed on the root IDS, not on `roots`.
+   *
+   * Every revalidation of the tree hands back a NEW object — same projects,
+   * new identity — and an effect that depended on the array would re-fan-out
+   * one request per root each time, including on every window focus. What
+   * this fan-out actually depends on is WHICH roots exist, and that is a
+   * string.
+   */
+  const rootIds = useMemo(() => roots.map((root) => root.id).join(","), [roots]);
   useEffect(() => {
+    // No roots, nothing to ask for. The empty case is DERIVED below rather
+    // than written into state here — an effect that only sets state is a
+    // render the component could have done itself.
+    if (rootIds === "") return;
     let live = true;
     (async () => {
-      try {
-        const tree = await projectsApi.tree();
-        if (!live) return;
-        setRoots(tree.rows);
-        const all = await Promise.all(
-          tree.rows.map((root) =>
-            projectsApi
-              .grants(root.id)
-              .then((res) => res.rows)
-              .catch(() => [] as GrantRow[])
-          )
-        );
-        if (live) setGrants(all.flat());
-      } catch (err) {
-        if (live) setError(String((err as Error).message));
-      } finally {
-        if (live) setLoading(false);
-      }
+      const all = await Promise.all(
+        rootIds.split(",").map((id) =>
+          projectsApi
+            .grants(id)
+            .then((res) => res.rows)
+            .catch(() => [] as GrantRow[])
+        )
+      );
+      if (live) setGrants(all.flat());
     })();
     return () => {
       live = false;
     };
-  }, [treeKey]);
+  }, [rootIds]);
+
+  /**
+   * `treeKey` is the page's explicit "read it again" signal.
+   *
+   * Kept, although a write now invalidates the cache on its own (see
+   * `projectsApi`'s `call`): the seven call sites all follow a mutation, and
+   * an explicit refresh that costs one deduped read is cheaper than auditing
+   * every one of them.
+   *
+   * `tree.refresh` is safe as a dependency although `tree` itself is a new
+   * object every render — it is a `useCallback` over `[key, ttl]`, and this
+   * page's key is a constant string.
+   */
+  const refreshTree = tree.refresh;
+  useEffect(() => {
+    // 0 is the initial render, which the hook has already read for.
+    if (treeKey === 0) return;
+    refreshTree();
+  }, [treeKey, refreshTree]);
 
   /**
    * WS-27bg — the project run-state and archive actions.
@@ -763,8 +884,10 @@ function ProjectsWorkspace() {
   }
 
   const visibleRoots = useMemo(
-    () => filterByCenter(roots, grants, center),
-    [roots, grants, center]
+    // ⚠️ `rootIds` gates the grants, so an empty tree can never be filtered by
+    // the PREVIOUS tree's grants while the fan-out below has not run yet.
+    () => filterByCenter(roots, rootIds === "" ? NO_GRANTS : grants, center),
+    [roots, rootIds, grants, center]
   );
 
   // Which LEVEL the selection occupies, derived from the tree rather than
@@ -944,28 +1067,52 @@ function ProjectsWorkspace() {
   const loadProject = useCallback(
     async (project: ProjectRow) => {
       setError(null);
+      // Filters travel to the server, never applied to the page after it
+      // arrives: paging happens in SQL, so a filter applied here would return
+      // short pages and hide work that is genuinely there.
+      const taskParams = {
+        project_id: project.id,
+        include_subtree: true,
+        page_size: 100,
+        ...toQuery(filters),
+        // WS-27x — the table's header sort; {} when none, so every other
+        // surface keeps the endpoint's default ordering.
+        ...sortQuery(tableSort),
+      };
+      const statusesKey = projectsKey(`nodes/${project.id}/statuses`);
+      const tasksKey = projectsKey("tasks", taskParams);
+
+      /**
+       * ── Paint what we already know, before asking ──────────────────────
+       *
+       * Switching project, view or filter and coming back is the same
+       * question we asked a moment ago, and the answer is a ~124 ms round
+       * trip away. `peek` is what makes that return instant: the rows go up
+       * on this frame, and the read below replaces them when it lands.
+       *
+       * The key carries EVERY parameter (`cacheKey` sorts them), so a
+       * different filter is a different question and can never be answered
+       * with another filter's rows.
+       */
+      const heldStatuses = peek<{ rows: StatusRow[] }>(statusesKey);
+      const heldTasks = peek<{ rows: TaskRow[] }>(tasksKey);
+      if (heldStatuses) setStatuses(heldStatuses.data.rows);
+      if (heldTasks) setTasks(heldTasks.data.rows);
+
       try {
         const [statusRes, taskRes] = await Promise.all([
-          projectsApi.statuses(project.id),
-          // Filters travel to the server, never applied to the page after it
-          // arrives: paging happens in SQL, so a filter applied here would
-          // return short pages and hide work that is genuinely there.
-          projectsApi.tasks({
-            project_id: project.id,
-            include_subtree: true,
-            page_size: 100,
-            ...toQuery(filters),
-            // WS-27x — the table's header sort; {} when none, so every other
-            // surface keeps the endpoint's default ordering.
-            ...sortQuery(tableSort),
-          }),
+          read(statusesKey, () => projectsApi.statuses(project.id)),
+          read(tasksKey, () => projectsApi.tasks(taskParams)),
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
       } catch (err) {
         setError(String((err as Error).message));
-        setStatuses([]);
-        setTasks([]);
+        // ⚠️ Only blank what we had nothing for. Clearing rows we are already
+        // showing turns a failed refresh into an empty board — the screen goes
+        // blank at the moment the reader most needs to see something.
+        if (!heldStatuses) setStatuses([]);
+        if (!heldTasks) setTasks([]);
       }
     },
     [filters, tableSort]
@@ -1677,7 +1824,7 @@ function ProjectsWorkspace() {
     }
   }
 
-  if (loading) return renderState("loading", LOADING_COPY);
+  if (loading) return renderState("loading", LOADING_COPY, "page");
 
   // ── The parts both layouts render ────────────────────────────────────────
   // Built once here rather than twice in the two branches below: a phone and a
@@ -1843,7 +1990,7 @@ function ProjectsWorkspace() {
     // a per-space state matrix (see AnalyticsView's header for sources).
     // Same endpoint as the dashboards, so the two cannot disagree.
     <>
-      {error ? renderState("error", error) : null}
+      {shownError ? renderState("error", shownError) : null}
       {portfolio ? (
         <AnalyticsView
           summary={portfolio}
@@ -1867,7 +2014,7 @@ function ProjectsWorkspace() {
     // each piece: six `&&`s would leave the next control somebody adds
     // showing up here by default, and the default must be "not on a space".
     <>
-      {error ? renderState("error", error) : null}
+      {shownError ? renderState("error", shownError) : null}
       {summary ? (
         <NodeDashboard
           summary={summary}
@@ -1882,7 +2029,7 @@ function ProjectsWorkspace() {
     </>
   ) : (
     <>
-      {error ? renderState("error", error) : null}
+      {shownError ? renderState("error", shownError) : null}
 
       {selected && !overview ? (
         <FilterBar
@@ -2429,7 +2576,7 @@ function ProjectsWorkspace() {
 export default function ProjectsPage() {
   // `useSearchParams` needs a Suspense boundary in the App Router.
   return (
-    <Suspense fallback={renderState("loading", LOADING_COPY)}>
+    <Suspense fallback={renderState("loading", LOADING_COPY, "page")}>
       <ProjectsWorkspace />
     </Suspense>
   );

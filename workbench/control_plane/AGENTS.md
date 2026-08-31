@@ -201,6 +201,26 @@ Five rules on top of the three above. Each one exists because it was broken:
    docstring naming "Wave 2's Modal": Base UI brings its own outside-press
    handling with the start-and-end-outside rule the hand-rolled walker does not
    express. It stays the answer for a popover we do not build on the substrate.
+9. **One read cache, and one loading vocabulary.** `src/lib/dataCache.ts` is the
+   only stale-while-revalidate store, and `useCachedResource` is its React face.
+   Do not add a second one, and do not add a data-fetching library beside it.
+   Two rules bind every read through it. The cache gives back what it holds
+   **immediately**, at any age. A revalidation **always** runs behind it.
+   ⚠️ **The cache is memory-only, and bound to the signed-in member.** Keys are
+   request paths, and a path says nothing about who asked — so two members on
+   one browser share every key. `bindIdentity` (called in `AppShell`) empties it
+   when the member changes. Never persist it to `localStorage`,
+   `sessionStorage` or IndexedDB: that puts one member's tenant rows on the
+   device for whoever opens the browser next, below the gateway, where no
+   row-level security reaches.
+   The loading half is the same rule: **`loading` means NOTHING TO SHOW**, not
+   "a request is in flight". A revisit that already holds the answer must never
+   blank. Only a true miss earns a skeleton, and a skeleton comes from
+   `src/components/ui/Skeleton.tsx` — never a hand-rolled `animate-pulse` bar,
+   which is rule 3 one level down and had accumulated in twenty files.
+   Fences: `dataCache.test.ts` (including a source grep for the storage APIs)
+   and `useCachedResource.test.ts`. **Advisory:** nothing tests that a NEW
+   surface adopts the cache instead of a cold fetch.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that
