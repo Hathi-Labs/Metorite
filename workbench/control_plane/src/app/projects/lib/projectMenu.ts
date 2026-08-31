@@ -81,6 +81,17 @@ export interface ProjectMenuUi {
   /** Swap the row's label for its inline rename field. */
   onBeginRename: () => void;
   /**
+   * WS-27bk §9.12.4 — open the "Move to…" picker for this row.
+   *
+   * ⚠️ **This is the KEYBOARD path, and it ships before the drag.** A tree
+   * whose only re-parent gesture is a mouse drag excludes anybody who does not
+   * use one. It also teaches the grammar: the picker greys what the server
+   * would refuse and says why, so the rule arrives before the error.
+   *
+   * Optional, so a read-only tree omits it.
+   */
+  onMove?: () => void;
+  /**
    * Open Space Settings — name, icon, icon colour (migration 194). Offered
    * on a SPACE only, and optional so a read-only tree can omit it.
    */
@@ -129,6 +140,16 @@ export function projectMenuItems(
       icon: "PenLine",
       onSelect: ui.onBeginRename,
     });
+    // Beside Rename, because both edit what the node IS rather than filing or
+    // pausing it. A move is the second such act the product has.
+    if (ui.onMove) {
+      items.push({
+        kind: "item",
+        label: "Move to…",
+        icon: "FolderInput",
+        onSelect: ui.onMove,
+      });
+    }
     items.push({ kind: "sep" });
   }
 

@@ -308,6 +308,109 @@ export function canMoveUnder(
   return !subtreeIds(node).includes(newParentId);
 }
 
+/* ── Moving a node (WS-27bk §9.12.4) ───────────────────────────────────────
+ *
+ * The server owns the grammar. `assert_node_grammar` is called by create AND
+ * by move, and it is the only thing that decides. What follows is a MIRROR,
+ * and it exists for one reason: a picker that offers an illegal target teaches
+ * the rule by error message.
+ *
+ * ⚠️ **A mirror goes stale, so this one is fenced against the original.**
+ * `tree.test.ts` reads `core.py` and asserts the cap and the two refusals are
+ * still the ones spelled here. A silent divergence would show a legal target
+ * as grey, which is worse than the error it replaces — the user cannot even
+ * try.
+ */
+
+/** `core.MAX_PROJECT_GENERATIONS`. Space 1, project 2, subproject 3, stop. */
+export const MAX_PROJECT_GENERATIONS = 3;
+
+/**
+ * The longest chain of PROJECT levels inside a node, itself included.
+ *
+ * A folder counts 0 and passes its children's depth through, because folders
+ * are transparent to depth everywhere in this grammar. So a folder holding one
+ * project reports 1, exactly as the project alone would.
+ */
+export function subtreeProjectDepth(node: ProjectNode): number {
+  const own = nodeKind(node) === "project" ? 1 : 0;
+  const children = (node.children ?? []).map(subtreeProjectDepth);
+  return own + (children.length ? Math.max(...children) : 0);
+}
+
+/**
+ * A node's generation — its PROJECT ancestors, itself included.
+ *
+ * A folder reports its nearest project ancestor's count, which is what makes
+ * it transparent. 0 for a node that is not in the tree, which is also the
+ * right answer for "the root", where a move to `null` lands.
+ */
+export function generationOf(
+  roots: readonly ProjectNode[],
+  projectId: string,
+): number {
+  const path = pathTo(roots, projectId);
+  return path.filter((node) => nodeKind(node) === "project").length;
+}
+
+/**
+ * Why this move is refused, or `null` when it is legal.
+ *
+ * ⚠️ **Returns the REASON, not a boolean.** A greyed row with no explanation
+ * is a rule the user has to guess at, and the guesses are wrong in both
+ * directions — people conclude the tree is broken, or that they lack a
+ * permission. The picker shows this string on the disabled row.
+ *
+ * The wording follows the server's own refusals, because the two must not
+ * describe the same rule differently.
+ */
+export function moveRefusal(
+  roots: readonly ProjectNode[],
+  projectId: string,
+  parentId: string | null,
+): string | null {
+  const path = pathTo(roots, projectId);
+  const node = path[path.length - 1];
+  if (!node) return null;
+
+  // The cycle rule first: it is the one that would corrupt the tree rather
+  // than merely break the grammar.
+  if (!canMoveUnder(roots, projectId, parentId)) {
+    return "A node cannot move inside itself.";
+  }
+
+  const parentPath = parentId ? pathTo(roots, parentId) : [];
+  const parent = parentPath[parentPath.length - 1] ?? null;
+  if (parentId && !parent) return null;
+
+  const parentKind = parent ? nodeKind(parent) : null;
+  const parentGeneration = parentId ? generationOf(roots, parentId) : 0;
+  const depth = subtreeProjectDepth(node);
+
+  if (nodeKind(node) === "folder") {
+    if (parentKind === null) {
+      return "A folder cannot be a space. Put it inside a space or a project.";
+    }
+    if (parentKind === "folder") {
+      return "A folder cannot hold another folder.";
+    }
+    // max(depth, 1): an EMPTY folder still reserves one generation for the
+    // children it exists to hold. A folder under a subproject could legally
+    // hold nothing, and that is a refusal rather than a placement.
+    if (parentGeneration + Math.max(depth, 1) > MAX_PROJECT_GENERATIONS) {
+      return "Too deep: a folder here could only hold nodes below the subproject level.";
+    }
+    return null;
+  }
+
+  if (parentGeneration + depth > MAX_PROJECT_GENERATIONS) {
+    return depth > 1
+      ? "Too deep: this node carries subprojects, and they would land below the floor."
+      : "A subproject is the lowest level — it cannot contain projects.";
+  }
+  return null;
+}
+
 /* ── Effective run state (WS-27bg / D-PM-26) ───────────────────────────────
  *
  * A project's run state governs its whole subtree, the same way a

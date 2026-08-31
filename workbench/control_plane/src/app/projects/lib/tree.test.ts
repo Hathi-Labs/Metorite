@@ -5,6 +5,9 @@
  * done-when 4 — including the one claim that must not be misread as a security
  * boundary.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { hashSlot } from "@/lib/categorical";
@@ -12,6 +15,7 @@ import { isKnownIcon } from "@/lib/icons";
 
 import {
   LEVEL_ICONS,
+  MAX_PROJECT_GENERATIONS,
   type ProjectNode,
   SPACE_ICON_CHOICES,
   canMoveUnder,
@@ -20,8 +24,10 @@ import {
   filterByCenter,
   flatten,
   hasRunState,
+  generationOf,
   levelOf,
   moreRestrictive,
+  moveRefusal,
   nodeKind,
   nodeLevel,
   ownState,
@@ -30,6 +36,7 @@ import {
   spaceMarker,
   spansMultipleProjects,
   subtreeIds,
+  subtreeProjectDepth,
 } from "./tree";
 
 const FOREST: ProjectNode[] = [
@@ -425,5 +432,153 @@ describe("spaceMarker — a name and a SLOT, never a colour", () => {
     }
     expect(isKnownIcon(LEVEL_ICONS.space)).toBe(true);
     expect(isKnownIcon(LEVEL_ICONS.folder)).toBe(true);
+  });
+});
+
+describe("moving a node (WS-27bk §9.12.4)", () => {
+  /**
+   *   space          (generation 1)
+   *     bin          folder
+   *       alpha      project      (generation 2)
+   *         beta     subproject   (generation 3)
+   *     gamma        project      (generation 2)
+   *   other          space
+   */
+  const tree = (): ProjectNode[] => [
+    {
+      id: "space",
+      name: "Space",
+      children: [
+        {
+          id: "bin",
+          name: "Bin",
+          kind: "folder",
+          children: [
+            {
+              id: "alpha",
+              name: "Alpha",
+              children: [{ id: "beta", name: "Beta", children: [] }],
+            },
+          ],
+        },
+        { id: "gamma", name: "Gamma", children: [] },
+      ],
+    },
+    { id: "other", name: "Other", children: [] },
+  ];
+
+  describe("subtreeProjectDepth", () => {
+    it("counts a lone project as 1", () => {
+      expect(subtreeProjectDepth({ id: "g", name: "G", children: [] })).toBe(1);
+    });
+
+    it("counts a project carrying a subproject as 2", () => {
+      const alpha = pathTo(tree(), "alpha").at(-1)!;
+      expect(subtreeProjectDepth(alpha)).toBe(2);
+    });
+
+    it("⚠️ a FOLDER is transparent — it counts 0 and passes its children through", () => {
+      // A folder holding one project reports 1, exactly as the project alone
+      // would. Counting the folder would make every foldered subtree read one
+      // level deeper than it is, and legal moves would be refused.
+      const bin = pathTo(tree(), "bin").at(-1)!;
+      expect(subtreeProjectDepth(bin)).toBe(2);
+      expect(
+        subtreeProjectDepth({ id: "empty", name: "E", kind: "folder", children: [] }),
+      ).toBe(0);
+    });
+  });
+
+  describe("generationOf", () => {
+    it("counts project ancestors, itself included", () => {
+      expect(generationOf(tree(), "space")).toBe(1);
+      expect(generationOf(tree(), "alpha")).toBe(2);
+      expect(generationOf(tree(), "beta")).toBe(3);
+    });
+
+    it("⚠️ a folder reports its nearest PROJECT ancestor's count", () => {
+      // `bin` sits under a space, so it reports 1 — not 2. That is what keeps
+      // a folder from consuming a generation.
+      expect(generationOf(tree(), "bin")).toBe(1);
+    });
+  });
+
+  describe("moveRefusal", () => {
+    it("allows a project to move to another space", () => {
+      expect(moveRefusal(tree(), "gamma", "other")).toBeNull();
+    });
+
+    it("allows a project into a folder", () => {
+      expect(moveRefusal(tree(), "gamma", "bin")).toBeNull();
+    });
+
+    it("allows a project to become a space", () => {
+      expect(moveRefusal(tree(), "gamma", null)).toBeNull();
+    });
+
+    it("refuses a move into the node's OWN subtree", () => {
+      expect(moveRefusal(tree(), "alpha", "beta")).toMatch(/inside itself/);
+      expect(moveRefusal(tree(), "alpha", "alpha")).toMatch(/inside itself/);
+    });
+
+    it("refuses a folder at the root", () => {
+      expect(moveRefusal(tree(), "bin", null)).toMatch(/cannot be a space/);
+    });
+
+    it("refuses a folder inside a folder", () => {
+      const roots = tree();
+      const bin = pathTo(roots, "bin").at(-1)!;
+      bin.children!.push({ id: "inner", name: "Inner", kind: "folder", children: [] });
+      expect(moveRefusal(roots, "inner", "bin")).toMatch(/cannot hold another folder/);
+    });
+
+    it("⚠️ refuses a move that would push a CARRIED subtree below the floor", () => {
+      // `alpha` holds `beta`, so its depth is 2. Landing it under `gamma`
+      // (generation 2) would put `beta` at generation 4. The naive check —
+      // "is the node itself allowed here" — says yes, and it is wrong.
+      expect(moveRefusal(tree(), "alpha", "gamma")).toMatch(/subprojects/);
+    });
+
+    it("allows the same node where its subtree still fits", () => {
+      // Under a space (generation 1), alpha's two levels land at 2 and 3.
+      expect(moveRefusal(tree(), "alpha", "other")).toBeNull();
+    });
+
+    it("refuses a lone project under a subproject", () => {
+      expect(moveRefusal(tree(), "gamma", "beta")).toMatch(/lowest level/);
+    });
+
+    it("refuses a folder under a subproject, although the folder is empty", () => {
+      // An empty folder still reserves the generation it exists to hold.
+      const roots = tree();
+      roots.push({ id: "loose", name: "Loose", kind: "folder", children: [] });
+      expect(moveRefusal(roots, "loose", "beta")).toMatch(/Too deep/);
+    });
+
+    it("says nothing about a target that is not in the tree", () => {
+      // A stale id from a tree that has since changed. The server decides.
+      expect(moveRefusal(tree(), "gamma", "ghost")).toBeNull();
+    });
+  });
+
+  describe("⚠️ the mirror is fenced against the server", () => {
+    it("keeps the same generation cap the grammar enforces", () => {
+      const source = readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../../../apps/services/gateway/gateway/routes/projects/core.py",
+            import.meta.url,
+          ),
+        ),
+        "utf-8",
+      );
+      expect(source).toContain(
+        `MAX_PROJECT_GENERATIONS = ${MAX_PROJECT_GENERATIONS}`,
+      );
+      // The two refusals this mirror reproduces, still worded as rules rather
+      // than as one generic message.
+      expect(source).toContain("A folder cannot hold another folder.");
+      expect(source).toContain("A folder cannot be a space.");
+    });
   });
 });

@@ -239,6 +239,8 @@ interface Props {
   onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
   onOpenSettings?: (space: ProjectRow) => void;
+  /** WS-27bk §9.12.4 — open the "Move to…" picker for a row. */
+  onMove?: (node: ProjectRow) => void;
   /** The node being named, drawn in place. Null = nothing is being created. */
   creating?: CreatingDraft | null;
   onCommitCreate?: (name: string) => void;
@@ -255,6 +257,7 @@ function Node({
   onSelect,
   onAddChild,
   onOpenSettings,
+  onMove,
   creating,
   onCommitCreate,
   onCancelCreate,
@@ -273,6 +276,8 @@ function Node({
   onSelect: (project: ProjectRow) => void;
   onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   onOpenSettings?: (space: ProjectRow) => void;
+  /** WS-27bk §9.12.4 — open the "Move to…" picker for a row. */
+  onMove?: (node: ProjectRow) => void;
   creating?: CreatingDraft | null;
   onCommitCreate?: (name: string) => void;
   onCancelCreate?: () => void;
@@ -484,6 +489,7 @@ function Node({
               onOpenSettings: onOpenSettings
                 ? () => onOpenSettings(node)
                 : undefined,
+              onMove: onMove ? () => onMove(node) : undefined,
             },
             level
           ).map((entry) =>
@@ -512,6 +518,7 @@ function Node({
               onSelect={onSelect}
               onAddChild={onAddChild}
               onOpenSettings={onOpenSettings}
+          onMove={onMove}
               creating={creating}
               onCommitCreate={onCommitCreate}
               onCancelCreate={onCancelCreate}
@@ -540,6 +547,7 @@ export function ProjectTree({
   onSelect,
   onAddChild,
   onOpenSettings,
+  onMove,
   creating,
   onCommitCreate,
   onCancelCreate,
@@ -570,6 +578,7 @@ export function ProjectTree({
           onSelect={onSelect}
           onAddChild={onAddChild}
           onOpenSettings={onOpenSettings}
+          onMove={onMove}
           creating={creating}
           onCommitCreate={onCommitCreate}
           onCancelCreate={onCancelCreate}
