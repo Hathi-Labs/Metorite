@@ -108,6 +108,29 @@ export function marginLabelPct(fraction: number | null): string {
   return `${Math.round(fraction * 100)}%`;
 }
 
+/** A number as PLAIN DECIMAL DIGITS — never `3e-7`, at any magnitude.
+ *
+ * 🔴 **`String(n)` and `n.toString()` go exponential below 1e-6**, and every
+ *  place this console shows a per-unit vendor price is below it. A form box
+ *  reading `3e-7` is not a number an operator can check, and the box is
+ *  POSTed back verbatim — so the notation would reach the database too.
+ *
+ * ⚠️ **Never strip zeros from a string with no dot.** "1000" → "1" was a
+ *  shipped bug (caught 2026-08-30). The trim below runs ONLY on `toFixed`
+ *  output, which always carries a dot, and the `\.$` pass removes it after.
+ *
+ *  This is the ONE fixed-point renderer. `roundCredits` below and the two
+ *  H-78 display sites (`driftFor`, `vendorUsdBox`) all come here, so the
+ *  console cannot grow a second answer to the same question. */
+export function fixedDecimal(n: number): string {
+  if (!Number.isFinite(n)) return "";
+  const s = n.toString();
+  if (!s.includes("e")) return s;
+  // 20 places is the most `toFixed` accepts, and it covers every price the
+  // NUMERIC(18, 10) columns can carry.
+  return n.toFixed(20).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 /** Round a suggested credit price to something a person would actually set.
  *
  * ⚠️ Four significant figures, not four decimals: DeepSeek-class prices live
@@ -118,13 +141,7 @@ export function roundCredits(value: number | null): string {
   // Above 1e15 a float stops carrying exact digits, and no real credit
   // price lives there — no suggestion beats a fabricated one.
   if (value >= 1e15) return "";
-  // ⚠️ Never strip zeros from the string: "1000" has no dot, and a regex
-  // that eats its zeros turns a 1000-credit price into 1 (shipped bug,
-  // caught 2026-08-30). Number() drops trailing decimals exactly.
-  const n = Number(value.toPrecision(4));
-  const s = n.toString();
-  if (!s.includes("e")) return s;
-  // DeepSeek-class tiny values: expand the exponent by hand — the wire
-  // and the operator both read plain decimals, never "8e-7".
-  return n.toFixed(20).replace(/0+$/, "").replace(/\.$/, "");
+  // DeepSeek-class tiny values reach here as "8e-7", and the operator reads
+  // plain decimals. `fixedDecimal` owns that expansion for the whole app.
+  return fixedDecimal(Number(value.toPrecision(4)));
 }

@@ -32,6 +32,11 @@ from tests.unit._customer_console_ladder import (  # noqa: E402
     ensure_deployment,
 )
 
+#: 📌 IMPORTED, never re-declared. `Wrapper` is the litellm-shaped source the
+#: close fences need at both ends of the stream path — the walk's loser and the
+#: route's winner — and two copies of it would drift.
+from tests.unit.test_router_failover import Wrapper
+
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
@@ -818,6 +823,269 @@ class TestStreaming:
 
         assert r.status_code == 400
         assert "name a tier" in r.json()["detail"]
+
+
+#: 📌 **`_stream_chain` is gone, and `bound_tier` took its work.** It bound a
+#: `tier-sf-…` chain and removed nothing, so 368 rows accumulated in one
+#: worktree's scratch database. They passed the catalog fence only because
+#: somebody had hand-written a `model_capability` row for each model. On a
+#: fresh database they fail it. One fixture now binds every chain in this
+#: file, and it takes its rows away with it.
+
+
+def _served(db, slug: str):
+    """The newest usage row for this org, as (model, served_rank)."""
+    with db.begin() as c:
+        return c.execute(text(
+            "SELECT model, served_rank FROM usage_event u JOIN organization o "
+            "ON o.id = u.organization_id WHERE o.slug = :s "
+            "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+
+
+class TestAStreamFailsOverBeforeItsFirstFrame:
+    """§8.6 — the boundary, and the four clauses that fix where it sits.
+
+    🔴 **What this suite exists to prove.** A streamed request used to take
+    step 1 of the chain and stop there, so a provider being down cost the
+    customer their request while the chain the operator configured did
+    nothing. The line is now drawn at the FIRST FRAME: the route pulls it
+    while walking, and only then does the 200 status line go out.
+
+    ⚠️ **Both models are the SAME vendor on purpose.** A 529 does not strike
+    a vendor off, and the shared `deepseek` platform credential is the one
+    `org_key` provisions — so these fences test the WALK, not credential
+    plumbing.
+    """
+
+    PRIMARY = "deepseek/sf-primary"
+    BACKUP = "deepseek/sf-backup"
+
+    @staticmethod
+    def _provider(seen: list[str], *, primary_fails, backup_frames=None):
+        """Step 1 raises what the test asks for. Step 2 streams normally."""
+        frames = PROVIDER_FRAMES if backup_frames is None else backup_frames
+
+        async def _stub(**kwargs):
+            model = kwargs["model"]
+            seen.append(model)
+            if model == TestAStreamFailsOverBeforeItsFirstFrame.PRIMARY:
+                raise primary_fails
+
+            async def _gen():
+                for f in frames:
+                    yield f
+
+            return _gen()
+
+        return _stub
+
+    # ── done-when 1 ──
+    def test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream(
+            self, client, org_key, db, bound_tier):
+        """🔴 The headline. The client must not be able to tell it happened."""
+        _, key = org_key
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
+        seen: list[str] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_Overloaded("busy")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            assert r.status_code == 200
+            body = b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY, self.BACKUP]
+        # ⚠️ EXACT BYTES, not a substring. The first frame is pulled by the
+        # route and replayed by the generator, so the two failures this
+        # mechanism can have are a DUPLICATED first frame and a MISSING one.
+        # Only equality catches both.
+        assert body == b"".join(PROVIDER_FRAMES)
+
+    def test_the_row_records_the_step_that_ANSWERED(
+            self, client, org_key, db, bound_tier):
+        # done-when 3. The customer pays for the model they got.
+        slug, key = org_key
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        router_mod.set_provider_call(
+            self._provider([], primary_fails=_Overloaded("busy")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            r.read()
+
+        row = _served(db, slug)
+        assert row is not None
+        assert row.model == self.BACKUP
+        assert row.served_rank == 2
+
+    # ── done-when 2 ──
+    def test_a_400_before_any_frame_calls_NO_second_step(
+            self, client, org_key, db, bound_tier):
+        # Every step fails a malformed request identically, so walking the
+        # chain spends money to learn nothing.
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
+        seen: list[str] = []
+
+        class _BadRequest(Exception):
+            status_code = 400
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_BadRequest("malformed")))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": tier, "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY]
+        # Clause 5: a walk that ends with nothing still closes cleanly, and
+        # writes no row. `_REFUSAL_REASONS` stays closed — this wall was the
+        # vendor's, not the customer's.
+        assert body == b"data: [DONE]\n\n"
+        assert TestMetering._count(db, slug) == before
+
+    # ── the other side of the boundary ──
+    def test_a_failure_AFTER_the_first_frame_does_NOT_fail_over(
+            self, client, org_key, db, bound_tier):
+        """The half of §3.6 that did not move, pinned at the ROUTE.
+
+        Once a frame has reached the client the request is half answered.
+        Serving the rest from a second model would splice two different
+        completions into one response, which is worse than the error.
+        """
+        _, key = org_key
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
+        seen: list[str] = []
+
+        async def _stub(**kwargs):
+            seen.append(kwargs["model"])
+
+            async def _gen():
+                yield PROVIDER_FRAMES[0]
+                raise RuntimeError("provider dropped the connection")
+
+            return _gen()
+
+        router_mod.set_provider_call(_stub)
+
+        # The error reaches the client, and that is the CORRECT outcome. A
+        # response already committed to one model cannot honestly continue on
+        # another.
+        with pytest.raises(RuntimeError), client.stream(
+                "POST", "/v1/chat/completions", headers=key, json={
+                    "model": tier, "stream": True,
+                    "messages": [{"role": "user", "content": "x"}]}) as r:
+            b"".join(r.iter_bytes())
+
+        assert seen == [self.PRIMARY], "a started stream must not fail over"
+        assert self.BACKUP not in seen
+
+
+class TestTheWinningStreamIsCLOSED:
+    """§8.6 — the socket the walk WON is released, whatever the client does.
+
+    🔴 **This window is new, and the walk moving earlier is what opened it.**
+    Starlette 1.1.0 never calls `aclose` on a body iterator, and the provider
+    stream is now open before the response exists. So a client that goes away
+    used to cost nothing and would now cost one held connection for the life
+    of the process.
+
+    ⚠️ **The source here is WRAPPER-shaped, not a bare async generator.** The
+    loop's own finaliser closes an abandoned generator whatever the Router
+    does, so a leak test written against one stays green after somebody
+    deletes the close. `router_failover.Wrapper` is the shape litellm returns.
+    """
+
+    @staticmethod
+    def _caller(org_id: str):
+        from customer_console.auth import Caller
+        return Caller(organization_id=org_id, key_prefix="cc_live_fence")
+
+    @staticmethod
+    def _drive(head, source, org_id, *, read):
+        """Run `_streamed_completion` the way Starlette would, then stop.
+
+        `read` decides how the client behaves: ``"one"`` takes a frame and
+        walks away, ``"all"`` reads to the end or to the provider's error.
+        """
+        from customer_console.main import _streamed_completion
+
+        async def _run():
+            gen = _streamed_completion(
+                head, source,
+                org_id=org_id,
+                caller=TestTheWinningStreamIsCLOSED._caller(org_id),
+                resolved=router_mod.ResolvedTier(
+                    tier="tier-balanced", model="deepseek/x", task="chat"),
+                client_ref=None,
+            )
+            got = []
+            if read == "one":
+                async for frame in gen:
+                    got.append(frame)
+                    break          # the client stops reading here
+                await gen.aclose()  # and Starlette drops the iterator
+            else:
+                with pytest.raises(RuntimeError):
+                    async for frame in gen:
+                        got.append(frame)
+            return got
+
+        return asyncio.run(_run())
+
+    def test_a_stream_read_to_the_END_is_closed(self, client, org_key, db):
+        # The ordinary exit. `aclose` on a finished stream is a no-op, so the
+        # route closes on every path rather than reasoning about which it took.
+        _, key = org_key
+        made: list[Wrapper] = []
+
+        async def _stub(**kwargs):
+            made.append(Wrapper(frames=list(PROVIDER_FRAMES)))
+            return made[-1]
+
+        router_mod.set_provider_call(_stub)
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True,
+                "messages": [{"role": "user", "content": "x"}]}) as r:
+            body = b"".join(r.iter_bytes())
+
+        # Byte-identity survives the close, and the close happened once.
+        assert body == b"".join(PROVIDER_FRAMES)
+        assert made[0].closed == 1
+
+    def test_an_ABANDONED_stream_is_closed(self, org_id):
+        """🔴 The headline. The client left, and the socket still goes back.
+
+        Driven directly, because the HTTP layer cannot be made to abandon a
+        response deterministically — the same reason `TestTheRelayItself`
+        gives for its own direct drive.
+        """
+        source = Wrapper(frames=list(PROVIDER_FRAMES[1:]))
+        got = self._drive([PROVIDER_FRAMES[0]], source, org_id, read="one")
+
+        assert got == [PROVIDER_FRAMES[0]], "the head still reached the client"
+        assert source.closed == 1, "an abandoned stream held its connection"
+
+    def test_a_stream_that_DIES_mid_relay_is_closed(self, org_id):
+        # The provider, not the client, ends it. The socket is still ours.
+        source = Wrapper(raise_first=RuntimeError("provider dropped it"))
+        got = self._drive([PROVIDER_FRAMES[0]], source, org_id, read="all")
+
+        assert got == [PROVIDER_FRAMES[0]]
+        assert source.closed == 1
 
 
 class TestTheRelayItself:
@@ -1791,6 +2059,648 @@ class TestTaskRoutingEndToEnd:
         # already carry the quantity, and a second copy is a second thing to
         # disagree with. `quantity` is for the units that have no column.
         assert row[2] is None
+
+
+# ── D-AI-2: the Router image rule (§3.2, §8.5 slice 4) ──────────────────────
+
+#: A payload that CARRIES an image. Every test that sends it declares its own
+#: task, because the Router must reach the same answer from the declaration
+#: alone — the parts below are decoration the resolution never opens.
+IMAGE_MESSAGES = [{
+    "role": "user",
+    "content": [
+        {"type": "text", "text": "what is in this picture"},
+        {"type": "image_url",
+         "image_url": {"url": "https://example.invalid/pump.png"}},
+    ],
+}]
+
+
+@pytest.fixture
+def bound_tier(db):
+    """Bind a fresh tier, and REMOVE what it wrote afterwards.
+
+    **THE ONE tier-binding fixture in this file**, and every fence that needs a
+    binding of its own goes through it. It takes one model or a whole CHAIN,
+    which is what lets the image rule and the stream walk share it. A second
+    binding helper beside this one is a second place to forget the teardown,
+    which is exactly the defect below.
+
+    🔴 **The teardown is not tidiness, and this fixture exists for it.**
+    `GET /catalog/models` reports every binding whose ``(model, task)`` pair
+    declares no `model_capability` row as **unserved**, and
+    `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
+    fails while one exists. These bindings name models that nothing declares.
+    The scratch database is REUSED between runs, so a row left behind fails a
+    SIBLING suite on the next sweep. Measured on one worktree: 419 rows from
+    the image fences and 368 from the stream fences. `vision_bound` and
+    `priced` clean up for the same reason.
+
+    ⚠️ **A chain shares ONE ``effective_from``** (migration 011). Reading the
+    newest row per rank instead would splice two chains together, so a fixture
+    that dated each step separately would build a shape the Router never sees.
+
+    ⚠️ **The test writes the `model_profile` row ITSELF.** Nothing seeds that
+    table (§3.7 rule 4) and nothing populates ``reads_images``, so a fixture
+    that leaned on the ladder would prove D-AI-2 against an empty table and
+    pass for the wrong reason. ``reads_images=None`` leaves the model with NO
+    profile row at all, which is the launch state and must read the same as
+    FALSE.
+
+    🔴 **``reads_images`` takes a LIST for a PER-STEP flag**, one entry per
+    rank, and the entries may disagree. `resolve_vision_chain` reads the flag
+    on EVERY step (§3.2 step 3b), so a fence for a mixed chain has to be able
+    to build one. A scalar keeps the older shape: the flag lands on the RANK-1
+    model, and the steps behind it get no profile row. Passing a list is what
+    lets `TestABlindStepNeverEntersALiftChain` share this fixture instead of
+    minting a second one.
+    """
+    made: list[tuple[str, list[str]]] = []
+
+    def _bind(model: str | list[str], *, reads_images,
+              task: str = "chat") -> str:
+        models = [model] if isinstance(model, str) else list(model)
+        if isinstance(reads_images, list):
+            flags = list(reads_images)
+        else:
+            flags = [reads_images] + [None] * (len(models) - 1)
+        tier = f"tier-fx-{uuid.uuid4().hex[:8]}"
+        made.append((tier, models))
+        with db.begin() as c:
+            eff = c.execute(text("SELECT now()")).scalar_one()
+            for rank, (step, flag) in enumerate(
+                    zip(models, flags, strict=True), start=1):
+                c.execute(
+                    text("INSERT INTO tier_binding (tier, task, model, rank, "
+                         "effective_from) VALUES (:t, :k, :m, :r, :eff)"),
+                    {"t": tier, "k": task, "m": step, "r": rank, "eff": eff})
+                if flag is not None:
+                    c.execute(
+                        text("INSERT INTO model_profile (model, reads_images) "
+                             "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
+                             "SET reads_images = EXCLUDED.reads_images"),
+                        {"m": step, "r": flag})
+        return tier
+
+    yield _bind
+    with db.begin() as c:
+        for tier, models in made:
+            c.execute(text("DELETE FROM tier_binding WHERE tier = :t"),
+                      {"t": tier})
+            for step in models:
+                c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                          {"m": step})
+
+
+@pytest.fixture
+def vision_bound(db):
+    """`tier-vision` bound to one model, for the life of one test.
+
+    F3 measured `tier-vision` as UNBOUND, and migration 010 seeds no binding
+    for it. So the fall path has nowhere to land until a test builds it, and
+    the row is removed afterwards — the unbound fence next door depends on the
+    launch state still being the launch state.
+    """
+    model = "deepseek/vision-eyes"
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO tier_binding (tier, task, model, rank, "
+                 "effective_from) VALUES ('tier-vision', 'vision', :m, 1, "
+                 "now())"),
+            {"m": model})
+    yield model
+    with db.begin() as c:
+        c.execute(text("DELETE FROM tier_binding WHERE tier = 'tier-vision'"))
+
+
+@pytest.fixture
+def vision_unbound(db):
+    """Assert the launch state, and hand it to the test that needs it."""
+    with db.begin() as c:
+        bound = c.execute(text(
+            "SELECT count(*) FROM tier_binding WHERE tier = 'tier-vision'"
+        )).scalar_one()
+    assert bound == 0, (
+        "`tier-vision` is bound, so this fence cannot measure the unbound "
+        "wall. A sibling test left its binding behind."
+    )
+
+
+@pytest.fixture
+def priced(db):
+    """Price one (tier, task) pair, so a bill proves WHICH pair was read.
+
+    The card and its catalog row are removed afterwards. Migration 015 seeds
+    NO tier rates, and pricing the slate is the owner's commercial act (H-42)
+    — a fixture that left a price behind would make the next suite read a
+    number nobody chose.
+    """
+    made: list[str] = []
+
+    def _price(tier: str, task: str) -> None:
+        made.append(tier)
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO tier_catalog (slug, label) VALUES (:t, :t) "
+                "ON CONFLICT (slug) DO NOTHING"), {"t": tier})
+            c.execute(text(
+                "INSERT INTO tier_rate_card (tier, task, "
+                " input_credits_per_1k, output_credits_per_1k, "
+                " cached_input_credits_per_1k, unit, pricing_mode, "
+                " effective_from) "
+                "VALUES (:t, :k, 2, 6, 0.5, 'tokens', 'priced', now())"),
+                {"t": tier, "k": task})
+
+    yield _price
+    with db.begin() as c:
+        for tier in made:
+            c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"),
+                      {"t": tier})
+            c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"),
+                      {"t": tier})
+
+
+def _last_row(db, slug: str):
+    """The newest usage row for this org — tier, task, model, rank, credits."""
+    with db.begin() as c:
+        return c.execute(text(
+            "SELECT tier, task, model, served_rank, billed_credits, unit "
+            "FROM usage_event u JOIN organization o "
+            "ON o.id = u.organization_id WHERE o.slug = :s "
+            "AND u.refusal_reason IS NULL "
+            "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+
+
+class TestTheRouterImageRule:
+    """§3.2 / §8.5 — an image follows the chat model when it can (D-AI-2).
+
+    🔴 **The money is the whole reason.** A chat model that already reads
+    images answers with ONE call. Sending the image to a separate vision model
+    costs a second call for the same turn, every turn.
+
+    ⚠️ **Every test here drives the HTTP route**, because the rule is about
+    which model the ROUTE calls and which pair the ROUTE bills. A direct call
+    to the resolver proves the resolution and not the serving.
+    """
+
+    CHAT_MODEL = "deepseek/sees-images"
+    BLIND_MODEL = "deepseek/reads-text-only"
+
+    # ── §3.2 step 0.5: a tier that binds the declared task serves it ──
+    def test_a_caller_that_NAMES_a_vision_tier_is_served_by_it(
+            self, client, org_key, db, calls, vision_bound):
+        """🔴 The regression this rule exists to stop.
+
+        `tier-vision` binds `vision` and binds NO chat model. A resolution
+        that reads the chat binding first answers *"no binding for tier
+        'tier-vision' on task 'vision'"*, which is false — the binding the
+        caller named is right there. That call was a 200 before D-AI-2, and it
+        stays one.
+        """
+        slug, key = org_key
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-vision", "task": "vision",
+            "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+        row = _last_row(db, slug)
+        # No lift and no fall. The tier the caller picked serves and bills.
+        assert row.tier == "tier-vision"
+        assert row.task == "vision"
+
+    def test_a_SECOND_vision_tier_serves_ITSELF_too(
+            self, client, org_key, db, calls, bound_tier):
+        """The rule reads the declared TASK, never a list of slugs.
+
+        An operator who adds a second vision tier tomorrow must not have to
+        edit the Router. This is why step 0.5 is stated about the task.
+        """
+        slug, key = org_key
+        model = "deepseek/second-eyes"
+        # Through the fixture, so the binding LEAVES with the test. A `vision`
+        # binding that outlives it is an `unserved` row for the catalog fence
+        # next door, and the scratch database is reused.
+        tier = bound_tier(model, task="vision", reads_images=None)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [model]
+        assert _last_row(db, slug).tier == tier
+
+    # ── clause 1: one model on a TRUE flag ──
+    def test_a_chat_model_that_reads_images_serves_the_image_ITSELF(
+            self, client, org_key, db, calls, bound_tier):
+        _, key = org_key
+        tier = bound_tier(self.CHAT_MODEL, reads_images=True)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        # 🔴 ONE model, one call. Two calls here is the cost defect D-AI-2
+        # exists to close, and it would still answer the customer correctly.
+        assert [c["model"] for c in calls] == [self.CHAT_MODEL]
+
+    # ── clause 4 + §8.5 clause 4: the row says vision, the bill says chat ──
+    def test_the_lift_records_VISION_and_bills_the_CHAT_pair(
+            self, client, org_key, db, calls, priced, bound_tier):
+        slug, key = org_key
+        tier = bound_tier(self.CHAT_MODEL, reads_images=True)
+        # Only the CHAT pair is priced. A bill computed from (tier, `vision`)
+        # would find no card and report zero.
+        priced(tier, "chat")
+
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        row = _last_row(db, slug)
+        assert row is not None
+        assert row.tier == tier
+        assert row.model == self.CHAT_MODEL
+        # 📌 The CUSTOMER asked for vision, so analytics must say vision.
+        assert row.task == "vision"
+        assert row.served_rank == 1
+        # The (chosen tier, `chat`) card rated it — 1200 prompt of which 900
+        # cached, 40 output, exactly `CALL_COST`.
+        assert row.billed_credits == CALL_COST
+
+    # ── clause 2: the fall ──
+    def test_a_chat_model_that_reads_no_image_falls_to_the_vision_tier(
+            self, client, org_key, db, calls, vision_bound, bound_tier):
+        _, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        # The image reaches the model that can see it, and the text-only chat
+        # model is never asked about a picture it cannot read.
+        assert [c["model"] for c in calls] == [vision_bound]
+
+    def test_a_model_with_NO_profile_row_falls_the_same_way(
+            self, client, org_key, db, calls, vision_bound, bound_tier):
+        """The LAUNCH state. Nothing populates `reads_images` (§3.7 rule 4).
+
+        An absent row means nobody told us, and D-AI-2 then sends the image to
+        a model that certainly reads it rather than to one that may drop it in
+        silence.
+        """
+        _, key = org_key
+        tier = bound_tier("deepseek/unprofiled", reads_images=None)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+
+    def test_the_fall_bills_the_VISION_pair(
+            self, client, org_key, db, vision_bound, priced, bound_tier):
+        slug, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+        # The chosen tier is priced and `tier-vision` is not. A bill that read
+        # the chosen tier would report `CALL_COST` here.
+        priced(tier, "chat")
+
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        row = _last_row(db, slug)
+        assert row is not None
+        assert row.tier == "tier-vision"
+        assert row.task == "vision"
+        assert row.model == vision_bound
+        assert row.billed_credits == Decimal("0.0000"), (
+            "the chosen tier's chat card priced a call that ran on "
+            "`tier-vision` — the bill must follow the pair that SERVED"
+        )
+
+    # ── clause 3: the wall ──
+    def test_an_unbound_vision_tier_answers_400_AND_CALLS_NOBODY(
+            self, client, org_key, org_id, db, calls, vision_unbound, bound_tier):
+        """§3.2 step 4. A silent drop makes the model answer about text it
+        cannot see, and that answer looks correct."""
+        slug, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 400, r.text
+        # The sentence names BOTH halves, so an operator knows which to fix.
+        assert r.json()["detail"] == (
+            f"no vision model is bound; the chat model for tier {tier} "
+            "does not read images"
+        )
+        assert calls == [], "a refused image call must reach no provider"
+        assert _last_row(db, slug) is None
+
+    def test_the_image_wall_writes_ONE_tier_unknown_row_naming_tier_vision(
+            self, client, org_key, org_id, db, vision_unbound, bound_tier):
+        """🔴 The slug and the sentence are two different things.
+
+        `020_usage_refusal.sql`'s CHECK closes the vocabulary at three slugs,
+        and `main._REFUSAL_REASONS` names the same three. A fourth spelling of
+        one wall is what both exist to stop, so the row says `tier_unknown`
+        truthfully — nothing binds `tier-vision` — while the HTTP detail says
+        the vision sentence.
+        """
+        from customer_console.main import _REFUSAL_REASONS
+
+        _, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        assert row["refusal_reason"] == "tier_unknown"
+        assert len(_REFUSAL_REASONS) == 3
+        # ⚠️ The MISSING binding, not the tier the caller named. `tier-vision`
+        # is the thing an operator has to go and bind.
+        assert row["tier"] == "tier-vision"
+        assert row["task"] == "vision"
+        # `vision` prices in tokens (`010`:46), so the row does too. Minutes
+        # here would mean the unit came from somewhere other than the catalog.
+        assert row["unit"] == "tokens"
+        assert row["billed_credits"] == Decimal("0.0000")
+
+    # ── §3.2 step 0 ──
+    def test_a_tier_with_no_chat_binding_hits_the_wall_it_ALREADY_had(
+            self, client, org_key, org_id, db, calls):
+        """Step 0. Nothing about D-AI-2 changes this refusal."""
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-imaginary", "task": "vision",
+            "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 400, r.text
+        assert "name a tier, not a model" in r.json()["detail"]
+        assert calls == []
+        row = _refusal_row(db, org_id)
+        # The tier the CALLER named, because that is the one that binds
+        # nothing. `tier-vision` is not the repair here.
+        assert row["tier"] == "tier-imaginary"
+        assert row["task"] == "vision"
+
+    # ── clause 5: nothing reads the payload ──
+    def test_an_IMAGE_in_the_payload_with_task_chat_stays_on_the_chat_binding(
+            self, client, org_key, db, calls, vision_bound, bound_tier):
+        """🔴 The fence for G-3 on this slice.
+
+        `tier-vision` IS bound here, so a Router that sniffed the payload
+        would have somewhere to send this call — and it would send it. The
+        caller declared nothing, so the task defaults to `chat` and the chat
+        binding serves, image parts and all.
+        """
+        slug, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [self.BLIND_MODEL], (
+            "the Router inferred `vision` from the payload — G-3 says the "
+            "CALLER declares the task"
+        )
+        assert _last_row(db, slug).task == "chat"
+
+    def test_the_vision_resolution_reads_a_TIER_and_never_a_PAYLOAD(self):
+        """The resolver's own half of clause 5, read from the AST.
+
+        ⚠️ Read structurally rather than by grep: the docstrings around this
+        rule discuss `image_url` and sniffing precisely while explaining why
+        both are refused, so a text search matches the prose that forbids it.
+        """
+        import ast
+        import inspect
+        import pathlib
+
+        import customer_console.router as router_file
+
+        assert set(inspect.signature(
+            router_mod.resolve_vision_chain).parameters) == {"conn", "tier"}
+
+        src = pathlib.Path(router_file.__file__).read_text(encoding="utf-8")
+        fn = next(
+            n for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+            and n.name == "resolve_vision_chain"
+        )
+        literals = {
+            s.value for s in ast.walk(fn)
+            if isinstance(s, ast.Constant) and isinstance(s.value, str)
+        }
+        for sniffed in ("messages", "image_url", "content", "content_type"):
+            assert sniffed not in literals, (
+                f"the vision resolution reads {sniffed!r} — that is "
+                "inference, and the CALLER declares the task"
+            )
+
+    # ── the stream takes the same two paths ──
+    def test_a_STREAMED_vision_call_lifts_and_falls_the_same_way(
+            self, client, org_key, db, vision_bound, bound_tier):
+        """Slice 11 walks the chain AFTER this resolution, so both agree.
+
+        A `stream: true` flag is not a second router any more than it is a way
+        around the meter. One resolution serves both branches, and this test
+        drives the lift and the fall through the streamed one.
+        """
+        slug, key = org_key
+        seen: list[str] = []
+
+        async def _stub(**kwargs):
+            seen.append(kwargs["model"])
+
+            async def _gen():
+                for f in PROVIDER_FRAMES:
+                    yield f
+
+            return _gen()
+
+        router_mod.set_provider_call(_stub)
+
+        lifts = bound_tier(self.CHAT_MODEL, reads_images=True)
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": lifts, "task": "vision", "stream": True,
+                "messages": IMAGE_MESSAGES}) as r:
+            assert r.status_code == 200
+            r.read()
+
+        assert seen == [self.CHAT_MODEL]
+        lifted = _last_row(db, slug)
+        assert lifted.model == self.CHAT_MODEL
+        # 📌 The streamed row says `vision` too, or the two paths report one
+        # customer's image work as two different things.
+        assert lifted.task == "vision"
+
+        falls = bound_tier(self.BLIND_MODEL, reads_images=False)
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": falls, "task": "vision", "stream": True,
+                "messages": IMAGE_MESSAGES}) as r:
+            assert r.status_code == 200
+            r.read()
+
+        assert seen == [self.CHAT_MODEL, vision_bound]
+        fell = _last_row(db, slug)
+        assert fell.tier == "tier-vision"
+        assert fell.task == "vision"
+
+    def test_a_STREAMED_call_on_an_unbound_vision_tier_is_400(
+            self, client, org_key, db, calls, vision_unbound, bound_tier):
+        """`stream: true` reaches the same wall, and reaches no provider."""
+        _, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "stream": True,
+            "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 400, r.text
+        assert "does not read images" in r.json()["detail"]
+        assert calls == []
+
+    # ── the chat path did not move ──
+    def test_a_plain_CHAT_call_reads_no_profile_and_is_unchanged(
+            self, client, org_key, db, calls, bound_tier):
+        """D-AI-2 turns on `task`, and a chat call never asks about images."""
+        slug, key = org_key
+        tier = bound_tier(self.BLIND_MODEL, reads_images=False)
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [self.BLIND_MODEL]
+        assert _last_row(db, slug).task == "chat"
+
+
+def _scratch_step(vendor: str, *, sees: bool) -> str:
+    """Mint a model id nothing else in the run holds.
+
+    A `model_profile` row is keyed on the model alone, so two fences that
+    shared an id would share a flag and `bound_tier`'s teardown would remove
+    a row the other one still needs. The name says what the step DOES, so a
+    failure message reads without a lookup.
+    """
+    return f"{vendor}/{'sees' if sees else 'blind'}-{uuid.uuid4().hex[:8]}"
+
+
+class TestABlindStepNeverEntersALiftChain:
+    """§3.2 step 3b (D16) / §8.5 clauses 7 and 8.
+
+    🔴 **The harm is a CONFIDENT WRONG ANSWER.** The flag used to be read on
+    the rank-1 step alone. So a blind rank 2 could serve an image request and
+    answer about a picture it never saw, with a 200 the customer reads as
+    correct. §3.2 refuses at the image wall for exactly this reason.
+
+    ⚠️ **Every test here drives the HTTP route.** The rule is about which
+    model the ROUTE calls, and a direct call to the resolver proves the
+    resolution and not the serving.
+    """
+
+    # ── clause 7 ──
+    def test_a_blind_rank_2_never_enters_the_lift_chain(
+            self, client, org_key, bound_tier, vision_bound):
+        """Rank 1 sees, rank 1 fails, and no second model is asked.
+
+        `vision_bound` binds `tier-vision` here, so a resolution that spliced
+        the two chains together would show up as a third model in `seen`.
+        """
+        seen: list[str] = []
+
+        async def _fail(**kwargs):
+            seen.append(kwargs["model"])
+            exc = Exception("overloaded")
+            exc.status_code = 500
+            raise exc
+
+        router_mod.set_provider_call(_fail)
+        _, key = org_key
+        sees = _scratch_step("deepseek", sees=True)
+        blind = _scratch_step("deepseek", sees=False)
+        tier = bound_tier([sees, blind], reads_images=[True, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        # An exhausted chain is the 502 it has always been. The chain is one
+        # step long, so there is nothing left to try.
+        assert r.status_code == 502, r.text
+        assert seen == [sees], (
+            "the blind rank-2 step answered about a picture it never saw"
+        )
+
+    def test_a_SEEING_rank_2_stays_in_the_lift_chain(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """The filter reads the whole chain, and not the head of it.
+
+        Rank 1 is blind and rank 2 sees. One model in the chosen tier can
+        still answer, so the lift holds and the second call to `tier-vision`
+        is saved.
+        """
+        _, key = org_key
+        blind = _scratch_step("deepseek", sees=False)
+        sees = _scratch_step("deepseek", sees=True)
+        tier = bound_tier([blind, sees], reads_images=[False, True])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [sees]
+
+    def test_a_chain_with_NO_seeing_step_falls_to_the_vision_tier(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """An empty filter result falls, exactly as one FALSE step does."""
+        _, key = org_key
+        tier = bound_tier(
+            [_scratch_step("deepseek", sees=False),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[False, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+
+    # ── clause 8 ──
+    def test_an_unkeyed_rank_1_never_promotes_a_blind_rank_2(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """🔴 This shape needs NO failover at all, which is the wider half.
+
+        The route drops every step it holds no key for before it tries
+        anything. So an unkeyed rank 1 used to make the blind rank 2 the FIRST
+        step the Router called, with nothing having failed.
+
+        ⚠️ **The answer is the 503 an unconfigured vendor already gets, and
+        NOT a fall to `tier-vision`.** A credential-aware fall is a third
+        resolution rule and §3.2 records no decision on it (§8.5 clause 8).
+        `tier-vision` is bound here, and the route still does not reach it.
+        """
+        _, key = org_key
+        vendor = f"nokey{uuid.uuid4().hex[:8]}"
+        tier = bound_tier(
+            [_scratch_step(vendor, sees=True),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[True, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 503, r.text
+        assert vendor in r.json()["detail"]
+        assert calls == [], (
+            "a blind model answered because rank 1 held no credential"
+        )
 
 
 def test_n_is_capped_like_max_tokens(client, org_key):

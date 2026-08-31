@@ -64,6 +64,13 @@ const M = (
   // does about it.
   cachedInputPer1M: id === "anthropic/claude-sonnet-4" ? 0.3
     : id === "openai/gpt-4o" ? 1.25 : null,
+  // The per-unit costs (019, H-78) — the only cost a non-token job has.
+  // ⚠️ Whisper reads 0.006 PER MINUTE, and litellm publishes 0.0001 per
+  // second. The Console multiplies by 60 once, in the feed read, so the
+  // profile a sample stands in for already holds the per-minute number.
+  perMinuteUsd: id === "openai/whisper-1" ? 0.006 : null,
+  perCharacterUsd: id === "openai/tts-1" ? 0.000015 : null,
+  perImageUsd: id === "openai/gpt-image-1" ? 0.04 : null,
   description,
   declared,
 });
@@ -366,6 +373,9 @@ const FM = (
   id, provider: id.split("/")[0], mode, task, invocation,
   contextWindow: ctx, maxOutput: out,
   inputPer1M: inP, outputPer1M: outP, cachedInputPer1M: cached,
+  // 019 (H-78) — unknown unless a row says otherwise, which is the real
+  // state for every chat model litellm ships.
+  perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
   readsImages: false, thinksFirst: false, deprecatedOn: null,
   ...over,
 });

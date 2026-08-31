@@ -315,16 +315,22 @@ verification once** and rebuilt (see its ticket) ·
 stays unwired, because the member identity it would rest on is a request
 header (**H-73**) · CP-8 spec only ·
 **⚠️ THE MIGRATION LADDER AND THE §6A SECTIONS, REFRESHED 2026-08-30.**
-`infra/customer_console/` holds **001–018**. The next free number is **019**.
-R1 says list the directory at build time and re-check at merge. `014` is the
-vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
+`infra/customer_console/` holds **001–019** on this branch. The next free
+number is **020**. ⚠️ **§8.1 (slice 5) of `ai_metering_and_analytics.md`
+claims 020**, and a sibling branch builds it. Re-check at merge (R1). R1 also
+says an agent lists the directory at build time. `014` is
+the vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
 `tier_rate_card`, the eleven-tier slate and the `video` and `music` task rows
 (§6A.12, D67). `016` adds `tier_catalog.task` (D68). `017` adds `credit_price`,
 the rupee side of H-42 (§6A.13). `018` adds the credit-reference unique index.
-Three §6A sections carry the 2026-08-30 work: **§6A.11** the vendor feed,
-**§6A.12** tier pricing and the slate, and **§6A.13** the credit's own price.
-**§6A.11a is SPEC ONLY.** It holds the per-unit vendor costs (H-78), written
-2026-08-30 as agent-proposed defaults the owner may overrule (D16/D17). ⚠️ The
+`019` adds the six columns for per-unit vendor cost (§6A.11a).
+Four §6A sections carry the 2026-08-30 work. They are **§6A.11** the vendor
+feed, **§6A.11a** the per-unit vendor costs, **§6A.12** tier pricing and the
+slate, and **§6A.13** the credit's own price.
+**§6A.11a is BUILT, 2026-08-31.** It holds the per-unit vendor costs (H-78).
+Clauses 5, 6 and 7 landed on 2026-08-31, beside clauses 1 to 4 and clause 8.
+The projection in the feed read does the one conversion. The profile write
+passes the price through, and the board reads the profile. ⚠️ The
 sentence further down that reads *"the ladder is 001–007 … the next free number
 is 008"* was true on 2026-08-18. This line supersedes it. ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
@@ -619,6 +625,16 @@ correction carries its own date. Re-verify every anchor at dispatch.
 clause 10 for the refusal rows, it rewrote clause 3 around the
 `verbose_json` rule, and it made clause 5's ordering a preference. It also
 re-measured the `main.py` anchors on branch `ws-31-slice5-refusals`.
+
+🆕 **§6A.10c arrived on 2026-08-31, and it is now BUILT.** It holds the
+build contract for `POST /v1/images/generations` and `POST /v1/audio/speech`,
+in twelve clauses with their own fence table. §6A.10a clause 2 named both
+routes as non-goals of the transcribe slice, and that clause now cites
+§6A.10c. **So §6A.10b is the one section that stays SPEC ONLY.**
+
+⚠️ **§6A.10c seeds NO `tier_binding` row**, because the choice of the vendor
+model we resell is a commercial act. Its clause 4 holds that argument. So
+both routes answer 400 until the owner writes one binding row for each.
 
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
@@ -7915,6 +7931,12 @@ call.
 2. **Four named non-goals.** No image route. No speak route. No streaming.
    No tenant caller in this slice, per clause 7.
 
+   📌 **§6A.10c now scopes the image route and the speak route IN.** It
+   arrived on 2026-08-31, and it holds the build contract for
+   `POST /v1/images/generations` and `POST /v1/audio/speech`. This clause
+   stays as the audit wrote it, because it records what the transcribe slice
+   built. Read it as history from that date on.
+
    🔴 **The 400 on a stream request is NEW behaviour THIS SLICE builds.**
    *(Rewritten 2026-08-30. This clause read the refusal off
    `STREAMABLE_TASKS`, and that constant cannot serve it.)*
@@ -8130,6 +8152,423 @@ uv run pytest tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
 ```
 
+### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — BUILT 2026-08-31 · REPAIRED 2026-08-31 · CORRECTED 2026-08-31
+
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-media`.** The routes are
+`main.py::images_generations` and `main.py::audio_speech`. All twelve clauses
+below hold.
+
+🔴 **REPAIRED on 2026-08-31, review round 2, on the same branch.** An
+adversarial review returned REQUEST-CHANGES on one P1 and four P2s. This
+section carries the answer to each one.
+
+- **P1, a revenue defect.** The image body forwarded a caller-chosen `size`,
+  and the vendor prices a picture by size. Clause 1 holds the removal and the
+  measurement behind it.
+- **P2 (a).** The speak door billed what went OUT and never read what came
+  BACK. Clause 6 holds the repair.
+- **P2 (b).** `router.image_count`'s `None` arm cannot fire against a real
+  litellm answer. Clause 5 holds the ruling, and the fence name carries it.
+- **P2 (c).** `SpeechRequest.input` held no `min_length`, while
+  `ImageRequest.prompt` held one. Clause 6 holds the floor.
+- **P2 (d).** Fence row 10 cited a line number that had drifted onto a blank
+  line. **NO row of the table below cites a line number now.** *(Corrected
+  2026-08-31. This bullet said every row carries a test NAME, and nine of
+  them do not.)* Nine of the eighteen rows cite `file::test_name`, and the
+  other nine cite the file alone. A bare file name does not drift either, so
+  this defect closes and the table needs no further edit.
+
+🔴 **CORRECTED on 2026-08-31, a truth-repair round on the same branch. It
+changes NO behaviour.** Review round 2 returned APPROVE and recorded three
+statements that measurement refutes. This round replaces each with the
+measured one, and it touches no code path.
+
+- **Clause 1 said `input_cost_per_character` was the one per-unit key on all
+  27 speech models.** SIX of the 27 carry no such key. The ruling stands on
+  the half the review did measure: no speech model prices by voice or by
+  format. Clause 1 now says that, and it names the six.
+- **Clause 5 said a deleted `None` arm would cost a picture call against three
+  token rates.** It would not — `vendor_cost_usd` answers NULL for a call with
+  no tokens. The KEEP ruling stands on H-47 alone, and clause 5 now rests
+  there.
+- **P2 (d) above said every fence row carries a test name.** Nine of the
+  eighteen carry the file alone. The bullet now says so.
+
+📌 **Three follow-ups left the round as HANDOFF entries, and this section
+builds none of them.** **H-87** asks for a size dimension on the vendor price,
+which is what offering `size` needs first. **H-85** asks for an unmeasured-call
+log a person can reconcile. `router.unmeasured_quantity` names no organization
+and no request id, and the transcribe route wrote that shape before these two
+doors copied it. **H-86** asks for one `_serving_prelude` across all four
+Router doors, because the transcribe route still keeps its own copy of the same
+body.
+
+`tests/unit/test_customer_console_tasks.py` carries seventeen of the eighteen
+fences, and `tests/unit/test_customer_console_payments.py` carries the
+eighteenth. The clause text stays as the audit wrote it, because it is the
+contract the build answers. The repair round ADDS to a clause and rewrites
+none of it. Match a `main.py` anchor by handler name, because the two new
+routes moved every line number below them.
+
+⚠️ **Every default here is an agent-proposed answer the owner may
+overrule.** Clause 3 records the one the build had to take.
+
+🔴 **Neither tier is BOUND, so both routes answer 400 today.** Clause 4 holds
+that argument, and it stays true after the build. Arming each route is ONE
+`tier_binding` INSERT, and it is the owner's act.
+
+**Gate: AGENT-SAFE.** D61.1 decided the endpoint shape, so no owner act stands
+in front of the build. Two owner acts stand in front of the SERVING, and
+clause 4 names both. `ROUTER_SERVING_ENABLED` stays the owner's flip (H-69).
+
+**The problem, in one line.** G-1 measured it, and §6A.10a closed one third of
+it. The Router serves two of D60's six tasks today.
+`015_tier_pricing.sql:52,54` registers `tier-image` and `tier-tts`, and
+`016_tier_task.sql:33,35` maps them to `image` and `speak`. Neither tier has a
+door.
+
+**Scope.** This section holds the build contract for two routes, and for
+nothing else. Both routes copy §6A.10a line for line:
+
+- The DOOR declares the task. The `model` field names a TIER.
+- The three customer walls stand before the provider call.
+- `_record_completion` writes the one usage row.
+
+📌 **§6A.10a clause 2 named these two routes as non-goals of the transcribe
+slice.** This section scopes them in, and that clause now cites this one.
+
+#### Twelve clauses
+
+1. **Scope: the image route.** `POST /v1/images/generations`, on the existing
+   `KeyCaller` auth. The body is JSON, and it carries `model` and `prompt`.
+   **That `model` field is a TIER ALIAS**, never a model id.
+   `016_tier_task.sql:33` maps `tier-image` to the `image` task, so the alias
+   declares the task.
+
+   D61.1 fixed the OpenAI shape, and D61.3 and D60.4 bind the alias rule. A
+   bare model id answers **400**, and the Router never sniffs the payload
+   (D61 G-3). The route names its own task in a module constant, as
+   `TRANSCRIBE_TASK` does (`main.py:5410`).
+
+   🔴 **THE BODY CARRIES NO `size` FIELD, and that is a REVENUE rule**
+   *(repaired 2026-08-31, review round 2)*. The vendor prices a picture by
+   size. Our own profile column carries no size axis at all. `feed.py` reads
+   `output_cost_per_image` off the bare model key, and
+   `019_per_unit_vendor_costs.sql:97` states `vendor_per_image_usd` as *"USD
+   per generated image"*. So exactly one number lands in that column.
+
+   The build shipped `size` as a forwarded field for one round. A caller
+   sending `{"model": "tier-image", "n": 4, "size": "1024x1792"}` against
+   `openai/dall-e-3` costs us 4 x $0.080. The row would have recorded
+   4 x $0.04, and half of the recorded cost is fiction.
+
+   **Measured in litellm 1.86.0.** `standard/1024-x-1024/dall-e-3` is
+   3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
+   4.359e-08 per pixel, which is $0.080.
+
+   📌 **This clause names `model` and `prompt` alone, so the removal returns
+   the code to its own contract.** The body clamps `n` at four because `n`
+   multiplies our cost. `size` multiplied the same cost with no ceiling. The
+   chat route states the house rule at `main.py::chat_completions`, in
+   `_kwargs_for`: *"the ones that multiply our cost are clamped."* Nothing
+   can clamp a size, because each size the vendor sells holds its own price.
+   With `extra="forbid"` in place, a caller who sends `size` reads a 422
+   instead of buying an under-charge.
+
+   ⚠️ **Offering sizes is a real feature, and it needs a price shape first.**
+   `HANDOFF.md` **H-87** holds it: a size dimension on the vendor price, in
+   the feed and in `model_profile`. It must land before the owner offers
+   image sizes to a customer.
+
+   📌 **The sibling question, asked and answered.** No other forwarded field
+   picks a price axis our profile cannot see. On the speak door, `voice` and
+   `response_format` are not price axes. 🔴 **No speech model prices by voice
+   or by format.** Measured 2026-08-31 in litellm 1.86.0. 27 entries carry
+   `mode: audio_speech`, and a regex over all 27 keys for
+   `alloy|nova|shimmer|mp3|opus|wav|pcm|flac|aac` returns zero hits.
+
+   The litellm map prices each speech model by a whole model id (`tts-1`
+   against `tts-1-hd`, `aws_polly/standard` against `aws_polly/neural`).
+
+   ⚠️ **SIX of the 27 carry no `input_cost_per_character`** *(corrected
+   2026-08-31 — this clause said one per-unit key served all of them, and it
+   does not)*. They are `gpt-4o-mini-tts`, `azure/gpt-4o-mini-tts`, the two
+   dated `gpt-4o-mini-tts` builds, and both `gemini-2.5-flash-preview-tts`
+   keys. They price on tokens and on seconds. Binding one is an OPERATOR
+   choice through `tier_binding`, and never a caller's. `feed.py:242` finds
+   no character key for them, so `vendor_per_character_usd` lands NULL. That
+   is D-AI-7 rule 3 working as designed.
+
+   📌 **The feed keys on a model id, so it holds 26 speak rows and 5 NULLs.**
+   It folds `gemini-2.5-flash-preview-tts` and
+   `gemini/gemini-2.5-flash-preview-tts` onto one row. The count of 27 is a
+   count of ENTRIES in the litellm map.
+
+   📌 **Two image axes exist, and neither body accepts one.** `quality` and
+   `style` do move the vendor price (`hd/1024-x-1024/dall-e-3` is 7.629e-08
+   per pixel, twice `standard`). A later diff that adds either field takes
+   this clause's argument with it.
+
+2. **Scope: the speak route.** `POST /v1/audio/speech`, on the same
+   `KeyCaller` auth. The body is JSON, and it carries `model`, `input` and
+   `voice`. `016_tier_task.sql:35` maps `tier-tts` to the `speak` task.
+   **The `model` field is a TIER ALIAS here too**, and a bare model id answers
+   **400**.
+
+   The response is **audio bytes**, and not JSON. So the route answers the
+   caller with the bytes the provider returned, under the provider's own
+   content type. Clause 3 holds the streaming question that this shape opens.
+
+3. **Four named non-goals.**
+   - **No streaming speech.** The route serves the buffered bytes alone.
+
+     🔴 **A caller-sent `stream: true` on the speak route is a 400.** This
+     clause named the non-goal and did not say what such a request gets.
+     The build takes §6A.10a clause 2's answer, which the transcribe door
+     already gives. **It is a D16 agent default, and the owner may overrule
+     it.** The refusal stands before anything resolves, so it costs the
+     customer nothing. It writes no usage row, because migration `020`'s
+     CHECK holds three slugs and this wall is not one of them.
+     `test_customer_console_tasks.py::TestASpeakCallNeverStreams` fences
+     both halves. *(Recorded 2026-08-31, in the same change that built it.)*
+   - **No tenant caller.** Nothing in the tenant plane posts to either route
+     in this slice.
+   - **No `tier_binding` seed.** Clause 4 holds the reason.
+   - **No native handler.** Clause 9 holds the reason.
+
+   🔴 **`speak` IS in `STREAMABLE_TASKS` (`catalog.py:36`), and this slice
+   still does not stream it.** The OpenAI speech endpoint answers with audio
+   bytes, and never with SSE frames. Slice 11's failover walk is built for
+   SSE. Its first-frame boundary has no meaning for an audio body, so a
+   streamed speak call would run that walk against a shape it cannot read.
+
+   ⚠️ **Name the ONE path that membership makes reachable.**
+   `STREAMABLE_TASKS` has one reader, `check_streams` (`catalog.py:108`). It
+   guards the OPERATOR capability write at `main.py:2002`, so an operator MAY
+   set `streams = TRUE` on a `speak` capability row. **Nothing on the serving
+   path reads that column.** The chat route branches on the request body
+   instead (`main.py:5301`). The fence must prove that such a row changes
+   nothing about what this route answers.
+
+4. **THE BINDING GAP: this slice seeds NO `tier_binding` row.** Which vendor
+   model we resell for pictures, and which one we resell for speech, is a
+   COMMERCIAL decision. It belongs to the owner, and an agent must not take
+   it. `010:212` seeded `groq/whisper-large-v3-turbo` for `tier-stt`, and no
+   such row exists for `tier-image` or for `tier-tts`.
+
+   The slice MAY seed `model_capability` rows. *"This model answers
+   `aimage_generation`"* is a vendor fact, and not a choice about what we
+   sell. `010:219` seeds the `transcribe` capability the same way.
+
+   ⚠️ **The consequence, stated plainly.** Until the owner binds `tier-image`
+   and `tier-tts`, each route answers **400** with the `tier_unknown` refusal
+   and writes one refusal row. That is the SAME wall §6A.10a clause 10
+   already specifies, on a second door and a third. A fence seeds its own
+   binding in its test fixture, so the fences pass against an unbound
+   database.
+
+   📌 **Arming each route is therefore ONE owner act — one `tier_binding`
+   INSERT.** It sits beside the three prerequisites H-69 already lists, and it
+   is not a fourth kind of act.
+
+5. **Quantity, the image route: the COUNT OF IMAGES the provider RETURNED.**
+   The unit is `images`, which `task_catalog` gives the `image` task
+   (`010:49`). The route counts the pictures in the response, and it never
+   reads the request's `n`. A provider that returns fewer pictures than the
+   caller asked for must bill fewer. The count is a `Decimal`, and it bills
+   through the one `rate_call` seam, exactly as transcribe's minutes do.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A response that carries
+   no readable list of images logs `router.unmeasured_quantity` and bills
+   zero. It guesses at no count. §6A.10a clause 3 took that same answer for a
+   missing duration, and the reason holds here: the customer already holds
+   the pictures.
+
+   🔴 **THAT ALARM IS STUB-ONLY, and nobody may read it as a live one**
+   *(measured 2026-08-31, review round 2)*. `ImageResponse.__init__`
+   (`litellm/types/utils.py:2336`, litellm 1.86.0) turns a falsy `data` into
+   `[]`. So a real litellm answer always reaches `router.image_count` with a
+   list, and it takes the `Decimal(0)` arm and not the `None` arm. The
+   fence drives a dict stub that litellm does not produce, and its name now
+   ends in `_STUB_ONLY`.
+
+   📌 **The ruling: KEEP the arm, and record what it can and cannot do.**
+   The arm is the only reader H-47's native handler seam can rely on, because
+   that seam will answer a shape litellm never built. That reason carries the
+   ruling on its own. An alarm that cannot ring is a defect only while nobody
+   has written down that it cannot ring.
+
+   🔴 **THE SECOND REASON WAS FALSE, and this clause no longer states it**
+   *(measured 2026-08-31, review round 2)*. It said a deleted arm would cost
+   the picture call against three TOKEN rates it never consumed.
+   `router.vendor_cost_usd` returns `None` when prompt and completion are
+   both zero, which is every image call. So the token branch would record
+   `provider_cost_usd` NULL. That is the same value the per-unit branch
+   records for a quantity of zero, so the claimed harm is nil. The route
+   coerces a `None` count to zero before the meter runs, so nothing hands
+   `_record_completion` a `None` quantity either.
+
+6. **Quantity, the speak route: the COUNT OF CHARACTERS in the input text.**
+   The unit is `characters`, which `task_catalog` gives the `speak` task
+   (`010:48`). The route measures the text it SENDS upstream, and never a
+   figure the caller reports. The count is a `Decimal`, and it bills through
+   the same `rate_call` seam.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A request that carries
+   no readable input text logs `router.unmeasured_quantity` and bills zero.
+
+   📌 **The two routes measure at opposite ends, on purpose.** A picture count
+   is a fact only the RESPONSE holds. A character count is a fact the REQUEST
+   holds, and an audio body reports nothing we can count.
+
+   🔴 **THE COUNTING RULE: we count CODEPOINTS** *(recorded 2026-08-31, review
+   round 2)*. `len()` on a Python `str` counts codepoints, and pydantic's
+   `max_length` counts them too. So the guard and the meter agree by
+   construction, and a caller cannot pass the ceiling and then bill under it.
+   ⚠️ **The vendor's own rule may differ, and somebody must check it before
+   the owner binds `tier-tts`.** A vendor that bills UTF-8 bytes charges us
+   more for one Devanagari character than this row records.
+
+   🔴 **AN EMPTY INPUT IS A 422 NOW, and never a served call**
+   *(repaired 2026-08-31, review round 2)*. `SpeechRequest.input` carries
+   `min_length=1`, the same floor `ImageRequest.prompt` already held. An
+   empty string used to resolve the chain, open the provider call and buy a
+   vendor refusal for text the vendor will not read. It then tripped
+   `router.unmeasured_quantity` for a quantity that is genuinely zero, which
+   hid a real alarm behind a shape pydantic refuses for free.
+
+   🔴 **A CALL THAT ANSWERED NO AUDIO BILLS ZERO, whatever we sent**
+   *(repaired 2026-08-31, review round 2)*. This clause measures the request,
+   and the response still decides whether the count bought anything.
+   `router.speech_audio` never raises — a body it cannot read answers
+   `(b"", "audio/mpeg")` by design. So the route used to hand the customer an
+   empty 200 and charge them for every character. The route now reads the
+   audio BEFORE the meter runs. Zero bytes log `router.unmeasured_quantity`
+   and bill zero, which is what the image door has always done.
+
+7. **`unit` and `quantity` reuse H-46's plumbing. Build no second path.**
+   `_record_completion` (`main.py:4635`) already takes a `quantity`, and
+   `_rate_completion` (`main.py:1038`) already hands it to `rate_call`.
+   `rate_call` prices a per-unit card from the quantity alone, so neither
+   function changes for these two routes. The usage row then holds that
+   quantity and the unit the tier card names.
+
+   `_task_unit` (`main.py:2307`) reads `task_catalog.natural_unit`. So it
+   answers `images` for `image` and `characters` for `speak` with no change at
+   all, because both rows already exist (`010:48`, `010:49`).
+
+   ⚠️ **`unit` lands NULL while no `tier_rate_card` row exists for the pair.**
+   `_rate_completion` reads the unit off the CARD, and it returns `(0, None)`
+   when it finds none. Migration `015` seeds no tier rates, so a NULL unit is
+   the SHIPPED state until the owner prices the two tiers (H-42, a commercial
+   act). An absent card does not touch `quantity`. The route measures the
+   count, and the row records it whether or not a card exists.
+
+8. **Vendor cost: `vendor_per_image_usd` and `vendor_per_character_usd`.**
+   `019_per_unit_vendor_costs.sql:81-83` built both columns, so this slice
+   adds no column. Guard each read the way `_vendor_per_minute`
+   (`main.py:4613`) guards `vendor_per_minute_usd`. Ask
+   `information_schema` first, and answer NULL when the column is absent.
+   NULL means nobody told us, and it never means zero (D-AI-7 rule 3,
+   `ai_metering_and_analytics.md` §3.7).
+
+   🔴 **A MEASURED defect the implementer must repair.**
+   `_record_completion`'s per-unit cost branch (`main.py:4704`) is hard-wired
+   to the MINUTE column. It calls `_vendor_per_minute` for every call that
+   carries a quantity. An image call would then take its cost from a
+   per-minute price. The branch must pick its column by the task's UNIT, and
+   never by the presence of a quantity.
+
+9. **Dispatch through the ONE seam. Add no second dispatch table.**
+   `resolve_invocation` (`router.py:397`) answers which verb serves the
+   `(model, task)` pair, and `010:219` shows the shape of a capability seed.
+   The verbs are `aimage_generation` and `aspeech`, and `KNOWN_INVOCATIONS`
+   (`catalog.py:26-32`) already holds both. So this slice adds no verb to that
+   set.
+
+   🔴 **`SERVING_INVOCATIONS` (`router.py:509`) holds two verbs today**,
+   `acompletion` and `atranscription`. It is the set the Router may CALL, and
+   `_litellm_call` raises `UnservableInvocation` for anything outside it. This
+   slice adds `aimage_generation` and `aspeech` to that set, and nothing else.
+
+   📌 **H-47 gets NO first caller here.** Both verbs are litellm verbs, so
+   neither route needs a native handler. H-47 stays open and unbundled per
+   D57.3 — the handler seam lands with its first NATIVE caller, and never
+   before it. Do not fold H-47 into this slice.
+
+10. **The three walls write refusal rows, through slice 5's writer.**
+    `_record_refusal` (`main.py:4851`) is that writer. Each route calls it on
+    each of its three customer walls: the 400 `tier_unknown`, the 402
+    `insufficient_credits` and the 403 `run_ceiling_exceeded`.
+    `020_usage_refusal.sql:47-49` closes the vocabulary at those three slugs,
+    so this slice mints no fourth one. Each route passes its own task, so
+    `_task_unit` writes a `unit` of `images` or of `characters`.
+
+    ⚠️ **Carry the refusal OUT of the serving transaction before you call the
+    writer.** A row written on the serving connection rolls back with the
+    raise, and then the meter records nothing. `_record_refusal`'s own
+    docstring names that hazard.
+
+    🔴 **The 401 CANNOT write a row, and the reason is structural.** The key
+    check refuses before the code knows the organization, and
+    `usage_event.organization_id` is NOT NULL.
+    `ai_metering_and_analytics.md` §8.1 holds that reason.
+
+11. **`METERING_EXEMPTION` grows by EXACTLY two doors, in this same diff.**
+    `tests/unit/test_customer_console_payments.py:133` holds the constant, and
+    it names `chat_completions` and `audio_transcriptions` today. The two new
+    routes join it, so the set holds four pairs. Update the
+    count-and-contents fence in the SAME change, or the suite goes red.
+
+    📌 **§9's owner-ratification item already predicts this growth.** Item 6
+    reads *"The image endpoint and the speak endpoint will each add one
+    more."* So this is the same argument on the third door and the fourth, and
+    it is not a new argument. Both routes take a customer key, and our own
+    infrastructure decides both amounts.
+
+12. **No migration, and no new suite.** `usage_event` has carried `task`,
+    `quantity` and `unit` since `010_tasks_units_capabilities.sql`.
+    `task_catalog` has carried `image` and `speak` since the same migration.
+    `019` built both vendor columns, and `020` built the refusal vocabulary.
+    §7's command block already names `test_customer_console_tasks.py` and
+    `test_customer_console_catalog.py`, which §6A.10a clause 8 added. The new
+    fences land in those files and in `test_customer_console_payments.py`, so
+    §7 needs no edit.
+
+#### Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| The `model` field is a tier alias on both routes, never a model id | `test_customer_console_tasks.py` — a bare model id returns 400 on `POST /v1/images/generations` and on `POST /v1/audio/speech` |
+| A speak call never streams | `test_customer_console_tasks.py` — the test writes a `speak` capability row with `streams = TRUE`, DRIVES the route, and reads one buffered body |
+| An image usage row records the count of images AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route against a stub that returns TWO pictures for a request that asked for THREE. It then SELECTs the `usage_event` row that call wrote, and reads `quantity` of 2 and `unit` of `images`. A hand-inserted row does not satisfy this fence |
+| A speak usage row records the count of characters AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route with a known input string, SELECTs the row it wrote, and reads that length off `quantity` with a `unit` of `characters` |
+| An unreadable count bills zero and does not fail the call — **stub-only** | `test_customer_console_tasks.py::test_a_response_with_no_image_list_bills_zero_STUB_ONLY` — a response with no image list returns 200 and the row bills 0. The name carries the ruling: litellm never produces that shape |
+| An unpriced vendor cost stays NULL | `test_customer_console_tasks.py` — no `vendor_per_image_usd` writes NULL, never 0 |
+| An image call costs off `vendor_per_image_usd`, never off `vendor_per_minute_usd` | `test_customer_console_tasks.py` — a profile priced on the MINUTE column alone leaves `provider_cost_usd` NULL for an image call |
+| Neither route serves without a `tier_binding` row | `test_customer_console_tasks.py` — with no binding, both routes return 400 and each writes one `tier_unknown` refusal row |
+| A refused POST writes ONE refusal row, with the task's own unit | `test_customer_console_tasks.py` — the test SELECTs the one row and reads `refusal_reason` plus a `unit` of `images` or of `characters` |
+| `SERVING_INVOCATIONS` gains the two verbs and stays inside `KNOWN_INVOCATIONS` | `test_customer_console_tasks.py::test_the_operator_vocabulary_is_wider_than_the_serving_one` — the subset assertion stands, and the test names both new verbs |
+| `METERING_EXEMPTION` holds exactly four pairs | `test_customer_console_payments.py` — the count-and-contents assertion names all four |
+| A caller may NOT pick the picture size | `test_customer_console_tasks.py::test_a_caller_may_NOT_pick_the_picture_SIZE` — a body carrying `size` returns 422 and writes no usage row |
+| No `size` reaches the vendor kwargs | `test_customer_console_tasks.py::test_no_SIZE_reaches_the_vendor_kwargs` — the test pins the served call's kwarg keys, and a sized request reaches the provider seam not at all |
+| `ImageRequest` declares no `size` field | `test_customer_console_tasks.py::test_the_image_body_declares_no_size_field_at_all` — the test pins the field set at `model`, `prompt`, `n`, `client_ref` |
+| No speak field multiplies the vendor price | `test_customer_console_tasks.py::test_no_speak_field_multiplies_the_vendor_price` — the test pins the `SpeechRequest` field set, and the clause holds the litellm measurement behind it |
+| An empty speech input never resolves a chain | `test_customer_console_tasks.py::test_an_empty_input_is_refused_before_anything_resolves` — a body with `input: ""` returns 422 and writes no usage row |
+| A speech call that answered no audio bills zero | `test_customer_console_tasks.py::test_a_call_that_answers_NO_AUDIO_bills_zero` and `::test_an_UNREADABLE_body_bills_zero_too` — a 200 with an empty body writes a row of 0 credits |
+| A speech call that DID answer audio still bills its characters | `test_customer_console_tasks.py::test_audio_that_DID_come_back_still_bills_the_characters` — the mutation guard, so a "bill zero" fence cannot pass on a route that bills nothing |
+
+**Verification.** The suites are database-gated (R8), so start the database
+first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_customer_console_catalog.py \
+  tests/unit/test_customer_console_payments.py -q
+```
+
 ---
 
 ### 6A.11 The vendor feed — upstream facts, fetched instead of typed (2026-08-30)
@@ -8164,18 +8603,49 @@ Decimal from the first parse, so trailing zeros never read as drift.
 against a real Postgres (R8). Frontend: `feed.test.ts` inside
 `npx vitest run` in `workbench/operator_console`.
 
-⚠️ **The feed stores TOKEN prices only, and §6A.11a is the ticket that
-widens it.** `014` holds three per-million-token columns and no per-second,
-per-character or per-image column. So an `image`, `transcribe` or `speak`
-job has no cost source. H-78 is that gap, and §6A.11a below carries its
-rules and its done-when.
+⚠️ **The feed also stores PER-UNIT prices since migration `019`, and
+§6A.11a owns them.** `014` held three per-million-token columns alone, so
+an `image`, `transcribe` or `speak` job had no cost source. H-78 is that
+gap. Both halves are built since 2026-08-31, and §6A.11a below carries the
+rules and the done-when.
 
-### 6A.11a The per-unit vendor costs (H-78) — SPEC ONLY, 2026-08-30
+### 6A.11a The per-unit vendor costs (H-78) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed
-answer the owner may overrule**, which is the D16/D17 convention CP-2b and
-CP-2c used. Where a name or a number below disagrees with the tree, the
-tree wins. Re-verify every anchor at dispatch.
+**Status: all eight done-when clauses are BUILT.** Clauses 1, 2, 3, 4 and 8
+landed on 2026-08-30. Migration `019_per_unit_vendor_costs.sql` adds the six
+columns and widens the two CHECK constraints. `feed.py` parses the three
+per-unit prices, and the upsert writes them.
+
+**Clauses 5, 6 and 7 landed on 2026-08-31 — the per-unit cost seam.**
+`_feed_wire` in `main.py` multiplies the stored per-second price by
+`Decimal(60)` and serves `vendor_per_minute_usd`. The other two per-unit
+prices cross the wire verbatim. `ProfileRequest` and the `set_model_profile`
+INSERT carry the three fields as optional `Decimal` values, and that route
+does no arithmetic. `GET /catalog/models` sends the profile's three fields as
+strings.
+
+`CatalogModel` gains `perMinuteUsd`, `perCharacterUsd` and `perImageUsd`,
+each read from the profile. `PriceFromCost.tsx` fills the vendor-cost box for
+an `image`, `transcribe` or `speak` job, through `recordedVendorUsd` in
+`priceboard.ts`.
+
+⚠️ **`CatalogModel`'s three new fields are `number | null`, not
+`string | null`.** They follow the `num()` rule every other price on that
+shape follows, because the board only DISPLAYS them and derives a suggestion
+from them. `FeedModel`'s three stay `string | null`. Those values get POSTed
+back into `model_profile`, and a float round trip would write its own noise
+into the database.
+
+⚠️ **The Console holds TWO multiplications by 60, and they convert different
+things.** `_feed_wire` converts a PRICE, which this section owns.
+`_SECONDS_PER_MINUTE` on the transcribe route converts a QUANTITY, which
+§6A.10a owns. Both are correct. A third is a defect, and
+`test_only_the_feed_read_multiplies_a_PRICE_by_sixty` names both sites.
+
+Each default below was an **agent-proposed answer the owner may overrule**,
+which is the D16/D17 convention CP-2b and CP-2c used. Where a name or a
+number below disagrees with the tree, the tree wins. Re-verify every anchor
+at dispatch.
 
 **The problem.** The "Price from cost" panel (§6A.13) reads a job's cost
 from the first model of its chain. That model carries token prices and
@@ -8186,17 +8656,20 @@ the operator types the vendor's dollar price by hand.
 the vendor's own unit. The profile stores the same price in the task's
 natural unit. The board reads the profile.
 
-⚠️ **Read "The seam" below before you build clauses 5 to 7.** A re-audit on
-2026-08-30 found that clause 5 named a copy seam the tree does not hold, and
-that nothing writes the three profile columns. The addendum names the real
-seam. Clauses 1 to 4 and clause 8 are unchanged.
+⚠️ **"The seam" below is now a BUILD RECORD, and it reads as a plan.** A
+re-audit on 2026-08-30 found that clause 5 named a copy seam the tree did not
+hold, and that nothing wrote the three profile columns. The addendum named
+the real seam, and clauses 5 to 7 built it on 2026-08-31. Read that section
+for the reasoning, not for work that is left.
+*(This read "Read 'The seam' below before you build clauses 5 to 7" until
+2026-08-31, when the three clauses landed.)*
 
 #### The feed columns — migration `019`
 
-⚠️ **Take the migration number at build time, and again at merge (R1).**
-The highest number on disk on 2026-08-30 is `018_credit_ref_unique.sql`, so
-`019` is free today. List `infra/customer_console/` before you name the
-file.
+⚠️ **An agent took the number at build time, and the merge re-checks it (R1).**
+The file is `019_per_unit_vendor_costs.sql`. A renumber at merge changes
+the name and nothing else, because every suite reads the ladder off the
+directory.
 
 R6 binds the migration. Add nullable columns. Rename nothing. Drop nothing.
 
@@ -8291,13 +8764,17 @@ copy. `read.ts` already builds `catalog.models` out of `model_profile`, and
 `PriceFromCost.tsx` already reads `catalog.models`. So the board gains
 three fields on a shape it consumes today.
 
-#### The seam — an addendum of 2026-08-30, after a re-audit
+#### The seam — an addendum of 2026-08-30, BUILT 2026-08-31
 
-🔴 **Clause 5 named a seam that does not exist.** "The declare-and-prefill
-seam" reads as one server-side function, and there is none. The copy is
-client-side. `prefillFrom` (`feed.ts:73`) fills the form boxes, and
-`declareBodies` (`feed.ts:95`) returns TWO bodies. Nothing on the server
-copies a feed row onto a profile row.
+⚠️ **This section is a build record.** A re-audit wrote it as a plan on
+2026-08-30, and clauses 5 to 7 built it on 2026-08-31. The present tense
+below describes the tree as it now stands. A 🔴 marks the state the addendum
+corrected.
+
+🔴 **Clause 5 named a seam that did not exist.** "The declare-and-prefill
+seam" reads as one server-side function, and there was none. The copy is
+client-side. `prefillFrom` fills the form boxes, and `declareBodies` returns
+TWO bodies. Nothing on the server copies a feed row onto a profile row.
 
 ⚠️ **The two bodies go to two DIFFERENT routes.** `FeedAvailable.tsx:52`
 posts the capability body to `POST /catalog/capabilities`.
@@ -8306,28 +8783,88 @@ posts the capability body to `POST /catalog/capabilities`.
 body carries the three per-unit fields. *(This read "Both post to
 `POST /catalog/profiles`" until 2026-08-30, and that was wrong.)*
 
-🔴 **And nothing writes the three profile columns.** `ProfileRequest`
-(`main.py:2238`) names ten fields, and the `set_model_profile` INSERT
-(`main.py:2270-2348`) names the same ten. Neither carries a per-unit price.
+🔴 **And nothing wrote the three profile columns.** `ProfileRequest` named
+ten fields, and the `set_model_profile` INSERT named the same ten. Neither
+carried a per-unit price.
+
+**Clause 6 closed this on 2026-08-31.** Both now carry thirteen.
+`ProfileRequest` also sets `extra="forbid"`, so a misnamed price answers 422
+instead of a silent 200. *(This read "nothing writes the three profile
+columns" until 2026-08-31.)*
 
 **The answer: NO new route.** A second door onto `model_profile` is the
 CLAUDE.md §5 defect. `POST /catalog/profiles` stays the one write.
 
 **The ×60 runs ONCE, and it runs in the FEED READ projection.** `_FEED_COLS`
-(`main.py:1821-1826`) gains the three per-unit columns. The projection that
-builds each feed row serves `vendor_per_minute_usd` **already converted**. It
-reads `vendor_per_second_usd`, multiplies by `Decimal(60)`, and serializes the
-result as a string. The other two fields need no conversion, so they cross
-verbatim.
+gains the three per-unit columns. The projection that builds each feed row
+serves `vendor_per_minute_usd` **already converted**. `_per_minute_wire`
+reads `vendor_per_second_usd`, multiplies by `Decimal(60)`, and serializes
+the result as a string. The other two fields need no conversion, so they
+cross verbatim.
 
 ⚠️ **The browser copies numbers, and it converts none of them.** That is why
 the multiply belongs in the read. A conversion in TypeScript is a float
 conversion, and a float rewrites the number it copies.
 
+⚠️ **A converted price that the PROFILE column cannot hold serves NULL**
+*(added 2026-08-31, from a review probe)*. `feed._per_unit` admits any value
+below `1E8` per second, so ×60 reaches `6E9`, and
+`model_profile.vendor_per_minute_usd` is `NUMERIC(18, 10)` with eight digits
+in front of the point. That number gave the console a value whose only use is
+the copy button. The copy then took an unhandled psycopg `DataError` — a
+measured **500**.
+
+The read now applies the parser's own rule: unknown beats poisoned. A dash is
+honest, and a 500 on a button is not.
+
+⚠️ **Money on this wire is FIXED-POINT, never E-notation** *(added
+2026-08-31)*. `str(Decimal)` goes scientific below `1e-6`, and these columns
+are `NUMERIC(18, 10)` precisely so a cheap model fits. An operator cannot
+read `6.0E-9` in a form box, and the console POSTs that box back verbatim.
+Both projections format with `f`.
+
+⚠️ **The BROWSER has the same rule, and it needed the same fix** *(added
+2026-08-31, from a review probe)*. `String(n)` in TypeScript also goes
+exponential below `1e-6`, so the vendor-cost box read `3e-7` and a drift line
+read `$3e-10` even with the wire correct. `fixedDecimal` in `pricing.ts` is
+the ONE plain-digits renderer, and `driftFor`, `vendorUsdBox` and
+`roundCredits` all come to it. `roundCredits` held the only earlier copy of
+that expansion, so it now calls the shared one instead of keeping a second.
+
 **The write is a plain pass-through.** `ProfileRequest` gains three optional
 `Decimal` fields. The `set_model_profile` INSERT gains the three columns in
 its column list, in its VALUES list, and in its `ON CONFLICT DO UPDATE SET`
 list. The profile form gains three boxes. No maths happens on this path.
+
+⚠️ **`ProfileRequest` sets `extra="forbid"`** *(added 2026-08-31, from a
+review probe)*. Pydantic ignores an unknown key by default, so a POST
+carrying `vendor_per_second_usd` answered **200 and stored nothing**. That is
+the exact confusion this feature invites, because the feed table holds a
+per-second column and the profile holds a per-minute one. A silent success is
+the worst shape that failure could take. The misnamed price now answers 422
+and names the field. The idiom matches the five request models already in
+`main.py`, and the console sends only known fields.
+
+⚠️ **The three fields bound BOTH ends of the column, and each end mirrors
+the ingest rule** *(added 2026-08-31, from a review probe)*. The write stays
+a pass-through, because neither rule changes a number. Each one refuses one.
+
+| End | The rule on the WRITE | The matching ingest rule |
+|---|---|---|
+| Ceiling | `lt=_PER_UNIT_MAX` (`1E8`). A hand-typed `100000000` answers 422 instead of reaching the psycopg 500 it used to | `feed._UNIT_MAX` answers NULL |
+| Floor | A NONZERO price that quantizes to zero at scale 10 answers 422, and the message offers `0` as the way forward | `feed._per_unit` answers NULL |
+
+The two sides differ on the ANSWER and agree on the JUDGEMENT. A price
+outside what the column holds is not a price. The feed is a cache, so it may
+say "unknown". A person typing into a form gets told, because they can fix
+it. Zero stays legal on both sides, because a free model is real.
+
+🔎 **A consistency finding for the board, and this slice does NOT fix it.**
+The older money columns on this same table carry `ge=0` and no upper bound:
+`vendor_input_per_1m_usd`, `vendor_output_per_1m_usd` and
+`vendor_cached_input_per_1m_usd`. A large enough hand-typed value on one of
+those still reaches Postgres and answers a 500. H-78 scoped the three NEW
+fields. The same guard on the older three is a separate ticket.
 
 | Profile column | Wire field | Where the value comes from |
 |---|---|---|
@@ -8360,6 +8897,18 @@ that is what makes the compare correct.
 The three new labels read "per minute", "per character" and "per image". A
 drift row with no unit invites the seconds-against-minutes mistake this whole
 section exists to prevent.
+
+⚠️ **The three per-unit pairs compare RELATIVELY, and the token pairs do
+not** *(added 2026-08-31, from a review probe)*. `driftFor` used one absolute
+epsilon of `1e-9`, which is dollar-scale. These columns are
+`NUMERIC(18, 10)` exactly so a tiny price fits. So a vendor could DOUBLE a
+price from `3e-10` to `6e-10` and the board still reported no drift. The gap
+fell under the epsilon.
+
+Each per-unit pair now flags a difference above one part in a million, at any
+size. Two zeros stay equal. The per-million-token pairs keep the absolute
+rule unchanged, because a dollar-scale price is never small enough to hide a
+move.
 
 #### Non-goals — four, each named
 
@@ -8441,14 +8990,24 @@ section exists to prevent.
 | An image entry prefers the output field | `test_customer_console_vendor_feed.py` — an entry carrying both fields takes `output_cost_per_image` |
 | A pixel-priced image model declares no cost | `test_customer_console_vendor_feed.py` — an `azure/*/gpt-image-1` entry leaves the per-image column NULL |
 | A small per-character price survives the round trip | `test_customer_console_vendor_feed.py` — `0.000015` reads back exact |
-| The board reads the profile, never the feed | `read.test.ts` — a feed row with a cost and no profile row yields no cost |
-| The FEED READ is the only ×60 | `test_customer_console_vendor_feed.py` — the read serves `vendor_per_minute_usd` at 60 times the stored per-second value |
-| The profile write converts nothing | `test_customer_console_vendor_feed.py` — a posted per-minute price reads back byte-identical |
-| Drift compares in PROFILE units | `feed.test.ts` — an equal per-minute pair reports no drift, and no client code multiplies |
+| The board reads the profile, never the feed | `read.test.ts` — `THE BOARD READS THE PROFILE, NEVER THE FEED`: a feed row with a cost and no profile row yields no cost |
+| The FEED READ is the only price ×60 | `test_customer_console_vendor_feed.py` — `test_the_feed_read_serves_transcription_PER_MINUTE`, plus `test_only_the_feed_read_multiplies_a_PRICE_by_sixty`, which names both legal sites |
+| The profile write converts nothing | `test_customer_console_model_profile.py` — `test_the_per_unit_prices_read_back_BYTE_IDENTICAL`: a posted per-minute price reads back unchanged |
+| The wire sends the three as strings | `test_customer_console_model_profile.py` — `test_the_catalog_read_sends_the_three_as_STRINGS` |
+| Drift compares in PROFILE units | `feed.test.ts` — an equal per-minute pair reports no drift, and a source-text assert proves no client code multiplies by 60 |
+| A converted price the profile cannot hold serves NULL | `test_customer_console_vendor_feed.py::test_a_per_second_price_that_x60_CANNOT_FIT_serves_null` — a 99000000/s feed row reads as unknown, and the copy that follows it cannot 500 |
+| Money on the wire is fixed-point | `test_customer_console_vendor_feed.py::test_a_tiny_per_unit_price_crosses_as_FIXED_POINT` — a sub-1e-6 price carries no `E` |
+| A misnamed per-unit price is refused, never swallowed | `test_customer_console_model_profile.py::test_a_MISNAMED_per_unit_price_is_refused_not_swallowed` — `vendor_per_second_usd` answers 422 |
+| Drift sees a change at any price size | `feed.test.ts` — a per-character price doubling from 3e-10 reports drift, which the old absolute epsilon hid |
+| Each ×60 scan catches every spelling it claims to | `test_customer_console_vendor_feed.py::test_the_sixty_fence_catches_every_spelling_it_claims_to` and its `feed.test.ts` twin — both self-check against the smuggles that beat the first version, and the TS twin covers `read.ts` and `priceboard.ts` too |
+| A hand-typed price the column cannot hold is refused | `test_customer_console_model_profile.py::test_a_HAND_TYPED_price_too_big_for_the_column_is_422` — `100000000` on each of the three fields |
+| A price too small to store never lands as free | `test_customer_console_model_profile.py::test_a_price_too_SMALL_for_the_column_is_422_not_a_silent_zero` — and its two partners prove `0` itself and `0.0000000001` still save |
+| The browser shows plain digits, never an exponent | `pricing.test.ts` — `fixedDecimal(3e-7)` is `"0.0000003"`. `priceboard.test.ts` and `feed.test.ts` pin the box and the drift line |
+| The board's per-unit half reads the profile through a PURE function | `feed.test.ts` — `PriceFromCost reads the RECORDED cost through priceboard.ts`, plus `priceboard.test.ts` for `recordedVendorUsd` and `vendorUsdBox` |
 
-**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py`
-against a real Postgres (R8). Frontend: `npx vitest run` in
-`workbench/operator_console`.
+**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py
+tests/unit/test_customer_console_model_profile.py` against a real Postgres
+(R8). Frontend: `npx vitest run` in `workbench/operator_console`.
 
 ### 6A.12 Tier pricing and the tier slate (D67, 2026-08-30)
 

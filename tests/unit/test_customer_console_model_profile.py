@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import typing
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -66,9 +67,11 @@ UPSERT = text(
     INSERT INTO model_profile (
         model, label, context_window, max_output,
         vendor_input_per_1m_usd, vendor_output_per_1m_usd,
+        vendor_per_minute_usd, vendor_per_character_usd, vendor_per_image_usd,
         description, reads_images, thinks_first, updated_at
     ) VALUES (
-        :model, :label, :ctx, :out, :vin, :vout, :descr, :imgs, :think, now()
+        :model, :label, :ctx, :out, :vin, :vout,
+        :vmin, :vchar, :vimg, :descr, :imgs, :think, now()
     )
     ON CONFLICT (model) DO UPDATE SET
         label = EXCLUDED.label,
@@ -76,6 +79,9 @@ UPSERT = text(
         max_output = EXCLUDED.max_output,
         vendor_input_per_1m_usd = EXCLUDED.vendor_input_per_1m_usd,
         vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
+        vendor_per_minute_usd = EXCLUDED.vendor_per_minute_usd,
+        vendor_per_character_usd = EXCLUDED.vendor_per_character_usd,
+        vendor_per_image_usd = EXCLUDED.vendor_per_image_usd,
         description = EXCLUDED.description,
         reads_images = EXCLUDED.reads_images,
         thinks_first = EXCLUDED.thinks_first,
@@ -88,6 +94,7 @@ def save(conn, model: str, **over):
     row = {
         "model": model, "label": None, "ctx": None, "out": None,
         "vin": None, "vout": None, "descr": "", "imgs": False, "think": False,
+        "vmin": None, "vchar": None, "vimg": None,
     }
     row.update(over)
     conn.execute(UPSERT, row)
@@ -126,6 +133,58 @@ class TestUnknownIsNotZero:
         # vendor's free tier — and refusing zero here would make it unrecordable.
         save(conn, model, vin=0, vout=0)
         assert read(conn, model)["vendor_input_per_1m_usd"] == 0
+
+
+class TestThePerUnitCosts:
+    """H-78 (§6A.11a): the three per-unit columns migration 019 adds.
+
+    ⚠️ The profile holds the TASK's natural unit, and the feed holds the
+    VENDOR's. litellm prices transcription per second, `task_catalog` prices
+    `transcribe` per minute, and the x60 conversion happens once inside the
+    FEED-READ projection (`_FEED_COLS`, which §6A.11a clauses 5 to 7 build).
+    Nothing here converts anything.
+
+    (This named "the declare-and-prefill seam" until 2026-08-31. §6A.11a
+    retracted that seam — it does not exist, and the copy is client-side.)
+    """
+
+    def test_all_three_are_nullable_and_default_to_unknown(self, conn, model):
+        save(conn, model)
+        row = read(conn, model)
+        assert row["vendor_per_minute_usd"] is None
+        assert row["vendor_per_character_usd"] is None
+        assert row["vendor_per_image_usd"] is None
+
+    def test_a_negative_per_minute_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vmin=-1)
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_negative_per_character_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vchar="-0.000015")
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_negative_per_image_price_is_refused(self, conn, model):
+        with pytest.raises(Exception) as exc:
+            save(conn, model, vimg=-1)
+        assert "model_profile_positive" in str(exc.value)
+
+    def test_a_small_price_survives_the_round_trip(self, conn, model):
+        # 🔴 NUMERIC(18, 10), wider than the token columns on purpose. OpenAI
+        # text-to-speech charges 0.000015 per character today, and four
+        # decimals would store that as zero — a free model on the card.
+        save(conn, model, vchar="0.000015", vimg="0.04", vmin="0.006")
+        row = read(conn, model)
+        assert row["vendor_per_character_usd"] == Decimal("0.000015")
+        assert row["vendor_per_image_usd"] == Decimal("0.04")
+        assert row["vendor_per_minute_usd"] == Decimal("0.006")
+
+    def test_a_price_of_zero_is_ALLOWED(self, conn, model):
+        # The CHECK reads `>= 0`, like the token columns. A free model is a
+        # real thing, and only NULL says "nobody has told us".
+        save(conn, model, vmin=0, vchar=0, vimg=0)
+        assert read(conn, model)["vendor_per_image_usd"] == 0
 
 
 class TestSavingTwice:
@@ -246,6 +305,197 @@ class TestTheProfileRoute:
             conn.execute(text(
                 "DELETE FROM model_profile WHERE model = :m"), {"m": name})
         assert actor, "the profile audit row must name who saved it"
+
+    def test_the_per_unit_prices_read_back_BYTE_IDENTICAL(
+            self, client, engine):
+        """🔴 §6A.11a clause 6: the profile write is a PASS-THROUGH.
+
+        The one unit change in this feature — per second to per minute —
+        happens in the FEED READ, once. If this route also converted, a
+        transcription price would be multiplied by 3600 between the box the
+        operator typed it into and the column billing reads, and nothing on
+        any screen would say so.
+
+        So: post three per-unit prices, read the three columns, and demand
+        the same numbers. Add any arithmetic to `set_model_profile` and this
+        test goes red.
+        """
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name,
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+        })
+        assert r.status_code == 200, r.text
+
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = (row["vendor_per_minute_usd"],
+                   row["vendor_per_character_usd"],
+                   row["vendor_per_image_usd"])
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == (Decimal("0.006"), Decimal("0.000015"), Decimal("0.04"))
+
+    def test_the_per_unit_prices_UPSERT_like_every_other_column(
+            self, client, engine):
+        """A second save must UPDATE. `set_model_profile` is the one catalog
+        write that is not insert-only, and a per-unit price left behind by
+        the ON CONFLICT list would freeze at whatever landed first."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        for price in ("0.006", "0.012"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": name, "vendor_per_minute_usd": price})
+            assert r.status_code == 200, r.text
+
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_minute_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == Decimal("0.012")
+
+    def test_a_negative_per_unit_price_is_a_422_not_a_500(self, client):
+        """The route mirrors `model_profile_positive`'s new clauses too."""
+        for field in ("vendor_per_minute_usd", "vendor_per_character_usd",
+                      "vendor_per_image_usd"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": f"test/{uuid.uuid4().hex[:8]}", field: "-1"})
+            assert r.status_code == 422, f"{field} answered {r.status_code}"
+
+    def test_the_catalog_read_sends_the_three_as_STRINGS(
+            self, client, engine):
+        """Money as strings, the rule every price on this wire follows. A
+        parsed float re-formatted is how 0.000015 stops matching itself."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name,
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+        })
+        assert r.status_code == 200, r.text
+        try:
+            body = client.get("/catalog/models", headers=self.OP)
+            assert body.status_code == 200, body.text
+            profile = next(
+                p for p in body.json()["profiles"] if p["model"] == name)
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "DELETE FROM model_profile WHERE model = :m"),
+                    {"m": name})
+        assert profile["vendor_per_minute_usd"] == "0.0060000000"
+        assert profile["vendor_per_character_usd"] == "0.0000150000"
+        assert profile["vendor_per_image_usd"] == "0.0400000000"
+        # ⚠️ The per-SECOND name belongs to the FEED table alone. It must
+        # never appear on a profile.
+        assert "vendor_per_second_usd" not in profile
+
+    def test_a_HAND_TYPED_price_too_big_for_the_column_is_422(self, client):
+        """🔴 The same overflow the feed read guards, arriving by the other
+        door. `_per_minute_wire` serves NULL for a value the column cannot
+        hold, but nothing stopped an operator TYPING one. It reached
+        Postgres and answered an unhandled psycopg 500. `lt=_PER_UNIT_MAX`
+        turns it into a refusal that names the field."""
+        for field in ("vendor_per_minute_usd", "vendor_per_character_usd",
+                      "vendor_per_image_usd"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": f"test/{uuid.uuid4().hex[:8]}", field: "100000000"})
+            assert r.status_code == 422, f"{field} answered {r.status_code}"
+            assert field in r.text
+
+    def test_a_price_too_SMALL_for_the_column_is_422_not_a_silent_zero(
+            self, client):
+        """🔴 The other end of the same column, and the worse failure.
+
+        NUMERIC(18, 10) quantizes on the way in, so `0.00000000001` stores
+        as `0E-10` and the board then says the model is "listed at $0".
+        Free is a real state with real consequences, so inventing one is a
+        wrong fact on the screen an operator prices from.
+
+        ⚠️ The message must offer 0 as the way forward. Otherwise the
+        refusal reads as "this number is not allowed" and stops there.
+        """
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}",
+            "vendor_per_image_usd": "0.00000000001"})
+        assert r.status_code == 422, r.text
+        assert "vendor_per_image_usd" in r.text
+        assert "free" in r.text
+
+    def test_a_price_of_zero_still_SAVES_through_the_route(
+            self, client, engine):
+        """The floor rule is ONE-SIDED, like `feed._per_unit`'s. A vendor
+        that really charges nothing is recordable, and only a NONZERO value
+        that rounds away is refused."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "vendor_per_minute_usd": "0"})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_minute_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == 0
+
+    def test_the_smallest_price_the_column_CAN_hold_still_saves(
+            self, client, engine):
+        """The boundary sits between refused and stored, so name it. Scale
+        10 carries 0.0000000001 exactly, and that is a price, not a zero."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "vendor_per_character_usd": "0.0000000001"})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_character_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == Decimal("0.0000000001")
+
+    def test_a_MISNAMED_per_unit_price_is_refused_not_swallowed(self, client):
+        """🔴 The seconds-against-minutes confusion, caught at the door.
+
+        `vendor_price_feed` holds a per-SECOND column and `model_profile`
+        holds a per-MINUTE one. So `vendor_per_second_usd` is the exact key
+        somebody posts here by mistake. Pydantic ignores an unknown key by
+        default, which answered 200 and stored nothing - a green save that
+        left the price a dash, and that is the worst shape this failure could
+        take. `extra="forbid"` turns it into a 422 that names the field.
+        """
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}",
+            "vendor_per_second_usd": "0.0001"})
+        assert r.status_code == 422, r.text
+        assert "vendor_per_second_usd" in r.text
+
+    def test_the_consoles_own_body_still_passes_the_forbid(
+            self, client, engine):
+        """`extra="forbid"` is only safe because the console sends known
+        fields. This posts `declareBodies`' exact shape, so a field added
+        there without a matching model field fails HERE and not live."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "label": None,
+            "context_window": 131072, "max_output": 8192,
+            "vendor_input_per_1m_usd": "0.280000",
+            "vendor_output_per_1m_usd": "0.420000",
+            "vendor_cached_input_per_1m_usd": "0.070000",
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+            "description": "", "reads_images": False, "thinks_first": False})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
 
     def test_a_customer_key_may_NOT_write_our_reference_data(self, client):
         """The door also admitted `can_pay` customer keys - D66 in spirit:
