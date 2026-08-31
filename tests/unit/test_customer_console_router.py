@@ -825,21 +825,12 @@ class TestStreaming:
         assert "name a tier" in r.json()["detail"]
 
 
-def _stream_chain(db, models: list[str]) -> str:
-    """Bind ONE chat chain of `models`, in order, at one timestamp.
-
-    Returns the tier alias. A fresh alias per test, so a fence here never
-    edits the seeded `tier-balanced` row another suite reads.
-    """
-    tier = f"tier-sf-{uuid.uuid4().hex[:8]}"
-    with db.begin() as c:
-        eff = c.execute(text("SELECT now()")).scalar_one()
-        for rank, model in enumerate(models, start=1):
-            c.execute(
-                text("INSERT INTO tier_binding (tier, task, model, rank, "
-                     "effective_from) VALUES (:t, 'chat', :m, :r, :eff)"),
-                {"t": tier, "m": model, "r": rank, "eff": eff})
-    return tier
+#: 📌 **`_stream_chain` is gone, and `bound_tier` took its work.** It bound a
+#: `tier-sf-…` chain and removed nothing, so 368 rows accumulated in one
+#: worktree's scratch database. They passed the catalog fence only because
+#: somebody had hand-written a `model_capability` row for each model. On a
+#: fresh database they fail it. One fixture now binds every chain in this
+#: file, and it takes its rows away with it.
 
 
 def _served(db, slug: str):
@@ -890,10 +881,10 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
 
     # ── done-when 1 ──
     def test_a_529_before_any_frame_serves_the_backup_as_ONE_clean_stream(
-            self, client, org_key, db):
+            self, client, org_key, db, bound_tier):
         """🔴 The headline. The client must not be able to tell it happened."""
         _, key = org_key
-        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
         seen: list[str] = []
 
         class _Overloaded(Exception):
@@ -916,10 +907,10 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         assert body == b"".join(PROVIDER_FRAMES)
 
     def test_the_row_records_the_step_that_ANSWERED(
-            self, client, org_key, db):
+            self, client, org_key, db, bound_tier):
         # done-when 3. The customer pays for the model they got.
         slug, key = org_key
-        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
 
         class _Overloaded(Exception):
             status_code = 529
@@ -939,12 +930,12 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
 
     # ── done-when 2 ──
     def test_a_400_before_any_frame_calls_NO_second_step(
-            self, client, org_key, db):
+            self, client, org_key, db, bound_tier):
         # Every step fails a malformed request identically, so walking the
         # chain spends money to learn nothing.
         slug, key = org_key
         before = TestMetering._count(db, slug)
-        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
         seen: list[str] = []
 
         class _BadRequest(Exception):
@@ -967,7 +958,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
 
     # ── the other side of the boundary ──
     def test_a_failure_AFTER_the_first_frame_does_NOT_fail_over(
-            self, client, org_key, db):
+            self, client, org_key, db, bound_tier):
         """The half of §3.6 that did not move, pinned at the ROUTE.
 
         Once a frame has reached the client the request is half answered.
@@ -975,7 +966,7 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         completions into one response, which is worse than the error.
         """
         _, key = org_key
-        tier = _stream_chain(db, [self.PRIMARY, self.BACKUP])
+        tier = bound_tier([self.PRIMARY, self.BACKUP], reads_images=None)
         seen: list[str] = []
 
         async def _stub(**kwargs):
@@ -2087,51 +2078,66 @@ IMAGE_MESSAGES = [{
 
 @pytest.fixture
 def bound_tier(db):
-    """Bind a fresh tier to one model, and REMOVE the binding afterwards.
+    """Bind a fresh tier, and REMOVE what it wrote afterwards.
 
-    ⚠️ **The test writes the `model_profile` row ITSELF.** Nothing seeds that
-    table (§3.7 rule 4) and nothing populates ``reads_images``, so a fixture
-    that leaned on the ladder would prove this rule against an empty table and
-    pass for the wrong reason.
-
-    ``reads_images=None`` leaves the model with NO profile row at all. That is
-    the launch state, and it must read the same as FALSE.
+    **THE ONE tier-binding fixture in this file**, and every fence that needs a
+    binding of its own goes through it. It takes one model or a whole CHAIN,
+    which is what lets the image rule and the stream walk share it. A second
+    binding helper beside this one is a second place to forget the teardown,
+    which is exactly the defect below.
 
     🔴 **The teardown is not tidiness, and this fixture exists for it.**
     `GET /catalog/models` reports every binding whose ``(model, task)`` pair
     declares no `model_capability` row as **unserved**, and
     `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
-    fails while one exists. The bindings here name models that nothing
-    declares. The scratch database is REUSED between runs, so a row left
-    behind fails a SIBLING suite on the next sweep — measured, six rows.
-    `vision_bound` and `priced` clean up for the same reason, and this follows
-    them rather than inventing a second habit.
-    """
-    made: list[tuple[str, str]] = []
+    fails while one exists. These bindings name models that nothing declares.
+    The scratch database is REUSED between runs, so a row left behind fails a
+    SIBLING suite on the next sweep. Measured on one worktree: 419 rows from
+    the image fences and 368 from the stream fences. `vision_bound` and
+    `priced` clean up for the same reason.
 
-    def _bind(model: str, *, reads_images, task: str = "chat") -> str:
-        tier = f"tier-img-{uuid.uuid4().hex[:8]}"
-        made.append((tier, model))
+    ⚠️ **A chain shares ONE ``effective_from``** (migration 011). Reading the
+    newest row per rank instead would splice two chains together, so a fixture
+    that dated each step separately would build a shape the Router never sees.
+
+    ⚠️ **The test writes the `model_profile` row ITSELF.** Nothing seeds that
+    table (§3.7 rule 4) and nothing populates ``reads_images``, so a fixture
+    that leaned on the ladder would prove D-AI-2 against an empty table and
+    pass for the wrong reason. The flag lands on the RANK-1 model, which is
+    the one `resolve_vision_chain` reads. ``reads_images=None`` leaves that
+    model with NO profile row at all, which is the launch state and must read
+    the same as FALSE.
+    """
+    made: list[tuple[str, list[str]]] = []
+
+    def _bind(model: str | list[str], *, reads_images,
+              task: str = "chat") -> str:
+        models = [model] if isinstance(model, str) else list(model)
+        tier = f"tier-fx-{uuid.uuid4().hex[:8]}"
+        made.append((tier, models))
         with db.begin() as c:
-            c.execute(
-                text("INSERT INTO tier_binding (tier, task, model, rank, "
-                     "effective_from) VALUES (:t, :k, :m, 1, now())"),
-                {"t": tier, "k": task, "m": model})
+            eff = c.execute(text("SELECT now()")).scalar_one()
+            for rank, step in enumerate(models, start=1):
+                c.execute(
+                    text("INSERT INTO tier_binding (tier, task, model, rank, "
+                         "effective_from) VALUES (:t, :k, :m, :r, :eff)"),
+                    {"t": tier, "k": task, "m": step, "r": rank, "eff": eff})
             if reads_images is not None:
                 c.execute(
                     text("INSERT INTO model_profile (model, reads_images) "
                          "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
                          "SET reads_images = EXCLUDED.reads_images"),
-                    {"m": model, "r": reads_images})
+                    {"m": models[0], "r": reads_images})
         return tier
 
     yield _bind
     with db.begin() as c:
-        for tier, model in made:
+        for tier, models in made:
             c.execute(text("DELETE FROM tier_binding WHERE tier = :t"),
                       {"t": tier})
-            c.execute(text("DELETE FROM model_profile WHERE model = :m"),
-                      {"m": model})
+            for step in models:
+                c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                          {"m": step})
 
 
 @pytest.fixture
