@@ -923,9 +923,27 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
+- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
+  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
+  `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
+  endpoint and H-47's handler seam are what is left. Keep this entry until
+  those three land.
+- **⚠️ Three review findings ride with the next half (recorded 2026-08-31):**
+  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
+     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
+     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
+     which reads as "upstream provider error". The family branch belongs in
+     H-47's handler seam.
+  2. An unmeasured transcription writes `quantity` 0, and a silent file also
+     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
+     does not. Decide one way when a reader of `quantity` exists.
+  3. A capability row with a wrong verb (for example `aspeech` on a
+     transcribe pair) burns the failover walk and answers 502 "upstream
+     provider error" for OUR configuration error. `_nothing_to_try` shows the
+     precise-503 shape the refusal should copy.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → only `/v1/chat/completions` means the Router still serves exactly one of D60's six
-  tasks and the shape is still undecided.
+  → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
+  endpoint and the speak endpoint are still not built.
 - **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
   **nowhere to serve them**. The fork is real and is an owner call because it is a public
   wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
@@ -1303,6 +1321,10 @@ line — never reclaim a number by deleting the other entry.
   `store.py` cites "HANDOFF H-76" by name.
 - **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
   `usage_by_org`
+- **⚠️ Widened 2026-08-31 by slice 5.** A walled organization bills 0, so it
+  also sorts last. The `walled` flag rides the capped table, and only `silent`
+  has the cap-proof banner. Above `SPEND_PAGE_SIZE` organizations, a walled
+  customer appears nowhere. The fix for the sort must cover both classes.
 - **Added:** 2026-08-30 · WS-31 spec remediation session
 
 ### H-77 · Set the vendor feed's clock on the box · [OWNER]

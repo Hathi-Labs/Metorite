@@ -597,14 +597,16 @@ unique index and the cap against a real database). Line anchors re-derived
 in session). D15, D19.2, D19.3, D22, D23, D24 are carried unchanged and must not
 be re-litigated here.
 
-🆕 **Three sections gained a build contract on 2026-08-30, and all three are
-SPEC ONLY.** **§6A.10a** holds H-46's ten clauses, which build
-`POST /v1/audio/transcriptions`. **§6A.10b** holds H-47's seven clauses, which
-build the provider-handler seam. **§6A.11a** gained an addendum, because a
-re-audit found that its clause 5 named a copy seam the tree does not hold.
+🆕 **Three sections gained a build contract on 2026-08-30. ONE of the three
+is now BUILT, and TWO stay SPEC ONLY.** **§6A.10a** held H-46's ten clauses,
+which build `POST /v1/audio/transcriptions`. **H-46 landed on 2026-08-31.**
+**§6A.10b** holds H-47's seven clauses, which build the provider-handler seam.
+**§6A.11a** gained an addendum, because a re-audit found that its clause 5
+named a copy seam the tree does not hold.
+
 **Order: we prefer H-78 first, then H-46 with H-47 folded in as its dispatch
-clause.** §6A.10a clause 5 holds that preference, and H-46 can land ahead of
-H-78.
+clause.** §6A.10a clause 5 holds that preference. H-46 landed ahead of H-78,
+which clause 5 permits.
 
 ⚠️ **A diff review then corrected SIX statements in those sections, also on
 2026-08-30.** §6A.10a clause 2 and clause 4 each stated as built a behaviour
@@ -7846,12 +7848,47 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ---
 
-### 6A.10a The transcribe endpoint (H-46) — SPEC ONLY, re-audited 2026-08-31
+### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**, which is the D16/D17 convention CP-2b and CP-2c
-used. Where a name or a number below disagrees with the tree, the tree wins.
-Re-verify every anchor at dispatch.
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
+`main.py::audio_transcriptions`, and all ten clauses below hold.
+`tests/unit/test_customer_console_tasks.py` carries the seven fences.
+The clause text stays as the audit wrote it, because it is the contract the
+build answers. Match a `main.py` anchor by handler name, because the route
+moved every line number below it.
+
+⚠️ **The build measured three things about the BODY. The owner may overrule
+the first, and the third is a deliberate non-wall.**
+
+1. **The route refuses an upload above 25 MB with a 413.** 25 MB is the
+   ceiling the OpenAI Whisper API states. A larger file buys a round trip and
+   a vendor refusal.
+
+   🔴 **That 413 bounds what we SEND, and NOT what we accept.** Measured on
+   Starlette 1.1.0. Starlette parses the whole multipart body into the
+   `UploadFile` dependency before the handler runs. It spools above 1 MB to
+   disk. So a 60 MB chunked body is read in full, written to disk, and only
+   then refused.
+
+   ⚠️ **Per-request memory, recorded as a KNOWN BOUND.** The route holds up
+   to 25 MB, and it copies those bytes again for each failover step it tries.
+   So one request in flight can hold about 50 MB. FastAPI's threadpool
+   defaults to 40 workers, and no global ceiling stands above that.
+
+   📌 **The acceptance-side cap is FOLLOW-UP WORK.** A body limit belongs in
+   the proxy in front of the service. That is deployment configuration, and
+   the owner owns it. Nothing added to `main.py` can refuse a body that
+   Starlette has already read.
+
+2. **The ORDER is body, then stream, then tier.** A handler cannot read a
+   form field until the body it rides on is parsed. So an over-large
+   `stream=true` request answers 413, and never the clause 2 400.
+
+3. **An empty file SERVES, and it is not a wall.** The provider answers for
+   empty audio, and the meter bills the zero duration it reports. The Router
+   never decodes audio. A refusal here would guess at what is inside a file
+   we did not read. `test_customer_console_tasks.py` pins the behaviour, so a
+   change to it stays visible.
 
 📌 **The audit measured every `main.py` anchor below on branch
 `ws-31-slice5-refusals`**, because this build stacks on the slice-5 base. That
@@ -7935,6 +7972,16 @@ call.
    true for it. A `transcribe` call carries the minutes instead. The usage row
    then holds that quantity and a `unit` of `minutes`.
    `tests/unit/test_customer_console_tasks.py` is the fence.
+
+   ⚠️ **`unit` lands NULL while NO `tier_rate_card` row exists for the
+   pair.** `_rate_completion` reads the unit off the CARD, and it returns
+   `(0, None)` when it finds none. That behaviour predates this slice, and
+   the slice did not change it. Migration 015 seeds no tier rates, so a NULL
+   unit is the SHIPPED state until the owner prices `tier-stt` (H-42, a
+   commercial act). The fence proves the plumbing against a priced fixture
+   card. Do not read it as a production guarantee.
+   📌 **An absent card does not touch `quantity`.** The route measures the
+   minutes, and the row records them whether or not a card exists.
 5. **Vendor cost reads `model_profile.vendor_per_minute_usd`.** H-78 builds
    that column. **The order is a PREFERENCE, not a condition.** *(Resolved
    2026-08-31. The clause held two arms that disagreed — one made H-78 a
@@ -8869,6 +8916,17 @@ gates only how WS-30 wires it, not whether):
    credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
    goes red the day the draw moves, so the exemption is deleted rather than
    inherited either way.
+
+   ⚠️ **The exemption grew to TWO ROUTES on 2026-08-31, and the owner has
+   still not ratified it.** H-46 built `POST /v1/audio/transcriptions`, and
+   §6A.10a clause 4 and clause 10 both send it through `store.record_usage`.
+   So the constant now names `chat_completions` and `audio_transcriptions`.
+   **This is the same argument on a second door, and it is NOT a third
+   argument.** Both routes take a customer key, and our own infrastructure
+   decides both amounts. So what the owner ratifies or overrules is the
+   RULE, not the count. An amended §9.3(4) should read "one carve-out plus
+   the Router's own serving routes". The image endpoint and the speak
+   endpoint will each add one more.
 7. ✅ **RESOLVED 2026-08-21 (owner call) — the GATEWAY TIER carries the customer
    seat WRITE; the deployment key stays gateway-side.** *(Opened 2026-08-21 with
    WS-31 `ws-31-seat-assign`; not commercial, and it gates the WS-30 "manage

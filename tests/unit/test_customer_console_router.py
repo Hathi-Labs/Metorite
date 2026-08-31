@@ -14,6 +14,7 @@ on every run, which means in practice nobody runs it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from decimal import Decimal
@@ -429,6 +430,34 @@ class TestMetering:
                 "ON o.id = u.organization_id WHERE o.slug = :s"), {"s": slug}
             ).scalar_one()
 
+    @staticmethod
+    def _count_served(db, slug: str) -> int:
+        """Rows recording a call that SERVED — the ones :meth:`_count` used to
+        be the whole of.
+
+        Migration 020 (§8.1) put refusals in this same table, so a bare
+        ``count(*)`` stopped answering *"was this call metered"* and started
+        answering *"did anything happen"*. Two shipped tests asserted the
+        first sentence through the second one, and they now say what they
+        always meant.
+        """
+        with db.begin() as c:
+            return c.execute(text(
+                "SELECT count(*) FROM usage_event u JOIN organization o "
+                "ON o.id = u.organization_id "
+                "WHERE o.slug = :s AND u.refusal_reason IS NULL"), {"s": slug}
+            ).scalar_one()
+
+    @staticmethod
+    def _refusals(db, slug: str) -> list[str]:
+        """Every refusal slug this organization has collected, oldest first."""
+        with db.begin() as c:
+            return [r[0] for r in c.execute(text(
+                "SELECT u.refusal_reason FROM usage_event u JOIN organization o "
+                "ON o.id = u.organization_id "
+                "WHERE o.slug = :s AND u.refusal_reason IS NOT NULL "
+                "ORDER BY u.created_at, u.id"), {"s": slug}).all()]
+
 
 # ── Usage extraction, across provider shapes ────────────────────────────────
 
@@ -752,7 +781,10 @@ class TestStreaming:
         single frame exists.
         """
         slug, key = org_key
-        before = TestMetering._count(db, slug)
+        # ⚠️ SERVED rows. The gate refuses before a frame exists, and since
+        # migration 020 that refusal writes its own row (§8.1) — which is not
+        # what this test is about.
+        before = TestMetering._count_served(db, slug)
         opened: list[bool] = []
 
         async def _stub(**kwargs):
@@ -768,7 +800,13 @@ class TestStreaming:
         assert not r.headers["content-type"].startswith("text/event-stream")
         assert r.json()["detail"]["reason"] == "insufficient_credits"
         assert opened == []
-        assert TestMetering._count(db, slug) == before
+        assert TestMetering._count_served(db, slug) == before
+        # 📌 The POSITIVE half, so this stream-named test carries its own pin
+        # instead of borrowing `TestARefusalReachesTheMeter`'s. The gate
+        # refused before a frame existed, and the meter still recorded the
+        # wall (§8.1). A negative-only assertion stays green on the day the
+        # stream path silently stops metering its refusals.
+        assert TestMetering._refusals(db, slug) == ["insufficient_credits"]
 
     def test_an_unknown_tier_refuses_a_stream_with_400(self, client, org_key):
         # The same refusal the buffered path gives. `stream: true` is not a way
@@ -1123,14 +1161,21 @@ class TestTheBalanceGate:
 
         assert len(calls) == before
 
-    def test_a_refused_call_writes_no_usage_row(
+    def test_a_refused_call_writes_no_SERVED_usage_row(
             self, client, org_key, db, gate_on):
+        """CP-6's clause, kept, plus slice 5's (§8.1).
+
+        The refusal is not metered as a call — nothing served, so nothing is
+        counted and nothing is charged. Since migration 020 it does leave ONE
+        row saying which wall the customer hit, and that row is what A5 reads.
+        """
         slug, key = org_key
-        before = TestMetering._count(db, slug)
+        before = TestMetering._count_served(db, slug)
 
-        _complete(client, key)
+        assert _complete(client, key).status_code == 402
 
-        assert TestMetering._count(db, slug) == before
+        assert TestMetering._count_served(db, slug) == before
+        assert TestMetering._refusals(db, slug) == ["insufficient_credits"]
 
     def test_an_org_with_credits_passes_the_gate(
             self, client, org_key, gate_on):
@@ -1267,6 +1312,311 @@ class TestThePerRunCircuitBreaker:
 
         assert _complete(
             client, key, headers={"X-CC-Run": "run-hot"}).status_code == 200
+
+
+# ── A5 slice 5: the meter records the WALL (§8.1, migration 020) ────────────
+
+
+def _refusal_row(db, org_id: str) -> dict | None:
+    """The single refusal row for this organization, as a dict, or ``None``."""
+    with db.begin() as c:
+        row = c.execute(text(
+            "SELECT request_id, refusal_reason, billed_credits, quantity, "
+            "       unit, tier, task, model, provider_cost_usd, run_id, "
+            "       client_ref "
+            "FROM usage_event "
+            "WHERE organization_id = :o AND refusal_reason IS NOT NULL"
+        ), {"o": org_id}).all()
+    assert len(row) <= 1, f"expected at most one refusal row, found {len(row)}"
+    if not row:
+        return None
+    keys = ("request_id", "refusal_reason", "billed_credits", "quantity",
+            "unit", "tier", "task", "model", "provider_cost_usd", "run_id",
+            "client_ref")
+    return dict(zip(keys, row[0], strict=True))
+
+
+class TestARefusalReachesTheMeter:
+    """§8.1, A5: *"is a customer hitting a wall"* needs the wall in the meter.
+
+    🔴 **Every test here DRIVES the HTTP route.** A hand-inserted row proves
+    the column exists and proves nothing about the hazard this slice is really
+    about — the 400 raises from inside the serving transaction, so a refusal
+    row written on that connection rolls back with the raise and the meter
+    records nothing at all.
+    """
+
+    def test_an_unknown_tier_writes_one_row_that_SURVIVES_the_raise(
+            self, client, org_key, org_id, db):
+        """The fence for §8.1 clause 3, and the reason the slice is not a
+        one-line insert."""
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "deepseek/deepseek-v4-pro",
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 400, r.text
+        row = _refusal_row(db, org_id)
+        assert row is not None, (
+            "the 400 raised from inside the serving transaction and the "
+            "refusal row rolled back with it — §8.1 clause 3"
+        )
+        assert row["refusal_reason"] == "tier_unknown"
+
+    def test_the_row_holds_the_shape_A5_reads(self, client, org_key, org_id, db):
+        """§8.1 clause 4, field by field."""
+        _, key = org_key
+        ref = f"cust-{uuid.uuid4().hex[:8]}"
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-imaginary", "client_ref": ref,
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        # 📌 The customer's OWN correlation id, exactly as a served row carries
+        # it. Without it, "my request failed" has nothing support can match.
+        assert row["client_ref"] == ref
+        # We served nothing, so we charge nothing and consume nothing.
+        assert row["billed_credits"] == Decimal("0.0000")
+        assert row["quantity"] == Decimal(0)
+        # The task's own unit, so the row reads beside a served one.
+        assert row["unit"] == "tokens"
+        assert row["task"] == "chat"
+        # ⚠️ The REQUESTED tier, never a resolved one. At `tier_unknown` there
+        # is nothing to resolve, and this is the fact A5 reports.
+        assert row["tier"] == "tier-imaginary"
+        # No model answered and no vendor billed us.
+        assert row["model"] is None
+        assert row["provider_cost_usd"] is None
+        # Minted exactly as the served path mints it (001:271 NOT NULL UNIQUE).
+        assert row["request_id"].startswith("rtr-")
+
+    def test_a_HUGE_caller_label_is_clipped_before_it_persists(
+            self, client, org_key, org_id, db):
+        """🔴 A refused request is FREE, and its `model` is whatever they typed.
+
+        Nothing upstream bounds the field, so without a clip a five-megabyte
+        "model" string would persist once per 400 at no cost to the sender —
+        unbounded growth an attacker drives for the price of a rejected
+        request. The cell is OBSERVABILITY ("which tier did they ask for"), so
+        a clipped value answers the question just as well.
+        """
+        from customer_console.main import _REFUSAL_LABEL_MAX
+
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "x" * 100_000,
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        # The customer still gets their refusal, and it is still a 400.
+        assert r.status_code == 400, r.text
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        assert len(row["tier"]) <= _REFUSAL_LABEL_MAX
+        assert _REFUSAL_LABEL_MAX == 200
+
+    def test_a_refusal_draws_no_credit(self, client, org_key, org_id, db):
+        _, key = org_key
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-imaginary",
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        with db.begin() as c:
+            drawn = c.execute(text(
+                "SELECT count(*) FROM credit_ledger WHERE organization_id = :o"
+            ), {"o": org_id}).scalar_one()
+        assert drawn == 0, "a refusal must not move the ledger"
+
+    def test_a_refused_STREAM_is_metered_the_same_way(
+            self, client, org_key, org_id, db):
+        # `stream: true` is not a way around the meter any more than it is a
+        # way around D32.7's "name a tier, not a model".
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "deepseek/deepseek-v4-pro", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert r.status_code == 400
+        assert _refusal_row(db, org_id)["refusal_reason"] == "tier_unknown"
+
+    def test_the_402_writes_the_word_the_customer_reads(
+            self, client, org_key, org_id, db, gate_on):
+        # W3: the slug is COPIED from `decide_spend`, never a second spelling.
+        _, key = org_key
+        r = _complete(client, key)
+
+        assert r.status_code == 402
+        assert r.json()["detail"]["reason"] == "insufficient_credits"
+        row = _refusal_row(db, org_id)
+        assert row["refusal_reason"] == "insufficient_credits"
+        assert row["tier"] == "tier-balanced"
+        assert row["billed_credits"] == Decimal("0.0000")
+
+    def test_the_403_row_carries_its_RUN(
+            self, client, org_key, org_id, db, gate_on):
+        # A ceiling refusal without its run is not actionable — the breaker
+        # reads the same field to decide the refusal.
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        r = _complete(client, key, headers={"X-CC-Run": "run-hot"})
+
+        assert r.status_code == 403
+        row = _refusal_row(db, org_id)
+        assert row["refusal_reason"] == "run_ceiling_exceeded"
+        assert row["run_id"] == "run-hot"
+
+    def test_a_503_credential_failure_writes_NOTHING(
+            self, client, org_key, org_id, db, monkeypatch):
+        """Named non-goal: OUR failure is not a customer wall.
+
+        One table that mixes a broken vendor with a customer at a wall answers
+        neither question. The 502 half is
+        ``TestFailureShapes::test_a_failed_provider_call_writes_no_usage_row``.
+        """
+        _, key = org_key
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", "a-different-key")
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 503, r.text
+        with db.begin() as c:
+            rows = c.execute(text(
+                "SELECT count(*) FROM usage_event WHERE organization_id = :o"
+            ), {"o": org_id}).scalar_one()
+        assert rows == 0
+
+    def test_an_anonymous_401_writes_nothing_because_it_CANNOT(self, client, db):
+        """🔴 Structural, not a policy choice.
+
+        Authentication refuses before the code knows the organization, and
+        ``usage_event.organization_id`` is NOT NULL (001:256). A row needs a
+        tenant and at 401 there is none. Do not invent a system organization
+        to make it fit.
+        """
+        with db.begin() as c:
+            before = c.execute(
+                text("SELECT count(*) FROM usage_event")).scalar_one()
+
+        r = client.post("/v1/chat/completions", json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 401
+        with db.begin() as c:
+            after = c.execute(
+                text("SELECT count(*) FROM usage_event")).scalar_one()
+        assert after == before
+
+
+class TestTheThreeBranchesTheRefusalWriterCanTake:
+    """R7 for the three ways `_record_refusal` writes nothing.
+
+    Each branch is a place where a refusal loses its meter row. All three are
+    deliberate, and none of them was pinned until 2026-08-31 — so each one
+    could have been deleted, or could have started firing, with every suite
+    still green.
+    """
+
+    @staticmethod
+    def _refuse_with(monkeypatch, exc):
+        """Make the spend gate return *exc* from `_spend_refusal`.
+
+        Patched at the MODULE attribute, because the route looks the name up
+        at call time. Nothing else about the gate changes, so the refusal
+        travels the real path the 402 and the 403 travel.
+        """
+        from customer_console import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_spend_gate_enabled", lambda: True)
+        monkeypatch.setattr(main_mod, "_spend_refusal",
+                            lambda conn, caller: exc)
+
+    def test_a_FOURTH_slug_is_dropped_and_LOGGED(
+            self, client, org_key, org_id, db, monkeypatch, caplog):
+        """🔴 The guard on the vocabulary, and why the assertion is a LOG line.
+
+        A slug nobody declared would fail migration 020's CHECK. The writer
+        drops it first, so a typo never becomes an IntegrityError on the
+        hottest path in the system.
+
+        ⚠️ **"No row" alone does not fence this.** Delete the guard and the
+        insert fails the CHECK, `_record_refusal` swallows it, and there is
+        still no row — a test asserting only absence stays green. The two log
+        lines are what tell the branches apart, so both are asserted.
+        """
+        from fastapi import HTTPException
+
+        _, key = org_key
+        self._refuse_with(monkeypatch, HTTPException(
+            status_code=402, detail={"reason": "out_of_cheese"}))
+
+        with caplog.at_level(logging.WARNING):
+            r = _complete(client, key)
+
+        # The customer still gets their refusal, unchanged.
+        assert r.status_code == 402, r.text
+        assert r.json()["detail"]["reason"] == "out_of_cheese"
+        assert _refusal_row(db, org_id) is None
+        assert "router.refusal_slug_unknown" in caplog.text
+        assert "router.refusal_metering_failed" not in caplog.text, (
+            "the writer reached the database with an undeclared slug — the "
+            "vocabulary guard is gone"
+        )
+
+    def test_a_METER_failure_never_turns_a_REFUSAL_into_a_500(
+            self, client, org_key, org_id, db, monkeypatch, caplog):
+        """🔴 Best effort, the same rule `_record_completion` follows.
+
+        An unmetered refusal is a reporting gap. A refusal the customer never
+        receives, because the meter fell over, is an outage — and the outage
+        is worse. So the writer swallows its own failure.
+        """
+        from customer_console import store as store_mod
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("the meter is down")
+
+        monkeypatch.setattr(store_mod, "record_usage", _boom)
+        _, key = org_key
+
+        with caplog.at_level(logging.ERROR):
+            r = client.post("/v1/chat/completions", headers=key, json={
+                "model": "tier-imaginary",
+                "messages": [{"role": "user", "content": "hi"}]})
+
+        assert r.status_code == 400, r.text
+        assert "name a tier" in r.json()["detail"]
+        assert _refusal_row(db, org_id) is None
+        assert "router.refusal_metering_failed" in caplog.text
+
+    def test_a_refusal_whose_detail_is_a_STRING_writes_no_row(
+            self, client, org_key, org_id, db, monkeypatch):
+        """Today's behaviour, pinned. It is deliberate and it is narrow.
+
+        The slug must be the word already inside the body the customer reads,
+        and a plain-string detail carries no such word. Minting one from the
+        status code would be the second spelling W3 forbids.
+
+        ⚠️ **Both shipped gate refusals carry a dict** — `decide_spend` and
+        `_spend_refusal` build one each — so nothing in the tree reaches this
+        branch. It is pinned because a future refusal that answers a bare
+        sentence would lose its row SILENTLY, and this test is what turns that
+        into a visible decision.
+        """
+        from fastapi import HTTPException
+
+        _, key = org_key
+        self._refuse_with(monkeypatch, HTTPException(
+            status_code=403, detail="run stopped"))
+
+        r = _complete(client, key)
+
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "run stopped"
+        assert _refusal_row(db, org_id) is None
 
 
 # ── G-3: the CALLER declares the task ───────────────────────────────────────

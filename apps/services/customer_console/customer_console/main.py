@@ -45,6 +45,7 @@ threadpool worker.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -54,9 +55,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any, NoReturn
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
@@ -1028,6 +1036,7 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
 
 def _rate_completion(
     conn, *, tier: str, model: str, usage: ExtractedUsage, task: str = "chat",
+    quantity: Decimal | None = None,
 ) -> tuple[Decimal, str | None]:
     """Credits drawn by one completion — priced by the TIER (D67). **Never
     raises.**
@@ -1051,6 +1060,13 @@ def _rate_completion(
     ⚠️ Returns the UNIT alongside the credits, so the usage row can record
     what the number was measured in. A row that says `0.4` without saying
     `minutes` is a number nobody can check afterwards.
+
+    ``quantity`` is what the call consumed, in the card's own unit — minutes
+    of audio for `transcribe` (§6A.10a clause 4). `rate_call` ignores it on a
+    token-priced card, whose quantity is the token counters themselves, and
+    it REFUSES a per-unit card that carries none rather than rating minutes
+    at a token rate. That refusal arrives here as `UnpricedModel` and bills
+    zero loudly, which is the same answer every other unrateable call gets.
     """
     # ⚠️ Resolving the CARD and RATING it are separate `try` blocks on
     # purpose. A card that exists but is not priced still knows what it
@@ -1077,6 +1093,7 @@ def _rate_completion(
                         completion_tokens=usage.completion_tokens,
                         cached_tokens=usage.cached_tokens,
                     ),
+                    quantity=quantity,
                 )
             ),
             card.unit,
@@ -2086,10 +2103,7 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         # the same reason the binding is - it could never bill anything the
         # tier serves.
         _check_tier_task(conn, tier=req.tier, task=req.task)
-        natural = conn.execute(
-            text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
-            {"t": req.task},
-        ).scalar_one_or_none()
+        natural = _task_unit(conn, req.task)
         if natural is None:
             raise HTTPException(
                 status_code=400, detail=f"unknown task {req.task!r}")
@@ -2209,6 +2223,18 @@ def _task_exists(conn, task: str) -> bool:
     return conn.execute(
         text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
     ).first() is not None
+
+
+def _task_unit(conn, task: str) -> str | None:
+    """What this task is measured in (``task_catalog.natural_unit``).
+
+    ``None`` for a task the catalog does not carry. A refusal on an unknown
+    task therefore records no unit, which is honest — nobody ever measured it.
+    """
+    return conn.execute(
+        text("SELECT natural_unit FROM task_catalog WHERE slug = :t"),
+        {"t": task},
+    ).scalar_one_or_none()
 
 
 def _check_tier_task(conn, *, tier: str, task: str) -> None:
@@ -4407,6 +4433,51 @@ def _vendor_prices(conn, model: str) -> dict[str, Decimal | None]:
     return {"input": row[0], "output": row[1], "cached": row[2]}
 
 
+#: The `model_profile` column that prices a per-minute task. H-78 adds it
+#: (§6A.11a), and H-46 shipped before it — so the read below is GUARDED and
+#: an absent column answers NULL rather than raising.
+_PER_MINUTE_COLUMN = "vendor_per_minute_usd"
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    """Does this table carry this column on the database we are talking to?
+
+    ⚠️ **Asked, never caught.** A failed statement poisons the whole
+    Postgres transaction, so a `try` around the real SELECT would take the
+    metering write down with it. The catalog answers the question first
+    instead, and the write goes on.
+    """
+    return conn.execute(
+        text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = :t AND column_name = :c"
+        ),
+        {"t": table, "c": column},
+    ).first() is not None
+
+
+def _vendor_per_minute(conn, model: str) -> Decimal | None:
+    """What one minute of this model costs us at the vendor, or ``None``.
+
+    The per-minute half of :func:`_vendor_prices`, read at metering time for
+    the same reason — a later profile edit must never rewrite what a past
+    call cost.
+
+    ``None`` covers all three ways nobody has told us: the column is not
+    there yet, the model has no profile row, or the row holds NULL. D-AI-7
+    rule 3 says NULL means nobody told us and never means zero.
+    """
+    if not _column_exists(conn, "model_profile", _PER_MINUTE_COLUMN):
+        return None
+    return conn.execute(
+        text(
+            f"SELECT {_PER_MINUTE_COLUMN} FROM model_profile "
+            "WHERE model = :m"
+        ),
+        {"m": model},
+    ).scalar_one_or_none()
+
+
 def _record_completion(
     usage: ExtractedUsage,
     *,
@@ -4415,6 +4486,7 @@ def _record_completion(
     resolved: Any,
     client_ref: str | None,
     byok: bool = False,
+    quantity: Decimal | None = None,
 ) -> None:
     """Write ONE usage row and draw the credits for it. Never raises.
 
@@ -4433,6 +4505,16 @@ def _record_completion(
     on its own vendor account is metered but not charged for tokens. The unit
     is still recorded — the history must stay readable — and our provider
     cost is zero because we paid the vendor nothing.
+
+    ⚠️ **``quantity`` is for the units that have NO column** — minutes,
+    characters, images (§6A.10a clause 4). A token call passes none and the
+    row keeps NULL, because the three token columns already carry that
+    number and a second copy is a second thing to disagree with. A call that
+    passes one is priced per unit at BOTH ends: the customer against
+    ``credits_per_unit``, and our own cost against the vendor's per-minute
+    price. That is why the cost branch below reads ``quantity`` rather than
+    the task name — the rule is about how the call is MEASURED, not about
+    which of D60's six tasks it happens to be.
     """
     try:
         with get_engine().begin() as conn:
@@ -4442,7 +4524,7 @@ def _record_completion(
             # unpriced, which is the shipped state until the owner prices it.
             billed, unit = _rate_completion(
                 conn, tier=resolved.tier, model=resolved.model,
-                usage=usage, task=resolved.task,
+                usage=usage, task=resolved.task, quantity=quantity,
             )
             if byok:
                 if billed:
@@ -4455,6 +4537,13 @@ def _record_completion(
                     )
                 billed = Decimal(0)
                 cost = Decimal(0)
+            elif quantity is not None:
+                # A per-unit call. The vendor sells it by time, so our cost
+                # comes off the per-minute price rather than off three token
+                # rates that this call never consumed.
+                cost = router_mod.vendor_cost_per_minute_usd(
+                    quantity, _vendor_per_minute(conn, resolved.model)
+                )
             else:
                 prices = _vendor_prices(conn, resolved.model)
                 cost = router_mod.vendor_cost_usd(
@@ -4474,11 +4563,11 @@ def _record_completion(
                 module_slug=caller.module_slug, run_id=caller.run_id,
                 model=resolved.model, tier=resolved.tier,
                 task=resolved.task,
-                # ⚠️ `quantity` stays NULL for a token-priced call. The three
-                # token columns already carry it, and a second copy of the
-                # same number is a second thing to disagree with. It is for
-                # the units that have no column — minutes, characters, images.
-                quantity=None,
+                # ⚠️ `quantity` stays NULL for a token-priced call, because
+                # that caller passes none. The three token columns already
+                # carry the number, and a second copy of it is a second thing
+                # to disagree with. A per-unit call passes its minutes here.
+                quantity=quantity,
                 unit=unit,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
@@ -4489,6 +4578,207 @@ def _record_completion(
             )
     except Exception:
         _log.exception("router.metering_failed")
+
+
+def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
+    """Map an upstream failure onto something a caller can branch on.
+
+    Without this a provider 429 is indistinguishable from a Router bug, and
+    every client treats both as fatal or both as retryable.
+
+    ⚠️ **The upstream message is deliberately NOT echoed.** It can quote the
+    request, and the request can carry customer content.
+
+    ⚠️ **401, 402 and 403 from the VENDOR become 502.** They are our
+    credential or our account, never the customer's key. Relayed verbatim,
+    every SDK tells the customer to rotate THEIR key, and a vendor 402
+    collides with this API's own top-up 402.
+
+    🔴 **ONE mapping for every serving route.** `/v1/chat/completions` and
+    `/v1/audio/transcriptions` both raise from here, so a second endpoint
+    cannot grow a second opinion about what a vendor 500 means.
+    """
+    status = failed.status
+    _log.warning("router.provider_error", extra={"upstream_status": status})
+    if isinstance(status, int) and 400 <= status < 600:
+        return HTTPException(
+            status_code=(
+                502 if status >= 500 or status in (401, 402, 403) else status
+            ),
+            detail="upstream provider error",
+        )
+    return HTTPException(status_code=502, detail="upstream provider error")
+
+
+def _chain_credentials(
+    conn, chain: list[ResolvedTier], *, org_id: str,
+) -> dict[str, router_mod.Credential | None]:
+    """One credential per VENDOR named in the chain, read in the caller's
+    transaction.
+
+    A vendor appears once however many steps it holds — the second step on the
+    same vendor reuses the first step's key rather than paying for a second
+    lookup on the hottest path in the system.
+
+    ⚠️ **The 503 raises from INSIDE the caller's transaction, on purpose.** A
+    missing or rotated encryption key is OUR failure and not a customer wall,
+    so it writes no `usage_event` row (§8.1). Only the three customer refusals
+    leave the block before they are raised.
+    """
+    credentials: dict[str, router_mod.Credential | None] = {}
+    for step in chain:
+        vendor = step.model.split("/", 1)[0]
+        if vendor in credentials:
+            continue
+        try:
+            credentials[vendor] = provider_credential(
+                conn, provider=vendor, org_id=org_id
+            )
+        except Exception:
+            # A missing or rotated encryption key must fail CLOSED with the
+            # same 503 shape the other secrets use — not a 500 that reads
+            # as a bug.
+            _log.exception("router.credential_unavailable")
+            raise HTTPException(
+                status_code=503, detail="provider credentials unavailable")
+    return credentials
+
+
+# ── A5: the meter records the WALL as well as the call (§8.1, migration 020) ─
+
+#: The slug for the 400. Minted by §8.1, because this refusal carries a
+#: sentence rather than a machine-readable reason.
+REFUSAL_TIER_UNKNOWN = "tier_unknown"
+
+#: Every slug migration 020's CHECK admits. Two of them are copied WORD FOR
+#: WORD from the body the customer already reads — ``decide_spend`` writes
+#: ``insufficient_credits`` and :func:`_spend_refusal` writes
+#: ``run_ceiling_exceeded`` — so the meter and the refusal say one thing.
+#:
+#: ⚠️ Named here as well as in the database on purpose. The CHECK is the fence,
+#: and this set makes the writer refuse a fourth spelling BEFORE it becomes an
+#: IntegrityError on the hottest path in the system.
+_REFUSAL_REASONS = frozenset({
+    "insufficient_credits",
+    "run_ceiling_exceeded",
+    REFUSAL_TIER_UNKNOWN,
+})
+
+#: How much of a caller-supplied label a refusal row keeps.
+#:
+#: 🔴 **A refused request is FREE, and its `model` and `task` are whatever the
+#: caller typed.** Nothing upstream bounds either one, so a five-megabyte
+#: "model" string would persist once per 400, at no cost to the sender. These
+#: two cells are OBSERVABILITY — "which tier did they ask for" — and never an
+#: authority anything reads back, so a truncated value answers the question
+#: just as well as a whole one.
+_REFUSAL_LABEL_MAX = 200
+
+
+def _clip(value: str | None) -> str | None:
+    """Bound one caller-supplied label. ``None`` stays ``None``."""
+    if value is None:
+        return None
+    return str(value)[:_REFUSAL_LABEL_MAX]
+
+
+def _record_refusal(
+    reason: str, *, org_id: str, caller: Any, tier: str, task: str,
+    client_ref: str | None = None,
+) -> None:
+    """Write the one ``usage_event`` row that says we refused (A5).
+
+    🔴 **It opens its OWN short transaction, and that is the design.** The 400
+    raises from INSIDE the serving transaction, so a refusal row written on
+    that connection rolls back with the raise and the meter records nothing.
+    :func:`_spend_refusal` answers the same hazard the other way — it RETURNS
+    the refusal so the caller leaves the transaction cleanly — and the route
+    now carries both refusals out of the block before it calls this.
+
+    ⚠️ **Best effort, exactly like :func:`_record_completion`.** An unmetered
+    refusal is a reporting gap. A refusal the customer never receives because
+    the meter fell over is an outage, and the outage is worse.
+
+    ⚠️ **``tier`` is the tier the caller ASKED for, never a resolved one.** At
+    ``tier_unknown`` there is nothing to resolve, and the requested tier is the
+    fact A5 reports.
+
+    ⚠️ **Only a CUSTOMER wall reaches here.** The two 503s and the 502 are OUR
+    failures and write no usage row at all — one table that mixes a customer
+    wall with a broken vendor answers neither question.
+    """
+    if reason not in _REFUSAL_REASONS:
+        # A slug nobody declared would fail the CHECK. Say so in the log rather
+        # than raise on a path whose whole job is to deliver a refusal.
+        _log.warning("router.refusal_slug_unknown",
+                     extra={"router_refusal": reason})
+        return
+    # ⚠️ Clipped BEFORE the database sees them, so a five-megabyte label is
+    # never sent as a bind parameter either.
+    tier, task = _clip(tier) or "", _clip(task) or ""
+    try:
+        with get_engine().begin() as conn:
+            store.record_usage(
+                conn, org_id=org_id,
+                # SERVER-generated, exactly as the served path mints it.
+                # `request_id` is NOT NULL UNIQUE (001:271).
+                request_id=f"rtr-{uuid.uuid4().hex}",
+                # We served nothing, so we charge nothing and the row draws no
+                # ledger line — `record_usage` skips the draw on a zero charge.
+                billed_credits=Decimal(0),
+                refusal_reason=reason,
+                user_email=caller.member, agent=caller.agent,
+                module_slug=caller.module_slug,
+                # A `run_ceiling_exceeded` row without its run is not
+                # actionable, and the breaker reads the same field.
+                run_id=caller.run_id,
+                # 📌 The customer's own correlation id, exactly as the served
+                # path carries it. Support finds a refused call the same way
+                # they find a served one, and without it the customer's "my
+                # request rtr-… failed" has nothing to match.
+                client_ref=_clip(client_ref),
+                # Both clipped above, because both are caller-supplied and
+                # unbounded and a refused request costs the sender nothing.
+                tier=tier, task=task,
+                # The call consumed nothing, and the task's own unit keeps the
+                # row readable beside a served one.
+                quantity=0, unit=_task_unit(conn, task),
+                # No model answered, and no vendor billed us.
+                model=None, provider_cost_usd=None,
+            )
+    except Exception:
+        _log.exception("router.refusal_metering_failed")
+
+
+def _raise_spend_refusal(
+    refusal: HTTPException, *, org_id: str, caller: Any, tier: str, task: str,
+    client_ref: str | None,
+) -> NoReturn:
+    """Record the wall the spend gate raised, then deliver it.
+
+    🔴 **ONE shape for every serving route.** Both `/v1/chat/completions` and
+    `/v1/audio/transcriptions` call this, so the 402 and the 403 cannot come
+    to mean two different rows.
+
+    The slug is the word already inside the body the customer reads —
+    `insufficient_credits` or `run_ceiling_exceeded` — never a second
+    spelling minted here. `_record_refusal` drops anything else.
+
+    ⚠️ **A plain-string detail writes NO row, and that is deliberate.** It
+    carries no slug, and minting one from the status code would be the second
+    spelling W3 forbids. Both shipped gate refusals build a dict, so nothing
+    in the tree takes that branch — it is pinned by
+    `TestTheThreeBranchesTheRefusalWriterCanTake` so that a future refusal
+    answering a bare sentence loses its row VISIBLY.
+
+    ⚠️ The caller must already have LEFT the serving transaction. A row
+    written on that connection rolls back with the raise below.
+    """
+    detail = refusal.detail
+    if isinstance(detail, dict) and detail.get("reason"):
+        _record_refusal(str(detail["reason"]), org_id=org_id, caller=caller,
+                        tier=tier, task=task, client_ref=client_ref)
+    raise refusal
 
 
 async def _streamed_completion(
@@ -4560,6 +4850,16 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     """
     org_id = caller.organization_id
 
+    # 🔴 **A CUSTOMER refusal leaves this block before it is raised** (§8.1
+    # clause 3). The meter has to record the wall, and a row written on the
+    # serving connection rolls back with the raise — so the 400 is CARRIED out
+    # of the transaction rather than thrown through it. `_spend_refusal`
+    # already works this way, and its docstring states the rule.
+    unknown_tier: HTTPException | None = None
+    refusal: HTTPException | None = None
+    chain: list[ResolvedTier] = []
+    credentials: dict[str, router_mod.Credential | None] = {}
+
     with get_engine().begin() as conn:
         try:
             # 🔴 **The whole chain, not one model (D-AI-5).** Every step is
@@ -4571,7 +4871,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         except TierUnknown:
             # 400, not a silent coercion to a default. A misconfigured agent
             # must be visible rather than quietly billed (D32.7).
-            raise HTTPException(
+            unknown_tier = HTTPException(
                 status_code=400,
                 detail=(
                     f"no binding for tier {req.model!r} on task "
@@ -4579,31 +4879,29 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 ),
             )
 
-        credentials: dict[str, router_mod.Credential | None] = {}
-        for step in chain:
-            vendor = step.model.split("/", 1)[0]
-            if vendor in credentials:
-                continue
-            try:
-                credentials[vendor] = provider_credential(
-                    conn, provider=vendor, org_id=org_id
-                )
-            except Exception:
-                # A missing or rotated encryption key must fail CLOSED with the
-                # same 503 shape the other secrets use — not a 500 that reads
-                # as a bug.
-                _log.exception("router.credential_unavailable")
-                raise HTTPException(
-                    status_code=503, detail="provider credentials unavailable")
+        if unknown_tier is None:
+            credentials = _chain_credentials(conn, chain, org_id=org_id)
 
-        # CP-6. BEFORE the provider call, which is the only place a refusal is
-        # worth anything: after it we have already spent the money. Metering
-        # afterwards stays best-effort and never fails a completion — the GATE
-        # may refuse, the METER may not.
-        refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            # CP-6. BEFORE the provider call, which is the only place a refusal
+            # is worth anything: after it we have already spent the money.
+            # Metering afterwards stays best-effort and never fails a
+            # completion — the GATE may refuse, the METER may not.
+            refusal = (
+                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            )
+
+    if unknown_tier is not None:
+        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
+                        tier=req.model, task=req.task,
+                        client_ref=req.client_ref)
+        raise unknown_tier
 
     if refusal is not None:
-        raise refusal
+        # Carried OUT of the transaction above, then recorded and delivered.
+        # `_raise_spend_refusal` holds the rules and the shared shape.
+        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
+                             tier=req.model, task=req.task,
+                             client_ref=req.client_ref)
 
     # ⚠️ **A step we hold no key for is not a step.** It cannot be tried at all,
     # so it is dropped here rather than attempted and counted as a failure —
@@ -4728,27 +5026,9 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     except HTTPException:
         raise
     except router_mod.UpstreamFailed as failed:
-        # Map upstream failures to something a caller can branch on. Without
-        # this a provider 429 is indistinguishable from a Router bug and every
-        # client treats both as fatal (or both as retryable). The message is
-        # deliberately NOT echoed: it can carry the request, and the request can
-        # carry customer content.
-        status = failed.status
-        _log.warning("router.provider_error", extra={"upstream_status": status})
-        if isinstance(status, int) and 400 <= status < 600:
-            # 401/402/403 from the VENDOR are our credential or our
-            # account, never the customer's key — relayed verbatim, every
-            # SDK tells the customer to rotate THEIR key, and a vendor 402
-            # collides with this API's own top-up 402. 502: our upstream.
-            raise HTTPException(
-                status_code=(
-                    502 if status >= 500 or status in (401, 402, 403)
-                    else status
-                ),
-                detail="upstream provider error",
-            ) from failed
-        raise HTTPException(
-            status_code=502, detail="upstream provider error") from failed
+        # ONE mapping, shared with the transcribe route. See
+        # `_upstream_refusal` for what each status becomes and why.
+        raise _upstream_refusal(failed) from failed
 
     # Metering is best-effort and NEVER fails the call: an unmetered completion
     # is a revenue problem, a failed completion is a product problem, and the
@@ -4765,6 +5045,351 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     )
 
     return response
+
+
+# ── H-46: the transcribe endpoint (§6A.10a) ─────────────────────────────────
+#
+# 🔴 **`tier-stt` has been bound since migration 010 and nothing could call
+# it.** The Router served one of D60's six tasks. This route serves the
+# second, and it is the first caller `resolve_invocation` has ever had on the
+# serving path.
+
+#: The ONE task this endpoint serves, and the route names it rather than
+#: reading it off the caller's alias.
+#:
+#: 🔴 **The Router never sniffs the payload to learn what the caller wants**
+#: (§6A.10a clause 1). The DOOR declares the task, the `model` field names a
+#: TIER, and `resolve_chain` refuses any alias that is not bound to this task.
+#: So a bare model id and a chat tier both walk into the same 400, and audio
+#: can never reach a chat model by accident (D60.2).
+TRANSCRIBE_TASK = "transcribe"
+
+#: Minutes are what `task_catalog.natural_unit` prices `transcribe` in.
+_SECONDS_PER_MINUTE = Decimal(60)
+
+#: `usage_event.quantity` is `NUMERIC(14, 4)` (migration 010).
+#:
+#: ⚠️ **Rounded HERE, before rating, and that is the point.** Postgres would
+#: round the stored value on its own, and then the minutes we billed and the
+#: minutes the row reports would differ in the last place. One number,
+#: rounded once, bills and records the same thing.
+_MINUTE_QUANTUM = Decimal("0.0001")
+
+#: How big an upload we accept. *Agent default*, anchored on the vendor rather
+#: than invented: the OpenAI Whisper API refuses above 25 MB, so a larger file
+#: buys a round trip and a provider 413. The Router holds the body in memory
+#: to replay it across a failover, so the ceiling is ours to state.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+#: How much of a caller-supplied filename we send upstream. The name only
+#: tells the provider the audio format, and nothing reads it back.
+_FILENAME_MAX = 200
+
+#: Form values that mean yes. A form field is a STRING, so `"false"` is truthy
+#: to Python and every one of these has to be named.
+_TRUTHY_FORM = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
+class _NamedAudio(io.BytesIO):
+    """The uploaded audio, with the filename the provider reads it by.
+
+    ⚠️ A subclass because `io.BytesIO` refuses attribute assignment, and an
+    OpenAI-family provider infers the audio FORMAT from the name. A stream
+    with no name is a stream the vendor cannot decode.
+    """
+
+    def __init__(self, data: bytes, name: str) -> None:
+        super().__init__(data)
+        self.name = name
+
+
+def _upload_name(filename: str | None) -> str:
+    """The bare filename we send upstream, bounded and stripped of any path.
+
+    Caller-supplied and therefore never trusted with a directory: a multipart
+    filename can carry one, and this value is handed to a client library.
+    """
+    raw = (filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    # No extension is invented for a caller who sent no name. Guessing the
+    # format for them produces a decode failure that reads as our bug.
+    return (raw or "audio")[:_FILENAME_MAX]
+
+
+def _form_is_true(value: str | None) -> bool:
+    return value is not None and value.strip().lower() in _TRUTHY_FORM
+
+
+def _chain_invocations(
+    conn, chain: list[ResolvedTier], *, task: str
+) -> dict[str, str]:
+    """The provider verb for each step of the chain. D60 step two.
+
+    Read in the caller's transaction beside the credentials, and for the same
+    reason: the provider call happens after the connection closes.
+
+    ⚠️ **A step with no capability row is OMITTED, not raised on.** It is our
+    configuration mistake rather than a customer wall, so it writes no
+    refusal row — it simply stops being a step the Router can try. Refusing
+    the whole request would let one unconfigured model take down a chain
+    whose other steps serve perfectly well.
+    """
+    verbs: dict[str, str] = {}
+    for step in chain:
+        try:
+            verbs[step.model] = router_mod.resolve_invocation(
+                conn, step.model, task
+            )
+        except TierUnknown:
+            _log.warning(
+                "router.capability_missing",
+                extra={"router_model": step.model, "router_task": task},
+            )
+    return verbs
+
+
+def _nothing_to_try(
+    primary: ResolvedTier, invocations: dict[str, str], *, task: str
+) -> HTTPException:
+    """The 503 for a chain no step of which can be attempted.
+
+    Two causes, and the operator has to be told which. A missing credential
+    names the vendor somebody has to go and configure. A missing capability
+    row names the model and the task, because the credential is fine and the
+    catalog is not.
+    """
+    if primary.model in invocations:
+        provider = primary.model.split("/", 1)[0]
+        detail = f"no provider credential configured for {provider!r}"
+    else:
+        detail = (
+            f"no capability declares how to serve {primary.model!r} "
+            f"for task {task!r}"
+        )
+    return HTTPException(status_code=503, detail=detail)
+
+
+def _transcript_of(response: Any) -> str:
+    """The text of a transcription, whatever shape the response carries.
+
+    litellm answers with a `TranscriptionResponse` whose `text` may be
+    `None`, and the stub seam in the tests answers with a plain dict. Both
+    reach the customer as a string, because a caller that asked for a
+    transcript and got `null` cannot tell a silent file from our bug.
+    """
+    if isinstance(response, dict):
+        text_value = response.get("text")
+    else:
+        text_value = getattr(response, "text", None)
+    return text_value if isinstance(text_value, str) else ""
+
+
+@app.post("/v1/audio/transcriptions")
+def audio_transcriptions(
+    caller: KeyCaller,
+    file: Annotated[UploadFile, File()],
+    model: Annotated[str, Form()],
+    stream: Annotated[str | None, Form()] = None,
+    client_ref: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    """Transcribe one audio file, gate it, and charge it per minute.
+
+    The same shape as ``chat_completions`` and deliberately so: the
+    organization comes from the API key, the model comes from the tier
+    binding, the three customer walls stand BEFORE the provider call, and the
+    usage row is written from numbers we observed rather than reported by the
+    party being metered.
+
+    Three things differ, and each is a clause of §6A.10a.
+
+    🔴 **The body is multipart, so ``model`` arrives as a form field** — and
+    it is a TIER ALIAS, never a model id (clause 1). ``016_tier_task.sql``
+    binds ``tier-stt`` to this task.
+
+    🔴 **The METER owns ``response_format``** (clause 3). The Router sends
+    ``verbose_json`` upstream, because litellm's ``TranscriptionResponse``
+    declares ``text`` and ``usage`` alone and a duration reaches it only
+    under that format. A caller-supplied format is ignored, and the caller
+    reads ``{"text": …}`` whatever the upstream body looked like — so the
+    meter's choice never changes the customer-visible contract.
+
+    🔴 **A truthy ``stream`` field is a 400** (clause 2). ``STREAMABLE_TASKS``
+    cannot serve this refusal: its one reader guards the OPERATOR capability
+    write and never sees a serving request. So the refusal is this endpoint's
+    own contract, and it is NEW behaviour.
+
+    ⚠️ **The stream 400 and the 413 write NO usage row.** Migration 020's
+    CHECK holds three slugs and minting a fourth would be the second spelling
+    §8.1 forbids. The three walls that DO write one are the ones clause 10
+    names, and they are the same three the chat route carries.
+
+    Declared ``def`` for the reason the module docstring gives — the engine is
+    synchronous, and the provider coroutine is driven with ``asyncio.run``
+    inside the threadpool worker.
+    """
+    org_id = caller.organization_id
+
+    # Read once. Every failover step re-sends the same bytes, and a file
+    # object is consumed by the first attempt that reads it.
+    audio = file.file.read(_MAX_AUDIO_BYTES + 1)
+    if len(audio) > _MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"audio above {_MAX_AUDIO_BYTES} bytes is refused",
+        )
+    filename = _upload_name(file.filename)
+
+    if _form_is_true(stream):
+        # Refused BEFORE anything is resolved or spent. A stream this route
+        # cannot deliver must cost the customer nothing.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this endpoint does not stream; omit the 'stream' field and "
+                "read the transcript from the response body"
+            ),
+        )
+
+    # 🔴 **A CUSTOMER refusal leaves this block before it is raised**, exactly
+    # as the chat route carries it (§8.1 clause 3). A row written on the
+    # serving connection rolls back with the raise, and the meter records
+    # nothing.
+    unknown_tier: HTTPException | None = None
+    refusal: HTTPException | None = None
+    chain: list[ResolvedTier] = []
+    credentials: dict[str, router_mod.Credential | None] = {}
+    invocations: dict[str, str] = {}
+
+    with get_engine().begin() as conn:
+        try:
+            chain = resolve_chain(conn, model, TRANSCRIBE_TASK)
+        except TierUnknown:
+            unknown_tier = HTTPException(
+                status_code=400,
+                detail=(
+                    f"no binding for tier {model!r} on task "
+                    f"{TRANSCRIBE_TASK!r}; name a tier, not a model"
+                ),
+            )
+
+        if unknown_tier is None:
+            credentials = _chain_credentials(conn, chain, org_id=org_id)
+            # D60 step two, on the serving path for the first time.
+            invocations = _chain_invocations(
+                conn, chain, task=TRANSCRIBE_TASK
+            )
+            refusal = (
+                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            )
+
+    if unknown_tier is not None:
+        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
+                        tier=model, task=TRANSCRIBE_TASK,
+                        client_ref=client_ref)
+        raise unknown_tier
+
+    if refusal is not None:
+        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
+                             tier=model, task=TRANSCRIBE_TASK,
+                             client_ref=client_ref)
+
+    # A step we hold no key for, or no capability row for, is not a step. It
+    # cannot be tried at all, so it is dropped rather than attempted and
+    # counted as a failure.
+    attempts = [
+        step for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None
+        and step.model in invocations
+    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+
+    if not attempts:
+        raise _nothing_to_try(chain[0], invocations, task=TRANSCRIBE_TASK)
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain.
+
+        ⚠️ ALLOWLIST, exactly as the chat route builds one. Nothing the
+        caller sent reaches the provider except the audio itself and its
+        name. `api_base` is ours alone.
+        """
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        out: dict[str, Any] = {
+            "model": step.model,
+            # A FRESH reader per attempt. The first attempt consumes it, and
+            # a failover that re-sent an exhausted stream would transcribe
+            # zero bytes and bill for it.
+            "file": _NamedAudio(audio, filename),
+            "api_key": cred.secret,
+            # 🔴 The meter owns this field (clause 3). Without it the
+            # provider reports no duration, the zero-bill arm is the only arm
+            # that ever runs, and the meter records zero for every call.
+            "response_format": router_mod.TRANSCRIPTION_RESPONSE_FORMAT,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "num_retries": 1,
+            "timeout": 120,
+        }
+        if cred.api_base:
+            out["api_base"] = cred.api_base
+        return out
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        """Whose account ran this step. §3.4 turns on exactly this bit."""
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(
+        frm: ResolvedTier, to: ResolvedTier, status: int | None
+    ) -> None:
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model, "fo_to": to.model,
+                "fo_status": status, "fo_tier": frm.tier,
+                "fo_task": TRANSCRIBE_TASK,
+            },
+        )
+
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        # ONE mapping, shared with the chat route. A second endpoint must not
+        # grow a second opinion about what a vendor 500 means.
+        raise _upstream_refusal(failed) from failed
+
+    seconds = router_mod.duration_seconds(response)
+    if seconds is None:
+        # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
+        # transcript, so the only choice left is whether we also lose the
+        # row. We keep the row — it is the evidence — and this line is how
+        # an unmeasured call becomes visible instead of merely cheap.
+        _log.warning(
+            "router.unmeasured_quantity",
+            extra={"router_model": resolved.model,
+                   "router_tier": resolved.tier,
+                   "router_task": TRANSCRIBE_TASK},
+        )
+        minutes = Decimal(0)
+    else:
+        minutes = (seconds / _SECONDS_PER_MINUTE).quantize(_MINUTE_QUANTUM)
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        ExtractedUsage(),
+        org_id=org_id, caller=caller,
+        resolved=resolved, client_ref=client_ref,
+        byok=_byok_served(resolved),
+        quantity=minutes,
+    )
+
+    # 📌 The caller reads a transcript, never the verbose body the meter
+    # asked for. One field, so the meter's choice of `response_format` stays
+    # invisible from outside (clause 3).
+    return {"text": _transcript_of(response)}
 
 
 @app.get("/me/billing")
@@ -4916,6 +5541,15 @@ class OrgUsageRow(BaseModel):
     #: NULL means "no burn to extrapolate from", never "forever".
     runwayDays: int | None = None
     silent: bool = False
+    #: How many times we REFUSED this organization over the same window
+    #: (§8.1, A5). A plain int, because it is a count and not money.
+    #:
+    #: 🔴 **This is what makes a wall FINDABLE.** A refusal moves `last_seen`,
+    #: so a walled customer stops reading as `silent` — and without this count
+    #: the wall would make them HARDER to find than silence did. `refusals`
+    #: above zero with `calls` at zero is an organization that got nothing
+    #: through, which is the row support wants before the customer writes in.
+    refusals: int = 0
 
 
 class OrgUsageView(BaseModel):
@@ -5008,6 +5642,7 @@ def admin_usage_by_org(
                     None if r["costed_share"] is None else str(r["costed_share"])
                 ),
                 runwayDays=r["runway_days"], silent=r["silent"],
+                refusals=r["refusals"],
             )
             for r in annotated
         ],
