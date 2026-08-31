@@ -1,4 +1,4 @@
-import { usesSessions } from "@/lib/identity";
+import { IDENTITY_FLAG, usesSessions } from "@/lib/identity";
 import InterimForm from "./InterimForm";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +45,10 @@ export default async function LoginPage({
   const origin = (process.env.OPERATOR_CONSOLE_ORIGIN ?? "").trim();
   const href = origin ? authorizeUrl(origin) : null;
 
+  // A real boolean, not the error string: JSX renders a truthy string, so
+  // `params.error && …` in the guard would print the message a second time.
+  const stranded = !href || Boolean(params.error);
+
   return (
     <main className="login-center">
       <div className="panel login-card">
@@ -70,6 +74,27 @@ export default async function LoginPage({
             <code>OPERATOR_SUPABASE_URL</code> and{" "}
             <code>OPERATOR_CONSOLE_ORIGIN</code> server-side, and add the
             callback URL to the Supabase redirect allowlist.
+          </div>
+        )}
+
+        {/* The way back, printed on the page instead of left in a runbook.
+
+            ⚠️ **This is TEXT, and it is deliberately NOT a second door.**
+            `usesSessions()` picks ONE path, and the gate refuses the
+            passphrase while the flag is on (§8 done-when 29). A console that
+            accepted both at once would have two live doors while only one was
+            being reasoned about. So this names the one env line that RETURNS
+            the console to the interim path, and renders no form — a
+            passphrase box here would 400 on submit.
+
+            It shows in the two states that strand a reader: sign-in not
+            configured, and a refused Microsoft sign-in. */}
+        {stranded && (
+          <div className="field-hint">
+            Cannot get in? Unset <code>{IDENTITY_FLAG}</code> server-side and
+            restart the console. The staff passphrase works again after that
+            restart. H-56 removes the passphrase for good, after one real
+            sign-in has succeeded.
           </div>
         )}
 
