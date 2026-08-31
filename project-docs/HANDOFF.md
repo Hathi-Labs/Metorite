@@ -75,28 +75,297 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-80 · Give the stream walk its own thread budget, off the shared 40 · [AGENT]
-- **Check:** `grep -n "CapacityLimiter\|Semaphore" apps/services/customer_console/customer_console/main.py`.
-  No hit inside `_open_stream_chain` means this entry is still real.
-- **Why:** WS-31 slice 11 moved the provider stream open into the route. So a
+### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
+- **Check:** the DELIVERABLE first, and the request body only after it.
+  *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
+  who restored `size` with no size dimension behind it flipped this entry to
+  "done". That is the exact P1 below, and the Check deleted its own guard.)*
+  1. **The price.** `rg -c 'size' apps/services/customer_console/customer_console/feed.py`
+     reads **0** today, and `rg -n 'vendor_per_image' infra/customer_console/`
+     shows ONE image column on `model_profile` and one on `vendor_price_feed`.
+     Together that means the vendor image price still holds one number per
+     model and carries NO size axis. This entry stays real while that holds,
+     whatever the request body does.
+  2. **The body.** `rg -n 'size' apps/services/customer_console/customer_console/main.py | rg 'ImageRequest|"size"|req\.size'`.
+     A hit here while step 1 still reads one bare column is the P1 back. Reopen
+     it, and never close this entry on it.
+  🔴 **Close this entry only when step 1 shows a size dimension on
+  `model_profile` and a feed that fills it.** The body field is the last step
+  of the work, and never the measure of it.
+- **Why:** the vendor prices a picture BY SIZE. Our own price column carries no
+  size axis at all. `feed.py:245` reads `output_cost_per_image` and
+  `input_cost_per_image` off the BARE model key, so exactly one number reaches
+  the profile. `019_per_unit_vendor_costs.sql:97` states
+  `model_profile.vendor_per_image_usd` as *"USD per generated image"*, with no
+  size in it. Measured in litellm 1.86.0: `standard/1024-x-1024/dall-e-3` is
+  3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
+  4.359e-08 per pixel, which is $0.080.
+- 🔴 **This was a live revenue defect for one round.** The build forwarded a
+  caller-chosen `size` to the vendor. A caller who sent
+  `{"model": "tier-image", "n": 4, "size": "1024x1792"}` cost us 4 x $0.080
+  while the row recorded 4 x $0.04. Review round 2 removed the field, and
+  `extra="forbid"` answers 422 for it now.
+- 📌 **The fix shape:** a size dimension on the vendor price, in the feed
+  projection and in `model_profile`. The feed already holds the sized keys —
+  it reads the bare key by choice, not by lack. `quality` is the same shape of
+  axis (`hd/1024-x-1024/dall-e-3` is twice `standard`), so one dimension
+  should carry both.
+- ⚠️ **It must land BEFORE the owner offers image sizes to customers.** Until
+  it does, one number per model is the only honest thing we can record.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 1 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
+  2026-08-31**. The router-guards slice took that id first.
+
+### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
+- **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
+  An `extra` block carrying no organization and no request id means this entry
+  is still real.
+- **Why:** `router.unmeasured_quantity` is the alarm that says nothing measured
+  a call we served. It logs the model, the tier and the task, and it names
+  neither the organization nor the request. So nobody can join the alarm to the
+  `usage_event` row it belongs to. Nobody can tell one customer's unmeasured
+  calls from another customer's either. The revenue path deserves a log a
+  person can reconcile.
+- 📌 **PRE-EXISTING, and wider than the two media doors.** The transcribe route
+  writes the same three fields (`main.py:5749`). The two H-46 doors copied that
+  shape, so a repair here should move all three onto one helper.
+- 🔴 **SPLIT THE NAME TOO — two different incidents share one alarm today.**
+  On the image door and the transcribe door, `router.unmeasured_quantity`
+  means *we could not count what the provider returned*. On the speak door it
+  also fires when the vendor answered ZERO BYTES of audio. That is not a
+  counting failure at all. We counted the characters fine, and the vendor
+  sent nothing back. One alarm cannot page for both. This entry is the place
+  to give the empty-audio case its own name.
+- 📌 **The fix shape:** carry `org_id` and the server-generated `request_id`
+  into the log line. `_record_completion` mints the id, so the ORDER matters —
+  the alarm fires before the row exists today.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 5 · clause 6
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
+- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
+  A count under 5 means fewer than four doors share it, and this entry is still
+  real. One definition plus four call sites reads 5.
+- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
+  verbs, and stands the three customer walls. H-46 built it for the image door
+  and the speak door. The transcribe route keeps its own copy of the same body,
+  and the chat route wrote the shape first. Three implementations of one gate
+  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
+  that drifts.
+- 📌 **The fix shape:** move the transcribe route and the chat route onto the
+  prelude. The chat route needs one extra return, because it resolves a vision
+  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
+- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-84 · Fix two fixture hazards on the shared scratch database · [AGENT]
+- ⚠️ **Two shapes, one record.** Shape 1 LEAKS a row on every run. Shape 2
+  DELETES a whole table, and it reddens any suite that runs beside it.
+- **Check (shape 1):** `grep -n "tier-orphan" -A4 tests/unit/test_customer_console_router.py`.
+  A raw `INSERT INTO tier_binding` with no teardown means this entry is still
+  real. Count the rows with `docker exec metorite-scratch-console psql -U cc
+  -d cc_platform -Atc "SELECT count(*) FROM tier_binding WHERE tier =
+  'tier-orphan'"`.
+- **Why:** `test_a_missing_credential_is_a_503_not_a_crash`
+  (`test_customer_console_router.py:535-547`) inserts a `tier_binding` row and
+  removes nothing. It does not use the `bound_tier` fixture beside it. Every
+  other fence in that file goes through `bound_tier`, which owns the teardown.
+- 🔴 **`ON CONFLICT DO NOTHING` never fires.** Migration `011` keys the table
+  on `(task, tier, effective_from, rank)`. The test stamps
+  `now() - interval '1 day'`, which is a fresh timestamp on every run.
+- 📌 **Measured 2026-08-31: 83 rows** of `tier-orphan` / `chat` /
+  `nosuchprovider/model` on the scratch console database.
+- 🔴 **A SECOND leaked row MASKS the failure `bound_tier` warns about.**
+  `model_capability` holds `nosuchprovider/model | chat | acompletion | t`, and
+  nothing in the tree writes that row on purpose. On a clean database the
+  binding leak reddens
+  `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`.
+  So sweep both rows, and do not sweep only the binding.
+- 📌 **`model_profile` holds 194 rows on the same database.** `bound_tier`
+  deletes its own model rows, so some run stopped before its teardown.
+- **Check (shape 2):** `grep -n "DELETE FROM provider_credential" tests/unit/test_provider_keys.py`.
+  A hit on an UNQUALIFIED delete means this entry is still real.
+- 🔴 **Why (shape 2) — one suite empties `provider_credential` for the whole
+  box.** The `client` fixture (`test_provider_keys.py:71`) runs
+  `DELETE FROM provider_credential` with no WHERE clause, once per test. The
+  console suites share ONE scratch database across worktrees. So a run beside
+  it loses the platform `deepseek` row that `org_key` installed.
+- 📌 **Measured 2026-08-31.** Ten full runs of
+  `test_customer_console_router.py` plus its two siblings gave eight green and
+  two red. Both reds answered
+  `no provider credential configured for 'deepseek'`, and the tests differed
+  between them. The row was present before and after each run.
+- ✅ **The repair is a WHERE clause.** Delete the rows that test installed, and
+  never the table. Scope it by `label` or by the provider the test writes.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 fences ·
+  `engineering_practice.md` §1.1 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-83 · Scope the `usage_by_org` fence to its own organization · [AGENT]
+- **Check:** `grep -n "limit=10_000" tests/unit/test_customer_console_sql.py`.
+  TWO hits mean the fence still asks for a page sized by a bound that the data
+  has passed, and this entry is still real.
+- 🔴 **IT HIDES REGRESSIONS, and that is why it is here.**
+  `test_an_org_with_no_usage_still_appears` passed about 27 percent of runs on
+  a full scratch database. A true red then reads as volume noise. This is the
+  41-failures-then-22 swing that moved with no code change.
+- **Why:** `store.usage_by_org` orders by `credits DESC, calls DESC, slug ASC`
+  with `LIMIT :lim` (`store.py:808-809`). The fence asks for `limit=10_000`.
+  Somebody sized that bound when the database held 563 organizations.
+- 🔴 **SEVEN tests carry the shape, and not one** *(a reviewer found this on
+  2026-08-31, and an agent counted the callers the same day)*. The direct call
+  is `test_customer_console_sql.py:657`. The helper `_row_for` (`:878`) runs
+  the identical uncapped read at `:888`, and SIX tests call it — lines 835,
+  861, 947, 963, 970 and 1002.
+- 📌 **Re-measured 2026-08-31 at 14:33, and every figure had moved UP.** The
+  scratch console database holds 25,761 organizations, 14,987 `usage_event`
+  rows and 2,377 `acme-` organizations. The earlier read the same day gave
+  22,787 and 12,721 and 2,265.
+- 🔴 **The cut has now passed the zero-usage block.** Organizations with usage
+  in the window fill ranks 1 to 10,857. The zero-usage block starts at rank
+  10,858 and holds 14,904 rows. So `limit=10_000` admits NO zero-usage
+  organization, and the first `acme-` row sits at rank 10,858.
+- 🔴 **The `org` fixture mints `acme-<8 random hex>`**
+  (`test_customer_console_sql.py:79`). The test passed only when that hex
+  sorted below `457ea6e3`, which was about 27 percent. Today no hex value
+  passes it. The flake has become a steady red. This comes from the page query
+  above, and not from a run of that suite.
+- ✅ **The smallest correct repair is a slug filter in the query.** Scope the
+  assertion to the fixture's OWN organization. Repair BOTH sites. A filter at
+  `:657` alone leaves the six `_row_for` tests on the coin flip. Do NOT raise
+  the limit again. The last raise bought 563 organizations of headroom, and it
+  has expired.
+- **Authority:** `customer_console.md` §5 · board row WS-31 · beside H-76
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-82 · Correct the failover read, which now counts a resolution act · [AGENT]
+- **Check:** `grep -n "served_rank > 1" apps/services/customer_console/customer_console/main.py`
+  and `grep -n "Failovers, last 14 days" workbench/operator_console/src/app/tiers/TierBoard.tsx`.
+  A hit on both means the read still calls every `served_rank > 1` row a
+  failover, and this entry is still real.
+- **Why:** D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
+  starts. Take a tier that binds a blind rank 1 and a seeing rank 2, both
+  keyed. `_record_completion` (`main.py:4656`) then writes `served_rank = 2`
+  with `task = vision` on EVERY successful call, and no step ever failed.
+- 🔴 **The dashboard reads that as a failover.** `main.py:1858-1868` selects
+  `WHERE served_rank > 1`, and its own comment calls every such row a customer
+  request the rank-1 step did not answer. `TierBoard` would report 100 percent
+  of that tier's vision traffic as a failover.
+- ⚠️ **The emitted group joins to no `tier_binding` row.** It carries the
+  chosen tier with `task = vision`, and the chosen tier binds no `vision` task.
+- 📌 **The RANK is TRUE, and only the MEANING slipped.** `resolve_chain` builds
+  `rank` from the column and never from a list index, and the lift chain stays
+  a subsequence of the chain. So do not change the write.
+- 📌 **The credential filter (`main.py:5255-5258`) already does this on the
+  CHAT path.** So this widens a shape, and it mints no new class.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 7 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
+- **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
+  and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
+  and `grep -n "_models_that_read_images" apps/services/customer_console/customer_console/router.py`.
+  This entry is still real on three conditions. The resolver takes
+  `(conn, tier)` alone, the empty-`attempts` branch answers 503 with no second
+  resolve, and the declared-task resolve carries no `reads_images` filter.
+  ⚠️ **The third grep keys on the SYMBOL, and never on a whole source line.**
+  A literal match of the `return resolve_chain(conn, tier, VISION_TASK)` line
+  read as done the moment somebody reformatted it, while shape 2 still stood.
+  `_models_that_read_images` is the ONE reader of the flag, so any filter must
+  call it. Today the grep answers three lines: the definition, one docstring
+  reference, and ONE call inside the LIFT path. The declared-task resolve
+  calls it NOWHERE. A second call means somebody filtered another chain, and
+  shape 2 may be closed.
+  ⚠️ Do NOT grep `provider_credential` on its own. `router.py:535`
+  already reads that table for the SERVING path, so that grep hits today and
+  reads as done.
+- ⚠️ **This entry carries TWO shapes** *(the second one arrived 2026-08-31)*.
+  Shape 1 costs a correct 200. Shape 2 lets a blind model answer. Close them
+  together, because both add a resolution rule to the same function.
+- **Why (shape 1):** WS-31's blind-step guard filters the lift chain on `reads_images`,
+  and one chain shape pays a CORRECT 200 for it. The shape is a BLIND rank 1,
+  then a SEEING rank 2 that the service holds no key for, with `tier-vision`
+  bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
+  and answered 200 from a model that saw the image. The filter keeps the
+  unkeyed seeing step, `main.py:5255-5258` empties the chain, and the route
+  answers 503. A verifier drove both sides on 2026-08-31.
+- 🔴 **The loss is AVAILABILITY, and never correctness.** No blind model
+  answers in either version. So the customer trades a right answer for a
+  refusal, and never a refusal for a wrong answer.
+- 🔴 **Two candidate closes, and each one is a THIRD resolution rule.**
+  (a) The resolver reads `provider_credential` BEFORE it filters, so a step
+  the service cannot call never enters the chain. (b) The credential filter
+  re-resolves to `tier-vision` when it empties `attempts` on a declared vision
+  task. §3.2 records no decision on either shape, so an agent may not mint one
+  (CLAUDE.md §5). That is why this entry is the owner's.
+- 🔴 **Why (shape 2) — a blind step can still enter a tier's OWN vision
+  chain.** §3.2 step 0.5 returns `resolve_chain(conn, tier, VISION_TASK)` with
+  NO `reads_images` filter (`router.py:338`). Step 3b narrows the LIFT chain
+  and narrows nothing else. So take an operator who binds `tier-vision` to
+  `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 returns a retryable 500.
+  `walk_chain` moves to the blind rank 2, and that model answers a confident
+  200 about a picture it never saw.
+- 🔴 **Shape 2 is a CORRECTNESS gap, and it is the older one.** It sits on the
+  path §3.2 step 3 sends the image down as the safe one. Shape 1 trades a right
+  answer for a refusal. Shape 2 gives a wrong answer.
+- 🔴 **Shape 2 needs two answers, and each one is a resolution rule.** Does a
+  declared `vision` chain drop its blind steps? Does an emptied declared chain
+  refuse, or does it fall to something? §3.2 records no decision on either, so
+  an agent may not mint one (CLAUDE.md §5).
+- 📌 **Both shapes are latent today.** Nothing binds `tier-vision` (F3) and
+  nothing writes `model_profile.reads_images` (§3.7 rule 4). Building either
+  shape takes all three operator acts of
+  `ai_metering_and_analytics.md` §8.5 clause 3.
+- ⏰ **Deadline: decide before H-69 arms the lift.** That flip is what makes
+  both shapes reachable on a live box.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clauses 8 and 9 · board
+  row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards repair round · **shape 2 added
+  2026-08-31**, WS-31 router-guards final repair round
+
+### H-80 · Decide the thread budget for the stream walk · [OWNER]
+- **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
+  No hit means nobody has capped the stream walk, and this entry is still real.
+  ⚠️ **The grep reads `main.py` alone** *(named 2026-08-31)*. A cap that lands
+  in a NEW module still reads as no hit, so this entry would say STILL PENDING
+  after the repair. Widen the path to the package when you close it.
+- **Why:** WS-31 slice 11 moved the provider stream open into the route. A
   `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
-  length of the walk — up to `3 × 120` seconds. And litellm's `asyncify`
-  (`asyncify.py:57`) passes `limiter=None`, which borrows from that SAME
-  default pool. Put 40 concurrent stream walks beside one asyncify-bound
-  model, and nothing recovers. Every token sits in a walk, and each walk waits
-  for a token that no walk will release. Measured 2026-08-31 — the stream path
-  borrows 1 of 40, and seven litellm call sites share the limiter. Two of them
-  serve requests: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
-  (`sagemaker/completion/handler.py:428`, `:499`).
+  length of the walk. That is up to `3 x 120` seconds. The `asyncify` helper in
+  litellm borrows from the SAME default pool, because `asyncify.py:60` and
+  `:66` pass `limiter=None`. Then anyio resolves `limiter or
+  cls.current_default_thread_limiter()` (`anyio/_backends/_asyncio.py:2480`),
+  and that factory builds `CapacityLimiter(40)` (`:2957`). Put 40 stream walks
+  beside one asyncify-bound model, and nothing recovers.
+- ⛔ **The fix shape this entry carried is WITHDRAWN** *(2026-08-31)*. It read
+  "a bounded semaphore in front of `_open_stream_chain`". FastAPI takes the
+  threadpool token BEFORE the route body runs. `run_endpoint_function` calls
+  `run_in_threadpool(dependant.call, **values)` (`fastapi/routing.py:315`). So
+  a semaphore inside the route blocks a thread that ALREADY holds a token. It
+  reserves no headroom, and the deadlock stands.
+- 📌 **The scope is narrower than it looks.** Both buffered paths call
+  `asyncio.run` (`main.py:5398`, `:5733`), which builds a PRIVATE loop. A
+  `RunVar` (`_asyncio.py:2085`) keys anyio's default limiter, so a private loop
+  gets its own 40 tokens. Only `_open_stream_chain` shares the serving loop's
+  limiter, because it alone calls `anyio.from_thread.run`.
+- 🔴 **Two shapes WOULD work, and both change throughput.** An `async def`
+  dependency runs on the loop BEFORE FastAPI takes the token, so it can cap
+  stream requests. That cap makes the 9th concurrent stream WAIT. The other shape
+  raises `total_tokens` on the default limiter at startup, which changes the
+  thread budget of EVERY route. §3.6 records no decision on either, so this
+  entry is the owner's.
 - 📌 **Latent, and one row from live.** Every model bound today (deepseek,
-  groq) reaches httpx and borrows no thread. A vendor swap is one
+  groq) reaches httpx and borrows no thread. Two request-serving `asyncify(`
+  sites exist: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
+  (`sagemaker/completion/handler.py:428`, `:499`). A vendor swap is one
   `tier_binding` row, which is an operator act that no code review sees.
-- 📌 **The fix shape:** a dedicated `anyio.CapacityLimiter` for stream walks,
-  or a bounded semaphore in front of `_open_stream_chain`, sized well under 40.
-  Not a rewrite of the route to `async def`.
 - **Authority:** `ai_metering_and_analytics.md` §8.6 "The threadpool hazard"
   · board row WS-31
-- **Added:** 2026-08-31 · WS-31 slice 11 review round 2
+- **Added:** 2026-08-31 · WS-31 slice 11 review round 2 · **rewritten
+  2026-08-31**. The WS-31 router-guards slice withdrew the fix shape and moved
+  the label to OWNER.
 
 ### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
 - **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
@@ -858,35 +1127,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
 
-### H-78 · Teach the vendor feed the per-unit costs (image, second, character) · [AGENT]
-- **Check:** `grep -c "cost_per_image" apps/services/customer_console/customer_console/feed.py`
-  → `0` means the feed still reads only the three per-token columns.
-- **Why:** The "Price from cost" board on `/pricing` suggests a charge from the
-  chain's first model and its vendor price. For a token job the cost comes from
-  the feed. For `image`, `transcribe` and `speak` the litellm map carries
-  per-unit fields that `vendor_price_feed` (`014`) does not store. Until it
-  does, the operator types the vendor's dollar price into the board by hand.
-  The work is a new migration with nullable columns, a read in `feed.py`,
-  matching columns on `model_profile`, and a board that reads the profile.
-  R6 applies.
-- **Done when:** `customer_console.md` **§6A.11a** holds the eight clauses.
-  Build to that section, and to nothing written in this entry.
-  ⚠️ **`music` is struck from this entry.** litellm has no `music` mode, so the
-  feed can never fill the `music` task. The task row and the `tier-music` tier
-  both stay.
-  ⚠️ **`video` is a named follow-up, and not part of this entry.** A map of
-  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`
-  (`catalog.py:26`). `check_invocation` (`catalog.py:100`) is the refuser, and
-  it rejects a video capability until that verb lands. *(This entry named
-  `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
-  the refusal, and it enforces nothing.)* The follow-up rides with **H-46**.
-  📌 Migration number: list `infra/customer_console/` at build time, and list it
-  again at merge (R1). It was `019` on 2026-08-30.
-- **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·
-  §6A.13 · `ai_metering_and_analytics.md` §3.7 · §9
-- **Added:** 2026-08-30 · pricing-method session · **amended 2026-08-30** after a
-  dispatch audit returned NO-GO on scope, on acceptance and on a stale header
-
 ### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
 - **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`
   → `1` means the Console still sends floats.
@@ -948,12 +1188,36 @@ line — never reclaim a number by deleting the other entry.
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
 - ✅ **The `transcribe` half is BUILT, 2026-08-31.**
   `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
-  `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
-  endpoint and H-47's handler seam are what is left. Keep this entry until
-  those three land.
+  `customer_console.md` §6A.10a is now BUILT.
+- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
+  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
+  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
+  is left. Keep this entry until it lands.
+- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
+  audit minted that section on 2026-08-31, and the build answered it the same
+  day. It holds twelve clauses and a fence table.
+  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
+  we resell for pictures and for speech is a commercial act, and it belongs to
+  the owner. So each route answers 400 `tier_unknown` until the owner binds
+  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
+  beside the three prerequisites H-69 lists.
+  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
+  are litellm verbs already, so neither route needed a native handler.
+- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
+  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
+  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
+  `size`, and the vendor prices a picture by size. **H-87** now carries the
+  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
+  carries the one prelude for four doors. §6A.10c holds each answer.
+- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
+  WS-31 slice 4, and the router-guards slice filtered the chain.
+  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
+  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
+  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
+  done-when.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
-  endpoint and the speak endpoint are still not built.
+  → four routes means every endpoint D61.1 named is built. A tree missing
+  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
 - **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
   **nowhere to serve them**. The fork is real and is an owner call because it is a public
   wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
@@ -971,17 +1235,33 @@ line — never reclaim a number by deleting the other entry.
   mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
   ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
   measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Done when:** `customer_console.md` **§6A.10a** holds the nine clauses.
-  Build to that section, and to nothing written in this entry.
-  📌 **H-78 lands FIRST.** Clause 5 reads `model_profile.vendor_per_minute_usd`,
-  and H-78 builds that column. Until a profile holds the price,
-  `provider_cost_usd` stays NULL (D-AI-7 rule 3).
+- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
+  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
+  the speak endpoint. Build to those two sections, and to nothing written in
+  this entry.
+  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
+  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
+  seam that fills it. A profile with no price still leaves
+  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
+  the profile.
   📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
   WITH its first caller (D57.3). §6A.10b clause 7 says so.
-- **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
+  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
+  litellm's `video_generation` mode needs a sixth verb in
+  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
+  refuser, and it rejects a video capability until that verb lands. This slice
+  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
+  apps/services/customer_console/customer_console/catalog.py` — five verbs
+  means the follow-up is open.
+- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
+  done-when) ·
   `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
 - **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
-  done-when section and the H-78 order
+  done-when section and the H-78 order · **amended 2026-08-31** with the
+  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
+  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
+  2026-08-31** with §6A.10c, the contract for the two routes that are left.
+  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present

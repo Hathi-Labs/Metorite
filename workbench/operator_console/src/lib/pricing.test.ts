@@ -17,6 +17,7 @@ import {
   marginLabelPct,
   parseAssumption,
   priceForMargin,
+  fixedDecimal,
   roundCredits,
   vendorCostCreditsPer1k,
 } from "./pricing";
@@ -148,6 +149,30 @@ describe("rendering", () => {
     expect(roundCredits(-3)).toBe("");
     expect(roundCredits(Number.NaN)).toBe("");
     expect(roundCredits(1e16)).toBe("");
+  });
+
+  // ── fixedDecimal — the ONE plain-digits renderer (H-78) ─────────────────
+
+  it("🔴 fixedDecimal renders a sub-1e-6 price as plain digits", () => {
+    // `String(n)` goes exponential below 1e-6, and every per-unit vendor
+    // price lives there. A form box reading "3e-7" is not a number an
+    // operator can check, and the box is POSTed back verbatim.
+    expect(fixedDecimal(3e-7)).toBe("0.0000003");
+    expect(fixedDecimal(3e-10)).toBe("0.0000000003");
+    expect(fixedDecimal(0.000015)).toBe("0.000015");
+  });
+
+  it("fixedDecimal keeps every digit of a whole number (1000 is not 1)", () => {
+    // The same shipped bug the roundCredits test above pins. The zero-trim
+    // must never touch a string with no dot in it.
+    expect(fixedDecimal(1000)).toBe("1000");
+    expect(fixedDecimal(0)).toBe("0");
+    expect(fixedDecimal(0.04)).toBe("0.04");
+  });
+
+  it("fixedDecimal answers empty for fiction, never NaN on screen", () => {
+    expect(fixedDecimal(Number.NaN)).toBe("");
+    expect(fixedDecimal(Number.POSITIVE_INFINITY)).toBe("");
   });
 
   it("parses assumptions strictly", () => {

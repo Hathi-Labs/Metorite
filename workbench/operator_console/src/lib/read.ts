@@ -50,6 +50,11 @@ type WireCatalog = {
     vendor_input_per_1m_usd: string | null;
     vendor_cached_input_per_1m_usd?: string | null;
     vendor_output_per_1m_usd: string | null;
+    // 019 (H-78) — the per-unit costs, in the TASK's own unit. Optional,
+    // because a Console still mid-rollout answers without them.
+    vendor_per_minute_usd?: string | null;
+    vendor_per_character_usd?: string | null;
+    vendor_per_image_usd?: string | null;
     description: string;
     reads_images: boolean;
     thinks_first: boolean;
@@ -111,6 +116,12 @@ type WireFeedModel = {
   vendor_input_per_1m_usd: string | null;
   vendor_output_per_1m_usd: string | null;
   vendor_cached_input_per_1m_usd: string | null;
+  // 019 (H-78). ⚠️ The wire says `vendor_per_minute_usd`, and the feed TABLE
+  // stores per second — the Console converts once, server-side, so the
+  // per-second number never crosses this wire.
+  vendor_per_minute_usd?: string | null;
+  vendor_per_character_usd?: string | null;
+  vendor_per_image_usd?: string | null;
   reads_images: boolean;
   thinks_first: boolean;
   deprecated_on: string | null;
@@ -187,6 +198,12 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         inputPer1M: num(p?.vendor_input_per_1m_usd ?? null),
         cachedInputPer1M: num(p?.vendor_cached_input_per_1m_usd ?? null),
         outputPer1M: num(p?.vendor_output_per_1m_usd ?? null),
+        // 🔴 The PROFILE, never the feed (H-78). The board's cost comes from
+        // the table an operator saved, so a vendor's published price cannot
+        // change what we bill until somebody looks at it and presses Save.
+        perMinuteUsd: num(p?.vendor_per_minute_usd ?? null),
+        perCharacterUsd: num(p?.vendor_per_character_usd ?? null),
+        perImageUsd: num(p?.vendor_per_image_usd ?? null),
         description: p?.description ?? "",
         declared: true,
       };
@@ -288,6 +305,10 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     inputPer1M: r.vendor_input_per_1m_usd,
     outputPer1M: r.vendor_output_per_1m_usd,
     cachedInputPer1M: r.vendor_cached_input_per_1m_usd,
+    // 019 (H-78) — strings, verbatim, already in the profile's unit.
+    perMinuteUsd: r.vendor_per_minute_usd ?? null,
+    perCharacterUsd: r.vendor_per_character_usd ?? null,
+    perImageUsd: r.vendor_per_image_usd ?? null,
     readsImages: r.reads_images,
     thinksFirst: r.thinks_first,
     deprecatedOn: r.deprecated_on,
