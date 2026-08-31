@@ -11,10 +11,9 @@
  * `commands.ts`**, not a statement about this file alone.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { describe, expect, it } from "vitest";
+
+import { isKnownIcon } from "@/lib/icons";
 
 import type { StatusRow, TaskRow } from "./api";
 import { COMMANDS } from "./commands";
@@ -235,20 +234,13 @@ describe("the registry itself", () => {
     }
   });
 
-  it("every glyph is mapped in the icon registry, for every pack", () => {
-    // Same fence `commands.test.ts` carries: an unmapped name silently falls
-    // back to Lucide on every theme, which is the one glyph in a row of
-    // Material Symbols that reads as a bug.
-    const registry = JSON.parse(
-      readFileSync(
-        resolve(__dirname, "../../../lib/theme/icon-data/registry.json"),
-        "utf8",
-      ),
-    ) as Record<string, unknown>;
-    const unmapped = TASK_MENU_ACTIONS.map((a) => a.icon)
+  it("every glyph is a real Lucide icon", () => {
+    // Same fence `commands.test.ts` carries: an unknown name resolves to the
+    // `Zap` fallback, so a typo ships as a lightning bolt in the menu.
+    const unknown = TASK_MENU_ACTIONS.map((a) => a.icon)
       .filter((name): name is string => Boolean(name))
-      .filter((name) => !(name in registry));
-    expect(unmapped, "add these to lib/theme/icon-data/registry.json").toEqual([]);
+      .filter((name) => !isKnownIcon(name));
+    expect(unknown, "these are not Lucide icon names").toEqual([]);
   });
 });
 

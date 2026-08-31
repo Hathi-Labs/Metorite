@@ -258,11 +258,16 @@ describe("no hardcoded colour", () => {
 
 describe("icons are a theme choice", () => {
   /**
-   * The only two files allowed to name `lucide-react`. Not a ratchet: this one
-   * WAS driven to zero, and a rule with no exceptions is worth far more than a
+   * The only file allowed to name `lucide-react`. Not a ratchet: this one WAS
+   * driven to zero, and a rule with no exceptions is worth far more than a
    * budget nobody reads.
+   *
+   * ⚠️ `components/Icon.tsx` left this list on 2026-08-31. It no longer
+   * imports the library at all — with one pack it renders through
+   * `resolveIcon`, so `lib/icons.tsx` is the single place the module is
+   * named. The rule got STRICTER as the theming engine went away, not looser.
    */
-  const ICON_SOURCES = ["components/Icon.tsx", "lib/icons.tsx"];
+  const ICON_SOURCES = ["lib/icons.tsx"];
 
   it("nothing imports lucide-react except the icon layer itself", () => {
     const offenders = sourceFiles().filter(
@@ -270,9 +275,9 @@ describe("icons are a theme choice", () => {
     );
     expect(
       offenders,
-      "Render icons with <Icon name=\"…\" />. Lucide names stay the vocabulary; " +
-        "the active theme decides which pack draws them, and a direct import " +
-        "pins that one glyph to Lucide on every theme.",
+      "Render icons with <Icon name=\"…\" />. One import site keeps sizing, " +
+        "fallback and the name vocabulary in one place; a direct import opts " +
+        "that one glyph out of all three.",
     ).toEqual([]);
   });
 

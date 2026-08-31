@@ -1,37 +1,37 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── RapidTool Design System — HSL colour tokens ─────────────────────────
-   Dark-only professional theme adapted from RapidTool-Fixture.
-   Primary: professional blue  hsl(198 89% 50%)
-   Accent:  warm orange       hsl(27 96% 61%)
-   Surface: deep blue-gray    hsl(220 13% 8%)
+/* ── The Metorite design system — HSL colour tokens ──────────────────────
+   The Control Plane's original look. Primary: professional blue
+   hsl(198 89% 50%). Accent: warm orange hsl(27 96% 61%). Surface: deep
+   blue-gray hsl(220 13% 8%). Light mode arrives via the `.light` class
+   (next-themes class strategy).
 
-   Light theme is applied via .light class (next-themes class strategy).
+   THIS FILE IS THE SOURCE. Read this before editing the blocks below.
 
-   THEMING ENGINE — read this before editing the blocks below.
-
-   These `:root` / `.light` blocks are the FALLBACK layer. The live values come
-   from the theme manifests in src/lib/theme/themes.ts, emitted by
-   <ThemeStyles> as `html[data-theme="…"]` scopes whose specificity (0,1,1)
-   deliberately outranks everything here (0,1,0). What is written below is what
-   you see only before the boot script runs, or with JavaScript disabled.
+   Owner directive 2026-08-31 retired the theming engine. There is one look
+   and every app renders in it, so these `:root` / `.light` blocks are no
+   longer a fallback beneath a generated layer — they ARE what the browser
+   reads. There is no `data-theme` attribute and no <ThemeStyles>.
 
    Consequences:
-     • These values MUST stay identical to the `rapidtool` manifest.
-       src/lib/theme/themes.test.ts parses this file and fails the build if
-       they drift.
-     • To change how the app looks, edit the manifest — not this file.
-     • To add a theme, add a manifest entry. Nothing here needs to change.
+     • To change how the app looks, edit THIS file.
+     • src/lib/theme/themes.ts still holds the same values as a MANIFEST,
+       because three consumers need them as data rather than as CSS (the
+       generated-app sandbox, Monaco/Shiki, and the contrast test). It is a
+       mirror, and mirrors go stale — so themes.test.ts parses this
+       stylesheet and fails if the two drift. Change a value in both.
+     • Do not reintroduce a second look. See DESIGN_SYSTEM.md §1.
    ──────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Structural tokens — shape, typography and effects. Themes override these
-     wholesale; the values here are RapidTool's. */
+  /* Structural tokens — shape, typography and effects. */
   --border-width: 1px;
-  --font-app: var(--font-geist-sans);
-  --font-app-mono: var(--font-geist-mono);
-  --font-display: var(--font-geist-sans);
+  /* A platform stack follows each webfont handle: if the face never
+     arrives, text falls to the OS's own rather than the browser default. */
+  --font-app: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-app-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: var(--font-geist-sans), system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --heading-tracking: 0em;
   --heading-weight: 700;
   --label-weight: 500;

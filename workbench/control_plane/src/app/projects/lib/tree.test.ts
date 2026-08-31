@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { hashSlot } from "@/lib/categorical";
-import { ICON_REGISTRY } from "@/lib/theme/icon-registry";
+import { isKnownIcon } from "@/lib/icons";
 
 import {
   LEVEL_ICONS,
@@ -376,9 +376,9 @@ describe("spaceMarker — a name and a SLOT, never a colour", () => {
     // A name absent from the registry renders as a hole, and the theme
     // system has no way to warn about one.
     for (const name of SPACE_ICON_CHOICES) {
-      expect(ICON_REGISTRY[name], `${name} missing from the registry`).toBeDefined();
+      expect(isKnownIcon(name), `${name} is not a real Lucide icon`).toBe(true);
     }
-    expect(ICON_REGISTRY[LEVEL_ICONS.space]).toBeDefined();
-    expect(ICON_REGISTRY[LEVEL_ICONS.folder]).toBeDefined();
+    expect(isKnownIcon(LEVEL_ICONS.space)).toBe(true);
+    expect(isKnownIcon(LEVEL_ICONS.folder)).toBe(true);
   });
 });

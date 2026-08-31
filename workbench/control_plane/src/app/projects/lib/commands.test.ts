@@ -8,11 +8,9 @@
  * fighting over `g t`, a sheet advertising something the keyboard forgot.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { describe, expect, it, vi } from "vitest";
 
+import { isKnownIcon } from "@/lib/icons";
 import { PANES } from "@/lib/nav";
 
 import { PANEL_MODE_ICONS } from "./panelMode";
@@ -71,21 +69,18 @@ describe("the registry itself", () => {
     }
   });
 
-  it("every glyph is mapped in the icon registry, for every pack", () => {
-    // An unmapped name renders the LUCIDE glyph whatever the theme — one
-    // stranger in a column of Material Symbols, and nothing else catches it.
-    const registry = JSON.parse(
-      readFileSync(
-        resolve(__dirname, "../../../lib/theme/icon-data/registry.json"),
-        "utf-8",
-      ),
-    ) as Record<string, Record<string, string>>;
+  it("every glyph is a real Lucide icon", () => {
+    // An unknown name resolves to the `Zap` fallback, so a typo ships as a
+    // lightning bolt in the palette rather than as a failure. (Until
+    // 2026-08-31 this asserted a mapping in the multi-pack registry; with one
+    // pack, existence is the stronger check — the registry could not tell a
+    // real name from an invented one.)
     const names = [
       ...COMMANDS.map((c) => c.icon),
       ...Object.values(PANEL_MODE_ICONS),
     ];
-    const unmapped = names.filter((name) => !registry[name]);
-    expect(unmapped, "add these to lib/theme/icon-data/registry.json").toEqual([]);
+    const unknown = names.filter((name) => !isKnownIcon(name));
+    expect(unknown, "these are not Lucide icon names").toEqual([]);
   });
 
   it("every id is unique", () => {

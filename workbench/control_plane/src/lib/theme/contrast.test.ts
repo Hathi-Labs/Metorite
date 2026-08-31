@@ -21,7 +21,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AA_LARGE_TEXT, AA_NORMAL_TEXT, accentInk, contrast, parseColor } from "./contrast";
-import { THEMES } from "./themes";
+import { THEME } from "./themes";
 import { CATEGORICAL_TOKENS } from "./types";
 import type { ColorTokens } from "./types";
 
@@ -92,16 +92,14 @@ const EPSILON = 0.01;
 type Measured = { id: string; ratio: number; min: number };
 
 const measurements: Measured[] = [];
-for (const theme of THEMES) {
-  for (const mode of ["dark", "light"] as const) {
-    for (const pair of PAIRS) {
-      const fg = theme.colors[mode][pair.fg];
-      const bg = theme.colors[mode][pair.bg];
-      if (!fg || !bg) continue;
-      const ratio = contrast(fg, bg);
-      if (ratio === null) continue;
-      measurements.push({ id: key(theme.id, mode, pair), ratio, min: pair.min });
-    }
+for (const mode of ["dark", "light"] as const) {
+  for (const pair of PAIRS) {
+    const fg = THEME.colors[mode][pair.fg];
+    const bg = THEME.colors[mode][pair.bg];
+    if (!fg || !bg) continue;
+    const ratio = contrast(fg, bg);
+    if (ratio === null) continue;
+    measurements.push({ id: key(THEME.id, mode, pair), ratio, min: pair.min });
   }
 }
 
@@ -120,13 +118,11 @@ describe("contrast maths", () => {
     expect(contrast("color-mix(in srgb, red, blue)", "#fff")).toBeNull();
   });
 
-  it("parses every colour form the manifests use", () => {
-    for (const theme of THEMES) {
-      for (const mode of ["dark", "light"] as const) {
-        for (const [token, value] of Object.entries(theme.colors[mode])) {
-          if (!value) continue;
-          expect(parseColor(value as string), `${theme.id}/${mode}/${token}`).not.toBeNull();
-        }
+  it("parses every colour form the manifest uses", () => {
+    for (const mode of ["dark", "light"] as const) {
+      for (const [token, value] of Object.entries(THEME.colors[mode])) {
+        if (!value) continue;
+        expect(parseColor(value as string), `${mode}/${token}`).not.toBeNull();
       }
     }
   });
@@ -135,7 +131,9 @@ describe("contrast maths", () => {
 describe("theme contrast", () => {
   it("checks a meaningful number of pairs", () => {
     // Guards against a refactor that silently stops measuring anything.
-    expect(measurements.length).toBeGreaterThan(100);
+    // Was >100 across four themes; one theme in two modes measures ~80, so
+    // the floor moved with the divisor rather than being quietly deleted.
+    expect(measurements.length).toBeGreaterThan(60);
   });
 
   it.each(measurements.map((m) => [m.id, m] as const))(

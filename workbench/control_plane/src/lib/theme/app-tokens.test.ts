@@ -18,34 +18,31 @@
 import { describe, expect, it } from "vitest";
 
 import { CC_TOKEN_NAMES, appTokenCss, appTokenMap, appTokens } from "./app-tokens";
-import { THEMES, resolveTheme } from "./themes";
+import { THEME } from "./themes";
 import type { ThemeMode } from "./types";
 
 const MODES: ThemeMode[] = ["dark", "light"];
 
 describe("appTokens", () => {
-  it.each(THEMES.map((t) => t.id))("%s defines every token in both modes", (id) => {
-    const theme = resolveTheme(id);
+  it("defines every token in both modes", () => {
     for (const mode of MODES) {
-      const map = appTokenMap(theme, mode);
+      const map = appTokenMap(THEME, mode);
       expect(Object.keys(map).sort()).toEqual([...CC_TOKEN_NAMES].sort());
       for (const [name, value] of Object.entries(map)) {
-        expect(value, `${id}/${mode} ${name}`).toBeTruthy();
-        expect(String(value).trim(), `${id}/${mode} ${name}`).not.toBe("");
+        expect(value, `${mode} ${name}`).toBeTruthy();
+        expect(String(value).trim(), `${mode} ${name}`).not.toBe("");
       }
     }
   });
 
   it("resolves var() references that only exist in OUR document", () => {
-    // `controls.buttonRadius` is `var(--radius)` for most themes. Inside the
-    // sandbox's opaque origin `--radius` does not exist, and an unresolvable
-    // var() invalidates the whole declaration at computed-value time — so the
-    // button silently loses its radius rather than erroring anywhere visible.
-    for (const theme of THEMES) {
-      for (const mode of MODES) {
-        for (const [name, value] of appTokens(theme, mode)) {
-          expect(value, `${theme.id}/${mode} ${name}`).not.toMatch(/var\(\s*--radius\b/);
-        }
+    // `controls.buttonRadius` is `var(--radius)`. Inside the sandbox's opaque
+    // origin `--radius` does not exist, and an unresolvable var() invalidates
+    // the whole declaration at computed-value time — so the button silently
+    // loses its radius rather than erroring anywhere visible.
+    for (const mode of MODES) {
+      for (const [name, value] of appTokens(THEME, mode)) {
+        expect(value, `${mode} ${name}`).not.toMatch(/var\(\s*--radius\b/);
       }
     }
   });
@@ -53,31 +50,29 @@ describe("appTokens", () => {
   it("leaves no reference to a token the sandbox does not define", () => {
     // Any var() that survives must point at something inside the --cc-*
     // namespace, which the frame does have. This is the general form of the
-    // --radius case above and it caught a second, subtler one: every theme's
-    // font stack starts with a `next/font` handle (`var(--font-geist-sans)`)
-    // that exists only on our <html>, so exporting stacks verbatim gave
-    // sandboxed apps an invalid font-family and therefore NO themed font.
+    // --radius case above and it caught a second, subtler one: the font stack
+    // starts with a `next/font` handle (`var(--font-geist-sans)`) that exists
+    // only on our <html>, so exporting stacks verbatim gave sandboxed apps an
+    // invalid font-family and therefore NO font.
     const defined = new Set(CC_TOKEN_NAMES);
-    for (const theme of THEMES) {
-      for (const [name, value] of appTokens(theme, "dark")) {
-        for (const [, ref] of String(value).matchAll(/var\(\s*(--[a-z-]+)/gi)) {
-          expect(defined.has(ref), `${theme.id} ${name} → ${ref}`).toBe(true);
-        }
+    for (const [name, value] of appTokens(THEME, "dark")) {
+      for (const [, ref] of String(value).matchAll(/var\(\s*(--[a-z-]+)/gi)) {
+        expect(defined.has(ref), `${name} → ${ref}`).toBe(true);
       }
     }
   });
 
-  it("keeps the named families when it strips the font handles", () => {
-    // Stripping must not flatten every theme to the same system stack — the
-    // platform families ARE most of Fluent's and Material's typographic
-    // identity, and they are the half that survives the sandbox boundary
-    // (self-hosted webfonts cannot: the frame's CSP is `font-src data:`).
-    expect(appTokenMap(resolveTheme("fluent"), "dark")["--cc-font"]).toContain("Segoe UI");
-    expect(appTokenMap(resolveTheme("material"), "dark")["--cc-font"]).toContain("Roboto");
-    for (const theme of THEMES) {
-      for (const key of ["--cc-font", "--cc-mono"] as const) {
-        expect(appTokenMap(theme, "dark")[key], `${theme.id} ${key}`).not.toBe("sans-serif");
-      }
+  it("keeps a real stack when it strips the font handles", () => {
+    // Stripping the webfont handle must leave the platform families behind,
+    // not flatten to a bare generic: they are the half that survives the
+    // sandbox boundary (the frame's CSP is `font-src data:`, so a self-hosted
+    // face cannot follow). A bare "sans-serif" here means a sandboxed app
+    // renders in Times while the shell around it renders in Geist.
+    for (const key of ["--cc-font", "--cc-mono"] as const) {
+      const value = appTokenMap(THEME, "dark")[key];
+      expect(value, key).not.toBe("sans-serif");
+      expect(value, key).not.toBe("monospace");
+      expect(String(value).split(",").length, `${key} kept a stack`).toBeGreaterThan(1);
     }
   });
 
@@ -86,54 +81,49 @@ describe("appTokens", () => {
     // helper text wants ink, and every app already assumes it. Mapping it to
     // `colors.muted` would be defensible from the name alone and would render
     // grey-on-grey in every one of them.
-    const t = resolveTheme("rapidtool");
-    const map = appTokenMap(t, "dark");
-    expect(map["--cc-muted"]).toBe(t.colors.dark.mutedForeground);
-    expect(map["--cc-muted"]).not.toBe(t.colors.dark.muted);
-  });
-
-  it("gives each theme a visibly different block — the frozen-values regression", () => {
-    // The bug this module fixes was not a missing token, it was a token that
-    // existed and never changed. A theme whose --cc-* block is byte-identical
-    // to RapidTool's means the sandbox has been re-frozen, whatever the code
-    // around it looks like.
-    const base = appTokenCss(resolveTheme("rapidtool"), "dark");
-    for (const theme of THEMES.filter((t) => t.id !== "rapidtool")) {
-      expect(appTokenCss(theme, "dark"), theme.id).not.toBe(base);
-    }
+    const map = appTokenMap(THEME, "dark");
+    expect(map["--cc-muted"]).toBe(THEME.colors.dark.mutedForeground);
+    expect(map["--cc-muted"]).not.toBe(THEME.colors.dark.muted);
   });
 
   it("carries control PERSONALITY across, not just colour", () => {
-    // The point of handing these over: an app built a year ago picks up
-    // Material's pill buttons and uppercase labels from a theme switch, rather
-    // than becoming "RapidTool with Material's palette".
-    const material = resolveTheme("material");
-    const map = appTokenMap(material, "dark");
-    expect(map["--cc-button-radius"]).toBe(material.controls.buttonRadius);
-    expect(map["--cc-control-label-transform"]).toBe(material.controls.labelTransform);
-    expect(map["--cc-control-state-layer"]).toBe(material.controls.stateLayerOpacity);
+    // The point of handing these over: a generated app picks up the shell's
+    // button radius and label treatment, rather than being "our palette on
+    // somebody else's controls".
+    const map = appTokenMap(THEME, "dark");
+    // The RESOLVED radius, not the manifest's `var(--radius)` — that variable
+    // does not exist inside the frame, which is what `resolveVars` is for.
+    expect(map["--cc-button-radius"]).toBe(THEME.shape.radius);
+    expect(map["--cc-control-label-transform"]).toBe(THEME.controls.labelTransform);
+    expect(map["--cc-control-state-layer"]).toBe(THEME.controls.stateLayerOpacity);
   });
 
-  it("differs between modes where the theme's colours do", () => {
-    const t = resolveTheme("rapidtool");
-    expect(appTokenMap(t, "dark")["--cc-bg"]).not.toBe(appTokenMap(t, "light")["--cc-bg"]);
+  it("differs between modes — the frozen-values regression", () => {
+    // The bug this module fixes was not a missing token, it was a token that
+    // existed and never changed: the sandbox stayed frozen while the shell
+    // around it moved. The theme axis that used to prove this is gone
+    // (2026-08-31), so MODE is the axis that carries the guard now — and it
+    // is the one that still moves at runtime.
+    expect(appTokenMap(THEME, "dark")["--cc-bg"]).not.toBe(
+      appTokenMap(THEME, "light")["--cc-bg"],
+    );
+    expect(appTokenCss(THEME, "dark")).not.toBe(appTokenCss(THEME, "light"));
   });
 });
 
 describe("appTokenCss", () => {
   it("agrees exactly with the postMessage map", () => {
     // The srcDoc <style> and the live patch are two paths to the same screen.
-    // If they disagree, a theme switch changes the app's appearance and a
+    // If they disagree, a mode switch changes the app's appearance and a
     // reload changes it back — the worst kind of bug to be told about.
-    const theme = resolveTheme("fluent");
-    const css = appTokenCss(theme, "light");
-    for (const [name, value] of Object.entries(appTokenMap(theme, "light"))) {
+    const css = appTokenCss(THEME, "light");
+    for (const [name, value] of Object.entries(appTokenMap(THEME, "light"))) {
       expect(css).toContain(`${name}: ${value};`);
     }
   });
 
   it("emits one declaration per line, safe to paste inside a rule", () => {
-    const css = appTokenCss(resolveTheme("rapidtool"), "dark");
+    const css = appTokenCss(THEME, "dark");
     const lines = css.split("\n").filter((l) => l.trim());
     expect(lines).toHaveLength(CC_TOKEN_NAMES.length);
     for (const line of lines) {

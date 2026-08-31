@@ -263,21 +263,23 @@ export type SurfaceTokens = {
   shiki: { dark: string; light: string };
 };
 
-/** Identifier of an icon pack understood by `<Icon>`. */
-export type IconPackId = "lucide" | "fluent" | "material";
-
-/** A complete theme definition. */
+/**
+ * The theme definition.
+ *
+ * ⚠️ Singular since 2026-08-31. `IconPackId` and the `iconPack` field went
+ * with the engine — `<Icon>` draws Lucide, full stop. `id`, `name` and
+ * `description` are kept because the manifest still identifies itself in the
+ * sandbox bridge and in test output, not because anything selects on them.
+ */
 export type Theme = {
-  /** URL/attribute-safe identifier — the `data-theme` value. */
+  /** Stable identifier. No longer a `data-theme` value — nothing selects it. */
   id: string;
-  /** Human-readable name shown in Settings. */
+  /** Human-readable name. */
   name: string;
-  /** One-line description of the look, shown under the name in the gallery. */
+  /** One-line description of the look. */
   description: string;
-  /** Attribution for themes derived from a public design system. */
+  /** Attribution, where the look derives from a public design system. */
   inspiration?: string;
-  /** Icon pack this theme renders `<Icon>` with. */
-  iconPack: IconPackId;
   typography: TypographyTokens;
   shape: ShapeTokens;
   effects: EffectTokens;
@@ -289,7 +291,7 @@ export type Theme = {
   };
 };
 
-/** Colour mode, orthogonal to the theme's style identity. */
+/** Colour mode — the one axis of the look that is still switchable. */
 export type ThemeMode = "dark" | "light";
 
 /** UI density — a user preference, not a theme property. */
@@ -308,15 +310,13 @@ export const DENSITY_SCALE: Record<Density, number> = {
  * one look while individuals opt out.
  */
 export type AppearancePreferences = {
-  /** Theme id; `null` means "inherit the organisation default". */
-  themeId: string | null;
   /** Colour mode; `null` means "inherit the organisation default". */
   mode: ThemeMode | null;
   /** UI density; `null` means "inherit the organisation default". */
   density: Density | null;
   /**
-   * Optional primary-colour override applied on top of the chosen theme.
-   * Any CSS colour; `null` keeps the theme's own primary.
+   * Optional primary-colour override applied on top of the one theme.
+   * Any CSS colour; `null` keeps the app's own primary.
    */
   accent: string | null;
 };
@@ -325,7 +325,6 @@ export type AppearancePreferences = {
 export type AppearanceSettings = {
   /** Organisation-wide default, set by admins. */
   org: {
-    themeId: string;
     mode: ThemeMode;
     density: Density;
     /** When false, members may not deviate from the org default. */
