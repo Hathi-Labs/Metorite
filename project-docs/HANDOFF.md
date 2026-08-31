@@ -1600,9 +1600,70 @@ line — never reclaim a number by deleting the other entry.
      set `OPERATOR_CONSOLE_UNIT` on the box or rename the unit.
 - **📌 Until 1 and 2 land, the deploy manages an artefact it cannot
   reproduce.** Losing the box loses the console's configuration entirely.
+- 🔴 **ESCALATED 2026-08-31. This entry now BLOCKS EVERY DEPLOY, and not only
+  the console.** Deploy run `33397261968` for SHA `301d0e59` failed all three
+  rounds on one line. `error: unable to unlink old
+  'workbench/operator_console/src/app/models/ModelDetails.tsx': Permission
+  denied`, and then `fatal: Could not reset index file to revision
+  'origin/main'`. The box builds the console in place. So files under
+  `workbench/operator_console/` belong to a user the deploy does not run as,
+  and `git reset --hard origin/main` stops there. No code lands. No migration
+  applies. No service restarts.
+- ⚠️ **Measured after that run. Migrations 019, 020 and 021 are ABSENT from
+  the production Console database, and the box still serves `3ad494bd`.** The
+  whole WS-31 stack merged to `main` and reached nothing.
+- ✅ **The deploy verifier did its work.** It refused to read a healthy app as
+  a landed deploy, and it said so. "The app is UP but on a DIFFERENT commit."
+  Nothing broke, and the commit from before still serves.
+- 📌 **The owner does the fix, and an agent must refuse it (§6 deploy reach).**
+  Correct the ownership of `/opt/acb/app/workbench/operator_console` to the
+  deploy user, then run the workflow again. Nothing needs a second merge,
+  because `main` already holds the stack.
+- 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
+  but does not OWN does this again on the next file it must replace.
 - **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
   app) · `scripts/vps_apply.sh`
-- **Added:** 2026-08-28 · operator-console deploy session
+- **Added:** 2026-08-28 · operator-console deploy session · **escalated
+  2026-08-31** after run `33397261968` failed
+
+### H-88 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
+- **Check:** count `organization` on the console scratch database, run
+  `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
+  again. A rise means this entry is still real. ⚠️ Do NOT check by reading
+  `test_customer_console_sql.py` for `limit=`. H-83 closed that shape on
+  2026-08-31, and the fences no longer care how large the table grows. This
+  entry is about the TABLE, and never about the fence.
+- **Why:** 🔴 **This is the root cause behind the two entries closed on
+  2026-08-31, and neither of them fixed it.** The verification set leaks about
+  **170 organizations and 150 `usage_event` rows on every run**. The
+  provisioning fixtures in the router suite and the keys suite each create an
+  organization, and nothing takes it back. Measured over three runs on
+  2026-08-31: `organization` went 1598 to 2117, and `usage_event` went 961 to
+  1405.
+- **📌 The number this reached, and what it cost.** The shared database held
+  **25,959 organizations, 15,159 usage events and 8,643 credit-ledger rows**
+  before an operator rebuilt it. At that size
+  `test_customer_console_sql.py` and `test_customer_console_pricing_truth.py`
+  failed on volume alone. A wide sweep gave 41 failures on one run and 22 on
+  the next, with no code change between them. 🔴 **A red that comes and goes
+  hides a real red.**
+- **📌 H-83's repair makes the FENCES immune, and it does not stop the
+  GROWTH.** A slug filter reads one organization whatever the table holds. The
+  table still grows by 170 rows a run, and the next assertion that pages the
+  table inherits the same trap.
+- **The repair:** give each provisioning fixture a teardown, the way
+  `bound_tier` already does for tier bindings. One fixture, one teardown, and
+  a source fence that fails when a test writes an organization nothing takes
+  back — `test_every_binding_this_file_writes_is_taken_back` is the shape to
+  copy.
+- **📌 Two smaller leaks ride here.** `test_customer_console_vendor_feed.py`
+  leaks `ptv*` provider credentials and `model_profile` rows, measured 2 to 16
+  in one run. And `test_customer_console_pricing_truth.py:497,530` carry the
+  same volume bet with `limit=1_000_000`. Both pass today, and both fail at
+  some table size nobody has chosen.
+- **Authority:** `engineering_practice.md` §1.1 (the R8 loop) · the H-83 and
+  H-84 closures on branch `ws-31-fixture-hygiene`
+- **Added:** 2026-08-31 · WS-31 fixture-hygiene slice
 
 ### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
 - **Check:** read the docstring of `usage_by_org` in
