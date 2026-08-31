@@ -446,6 +446,204 @@ def _transcribe(client, key, *, model="tier-stt", audio=AUDIO,
     )
 
 
+# ── §6A.10c: the image door and the speak door ──────────────────────────────
+#
+# 🔴 **THE SLICE SEEDS NO `tier_binding` ROW** (clause 4). Which vendor model
+# we resell for pictures and for speech is a COMMERCIAL decision, and it
+# belongs to the owner. So every fence that needs a bound tier seeds its OWN
+# binding here and DELETES it again, and the fences pass against an unbound
+# database.
+
+#: ⚠️ **Two vendors no sibling Console suite touches**, because
+#: `provider_credential_live_uniq` admits ONE live platform row per provider
+#: and a suite that minted a second would collide with whoever owns the first.
+IMAGE_MODEL = "stability/stable-image-core"
+SPEECH_MODEL = "elevenlabs/eleven-multilingual-v2"
+
+#: What the caller asks for, and what the stubbed provider answers with. The
+#: two disagree on purpose — clause 5 bills what came BACK.
+IMAGES_ASKED = 3
+IMAGES_RETURNED = 2
+
+#: A known input string, and the character count clause 6 measures off it.
+SPOKEN = "Sixteen pumps are overdue."
+CHARACTERS = Decimal(len(SPOKEN))
+
+#: The audio a stubbed speech provider answers with, and its own type.
+SPEECH_BYTES = b"ID3\x04fake-mp3-bytes"
+SPEECH_MEDIA_TYPE = "audio/mpeg"
+
+#: What the fixture cards charge, and what one stubbed call costs at them.
+CREDITS_PER_IMAGE = Decimal("2.5")
+IMAGE_CALL_COST = Decimal(5)
+CREDITS_PER_CHARACTER = Decimal("0.01")
+SPEECH_CALL_COST = (CHARACTERS * CREDITS_PER_CHARACTER)
+
+
+def _image_reply(count: int = IMAGES_RETURNED) -> dict:
+    """The OpenAI image shape, with ``count`` pictures in it."""
+    return {"created": 1, "data": [{"url": f"https://x/{i}.png"}
+                                   for i in range(count)]}
+
+
+def _speech_reply() -> dict:
+    """What the provider seam answers for a speech call — bytes and a type."""
+    return {"content": SPEECH_BYTES, "media_type": SPEECH_MEDIA_TYPE}
+
+
+def _generate(client, key, *, model="tier-image", n=IMAGES_ASKED, **fields):
+    body = {"model": model, "prompt": "a red bicycle", **fields}
+    if n is not None:
+        body["n"] = n
+    return client.post("/v1/images/generations", headers=key, json=body)
+
+
+def _speak(client, key, *, model="tier-tts", text_=SPOKEN, **fields):
+    return client.post("/v1/audio/speech", headers=key, json={
+        "model": model, "input": text_, "voice": "alloy", **fields})
+
+
+#: The label every credential these fixtures mint carries, so the teardown
+#: removes ITS OWN row and never a row a sibling suite owns.
+_FENCE_LABEL = "media-fence"
+
+
+def _bind(db, *, tier, model, task, invocation, streams=False):
+    """Seed ONE binding, ONE capability and ONE vendor key. Clause 4.
+
+    ⚠️ **The credential is the PLATFORM row, never an organization one.** An
+    organization-scoped key IS BYOK (§3.4), and a BYOK call is metered and
+    billed ZERO — so every price this suite asserts would read zero for the
+    wrong reason. Measured on the first run of these fences.
+    """
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO tier_binding (tier, model, task, effective_from) "
+            "VALUES (:t, :m, :k, '2026-01-01T00:00:00Z')"),
+            {"t": tier, "m": model, "k": task})
+        c.execute(text(
+            "INSERT INTO model_capability (model, task, invocation, streams) "
+            "VALUES (:m, :k, :i, :s)"),
+            {"m": model, "k": task, "i": invocation, "s": streams})
+        c.execute(text(
+            "INSERT INTO provider_credential (provider, secret_enc, label) "
+            "VALUES (:p, :s, :l) ON CONFLICT DO NOTHING"),
+            {"p": model.split("/", 1)[0], "l": _FENCE_LABEL,
+             "s": router_mod.encrypt_secret("sk-media-fence")})
+
+
+def _unbind(db, *, tier, model):
+    """Take every row :func:`_bind` wrote back out again.
+
+    🔴 **The fixture cleans up after ITSELF.** `tier_binding` and
+    `model_capability` are global rows, so one left behind would make a
+    sibling fence — *"neither route serves without a binding"* — pass for the
+    wrong reason on the next run.
+    """
+    with db.begin() as c:
+        c.execute(text("DELETE FROM tier_binding WHERE tier = :t"), {"t": tier})
+        c.execute(text("DELETE FROM model_capability WHERE model = :m"),
+                  {"m": model})
+        c.execute(text(
+            "DELETE FROM provider_credential "
+            "WHERE provider = :p AND label = :l"),
+            {"p": model.split("/", 1)[0], "l": _FENCE_LABEL})
+
+
+@pytest.fixture
+def bound_image(db, org_key, provider):
+    """`tier-image` bound, capable and credentialled, for ONE test."""
+    provider["reply"] = _image_reply()
+    _bind(db, tier="tier-image", model=IMAGE_MODEL, task="image",
+          invocation="aimage_generation")
+    yield
+    _unbind(db, tier="tier-image", model=IMAGE_MODEL)
+
+
+@pytest.fixture
+def bound_tts(db, org_key, provider):
+    """`tier-tts` bound, capable and credentialled, for ONE test."""
+    provider["reply"] = _speech_reply()
+    _bind(db, tier="tier-tts", model=SPEECH_MODEL, task="speak",
+          invocation="aspeech")
+    yield
+    _unbind(db, tier="tier-tts", model=SPEECH_MODEL)
+
+
+@pytest.fixture
+def streaming_tts(db, org_key, provider):
+    """The same binding, with `streams = TRUE` on the capability row.
+
+    🔴 **Clause 3's named path.** `speak` IS in `STREAMABLE_TASKS`, so an
+    operator MAY write this row. Nothing on the serving path reads it, and
+    this fixture exists to prove that.
+    """
+    provider["reply"] = _speech_reply()
+    _bind(db, tier="tier-tts", model=SPEECH_MODEL, task="speak",
+          invocation="aspeech", streams=True)
+    yield
+    _unbind(db, tier="tier-tts", model=SPEECH_MODEL)
+
+
+def _price(db, *, tier, task, unit, per_unit):
+    """A per-UNIT tier card, for the life of one test.
+
+    ⚠️ **Removed afterwards**, for the reason `priced_stt` gives: migration
+    015 seeds no tier rates, and pricing the slate is the owner's commercial
+    act (H-42).
+    """
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO tier_rate_card (tier, task, unit, credits_per_unit, "
+            " input_credits_per_1k, output_credits_per_1k, "
+            " cached_input_credits_per_1k, pricing_mode, effective_from) "
+            "VALUES (:t, :k, :u, :c, 0, 0, 0, 'priced', now())"),
+            {"t": tier, "k": task, "u": unit, "c": per_unit})
+
+
+def _unprice(db, *, tier, task):
+    with db.begin() as c:
+        c.execute(text(
+            "DELETE FROM tier_rate_card WHERE tier = :t AND task = :k"),
+            {"t": tier, "k": task})
+
+
+@pytest.fixture
+def priced_image(db):
+    _price(db, tier="tier-image", task="image", unit="images",
+           per_unit=CREDITS_PER_IMAGE)
+    yield
+    _unprice(db, tier="tier-image", task="image")
+
+
+@pytest.fixture
+def priced_tts(db):
+    _price(db, tier="tier-tts", task="speak", unit="characters",
+           per_unit=CREDITS_PER_CHARACTER)
+    yield
+    _unprice(db, tier="tier-tts", task="speak")
+
+
+@pytest.fixture
+def minute_priced_profile(db):
+    """A vendor profile priced on the MINUTE column ALONE. Fence row 7.
+
+    The measured defect: `_record_completion` read the per-minute column for
+    every call that carried a quantity, so this profile would have costed an
+    image call at a price for one minute of audio.
+    """
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO model_profile (model, vendor_per_minute_usd) "
+            "VALUES (:m, 0.004) "
+            "ON CONFLICT (model) DO UPDATE SET vendor_per_minute_usd = 0.004"),
+            {"m": IMAGE_MODEL})
+    yield
+    with db.begin() as c:
+        c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                  {"m": IMAGE_MODEL})
+
+
 def _grant(client, slug: str, credits: str):
     return client.post("/credits/grant", headers=OP,
                        json={"org_slug": slug, "credits": credits})
@@ -708,22 +906,30 @@ class TestAnUnpricedVendorCostStaysNull:
         rather than against the state of one shared box.
         """
         from customer_console import main as main_mod
-        monkeypatch.setattr(main_mod, "_PER_MINUTE_COLUMN", "vendor_per_furlong_usd")
+        monkeypatch.setitem(
+            main_mod._PER_UNIT_COLUMNS, "minutes", "vendor_per_furlong_usd")
 
-        assert main_mod._vendor_per_minute(conn, WHISPER) is None
+        assert main_mod._vendor_per_unit(conn, WHISPER, unit="minutes") is None
         # The transaction survives, which is the whole point of asking the
         # catalog instead of catching the error: a failed statement poisons
         # a Postgres transaction and would take the metering write with it.
         assert conn.execute(text("SELECT 1")).scalar_one() == 1
 
+    def test_a_unit_no_column_prices_answers_NULL(self, conn):
+        """`tokens` and `seconds` have no per-unit column, and neither does
+        a task nobody has told us about. NULL, never zero."""
+        from customer_console import main as main_mod
+        assert main_mod._vendor_per_unit(conn, WHISPER, unit="tokens") is None
+        assert main_mod._vendor_per_unit(conn, WHISPER, unit=None) is None
+
     def test_zero_minutes_cost_NULL_rather_than_zero_dollars(self):
         """Recording $0.00 for a call we could not read would report a
         margin of 100 percent on a call nobody measured."""
-        assert router_mod.vendor_cost_per_minute_usd(
+        assert router_mod.vendor_cost_per_unit_usd(
             Decimal(0), Decimal("0.004")) is None
-        assert router_mod.vendor_cost_per_minute_usd(
+        assert router_mod.vendor_cost_per_unit_usd(
             MINUTES, None) is None
-        assert router_mod.vendor_cost_per_minute_usd(
+        assert router_mod.vendor_cost_per_unit_usd(
             MINUTES, Decimal("0.004")) == Decimal("0.00600000")
 
 
@@ -888,6 +1094,523 @@ class TestTheUploadCeilingAndTheEmptyFile:
         assert len(provider["calls"][-1]["file"].read()) == len(big)
 
 
+# ══ §6A.10c — the image endpoint and the speak endpoint ═════════════════════
+#
+# 🔴 **These fences DRIVE the two routes.** Every claim about a `usage_event`
+# row is read off the row a real POST wrote. A hand-inserted row proves the
+# column exists and proves nothing about the writer.
+
+
+class TestTheMediaModelFieldIsATierAlias:
+    """Fence row 1. The DOOR declares the task, and the field names a TIER."""
+
+    def test_a_bare_model_id_is_refused_on_the_image_route(
+            self, client, org_key):
+        _, key = org_key
+        answer = _generate(client, key, model=IMAGE_MODEL)
+        assert answer.status_code == 400
+        assert "name a tier, not a model" in answer.json()["detail"]
+
+    def test_a_bare_model_id_is_refused_on_the_speak_route(
+            self, client, org_key):
+        _, key = org_key
+        answer = _speak(client, key, model=SPEECH_MODEL)
+        assert answer.status_code == 400
+        assert "name a tier, not a model" in answer.json()["detail"]
+
+    def test_a_chat_tier_cannot_make_a_picture(self, client, org_key):
+        """D60.2 in one line. `tier-fast` is bound to `chat` alone."""
+        _, key = org_key
+        assert _generate(client, key, model="tier-fast").status_code == 400
+
+    def test_a_chat_tier_cannot_speak(self, client, org_key):
+        _, key = org_key
+        assert _speak(client, key, model="tier-fast").status_code == 400
+
+    def test_the_bound_image_tier_serves(self, client, org_key, bound_image):
+        _, key = org_key
+        answer = _generate(client, key)
+        assert answer.status_code == 200, answer.text
+        assert len(answer.json()["data"]) == IMAGES_RETURNED
+
+    def test_the_bound_speech_tier_serves(self, client, org_key, bound_tts):
+        _, key = org_key
+        answer = _speak(client, key)
+        assert answer.status_code == 200, answer.text
+        assert answer.content == SPEECH_BYTES
+
+    def test_each_route_calls_the_verb_its_capability_row_names(
+            self, client, org_key, bound_image, provider):
+        """Clause 9. Dispatch through the ONE seam, on the serving path."""
+        _, key = org_key
+        assert _generate(client, key).status_code == 200
+        assert provider["calls"][-1]["invocation"] == "aimage_generation"
+
+    def test_the_speak_route_calls_aspeech(
+            self, client, org_key, bound_tts, provider):
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+        assert provider["calls"][-1]["invocation"] == "aspeech"
+
+
+class TestASpeakCallNeverStreams:
+    """Fence row 2, and the CONDITION §6A.10c clause 3 now records."""
+
+    def test_a_truthy_stream_field_is_refused(
+            self, client, org_key, bound_tts, provider):
+        """A D16 agent default: the answer §6A.10a clause 2 already gives on
+        the transcribe door, on a third door."""
+        _, key = org_key
+        answer = _speak(client, key, stream=True)
+        assert answer.status_code == 400
+        assert "does not stream" in answer.json()["detail"]
+        # Refused BEFORE the provider call. A wall after it would refuse a
+        # request we had already paid for.
+        assert provider["calls"] == []
+
+    def test_the_stream_400_writes_no_usage_row(
+            self, client, db, org_key, org_id, bound_tts):
+        """Migration 020's CHECK holds three slugs. A fourth spelling minted
+        for this wall is the thing §8.1 forbids."""
+        _, key = org_key
+        assert _speak(client, key, stream=True).status_code == 400
+        assert _rows(db, org_id) == []
+
+    def test_a_false_stream_field_still_serves(
+            self, client, org_key, bound_tts):
+        _, key = org_key
+        assert _speak(client, key, stream=False).status_code == 200
+
+    def test_a_capability_that_CLAIMS_to_stream_changes_nothing(
+            self, client, db, org_id, org_key, streaming_tts, priced_tts):
+        """🔴 Clause 3's named path, DRIVEN.
+
+        `speak` is in `STREAMABLE_TASKS`, so `check_streams` lets an operator
+        write `streams = TRUE` on a `speak` capability row. Nothing on the
+        serving path reads that column — the chat route branches on the
+        request body instead. So the route answers ONE buffered body.
+        """
+        _, key = org_key
+        answer = _speak(client, key)
+
+        assert answer.status_code == 200
+        assert answer.content == SPEECH_BYTES
+        assert answer.headers["content-type"] == SPEECH_MEDIA_TYPE
+        # Not an SSE body: no frames, no sentinel.
+        assert b"data:" not in answer.content
+        # And it metered exactly once, as a buffered call does.
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].unit == "characters"
+
+    def test_the_operator_may_still_write_that_row(self):
+        """The other half: `check_streams` is unchanged, and this slice did
+        not narrow the OPERATOR's vocabulary to make the route safe."""
+        assert catalog.check_streams("speak", True) is True
+        with pytest.raises(catalog.CatalogRefused):
+            catalog.check_streams("image", True)
+
+
+class TestAnImageRowRecordsThePicturesTheProviderReturned:
+    """Fence rows 3 and 5. Clause 5 measures the RESPONSE, never the `n`."""
+
+    def test_two_pictures_for_a_request_that_asked_for_three(
+            self, client, db, org_key, org_id, bound_image, priced_image):
+        _, key = org_key
+        answer = _generate(client, key, n=IMAGES_ASKED)
+
+        assert answer.status_code == 200
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.task == "image"
+        assert row.tier == "tier-image"
+        assert row.model == IMAGE_MODEL
+        # 🔴 TWO, not THREE. The customer holds two pictures.
+        assert row.quantity == Decimal(IMAGES_RETURNED)
+        assert row.unit == "images"
+        assert row.refusal_reason is None
+
+    def test_the_pictures_are_billed_at_the_per_image_card(
+            self, client, db, org_key, org_id, bound_image, priced_image):
+        _, key = org_key
+        assert _generate(client, key).status_code == 200
+        assert _rows(db, org_id)[0].billed_credits == IMAGE_CALL_COST
+
+    def test_the_request_n_reaches_the_provider_and_not_the_meter(
+            self, client, db, org_key, org_id, bound_image, priced_image,
+            provider):
+        """The caller's `n` is a request to the vendor. It is never a count
+        of what we deliver."""
+        _, key = org_key
+        assert _generate(client, key, n=IMAGES_ASKED).status_code == 200
+        assert provider["calls"][-1]["n"] == IMAGES_ASKED
+        assert _rows(db, org_id)[0].quantity == Decimal(IMAGES_RETURNED)
+
+    def test_a_response_with_no_image_list_bills_zero(
+            self, client, db, org_key, org_id, bound_image, priced_image,
+            provider):
+        """Fence row 5. An unreadable count bills zero and does NOT fail the
+        call — the customer already holds whatever came back."""
+        provider["reply"] = {"created": 1}
+        _, key = org_key
+        answer = _generate(client, key)
+
+        assert answer.status_code == 200
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal(0)
+        assert rows[0].billed_credits == Decimal(0)
+        # The unit stays, because the history has to stay readable.
+        assert rows[0].unit == "images"
+
+    def test_a_broken_image_list_reads_as_unmeasured(self):
+        """The reader itself, where the stub cannot reach."""
+        for broken in ({"data": "two"}, {"data": None}, {}, None, "ok"):
+            assert router_mod.image_count(broken) is None
+        assert router_mod.image_count({"data": []}) == Decimal(0)
+        assert router_mod.image_count(_image_reply(5)) == Decimal(5)
+
+
+class TestASpeechRowRecordsTheCharactersWeSent:
+    """Fence row 4. Clause 6 measures the REQUEST, at the opposite end."""
+
+    def test_a_served_call_writes_the_characters_and_the_unit(
+            self, client, db, org_key, org_id, bound_tts, priced_tts):
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.task == "speak"
+        assert row.tier == "tier-tts"
+        assert row.model == SPEECH_MODEL
+        assert row.quantity == CHARACTERS
+        assert row.unit == "characters"
+        assert row.refusal_reason is None
+
+    def test_the_characters_are_billed_at_the_per_character_card(
+            self, client, db, org_key, org_id, bound_tts, priced_tts):
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+        assert _rows(db, org_id)[0].billed_credits == SPEECH_CALL_COST
+
+    def test_the_text_we_SEND_is_the_text_we_COUNT(
+            self, client, db, org_key, org_id, bound_tts, priced_tts,
+            provider):
+        """Never a figure the caller reports, and never the audio body — an
+        audio body reports nothing we can count."""
+        longer = SPOKEN * 3
+        _, key = org_key
+        assert _speak(client, key, text_=longer).status_code == 200
+        assert provider["calls"][-1]["input"] == longer
+        assert _rows(db, org_id)[0].quantity == Decimal(len(longer))
+
+    def test_an_empty_input_bills_zero(
+            self, client, db, org_key, org_id, bound_tts, priced_tts):
+        """There is no text to count, so the row bills zero and says so."""
+        _, key = org_key
+        assert _speak(client, key, text_="").status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal(0)
+        assert rows[0].billed_credits == Decimal(0)
+        assert rows[0].unit == "characters"
+
+    def test_the_caller_reads_the_providers_own_bytes_and_type(
+            self, client, org_key, bound_tts, provider):
+        """Clause 2. Audio bytes, and not JSON."""
+        provider["reply"] = {"content": b"OggS-not-mp3",
+                             "media_type": "audio/ogg"}
+        _, key = org_key
+        answer = _speak(client, key)
+
+        assert answer.content == b"OggS-not-mp3"
+        assert answer.headers["content-type"] == "audio/ogg"
+
+    def test_a_provider_that_names_no_type_still_plays(self):
+        """The reader itself. A body with no type makes a browser guess."""
+        assert router_mod.speech_audio({"content": b"x"}) == (
+            b"x", router_mod.DEFAULT_SPEECH_MEDIA_TYPE)
+        assert router_mod.speech_audio(b"raw") == (
+            b"raw", router_mod.DEFAULT_SPEECH_MEDIA_TYPE)
+        assert router_mod.speech_audio(None) == (
+            b"", router_mod.DEFAULT_SPEECH_MEDIA_TYPE)
+
+
+class TestTheVendorCostReadsTheColumnForTheTASKS_UNIT:
+    """Fence rows 6 and 7. Clause 8's measured defect, repaired."""
+
+    def test_no_vendor_price_writes_NULL_never_zero(
+            self, client, db, org_key, org_id, bound_image, priced_image):
+        """Fence row 6, and D-AI-7 rule 3. NULL means nobody told us."""
+        _, key = org_key
+        assert _generate(client, key).status_code == 200
+        assert _rows(db, org_id)[0].provider_cost_usd is None
+
+    def test_an_image_call_never_costs_off_the_MINUTE_column(
+            self, client, db, org_key, org_id, bound_image, priced_image,
+            minute_priced_profile):
+        """🔴 Fence row 7, and the whole reason clause 8 calls the old branch
+        a LIVE mis-costing.
+
+        The profile carries a per-MINUTE price and no per-image one. The old
+        branch multiplied two pictures by a price for one minute of audio.
+        The repaired branch reads `task_catalog.natural_unit`, finds
+        `images`, reads `vendor_per_image_usd`, and answers NULL.
+        """
+        _, key = org_key
+        assert _generate(client, key).status_code == 200
+        assert _rows(db, org_id)[0].provider_cost_usd is None
+
+    def test_a_priced_image_column_DOES_cost_the_call(
+            self, client, db, org_key, org_id, bound_image, priced_image):
+        """The other half: the right column is read, so a priced one bills.
+
+        Without this the fence above would pass on a branch that costs
+        nothing at all.
+        """
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO model_profile (model, vendor_per_image_usd) "
+                "VALUES (:m, 0.04) ON CONFLICT (model) DO UPDATE SET "
+                "vendor_per_image_usd = 0.04"), {"m": IMAGE_MODEL})
+        try:
+            _, key = org_key
+            assert _generate(client, key).status_code == 200
+            assert _rows(db, org_id)[0].provider_cost_usd == Decimal(
+                "0.08000000")
+        finally:
+            with db.begin() as c:
+                c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                          {"m": IMAGE_MODEL})
+
+    def test_a_speech_call_costs_off_the_CHARACTER_column(
+            self, client, db, org_key, org_id, bound_tts, priced_tts):
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO model_profile (model, vendor_per_character_usd, "
+                " vendor_per_minute_usd) VALUES (:m, 0.000015, 0.004) "
+                "ON CONFLICT (model) DO UPDATE SET "
+                " vendor_per_character_usd = 0.000015, "
+                " vendor_per_minute_usd = 0.004"), {"m": SPEECH_MODEL})
+        try:
+            _, key = org_key
+            assert _speak(client, key).status_code == 200
+            expected = (CHARACTERS * Decimal("0.000015")).quantize(
+                Decimal("0.00000001"))
+            assert _rows(db, org_id)[0].provider_cost_usd == expected
+        finally:
+            with db.begin() as c:
+                c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                          {"m": SPEECH_MODEL})
+
+    def test_a_transcribe_call_still_costs_off_the_MINUTE_column(
+            self, client, db, org_key, org_id, priced_stt):
+        """The repair must not move the door it was written behind."""
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO model_profile (model, vendor_per_minute_usd) "
+                "VALUES (:m, 0.004) ON CONFLICT (model) DO UPDATE SET "
+                "vendor_per_minute_usd = 0.004"), {"m": WHISPER})
+        try:
+            _, key = org_key
+            assert _transcribe(client, key).status_code == 200
+            assert _rows(db, org_id)[0].provider_cost_usd == Decimal(
+                "0.00600000")
+        finally:
+            with db.begin() as c:
+                c.execute(text("DELETE FROM model_profile WHERE model = :m"),
+                          {"m": WHISPER})
+
+
+class TestNeitherMediaRouteServesWithoutABinding:
+    """Fence row 8. Clause 4's wall, on the SHIPPED state of the database."""
+
+    def test_the_image_route_refuses_and_writes_one_refusal_row(
+            self, client, db, org_key, org_id):
+        """`015` registers `tier-image` and `016` maps it to `image`. No row
+        binds a MODEL to it, because that is the owner's commercial act."""
+        _, key = org_key
+        answer = _generate(client, key)
+
+        assert answer.status_code == 400
+        assert "tier-image" in answer.json()["detail"]
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "tier_unknown"
+        assert rows[0].task == "image"
+        assert rows[0].tier == "tier-image"
+        assert rows[0].unit == "images"
+        assert rows[0].billed_credits == Decimal(0)
+
+    def test_the_speak_route_refuses_and_writes_one_refusal_row(
+            self, client, db, org_key, org_id):
+        _, key = org_key
+        answer = _speak(client, key)
+
+        assert answer.status_code == 400
+        assert "tier-tts" in answer.json()["detail"]
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "tier_unknown"
+        assert rows[0].task == "speak"
+        assert rows[0].tier == "tier-tts"
+        assert rows[0].unit == "characters"
+
+    def test_the_ladder_binds_neither_tier(self, conn):
+        """🔴 Read off the ladder, so a seed added later goes red HERE.
+
+        Clause 4 forbids this slice from seeding either binding. `010:212`
+        seeded `tier-stt` and no such row exists for these two.
+        """
+        bound = {r[0] for r in conn.execute(text(
+            "SELECT tier FROM tier_binding "
+            "WHERE tier IN ('tier-image', 'tier-tts')"))}
+        assert bound == set()
+
+
+class TestEachMediaWallWritesOneRowWithItsOwnUnit:
+    """Fence row 9. Clause 10, on the second door and the third."""
+
+    def test_the_image_402_writes_an_insufficient_credits_row_in_images(
+            self, client, db, org_key, org_id, bound_image, gate_on):
+        _, key = org_key
+        assert _generate(client, key).status_code == 402
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "insufficient_credits"
+        assert rows[0].task == "image"
+        assert rows[0].unit == "images"
+
+    def test_the_speak_402_writes_an_insufficient_credits_row_in_characters(
+            self, client, db, org_key, org_id, bound_tts, gate_on):
+        _, key = org_key
+        assert _speak(client, key).status_code == 402
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "insufficient_credits"
+        assert rows[0].task == "speak"
+        assert rows[0].unit == "characters"
+
+    def test_the_image_403_writes_a_run_ceiling_row_in_images(
+            self, client, db, org_key, org_id, bound_image, gate_on):
+        """The THIRD wall clause 10 names. §4.4's circuit breaker."""
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-pics")
+
+        # The run travels in a header, exactly as it does on the chat door.
+        answer = client.post("/v1/images/generations",
+                             headers={**key, "X-CC-Run": "run-pics"},
+                             json={"model": "tier-image", "prompt": "p"})
+
+        assert answer.status_code == 403, answer.text
+        assert answer.json()["detail"]["reason"] == "run_ceiling_exceeded"
+        rows = _refusals(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].task == "image"
+        assert rows[0].unit == "images"
+        assert rows[0].run_id == "run-pics"
+
+    def test_the_speak_403_writes_a_run_ceiling_row_in_characters(
+            self, client, db, org_key, org_id, bound_tts, gate_on):
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-voice")
+
+        answer = client.post("/v1/audio/speech",
+                             headers={**key, "X-CC-Run": "run-voice"},
+                             json={"model": "tier-tts", "input": SPOKEN,
+                                   "voice": "alloy"})
+
+        assert answer.status_code == 403, answer.text
+        rows = _refusals(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "run_ceiling_exceeded"
+        assert rows[0].task == "speak"
+        assert rows[0].unit == "characters"
+        assert rows[0].run_id == "run-voice"
+
+    def test_a_refused_media_call_never_reaches_the_provider(
+            self, client, org_key, bound_image, gate_on, provider):
+        _, key = org_key
+        assert _generate(client, key).status_code == 402
+        assert provider["calls"] == []
+
+    def test_the_401_writes_no_row_on_either_route(self, client, db):
+        """🔴 Structural, not an omission. The key check refuses before the
+        code knows the organization, and `usage_event.organization_id` is
+        NOT NULL."""
+        before = _count_all(db)
+        bad = {"Authorization": "Bearer cc_live_not_a_key"}
+        assert client.post("/v1/images/generations", headers=bad, json={
+            "model": "tier-image", "prompt": "p"}).status_code == 401
+        assert client.post("/v1/audio/speech", headers=bad, json={
+            "model": "tier-tts", "input": "hi",
+            "voice": "alloy"}).status_code == 401
+        assert _count_all(db) == before
+
+
+class TestTheMediaBodiesAreAnAllowlist:
+    """Clause 1 and clause 2. Nothing the caller sent reaches the provider
+    except the named fields."""
+
+    def test_an_unnamed_field_is_refused(self, client, org_key):
+        _, key = org_key
+        answer = client.post("/v1/images/generations", headers=key, json={
+            "model": "tier-image", "prompt": "p", "api_base": "http://evil"})
+        assert answer.status_code == 422
+
+    def test_the_api_base_is_ours_alone(
+            self, client, org_key, bound_image, provider):
+        _, key = org_key
+        assert _generate(client, key).status_code == 200
+        # No `api_base` on the credential, so none on the wire.
+        assert "api_base" not in provider["calls"][-1]
+
+    def test_the_speak_body_carries_the_three_fields_clause_2_names(
+            self, client, org_key, bound_tts, provider):
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+        sent = provider["calls"][-1]
+        assert sent["model"] == SPEECH_MODEL
+        assert sent["input"] == SPOKEN
+        assert sent["voice"] == "alloy"
+
+    def test_the_picture_count_is_bounded(self, client, org_key):
+        """R7 for an AGENT DEFAULT the twelve clauses do not state.
+
+        `n` multiplies what one request costs us, so `_MAX_IMAGES_PER_CALL`
+        reuses `CompletionRequest.n`'s own ceiling and its argument — fifty
+        pictures would be a 50x draw on the provider account from one
+        zero-balance trial call. The owner may overrule the number.
+        """
+        from customer_console import main as main_mod
+        assert main_mod._MAX_IMAGES_PER_CALL == 4
+        _, key = org_key
+        over = _generate(client, key, n=main_mod._MAX_IMAGES_PER_CALL + 1)
+        assert over.status_code == 422
+
+    def test_the_spoken_text_is_bounded(self, client, org_key):
+        """R7 for the second AGENT DEFAULT, anchored on the vendor.
+
+        The OpenAI speech endpoint refuses an input above 4096 characters,
+        and the Router holds the text in memory to replay it across a
+        failover. `_MAX_AUDIO_BYTES` states its own ceiling the same way.
+        """
+        from customer_console import main as main_mod
+        assert main_mod._MAX_SPEECH_CHARACTERS == 4096
+        _, key = org_key
+        over = _speak(client, key,
+                      text_="x" * (main_mod._MAX_SPEECH_CHARACTERS + 1))
+        assert over.status_code == 422
+
+
 class TestTheProviderCallDispatchesOnTheCapabilityVerb:
     """Clause 6, tested where the stub cannot reach.
 
@@ -898,9 +1621,14 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
 
     def test_an_unserved_verb_raises_rather_than_defaulting(self):
         """Guessing `acompletion` is how audio reaches a chat endpoint. The
-        capability table can legally name a verb no route serves yet."""
+        capability table can legally name a verb no route serves yet.
+
+        ⚠️ `aembedding`, because §6A.10c clause 9 gave `aspeech` a door and
+        the Router may call it now. `aembedding` still has none, so it is
+        what an operator may WRITE and the Router may not CALL.
+        """
         with pytest.raises(router_mod.UnservableInvocation):
-            asyncio.run(router_mod._litellm_call(invocation="aspeech"))
+            asyncio.run(router_mod._litellm_call(invocation="aembedding"))
 
     def test_the_named_verb_is_the_one_called(self, monkeypatch):
         import litellm
@@ -934,17 +1662,36 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
 
     def test_the_operator_vocabulary_is_wider_than_the_serving_one(self):
         """§6A.9 rule 3: capability is not availability. `KNOWN_INVOCATIONS`
-        is what an operator may WRITE, and this slice added nothing to it."""
+        is what an operator may WRITE, and this slice added nothing to it.
+
+        🔴 **§6A.10c clause 9's fence, row 10.** The two media verbs joined
+        the SERVING set, and the STRICT subset holds: `aembedding` has no
+        door, so the two sets must never become one.
+        """
         assert router_mod.SERVING_INVOCATIONS < catalog.KNOWN_INVOCATIONS
         assert "atranscription" in router_mod.SERVING_INVOCATIONS
+        assert "aimage_generation" in router_mod.SERVING_INVOCATIONS
+        assert "aspeech" in router_mod.SERVING_INVOCATIONS
+        # The gap is what makes the two sets two. `catalog.check_invocation`
+        # accepts this verb and `_litellm_call` refuses it.
+        assert "aembedding" not in router_mod.SERVING_INVOCATIONS
 
 
 class TestTheEndpointHasNoTenantCaller:
     """Clause 7. The hop is CP-11's, behind `ROUTER_SERVING_ENABLED`."""
 
-    def test_no_tenant_code_posts_to_the_transcribe_route(self):
+    @pytest.mark.parametrize("route", [
+        "/v1/audio/transcriptions",
+        "/v1/images/generations",
+        "/v1/audio/speech",
+    ])
+    def test_no_tenant_code_posts_to_the_serving_route(self, route):
         """D57.3's lesson: an endpoint nobody calls is CP-4's mistake. The
-        caller slice follows, and until it does this stays true."""
+        caller slice follows, and until it does this stays true.
+
+        §6A.10c clause 3 names "no tenant caller" for both media routes, so
+        all three doors carry the same claim.
+        """
         hits = []
         for base in ("apps", "packages", "workbench/control_plane/src"):
             root = ROOT / base
@@ -953,7 +1700,7 @@ class TestTheEndpointHasNoTenantCaller:
                     continue
                 if "customer_console" in path.parts:
                     continue
-                if "/v1/audio/transcriptions" in path.read_text(
+                if route in path.read_text(
                         encoding="utf-8", errors="ignore"):
                     hits.append(str(path.relative_to(ROOT)))
         assert hits == []

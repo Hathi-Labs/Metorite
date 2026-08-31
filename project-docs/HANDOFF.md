@@ -919,20 +919,22 @@ line — never reclaim a number by deleting the other entry.
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
 - ✅ **The `transcribe` half is BUILT, 2026-08-31.**
   `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
-  `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
-  endpoint and H-47's handler seam are what is left. Keep this entry until
-  those three land.
-- 📌 **The remaining half now has a contract: `customer_console.md` §6A.10c**,
-  minted 2026-08-31. It holds twelve clauses and a fence table for
-  `POST /v1/images/generations` and `POST /v1/audio/speech`. Build to that
-  section.
+  `customer_console.md` §6A.10a is now BUILT.
+- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
+  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
+  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
+  is left. Keep this entry until it lands, and until the two findings below
+  close.
+- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
+  audit minted that section on 2026-08-31, and the build answered it the same
+  day. It holds twelve clauses and a fence table.
   ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
   we resell for pictures and for speech is a commercial act, and it belongs to
   the owner. So each route answers 400 `tier_unknown` until the owner binds
   `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
   beside the three prerequisites H-69 lists.
-  📌 **§6A.10c gives H-47 no first caller.** `aimage_generation` and `aspeech`
-  are litellm verbs already, so neither route needs a native handler.
+  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
+  are litellm verbs already, so neither route needed a native handler.
 - 🔴 **A SECOND finding rides here, from WS-31 slice 4 (D-AI-2), 2026-08-31.**
   **A mixed lift chain answers about an image it never saw.**
   `resolve_vision_chain` reads `model_profile.reads_images` on the RANK-1 step
@@ -965,8 +967,8 @@ line — never reclaim a number by deleting the other entry.
   profile. **Fix it before H-69.**
   **Authority:** `ai_metering_and_analytics.md` §8.5 (the 🔴 that states it).
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
-  endpoint and the speak endpoint are still not built.
+  → four routes means every endpoint D61.1 named is built. A tree missing
+  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
 - **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
   **nowhere to serve them**. The fork is real and is an owner call because it is a public
   wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
@@ -1009,7 +1011,8 @@ line — never reclaim a number by deleting the other entry.
   done-when section and the H-78 order · **amended 2026-08-31** with the
   mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
   with H-78's `video` follow-up, after H-78 closed. **Amended a third time
-  2026-08-31** with §6A.10c, the contract for the two routes that are left
+  2026-08-31** with §6A.10c, the contract for the two routes that are left.
+  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present

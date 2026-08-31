@@ -626,13 +626,15 @@ clause 10 for the refusal rows, it rewrote clause 3 around the
 `verbose_json` rule, and it made clause 5's ordering a preference. It also
 re-measured the `main.py` anchors on branch `ws-31-slice5-refusals`.
 
-🆕 **§6A.10c arrived on 2026-08-31, and it is SPEC ONLY.** It holds the
+🆕 **§6A.10c arrived on 2026-08-31, and it is now BUILT.** It holds the
 build contract for `POST /v1/images/generations` and `POST /v1/audio/speech`,
 in twelve clauses with their own fence table. §6A.10a clause 2 named both
 routes as non-goals of the transcribe slice, and that clause now cites
-§6A.10c. **So §6A.10b and §6A.10c are the two sections that stay SPEC ONLY.**
+§6A.10c. **So §6A.10b is the one section that stays SPEC ONLY.**
+
 ⚠️ **§6A.10c seeds NO `tier_binding` row**, because the choice of the vendor
-model we resell is a commercial act. Its clause 4 holds that argument.
+model we resell is a commercial act. Its clause 4 holds that argument. So
+both routes answer 400 until the owner writes one binding row for each.
 
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
@@ -8150,10 +8152,24 @@ uv run pytest tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
 ```
 
-### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — SPEC ONLY, 2026-08-31
+### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**. Re-verify every anchor at dispatch.
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-media`.** The routes are
+`main.py::images_generations` and `main.py::audio_speech`. All twelve clauses
+below hold.
+
+`tests/unit/test_customer_console_tasks.py` carries ten of the eleven fences,
+and `tests/unit/test_customer_console_payments.py` carries the eleventh. The
+clause text stays as the audit wrote it, because it is the contract the build
+answers. Match a `main.py` anchor by handler name, because the two new routes
+moved every line number below them.
+
+⚠️ **Every default here is an agent-proposed answer the owner may
+overrule.** Clause 3 records the one the build had to take.
+
+🔴 **Neither tier is BOUND, so both routes answer 400 today.** Clause 4 holds
+that argument, and it stays true after the build. Arming each route is ONE
+`tier_binding` INSERT, and it is the owner's act.
 
 **Gate: AGENT-SAFE.** D61.1 decided the endpoint shape, so no owner act stands
 in front of the build. Two owner acts stand in front of the SERVING, and
@@ -8200,6 +8216,16 @@ slice.** This section scopes them in, and that clause now cites this one.
 
 3. **Four named non-goals.**
    - **No streaming speech.** The route serves the buffered bytes alone.
+
+     🔴 **A caller-sent `stream: true` on the speak route is a 400.** This
+     clause named the non-goal and did not say what such a request gets.
+     The build takes §6A.10a clause 2's answer, which the transcribe door
+     already gives. **It is a D16 agent default, and the owner may overrule
+     it.** The refusal stands before anything resolves, so it costs the
+     customer nothing. It writes no usage row, because migration `020`'s
+     CHECK holds three slugs and this wall is not one of them.
+     `test_customer_console_tasks.py::TestASpeakCallNeverStreams` fences
+     both halves. *(Recorded 2026-08-31, in the same change that built it.)*
    - **No tenant caller.** Nothing in the tenant plane posts to either route
      in this slice.
    - **No `tier_binding` seed.** Clause 4 holds the reason.

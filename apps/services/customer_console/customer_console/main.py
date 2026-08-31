@@ -65,6 +65,7 @@ from fastapi import (
     Form,
     HTTPException,
     Request,
+    Response,
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
@@ -4587,10 +4588,24 @@ def _vendor_prices(conn, model: str) -> dict[str, Decimal | None]:
     return {"input": row[0], "output": row[1], "cached": row[2]}
 
 
-#: The `model_profile` column that prices a per-minute task. H-78 adds it
-#: (§6A.11a), and H-46 shipped before it — so the read below is GUARDED and
-#: an absent column answers NULL rather than raising.
-_PER_MINUTE_COLUMN = "vendor_per_minute_usd"
+#: Which `model_profile` column prices ONE unit of a task, keyed by the unit
+#: `task_catalog.natural_unit` gives that task.
+#:
+#: 🔴 **The UNIT picks the column, and the presence of a quantity never
+#: does** (§6A.10c clause 8). The branch in :func:`_record_completion` read
+#: the per-MINUTE column for every call that carried a quantity, so an image
+#: call would have taken its cost from a per-minute price. That was a live
+#: mis-costing, and this map is the repair.
+#:
+#: `019_per_unit_vendor_costs.sql` built all three columns. H-46 shipped
+#: before it, so the read below is GUARDED and an absent column answers NULL
+#: rather than raising. A unit with no entry here — `tokens`, `seconds` —
+#: also answers NULL, because nobody has told us what one costs.
+_PER_UNIT_COLUMNS: dict[str, str] = {
+    "minutes": "vendor_per_minute_usd",
+    "images": "vendor_per_image_usd",
+    "characters": "vendor_per_character_usd",
+}
 
 
 def _column_exists(conn, table: str, column: str) -> bool:
@@ -4610,24 +4625,30 @@ def _column_exists(conn, table: str, column: str) -> bool:
     ).first() is not None
 
 
-def _vendor_per_minute(conn, model: str) -> Decimal | None:
-    """What one minute of this model costs us at the vendor, or ``None``.
+def _vendor_per_unit(conn, model: str, *, unit: str | None) -> Decimal | None:
+    """What ONE unit of this model costs us at the vendor, or ``None``.
 
-    The per-minute half of :func:`_vendor_prices`, read at metering time for
+    The per-unit half of :func:`_vendor_prices`, read at metering time for
     the same reason — a later profile edit must never rewrite what a past
     call cost.
 
-    ``None`` covers all three ways nobody has told us: the column is not
-    there yet, the model has no profile row, or the row holds NULL. D-AI-7
-    rule 3 says NULL means nobody told us and never means zero.
+    🔴 **``unit`` is the task's own** (`task_catalog.natural_unit`), so a
+    minute of audio reads the per-minute column and a picture reads the
+    per-image one. :data:`_PER_UNIT_COLUMNS` holds the whole mapping, and
+    this function chooses nothing by itself.
+
+    ``None`` covers all four ways nobody has told us: no column prices this
+    unit, the column is not there yet, the model has no profile row, or the
+    row holds NULL. D-AI-7 rule 3 says NULL means nobody told us and never
+    means zero.
     """
-    if not _column_exists(conn, "model_profile", _PER_MINUTE_COLUMN):
+    column = _PER_UNIT_COLUMNS.get(unit or "")
+    if column is None:
+        return None
+    if not _column_exists(conn, "model_profile", column):
         return None
     return conn.execute(
-        text(
-            f"SELECT {_PER_MINUTE_COLUMN} FROM model_profile "
-            "WHERE model = :m"
-        ),
+        text(f"SELECT {column} FROM model_profile WHERE model = :m"),
         {"m": model},
     ).scalar_one_or_none()
 
@@ -4666,10 +4687,16 @@ def _record_completion(
     row keeps NULL, because the three token columns already carry that
     number and a second copy is a second thing to disagree with. A call that
     passes one is priced per unit at BOTH ends: the customer against
-    ``credits_per_unit``, and our own cost against the vendor's per-minute
-    price. That is why the cost branch below reads ``quantity`` rather than
-    the task name — the rule is about how the call is MEASURED, not about
-    which of D60's six tasks it happens to be.
+    ``credits_per_unit``, and our own cost against the vendor's price for
+    ONE of that task's units.
+
+    🔴 **The task's UNIT picks the vendor column, and the presence of a
+    quantity never does** (§6A.10c clause 8). Until 2026-08-31 the branch
+    below called the per-MINUTE reader for every call that carried a
+    quantity, so the first image call would have multiplied two pictures by
+    a price for one minute of audio. ``_task_unit`` answers what the task is
+    measured in, and :data:`_PER_UNIT_COLUMNS` maps that unit onto the one
+    column that prices it.
 
     🔴 **``declared_task`` is what the CUSTOMER ASKED FOR, and the ROW records
     it. The BILL follows ``resolved``** (§8.5 clause 4). D-AI-2 lets a
@@ -4702,11 +4729,17 @@ def _record_completion(
                 billed = Decimal(0)
                 cost = Decimal(0)
             elif quantity is not None:
-                # A per-unit call. The vendor sells it by time, so our cost
-                # comes off the per-minute price rather than off three token
-                # rates that this call never consumed.
-                cost = router_mod.vendor_cost_per_minute_usd(
-                    quantity, _vendor_per_minute(conn, resolved.model)
+                # A per-unit call. The vendor sells it by minute, by picture
+                # or by character, so our cost comes off the column that
+                # prices THAT unit — never off three token rates this call
+                # did not consume, and never off a per-minute price for a
+                # task nobody measured in minutes.
+                cost = router_mod.vendor_cost_per_unit_usd(
+                    quantity,
+                    _vendor_per_unit(
+                        conn, resolved.model,
+                        unit=_task_unit(conn, resolved.task),
+                    ),
                 )
             else:
                 prices = _vendor_prices(conn, resolved.model)
@@ -4760,8 +4793,9 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     every SDK tells the customer to rotate THEIR key, and a vendor 402
     collides with this API's own top-up 402.
 
-    🔴 **ONE mapping for every serving route.** `/v1/chat/completions` and
-    `/v1/audio/transcriptions` both raise from here, so a second endpoint
+    🔴 **ONE mapping for every serving route.** All four raise from here —
+    `/v1/chat/completions`, `/v1/audio/transcriptions`,
+    `/v1/images/generations` and `/v1/audio/speech` — so a second endpoint
     cannot grow a second opinion about what a vendor 500 means.
     """
     status = failed.status
@@ -4930,9 +4964,9 @@ def _raise_spend_refusal(
 ) -> NoReturn:
     """Record the wall the spend gate raised, then deliver it.
 
-    🔴 **ONE shape for every serving route.** Both `/v1/chat/completions` and
-    `/v1/audio/transcriptions` call this, so the 402 and the 403 cannot come
-    to mean two different rows.
+    🔴 **ONE shape for every serving route.** All four call this — the chat
+    door, the transcribe door, the image door and the speak door — so the 402
+    and the 403 cannot come to mean four different rows.
 
     The slug is the word already inside the body the customer reads —
     `insufficient_credits` or `run_ceiling_exceeded` — never a second
@@ -5735,6 +5769,382 @@ def audio_transcriptions(
     # asked for. One field, so the meter's choice of `response_format` stays
     # invisible from outside (clause 3).
     return {"text": _transcript_of(response)}
+
+
+# ── H-46: the image endpoint and the speak endpoint (§6A.10c) ───────────────
+#
+# 🔴 **`015_tier_pricing.sql` registered `tier-image` and `tier-tts`, and
+# `016_tier_task.sql` mapped them to `image` and `speak`. Neither tier had a
+# door.** These two routes are that door. Both copy the transcribe route line
+# for line: the DOOR declares the task, the `model` field names a TIER, the
+# three customer walls stand before the provider call, and
+# `_record_completion` writes the one usage row.
+#
+# ⚠️ **Neither tier is BOUND, so both routes answer 400 `tier_unknown` until
+# the owner writes one `tier_binding` row each** (§6A.10c clause 4). Which
+# vendor model we resell for pictures and for speech is a commercial
+# decision, and an agent must not take it.
+
+#: The ONE task the image endpoint serves. The route names it, exactly as
+#: :data:`TRANSCRIBE_TASK` does, because the DOOR declares the task and the
+#: Router never sniffs the payload (§6A.10c clause 1, D61 G-3).
+IMAGE_TASK = "image"
+
+#: The ONE task the speak endpoint serves (§6A.10c clause 2).
+SPEAK_TASK = "speak"
+
+#: How many pictures one request may ask for.
+#:
+#: 📌 **The chat route's own ceiling, not a second one.**
+#: ``CompletionRequest.n`` caps completions at four for exactly this reason —
+#: `n` multiplies what one request costs us, so fifty would be a 50x draw on
+#: the provider account from one zero-balance trial call.
+_MAX_IMAGES_PER_CALL = 4
+
+#: How much text one speak request may carry.
+#:
+#: *Agent default*, anchored on the vendor rather than invented, exactly as
+#: :data:`_MAX_AUDIO_BYTES` is: the OpenAI speech endpoint refuses an input
+#: above 4096 characters. A longer one buys a round trip and a vendor
+#: refusal, and the Router holds the text in memory to replay it across a
+#: failover.
+_MAX_SPEECH_CHARACTERS = 4096
+
+
+class ImageRequest(BaseModel):
+    """One picture request, addressed to a TIER.
+
+    ⚠️ ``extra="forbid"``. Everything the caller may forward is named here,
+    and anything else is refused rather than passed through — the same
+    allowlist rule ``CompletionRequest`` states.
+    """
+
+    #: 🔴 A TIER ALIAS, never a model id (clause 1). `016_tier_task.sql` maps
+    #: `tier-image` to the `image` task, so the alias declares the task.
+    model: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    #: ⚠️ **What the caller ASKS for, and never what we bill.** The meter
+    #: counts the pictures the provider RETURNED (clause 5).
+    n: int | None = Field(default=None, ge=1, le=_MAX_IMAGES_PER_CALL)
+    size: str | None = Field(default=None, max_length=32)
+    #: The caller's own correlation id, trusted for nothing.
+    client_ref: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class SpeechRequest(BaseModel):
+    """One speech request, addressed to a TIER. The answer is audio bytes."""
+
+    #: 🔴 A TIER ALIAS, never a model id (clause 2). `016_tier_task.sql` maps
+    #: `tier-tts` to the `speak` task.
+    model: str = Field(min_length=1)
+    #: 🔴 **The text we SEND is what the meter counts** (clause 6). A figure
+    #: the caller reports is never read.
+    input: str = Field(max_length=_MAX_SPEECH_CHARACTERS)
+    voice: str = Field(min_length=1, max_length=100)
+    response_format: str | None = Field(default=None, max_length=32)
+    #: 📌 **Declared so the refusal can be a 400 rather than a 422.** Clause 3
+    #: names "no streaming speech" as a non-goal, and this field is how a
+    #: caller finds that out in the vocabulary the transcribe route already
+    #: uses. `extra="forbid"` would answer 422 and say nothing.
+    stream: bool | None = None
+    client_ref: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+def _serving_prelude(
+    *, tier: str, task: str, org_id: str, caller: Any, client_ref: str | None,
+) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None],
+           dict[str, str]]:
+    """Resolve the chain, load its keys and verbs, and stand the three walls.
+
+    🔴 **ONE prelude for the image door and the speak door.** The transcribe
+    route wrote this shape first and the chat route wrote it before that. A
+    third and a fourth copy is root ``CLAUDE.md`` §5's defect by name, so the
+    two new routes share this function and the older two keep their own
+    bodies until somebody moves them.
+
+    🔴 **A CUSTOMER refusal leaves the transaction before it is raised**
+    (§8.1 clause 3). A refusal row written on the serving connection rolls
+    back with the raise, and then the meter records nothing.
+
+    Raises:
+        HTTPException: the 400 unknown tier, the 402 no credit, the 403 run
+            ceiling — each after its refusal row is written — or the 503 for
+            a chain with no step we can try.
+    """
+    unknown_tier: HTTPException | None = None
+    refusal: HTTPException | None = None
+    chain: list[ResolvedTier] = []
+    credentials: dict[str, router_mod.Credential | None] = {}
+    invocations: dict[str, str] = {}
+
+    with get_engine().begin() as conn:
+        try:
+            chain = resolve_chain(conn, tier, task)
+        except TierUnknown:
+            unknown_tier = HTTPException(
+                status_code=400,
+                detail=(
+                    f"no binding for tier {tier!r} on task {task!r}; "
+                    "name a tier, not a model"
+                ),
+            )
+
+        if unknown_tier is None:
+            credentials = _chain_credentials(conn, chain, org_id=org_id)
+            invocations = _chain_invocations(conn, chain, task=task)
+            refusal = (
+                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+            )
+
+    if unknown_tier is not None:
+        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
+                        tier=tier, task=task, client_ref=client_ref)
+        raise unknown_tier
+
+    if refusal is not None:
+        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
+                             tier=tier, task=task, client_ref=client_ref)
+
+    # A step we hold no key for, or no capability row for, is not a step. It
+    # cannot be tried at all, so it is dropped rather than attempted and
+    # counted as a failure.
+    attempts = [
+        step for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None
+        and step.model in invocations
+    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+
+    if not attempts:
+        raise _nothing_to_try(chain[0], invocations, task=task)
+
+    return attempts, credentials, invocations
+
+
+def _unmeasured(resolved: ResolvedTier, task: str) -> None:
+    """Say out loud that nothing measured this call (clause 5, clause 6).
+
+    The customer already holds the pictures or the audio, so the only choice
+    left is whether we also lose the row. We keep the row and bill zero, and
+    this line is how an unmeasured call becomes visible instead of merely
+    cheap.
+    """
+    _log.warning(
+        "router.unmeasured_quantity",
+        extra={"router_model": resolved.model, "router_tier": resolved.tier,
+               "router_task": task},
+    )
+
+
+@app.post("/v1/images/generations")
+def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
+    """Generate pictures, gate the call, and charge it per PICTURE.
+
+    The same shape as ``audio_transcriptions`` and deliberately so: the
+    organization comes from the API key, the model comes from the tier
+    binding, the three customer walls stand BEFORE the provider call, and
+    the usage row is written from numbers we observed.
+
+    🔴 **``model`` is a TIER ALIAS, never a model id** (clause 1). A bare
+    model id has no ``tier_binding`` row on this task, so it walks into the
+    same 400 a chat tier does and pictures can never reach a chat model.
+
+    🔴 **The quantity is the count of pictures the provider RETURNED**
+    (clause 5), and never the request's ``n``. A provider that answers with
+    two pictures for a request that asked for three bills two.
+
+    ⚠️ **A response with no readable list of images bills ZERO, loudly.** It
+    guesses at no count.
+
+    Declared ``def`` for the reason the module docstring gives — the engine
+    is synchronous, and the provider coroutine is driven with ``asyncio.run``
+    inside the threadpool worker.
+    """
+    org_id = caller.organization_id
+    attempts, credentials, invocations = _serving_prelude(
+        tier=req.model, task=IMAGE_TASK, org_id=org_id, caller=caller,
+        client_ref=req.client_ref,
+    )
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain.
+
+        ⚠️ ALLOWLIST, exactly as the chat and transcribe routes build one.
+        ``api_base`` is ours alone, and nothing the caller sent reaches the
+        provider except the prompt and the two shape fields.
+        """
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        out: dict[str, Any] = {
+            "model": step.model,
+            "prompt": req.prompt,
+            "api_key": cred.secret,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "num_retries": 1,
+            "timeout": 120,
+        }
+        if req.n is not None:
+            out["n"] = req.n
+        if req.size is not None:
+            out["size"] = req.size
+        if cred.api_base:
+            out["api_base"] = cred.api_base
+        return out
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        """Whose account ran this step. §3.4 turns on exactly this bit."""
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(
+        frm: ResolvedTier, to: ResolvedTier, status: int | None
+    ) -> None:
+        _log.warning(
+            "router.failover",
+            extra={"fo_from": frm.model, "fo_to": to.model,
+                   "fo_status": status, "fo_tier": frm.tier,
+                   "fo_task": IMAGE_TASK},
+        )
+
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        # ONE mapping, shared with every serving route.
+        raise _upstream_refusal(failed) from failed
+
+    pictures = router_mod.image_count(response)
+    if pictures is None:
+        _unmeasured(resolved, IMAGE_TASK)
+        pictures = Decimal(0)
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        ExtractedUsage(),
+        org_id=org_id, caller=caller,
+        resolved=resolved, client_ref=req.client_ref,
+        byok=_byok_served(resolved),
+        quantity=pictures,
+    )
+
+    return response
+
+
+@app.post("/v1/audio/speech")
+def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
+    """Read text aloud, gate the call, and charge it per CHARACTER.
+
+    🔴 **The answer is AUDIO BYTES, and not JSON** (clause 2). The route
+    hands back the bytes the provider returned, under the provider's own
+    content type, so a caller written against the OpenAI speech endpoint
+    reads exactly what it expects.
+
+    🔴 **The quantity is the count of characters we SEND upstream** (clause
+    6), and never a figure the caller reports. A character count is a fact
+    the REQUEST holds, while a picture count is a fact only the RESPONSE
+    holds — the two routes measure at opposite ends on purpose.
+
+    🔴 **A truthy ``stream`` field is a 400** (clause 3, a D16 agent
+    default). ``speak`` IS in ``STREAMABLE_TASKS``, and that membership
+    changes nothing here: its one reader guards the OPERATOR capability
+    write and never sees a serving request. The refusal is this endpoint's
+    own contract, and it is the answer §6A.10a clause 2 already gives on the
+    transcribe door. The reason is slice 11's failover walk — it is built
+    for SSE, and its first-frame boundary has no meaning for an audio body.
+
+    ⚠️ **The stream 400 writes NO usage row.** Migration 020's CHECK holds
+    three slugs, and minting a fourth would be the second spelling §8.1
+    forbids.
+    """
+    if req.stream:
+        # Refused BEFORE anything is resolved or spent. A stream this route
+        # cannot deliver must cost the customer nothing.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this endpoint does not stream; omit the 'stream' field and "
+                "read the audio from the response body"
+            ),
+        )
+
+    org_id = caller.organization_id
+    attempts, credentials, invocations = _serving_prelude(
+        tier=req.model, task=SPEAK_TASK, org_id=org_id, caller=caller,
+        client_ref=req.client_ref,
+    )
+
+    #: What we SEND. The meter counts this string and nothing else.
+    spoken = req.input
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain. ALLOWLIST."""
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        out: dict[str, Any] = {
+            "model": step.model,
+            "input": spoken,
+            "voice": req.voice,
+            "api_key": cred.secret,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "num_retries": 1,
+            "timeout": 120,
+        }
+        if req.response_format is not None:
+            out["response_format"] = req.response_format
+        if cred.api_base:
+            out["api_base"] = cred.api_base
+        return out
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(
+        frm: ResolvedTier, to: ResolvedTier, status: int | None
+    ) -> None:
+        _log.warning(
+            "router.failover",
+            extra={"fo_from": frm.model, "fo_to": to.model,
+                   "fo_status": status, "fo_tier": frm.tier,
+                   "fo_task": SPEAK_TASK},
+        )
+
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        raise _upstream_refusal(failed) from failed
+
+    if spoken:
+        characters = Decimal(len(spoken))
+    else:
+        # ⚠️ BILL ZERO, LOUDLY (clause 6). There is no text to count, and we
+        # guess at no length.
+        _unmeasured(resolved, SPEAK_TASK)
+        characters = Decimal(0)
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        ExtractedUsage(),
+        org_id=org_id, caller=caller,
+        resolved=resolved, client_ref=req.client_ref,
+        byok=_byok_served(resolved),
+        quantity=characters,
+    )
+
+    audio, media_type = router_mod.speech_audio(response)
+    return Response(content=audio, media_type=media_type)
 
 
 @app.get("/me/billing")
