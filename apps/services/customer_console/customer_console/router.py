@@ -230,6 +230,40 @@ def reads_images(conn: Connection, model: str) -> bool:
     return bool(row and row[0])
 
 
+def _models_that_read_images(
+    conn: Connection, models: Sequence[str]
+) -> set[str]:
+    """The subset of *models* that reads an image, in ONE query.
+
+    🔴 **The chain resolves on the serving path, and inside the serving
+    transaction.** :func:`reads_images` answers for one model, so a filter
+    built on it runs one single-row SELECT per step. Measured on a five-step
+    chain: the resolve cost 7 queries before this helper and costs 3 after it.
+    The schema puts no ceiling on chain length, and ``MAX_CHAIN_ATTEMPTS`` caps
+    the WALK rather than the resolve, so that cost grows with the chain an
+    operator binds.
+
+    ⚠️ **Three states read the same, and they must.** A model with no
+    ``model_profile`` row is absent from the result. A SQL NULL flag fails
+    ``AND reads_images``. A FALSE flag fails it too. All three mean *does not
+    see*, exactly as :func:`reads_images` answers for one model.
+
+    :func:`reads_images` stays as it is for its own callers. This is the set
+    form of the same question, and never a second source for the flag.
+    """
+    wanted = list(models)
+    if not wanted:
+        return set()
+    rows = conn.execute(
+        text(
+            "SELECT model FROM model_profile "
+            "WHERE model = ANY(:models) AND reads_images"
+        ),
+        {"models": wanted},
+    ).all()
+    return {r[0] for r in rows}
+
+
 def resolve_vision_chain(
     conn: Connection, tier: str
 ) -> list[ResolvedTier]:
@@ -265,7 +299,9 @@ def resolve_vision_chain(
     🔴 **A BLIND STEP NEVER ENTERS THE LIFT CHAIN** (§3.2 step 3b, D16). The
     flag is read on EVERY step of the chat chain, and a step that clears it is
     dropped. An empty result falls to :data:`VISION_TIER`, exactly as a chain
-    whose every step clears the flag does.
+    whose every step clears the flag does. ONE query answers for the whole
+    chain (:func:`_models_that_read_images`), because this resolves on the
+    serving path and a per-step read cost one query per rank.
 
     ⚠️ **The rank-1 read was a shipped wrong answer, and this is the repair.**
     Rank 1 reads images, rank 1 fails, and the walk moves to a blind rank 2.
@@ -299,7 +335,12 @@ def resolve_vision_chain(
         # yet a wall.
         pass
     chat_chain = resolve_chain(conn, tier, CHAT_TASK)
-    seeing = [s for s in chat_chain if reads_images(conn, s.model)]
+    # ONE query for the whole chain, and the comprehension keeps the RANK
+    # order. The result is a SUBSEQUENCE of the chain, which is what makes
+    # `served_rank` true — `ResolvedTier.rank` comes off the column and never
+    # off a list index.
+    sees = _models_that_read_images(conn, [s.model for s in chat_chain])
+    seeing = [s for s in chat_chain if s.model in sees]
     if seeing:
         return seeing
     try:

@@ -75,15 +75,111 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-81 · Decide whether the vision resolver reads credentials · [OWNER]
+### H-84 · Fix two fixture hazards on the shared scratch database · [AGENT]
+- ⚠️ **Two shapes, one record.** Shape 1 LEAKS a row on every run. Shape 2
+  DELETES a whole table, and it reddens any suite that runs beside it.
+- **Check (shape 1):** `grep -n "tier-orphan" -A4 tests/unit/test_customer_console_router.py`.
+  A raw `INSERT INTO tier_binding` with no teardown means this entry is still
+  real. Count the rows with `docker exec metorite-scratch-console psql -U cc
+  -d cc_platform -Atc "SELECT count(*) FROM tier_binding WHERE tier =
+  'tier-orphan'"`.
+- **Why:** `test_a_missing_credential_is_a_503_not_a_crash`
+  (`test_customer_console_router.py:535-547`) inserts a `tier_binding` row and
+  removes nothing. It does not use the `bound_tier` fixture beside it. Every
+  other fence in that file goes through `bound_tier`, which owns the teardown.
+- 🔴 **`ON CONFLICT DO NOTHING` never fires.** Migration `011` keys the table
+  on `(task, tier, effective_from, rank)`. The test stamps
+  `now() - interval '1 day'`, which is a fresh timestamp on every run.
+- 📌 **Measured 2026-08-31: 83 rows** of `tier-orphan` / `chat` /
+  `nosuchprovider/model` on the scratch console database.
+- 🔴 **A SECOND leaked row MASKS the failure `bound_tier` warns about.**
+  `model_capability` holds `nosuchprovider/model | chat | acompletion | t`, and
+  nothing in the tree writes that row on purpose. On a clean database the
+  binding leak reddens
+  `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`.
+  So sweep both rows, and do not sweep only the binding.
+- 📌 **`model_profile` holds 194 rows on the same database.** `bound_tier`
+  deletes its own model rows, so some run stopped before its teardown.
+- **Check (shape 2):** `grep -n "DELETE FROM provider_credential" tests/unit/test_provider_keys.py`.
+  A hit on an UNQUALIFIED delete means this entry is still real.
+- 🔴 **Why (shape 2) — one suite empties `provider_credential` for the whole
+  box.** The `client` fixture (`test_provider_keys.py:71`) runs
+  `DELETE FROM provider_credential` with no WHERE clause, once per test. The
+  console suites share ONE scratch database across worktrees. So a run beside
+  it loses the platform `deepseek` row that `org_key` installed.
+- 📌 **Measured 2026-08-31.** Ten full runs of
+  `test_customer_console_router.py` plus its two siblings gave eight green and
+  two red. Both reds answered
+  `no provider credential configured for 'deepseek'`, and the tests differed
+  between them. The row was present before and after each run.
+- ✅ **The repair is a WHERE clause.** Delete the rows that test installed, and
+  never the table. Scope it by `label` or by the provider the test writes.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 fences ·
+  `engineering_practice.md` §1.1 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-83 · Scope the `usage_by_org` fence to its own organization · [AGENT]
+- **Check:** `grep -n "limit=10_000" tests/unit/test_customer_console_sql.py`.
+  A hit means the fence still asks for a page sized by a bound that the data
+  has passed, and this entry is still real.
+- 🔴 **IT HIDES REGRESSIONS, and that is why it is here.**
+  `test_an_org_with_no_usage_still_appears` passes about 27 percent of runs on
+  a full scratch database. A true red then reads as volume noise. This is the
+  41-failures-then-22 swing that moved with no code change.
+- **Why:** `store.usage_by_org` orders by `credits DESC, calls DESC, slug ASC`
+  with `LIMIT :lim` (`store.py:808-809`). The fence asks for `limit=10_000`
+  (`test_customer_console_sql.py:657`). Somebody sized that bound when the
+  database held 563 organizations.
+- 📌 **Measured 2026-08-31 on the scratch console database.** It holds 22,787
+  organizations and 12,721 `usage_event` rows. The zero-usage block starts at
+  row 9,428 and holds 13,360 rows. So the page admits 573 of the 2,265
+  `acme-` organizations, and the cut falls at slug `acme-457ea6e3`.
+- 🔴 **The `org` fixture mints `acme-<8 random hex>`**
+  (`test_customer_console_sql.py:79`). The test passes only when that hex sorts
+  below `457ea6e3`. That is `0x457ea6e3 / 0x100000000`, or about 27 percent.
+- ✅ **The smallest correct repair is a slug filter in the query.** Scope the
+  assertion to the fixture's OWN organization. Do NOT raise the limit again.
+  The last raise bought 563 organizations of headroom, and it has expired.
+- **Authority:** `customer_console.md` §5 · board row WS-31 · beside H-76
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-82 · Correct the failover read, which now counts a resolution act · [AGENT]
+- **Check:** `grep -n "served_rank > 1" apps/services/customer_console/customer_console/main.py`
+  and `grep -n "Failovers, last 14 days" workbench/operator_console/src/app/tiers/TierBoard.tsx`.
+  A hit on both means the read still calls every `served_rank > 1` row a
+  failover, and this entry is still real.
+- **Why:** D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
+  starts. Take a tier that binds a blind rank 1 and a seeing rank 2, both
+  keyed. `_record_completion` (`main.py:4742`) then writes `served_rank = 2`
+  with `task = vision` on EVERY successful call, and no step ever failed.
+- 🔴 **The dashboard reads that as a failover.** `main.py:1858-1868` selects
+  `WHERE served_rank > 1`, and its own comment calls every such row a customer
+  request the rank-1 step did not answer. `TierBoard` would report 100 percent
+  of that tier's vision traffic as a failover.
+- ⚠️ **The emitted group joins to no `tier_binding` row.** It carries the
+  chosen tier with `task = vision`, and the chosen tier binds no `vision` task.
+- 📌 **The RANK is TRUE, and only the MEANING slipped.** `resolve_chain` builds
+  `rank` from the column and never from a list index, and the lift chain stays
+  a subsequence of the chain. So do not change the write.
+- 📌 **The credential filter (`main.py:5221-5224`) already does this on the
+  CHAT path.** So this widens a shape, and it mints no new class.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 7 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
-  and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`.
-  This entry is still real while the resolver takes `(conn, tier)` and nothing
-  else, and while the empty-`attempts` branch answers 503 with no second
-  resolve. ⚠️ Do NOT grep `provider_credential` on its own. `router.py:486`
+  and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
+  and `grep -n "return resolve_chain(conn, tier, VISION_TASK)" apps/services/customer_console/customer_console/router.py`.
+  This entry is still real on three conditions. The resolver takes
+  `(conn, tier)` alone, the empty-`attempts` branch answers 503 with no second
+  resolve, and the declared-task resolve carries no `reads_images` filter.
+  ⚠️ Do NOT grep `provider_credential` on its own. `router.py:527`
   already reads that table for the SERVING path, so that grep hits today and
   reads as done.
-- **Why:** WS-31's blind-step guard filters the lift chain on `reads_images`,
+- ⚠️ **This entry carries TWO shapes** *(the second one arrived 2026-08-31)*.
+  Shape 1 costs a correct 200. Shape 2 lets a blind model answer. Close them
+  together, because both add a resolution rule to the same function.
+- **Why (shape 1):** WS-31's blind-step guard filters the lift chain on `reads_images`,
   and one chain shape pays a CORRECT 200 for it. The shape is a BLIND rank 1,
   then a SEEING rank 2 that the service holds no key for, with `tier-vision`
   bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
@@ -99,17 +195,37 @@ line — never reclaim a number by deleting the other entry.
   re-resolves to `tier-vision` when it empties `attempts` on a declared vision
   task. §3.2 records no decision on either shape, so an agent may not mint one
   (CLAUDE.md §5). That is why this entry is the owner's.
-- 📌 **Latent today.** Nothing binds `tier-vision` (F3) and nothing writes
-  `model_profile.reads_images` (§3.7 rule 4). Building the shape takes all
-  three operator acts of `ai_metering_and_analytics.md` §8.5 clause 3.
+- 🔴 **Why (shape 2) — a blind step can still enter a tier's OWN vision
+  chain.** §3.2 step 0.5 returns `resolve_chain(conn, tier, VISION_TASK)` with
+  NO `reads_images` filter (`router.py:330`). Step 3b narrows the LIFT chain
+  and narrows nothing else. So take an operator who binds `tier-vision` to
+  `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 returns a retryable 500.
+  `walk_chain` moves to the blind rank 2, and that model answers a confident
+  200 about a picture it never saw.
+- 🔴 **Shape 2 is a CORRECTNESS gap, and it is the older one.** It sits on the
+  path §3.2 step 3 sends the image down as the safe one. Shape 1 trades a right
+  answer for a refusal. Shape 2 gives a wrong answer.
+- 🔴 **Shape 2 needs two answers, and each one is a resolution rule.** Does a
+  declared `vision` chain drop its blind steps? Does an emptied declared chain
+  refuse, or does it fall to something? §3.2 records no decision on either, so
+  an agent may not mint one (CLAUDE.md §5).
+- 📌 **Both shapes are latent today.** Nothing binds `tier-vision` (F3) and
+  nothing writes `model_profile.reads_images` (§3.7 rule 4). Building either
+  shape takes all three operator acts of
+  `ai_metering_and_analytics.md` §8.5 clause 3.
 - ⏰ **Deadline: decide before H-69 arms the lift.** That flip is what makes
-  the shape reachable on a live box.
-- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 8 · board row WS-31
-- **Added:** 2026-08-31 · WS-31 router-guards repair round
+  both shapes reachable on a live box.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clauses 8 and 9 · board
+  row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards repair round · **shape 2 added
+  2026-08-31**, WS-31 router-guards final repair round
 
 ### H-80 · Decide the thread budget for the stream walk · [OWNER]
 - **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
   No hit means nobody has capped the stream walk, and this entry is still real.
+  ⚠️ **The grep reads `main.py` alone** *(named 2026-08-31)*. A cap that lands
+  in a NEW module still reads as no hit, so this entry would say STILL PENDING
+  after the repair. Widen the path to the package when you close it.
 - **Why:** WS-31 slice 11 moved the provider stream open into the route. A
   `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
   length of the walk. That is up to `3 x 120` seconds. The `asyncify` helper in
