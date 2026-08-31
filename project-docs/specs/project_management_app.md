@@ -4119,11 +4119,34 @@ function in `notifications.py` reads the chain.
 row. `GroupBy` does not offer it. Add `"category"` to `GroupBy`,
 `GROUP_OPTIONS` and the gateway's `GROUP_BY`.
 
-⚠️ **The reason is the SUBTREE, and it is not cosmetic.** A board over a
-subtree spans projects, and each project owns its own status rows. Grouping by
-status there draws one column per status per project — measured today, three
-projects give twelve columns where four are meant. Grouping by category is what
-makes a cross-project board readable at all.
+⚠️ **CORRECTION, 2026-09-01. The first version of this section justified the
+feature with a claim that is FALSE, and the claim was mine.**
+
+It said a subtree board "draws one column per status per project — three
+projects give twelve columns where four are meant". Statuses are
+**root-scoped**, not per-project. `pm_task_statuses.project_id` holds a ROOT id.
+A move re-stamps `root_project_id` across the subtree precisely so this stays
+true. Measured on the live database: three roots, four statuses each, every
+status row on a root. So a subtree board already draws one status set.
+
+**The real value is smaller, and it arrives later.** Today each root holds
+exactly four statuses, one per category. So grouping by category draws the SAME
+four columns as grouping by status. The feature is close to a no-op right now.
+
+It earns its place when a root holds more statuses than categories. The status
+manager already permits that, and it is the normal shape. Backlog, Todo, In
+Progress, In Review, Blocked, Done and Cancelled is seven statuses over four
+stages. Two things follow.
+
+1. **A long board collapses to its stages.** Seven columns become four.
+2. **Two roots become comparable.** Operations' "In Progress" and Sales' "In
+   Progress" are different rows with different ids. The category is the only
+   vocabulary they share, and every cross-project number in §9.12.7 rests on
+   it.
+
+📌 **So this slice is CHEAP and CORRECT, and its value is latent.** Build it
+when a root grows a fifth status, or build it beside §9.12.7, which needs the
+same vocabulary. Do not build it first on the strength of the deleted claim.
 
 **Design decisions:**
 - Order is the category vocabulary's own, never `position`. A category is a
@@ -4338,10 +4361,10 @@ dispatch. The seam is there. The product shape is not.
 
 | Wave | Items | Why here |
 |---|---|---|
-| 1 | Status groups · watching filter · delete a dependency | Small, independent, and each finishes a thing already half-built |
+| 1 | Delete a dependency · watching filter | Small, independent, and each one changes what a member sees TODAY |
 | 2 | Move dialog, then drag | One feature. The accessible path ships first |
 | 3 | Project watching · teamspace members | Both touch the tree and the grant table |
-| 4 | Analytics (a) → (b) → (c) → (d) | Each later metric needs more history |
+| 4 | Analytics (a) → (b) → (c) → (d), and status groups beside them | Each later metric needs more history. Status groups shares their vocabulary, and §9.12.3 explains why it waits |
 | 5 | Reporting | Renders what wave 4 computes |
 | 6 | Follow-ups | Independent, and it pairs with a parked feature |
 | — | Assign to AI | Parked. §9.12.10 |
