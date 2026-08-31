@@ -64,6 +64,7 @@ import {
   type Edge,
   LABEL_INSIDE_PX,
   ROW_H,
+  type TimelineWindow,
   type TimelineZoom,
   ZOOMS,
   ZOOM_ORDER,
@@ -130,6 +131,16 @@ interface Props {
    *  chose here too. One tag, one colour, on every surface of the project. */
   tags?: readonly TagRow[];
   today?: string;
+  /**
+   * S3 — the zoom and the span of dates the page FETCHED at it.
+   *
+   * Both live on the page rather than here, because the zoom decides the query
+   * and not only the layout. Held locally, the timeline drew a quarter of
+   * calendar over one month of data.
+   */
+  zoom?: TimelineZoom;
+  window?: TimelineWindow;
+  onZoom?: (zoom: TimelineZoom) => void;
   onSelect: (task: TaskRow) => void;
   /** S2 — a committed drag. The page's existing task-date write path. */
   onMove: (task: TaskRow, patch: Record<string, string | null>) => void;
@@ -145,13 +156,15 @@ export function TimelineView({
   today,
   shownFields,
   tags,
+  zoom = "month",
+  window: fetched,
+  onZoom,
   onSelect,
   onMove,
   onLink,
   onRefuse,
 }: Props) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [zoom, setZoom] = useState<TimelineZoom>("month");
   const [drag, setDrag] = useState<DragState | null>(null);
   const [link, setLink] = useState<LinkState | null>(null);
   const [hoverRow, setHoverRow] = useState<string | null>(null);
@@ -178,8 +191,8 @@ export function TimelineView({
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
   const rows = useMemo(() => timelineRows(tasks), [tasks]);
   const range = useMemo(
-    () => timelineRange(rows, todayKey, zoom),
-    [rows, todayKey, zoom]
+    () => timelineRange(rows, todayKey, zoom, fetched),
+    [rows, todayKey, zoom, fetched]
   );
 
   // One flat list of drawn lines — parents, then their children when expanded —
@@ -252,25 +265,73 @@ export function TimelineView({
   }, []);
 
   /** Centre the chart on a day. The only imperative scroll in here. */
-  const scrollToDay = useCallback((day: string) => {
+  const scrollToDay = useCallback((day: string, smooth = true) => {
     const el = scrollRef.current;
     if (!el) return;
     const target = dayPx(day, range) - (el.clientWidth - LEFT_COL) / 2;
-    el.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+    el.scrollTo({
+      left: Math.max(0, target),
+      behavior: smooth ? "smooth" : "auto",
+    });
   }, [range]);
 
-  // Open on today rather than on the range's left edge. A chart that opens
-  // three months in the past is one whose first interaction is always a scroll.
-  // Re-runs on zoom because the same day is at a different pixel at each.
+  /**
+   * What is on screen, for the off-screen markers below.
+   *
+   * A state write per scroll frame, throttled to one per animation frame —
+   * which is what any virtualised list does, and the only way to know whether a
+   * bar is visible. Nothing else in this component reads it, so a scroll
+   * re-renders the markers and not the chart's geometry.
+   */
+  const [viewport, setViewport] = useState({ left: 0, width: 0 });
+  const frameRef = useRef(0);
+  /** The day in the middle of the viewport — a REF, so scrolling is free. */
+  const centredRef = useRef<string | null>(null);
+
+  const readViewport = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const width = el.clientWidth - LEFT_COL;
+    centredRef.current = dayAtPx(el.scrollLeft + width / 2, range);
+    setViewport((current) =>
+      current.left === el.scrollLeft && current.width === width
+        ? current
+        : { left: el.scrollLeft, width }
+    );
+  }, [range]);
+
+  function onScroll() {
+    if (frameRef.current) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = 0;
+      readViewport();
+    });
+  }
+
+  // Open on today rather than on the range's left edge — a chart that opens
+  // four months in the past is one whose first interaction is always a scroll.
+  // A ZOOM change instead holds the day you were looking at: changing zoom to
+  // see more context should not also teleport you out of the quarter you were
+  // reading.
   const openedAt = useRef<string | null>(null);
+  const lastZoom = useRef<TimelineZoom>(zoom);
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || todayPx === null) return;
-    const stamp = `${zoom}:${range.from}`;
-    if (openedAt.current === stamp) return;
-    openedAt.current = stamp;
-    el.scrollLeft = Math.max(0, todayPx - (el.clientWidth - LEFT_COL) / 2);
-  }, [zoom, range.from, todayPx]);
+    if (!el) return;
+    if (lastZoom.current !== zoom) {
+      lastZoom.current = zoom;
+      const held = centredRef.current;
+      if (held) {
+        scrollToDay(held, false);
+        readViewport();
+        return;
+      }
+    }
+    if (openedAt.current === range.from) return;
+    openedAt.current = range.from;
+    if (todayPx !== null) scrollToDay(todayKey, false);
+    readViewport();
+  }, [zoom, range.from, todayPx, todayKey, scrollToDay, readViewport]);
 
   // ── Dragging a bar ──────────────────────────────────────────────────────
 
@@ -462,7 +523,7 @@ export function TimelineView({
               variant={zoom === key ? "primary" : "ghost"}
               size="sm"
               aria-pressed={zoom === key}
-              onClick={() => setZoom(key)}
+              onClick={() => onZoom?.(key)}
             >
               {ZOOMS[key].label}
             </Button>
@@ -503,12 +564,20 @@ export function TimelineView({
 
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className={`overflow-auto rounded-lg border border-border ${
           busy ? "select-none" : ""
         }`}
         style={{ maxHeight: "68vh" }}
       >
-        <div className="flex" style={{ minWidth: LEFT_COL + range.widthPx }}>
+        {/* `w-full` with a minWidth, not a bare minWidth: below it the row
+            stretches to the card and the header, shading and borders reach the
+            right edge. Without it the chart stopped wherever the data did and
+            left the rest of the card blank. */}
+        <div
+          className="flex w-full"
+          style={{ minWidth: LEFT_COL + range.widthPx }}
+        >
           {/* Task column — sticky, so the names stay while the chart scrolls. */}
           <div
             className="sticky left-0 z-30 shrink-0 border-r border-border bg-card"
@@ -564,7 +633,7 @@ export function TimelineView({
           </div>
 
           {/* Chart */}
-          <div className="relative shrink-0" style={{ width: range.widthPx }}>
+          <div className="relative flex-1" style={{ minWidth: range.widthPx }}>
             {/* Two tiers: months, then days or weeks depending on the zoom.
                 One tier could not say both "which month" and "which day", and a
                 Gantt you cannot date by eye is a picture of some bars. */}
@@ -751,6 +820,25 @@ export function TimelineView({
                       beginDrag(event, row.task.id, "create", day);
                     }}
                   >
+                    {/* Plane's `block-row.tsx` marker: a bar scrolled out of
+                        sight leaves an arrow at the edge it went past, and
+                        clicking it brings the bar back. Without it a row whose
+                        bar is off screen is indistinguishable from a row with
+                        no bar at all — which is exactly what "the task
+                        disappeared" feels like. Placed at the viewport's own
+                        left edge in chart coordinates, since `scrollLeft` is
+                        already known. */}
+                    {drawnBar && viewport.width > 0 ? (
+                      <OffscreenMarker
+                        drawnBar={drawnBar}
+                        viewport={viewport}
+                        onGo={() => {
+                          const span = interval(row.task);
+                          if (span) scrollToDay(span.from);
+                        }}
+                      />
+                    ) : null}
+
                     {drawnBar ? (
                       <TimelineBar
                         task={row.task}
@@ -827,6 +915,42 @@ function previewBar(
   }
   const moved = shiftDay(span.to, drag.steps);
   return barForSpan(span.from, moved < span.from ? span.from : moved, range);
+}
+
+/**
+ * "Your bar is that way" — and clicking it goes there.
+ *
+ * Renders nothing while the bar is even partly visible, so it costs a
+ * comparison per row per scroll frame and no DOM.
+ */
+function OffscreenMarker({
+  drawnBar,
+  viewport,
+  onGo,
+}: {
+  drawnBar: Bar;
+  viewport: { left: number; width: number };
+  onGo: () => void;
+}) {
+  const right = drawnBar.leftPx + drawnBar.widthPx;
+  const offLeft = right < viewport.left;
+  const offRight = drawnBar.leftPx > viewport.left + viewport.width;
+  if (!offLeft && !offRight) return null;
+  return (
+    <button
+      type="button"
+      onClick={onGo}
+      title="Scroll to this task's dates"
+      className="absolute top-1/2 z-20 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground"
+      style={{
+        left: offLeft
+          ? viewport.left + 8
+          : viewport.left + viewport.width - 32,
+      }}
+    >
+      <Icon name={offLeft ? "ArrowLeft" : "ArrowRight"} size={13} />
+    </button>
+  );
 }
 
 /** The span a `create` drag has swept out so far. */

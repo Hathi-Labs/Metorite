@@ -21,7 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import type { TaskRow } from "../lib/api";
 import { fromDayKey } from "../lib/calendar";
-import { LABEL_INSIDE_PX, PX_PER_DAY } from "../lib/timeline";
+import { LABEL_INSIDE_PX, PX_PER_DAY, windowFor } from "../lib/timeline";
 import { TimelineView } from "./TimelineView";
 
 const at = (key: string) => {
@@ -150,6 +150,22 @@ describe("TimelineView", () => {
     // The promise the whole drag feature had to keep. If this line goes, check
     // that the behaviour did not go with it.
     expect(draw()).toContain("Nothing is rescheduled automatically");
+  });
+
+  it("draws the whole FETCHED window, not just the dated span", () => {
+    // The regression this guards: the timeline borrowed the calendar's
+    // one-month window, so there was nowhere to drag a bar TO — past the last
+    // dated day it left the scrollable area and vanished under the cursor —
+    // and moving the earliest task slid every other bar sideways.
+    const window = windowFor("month", "2026-08-15");
+    const narrow = draw({ tasks: [SHORT], links: [], undated: 0 });
+    const wide = draw({ tasks: [SHORT], links: [], undated: 0, window });
+
+    const widthOf = (html: string) =>
+      Number(/min-width:(\d+)px/.exec(html)?.[1] ?? 0);
+    expect(widthOf(wide)).toBeGreaterThan(widthOf(narrow));
+    // Wide enough to hold the window at the current zoom, so a drag has room.
+    expect(widthOf(wide)).toBeGreaterThanOrEqual(240 * PX_PER_DAY);
   });
 
   it("reports a truncated window", () => {

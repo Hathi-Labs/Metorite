@@ -77,7 +77,8 @@ import {
   writePanelMode,
 } from "./lib/panelMode";
 import { isOpenShortcut } from "./lib/search";
-import type { Edge } from "./lib/timeline";
+import type { Edge, TimelineWindow, TimelineZoom } from "./lib/timeline";
+import { windowCentre, windowFor, windowIncluding } from "./lib/timeline";
 import {
   type BoardLanes,
   EMPTY_FILTERS,
@@ -515,6 +516,18 @@ function ProjectsWorkspace() {
   // window and is always the month's, so the layout only reaches the calendar.
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => new Date());
   const [calLayout, setCalLayout] = useState<CalendarLayout>("month");
+  /**
+   * The timeline's zoom, and the span of dates it loads (WS-27t S3).
+   *
+   * Held here rather than inside the view because the zoom decides the FETCH,
+   * not just the layout — same shape as `calLayout` above. The timeline used to
+   * borrow the calendar's one-month window, so dragging a task past the end of
+   * the month made it disappear on the reload that followed.
+   */
+  const [zoom, setZoom] = useState<TimelineZoom>("month");
+  const [timeWindow, setTimeWindow] = useState<TimelineWindow>(() =>
+    windowFor("month", dayKey(new Date()))
+  );
   const [month, setMonth] = useState(NO_MONTH);
 
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
@@ -996,7 +1009,11 @@ function ProjectsWorkspace() {
       setMonth(NO_MONTH);
       return;
     }
-    const { from, to } = calendarWindow(grid);
+    // ⚠️ Two views, two windows. The calendar's resource is the month it is
+    // drawing; the timeline's is the work, and a timeline fetched a month at a
+    // time loses any task dragged past the month's edge.
+    const { from, to } =
+      mode === "timeline" ? timeWindow : calendarWindow(grid);
     try {
       const res = await projectsApi.calendar({
         project_id: selected.id,
@@ -1020,7 +1037,7 @@ function ProjectsWorkspace() {
       // heading is a calendar confidently showing the wrong dates.
       setMonth(NO_MONTH);
     }
-  }, [selected, grid, filters, mode]);
+  }, [selected, grid, filters, mode, timeWindow]);
 
   useEffect(() => {
     // Both date views read the same window endpoint — the WINDOW is the
@@ -1504,6 +1521,17 @@ function ProjectsWorkspace() {
     await loadMonth();
   }
 
+  /** The window a date patch needs, or the one we already have. */
+  function grownWindow(
+    current: TimelineWindow,
+    patch: Record<string, string | null>
+  ): TimelineWindow {
+    let next = current;
+    if (patch.start_date) next = windowIncluding(next, patch.start_date);
+    if (patch.due_at) next = windowIncluding(next, dayKey(new Date(patch.due_at)));
+    return next;
+  }
+
   async function moveTask(task: TaskRow, patch: Record<string, string | null>) {
     setMonth((current) => ({
       ...current,
@@ -1513,6 +1541,19 @@ function ProjectsWorkspace() {
       await projectsApi.patchTask(task.id, patch);
     } catch (err) {
       setError(String((err as Error).message));
+    }
+    // The timeline's window follows what you schedule. Drag a bar past the
+    // window's edge and the next fetch would not return it, so the row
+    // disappears for having been moved somewhere the last fetch did not cover.
+    // Widening first means the reload includes it.
+    if (mode === "timeline") {
+      const widened = grownWindow(timeWindow, patch);
+      if (widened !== timeWindow) {
+        // `loadMonth` is keyed on the window, so setting it IS the reload.
+        // Calling both would fire two fetches and let the stale one win.
+        setTimeWindow(widened);
+        return;
+      }
     }
     // Reloaded either way: on success to pick up anything the server derived,
     // on failure to replace the optimistic move with the truth.
@@ -1895,6 +1936,15 @@ function ProjectsWorkspace() {
               today={dayKey(new Date())}
               shownFields={shownFields}
               tags={tags}
+              zoom={zoom}
+              window={timeWindow}
+              onZoom={(next) => {
+                // The window is re-scoped around what you are LOOKING at, not
+                // around today: changing zoom to see more context should not
+                // also teleport you out of the quarter you were reading.
+                setZoom(next);
+                setTimeWindow((current) => windowFor(next, windowCentre(current)));
+              }}
               onSelect={(task) => void openWithStatuses(task)}
               onMove={(task, patch) => void moveTask(task, patch)}
               onLink={(blockerId, blockedId) => void linkTasks(blockerId, blockedId)}

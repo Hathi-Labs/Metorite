@@ -68,6 +68,82 @@ export const ZOOM_ORDER: readonly TimelineZoom[] = ["week", "month", "quarter"];
 export const DEFAULT_ZOOM: TimelineZoom = "month";
 
 /**
+ * ── THE WINDOW (WS-27t S3) ────────────────────────────────────────────────
+ *
+ * How many days of tasks the timeline asks the server for, per zoom.
+ *
+ * **The timeline used to borrow the CALENDAR's window**, which is one month
+ * padded to whole weeks, and that was wrong from the day it shipped — it only
+ * became visible once bars could be dragged. Move a task past the end of the
+ * month and the reload no longer returns it, so the row silently disappears.
+ * A calendar's resource is a month. A timeline's is "the work", and its whole
+ * question is what runs alongside what.
+ *
+ * Sized after Plane's `approxFilterRange` (`gantt-chart/data/index.ts`), which
+ * widens the same way: the narrower the zoom, the less calendar fits on screen
+ * and the less there is any point fetching.
+ *
+ * ⚠️ **Capped by the SERVER, not by taste.** `calendar.py` refuses a window
+ * over `MAX_WINDOW_DAYS = 400` with a 422 — refuses rather than clamps, so a
+ * client that asks for two years draws nothing at all. Every span below is
+ * comfortably inside it, and `WINDOW_LIMIT_DAYS` is the mirror that keeps it
+ * that way.
+ */
+export const WINDOW_LIMIT_DAYS = 400;
+
+/** Days either side of the anchor, per zoom. Both ends, so double it. */
+const WINDOW_RADIUS: Record<TimelineZoom, number> = {
+  week: 60,
+  month: 120,
+  quarter: 180,
+};
+
+export interface TimelineWindow {
+  from: string;
+  to: string;
+}
+
+/** The span of dates the timeline loads at a zoom, centred on a day. */
+export function windowFor(zoom: TimelineZoom, anchor: string): TimelineWindow {
+  const radius = WINDOW_RADIUS[zoom];
+  return { from: shiftDay(anchor, -radius), to: shiftDay(anchor, radius) };
+}
+
+/** A window's middle day — what a zoom change re-scopes around. */
+export function windowCentre(window: TimelineWindow): string {
+  const span = Math.round(
+    (fromDayKey(window.to).getTime() - fromDayKey(window.from).getTime()) / DAY_MS,
+  );
+  return shiftDay(window.from, Math.floor(span / 2));
+}
+
+/**
+ * The same window, slid or stretched to contain `day`.
+ *
+ * Dragging a bar to the window's edge and past it is a legitimate reschedule,
+ * and the task must not vanish for having been moved somewhere the last fetch
+ * did not cover. Stretching is preferred — nothing already on screen leaves it
+ * — and the window SLIDES only when stretching would break the server's cap,
+ * because a 422 draws an empty chart and a slid window draws the right one.
+ */
+export function windowIncluding(
+  window: TimelineWindow,
+  day: string,
+): TimelineWindow {
+  if (day >= window.from && day <= window.to) return window;
+  const from = day < window.from ? day : window.from;
+  const to = day > window.to ? day : window.to;
+  const span =
+    Math.round((fromDayKey(to).getTime() - fromDayKey(from).getTime()) / DAY_MS);
+  if (span <= WINDOW_LIMIT_DAYS) return { from, to };
+  // Too wide to ask for. Keep the full width and put the new day at the end it
+  // ran off, so the thing that was just moved is certainly on screen.
+  return day < window.from
+    ? { from: day, to: shiftDay(day, WINDOW_LIMIT_DAYS) }
+    : { from: shiftDay(day, -WINDOW_LIMIT_DAYS), to: day };
+}
+
+/**
  * Chart pixels per calendar day at the DEFAULT zoom.
  *
  * Kept as a named export because the geometry fences read it, and because a
@@ -201,17 +277,36 @@ export function timelineRange(
   rows: readonly TimelineRow[],
   todayKey: string,
   zoom: TimelineZoom = DEFAULT_ZOOM,
+  window?: TimelineWindow,
 ): TimelineRange {
   const spans = rows
     .map((r) => rowInterval(r.task, r.children))
     .filter(Boolean) as { from: string; to: string }[];
 
-  const from = spans.length
+  const dataFrom = spans.length
     ? shiftDay(spans.reduce((lo, s) => (s.from < lo ? s.from : lo), spans[0].from), -PAD_DAYS)
     : shiftDay(todayKey, -14);
-  const to = spans.length
+  const dataTo = spans.length
     ? shiftDay(spans.reduce((hi, s) => (s.to > hi ? s.to : hi), spans[0].to), PAD_DAYS)
     : shiftDay(todayKey, 14);
+
+  /**
+   * The chart covers the WINDOW when there is one, not just the data.
+   *
+   * Two bugs fall out of fitting to the data alone, and both look like the
+   * chart is broken rather than the range:
+   *
+   * 1. There is nowhere to drag TO. A bar dragged past the last dated day goes
+   *    past `widthPx`, outside the scrollable area, and vanishes under the
+   *    cursor.
+   * 2. The chart re-lays-out under your hand. Move the earliest task later and
+   *    `from` jumps forward, so every other bar slides left mid-gesture.
+   *
+   * Unioned rather than replaced, so a task already loaded is always reachable
+   * even if the window moved out from under it.
+   */
+  const from = window ? (window.from < dataFrom ? window.from : dataFrom) : dataFrom;
+  const to = window ? (window.to > dataTo ? window.to : dataTo) : dataTo;
 
   const days =
     Math.round((fromDayKey(to).getTime() - fromDayKey(from).getTime()) / DAY_MS) + 1;

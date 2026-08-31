@@ -52,10 +52,21 @@ import {
   resizeStart,
   rowInterval,
   spanFor,
+  WINDOW_LIMIT_DAYS,
+  type TimelineWindow,
   timelineRange,
   timelineRows,
   weekCells,
+  windowCentre,
+  windowFor,
+  windowIncluding,
 } from "./timeline";
+
+/** A window's width in days, for the cap assertions. */
+const spanDays = (w: TimelineWindow) =>
+  Math.round(
+    (fromDayKey(w.to).getTime() - fromDayKey(w.from).getTime()) / 86_400_000,
+  );
 
 /** The module's own source, with comments stripped.
  *
@@ -511,6 +522,142 @@ describe("canLink", () => {
     expect(SOURCE).not.toMatch(/MAX_DEPTH|frontier|\bvisited\b/);
     const body = SOURCE.slice(SOURCE.indexOf("export function canLink"));
     expect(body).not.toMatch(/\bwhile\b|\bfor\s*\(/);
+  });
+});
+
+// ── S3: the window ──────────────────────────────────────────────────────────
+
+describe("windowFor", () => {
+  it("mirrors the gateway's cap by READING it, not by remembering it", () => {
+    // `WINDOW_LIMIT_DAYS` is a copy of a number that lives in Python, and a
+    // copy goes stale and then lies — the failure `AGENTS.md` names by hand.
+    // Read from the source rather than restated, the same way the gateway's
+    // own colour test reads CATEGORY_HUES out of the TypeScript.
+    const py = readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../../../../apps/services/gateway/gateway/routes/projects/calendar.py",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    );
+    const declared = /^MAX_WINDOW_DAYS\s*=\s*(\d+)/m.exec(py);
+    expect(declared).not.toBeNull();
+    expect(WINDOW_LIMIT_DAYS).toBe(Number(declared?.[1]));
+  });
+
+  it("stays inside the server's own cap at every zoom", () => {
+    // `calendar.py` REFUSES a window over MAX_WINDOW_DAYS with a 422 rather
+    // than clamping it, so a zoom that asks for too much draws an empty chart
+    // rather than a narrow one. This is the mirror of a number in the gateway,
+    // and it is the whole reason the constant is named here.
+    for (const key of ZOOM_ORDER) {
+      const w = windowFor(key, "2026-08-15");
+      expect(spanDays(w)).toBeLessThanOrEqual(WINDOW_LIMIT_DAYS);
+    }
+  });
+
+  it("widens with the zoom, and centres on the anchor", () => {
+    const week = windowFor("week", "2026-08-15");
+    const quarter = windowFor("quarter", "2026-08-15");
+    expect(spanDays(quarter)).toBeGreaterThan(spanDays(week));
+    expect(windowCentre(week)).toBe("2026-08-15");
+    expect(windowCentre(quarter)).toBe("2026-08-15");
+  });
+
+  it("covers far more than the one month the timeline used to borrow", () => {
+    // The bug: the timeline read the CALENDAR's window, so a task dragged past
+    // the end of the month was not returned by the reload and the row silently
+    // disappeared. Any zoom must hold a month with room either side.
+    for (const key of ZOOM_ORDER) {
+      expect(spanDays(windowFor(key, "2026-08-15"))).toBeGreaterThan(31 * 2);
+    }
+  });
+});
+
+describe("windowIncluding", () => {
+  const base = windowFor("month", "2026-08-15");
+
+  it("leaves a window that already covers the day alone", () => {
+    // Identity, not a copy — the page compares by reference to decide whether
+    // a refetch is needed at all.
+    expect(windowIncluding(base, "2026-08-20")).toBe(base);
+    expect(windowIncluding(base, base.from)).toBe(base);
+    expect(windowIncluding(base, base.to)).toBe(base);
+  });
+
+  it("STRETCHES rather than slides, so nothing on screen leaves it", () => {
+    const past = shiftDay(base.from, -5);
+    const grown = windowIncluding(base, past);
+    expect(grown.from).toBe(past);
+    // The far end is untouched: a task dragged into the past must not push
+    // everything after next month out of the chart.
+    expect(grown.to).toBe(base.to);
+  });
+
+  it("slides instead when stretching would break the server's cap", () => {
+    // A 422 draws nothing. A slid window draws the right thing minus the far
+    // end, and the thing just moved is certainly in it.
+    const wide = windowFor("quarter", "2026-08-15");
+    const far = shiftDay(wide.to, 200);
+    const slid = windowIncluding(wide, far);
+    expect(spanDays(slid)).toBeLessThanOrEqual(WINDOW_LIMIT_DAYS);
+    expect(far >= slid.from && far <= slid.to).toBe(true);
+  });
+
+  it("slides the other way for a day far in the past", () => {
+    const wide = windowFor("quarter", "2026-08-15");
+    const far = shiftDay(wide.from, -200);
+    const slid = windowIncluding(wide, far);
+    expect(spanDays(slid)).toBeLessThanOrEqual(WINDOW_LIMIT_DAYS);
+    expect(far >= slid.from && far <= slid.to).toBe(true);
+  });
+});
+
+describe("timelineRange over a window", () => {
+  const window = windowFor("month", "2026-08-15");
+  const rows = [
+    { task: task({ start_date: "2026-08-10", due_at: at("2026-08-12") }), depth: 0, children: [] },
+  ];
+
+  it("covers the whole window, not just the data", () => {
+    // Two bugs fall out of fitting to the data alone, and both read as a broken
+    // chart rather than a wrong range: there is nowhere to drag TO, and moving
+    // the earliest task slides every other bar sideways mid-gesture.
+    const range = timelineRange(rows, "2026-08-15", "month", window);
+    expect(range.from).toBe(window.from);
+    expect(range.to).toBe(window.to);
+  });
+
+  it("does not move when the data inside it moves", () => {
+    const before = timelineRange(rows, "2026-08-15", "month", window);
+    const after = timelineRange(
+      [{ task: task({ start_date: "2026-08-28", due_at: at("2026-08-30") }), depth: 0, children: [] }],
+      "2026-08-15",
+      "month",
+      window,
+    );
+    expect(after.from).toBe(before.from);
+    expect(after.widthPx).toBe(before.widthPx);
+  });
+
+  it("UNIONS with data that fell outside, so a loaded task is never off-chart", () => {
+    // The window can move out from under a row that is already on screen.
+    // Clipping it would hide a task the user can see in the left-hand column.
+    const outside = [
+      { task: task({ start_date: "2020-01-01", due_at: at("2020-01-05") }), depth: 0, children: [] },
+    ];
+    const range = timelineRange(outside, "2026-08-15", "month", window);
+    expect(range.from < "2020-01-01").toBe(true);
+    expect(range.to).toBe(window.to);
+  });
+
+  it("still fits the data when no window is given", () => {
+    // The old behaviour is the fallback, and `timeline.test.ts`'s original
+    // range assertions all run through it.
+    const range = timelineRange(rows, "2026-08-15", "month");
+    expect(range.from).toBe(shiftDay("2026-08-10", -PAD_DAYS));
   });
 });
 
