@@ -569,3 +569,58 @@ describe("divergence — when the board stopped being the view (WS-27ab)", () =>
     expect(describeDivergence(["filters"])).toBe("filters");
   });
 });
+
+describe("the watching filter (WS-27bk §9.12.2)", () => {
+  it("is off in EMPTY_FILTERS, so nothing is hidden by default", () => {
+    expect(EMPTY_FILTERS.watching).toBe(false);
+    expect(toQuery(EMPTY_FILTERS).watching).toBeUndefined();
+  });
+
+  it("travels as a string on the query and a BOOLEAN in a view", () => {
+    // The two shapes differ on purpose. A query string carries only text, and
+    // a config is JSON that keeps a boolean a boolean — `fromConfig` refuses a
+    // string where a toggle belongs, so a view built from query shape would
+    // come back with its toggles silently cleared.
+    const on = { ...EMPTY_FILTERS, watching: true };
+    expect(toQuery(on).watching).toBe("true");
+    expect(toConfig(on, "status").filters).toMatchObject({ watching: true });
+  });
+
+  it("survives a saved view round trip", () => {
+    const on = { ...EMPTY_FILTERS, watching: true };
+    const back = fromConfig(toConfig(on, "status"));
+    expect(back.filters.watching).toBe(true);
+  });
+
+  it("reads a hand-edited string as OFF rather than as on", () => {
+    // `"false"` is truthy. A config that stored the query shape by mistake
+    // must not silently switch the filter on for everyone who opens the view.
+    expect(fromConfig({ filters: { watching: "true" } }).filters.watching).toBe(false);
+    expect(fromConfig({ filters: { watching: "false" } }).filters.watching).toBe(false);
+  });
+
+  it("counts as filtering, so the Clear affordance appears", () => {
+    expect(isFiltered(EMPTY_FILTERS)).toBe(false);
+    expect(isFiltered({ ...EMPTY_FILTERS, watching: true })).toBe(true);
+  });
+
+  it("stores nothing when off, so an untouched view stays byte-identical", () => {
+    const config = toConfig(EMPTY_FILTERS, "status");
+    expect(config.filters).toEqual({});
+  });
+
+  it("composes with the other filters rather than replacing them", () => {
+    // The whole argument for a filter over a fourth lens.
+    const query = toQuery({
+      ...EMPTY_FILTERS,
+      watching: true,
+      overdue: true,
+      statusCategory: "in_progress",
+    });
+    expect(query).toMatchObject({
+      watching: "true",
+      overdue: "true",
+      status_category: "in_progress",
+    });
+  });
+});
