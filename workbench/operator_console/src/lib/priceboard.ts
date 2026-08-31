@@ -12,15 +12,24 @@
 // what these decide and `priceboard.test.ts` is the fence.
 //
 // ⚠️ **No fake suggestions.** A job whose vendor cost is unknown (a
-// costs-blind model, or a per-image price the feed does not carry yet —
-// H-78) gets an empty suggestion and says why, never a guessed number.
+// costs-blind model) gets an empty suggestion and says why, never a guessed
+// number.
+//
+// ⚠️ **A per-unit job now HAS a recorded cost** (H-78, §6A.11a clauses 5-7).
+// `recordedVendorUsd` below reads the profile's per-minute, per-character or
+// per-image price, so the operator stops typing the vendor's dollar figure
+// for an `image`, `transcribe` or `speak` job. The typed box stays, because
+// a model nobody has profiled still has no cost.
 
 import { singular } from "./catalog";
-import type { AiCatalog, CreditPrice, Task, Tier, TierRate } from "./contract";
+import type {
+  AiCatalog, CatalogModel, CreditPrice, Task, Tier, TierRate,
+} from "./contract";
 import {
   type Assumptions,
   chargeForMargin,
   creditsPerUnitFromUsd,
+  fixedDecimal,
   roundCredits,
   vendorCostCreditsPer1k,
 } from "./pricing";
@@ -106,7 +115,47 @@ export function tokenSuggestion(
   };
 }
 
-/** A per-unit job's suggestion from a typed vendor dollar price. */
+/** Which profile column a non-token task takes its vendor cost from
+ *  (H-78). The judgement lives HERE and not in `PriceFromCost.tsx`, because
+ *  this app carries no React renderer and logic inside a component is
+ *  untested by construction.
+ *
+ * 🔴 **One task, one column, and the units already agree.** `task_catalog`
+ *  (010) prices `transcribe` in minutes, and the profile column holds
+ *  minutes. The Console did the per-second-to-per-minute conversion once, in
+ *  the feed read, so nothing on this path multiplies anything.
+ *
+ *  Null for every other task. A `video` or `music` job has no cost source at
+ *  all, and inventing one would put a made-up price on the board. */
+export function recordedVendorUsd(
+  task: string,
+  m: CatalogModel | undefined,
+): number | null {
+  if (!m) return null;
+  if (task === "transcribe") return m.perMinuteUsd;
+  if (task === "speak") return m.perCharacterUsd;
+  if (task === "image") return m.perImageUsd;
+  return null;
+}
+
+/** What the vendor-cost box on the board SHOWS for a per-unit job: what the
+ *  operator typed, else the recorded profile price, else empty.
+ *
+ * ⚠️ **The typed value wins even when it is empty.** An operator who clears
+ *  the box means "ignore the recorded price", and re-filling it under their
+ *  cursor would make the box impossible to empty. */
+export function vendorUsdBox(
+  typed: string | undefined,
+  recorded: number | null,
+): string {
+  if (typed !== undefined) return typed;
+  // ⚠️ `String(recorded)` put "3e-7" in the box, and that box is both what
+  // the operator checks and what the suggestion reads. `fixedDecimal` is
+  // the console's one plain-digits renderer.
+  return recorded === null ? "" : fixedDecimal(recorded);
+}
+
+/** A per-unit job's suggestion from a vendor dollar price. */
 export function unitSuggestion(
   usdPerUnit: number | null,
   a: Assumptions,

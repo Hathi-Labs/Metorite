@@ -52,6 +52,12 @@ export default function ModelDetails({
   const [vin, setVin] = useState(m.inputPer1M?.toString() ?? "");
   const [vout, setVout] = useState(m.outputPer1M?.toString() ?? "");
   const [vcached, setVcached] = useState(m.cachedInputPer1M?.toString() ?? "");
+  // The three per-unit costs (019, H-78). Each box holds the TASK's own
+  // unit — a minute of audio, a character of text, one image — and nothing
+  // on this page converts anything.
+  const [vmin, setVmin] = useState(m.perMinuteUsd?.toString() ?? "");
+  const [vchar, setVchar] = useState(m.perCharacterUsd?.toString() ?? "");
+  const [vimg, setVimg] = useState(m.perImageUsd?.toString() ?? "");
   const [description, setDescription] = useState(m.description);
   const [readsImages, setReadsImages] = useState(m.kinds.includes("vision"));
   const [thinksFirst, setThinksFirst] = useState(m.kinds.includes("reasoning"));
@@ -68,6 +74,9 @@ export default function ModelDetails({
       ["$ per 1M in", vin],
       ["$ per 1M out", vout],
       ["$ per 1M cached", vcached],
+      ["$ per minute", vmin],
+      ["$ per character", vchar],
+      ["$ per image", vimg],
     ];
     const bad = boxes.find(([, v]) => badNumber(v));
     if (bad) {
@@ -93,6 +102,12 @@ export default function ModelDetails({
           // ⚠️ Without this, a cache-hitting call cannot be COSTED at all —
           // the metering write refuses to estimate (013).
           vendor_cached_input_per_1m_usd: blankToNull(vcached),
+          // ⚠️ The per-unit costs (H-78). These are what makes an image,
+          // transcribe or speak job costable at all — its token price is
+          // null and always will be.
+          vendor_per_minute_usd: blankToNull(vmin),
+          vendor_per_character_usd: blankToNull(vchar),
+          vendor_per_image_usd: blankToNull(vimg),
           description: description.trim(),
           reads_images: readsImages,
           thinks_first: thinksFirst,
@@ -129,6 +144,9 @@ export default function ModelDetails({
     setVin(v.vin);
     setVout(v.vout);
     setVcached(v.vcached);
+    setVmin(v.vmin);
+    setVchar(v.vchar);
+    setVimg(v.vimg);
     setReadsImages(v.readsImages);
     setThinksFirst(v.thinksFirst);
   }
@@ -228,6 +246,48 @@ export default function ModelDetails({
             value={vcached}
             placeholder="0.3"
             onChange={(e) => setVcached(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* The per-unit costs (H-78). A transcribe, speak or image model has
+          no token price, so without these the pricing board can cost it
+          only from a figure somebody types by hand every time.
+          ⚠️ The audio box is per MINUTE. litellm publishes per second, and
+          the Console multiplied by 60 before this box ever saw it. */}
+      <p className="field-hint">
+        For a model that is not priced by the token. Fill in the one line its
+        job uses, and leave the rest empty.
+      </p>
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`vm-${m.id}`}>We pay, per minute of audio</label>
+          <input
+            id={`vm-${m.id}`}
+            inputMode="decimal"
+            value={vmin}
+            placeholder="0.006"
+            onChange={(e) => setVmin(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vch-${m.id}`}>We pay, per character spoken</label>
+          <input
+            id={`vch-${m.id}`}
+            inputMode="decimal"
+            value={vchar}
+            placeholder="0.000015"
+            onChange={(e) => setVchar(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vim-${m.id}`}>We pay, per image</label>
+          <input
+            id={`vim-${m.id}`}
+            inputMode="decimal"
+            value={vimg}
+            placeholder="0.04"
+            onChange={(e) => setVimg(e.target.value)}
           />
         </div>
       </div>

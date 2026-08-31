@@ -39,6 +39,9 @@ const model = (
   inputPer1M: null,
   outputPer1M: null,
   cachedInputPer1M: null,
+  perMinuteUsd: null,
+  perCharacterUsd: null,
+  perImageUsd: null,
   description: "",
   declared,
 });

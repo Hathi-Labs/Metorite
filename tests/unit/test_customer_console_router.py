@@ -2103,31 +2103,43 @@ def bound_tier(db):
     ⚠️ **The test writes the `model_profile` row ITSELF.** Nothing seeds that
     table (§3.7 rule 4) and nothing populates ``reads_images``, so a fixture
     that leaned on the ladder would prove D-AI-2 against an empty table and
-    pass for the wrong reason. The flag lands on the RANK-1 model, which is
-    the one `resolve_vision_chain` reads. ``reads_images=None`` leaves that
-    model with NO profile row at all, which is the launch state and must read
-    the same as FALSE.
+    pass for the wrong reason. ``reads_images=None`` leaves the model with NO
+    profile row at all, which is the launch state and must read the same as
+    FALSE.
+
+    🔴 **``reads_images`` takes a LIST for a PER-STEP flag**, one entry per
+    rank, and the entries may disagree. `resolve_vision_chain` reads the flag
+    on EVERY step (§3.2 step 3b), so a fence for a mixed chain has to be able
+    to build one. A scalar keeps the older shape: the flag lands on the RANK-1
+    model, and the steps behind it get no profile row. Passing a list is what
+    lets `TestABlindStepNeverEntersALiftChain` share this fixture instead of
+    minting a second one.
     """
     made: list[tuple[str, list[str]]] = []
 
     def _bind(model: str | list[str], *, reads_images,
               task: str = "chat") -> str:
         models = [model] if isinstance(model, str) else list(model)
+        if isinstance(reads_images, list):
+            flags = list(reads_images)
+        else:
+            flags = [reads_images] + [None] * (len(models) - 1)
         tier = f"tier-fx-{uuid.uuid4().hex[:8]}"
         made.append((tier, models))
         with db.begin() as c:
             eff = c.execute(text("SELECT now()")).scalar_one()
-            for rank, step in enumerate(models, start=1):
+            for rank, (step, flag) in enumerate(
+                    zip(models, flags, strict=True), start=1):
                 c.execute(
                     text("INSERT INTO tier_binding (tier, task, model, rank, "
                          "effective_from) VALUES (:t, :k, :m, :r, :eff)"),
                     {"t": tier, "k": task, "m": step, "r": rank, "eff": eff})
-            if reads_images is not None:
-                c.execute(
-                    text("INSERT INTO model_profile (model, reads_images) "
-                         "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
-                         "SET reads_images = EXCLUDED.reads_images"),
-                    {"m": models[0], "r": reads_images})
+                if flag is not None:
+                    c.execute(
+                        text("INSERT INTO model_profile (model, reads_images) "
+                             "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
+                             "SET reads_images = EXCLUDED.reads_images"),
+                        {"m": step, "r": flag})
         return tier
 
     yield _bind
@@ -2568,6 +2580,127 @@ class TestTheRouterImageRule:
         assert r.status_code == 200, r.text
         assert [c["model"] for c in calls] == [self.BLIND_MODEL]
         assert _last_row(db, slug).task == "chat"
+
+
+def _scratch_step(vendor: str, *, sees: bool) -> str:
+    """Mint a model id nothing else in the run holds.
+
+    A `model_profile` row is keyed on the model alone, so two fences that
+    shared an id would share a flag and `bound_tier`'s teardown would remove
+    a row the other one still needs. The name says what the step DOES, so a
+    failure message reads without a lookup.
+    """
+    return f"{vendor}/{'sees' if sees else 'blind'}-{uuid.uuid4().hex[:8]}"
+
+
+class TestABlindStepNeverEntersALiftChain:
+    """§3.2 step 3b (D16) / §8.5 clauses 7 and 8.
+
+    🔴 **The harm is a CONFIDENT WRONG ANSWER.** The flag used to be read on
+    the rank-1 step alone. So a blind rank 2 could serve an image request and
+    answer about a picture it never saw, with a 200 the customer reads as
+    correct. §3.2 refuses at the image wall for exactly this reason.
+
+    ⚠️ **Every test here drives the HTTP route.** The rule is about which
+    model the ROUTE calls, and a direct call to the resolver proves the
+    resolution and not the serving.
+    """
+
+    # ── clause 7 ──
+    def test_a_blind_rank_2_never_enters_the_lift_chain(
+            self, client, org_key, bound_tier, vision_bound):
+        """Rank 1 sees, rank 1 fails, and no second model is asked.
+
+        `vision_bound` binds `tier-vision` here, so a resolution that spliced
+        the two chains together would show up as a third model in `seen`.
+        """
+        seen: list[str] = []
+
+        async def _fail(**kwargs):
+            seen.append(kwargs["model"])
+            exc = Exception("overloaded")
+            exc.status_code = 500
+            raise exc
+
+        router_mod.set_provider_call(_fail)
+        _, key = org_key
+        sees = _scratch_step("deepseek", sees=True)
+        blind = _scratch_step("deepseek", sees=False)
+        tier = bound_tier([sees, blind], reads_images=[True, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        # An exhausted chain is the 502 it has always been. The chain is one
+        # step long, so there is nothing left to try.
+        assert r.status_code == 502, r.text
+        assert seen == [sees], (
+            "the blind rank-2 step answered about a picture it never saw"
+        )
+
+    def test_a_SEEING_rank_2_stays_in_the_lift_chain(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """The filter reads the whole chain, and not the head of it.
+
+        Rank 1 is blind and rank 2 sees. One model in the chosen tier can
+        still answer, so the lift holds and the second call to `tier-vision`
+        is saved.
+        """
+        _, key = org_key
+        blind = _scratch_step("deepseek", sees=False)
+        sees = _scratch_step("deepseek", sees=True)
+        tier = bound_tier([blind, sees], reads_images=[False, True])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [sees]
+
+    def test_a_chain_with_NO_seeing_step_falls_to_the_vision_tier(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """An empty filter result falls, exactly as one FALSE step does."""
+        _, key = org_key
+        tier = bound_tier(
+            [_scratch_step("deepseek", sees=False),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[False, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+
+    # ── clause 8 ──
+    def test_an_unkeyed_rank_1_never_promotes_a_blind_rank_2(
+            self, client, org_key, calls, bound_tier, vision_bound):
+        """🔴 This shape needs NO failover at all, which is the wider half.
+
+        The route drops every step it holds no key for before it tries
+        anything. So an unkeyed rank 1 used to make the blind rank 2 the FIRST
+        step the Router called, with nothing having failed.
+
+        ⚠️ **The answer is the 503 an unconfigured vendor already gets, and
+        NOT a fall to `tier-vision`.** A credential-aware fall is a third
+        resolution rule and §3.2 records no decision on it (§8.5 clause 8).
+        `tier-vision` is bound here, and the route still does not reach it.
+        """
+        _, key = org_key
+        vendor = f"nokey{uuid.uuid4().hex[:8]}"
+        tier = bound_tier(
+            [_scratch_step(vendor, sees=True),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[True, False])
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 503, r.text
+        assert vendor in r.json()["detail"]
+        assert calls == [], (
+            "a blind model answered because rank 1 held no credential"
+        )
 
 
 def test_n_is_capped_like_max_tokens(client, org_key):
