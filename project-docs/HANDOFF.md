@@ -247,7 +247,7 @@ line — never reclaim a number by deleting the other entry.
   failover, and this entry is still real.
 - **Why:** D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
   starts. Take a tier that binds a blind rank 1 and a seeing rank 2, both
-  keyed. `_record_completion` (`main.py:4742`) then writes `served_rank = 2`
+  keyed. `_record_completion` (`main.py:4656`) then writes `served_rank = 2`
   with `task = vision` on EVERY successful call, and no step ever failed.
 - 🔴 **The dashboard reads that as a failover.** `main.py:1858-1868` selects
   `WHERE served_rank > 1`, and its own comment calls every such row a customer
@@ -258,7 +258,7 @@ line — never reclaim a number by deleting the other entry.
 - 📌 **The RANK is TRUE, and only the MEANING slipped.** `resolve_chain` builds
   `rank` from the column and never from a list index, and the lift chain stays
   a subsequence of the chain. So do not change the write.
-- 📌 **The credential filter (`main.py:5221-5224`) already does this on the
+- 📌 **The credential filter (`main.py:5255-5258`) already does this on the
   CHAT path.** So this widens a shape, and it mints no new class.
 - **Authority:** `ai_metering_and_analytics.md` §8.5 clause 7 · board row WS-31
 - **Added:** 2026-08-31 · WS-31 router-guards final repair round
@@ -278,7 +278,7 @@ line — never reclaim a number by deleting the other entry.
   reference, and ONE call inside the LIFT path. The declared-task resolve
   calls it NOWHERE. A second call means somebody filtered another chain, and
   shape 2 may be closed.
-  ⚠️ Do NOT grep `provider_credential` on its own. `router.py:527`
+  ⚠️ Do NOT grep `provider_credential` on its own. `router.py:535`
   already reads that table for the SERVING path, so that grep hits today and
   reads as done.
 - ⚠️ **This entry carries TWO shapes** *(the second one arrived 2026-08-31)*.
@@ -289,7 +289,7 @@ line — never reclaim a number by deleting the other entry.
   then a SEEING rank 2 that the service holds no key for, with `tier-vision`
   bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
   and answered 200 from a model that saw the image. The filter keeps the
-  unkeyed seeing step, `main.py:5221-5224` empties the chain, and the route
+  unkeyed seeing step, `main.py:5255-5258` empties the chain, and the route
   answers 503. A verifier drove both sides on 2026-08-31.
 - 🔴 **The loss is AVAILABILITY, and never correctness.** No blind model
   answers in either version. So the customer trades a right answer for a
@@ -302,7 +302,7 @@ line — never reclaim a number by deleting the other entry.
   (CLAUDE.md §5). That is why this entry is the owner's.
 - 🔴 **Why (shape 2) — a blind step can still enter a tier's OWN vision
   chain.** §3.2 step 0.5 returns `resolve_chain(conn, tier, VISION_TASK)` with
-  NO `reads_images` filter (`router.py:330`). Step 3b narrows the LIFT chain
+  NO `reads_images` filter (`router.py:338`). Step 3b narrows the LIFT chain
   and narrows nothing else. So take an operator who binds `tier-vision` to
   `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 returns a retryable 500.
   `walk_chain` moves to the blind rank 2, and that model answers a confident
@@ -346,7 +346,7 @@ line — never reclaim a number by deleting the other entry.
   a semaphore inside the route blocks a thread that ALREADY holds a token. It
   reserves no headroom, and the deadlock stands.
 - 📌 **The scope is narrower than it looks.** Both buffered paths call
-  `asyncio.run` (`main.py:5364`, `:5699`), which builds a PRIVATE loop. A
+  `asyncio.run` (`main.py:5398`, `:5733`), which builds a PRIVATE loop. A
   `RunVar` (`_asyncio.py:2085`) keys anyio's default limiter, so a private loop
   gets its own 40 tokens. Only `_open_stream_chain` shares the serving loop's
   limiter, because it alone calls `anyio.from_thread.run`.
