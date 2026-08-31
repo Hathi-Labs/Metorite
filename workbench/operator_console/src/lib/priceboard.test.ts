@@ -151,6 +151,14 @@ describe("the recorded per-unit vendor cost (H-78)", () => {
     expect(vendorUsdBox("0.09", 0.04)).toBe("0.09");
   });
 
+  it("🔴 a tiny recorded price fills the box as PLAIN DIGITS", () => {
+    // `String(3e-7)` is "3e-7", which is not a number an operator can check
+    // — and this box is POSTed back verbatim, so the notation would reach
+    // the database too.
+    expect(vendorUsdBox(undefined, 3e-7)).toBe("0.0000003");
+    expect(vendorUsdBox(undefined, 3e-10)).toBe("0.0000000003");
+  });
+
   it("🔴 a CLEARED box stays cleared", () => {
     // An operator who empties the box means "ignore the recorded price".
     // Re-filling it under their cursor makes the box impossible to empty.

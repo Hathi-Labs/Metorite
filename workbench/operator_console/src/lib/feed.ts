@@ -11,6 +11,7 @@
 // existed, through the same `/catalog/profiles` seam.
 
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
+import { fixedDecimal } from "./pricing";
 import type { Tone } from "./tone";
 
 /** Feed rows keyed by model id, for O(1) lookup per card. */
@@ -78,7 +79,9 @@ export function driftFor(m: CatalogModel, f: FeedModel | undefined): Drift[] {
     const drifted =
       rule === "abs" ? gap > 1e-9 : scale > 0 && gap / scale > 1e-6;
     if (drifted) {
-      out.push({ label, ours: String(ours), upstream });
+      // ⚠️ `String(ours)` rendered a per-unit price as "3e-10" in the drift
+      // sentence. `upstream` is the wire's own fixed-point string already.
+      out.push({ label, ours: fixedDecimal(ours), upstream });
     }
   }
   return out;

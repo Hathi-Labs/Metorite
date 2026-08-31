@@ -8390,6 +8390,14 @@ are `NUMERIC(18, 10)` precisely so a cheap model fits. An operator cannot
 read `6.0E-9` in a form box, and the console POSTs that box back verbatim.
 Both projections format with `f`.
 
+⚠️ **The BROWSER has the same rule, and it needed the same fix** *(added
+2026-08-31, from a review probe)*. `String(n)` in TypeScript also goes
+exponential below `1e-6`, so the vendor-cost box read `3e-7` and a drift line
+read `$3e-10` even with the wire correct. `fixedDecimal` in `pricing.ts` is
+the ONE plain-digits renderer, and `driftFor`, `vendorUsdBox` and
+`roundCredits` all come to it. `roundCredits` held the only earlier copy of
+that expansion, so it now calls the shared one instead of keeping a second.
+
 **The write is a plain pass-through.** `ProfileRequest` gains three optional
 `Decimal` fields. The `set_model_profile` INSERT gains the three columns in
 its column list, in its VALUES list, and in its `ON CONFLICT DO UPDATE SET`
@@ -8403,6 +8411,27 @@ per-second column and the profile holds a per-minute one. A silent success is
 the worst shape that failure could take. The misnamed price now answers 422
 and names the field. The idiom matches the five request models already in
 `main.py`, and the console sends only known fields.
+
+⚠️ **The three fields bound BOTH ends of the column, and each end mirrors
+the ingest rule** *(added 2026-08-31, from a review probe)*. The write stays
+a pass-through, because neither rule changes a number. Each one refuses one.
+
+| End | The rule on the WRITE | The matching ingest rule |
+|---|---|---|
+| Ceiling | `lt=_PER_UNIT_MAX` (`1E8`). A hand-typed `100000000` answers 422 instead of reaching the psycopg 500 it used to | `feed._UNIT_MAX` answers NULL |
+| Floor | A NONZERO price that quantizes to zero at scale 10 answers 422, and the message offers `0` as the way forward | `feed._per_unit` answers NULL |
+
+The two sides differ on the ANSWER and agree on the JUDGEMENT. A price
+outside what the column holds is not a price. The feed is a cache, so it may
+say "unknown". A person typing into a form gets told, because they can fix
+it. Zero stays legal on both sides, because a free model is real.
+
+🔎 **A consistency finding for the board, and this slice does NOT fix it.**
+The older money columns on this same table carry `ge=0` and no upper bound:
+`vendor_input_per_1m_usd`, `vendor_output_per_1m_usd` and
+`vendor_cached_input_per_1m_usd`. A large enough hand-typed value on one of
+those still reaches Postgres and answers a 500. H-78 scoped the three NEW
+fields. The same guard on the older three is a separate ticket.
 
 | Profile column | Wire field | Where the value comes from |
 |---|---|---|
@@ -8537,7 +8566,10 @@ move.
 | Money on the wire is fixed-point | `test_customer_console_vendor_feed.py::test_a_tiny_per_unit_price_crosses_as_FIXED_POINT` — a sub-1e-6 price carries no `E` |
 | A misnamed per-unit price is refused, never swallowed | `test_customer_console_model_profile.py::test_a_MISNAMED_per_unit_price_is_refused_not_swallowed` — `vendor_per_second_usd` answers 422 |
 | Drift sees a change at any price size | `feed.test.ts` — a per-character price doubling from 3e-10 reports drift, which the old absolute epsilon hid |
-| Each ×60 scan catches every spelling it claims to | `test_customer_console_vendor_feed.py::test_the_sixty_fence_catches_every_spelling_it_claims_to` and its `feed.test.ts` twin — both self-check against the smuggles that beat the first version |
+| Each ×60 scan catches every spelling it claims to | `test_customer_console_vendor_feed.py::test_the_sixty_fence_catches_every_spelling_it_claims_to` and its `feed.test.ts` twin — both self-check against the smuggles that beat the first version, and the TS twin covers `read.ts` and `priceboard.ts` too |
+| A hand-typed price the column cannot hold is refused | `test_customer_console_model_profile.py::test_a_HAND_TYPED_price_too_big_for_the_column_is_422` — `100000000` on each of the three fields |
+| A price too small to store never lands as free | `test_customer_console_model_profile.py::test_a_price_too_SMALL_for_the_column_is_422_not_a_silent_zero` — and its two partners prove `0` itself and `0.0000000001` still save |
+| The browser shows plain digits, never an exponent | `pricing.test.ts` — `fixedDecimal(3e-7)` is `"0.0000003"`. `priceboard.test.ts` and `feed.test.ts` pin the box and the drift line |
 | The board's per-unit half reads the profile through a PURE function | `feed.test.ts` — `PriceFromCost reads the RECORDED cost through priceboard.ts`, plus `priceboard.test.ts` for `recordedVendorUsd` and `vendorUsdBox` |
 
 **Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py

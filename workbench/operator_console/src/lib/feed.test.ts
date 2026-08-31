@@ -144,6 +144,18 @@ describe("driftFor", () => {
     ).toEqual([]);
   });
 
+  it("🔴 the drift sentence says PLAIN DIGITS, never an exponent", () => {
+    // `ours` came off `String(n)` and rendered "$3e-10" in the operator's
+    // drift line. The number the message is about became unreadable exactly
+    // where it mattered most.
+    const d = driftFor(
+      M({ perCharacterUsd: 3e-10 }),
+      F({ perCharacterUsd: "0.0000000006" }),
+    );
+    expect(d[0].ours).toBe("0.0000000003");
+    expect(d[0].ours).not.toContain("e");
+  });
+
   it("two zeros are equal, and never divide by zero", () => {
     expect(
       driftFor(M({ perImageUsd: 0 }), F({ perImageUsd: "0.0000000000" })),
@@ -174,9 +186,15 @@ describe("🔴 no client code converts a unit (H-78)", () => {
     /\(\s*["']?60["']?\s*\)/, // Number(60), Number("60")
   ];
 
-  /** Code lines that spell a literal sixty, `//` comments stripped. */
+  /** Code lines that spell a literal sixty, comments stripped.
+   *
+   * ⚠️ **BLOCK comments go first, and a JSDoc line is why.** Every leading
+   *  `*` in a doc block is an operator to the `60 *` pattern, so a line
+   *  ending "…by 60" ahead of another `*` line false-positived. Stripping
+   *  `//` alone was not enough. */
   const sixtySites = (src: string): string[] =>
     src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
       .split("\n")
       .map((ln) => ln.split("//")[0])
       .filter((code) => SIXTY.some((re) => re.test(code)))
@@ -200,6 +218,10 @@ describe("🔴 no client code converts a unit (H-78)", () => {
       "const ctx = 600;",
       "const ms = 3600;",
       "// multiply the per-second price by 60 here",
+      // 🔴 The JSDoc false positive: the block's own `*` is an operator to
+      // the `60 *` pattern, so this read as a conversion until the scan
+      // stripped block comments first.
+      "/** the feed read already multiplied by 60\n * so nothing here does\n */",
     ]) {
       expect(sixtySites(innocent)).toEqual([]);
     }
@@ -215,8 +237,15 @@ describe("🔴 no client code converts a unit (H-78)", () => {
     // name (`const SIXTY = 60` then `p * SIXTY`) still passes, because the
     // operand carries no literal. Nothing source-scanned can close that, and
     // claiming otherwise would make the fence lie about its own reach.
+    // ⚠️ `read.ts` and `priceboard.ts` are on this list because BOTH handle
+    // a per-minute value — `read.ts` maps it off the wire and
+    // `priceboard.ts` picks it per task. The first version of this scan
+    // covered neither, so a conversion in the two files most likely to want
+    // one would have gone unseen.
     for (const p of [
       "feed.ts",
+      "read.ts",
+      "priceboard.ts",
       "../app/models/ModelDetails.tsx",
       "../app/pricing/PriceFromCost.tsx",
     ]) {

@@ -1677,7 +1677,16 @@ def _catalog_refusal(exc: catalog.CatalogRefused) -> HTTPException:
 #: read can enforce it. It mirrors `feed._UNIT_MAX` exactly, and it must:
 #: NUMERIC(18, 10) keeps ten digits after the point, so eight remain in front
 #: and 1E8 is the first value that will not fit.
+#:
+#: ⚠️ **`ProfileRequest` binds the same number**, so a hand-typed price is
+#: refused at the door rather than at the database. Both ends of the seam
+#: read one constant.
 _PER_UNIT_MAX = Decimal("1E8")
+
+#: The FLOOR the same columns impose — the smallest value scale 10 can carry.
+#: A nonzero price below it quantizes to zero, and "0" on this table means
+#: free. `feed._UNIT10` is the ingest half of the identical rule.
+_PER_UNIT_SCALE = Decimal("0.0000000001")
 
 
 def _fixed(v: Decimal | None) -> str | None:
@@ -2374,12 +2383,51 @@ class ProfileRequest(BaseModel):
     #: into a per-MINUTE one already happened, once, in the feed-read
     #: projection (`_feed_wire`). A second conversion here would multiply the
     #: price by 3600, and the operator would never see why.
-    vendor_per_minute_usd: Decimal | None = Field(default=None, ge=0)
-    vendor_per_character_usd: Decimal | None = Field(default=None, ge=0)
-    vendor_per_image_usd: Decimal | None = Field(default=None, ge=0)
+    #: ⚠️ **`lt` mirrors what the COLUMN can hold**, and the feed read applies
+    #: the same ceiling on the way out. Without it a hand-typed `100000000`
+    #: reached Postgres and answered an unhandled psycopg 500 rather than a
+    #: refusal the operator could read. `_PER_UNIT_MAX` is the one number.
+    vendor_per_minute_usd: Decimal | None = Field(
+        default=None, ge=0, lt=_PER_UNIT_MAX)
+    vendor_per_character_usd: Decimal | None = Field(
+        default=None, ge=0, lt=_PER_UNIT_MAX)
+    vendor_per_image_usd: Decimal | None = Field(
+        default=None, ge=0, lt=_PER_UNIT_MAX)
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
+
+    @field_validator(
+        "vendor_per_minute_usd", "vendor_per_character_usd",
+        "vendor_per_image_usd",
+    )
+    @classmethod
+    def _too_small_is_refused_not_rounded(
+        cls, v: Decimal | None
+    ) -> Decimal | None:
+        """🔴 A nonzero price that rounds to zero at scale 10 is REFUSED.
+
+        `NUMERIC(18, 10)` quantizes on the way in, so `0.00000000001` stores
+        as `0E-10` and the board then reports the model as "listed at $0".
+        Free is a real and meaningful state, so a fabricated one is not a
+        rounding detail — it is a wrong fact about a vendor on the screen
+        an operator prices from.
+
+        ⚠️ **This mirrors `feed._per_unit`'s rule, which answers NULL for the
+        same input.** The two sides differ on the ANSWER and agree on the
+        JUDGEMENT: a price below what the column can hold is not a price.
+        The feed is a cache and may say "unknown". A person typing into a
+        form gets told, because they can fix it.
+        """
+        if v is None or v == 0:
+            return v
+        if v.quantize(_PER_UNIT_SCALE) == 0:
+            raise ValueError(
+                "this price is smaller than the column can hold "
+                "(10 decimal places), so it would store as 0 and read as "
+                "free. Record 0 if the model really is free."
+            )
+        return v
 
 
 @app.post("/catalog/profiles")

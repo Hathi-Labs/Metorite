@@ -395,6 +395,71 @@ class TestTheProfileRoute:
         # never appear on a profile.
         assert "vendor_per_second_usd" not in profile
 
+    def test_a_HAND_TYPED_price_too_big_for_the_column_is_422(self, client):
+        """🔴 The same overflow the feed read guards, arriving by the other
+        door. `_per_minute_wire` serves NULL for a value the column cannot
+        hold, but nothing stopped an operator TYPING one. It reached
+        Postgres and answered an unhandled psycopg 500. `lt=_PER_UNIT_MAX`
+        turns it into a refusal that names the field."""
+        for field in ("vendor_per_minute_usd", "vendor_per_character_usd",
+                      "vendor_per_image_usd"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": f"test/{uuid.uuid4().hex[:8]}", field: "100000000"})
+            assert r.status_code == 422, f"{field} answered {r.status_code}"
+            assert field in r.text
+
+    def test_a_price_too_SMALL_for_the_column_is_422_not_a_silent_zero(
+            self, client):
+        """🔴 The other end of the same column, and the worse failure.
+
+        NUMERIC(18, 10) quantizes on the way in, so `0.00000000001` stores
+        as `0E-10` and the board then says the model is "listed at $0".
+        Free is a real state with real consequences, so inventing one is a
+        wrong fact on the screen an operator prices from.
+
+        ⚠️ The message must offer 0 as the way forward. Otherwise the
+        refusal reads as "this number is not allowed" and stops there.
+        """
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}",
+            "vendor_per_image_usd": "0.00000000001"})
+        assert r.status_code == 422, r.text
+        assert "vendor_per_image_usd" in r.text
+        assert "free" in r.text
+
+    def test_a_price_of_zero_still_SAVES_through_the_route(
+            self, client, engine):
+        """The floor rule is ONE-SIDED, like `feed._per_unit`'s. A vendor
+        that really charges nothing is recordable, and only a NONZERO value
+        that rounds away is refused."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "vendor_per_minute_usd": "0"})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_minute_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == 0
+
+    def test_the_smallest_price_the_column_CAN_hold_still_saves(
+            self, client, engine):
+        """The boundary sits between refused and stored, so name it. Scale
+        10 carries 0.0000000001 exactly, and that is a price, not a zero."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "vendor_per_character_usd": "0.0000000001"})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_character_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == Decimal("0.0000000001")
+
     def test_a_MISNAMED_per_unit_price_is_refused_not_swallowed(self, client):
         """🔴 The seconds-against-minutes confusion, caught at the door.
 

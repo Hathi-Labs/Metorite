@@ -29,6 +29,7 @@ import {
   type Assumptions,
   chargeForMargin,
   creditsPerUnitFromUsd,
+  fixedDecimal,
   roundCredits,
   vendorCostCreditsPer1k,
 } from "./pricing";
@@ -148,7 +149,10 @@ export function vendorUsdBox(
   recorded: number | null,
 ): string {
   if (typed !== undefined) return typed;
-  return recorded === null ? "" : String(recorded);
+  // ⚠️ `String(recorded)` put "3e-7" in the box, and that box is both what
+  // the operator checks and what the suggestion reads. `fixedDecimal` is
+  // the console's one plain-digits renderer.
+  return recorded === null ? "" : fixedDecimal(recorded);
 }
 
 /** A per-unit job's suggestion from a vendor dollar price. */
