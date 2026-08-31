@@ -75,39 +75,44 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-89 · A root-owned file on the box blocks EVERY deploy · [OWNER]
-- **Check:** `curl -s https://api.metorite.com/version` and compare `sha` with
-  `git rev-parse origin/main`. Different means the box has not converged and
-  this is still open. Measured 2026-08-31 14:18 UTC: box on `3ad494bd`, main on
-  `0f8fdb5a` — **two merges behind**.
-- **What happens:** the deploy's `git` step cannot replace one file, so nothing
-  new ever lands:
-
-      error: unable to unlink old
-      'workbench/operator_console/src/app/models/ModelDetails.tsx':
-      Permission denied
-
-  Three deploy+verify rounds, then `App still unreachable after 3 rounds`. The
-  file on `/opt/acb/app` is owned by a user the deploy's SSH user cannot
-  unlink — a build or container that ran as root, most likely.
-- **It is NOT the code, and not one branch's fault.** The same error, on the
-  same file, failed PR #190's deploy at 13:29 and PR #198's at 13:57. Both had
-  fully green CI. It began before either.
-- **⚠️ The app is UP and serving OLD code.** `api.metorite.com/health` returns
-  200 and `app.metorite.com` returns 307. That is the dangerous shape: nothing
-  alarms, and every merge since 2026-08-30 17:07 is absent from production. A
-  failed deploy that took the site down would have told somebody hours ago.
-- **The fix needs a shell on the box** — roughly `sudo chown -R acb:acb
-  /opt/acb/app`, then re-run the deploy workflow. No workflow can do it:
-  `deploy.yml` takes only `skip_tests`, and `vps-forensics.yml` only collects.
-  An agent cannot do it either — SSH needs `HOSTINGER_SSH_KEY`, which is the
-  `secrets` gate, and a `deploy` grant does not open it.
-- **Then check WHY it recurs.** A one-off `chown` clears today's block and not
-  the cause. Something on that box writes into the checkout as root, and it
-  will do it again.
-- **Authority:** `work_plan.md` §6 (deploy is owner-gated) · CLAUDE.md §3.8
+### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
+  -name node_modules -prune -o ! -user acb -print | head`. Any line means a
+  root-owned path is back in the checkout, and the cause is still there.
+- **⚠️ Do NOT check this with the SHA comparison.** The old Check compared
+  `/version` against `origin/main`. That reads the SYMPTOM, and the symptom is
+  now repaired automatically. So the SHA check will pass while the cause runs
+  on. Read the ownership directly.
+- **A one-off `chown` CLEARED the block.** Measured 2026-08-31 16:40 UTC:
+  `/version` and `git rev-parse origin/main` both read `0f8fdb5a`. The tracked
+  tree now holds no root-owned path.
+  `scripts/vps_apply.sh` now normalises the checkout's ownership
+  before `git reset --hard`, so the next occurrence self-heals. That is the
+  repair, and this entry is the cause.
+- **What it was.** `workbench/operator_console/src/app/models/` was `root:root`,
+  created 2026-08-30 16:49. `git` unlinks a file through its parent directory,
+  so one root-owned directory blocks the rewrite of every file inside it. The
+  deploy's `git` step then failed with `unable to unlink old …
+  ModelDetails.tsx: Permission denied`, three rounds, twice — for PR #190 at
+  13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
+  root-owned, and the remaining 66681 were `.next` build output, which git
+  ignores.
+- **The open question: which step runs as root and writes there?** A container
+  or build with a bind mount is the first suspect, because the operator console
+  is the only tree affected. Read the unit files and the compose file on the
+  box, find the writer, and stop it writing as root.
+- **Why this stays open although the repair landed.** The repair lives inside
+  `vps_apply.sh`. A hand-run deploy, or any other path that resets the
+  checkout, meets the same failure with no repair. The repair also hides the
+  symptom, so nobody sees the next occurrence.
+- **⚠️ The shape to remember.** The app stayed UP on old code for hours.
+  `health` returned 200 and the workbench returned 307, so nothing alarmed. A
+  deploy that takes the site down reports itself. A deploy that silently does
+  not land does not.
+- **Authority:** `work_plan.md` §6 (box access is owner-gated) · CLAUDE.md §3.8
   (verify by evidence, never by a green job)
-- **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy
+- **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
+  rewritten the same day, after the block cleared and the repair landed
 
 ### H-90 · Production reports `env=dev` · [OWNER]
 - **Check:** `curl -s https://api.metorite.com/version` → `"env":"dev"` means
@@ -584,27 +589,6 @@ line — never reclaim a number by deleting the other entry.
   WS-27 row (the R1-collision record) · R1
 - **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
   push trigger (PR #46); re-pointed at T-6
-
-### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
-- **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
-  pending. `rg -n "127.0.0.1:8000" .env.example` → a hit means still pending.
-  `rg -n "ActiveEnterTimestamp" deploy/hostinger/health-watchdog.sh` → NO hit
-  means still pending.
-- **Why:** plan-guard forbids agent writes under `deploy/` and to `.env*`, so
-  three fixes exist only where the owner (or a granted session) applied them:
-  (a) `deploy/hostinger/deploy.sh` still seeds one company's Entra directory
-  GUID into every fresh box (`scripts/vps_apply.sh`, the CI path, is already
-  fixed); (b) `.env.example` ships `GATEWAY_BASE_URL` on port 8000 while the
-  gateway listens on 8080, lacks `ACB_MASTER_KEY` entirely (load-bearing —
-  encrypts stored provider keys), and carries the dead `AUTH_ALLOWED_DOMAIN`
-  variable; (c) `health-watchdog.sh` needs the **180-second startup grace**
-  that is live on the box but absent from the repo — the gateway cold-starts
-  in ~90–105 s (awaited warm-clone timeouts) while the watchdog probes after
-  15 s, and without the grace it killed the gateway seconds before "startup
-  complete", in a permanent loop. ⚠️ (a) and (c) are patched **on the box
-  only** — the next git-reset deploy REVERTS them unless committed first.
-- **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
-- **Added:** 2026-08-17 · updated 2026-08-19 (VPS bring-up: watchdog grace)
 
 ### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
 - **Check:** ask the owner whether a Razorpay test account exists; on the box or
