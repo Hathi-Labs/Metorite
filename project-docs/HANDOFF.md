@@ -139,9 +139,16 @@ line — never reclaim a number by deleting the other entry.
   removes the docs and corrects two labels. Nothing else moves.
 - **Then close the same hole in the deploy.** `.env.example` carries
   `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
-  this exactly. Decide where production's value comes from, and give it a fence.
+  this exactly. Decide where production's value comes from.
+- **The fence now exists (R7).** `vps-health.yml` gained an `exposure` job. It
+  probes the three paths and `/version` hourly from outside, and it fails the
+  run while any of them says `dev`. ⚠️ **So that job is RED until somebody sets
+  the variable.** That is the alarm working, not a broken job. It carries its
+  own job and never touches the outage issue, so it cannot mask a real
+  reachability alert, and a real outage cannot mask it.
 - **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
-  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only`
+  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only` ·
+  `vps-health.yml` job `exposure`
 - **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
   "reports the wrong label", after the schema probe returned 200
 
