@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
+import re
 import uuid
 from decimal import Decimal
 
@@ -532,16 +534,34 @@ class TestProviderCredentials:
         assert own[0] == "customer-own-key"
         assert platform[0] == "platform-key"
 
-    def test_a_missing_credential_is_a_503_not_a_crash(self, client, org_key, db):
+    def test_a_missing_credential_is_a_503_not_a_crash(
+            self, client, org_key, bound_tier):
+        """🔴 **Through `bound_tier`, because this test used to LEAK** (H-84).
+
+        It wrote a raw `tier-orphan` row and removed nothing. `ON CONFLICT DO
+        NOTHING` never fired either: migration 011 keys the table on
+        `(task, tier, effective_from, rank)` and the row was stamped
+        `now() - interval '1 day'`, which is a fresh key on every run. 83 rows
+        had collected on the shared scratch database by 2026-08-31, and each
+        one names a model that declares no capability — the shape
+        `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
+        fails on. So the leak reddened a SIBLING suite, in another worktree.
+
+        🔴 **The leak also MANUFACTURED the row that hid it.** Migration 010
+        backfills `model_capability` from every chat binding in the table, and
+        `apply_ladder` replays the ladder on every module setup. So a leaked
+        binding declares its own capability on the NEXT run, the catalog fence
+        then reads the pair as served, and the leak goes quiet again. Measured
+        on 2026-08-31 by deleting both rows and running this test twice. That
+        is why a sweep must take BOTH rows: sweep the capability alone and the
+        fence reddens over a row nobody wrote on purpose, sweep the binding
+        alone and the stale capability keeps hiding the next leak.
+        """
         _, key = org_key
-        with db.begin() as c:
-            c.execute(text(
-                "INSERT INTO tier_binding (tier, model, effective_from) "
-                "VALUES ('tier-orphan', 'nosuchprovider/model', "
-                "        now() - interval '1 day') ON CONFLICT DO NOTHING"))
+        tier = bound_tier("nosuchprovider/model", reads_images=None)
 
         r = client.post("/v1/chat/completions", headers=key, json={
-            "model": "tier-orphan", "messages": [{"role": "user", "content": "hi"}]})
+            "model": tier, "messages": [{"role": "user", "content": "hi"}]})
 
         assert r.status_code == 503
         assert "nosuchprovider" in r.json()["detail"]
@@ -2150,6 +2170,47 @@ def bound_tier(db):
             for step in models:
                 c.execute(text("DELETE FROM model_profile WHERE model = :m"),
                           {"m": step})
+
+
+#: The fixtures that own a `tier_binding` teardown. A binding written anywhere
+#: else in this file must be rolled back by its own test.
+_BINDING_FIXTURES = frozenset({"_bind", "vision_bound"})
+
+#: Assembled, never written whole — the fence below reads THIS file, and a
+#: literal here would count itself and its own docstring. The suite already
+#: hit that trap in `test_provider_keys.py`.
+_BINDING_WRITE = "INSERT INTO " + "tier_binding"
+
+
+def test_every_binding_this_file_writes_is_taken_back() -> None:
+    """🔴 **R7 — the fence for H-84 shape 1.** A committed binding must be owned.
+
+    `test_a_missing_credential_is_a_503_not_a_crash` wrote one and removed
+    nothing, and 83 rows collected on the shared scratch database. Each row
+    names a model that declares no capability, so the leak reddens
+    `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
+    — a SIBLING suite, in whichever worktree sweeps next. A data check cannot
+    catch that early enough, because the row is already there.
+
+    So this reads the source instead. Every write of a binding in this file
+    must sit inside a fixture that deletes it, or inside a test that rolls its
+    own transaction back. Add a third shape and this test names it.
+    """
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
+    starts = [m.start() for m in re.finditer(r"^\s*def ", src, re.MULTILINE)]
+    offenders = []
+    for hit in re.finditer(re.escape(_BINDING_WRITE), src):
+        cut = hit.start()
+        owner = src[:cut].rsplit("def ", 1)[1].split("(")[0]
+        after = [s for s in starts if s > cut]
+        body = src[cut:after[0] if after else len(src)]
+        if owner in _BINDING_FIXTURES or "rollback()" in body:
+            continue
+        offenders.append(owner)
+    assert not offenders, (
+        "these write a tier binding and nothing takes it back — route them "
+        f"through `bound_tier` or roll the transaction back: {offenders}"
+    )
 
 
 @pytest.fixture

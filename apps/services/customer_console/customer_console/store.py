@@ -763,7 +763,7 @@ def last_seen_by_org(conn: Connection) -> dict[str, Any]:
 
 def usage_by_org(
     conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
-    limit: int = SPEND_PAGE_SIZE,
+    limit: int = SPEND_PAGE_SIZE, slug: str | None = None,
 ) -> dict[str, Any]:
     """Per-organization AI usage over the window. **Operator-only.**
 
@@ -799,6 +799,20 @@ def usage_by_org(
     the very thing the cap makes untrue, so the test passed or failed on
     whether the fixture's random slug sorted into the first hundred. A test
     that encodes the defect it is meant to catch is worse than no test.
+
+    🔴 **`slug` narrows the read to ONE organization, and it is NOT a tenancy
+    boundary** (HANDOFF H-83). It answers "give me this customer's row of the
+    operator page" without asking for a page big enough to hold every other
+    customer. That question used to be asked with a large `limit`, and a large
+    `limit` is a bet on the size of the table: the bound was sized at 563
+    organizations, the scratch database reached 25,959, and the zero-usage
+    block moved past the page. A filter cannot expire that way.
+
+    ⚠️ **Do NOT read `slug` as permission to serve this to a customer.** The
+    section note above still binds — a customer-facing surface takes
+    `usage_by_activity` or `usage_by_member`, which carry an `org_id` and
+    cannot leak. This parameter narrows an operator read that is already behind
+    the operator role gate. It never establishes one.
     """
     rows = conn.execute(
         text(
@@ -846,12 +860,22 @@ def usage_by_org(
             LEFT JOIN usage_event u
                    ON u.organization_id = o.id
                   AND u.created_at >= now() - make_interval(days => :days)
+            -- 🔴 **A WHERE on `o`, and it does NOT undo the LEFT JOIN.** The
+            -- rule this file repeats is about the RIGHT-hand table: a WHERE on
+            -- `u` drops the rows the join exists to keep. `o.slug` is the LEFT
+            -- side, so this narrows which organizations are considered and
+            -- still returns the chosen one with zeros when it has no usage.
+            -- ⚠️ The CAST is load-bearing, for the reason `usage_daily`
+            -- records: a bare `:slug IS NULL` gives Postgres no type to infer
+            -- and the statement fails to PREPARE with AmbiguousParameter, on
+            -- every call including the unfiltered one.
+            WHERE CAST(:slug AS TEXT) IS NULL OR o.slug = CAST(:slug AS TEXT)
             GROUP BY o.id, o.slug, o.name
             ORDER BY credits DESC, calls DESC, o.slug ASC
             LIMIT :lim
             """
         ),
-        {"days": days, "lim": max(1, int(limit))},
+        {"days": days, "lim": max(1, int(limit)), "slug": slug},
     )
     out = [
         {
@@ -872,7 +896,15 @@ def usage_by_org(
     # ⚠️ Counted separately, and cheaply — `count(*)` over `organization` reads
     # one small table. Counting the joined result would repeat the aggregate
     # for no extra truth.
-    total = conn.execute(text("SELECT count(*) FROM organization")).scalar_one()
+    #
+    # ⚠️ **The same filter, or the page lies about its own truncation.** A
+    # filtered read returns one row, and a total taken over the whole table
+    # would make `shown < total` — which the console renders as "1 of 25,959".
+    total = conn.execute(
+        text("SELECT count(*) FROM organization "
+             "WHERE CAST(:slug AS TEXT) IS NULL OR slug = CAST(:slug AS TEXT)"),
+        {"slug": slug},
+    ).scalar_one()
     return {"rows": out, "total": int(total), "shown": len(out)}
 
 

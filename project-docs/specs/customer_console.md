@@ -636,6 +636,23 @@ routes as non-goals of the transcribe slice, and that clause now cites
 model we resell is a commercial act. Its clause 4 holds that argument. So
 both routes answer 400 until the owner writes one binding row for each.
 
+✅ **HANDOFF H-83 and H-84 are CLOSED, 2026-08-31 — three suites stopped
+lying.** `store.usage_by_org` gained a `slug` filter, and the operator-spend
+fences now read one organization by name. They asked for a page of 10,000
+before that. Somebody sized the bound at 563 organizations, the scratch
+database reached 25,959, and seven tests had become a steady red that read as
+volume noise.
+
+Two fixture leaks went with it. The Router's orphan-tier fence goes through
+`bound_tier`, and `test_provider_keys.py` deletes only the credential rows it
+owns. 📌 **Migration 010 backfills `model_capability` from every chat
+binding**, so a leaked binding declared its own capability on the next ladder
+replay and then hid itself. A sweep must take both rows. **Fences (R7):**
+`test_customer_console_sql.py::test_the_slug_filter_holds_a_page_of_ONE_against_richer_rows`,
+`test_customer_console_router.py::test_every_binding_this_file_writes_is_taken_back`
+and
+`test_provider_keys.py::test_the_slate_this_suite_wipes_is_only_its_own`.
+
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
 
