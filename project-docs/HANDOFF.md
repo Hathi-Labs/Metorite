@@ -114,16 +114,36 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
   rewritten the same day, after the block cleared and the repair landed
 
-### H-90 · Production reports `env=dev` · [OWNER]
-- **Check:** `curl -s https://api.metorite.com/version` → `"env":"dev"` means
-  still open. Measured 2026-08-31.
-- **Why it matters:** `ACB_ENV` is read for more than a label. Anything that
-  branches on environment — log verbosity, cookie flags, seeding, and any
-  future "is this production" guard — reads the wrong answer on the box that
-  serves real customers.
-- **Not investigated here.** Spotted while reading `/version` for the H-89
-  SHA comparison. It may be deliberate. Someone should say which.
-- **Added:** 2026-08-31 · projects UI/UX session
+### H-90 · ⚠️ Production publishes its whole API schema, because `env=dev` · [OWNER]
+- **Check:** `curl -s -o /dev/null -w '%{http_code} %{size_download}\n'
+  https://api.metorite.com/openapi.json`. A `200` means this is open. Measured
+  2026-08-31 17:05 UTC: **200, and 1121924 bytes, with no credential**. `/docs`
+  answers 200 too, and serves the Swagger UI.
+- **One variable causes it.** `/version` reports `"env":"dev"`.
+  `Settings.acb_env` defaults to `"dev"`, so an ABSENT `ACB_ENV` on the box
+  gives exactly this reading. `gateway/main.py:591` then returns
+  `env == "dev"` from `docs_enabled`, which wires `docs_url`, `redoc_url` and
+  `openapi_url`.
+- **The auth dependency cannot save us here.** FastAPI mounts the docs routes
+  as plain Starlette routes with NO dependency chain. `main.py:583` says so in
+  its own docstring, and `tests/unit/test_default_deny_auth.py` repeats it. The
+  app-level `require_authenticated` never reaches them. Switching the env off
+  is the ONLY guard this design has, and the box has it switched on.
+- **What the schema gives a reader.** Every route, every path parameter, every
+  request and response model, and the admin surface. It is a map of the attack
+  surface. It is not a credential, so this is exposure and not a breach.
+- **The fix, and why it is small.** Set `ACB_ENV=prod` in the box's `.env`, then
+  restart the gateway. The whole tree reads `acb_env` in six places: the startup
+  log, `docs_enabled`, `/health`, `/version`, the reconciler's start log and
+  `scripts/check_infra.py`. Nothing in the auth path reads it. So the flip
+  removes the docs and corrects two labels. Nothing else moves.
+- **Then close the same hole in the deploy.** `.env.example` carries
+  `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
+  this exactly. Decide where production's value comes from, and give it a fence.
+- **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
+  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only`
+- **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
+  "reports the wrong label", after the schema probe returned 200
 
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
 - **Check:** the DELIVERABLE first, and the request body only after it.
