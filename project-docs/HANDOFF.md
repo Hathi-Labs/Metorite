@@ -1215,6 +1215,20 @@ line — never reclaim a number by deleting the other entry.
   an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
   step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
   done-when.
+- **⚠️ Three review findings are still OPEN, and they ride with H-47
+  (recorded 2026-08-31):**
+  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
+     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
+     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
+     which reads as "upstream provider error". The family branch belongs in
+     H-47's handler seam.
+  2. An unmeasured transcription writes `quantity` 0, and a silent file also
+     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
+     does not. Decide one way when a reader of `quantity` exists.
+  3. A capability row with a wrong verb (for example `aspeech` on a
+     transcribe pair) burns the failover walk and answers 502 "upstream
+     provider error" for OUR configuration error. `_nothing_to_try` shows the
+     precise-503 shape the refusal should copy.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
   → four routes means every endpoint D61.1 named is built. A tree missing
   `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
