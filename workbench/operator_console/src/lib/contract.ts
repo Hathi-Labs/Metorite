@@ -157,6 +157,13 @@ export type Tier = {
    *  ghost, or a pre-016 row): the board groups it separately and the
    *  Console's mismatch refusals do not fire. */
   task?: string | null;
+  /** In `tier_catalog.customer_visible` (021, D-AI-3). TRUE means a customer
+   *  picks this tier on purpose. FALSE means the Router or the app selects
+   *  it — `GET /my/tiers` serves no such row, so it reaches no picker. A
+   *  ghost reads FALSE, because a picker cannot offer what the registry does
+   *  not hold. A Console that predates 021 reads TRUE, which is the column's
+   *  own default. */
+  customerVisible: boolean;
 };
 
 // ── What WE charge — the rate card ──────────────────────────────────────────

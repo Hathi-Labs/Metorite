@@ -676,6 +676,49 @@ def usage_by_member(
     ]
 
 
+# ── The tier words a customer may see (WS-31 slice 3) ───────────────────────
+#
+# Spec: `ai_metering_and_analytics.md` §8.4 clauses 3 and 5, and D-AI-1.
+#
+# 🔴 **The label is a display name the operator owns, and there is ONE source
+# for it.** `tier_catalog` holds the words. A picker that types its own labels
+# is a second source, and the two disagree the first time an operator edits
+# one. The customer app reads this function instead.
+#
+# ⚠️ **`tier_catalog` is a PLATFORM table, not a tenant one.** The slate is the
+# same product for every organization, so this read takes no `org_id` and holds
+# no `organization_id` predicate. That is not an exemption a caller may copy:
+# the route above it still authenticates the customer, and every read that
+# touches a customer's OWN rows still scopes by the key.
+
+
+def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
+    """The tiers a customer may pick, in the order the operator set.
+
+    ⚠️ **Three kinds of fact stay behind, and D66 binds the list.** No model,
+    no provider and no rate. A tier is the product and a model is supply, so a
+    model name here would tell a customer what we buy, and it would let a
+    picker save a raw model id (H-72). The price lives on the billing routes,
+    which keeps one surface for money instead of two.
+
+    A hidden tier is absent, and it is absent HERE rather than in the browser.
+    A filter in the caller is a filter somebody removes.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT slug, label, blurb
+            FROM tier_catalog
+            WHERE customer_visible
+            ORDER BY sort_order, slug
+            """
+        )
+    )
+    return [
+        {"slug": r.slug, "label": r.label, "blurb": r.blurb} for r in rows
+    ]
+
+
 # ── Operator spend reads (WS-31) ────────────────────────────────────────────
 #
 # 🔴 **THESE TWO READ ACROSS EVERY TENANT, AND THAT IS THE POINT.** Every other

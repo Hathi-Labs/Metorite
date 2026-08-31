@@ -1823,11 +1823,17 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # The tier registry (015) — the product slate. A row here is what
         # lets an EMPTY tier exist: bound to nothing yet, shown anyway,
         # because the board is the map of what we intend to sell.
+        # ⚠️ `customer_visible` (021) rides along so the board can say which
+        # tiers a customer can pick. It is the SAME column `GET /my/tiers`
+        # filters on, read once — an operator who cannot see the flag would
+        # have to guess why a tier is missing from the customer's picker.
         tier_registry = [
             {"slug": r[0], "label": r[1], "blurb": r[2],
-             "sort_order": int(r[3]), "task": r[4]}
+             "sort_order": int(r[3]), "task": r[4],
+             "customer_visible": bool(r[5])}
             for r in conn.execute(text(
-                "SELECT slug, label, blurb, sort_order, task "
+                "SELECT slug, label, blurb, sort_order, task, "
+                "       customer_visible "
                 "FROM tier_catalog ORDER BY sort_order, slug"))
         ]
         # What a CUSTOMER pays (D67): the tier card in force per (tier, task).
@@ -6302,6 +6308,32 @@ class MemberSpendView(BaseModel):
     windowDays: int
 
 
+# ── The tier a customer picks (WS-31 slice 3) ───────────────────────────────
+#
+# Spec: `ai_metering_and_analytics.md` §8.4. D-AI-1 and D-AI-3 own the rules.
+#
+# 🔴 **Three fields leave, and the list is the contract.** D66 says a customer
+# read names no model, no provider and no rate card, so this shape holds none
+# of the three. Adding one is not a field, it is a decision.
+#
+# ⚠️ **The slug ships, and it never ships ALONE.** A picker has to send the
+# tier back, and the slug is the wire name that every past usage row and every
+# `tier_binding` row already carries. The customer sees the LABEL.
+
+
+class CustomerTierRow(BaseModel):
+    #: The wire name. Permanent, because a past invoice names it (D-AI-1).
+    slug: str
+    #: What the customer reads. The operator owns these words.
+    label: str
+    #: What picking this tier means, in the customer's own words.
+    blurb: str
+
+
+class CustomerTierView(BaseModel):
+    rows: list[CustomerTierRow]
+
+
 # ── Operator usage (WS-31, `specs/ai_metering_and_analytics.md` §5) ─────────
 #
 # 🔴 **THESE TWO CROSS TENANTS.** Every `/my/*` read above is scoped by the
@@ -6518,6 +6550,43 @@ def my_usage_by_member(caller: KeyCaller) -> MemberSpendView:
             for r in rows
         ],
         windowDays=store.SPEND_WINDOW_DAYS,
+    )
+
+
+@app.get("/my/tiers")
+def my_tiers(_: KeyCaller) -> CustomerTierView:
+    """The tiers this customer may pick, with the words they read.
+
+    **`ai_metering_and_analytics.md` §8.4, D-AI-1 and D-AI-3.**
+
+    🔴 **ONE source for a tier label.** `tier_catalog` holds the words and an
+    operator edits them. A picker that carries its own list is a second source,
+    and the two disagree the moment one of them is edited.
+
+    ⚠️ **A hidden tier never reaches here.** `customer_visible` is FALSE on the
+    six tiers the Router or the app selects, and `store.visible_tiers` drops
+    them in SQL. A picker entry for one of those offers a choice no person can
+    act on.
+
+    **Authorisation.** The organization comes from the key, the same way
+    `GET /my/usage/activity` takes it. The request body decides nothing, and
+    there is no query parameter that names a tenant.
+
+    ⚠️ **The answer holds no per-organization fact at all.** `tier_catalog` is
+    the platform slate, so two organizations read the same rows. The key is
+    still required, because the slate is our product surface and not a public
+    page.
+    """
+    # ⚠️ The caller is named `_` on purpose, the way `billing_catalog` names
+    # its own. The gate is the whole use of the credential here, because the
+    # slate is the same product for every organization.
+    with get_engine().begin() as conn:
+        rows = store.visible_tiers(conn)
+    return CustomerTierView(
+        rows=[
+            CustomerTierRow(slug=r["slug"], label=r["label"], blurb=r["blurb"])
+            for r in rows
+        ],
     )
 
 

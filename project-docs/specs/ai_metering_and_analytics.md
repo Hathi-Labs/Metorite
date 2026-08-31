@@ -966,15 +966,16 @@ Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
 **Verification.** `uv run pytest tests/unit/test_customer_console_pricing_truth.py -q`.
 The suite is database-gated (R8), so run `bash scripts/dev_db.sh` first.
 
-### 8.4 The label seam (slice 3, C6) — BACKEND BUILDING · CLAUSE 6 SPECCED, 2026-08-31
+### 8.4 The label seam (slice 3, C6) — BACKEND BUILT 2026-08-31 · CLAUSE 6 SPECCED
 
-**Where the slice stands, 2026-08-31.** An agent builds the backend half on a
-sibling branch. That half is clauses 1 to 5 and clause 7. Clause 6 is the
-Control Plane half, and a re-audit held it out on four gaps. The seven edits
-dated 2026-08-31 below close those gaps, so clause 6 is now specced.
+**Where the slice stands, 2026-08-31.** The backend half is BUILT. That half
+is clauses 1 to 5 and clause 7. Clause 6 is the Control Plane half, and a
+re-audit held it out on four gaps. The seven edits dated 2026-08-31 below
+close those gaps, so clause 6 is now specced.
 
-**The table is built. The Console half of the seam is not.** Every default
-here is an **agent-proposed answer the owner may overrule**, which is the
+**The table is built, and the Console half of the seam is built beside it.
+The Control Plane half is not.** Every default here is an
+**agent-proposed answer the owner may overrule**, which is the
 D16/D17 convention CP-2b and CP-2c used. Where a name or a number below
 disagrees with the tree, the tree wins. Re-verify every anchor at dispatch.
 
