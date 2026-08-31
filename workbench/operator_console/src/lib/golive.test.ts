@@ -20,6 +20,7 @@ const MODEL = (over: Partial<CatalogModel> = {}): CatalogModel => ({
   id: "deepseek/chat", label: "DeepSeek", provider: "deepseek",
   kinds: ["chat"], contextWindow: null, maxOutput: null,
   inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+  perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
   description: "", declared: true, ...over,
 });
 
@@ -97,7 +98,7 @@ describe("step 4 — prices", () => {
     accounts: [ACCOUNT()],
     models: [MODEL({ inputPer1M: 3 })],
     tiers: [{
-      slug: "fast", label: "Fast", blurb: "", registered: true,
+      slug: "fast", label: "Fast", blurb: "", registered: true, customerVisible: true,
       jobs: [{ tier: "fast", task: "chat",
         chain: [{ model: "deepseek/chat", rank: 1 }] }],
     }],

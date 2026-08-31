@@ -27,6 +27,13 @@ export type OrgUsageRow = {
   /** NULL means "no burn to extrapolate", never "forever". */
   runwayDays: number | null;
   silent: boolean;
+  /** How many times the Router REFUSED this org in the window (A5, §8.1).
+   *
+   * 🔴 **A refusal moves `lastSeen`, so a walled customer is NOT silent.**
+   * Before this count existed, hitting a wall made a customer HARDER to find
+   * than saying nothing did: `silent` switched off and no other signal
+   * switched on. Refusals with no calls is the row support wants. */
+  refusals: number;
 };
 
 export type UsageDay = { day: string; calls: number; credits: string };
@@ -76,6 +83,17 @@ export function runwayLabel(days: number | null): string {
   return `${days}d left`;
 }
 
+/** Does this organization hold refusals and no answered call at all?
+ *
+ * 🔴 **The narrow test is the point.** Some refusals beside real traffic is a
+ * customer using their product and occasionally meeting a limit. NO answered
+ * call is a customer getting nothing, which is a support call that has not
+ * been made yet — A5's "before they write in".
+ */
+export function isWalled(row: OrgUsageRow): boolean {
+  return (row.refusals ?? 0) > 0 && row.calls === 0;
+}
+
 /** What wants a human on this row, most urgent first.
  *
  * ⚠️ Ordered, because the caller renders them in order and a row with three
@@ -87,6 +105,14 @@ export function orgFlags(row: OrgUsageRow): { label: string; tone: Tone }[] {
   }
   if (marginTone(row.marginRatio) === "danger") {
     out.push({ label: "below cost", tone: "danger" });
+  }
+  // 🔴 **Immediately above `silent`, because it REPLACES it.** A refusal moves
+  // `lastSeen`, so the moment a customer hits a wall the silent flag switches
+  // off — and until this chip existed nothing switched on in its place. The
+  // two are one signal handed from one flag to the other, and they cannot
+  // both fire on one row.
+  if (isWalled(row)) {
+    out.push({ label: "walled", tone: "danger" });
   }
   if (row.silent) {
     out.push({ label: "silent", tone: "warn" });
@@ -141,8 +167,12 @@ export function usageHeadline(rows: OrgUsageRow[]): string {
   const short = rows.filter(
     (r) => r.runwayDays !== null && r.runwayDays <= SHORT_RUNWAY_DAYS,
   ).length;
+  const walled = rows.filter(isWalled).length;
   const parts = [`${active} organization${active === 1 ? "" : "s"} active`];
   if (short) parts.push(`${short} nearly out of credit`);
+  // Ahead of `silent`, for the reason `orgFlags` gives: a walled customer is
+  // the one who stopped being silent.
+  if (walled) parts.push(`${walled} walled`);
   if (silent) parts.push(`${silent} silent`);
   return `${parts.join(" · ")}.`;
 }

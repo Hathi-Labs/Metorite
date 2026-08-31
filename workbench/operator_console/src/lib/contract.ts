@@ -102,6 +102,18 @@ export type CatalogModel = {
   /** The vendor's discounted CACHE-READ rate (013). NULL means untold, and a
    *  cache-hitting call cannot be costed until it is. */
   cachedInputPer1M: number | null;
+  /** USD per unit the vendor charges US for a job a token price cannot cost
+   *  (019, H-78): a `transcribe` MINUTE, a `speak` CHARACTER, an `image`.
+   *  NULL means untold, and the board draws a dash rather than a guess.
+   *
+   * ⚠️ **`number | null`, unlike `FeedModel`'s STRINGS, and the difference is
+   *  deliberate.** These read the PROFILE, which the board only ever DISPLAYS
+   *  and computes a suggestion from — no value here is ever POSTed back. The
+   *  feed's strings are, so they stay strings. Same `num()` rule every other
+   *  price on this shape follows. */
+  perMinuteUsd: number | null;
+  perCharacterUsd: number | null;
+  perImageUsd: number | null;
   description: string;
   /** A `model_capability` row exists, so the Router will accept it. */
   declared: boolean;
@@ -145,6 +157,13 @@ export type Tier = {
    *  ghost, or a pre-016 row): the board groups it separately and the
    *  Console's mismatch refusals do not fire. */
   task?: string | null;
+  /** In `tier_catalog.customer_visible` (021, D-AI-3). TRUE means a customer
+   *  picks this tier on purpose. FALSE means the Router or the app selects
+   *  it — `GET /my/tiers` serves no such row, so it reaches no picker. A
+   *  ghost reads FALSE, because a picker cannot offer what the registry does
+   *  not hold. A Console that predates 021 reads TRUE, which is the column's
+   *  own default. */
+  customerVisible: boolean;
 };
 
 // ── What WE charge — the rate card ──────────────────────────────────────────
@@ -244,6 +263,16 @@ export type FeedModel = {
   inputPer1M: string | null;
   outputPer1M: string | null;
   cachedInputPer1M: string | null;
+  /** The per-unit costs (019, H-78), in the PROFILE's unit already.
+   *
+   * 🔴 **`perMinuteUsd`, and the feed table stores per SECOND.** The Console's
+   *  feed-read projection multiplies by 60 once, server-side, so what arrives
+   *  here is per minute and the copy onto a profile is a straight copy. No
+   *  code in this app multiplies by 60 — `feed.test.ts` asserts on the source
+   *  text that none ever does. */
+  perMinuteUsd: string | null;
+  perCharacterUsd: string | null;
+  perImageUsd: string | null;
   readsImages: boolean;
   thinksFirst: boolean;
   /** The vendor's own retirement date, when litellm records one. */

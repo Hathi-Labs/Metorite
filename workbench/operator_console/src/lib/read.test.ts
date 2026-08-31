@@ -129,6 +129,77 @@ describe("what a model IS", () => {
   });
 });
 
+describe("the per-unit vendor costs (019, H-78)", () => {
+  const PROFILE = (over: Record<string, unknown> = {}) => ({
+    model: "anthropic/sonnet", label: null, context_window: null,
+    max_output: null, vendor_input_per_1m_usd: null,
+    vendor_output_per_1m_usd: null, description: "",
+    reads_images: false, thinks_first: false, ...over,
+  });
+
+  const FEED_ROW = (over: Record<string, unknown> = {}) => ({
+    model: "anthropic/sonnet", provider: "anthropic", mode: "chat",
+    task: "chat", invocation: "acompletion", context_window: null,
+    max_output: null, vendor_input_per_1m_usd: null,
+    vendor_output_per_1m_usd: null, vendor_cached_input_per_1m_usd: null,
+    reads_images: false, thinks_first: false, deprecated_on: null, ...over,
+  });
+
+  it("takes the three per-unit costs from the profile", () => {
+    const m = catalogFromWire(
+      WIRE({
+        profiles: [PROFILE({
+          vendor_per_minute_usd: "0.0060000000",
+          vendor_per_character_usd: "0.0000150000",
+          vendor_per_image_usd: "0.0400000000",
+        })],
+      }),
+    ).models[0];
+    expect(m.perMinuteUsd).toBe(0.006);
+    expect(m.perCharacterUsd).toBe(0.000015);
+    expect(m.perImageUsd).toBe(0.04);
+  });
+
+  it("🔴 THE BOARD READS THE PROFILE, NEVER THE FEED", () => {
+    // A feed row with a cost and no profile row yields NO cost. Billing
+    // reads `model_profile`, and only a staff Save changes that table — so
+    // a vendor's published price can never move what we charge on its own.
+    const cat = catalogFromWire(
+      WIRE({
+        feed: {
+          synced_at: "2026-08-31T06:00:00Z", source: "github", models: 1,
+          rows: [FEED_ROW({
+            vendor_per_minute_usd: "0.0060000000",
+            vendor_per_image_usd: "0.0400000000",
+          })],
+          available: [],
+        },
+      }),
+    );
+    expect(cat.models[0].perMinuteUsd).toBeNull();
+    expect(cat.models[0].perImageUsd).toBeNull();
+    // The feed still SHOWS the number, which is what drift is built on.
+    expect(cat.feed.rows[0].perMinuteUsd).toBe("0.0060000000");
+  });
+
+  it("a Console mid-rollout that sends no per-unit field reads as unknown", () => {
+    // Absent must never become zero: a zero per-image price reads as free.
+    const m = catalogFromWire(
+      WIRE({ profiles: [PROFILE()] }),
+    ).models[0];
+    expect(m.perMinuteUsd).toBeNull();
+    expect(m.perCharacterUsd).toBeNull();
+    expect(m.perImageUsd).toBeNull();
+  });
+
+  it("an unparseable per-unit price is UNKNOWN, never zero", () => {
+    const m = catalogFromWire(
+      WIRE({ profiles: [PROFILE({ vendor_per_image_usd: "not-a-number" })] }),
+    ).models[0];
+    expect(m.perImageUsd).toBeNull();
+  });
+});
+
 describe("the tier registry and the tier rates (015, D67)", () => {
   it("the registry leads and an EMPTY registered tier renders", () => {
     const cat = catalogFromWire(WIRE({
@@ -159,6 +230,27 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     expect(ghost?.registered).toBe(false);
     expect(ghost?.jobs).toHaveLength(1);
     expect(ghost?.task).toBeNull();
+    // A picker cannot offer what the registry does not hold.
+    expect(ghost?.customerVisible).toBe(false);
+  });
+
+  it("carries customer_visible through, and reads absent as TRUE (021)", () => {
+    // The column defaults to TRUE. A Console that predates 021 sends no
+    // field at all, and reading that as "hidden" would report every tier as
+    // hidden for the length of a rollout.
+    const cat = catalogFromWire(WIRE({
+      tier_registry: [
+        { slug: "tier-stt", label: "Speech to text", blurb: "b",
+          sort_order: 70, customer_visible: false },
+        { slug: "tier-fast", label: "Fast", blurb: "", sort_order: 10,
+          customer_visible: true },
+        { slug: "tier-old", label: "Old", blurb: "", sort_order: 20 },
+      ],
+    }));
+    const by = (slug: string) => cat.tiers.find((t) => t.slug === slug);
+    expect(by("tier-stt")?.customerVisible).toBe(false);
+    expect(by("tier-fast")?.customerVisible).toBe(true);
+    expect(by("tier-old")?.customerVisible).toBe(true);
   });
 
   it("maps the tier rates with money as STRINGS", () => {

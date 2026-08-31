@@ -150,6 +150,9 @@ export default function UsageBoard({
               <tr>
                 <th>Organization</th>
                 <th>Calls</th>
+                {/* A5 (§8.1). Beside Calls on purpose — "0 calls, 41 refused"
+                    is one sentence, and it is the sentence support needs. */}
+                <th>Refused</th>
                 <th>Credits</th>
                 <th>Our cost</th>
                 <th>Margin</th>
@@ -180,6 +183,9 @@ export default function UsageBoard({
                       )}
                     </td>
                     <td>{r.calls}</td>
+                    <td className={r.refusals > 0 ? "caution" : "muted"}>
+                      {r.refusals}
+                    </td>
                     <td>{r.credits}</td>
                     <td>${r.costUsd}</td>
                     <td>

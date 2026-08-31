@@ -11,6 +11,7 @@
 // existed, through the same `/catalog/profiles` seam.
 
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
+import { fixedDecimal } from "./pricing";
 import type { Tone } from "./tone";
 
 /** Feed rows keyed by model id, for O(1) lookup per card. */
@@ -21,7 +22,13 @@ export function feedById(feed: VendorFeed): Map<string, FeedModel> {
 }
 
 export type Drift = {
-  /** Operator words: "per 1M in", "per 1M out", "per 1M cached in". */
+  /** Operator words: "per 1M in", "per 1M out", "per 1M cached in", plus the
+   *  three per-unit labels "per minute", "per character" and "per image".
+   *
+   * ⚠️ **Each per-unit label NAMES ITS UNIT, and that is load-bearing**
+   *  (H-78). litellm prices transcription per second and we price it per
+   *  minute. A drift row that reads "$0.006 against $0.0001" with no unit
+   *  invites the very mistake this feature exists to prevent. */
   label: string;
   /** What OUR profile says — the number billing cost is computed from. */
   ours: string;
@@ -35,21 +42,46 @@ export type Drift = {
  *
  * ⚠️ `Number()` here only to COMPARE (the strings differ in trailing zeros:
  *  profile "0.2800" vs feed "0.280000"). What renders is the original
- *  strings, never a reformatted float. */
+ *  strings, never a reformatted float.
+ *
+ * 🔴 **Both sides speak the PROFILE's unit, and NOTHING here converts** (H-78).
+ *  The Console's feed read already multiplied the per-second transcription
+ *  price by 60, so `f.perMinuteUsd` and `m.perMinuteUsd` are the same kind of
+ *  number and a direct compare is the correct compare. */
 export function driftFor(m: CatalogModel, f: FeedModel | undefined): Drift[] {
   if (!f) return [];
-  const pairs: [string, number | null, string | null][] = [
-    ["per 1M in", m.inputPer1M, f.inputPer1M],
-    ["per 1M out", m.outputPer1M, f.outputPer1M],
-    ["per 1M cached in", m.cachedInputPer1M, f.cachedInputPer1M],
+  //  Each pair carries the RULE it is compared under, because the two kinds
+  //  of price live at different magnitudes.
+  const pairs: [string, number | null, string | null, "abs" | "rel"][] = [
+    // Per-MILLION-token prices are dollar-scale. 1e-9 is far below the
+    // NUMERIC(12,4) the profile stores, so absolute is right and unchanged.
+    ["per 1M in", m.inputPer1M, f.inputPer1M, "abs"],
+    ["per 1M out", m.outputPer1M, f.outputPer1M, "abs"],
+    ["per 1M cached in", m.cachedInputPer1M, f.cachedInputPer1M, "abs"],
+    // 🔴 Per-UNIT prices are not. These columns are NUMERIC(18,10) exactly
+    // so a tiny price fits, and 019's own header cites 0.000015 as a real
+    // one. Under the absolute rule a vendor DOUBLING 3e-10 to 6e-10 reports
+    // no drift at all, because the gap is smaller than the epsilon. So they
+    // compare RELATIVELY: a pair differing by more than one part in a
+    // million drifts, at any magnitude.
+    ["per minute", m.perMinuteUsd, f.perMinuteUsd, "rel"],
+    ["per character", m.perCharacterUsd, f.perCharacterUsd, "rel"],
+    ["per image", m.perImageUsd, f.perImageUsd, "rel"],
   ];
   const out: Drift[] = [];
-  for (const [label, ours, upstream] of pairs) {
+  for (const [label, ours, upstream, rule] of pairs) {
     if (ours === null || upstream === null) continue;
     const up = Number(upstream);
     if (!Number.isFinite(up)) continue;
-    if (Math.abs(ours - up) > 1e-9) {
-      out.push({ label, ours: String(ours), upstream });
+    const gap = Math.abs(ours - up);
+    // Two zeros are equal, and a relative test on them divides by zero.
+    const scale = Math.max(Math.abs(ours), Math.abs(up));
+    const drifted =
+      rule === "abs" ? gap > 1e-9 : scale > 0 && gap / scale > 1e-6;
+    if (drifted) {
+      // ⚠️ `String(ours)` rendered a per-unit price as "3e-10" in the drift
+      // sentence. `upstream` is the wire's own fixed-point string already.
+      out.push({ label, ours: fixedDecimal(ours), upstream });
     }
   }
   return out;
@@ -65,13 +97,24 @@ export function fillCount(m: CatalogModel, f: FeedModel | undefined): number {
   if (m.cachedInputPer1M === null && f.cachedInputPer1M !== null) n++;
   if (m.contextWindow === null && f.contextWindow !== null) n++;
   if (m.maxOutput === null && f.maxOutput !== null) n++;
+  // The three per-unit costs (H-78). A transcribe or image model has no
+  // token price at all, so without these its hint always read "0 boxes"
+  // while upstream held the one number the board needs.
+  if (m.perMinuteUsd === null && f.perMinuteUsd !== null) n++;
+  if (m.perCharacterUsd === null && f.perCharacterUsd !== null) n++;
+  if (m.perImageUsd === null && f.perImageUsd !== null) n++;
   return n;
 }
 
 /** The values "Copy the vendor's facts" writes into the form boxes.
- *  Strings because that is what the inputs hold — empty means unknown. */
+ *  Strings because that is what the inputs hold — empty means unknown.
+ *
+ * ⚠️ **Every value is copied, and none is computed** (H-78). `vmin` holds a
+ *  per-MINUTE price because the Console served one. Multiplying here would
+ *  be a float multiply, and a float rewrites the number it copies. */
 export function prefillFrom(f: FeedModel): {
   ctx: string; out: string; vin: string; vout: string; vcached: string;
+  vmin: string; vchar: string; vimg: string;
   readsImages: boolean; thinksFirst: boolean;
 } {
   return {
@@ -80,6 +123,9 @@ export function prefillFrom(f: FeedModel): {
     vin: f.inputPer1M ?? "",
     vout: f.outputPer1M ?? "",
     vcached: f.cachedInputPer1M ?? "",
+    vmin: f.perMinuteUsd ?? "",
+    vchar: f.perCharacterUsd ?? "",
+    vimg: f.perImageUsd ?? "",
     readsImages: f.readsImages,
     thinksFirst: f.thinksFirst,
   };
@@ -116,6 +162,11 @@ export function declareBodies(f: FeedModel): {
       vendor_input_per_1m_usd: f.inputPer1M,
       vendor_output_per_1m_usd: f.outputPer1M,
       vendor_cached_input_per_1m_usd: f.cachedInputPer1M,
+      // The three per-unit costs (H-78), also verbatim. The wire name and
+      // the profile column agree, so this is a copy and not a rename.
+      vendor_per_minute_usd: f.perMinuteUsd,
+      vendor_per_character_usd: f.perCharacterUsd,
+      vendor_per_image_usd: f.perImageUsd,
       description: "",
       reads_images: f.readsImages,
       thinks_first: f.thinksFirst,

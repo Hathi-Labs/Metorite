@@ -383,3 +383,175 @@ def test_the_same_effective_from_twice_answers_409_not_500(client, db):
     with db.begin() as c:
         c.execute(text("DELETE FROM tier_rate_card WHERE effective_from = :e"),
                   {"e": eff})
+
+
+# ---- D-AI-3: one column decides which tiers a customer may see ------------
+#
+# Migration 021 and `GET /my/tiers`. Spec:
+# `ai_metering_and_analytics.md` §3.3 and §8.4 clauses 1, 3, 4, 5.
+#
+# 🔴 **The rule these tests hold.** TRUE means a person picks this tier on
+# purpose. FALSE means the Router or the app picks it, so a picker entry
+# would offer a choice nobody can act on.
+
+#: The six §3.3 names. The migration turns each one FALSE.
+HIDDEN = {
+    "tier-vision", "tier-stt", "tier-tts", "tier-embed",
+    "tier-video", "tier-music",
+}
+
+#: The five a customer picks. They keep the column's TRUE default.
+PICKABLE = {
+    "tier-fast", "tier-balanced", "tier-powerful", "tier-code", "tier-image",
+}
+
+
+def _visible(db) -> dict[str, bool]:
+    """`customer_visible` for every slate row, read from the database."""
+    with db.begin() as c:
+        return {r[0]: r[1] for r in c.execute(
+            text("SELECT slug, customer_visible FROM tier_catalog "
+                 "WHERE slug = ANY(:slate)"), {"slate": list(SLATE)})}
+
+
+def test_the_six_specialised_tiers_ship_hidden(db):
+    """021's seed, read back from the ladder that applied it."""
+    seen = _visible(db)
+    assert {s: seen[s] for s in HIDDEN} == dict.fromkeys(HIDDEN, False)
+
+
+def test_the_five_pickable_tiers_ship_visible(db):
+    """The other half of the same claim. A seed that hid everything would
+    pass the test above on its own."""
+    seen = _visible(db)
+    assert {s: seen[s] for s in PICKABLE} == dict.fromkeys(PICKABLE, True)
+
+
+def test_a_tier_added_later_shows_up(db):
+    """The default is TRUE (§3.1). A new tier is visible until an operator
+    hides it, and a NOT NULL column with no default would refuse this
+    INSERT instead."""
+    slug = f"tier-tp-{uuid.uuid4().hex[:6]}"
+    with db.begin() as c:
+        c.execute(text("INSERT INTO tier_catalog (slug, label) "
+                       "VALUES (:t, 'probe')"), {"t": slug})
+        got = c.execute(
+            text("SELECT customer_visible FROM tier_catalog WHERE slug = :t"),
+            {"t": slug}).scalar_one()
+        c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"),
+                  {"t": slug})
+    assert got is True
+
+
+def test_my_tiers_serves_the_words_and_never_the_slug_alone(client, org):
+    """§8.4 clause 3. Every row carries `label` and `blurb`."""
+    _slug, _org_id, key = org
+    r = client.get("/my/tiers", headers=key)
+    assert r.status_code == 200, r.text
+    rows = r.json()["rows"]
+    assert rows, "the slate is not empty, so the read is not either"
+    for row in rows:
+        assert set(row) == {"slug", "label", "blurb"}
+        assert row["label"].strip(), f"{row['slug']} carries no label"
+    labels = {row["slug"]: row["label"] for row in rows}
+    assert labels["tier-balanced"] == "Balanced"
+
+
+def test_my_tiers_hides_every_specialised_tier(client, org):
+    """🔴 The headline. A `customer_visible` FALSE row never reaches a
+    customer, and `tier-stt` is the named case."""
+    _slug, _org_id, key = org
+    served = {row["slug"] for row in
+              client.get("/my/tiers", headers=key).json()["rows"]}
+    assert "tier-stt" not in served
+    assert not (served & HIDDEN)
+    assert served >= PICKABLE
+
+
+def test_my_tiers_agrees_with_the_column(client, db, org):
+    """The route filters in SQL, so the answer is the column. A test tier
+    that another suite registered is included on purpose: the claim is
+    'every visible row and nothing else', not 'the slate'."""
+    _slug, _org_id, key = org
+    served = {row["slug"] for row in
+              client.get("/my/tiers", headers=key).json()["rows"]}
+    with db.begin() as c:
+        expected = {r[0] for r in c.execute(text(
+            "SELECT slug FROM tier_catalog WHERE customer_visible"))}
+    assert served == expected
+
+
+def test_my_tiers_is_ordered_by_sort_order(client, db, org):
+    """The operator sets the order, and the route keeps it."""
+    _slug, _org_id, key = org
+    served = [row["slug"] for row in
+              client.get("/my/tiers", headers=key).json()["rows"]]
+    with db.begin() as c:
+        order = {r[0]: r[1] for r in c.execute(text(
+            "SELECT slug, sort_order FROM tier_catalog"))}
+    ranks = [order[s] for s in served]
+    assert ranks == sorted(ranks)
+
+
+def test_my_tiers_names_no_model_and_no_price(client, db, org, vendor):
+    """§8.4 clause 5, and D66. A bound model must not leak through the
+    tier that serves it."""
+    _slug, _org_id, key = org
+    model = f"{vendor}/tp-{uuid.uuid4().hex[:6]}"
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO model_capability (model, task, invocation) "
+                 "VALUES (:m, 'chat', 'acompletion') ON CONFLICT DO NOTHING"),
+            {"m": model})
+        c.execute(
+            text("INSERT INTO tier_binding (tier, task, model, rank, "
+                 "effective_from) VALUES ('tier-fast', 'chat', :m, 9, now())"),
+            {"m": model})
+    try:
+        body = client.get("/my/tiers", headers=key).text
+    finally:
+        with db.begin() as c:
+            c.execute(text("DELETE FROM tier_binding WHERE model = :m"),
+                      {"m": model})
+    assert model not in body
+    assert vendor not in body
+    # ⚠️ The blurb is customer copy, and it may say the word "price". The
+    # claim is about FACTS, so this reads the field names the shape carries.
+    for field in ("model", "provider", "rate", "credits", "task"):
+        assert f'"{field}"' not in body, f"{field!r} left the tier read"
+
+
+def test_my_tiers_refuses_a_caller_with_no_key(client):
+    """The read sits behind the customer key, like every `/my/*` route."""
+    assert client.get("/my/tiers").status_code == 401
+
+
+def test_my_tiers_refuses_the_operator_token(client):
+    """🔴 The operator token is not a customer key. A route that took both
+    would be a second scheme on a `/my/*` door."""
+    assert client.get("/my/tiers", headers=OP).status_code == 401
+
+
+def test_my_tiers_reads_the_same_slate_for_two_organizations(client, db, org):
+    """The slate is the product, so it is not per-tenant. This asserts the
+    consequence a reviewer must be able to see: the answer holds no fact
+    about the caller, so one organization reads nothing of another's."""
+    _slug_a, org_id_a, key_a = org
+    slug_b = f"tp-{uuid.uuid4().hex[:8]}"
+    # ⚠️ Both setup calls are ASSERTED, and the `org` fixture's copies are
+    # not. A bare `.json()["token"]` on a refusal raises KeyError, which
+    # reports the last line of the setup and names none of the reason.
+    made = client.post("/orgs/provision", headers=OP, json={
+        "slug": slug_b, "name": "B", "owner_email": f"o@{slug_b}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    assert made.status_code == 200, made.text
+    minted = client.post("/keys", headers=OP, json={"org_slug": slug_b})
+    assert minted.status_code == 200, minted.text
+    key_b = {"Authorization": f"Bearer {minted.json()['token']}"}
+
+    body_a = client.get("/my/tiers", headers=key_a).json()
+    body_b = client.get("/my/tiers", headers=key_b).json()
+    assert body_a == body_b
+    text_a = client.get("/my/tiers", headers=key_a).text
+    assert org_id_a not in text_a
+    assert slug_b not in text_a

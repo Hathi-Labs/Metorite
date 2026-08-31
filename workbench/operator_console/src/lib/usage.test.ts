@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type OrgUsageRow,
+  isWalled,
   marginLabel,
   marginTone,
   orgFlags,
@@ -30,6 +31,7 @@ const ROW = (over: Partial<OrgUsageRow> = {}): OrgUsageRow => ({
   marginRatio: "2.00",
   runwayDays: 40,
   silent: false,
+  refusals: 0,
   ...over,
 });
 
@@ -99,6 +101,54 @@ describe("what wants a human", () => {
 
   it("does not flag an unmeasured margin as below cost", () => {
     expect(orgFlags(ROW({ marginRatio: null }))).toEqual([]);
+  });
+});
+
+describe("walled — the customer who got NOTHING through (A5, §8.1)", () => {
+  it("🔴 flags refusals with no answered call", () => {
+    const row = ROW({ calls: 0, refusals: 41, silent: false });
+    expect(isWalled(row)).toBe(true);
+    expect(orgFlags(row).map((f) => f.label)).toContain("walled");
+  });
+
+  it("🔴 takes over from `silent`, which the refusal itself switched OFF", () => {
+    // The handoff this flag exists for. A refusal moves `last_seen`, so the
+    // Console stops calling a walled customer silent — and before this chip
+    // existed nothing replaced it, which made the wall HARDER to see than
+    // saying nothing.
+    const walled = ROW({ calls: 0, refusals: 3, silent: false });
+    const labels = orgFlags(walled).map((f) => f.label);
+    expect(labels).toContain("walled");
+    expect(labels).not.toContain("silent");
+  });
+
+  it("stays quiet when refusals sit beside real traffic", () => {
+    // A customer using the product and occasionally meeting a limit is not a
+    // support call. Only "nothing got through" is.
+    expect(isWalled(ROW({ calls: 12, refusals: 3 }))).toBe(false);
+    expect(orgFlags(ROW({ calls: 12, refusals: 3 }))).toEqual([]);
+  });
+
+  it("stays quiet for an organization that simply did nothing", () => {
+    // Zero calls and zero refusals is a quiet week, not a wall.
+    expect(isWalled(ROW({ calls: 0, refusals: 0 }))).toBe(false);
+  });
+
+  it("is DANGER, because the customer is getting no product at all", () => {
+    const flag = orgFlags(ROW({ calls: 0, refusals: 1 }))
+      .find((f) => f.label === "walled");
+    expect(flag?.tone).toBe("danger");
+  });
+
+  it("counts into the headline, ahead of silent", () => {
+    const line = usageHeadline([
+      ROW(),
+      ROW({ slug: "b", calls: 0, refusals: 9 }),
+    ]);
+    expect(line).toContain("1 walled");
+    expect(line.indexOf("walled")).toBeLessThan(
+      line.indexOf("silent") === -1 ? Infinity : line.indexOf("silent"),
+    );
   });
 });
 
