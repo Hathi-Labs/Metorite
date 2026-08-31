@@ -75,6 +75,83 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
+  -name node_modules -prune -o ! -user acb -print | head`. Any line means a
+  root-owned path is back in the checkout, and the cause is still there.
+- **⚠️ Do NOT check this with the SHA comparison.** The old Check compared
+  `/version` against `origin/main`. That reads the SYMPTOM, and the symptom is
+  now repaired automatically. So the SHA check will pass while the cause runs
+  on. Read the ownership directly.
+- **A one-off `chown` CLEARED the block.** Measured 2026-08-31 16:40 UTC:
+  `/version` and `git rev-parse origin/main` both read `0f8fdb5a`. The tracked
+  tree now holds no root-owned path.
+  `scripts/vps_apply.sh` now normalises the checkout's ownership
+  before `git reset --hard`, so the next occurrence self-heals. That is the
+  repair, and this entry is the cause.
+- **What it was.** `workbench/operator_console/src/app/models/` was `root:root`,
+  created 2026-08-30 16:49. `git` unlinks a file through its parent directory,
+  so one root-owned directory blocks the rewrite of every file inside it. The
+  deploy's `git` step then failed with `unable to unlink old …
+  ModelDetails.tsx: Permission denied`, three rounds, twice — for PR #190 at
+  13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
+  root-owned, and the remaining 66681 were `.next` build output, which git
+  ignores.
+- **The open question: which step runs as root and writes there?** A container
+  or build with a bind mount is the first suspect, because the operator console
+  is the only tree affected. Read the unit files and the compose file on the
+  box, find the writer, and stop it writing as root.
+- **Why this stays open although the repair landed.** The repair lives inside
+  `vps_apply.sh`. A hand-run deploy, or any other path that resets the
+  checkout, meets the same failure with no repair. The repair also hides the
+  symptom, so nobody sees the next occurrence.
+- **⚠️ The shape to remember.** The app stayed UP on old code for hours.
+  `health` returned 200 and the workbench returned 307, so nothing alarmed. A
+  deploy that takes the site down reports itself. A deploy that silently does
+  not land does not.
+- **Authority:** `work_plan.md` §6 (box access is owner-gated) · CLAUDE.md §3.8
+  (verify by evidence, never by a green job)
+- **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
+  rewritten the same day, after the block cleared and the repair landed
+
+### H-90 · ⚠️ Production publishes its whole API schema, because `env=dev` · [OWNER]
+- **Check:** `curl -s -o /dev/null -w '%{http_code} %{size_download}\n'
+  https://api.metorite.com/openapi.json`. A `200` means this is open. Measured
+  2026-08-31 17:05 UTC: **200, and 1121924 bytes, with no credential**. `/docs`
+  answers 200 too, and serves the Swagger UI.
+- **One variable causes it.** `/version` reports `"env":"dev"`.
+  `Settings.acb_env` defaults to `"dev"`, so an ABSENT `ACB_ENV` on the box
+  gives exactly this reading. `gateway/main.py:591` then returns
+  `env == "dev"` from `docs_enabled`, which wires `docs_url`, `redoc_url` and
+  `openapi_url`.
+- **The auth dependency cannot save us here.** FastAPI mounts the docs routes
+  as plain Starlette routes with NO dependency chain. `main.py:583` says so in
+  its own docstring, and `tests/unit/test_default_deny_auth.py` repeats it. The
+  app-level `require_authenticated` never reaches them. Switching the env off
+  is the ONLY guard this design has, and the box has it switched on.
+- **What the schema gives a reader.** Every route, every path parameter, every
+  request and response model, and the admin surface. It is a map of the attack
+  surface. It is not a credential, so this is exposure and not a breach.
+- **The fix, and why it is small.** Set `ACB_ENV=prod` in the box's `.env`, then
+  restart the gateway. The whole tree reads `acb_env` in six places: the startup
+  log, `docs_enabled`, `/health`, `/version`, the reconciler's start log and
+  `scripts/check_infra.py`. Nothing in the auth path reads it. So the flip
+  removes the docs and corrects two labels. Nothing else moves.
+- **Then close the same hole in the deploy.** `.env.example` carries
+  `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
+  this exactly. Decide where production's value comes from.
+- **The fence now exists (R7).** `vps-health.yml` gained an `exposure` job. It
+  probes the three paths and `/version` hourly from outside, and it fails the
+  run while any of them says `dev`. ⚠️ **So that job is RED until somebody sets
+  the variable.** That is the alarm working, not a broken job. It carries its
+  own job and never touches the outage issue, so it cannot mask a real
+  reachability alert, and a real outage cannot mask it.
+- **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
+  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only` ·
+  `vps-health.yml` job `exposure`
+- **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
+  "reports the wrong label", after the schema probe returned 200
+
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
 - **Check:** the DELIVERABLE first, and the request body only after it.
   *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
@@ -539,27 +616,6 @@ line — never reclaim a number by deleting the other entry.
   WS-27 row (the R1-collision record) · R1
 - **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
   push trigger (PR #46); re-pointed at T-6
-
-### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
-- **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
-  pending. `rg -n "127.0.0.1:8000" .env.example` → a hit means still pending.
-  `rg -n "ActiveEnterTimestamp" deploy/hostinger/health-watchdog.sh` → NO hit
-  means still pending.
-- **Why:** plan-guard forbids agent writes under `deploy/` and to `.env*`, so
-  three fixes exist only where the owner (or a granted session) applied them:
-  (a) `deploy/hostinger/deploy.sh` still seeds one company's Entra directory
-  GUID into every fresh box (`scripts/vps_apply.sh`, the CI path, is already
-  fixed); (b) `.env.example` ships `GATEWAY_BASE_URL` on port 8000 while the
-  gateway listens on 8080, lacks `ACB_MASTER_KEY` entirely (load-bearing —
-  encrypts stored provider keys), and carries the dead `AUTH_ALLOWED_DOMAIN`
-  variable; (c) `health-watchdog.sh` needs the **180-second startup grace**
-  that is live on the box but absent from the repo — the gateway cold-starts
-  in ~90–105 s (awaited warm-clone timeouts) while the watchdog probes after
-  15 s, and without the grace it killed the gateway seconds before "startup
-  complete", in a permanent loop. ⚠️ (a) and (c) are patched **on the box
-  only** — the next git-reset deploy REVERTS them unless committed first.
-- **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
-- **Added:** 2026-08-17 · updated 2026-08-19 (VPS bring-up: watchdog grace)
 
 ### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
 - **Check:** ask the owner whether a Razorpay test account exists; on the box or

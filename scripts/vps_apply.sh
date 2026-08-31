@@ -44,6 +44,47 @@ APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
 
 echo "==> Pulling latest from origin/main"
+
+# 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
+# one below, one directory over — and this one is worse, because it blocks the
+# `git reset` that would have delivered its own fix.
+#
+# `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
+# write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
+# with `drwxr-xr-x` therefore stops the app user dead:
+#
+#   error: unable to unlink old
+#   'workbench/operator_console/src/app/models/ModelDetails.tsx':
+#   Permission denied
+#
+# Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
+# rounds each, both with green CI. The box sat on 3ad494bd for a day while
+# `main` moved two merges ahead — and stayed UP the whole time, serving old
+# code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
+# 2026-08-30 16:49 by something in that deploy running as root.
+#
+# `.venv` gets this treatment at line ~270 and the source tree never did, which
+# is why the earlier fix could not save this case: `uv sync` is far downstream
+# of the checkout that now fails.
+#
+# ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
+# is gitignored, so `git reset` never touches it — chowning it here would turn
+# a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
+#
+# `find -exec … +` rather than `chown $(find …)`: the command substitution
+# splits on whitespace, so it breaks on any path with a space in it, and a tree
+# this size can overflow the argument list. `find` under `sudo` also keeps the
+# traversal quiet on directories the app user cannot read.
+CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
+if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
+     ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
+  echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+else
+  echo "    WARNING: could not repair checkout ownership — git reset may fail"
+  echo "             with 'unable to unlink old' (see H-89)."
+fi
+
 # Preserve runtime-managed state that lives in tracked files but is
 # mutated on the VPS (agents.json = Control-Plane agent registry).
 # git reset --hard would otherwise wipe agents registered via the UI.
