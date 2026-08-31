@@ -47,6 +47,7 @@ import {
   isFiltered,
   viewDivergence,
 } from "../lib/grouping";
+import { type ViewMode, honoursGroupBy, honoursLanes } from "../lib/commands";
 import {
   DEFAULT_SHOWN,
   FIELD_KEYS,
@@ -83,6 +84,12 @@ const SELECT =
 interface Props {
   filters: Filters;
   onFilters: (next: Filters) => void;
+  /**
+   * The canvas on screen — it decides which grouping axes this bar OFFERS.
+   * `honoursGroupBy` / `honoursLanes` own that table; the bar does not carry
+   * its own opinion about what a canvas can draw.
+   */
+  mode: ViewMode;
   groupBy: GroupBy;
   onGroupBy: (next: GroupBy) => void;
   /**
@@ -123,6 +130,7 @@ interface Props {
 export function FilterBar({
   filters,
   onFilters,
+  mode,
   groupBy,
   onGroupBy,
   lanes,
@@ -234,42 +242,52 @@ export function FilterBar({
           Overdue
         </Button>
 
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Group by
-          <select
-            aria-label="Group by"
-            className={SELECT}
-            value={groupBy}
-            onChange={(e) => onGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {GROUP_LABELS[option]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* Both axes are offered only where the canvas draws them. Calendar
+            and Timeline honour neither, and only the board has a second
+            axis — see `honoursGroupBy` / `honoursLanes`. Hiding the control
+            never clears the value: switching away and back keeps the
+            grouping, and a saved view carries both axes whichever canvas
+            saved it. */}
+        {honoursGroupBy(mode) ? (
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            Group by
+            <select
+              aria-label="Group by"
+              className={SELECT}
+              value={groupBy}
+              onChange={(e) => onGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {GROUP_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Lanes
-          <select
-            aria-label="Sub-group by (swimlanes)"
-            className={SELECT}
-            value={subGroupBy === groupBy ? "none" : subGroupBy}
-            onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.filter(
-              (option) => option === "none" || option !== groupBy
-            ).map((option) => (
-              <option key={option} value={option}>
-                {option === "none" ? "No lanes" : GROUP_LABELS[option]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {honoursLanes(mode) ? (
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            Lanes
+            <select
+              aria-label="Sub-group by (swimlanes)"
+              className={SELECT}
+              value={subGroupBy === groupBy ? "none" : subGroupBy}
+              onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.filter(
+                (option) => option === "none" || option !== groupBy
+              ).map((option) => (
+                <option key={option} value={option}>
+                  {option === "none" ? "No lanes" : GROUP_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         {/* WS-27x — which fields this view shows. ONE set feeding two
             consumers: the table's columns and every card's chip row, so

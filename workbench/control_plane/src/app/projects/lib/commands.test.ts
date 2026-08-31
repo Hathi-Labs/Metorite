@@ -22,6 +22,8 @@ import {
   type CommandActions,
   type CommandContext,
   VIEW_MODES,
+  honoursGroupBy,
+  honoursLanes,
   availableCommands,
   isSequenceKey,
   isTypingTarget,
@@ -133,6 +135,28 @@ describe("the registry itself", () => {
     expect(views.map((c) => c.id).sort()).toEqual(
       VIEW_MODES.map((m) => `view.${m.id}`).sort(),
     );
+  });
+
+  it("offers each grouping axis only where the canvas draws it", () => {
+    // Measured against the canvases on 2026-08-31: TaskBoard reads `lanes`,
+    // and TaskBoard/TaskList/TableView read `groupBy` for their columns,
+    // section headers and quick-add prefill. Calendar and Timeline read
+    // neither. Offering a control that cannot act is a dead click — and here
+    // a worse one, because setting it still writes the view's config from a
+    // surface that shows no effect.
+    expect(VIEW_MODES.map((m) => m.id).filter(honoursLanes)).toEqual(["board"]);
+    expect(VIEW_MODES.map((m) => m.id).filter(honoursGroupBy)).toEqual([
+      "board",
+      "list",
+      "table",
+    ]);
+  });
+
+  it("never offers lanes where it does not offer grouping", () => {
+    // A second axis with no first axis would be a grid with one column.
+    for (const { id } of VIEW_MODES) {
+      if (honoursLanes(id)) expect(honoursGroupBy(id), id).toBe(true);
+    }
   });
 
   it("labels a go command exactly as the sidebar does", () => {

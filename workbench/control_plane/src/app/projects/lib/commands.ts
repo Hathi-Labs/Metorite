@@ -58,6 +58,42 @@ export const VIEW_MODES = [
 
 export type ViewMode = (typeof VIEW_MODES)[number]["id"];
 
+/**
+ * Which grouping axes a canvas actually HONOURS.
+ *
+ * The filter bar offers "Group by" and "Lanes" to every canvas, which was
+ * wrong on four of the six: a control that cannot act where it is drawn is a
+ * dead click, and worse than dead here — setting it still writes the view's
+ * config, so somebody could change a saved view from a surface that shows
+ * them no effect.
+ *
+ * Measured from the canvases themselves rather than asserted:
+ *
+ * | canvas   | groupBy                          | lanes            |
+ * |----------|----------------------------------|------------------|
+ * | board    | columns                          | swimlane rows    |
+ * | list     | section headers + quick-add fill | —                |
+ * | table    | section headers + quick-add fill | —                |
+ * | calendar | —                                | —                |
+ * | timeline | —                                | —                |
+ * | overview | — (a roll-up, not a task canvas) | —                |
+ *
+ * ⚠️ These HIDE a control, they do not clear the value. Switching to
+ * Calendar and back must not silently drop the grouping somebody chose, and
+ * a saved view keeps carrying both axes whichever canvas saved it.
+ */
+const GROUPED_CANVASES = new Set<ViewMode>(["board", "list", "table"]);
+
+/** True when this canvas draws something with `groupBy`. */
+export function honoursGroupBy(mode: ViewMode): boolean {
+  return GROUPED_CANVASES.has(mode);
+}
+
+/** True when this canvas draws swimlanes. Only the board has a second axis. */
+export function honoursLanes(mode: ViewMode): boolean {
+  return mode === "board";
+}
+
 /** Where the app is, so a command can refuse to be offered when it would no-op. */
 export interface CommandContext {
   mode: ViewMode;

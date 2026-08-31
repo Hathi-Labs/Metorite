@@ -1736,6 +1736,7 @@ function ProjectsWorkspace() {
         <FilterBar
           filters={filters}
           onFilters={changeFilters}
+          mode={mode}
           groupBy={groupBy}
           onGroupBy={(next) => {
             setGroupBy(next);
