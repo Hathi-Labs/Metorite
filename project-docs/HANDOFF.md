@@ -75,6 +75,38 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-81 · Decide whether the vision resolver reads credentials · [OWNER]
+- **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
+  and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`.
+  This entry is still real while the resolver takes `(conn, tier)` and nothing
+  else, and while the empty-`attempts` branch answers 503 with no second
+  resolve. ⚠️ Do NOT grep `provider_credential` on its own. `router.py:486`
+  already reads that table for the SERVING path, so that grep hits today and
+  reads as done.
+- **Why:** WS-31's blind-step guard filters the lift chain on `reads_images`,
+  and one chain shape pays a CORRECT 200 for it. The shape is a BLIND rank 1,
+  then a SEEING rank 2 that the service holds no key for, with `tier-vision`
+  bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
+  and answered 200 from a model that saw the image. The filter keeps the
+  unkeyed seeing step, `main.py:5221-5224` empties the chain, and the route
+  answers 503. A verifier drove both sides on 2026-08-31.
+- 🔴 **The loss is AVAILABILITY, and never correctness.** No blind model
+  answers in either version. So the customer trades a right answer for a
+  refusal, and never a refusal for a wrong answer.
+- 🔴 **Two candidate closes, and each one is a THIRD resolution rule.**
+  (a) The resolver reads `provider_credential` BEFORE it filters, so a step
+  the service cannot call never enters the chain. (b) The credential filter
+  re-resolves to `tier-vision` when it empties `attempts` on a declared vision
+  task. §3.2 records no decision on either shape, so an agent may not mint one
+  (CLAUDE.md §5). That is why this entry is the owner's.
+- 📌 **Latent today.** Nothing binds `tier-vision` (F3) and nothing writes
+  `model_profile.reads_images` (§3.7 rule 4). Building the shape takes all
+  three operator acts of `ai_metering_and_analytics.md` §8.5 clause 3.
+- ⏰ **Deadline: decide before H-69 arms the lift.** That flip is what makes
+  the shape reachable on a live box.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 8 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards repair round
+
 ### H-80 · Decide the thread budget for the stream walk · [OWNER]
 - **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
   No hit means nobody has capped the stream walk, and this entry is still real.

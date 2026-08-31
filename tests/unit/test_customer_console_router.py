@@ -2103,31 +2103,43 @@ def bound_tier(db):
     ⚠️ **The test writes the `model_profile` row ITSELF.** Nothing seeds that
     table (§3.7 rule 4) and nothing populates ``reads_images``, so a fixture
     that leaned on the ladder would prove D-AI-2 against an empty table and
-    pass for the wrong reason. The flag lands on the RANK-1 model, which is
-    the one `resolve_vision_chain` reads. ``reads_images=None`` leaves that
-    model with NO profile row at all, which is the launch state and must read
-    the same as FALSE.
+    pass for the wrong reason. ``reads_images=None`` leaves the model with NO
+    profile row at all, which is the launch state and must read the same as
+    FALSE.
+
+    🔴 **``reads_images`` takes a LIST for a PER-STEP flag**, one entry per
+    rank, and the entries may disagree. `resolve_vision_chain` reads the flag
+    on EVERY step (§3.2 step 3b), so a fence for a mixed chain has to be able
+    to build one. A scalar keeps the older shape: the flag lands on the RANK-1
+    model, and the steps behind it get no profile row. Passing a list is what
+    lets `TestABlindStepNeverEntersALiftChain` share this fixture instead of
+    minting a second one.
     """
     made: list[tuple[str, list[str]]] = []
 
     def _bind(model: str | list[str], *, reads_images,
               task: str = "chat") -> str:
         models = [model] if isinstance(model, str) else list(model)
+        if isinstance(reads_images, list):
+            flags = list(reads_images)
+        else:
+            flags = [reads_images] + [None] * (len(models) - 1)
         tier = f"tier-fx-{uuid.uuid4().hex[:8]}"
         made.append((tier, models))
         with db.begin() as c:
             eff = c.execute(text("SELECT now()")).scalar_one()
-            for rank, step in enumerate(models, start=1):
+            for rank, (step, flag) in enumerate(
+                    zip(models, flags, strict=True), start=1):
                 c.execute(
                     text("INSERT INTO tier_binding (tier, task, model, rank, "
                          "effective_from) VALUES (:t, :k, :m, :r, :eff)"),
                     {"t": tier, "k": task, "m": step, "r": rank, "eff": eff})
-            if reads_images is not None:
-                c.execute(
-                    text("INSERT INTO model_profile (model, reads_images) "
-                         "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
-                         "SET reads_images = EXCLUDED.reads_images"),
-                    {"m": models[0], "r": reads_images})
+                if flag is not None:
+                    c.execute(
+                        text("INSERT INTO model_profile (model, reads_images) "
+                             "VALUES (:m, :r) ON CONFLICT (model) DO UPDATE "
+                             "SET reads_images = EXCLUDED.reads_images"),
+                        {"m": step, "r": flag})
         return tier
 
     yield _bind
@@ -2570,49 +2582,15 @@ class TestTheRouterImageRule:
         assert _last_row(db, slug).task == "chat"
 
 
-@pytest.fixture
-def chat_chain(db):
-    """Bind a fresh chat tier to an ORDERED chain, and remove it afterwards.
+def _scratch_step(vendor: str, *, sees: bool) -> str:
+    """Mint a model id nothing else in the run holds.
 
-    Each step is a ``(vendor, reads_images)`` pair, in rank order. The model
-    ids carry a fresh suffix per call, so no two tests share a
-    ``model_profile`` row and the teardown deletes only what it wrote. The
-    scratch database is SHARED, and a row left behind decides a sibling
-    suite's answer.
-
-    ⚠️ **One transaction for the whole chain.** Postgres freezes ``now()`` at
-    the start of a transaction, so every rank lands on ONE ``effective_from``.
-    :func:`router.resolve_chain` reads the newest timestamp and then every row
-    at it, so two timestamps would splice half a chain.
+    A `model_profile` row is keyed on the model alone, so two fences that
+    shared an id would share a flag and `bound_tier`'s teardown would remove
+    a row the other one still needs. The name says what the step DOES, so a
+    failure message reads without a lookup.
     """
-    made: list[tuple[str, list[str]]] = []
-
-    def _bind(*steps: tuple[str, bool]) -> tuple[str, list[str]]:
-        tier = f"tier-chain-{uuid.uuid4().hex[:8]}"
-        models = [
-            f"{vendor}/{'sees' if sees else 'blind'}-{uuid.uuid4().hex[:8]}"
-            for vendor, sees in steps
-        ]
-        made.append((tier, models))
-        with db.begin() as c:
-            for rank, (model, step) in enumerate(
-                    zip(models, steps, strict=True), start=1):
-                c.execute(text(
-                    "INSERT INTO tier_binding (tier, task, model, rank, "
-                    "effective_from) VALUES (:t, 'chat', :m, :r, now())"),
-                    {"t": tier, "m": model, "r": rank})
-                c.execute(text(
-                    "INSERT INTO model_profile (model, reads_images) "
-                    "VALUES (:m, :s)"), {"m": model, "s": step[1]})
-        return tier, models
-
-    yield _bind
-    with db.begin() as c:
-        for tier, models in made:
-            c.execute(text("DELETE FROM tier_binding WHERE tier = :t"),
-                      {"t": tier})
-            c.execute(text("DELETE FROM model_profile WHERE model = ANY(:m)"),
-                      {"m": models})
+    return f"{vendor}/{'sees' if sees else 'blind'}-{uuid.uuid4().hex[:8]}"
 
 
 class TestABlindStepNeverEntersALiftChain:
@@ -2630,7 +2608,7 @@ class TestABlindStepNeverEntersALiftChain:
 
     # ── clause 7 ──
     def test_a_blind_rank_2_never_enters_the_lift_chain(
-            self, client, org_key, chat_chain, vision_bound):
+            self, client, org_key, bound_tier, vision_bound):
         """Rank 1 sees, rank 1 fails, and no second model is asked.
 
         `vision_bound` binds `tier-vision` here, so a resolution that spliced
@@ -2646,8 +2624,9 @@ class TestABlindStepNeverEntersALiftChain:
 
         router_mod.set_provider_call(_fail)
         _, key = org_key
-        tier, (sees, _blind) = chat_chain(("deepseek", True),
-                                          ("deepseek", False))
+        sees = _scratch_step("deepseek", sees=True)
+        blind = _scratch_step("deepseek", sees=False)
+        tier = bound_tier([sees, blind], reads_images=[True, False])
 
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
@@ -2660,7 +2639,7 @@ class TestABlindStepNeverEntersALiftChain:
         )
 
     def test_a_SEEING_rank_2_stays_in_the_lift_chain(
-            self, client, org_key, calls, chat_chain, vision_bound):
+            self, client, org_key, calls, bound_tier, vision_bound):
         """The filter reads the whole chain, and not the head of it.
 
         Rank 1 is blind and rank 2 sees. One model in the chosen tier can
@@ -2668,8 +2647,9 @@ class TestABlindStepNeverEntersALiftChain:
         is saved.
         """
         _, key = org_key
-        tier, (_blind, sees) = chat_chain(("deepseek", False),
-                                          ("deepseek", True))
+        blind = _scratch_step("deepseek", sees=False)
+        sees = _scratch_step("deepseek", sees=True)
+        tier = bound_tier([blind, sees], reads_images=[False, True])
 
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
@@ -2678,10 +2658,13 @@ class TestABlindStepNeverEntersALiftChain:
         assert [c["model"] for c in calls] == [sees]
 
     def test_a_chain_with_NO_seeing_step_falls_to_the_vision_tier(
-            self, client, org_key, calls, chat_chain, vision_bound):
+            self, client, org_key, calls, bound_tier, vision_bound):
         """An empty filter result falls, exactly as one FALSE step does."""
         _, key = org_key
-        tier, _models = chat_chain(("deepseek", False), ("deepseek", False))
+        tier = bound_tier(
+            [_scratch_step("deepseek", sees=False),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[False, False])
 
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
@@ -2691,7 +2674,7 @@ class TestABlindStepNeverEntersALiftChain:
 
     # ── clause 8 ──
     def test_an_unkeyed_rank_1_never_promotes_a_blind_rank_2(
-            self, client, org_key, calls, chat_chain, vision_bound):
+            self, client, org_key, calls, bound_tier, vision_bound):
         """🔴 This shape needs NO failover at all, which is the wider half.
 
         The route drops every step it holds no key for before it tries
@@ -2705,7 +2688,10 @@ class TestABlindStepNeverEntersALiftChain:
         """
         _, key = org_key
         vendor = f"nokey{uuid.uuid4().hex[:8]}"
-        tier, _models = chat_chain((vendor, True), ("deepseek", False))
+        tier = bound_tier(
+            [_scratch_step(vendor, sees=True),
+             _scratch_step("deepseek", sees=False)],
+            reads_images=[True, False])
 
         r = client.post("/v1/chat/completions", headers=key, json={
             "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
