@@ -4221,7 +4221,29 @@ hit area is the wide stroke. Undo restores the link. The blocked indicator
 recomputes with no reload.
 **Gate:** AGENT-SAFE.
 
-#### 9.12.6 Teamspaces — a space with members (owner decision, 2026-08-31)
+#### 9.12.6 Teamspaces — a space with members · ⏸️ PARKED
+
+⚠️ **PARKED BY THE OWNER, 2026-09-01, and the reason is the useful part.**
+*"We will park for later when we actually have divisions and teams access.
+Right now we don't have that."*
+
+So the blocker is not the design and not the gate question below. **There is no
+second team to scope anything to.** A members tab on a one-team workspace is a
+list with one name on it, and the grant it writes changes who sees what for
+nobody.
+
+**The trigger that un-parks it:** a second team, division, or any group that
+should see less than the whole workspace. When that exists, the design below
+stands as written and the gate question is the only thing owed first.
+
+📌 **This park costs nothing.** The section below records the design, it settles
+the collision with D49 and D12, and `pm_project_grants` already carries the
+rows. This is a surface that waits for a reason, not a feature that waits for a
+decision.
+
+---
+
+**The design, kept intact below.**
 
 **The owner chose: give the existing Space tier membership.** Not a revival of
 Centers, and not a new level. Recorded here because the two rejected shapes both
@@ -4370,7 +4392,7 @@ dispatch. The seam is there. The product shape is not.
 |---|---|---|
 | 1 | Delete a dependency · watching filter | Small, independent, and each one changes what a member sees TODAY |
 | 2 | Move dialog, then drag | One feature. The accessible path ships first |
-| 3 | Project watching · teamspace members | Both touch the tree and the grant table |
+| 3 | Project watching | ⏸️ Teamspace members PARKED 2026-09-01 — no second team to scope to yet (§9.12.6) |
 | 4 | Analytics (a) → (b) → (c) → (d), and status groups beside them | Each later metric needs more history. Status groups shares their vocabulary, and §9.12.3 explains why it waits |
 | 5 | Reporting | Renders what wave 4 computes |
 | 6 | Follow-ups | Independent, and it pairs with a parked feature |
