@@ -653,9 +653,10 @@ class TestOperatorSpendReads:
         # organization sorts LAST — asserting against the default page tests
         # the pagination. The first repair asked for a page of 10,000, which
         # is a bet on the size of the table: somebody sized that bound at 563
-        # organizations, the scratch database reached 25,959, the zero-usage
-        # block moved past the page, and this fence became a steady red that
-        # read as volume noise. A filter cannot expire that way.
+        # organizations, the scratch database reached 25,959 by 2026-08-31,
+        # the zero-usage block moved past the page, and this fence became a
+        # steady red that read as volume noise. That count is a MEASUREMENT on
+        # that date, not the size today. A filter cannot expire that way.
         page = store.usage_by_org(conn, days=30, slug=slug)
         mine = page["rows"]
         assert mine, (

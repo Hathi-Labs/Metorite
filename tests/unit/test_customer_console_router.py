@@ -16,8 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import pathlib
-import re
 import uuid
 from decimal import Decimal
 
@@ -2172,45 +2170,105 @@ def bound_tier(db):
                           {"m": step})
 
 
-#: The fixtures that own a `tier_binding` teardown. A binding written anywhere
-#: else in this file must be rolled back by its own test.
-_BINDING_FIXTURES = frozenset({"_bind", "vision_bound"})
+#: The tables a test in this file can leak a row into, and the columns that
+#: identify one row. `tier_binding` is the leak of record (H-84 shape 1).
+#: `model_capability` is its shadow: migration 010 backfills a capability row
+#: from every chat binding, so a sweep that took only the binding left the
+#: second row on the database.
+#:
+#: Every column named here is NOT NULL (migrations 010 and 011), so a tuple of
+#: them is a total key and it sorts.
+_WATCHED_TABLES = {
+    "tier_binding": ("tier", "task", "model", "rank", "effective_from"),
+    "model_capability": ("model", "task", "invocation", "streams"),
+}
 
-#: Assembled, never written whole — the fence below reads THIS file, and a
-#: literal here would count itself and its own docstring. The suite already
-#: hit that trap in `test_provider_keys.py`.
-_BINDING_WRITE = "INSERT INTO " + "tier_binding"
+
+def _watch_read(engine) -> dict[str, set[tuple]]:
+    """Read one set of row keys per watched table."""
+    seen: dict[str, set[tuple]] = {}
+    with engine.begin() as c:
+        for table, cols in _WATCHED_TABLES.items():
+            rows = c.execute(text(f"SELECT {', '.join(cols)} FROM {table}")).all()
+            seen[table] = {tuple(row) for row in rows}
+    return seen
 
 
-def test_every_binding_this_file_writes_is_taken_back() -> None:
-    """🔴 **R7 — the fence for H-84 shape 1.** A committed binding must be owned.
+def _watch_escaped(before: dict[str, set[tuple]],
+                   after: dict[str, set[tuple]]) -> dict[str, list[tuple]]:
+    """Name the rows that appeared and STAYED. An empty dict is the pass."""
+    return {table: sorted(after[table] - before[table], key=repr)
+            for table in before if after[table] - before[table]}
 
-    `test_a_missing_credential_is_a_503_not_a_crash` wrote one and removed
-    nothing, and 83 rows collected on the shared scratch database. Each row
-    names a model that declares no capability, so the leak reddens
+
+@pytest.fixture(scope="module", autouse=True)
+def _binding_watch(_schema):
+    """🔴 **R7 — the fence for H-84 shape 1.** It watches the DATABASE.
+
+    `test_a_missing_credential_is_a_503_not_a_crash` wrote a `tier-orphan`
+    binding and removed nothing, and 83 rows collected on the shared scratch
+    database. Each row names a model that declares no capability, so the leak
+    reddens
     `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
-    — a SIBLING suite, in whichever worktree sweeps next. A data check cannot
-    catch that early enough, because the row is already there.
+    — a SIBLING suite, in whichever worktree sweeps next.
 
-    So this reads the source instead. Every write of a binding in this file
-    must sit inside a fixture that deletes it, or inside a test that rolls its
-    own transaction back. Add a third shape and this test names it.
+    🔴 **The first version of this fence read the source, and it was
+    out-spelled twice.** It looked for the literal ``INSERT INTO tier_binding``
+    in this file. A verifier defeated it with lower case, and again by
+    splitting the keyword over two adjacent string literals — which is this
+    file's own house style for multi-line SQL. Both leaked real rows while the
+    fence read green. A scan over spellings can always lose that race, so this
+    one measures the harm instead of one way of causing it.
+
+    **What it catches.** Any row that a test in THIS module commits to
+    `tier_binding` or `model_capability` and does not take back, whatever SQL
+    spelling wrote it, through whatever helper, in a test written today or
+    tomorrow. It also catches the `rollback()` hole: a test may call
+    ``rollback()`` on one transaction and commit a binding on another, and the
+    row is still here at the end.
+
+    **What it does NOT catch.** Four things, and the docstring says so because
+    a fence that overstates its reach is the defect it repairs.
+    1. A leak into any other table. `_WATCHED_TABLES` is the whole list.
+    2. A leak by a SIBLING suite. The window opens and closes around this
+       module, so `test_customer_console_sql.py` gets no cover from it.
+    3. A row written and taken back inside the window. That is correct — no
+       row escapes, so there is no harm to report.
+    4. Whose row it is. The scratch database is shared between worktrees. A
+       run beside this one can put a row in this window, and the fence names
+       it as an offender. The row keys in the message tell you which.
+
+    The failure lands as an ERROR at module teardown, not as a test failure.
+    That is the price of watching to the last test.
     """
-    src = pathlib.Path(__file__).read_text(encoding="utf-8")
-    starts = [m.start() for m in re.finditer(r"^\s*def ", src, re.MULTILINE)]
-    offenders = []
-    for hit in re.finditer(re.escape(_BINDING_WRITE), src):
-        cut = hit.start()
-        owner = src[:cut].rsplit("def ", 1)[1].split("(")[0]
-        after = [s for s in starts if s > cut]
-        body = src[cut:after[0] if after else len(src)]
-        if owner in _BINDING_FIXTURES or "rollback()" in body:
-            continue
-        offenders.append(owner)
-    assert not offenders, (
-        "these write a tier binding and nothing takes it back — route them "
-        f"through `bound_tier` or roll the transaction back: {offenders}"
+    engine = create_engine(_URL, future=True)
+    before = _watch_read(engine)
+    yield before
+    escaped = _watch_escaped(before, _watch_read(engine))
+    assert not escaped, (
+        "rows escaped this module — route the write through `bound_tier`, or "
+        f"delete what the test wrote: {escaped}"
     )
+
+
+def test_the_binding_watch_over_this_file_is_armed(_binding_watch) -> None:
+    """The fence has a fence. Disarm `_binding_watch` and this goes red.
+
+    `_binding_watch` reports at module teardown, so a change that deletes it,
+    empties `_WATCHED_TABLES`, or breaks the read fails NOTHING on its own.
+    This test makes that silent disarming loud. It also proves the comparison
+    step names a new row, rather than trusting that it does.
+    """
+    assert set(_binding_watch) == set(_WATCHED_TABLES), (
+        "the watch reads a different set of tables than it declares")
+    assert _binding_watch["tier_binding"], (
+        "the ladder binds tiers, so an empty snapshot means the watch read "
+        "the wrong database")
+
+    planted = ("tier-not-a-real-tier", "chat", "x/y", 1, "2000-01-01")
+    after = dict(_binding_watch)
+    after["tier_binding"] = _binding_watch["tier_binding"] | {planted}
+    assert _watch_escaped(_binding_watch, after) == {"tier_binding": [planted]}
 
 
 @pytest.fixture

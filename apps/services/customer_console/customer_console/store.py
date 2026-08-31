@@ -805,8 +805,10 @@ def usage_by_org(
     operator page" without asking for a page big enough to hold every other
     customer. That question used to be asked with a large `limit`, and a large
     `limit` is a bet on the size of the table: the bound was sized at 563
-    organizations, the scratch database reached 25,959, and the zero-usage
-    block moved past the page. A filter cannot expire that way.
+    organizations, the scratch database reached 25,959 by 2026-08-31, and the
+    zero-usage block moved past the page. That count is a MEASUREMENT on that
+    date and not the size today — a scratch database gets reset. A filter
+    cannot expire that way.
 
     ⚠️ **Do NOT read `slug` as permission to serve this to a customer.** The
     section note above still binds — a customer-facing surface takes

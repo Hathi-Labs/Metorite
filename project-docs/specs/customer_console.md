@@ -649,9 +649,26 @@ owns. 📌 **Migration 010 backfills `model_capability` from every chat
 binding**, so a leaked binding declared its own capability on the next ladder
 replay and then hid itself. A sweep must take both rows. **Fences (R7):**
 `test_customer_console_sql.py::test_the_slug_filter_holds_a_page_of_ONE_against_richer_rows`,
-`test_customer_console_router.py::test_every_binding_this_file_writes_is_taken_back`
+`test_customer_console_router.py::_binding_watch`
 and
 `test_provider_keys.py::test_the_slate_this_suite_wipes_is_only_its_own`.
+
+📌 **AMENDED 2026-08-31 — the Router fence now watches the DATABASE.** The
+first version read the source of its own file for the text
+`INSERT INTO tier_binding`. Verification defeated it twice. Lower case got
+past it. A keyword split over two adjacent string literals also got past it,
+and that split is this repository's house style for multi-line SQL. Both
+evasions leaked a real row while the fence read green.
+
+`_binding_watch` is a module-scoped fixture. It reads `tier_binding` and
+`model_capability` before the module and again after it. It names every row
+that the module leaves behind, whatever SQL wrote it. It sees no sibling
+suite, and its own docstring says so.
+`test_the_binding_watch_over_this_file_is_armed` goes red if somebody removes
+the watch.
+
+The 25,959 figure above is a MEASUREMENT taken on 2026-08-31. The scratch
+database has been reset since then, so it is not the size today.
 
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
