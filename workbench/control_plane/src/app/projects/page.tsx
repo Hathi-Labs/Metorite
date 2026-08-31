@@ -1720,13 +1720,90 @@ function ProjectsWorkspace() {
    * **Nothing is rescheduled (D-PM-12).** Creating the link may make the arrow
    * red; that is the whole intended effect.
    */
+  /**
+   * ── The two halves of a dependency, WITHOUT the undo bookkeeping ────────
+   *
+   * Bare on purpose. An undo step that called the recording version would push
+   * a NEW entry onto the stack while running off it, so one Ctrl+Z would leave
+   * the stack longer than it started. Both throw, because `undoApi` needs the
+   * rejection to put a failed step back rather than skip silently past it.
+   */
+  async function createBlockLink(blockerId: string, blockedId: string) {
+    const created = await projectsApi.createLink(blockerId, blockedId, "blocks");
+    await refreshRef.current();
+    return created.id;
+  }
+
+  /**
+   * `DELETE /tasks/{taskId}/links/{linkId}` takes EITHER end — the handler
+   * matches `source_task_id = :tid OR target_task_id = :tid`, and says in its
+   * own comment that the caller may be either. So the id here is a visibility
+   * check rather than a direction: the caller must be able to reach the task
+   * they name, and the link must touch it.
+   *
+   * The blocker's id travels because the timeline has it in hand. Nothing
+   * breaks if a future caller passes the blocked end.
+   */
+  async function dropLink(blockerId: string, linkId: string) {
+    await projectsApi.deleteLink(blockerId, linkId);
+    await refreshRef.current();
+  }
+
   async function linkTasks(blockerId: string, blockedId: string) {
     try {
-      await projectsApi.createLink(blockerId, blockedId, "blocks");
+      const id = await createBlockLink(blockerId, blockedId);
+      recordLinkHistory("linked two tasks", blockerId, blockedId, id, "created");
     } catch (err) {
       setError(String((err as Error).message));
     }
-    await loadMonth();
+  }
+
+  /** Remove a dependency — WS-27bk §9.12.5. */
+  async function unlinkTasks(blockerId: string, linkId: string) {
+    const edge = month.links.find((link) => link.id === linkId);
+    if (!edge) return;
+    try {
+      await dropLink(blockerId, linkId);
+      recordLinkHistory(
+        "removed a dependency",
+        edge.blocker_id,
+        edge.blocked_id,
+        linkId,
+        "deleted",
+      );
+    } catch (err) {
+      setError(String((err as Error).message));
+    }
+  }
+
+  /**
+   * One undo entry for both directions, because they share the trap.
+   *
+   * ⚠️ **THE LINK'S ID MOVES.** Re-creating a dependency writes a NEW row with
+   * a new id, so an entry that captured the original id points at nothing the
+   * second time round — undo, redo, undo, and the third step 404s. The live id
+   * is therefore held in a mutable cell that each re-create rewrites.
+   *
+   * A pair of task ids would not do instead. The route needs the LINK id, and
+   * two tasks can legitimately carry more than one link between them.
+   */
+  function recordLinkHistory(
+    label: string,
+    blockerId: string,
+    blockedId: string,
+    id: string,
+    did: "created" | "deleted",
+  ) {
+    let live = id;
+    const remake = async () => {
+      live = await createBlockLink(blockerId, blockedId);
+    };
+    const remove = () => dropLink(blockerId, live);
+    undoApi.record({
+      label,
+      undo: did === "created" ? remove : remake,
+      redo: did === "created" ? remake : remove,
+    });
   }
 
   /**
@@ -2201,6 +2278,7 @@ function ProjectsWorkspace() {
               onSelect={(task) => void openWithStatuses(task)}
               onMove={(task, patch) => void moveTask(task, patch)}
               onLink={(blockerId, blockedId) => void linkTasks(blockerId, blockedId)}
+              onUnlink={(blockerId, linkId) => void unlinkTasks(blockerId, linkId)}
               onRefuse={(reason) => setError(reason)}
             />
           ) : mode === "calendar" ? (
