@@ -94,6 +94,9 @@ import {
   toQuery,
 } from "./lib/grouping";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
+import { inversePatch } from "@/lib/undo";
+import { useUndoScope } from "@/components/UndoProvider";
+import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
 import { DEFAULT_SHOWN } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
@@ -542,6 +545,14 @@ function ProjectsWorkspace() {
    * wrong in.
    */
   const [people, setPeople] = useState<string[]>([]);
+  /**
+   * Undo history, scoped to the open project.
+   *
+   * Switching project clears it, which is the point of the scope: an entry
+   * holds the values needed to revert a row in a project you have navigated
+   * away from, and pressing Ctrl+Z there must not reach back into it.
+   */
+  const undoApi = useUndoScope(`projects:${selected?.id ?? "none"}`);
   const [zoom, setZoom] = useState<TimelineZoom>("month");
   const [timeWindow, setTimeWindow] = useState<TimelineWindow>(() =>
     windowFor("month", dayKey(new Date()))
@@ -1063,6 +1074,11 @@ function ProjectsWorkspace() {
     if (mode === "calendar" || mode === "timeline") void loadMonth();
   }, [mode, loadMonth]);
 
+  // Always the CURRENT reload, for undo steps that outlive the render that
+  // recorded them. See `rewriteTask`.
+  const refreshRef = useRef<() => Promise<void>>(async () => {});
+  refreshRef.current = loadMonth;
+
   // WS-27af — the assignee filter's options, accumulated from whatever has
   // been loaded. `mergeAssignees` returns the same array when nothing is new,
   // so this settles after the first load instead of re-rendering the bar.
@@ -1553,6 +1569,26 @@ function ProjectsWorkspace() {
     await loadMonth();
   }
 
+  /**
+   * Re-apply a patch and refresh — the body of every undo and redo step.
+   *
+   * Errors are THROWN rather than swallowed into `setError`, because the undo
+   * provider needs the rejection: it puts the step back on the stack so the
+   * next Ctrl+Z retries instead of skipping silently past a revert that never
+   * landed.
+   *
+   * The refresh goes through a ref rather than the captured `loadMonth`. These
+   * closures can outlive several renders, and a captured one would refetch with
+   * whatever window and filters were live when the drag happened.
+   */
+  async function rewriteTask(
+    taskId: string,
+    patch: Record<string, unknown>
+  ): Promise<void> {
+    await projectsApi.patchTask(taskId, patch);
+    await refreshRef.current();
+  }
+
   /** The window a date patch needs, or the one we already have. */
   function grownWindow(
     current: TimelineWindow,
@@ -1571,6 +1607,15 @@ function ProjectsWorkspace() {
     }));
     try {
       await projectsApi.patchTask(task.id, patch);
+      // Undoable from here on. Recorded only on SUCCESS — a stack entry for a
+      // write the server refused would offer to revert a change that never
+      // happened. The inverse is captured from the row as it was BEFORE the
+      // optimistic edit above, which is why `task` is read and not `month`.
+      undoApi.record({
+        label: `rescheduled ${task.title}`,
+        undo: () => rewriteTask(task.id, inversePatch(task, patch)),
+        redo: () => rewriteTask(task.id, patch),
+      });
     } catch (err) {
       setError(String((err as Error).message));
     }
@@ -1666,6 +1711,12 @@ function ProjectsWorkspace() {
    */
   const projectActions = (compact: boolean) =>
     selected ? (
+      <>
+      {/* Undo/redo sits with the VIEW ACTIONS, not in the filter bar: it acts
+          on the project, not on what is on screen, and the filter bar is
+          where you narrow rather than where you change things. Beside the
+          overflow menu it is the first thing to hand after a drag. */}
+      <UndoControls />
       <div ref={manageRef} className="relative">
         <Button
           variant="ghost"
@@ -1725,6 +1776,7 @@ function ProjectsWorkspace() {
           </div>
         ) : null}
       </div>
+      </>
     ) : null;
 
   const title = app

@@ -382,14 +382,13 @@ export function stepSequence(
  * A bare letter shortcut and a text field are the classic collision: without
  * this, typing "go" into the quick-add box navigates away mid-word.
  */
-export function isTypingTarget(
-  target: { tagName?: string; isContentEditable?: boolean } | null | undefined,
-): boolean {
-  if (!target) return false;
-  if (target.isContentEditable === true) return true;
-  const tag = (target.tagName ?? "").toLowerCase();
-  return tag === "input" || tag === "textarea" || tag === "select";
-}
+/**
+ * Re-exported, not reimplemented. The predicate moved to `@/lib/keyboard` when
+ * undo became global: Ctrl+Z inside a text field must reach the browser, and
+ * "which elements count as typing" cannot be one answer here and another in the
+ * undo provider. Callers here are unchanged.
+ */
+export { isTypingTarget } from "@/lib/keyboard";
 
 /** How long a half-typed prefix survives before it is forgotten. */
 export const SEQUENCE_TIMEOUT_MS = 1500;
