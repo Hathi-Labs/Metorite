@@ -2543,6 +2543,153 @@ class TestTheRouterImageRule:
         assert _last_row(db, slug).task == "chat"
 
 
+@pytest.fixture
+def chat_chain(db):
+    """Bind a fresh chat tier to an ORDERED chain, and remove it afterwards.
+
+    Each step is a ``(vendor, reads_images)`` pair, in rank order. The model
+    ids carry a fresh suffix per call, so no two tests share a
+    ``model_profile`` row and the teardown deletes only what it wrote. The
+    scratch database is SHARED, and a row left behind decides a sibling
+    suite's answer.
+
+    ⚠️ **One transaction for the whole chain.** Postgres freezes ``now()`` at
+    the start of a transaction, so every rank lands on ONE ``effective_from``.
+    :func:`router.resolve_chain` reads the newest timestamp and then every row
+    at it, so two timestamps would splice half a chain.
+    """
+    made: list[tuple[str, list[str]]] = []
+
+    def _bind(*steps: tuple[str, bool]) -> tuple[str, list[str]]:
+        tier = f"tier-chain-{uuid.uuid4().hex[:8]}"
+        models = [
+            f"{vendor}/{'sees' if sees else 'blind'}-{uuid.uuid4().hex[:8]}"
+            for vendor, sees in steps
+        ]
+        made.append((tier, models))
+        with db.begin() as c:
+            for rank, (model, step) in enumerate(
+                    zip(models, steps, strict=True), start=1):
+                c.execute(text(
+                    "INSERT INTO tier_binding (tier, task, model, rank, "
+                    "effective_from) VALUES (:t, 'chat', :m, :r, now())"),
+                    {"t": tier, "m": model, "r": rank})
+                c.execute(text(
+                    "INSERT INTO model_profile (model, reads_images) "
+                    "VALUES (:m, :s)"), {"m": model, "s": step[1]})
+        return tier, models
+
+    yield _bind
+    with db.begin() as c:
+        for tier, models in made:
+            c.execute(text("DELETE FROM tier_binding WHERE tier = :t"),
+                      {"t": tier})
+            c.execute(text("DELETE FROM model_profile WHERE model = ANY(:m)"),
+                      {"m": models})
+
+
+class TestABlindStepNeverEntersALiftChain:
+    """§3.2 step 3b (D16) / §8.5 clauses 7 and 8.
+
+    🔴 **The harm is a CONFIDENT WRONG ANSWER.** The flag used to be read on
+    the rank-1 step alone. So a blind rank 2 could serve an image request and
+    answer about a picture it never saw, with a 200 the customer reads as
+    correct. §3.2 refuses at the image wall for exactly this reason.
+
+    ⚠️ **Every test here drives the HTTP route.** The rule is about which
+    model the ROUTE calls, and a direct call to the resolver proves the
+    resolution and not the serving.
+    """
+
+    # ── clause 7 ──
+    def test_a_blind_rank_2_never_enters_the_lift_chain(
+            self, client, org_key, chat_chain, vision_bound):
+        """Rank 1 sees, rank 1 fails, and no second model is asked.
+
+        `vision_bound` binds `tier-vision` here, so a resolution that spliced
+        the two chains together would show up as a third model in `seen`.
+        """
+        seen: list[str] = []
+
+        async def _fail(**kwargs):
+            seen.append(kwargs["model"])
+            exc = Exception("overloaded")
+            exc.status_code = 500
+            raise exc
+
+        router_mod.set_provider_call(_fail)
+        _, key = org_key
+        tier, (sees, _blind) = chat_chain(("deepseek", True),
+                                          ("deepseek", False))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        # An exhausted chain is the 502 it has always been. The chain is one
+        # step long, so there is nothing left to try.
+        assert r.status_code == 502, r.text
+        assert seen == [sees], (
+            "the blind rank-2 step answered about a picture it never saw"
+        )
+
+    def test_a_SEEING_rank_2_stays_in_the_lift_chain(
+            self, client, org_key, calls, chat_chain, vision_bound):
+        """The filter reads the whole chain, and not the head of it.
+
+        Rank 1 is blind and rank 2 sees. One model in the chosen tier can
+        still answer, so the lift holds and the second call to `tier-vision`
+        is saved.
+        """
+        _, key = org_key
+        tier, (_blind, sees) = chat_chain(("deepseek", False),
+                                          ("deepseek", True))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [sees]
+
+    def test_a_chain_with_NO_seeing_step_falls_to_the_vision_tier(
+            self, client, org_key, calls, chat_chain, vision_bound):
+        """An empty filter result falls, exactly as one FALSE step does."""
+        _, key = org_key
+        tier, _models = chat_chain(("deepseek", False), ("deepseek", False))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+
+    # ── clause 8 ──
+    def test_an_unkeyed_rank_1_never_promotes_a_blind_rank_2(
+            self, client, org_key, calls, chat_chain, vision_bound):
+        """🔴 This shape needs NO failover at all, which is the wider half.
+
+        The route drops every step it holds no key for before it tries
+        anything. So an unkeyed rank 1 used to make the blind rank 2 the FIRST
+        step the Router called, with nothing having failed.
+
+        ⚠️ **The answer is the 503 an unconfigured vendor already gets, and
+        NOT a fall to `tier-vision`.** A credential-aware fall is a third
+        resolution rule and §3.2 records no decision on it (§8.5 clause 8).
+        `tier-vision` is bound here, and the route still does not reach it.
+        """
+        _, key = org_key
+        vendor = f"nokey{uuid.uuid4().hex[:8]}"
+        tier, _models = chat_chain((vendor, True), ("deepseek", False))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "task": "vision", "messages": IMAGE_MESSAGES})
+
+        assert r.status_code == 503, r.text
+        assert vendor in r.json()["detail"]
+        assert calls == [], (
+            "a blind model answered because rank 1 held no credential"
+        )
+
+
 def test_n_is_capped_like_max_tokens(client, org_key):
     """`n` MULTIPLIES output cost; uncapped it defeated the 32k ceiling."""
     _, key = org_key

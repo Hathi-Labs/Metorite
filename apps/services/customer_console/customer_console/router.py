@@ -253,7 +253,7 @@ def resolve_vision_chain(
 
     1. The chosen tier's own ``vision`` chain, when the tier binds one. The
        call bills (chosen tier, ``vision``), exactly as it did before D-AI-2.
-    2. The chosen tier's CHAT chain, when its rank-1 model sets
+    2. The chosen tier's CHAT chain, FILTERED to the steps that set
        ``reads_images``. One model answers, and the call bills the (chosen
        tier, ``chat``) pair. A second call to a vision model would cost a
        second call.
@@ -262,19 +262,33 @@ def resolve_vision_chain(
        rule 1 does not forbid it: the tier the customer picked does not drop,
        and every chat turn beside it stays where it was.
 
-    ⚠️ **The flag is read on the RANK-1 chat binding**, which is *the model
-    bound to the chosen tier* that §3.2 step 1 names. A chain whose rank-2 step
-    disagrees with its rank-1 step is an operator warning the Console owes, and
-    §8.5 names the wrong answer that gap produces. It is not a second
-    resolution rule, and this function does not build one.
+    🔴 **A BLIND STEP NEVER ENTERS THE LIFT CHAIN** (§3.2 step 3b, D16). The
+    flag is read on EVERY step of the chat chain, and a step that clears it is
+    dropped. An empty result falls to :data:`VISION_TIER`, exactly as a chain
+    whose every step clears the flag does.
+
+    ⚠️ **The rank-1 read was a shipped wrong answer, and this is the repair.**
+    Rank 1 reads images, rank 1 fails, and the walk moves to a blind rank 2.
+    That model then answers about a picture it never saw, with a confident 200.
+    The route also drops every step it holds no key for, so an UNKEYED rank 1
+    made the blind rank 2 the FIRST step, with nothing having failed. A wrong
+    answer is worse than a refusal, which is the whole reason §3.2 step 4
+    refuses rather than serving.
+
+    ⚠️ **The fall is a RESOLUTION act, and never a failover act.** This
+    function picks the chain before the walk starts. A step that fails at
+    runtime therefore falls to the next SEEING step and to nothing else. A
+    chain that spliced two tiers together would bill two pairs out of one walk,
+    and §3.2 records no decision on that.
 
     Raises:
         TierUnknown: the chosen tier binds neither ``vision`` nor ``chat``
             (§3.2 step 0). The caller answers this with the wall it already
             had, unchanged.
-        VisionUnbound: the chat model reads no image and nothing binds
-            :data:`VISION_TIER`. Both halves are down, and the sentence names
-            both.
+        VisionUnbound: no step of the chat chain reads an image, and nothing
+            binds :data:`VISION_TIER`. Both halves are down, and the sentence
+            names both. The wording stays singular *"the chat model for tier
+            <slug>"*, because §3.2 step 4 fixes it word for word.
     """
     try:
         return resolve_chain(conn, tier, VISION_TASK)
@@ -285,8 +299,9 @@ def resolve_vision_chain(
         # yet a wall.
         pass
     chat_chain = resolve_chain(conn, tier, CHAT_TASK)
-    if reads_images(conn, chat_chain[0].model):
-        return chat_chain
+    seeing = [s for s in chat_chain if reads_images(conn, s.model)]
+    if seeing:
+        return seeing
     try:
         return resolve_chain(conn, VISION_TIER, VISION_TASK)
     except TierUnknown as unbound:

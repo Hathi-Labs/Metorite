@@ -75,28 +75,44 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-80 · Give the stream walk its own thread budget, off the shared 40 · [AGENT]
-- **Check:** `grep -n "CapacityLimiter\|Semaphore" apps/services/customer_console/customer_console/main.py`.
-  No hit inside `_open_stream_chain` means this entry is still real.
-- **Why:** WS-31 slice 11 moved the provider stream open into the route. So a
+### H-80 · Decide the thread budget for the stream walk · [OWNER]
+- **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
+  No hit means nobody has capped the stream walk, and this entry is still real.
+- **Why:** WS-31 slice 11 moved the provider stream open into the route. A
   `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
-  length of the walk — up to `3 × 120` seconds. And litellm's `asyncify`
-  (`asyncify.py:57`) passes `limiter=None`, which borrows from that SAME
-  default pool. Put 40 concurrent stream walks beside one asyncify-bound
-  model, and nothing recovers. Every token sits in a walk, and each walk waits
-  for a token that no walk will release. Measured 2026-08-31 — the stream path
-  borrows 1 of 40, and seven litellm call sites share the limiter. Two of them
-  serve requests: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
-  (`sagemaker/completion/handler.py:428`, `:499`).
+  length of the walk. That is up to `3 x 120` seconds. The `asyncify` helper in
+  litellm borrows from the SAME default pool, because `asyncify.py:60` and
+  `:66` pass `limiter=None`. Then anyio resolves `limiter or
+  cls.current_default_thread_limiter()` (`anyio/_backends/_asyncio.py:2480`),
+  and that factory builds `CapacityLimiter(40)` (`:2957`). Put 40 stream walks
+  beside one asyncify-bound model, and nothing recovers.
+- ⛔ **The fix shape this entry carried is WITHDRAWN** *(2026-08-31)*. It read
+  "a bounded semaphore in front of `_open_stream_chain`". FastAPI takes the
+  threadpool token BEFORE the route body runs. `run_endpoint_function` calls
+  `run_in_threadpool(dependant.call, **values)` (`fastapi/routing.py:315`). So
+  a semaphore inside the route blocks a thread that ALREADY holds a token. It
+  reserves no headroom, and the deadlock stands.
+- 📌 **The scope is narrower than it looks.** Both buffered paths call
+  `asyncio.run` (`main.py:5364`, `:5699`), which builds a PRIVATE loop. A
+  `RunVar` (`_asyncio.py:2085`) keys anyio's default limiter, so a private loop
+  gets its own 40 tokens. Only `_open_stream_chain` shares the serving loop's
+  limiter, because it alone calls `anyio.from_thread.run`.
+- 🔴 **Two shapes WOULD work, and both change throughput.** An `async def`
+  dependency runs on the loop BEFORE FastAPI takes the token, so it can cap
+  stream requests. That cap makes the 9th concurrent stream WAIT. The other shape
+  raises `total_tokens` on the default limiter at startup, which changes the
+  thread budget of EVERY route. §3.6 records no decision on either, so this
+  entry is the owner's.
 - 📌 **Latent, and one row from live.** Every model bound today (deepseek,
-  groq) reaches httpx and borrows no thread. A vendor swap is one
+  groq) reaches httpx and borrows no thread. Two request-serving `asyncify(`
+  sites exist: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
+  (`sagemaker/completion/handler.py:428`, `:499`). A vendor swap is one
   `tier_binding` row, which is an operator act that no code review sees.
-- 📌 **The fix shape:** a dedicated `anyio.CapacityLimiter` for stream walks,
-  or a bounded semaphore in front of `_open_stream_chain`, sized well under 40.
-  Not a rewrite of the route to `async def`.
 - **Authority:** `ai_metering_and_analytics.md` §8.6 "The threadpool hazard"
   · board row WS-31
-- **Added:** 2026-08-31 · WS-31 slice 11 review round 2
+- **Added:** 2026-08-31 · WS-31 slice 11 review round 2 · **rewritten
+  2026-08-31**. The WS-31 router-guards slice withdrew the fix shape and moved
+  the label to OWNER.
 
 ### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
 - **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
@@ -922,37 +938,12 @@ line — never reclaim a number by deleting the other entry.
   `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
   endpoint and H-47's handler seam are what is left. Keep this entry until
   those three land.
-- 🔴 **A SECOND finding rides here, from WS-31 slice 4 (D-AI-2), 2026-08-31.**
-  **A mixed lift chain answers about an image it never saw.**
-  `resolve_vision_chain` reads `model_profile.reads_images` on the RANK-1 step
-  of the chosen tier's chat chain, and nothing checks the steps behind it.
-  So rank 1 reads images, rank 1 fails, and the chain falls over to a blind
-  rank 2. The customer then gets a confident 200 about a picture that model
-  never saw. The meter files the turn as `vision`. This is the exact harm §3.2
-  names when it refuses to answer 200 at the image wall.
-  ⚠️ **It needs NO failover at all, which is the wider half** *(reviewer,
-  2026-08-31)*. The route drops every step it holds no key for, before it
-  tries anything. So an UNKEYED rank 1 makes the blind rank 2 the FIRST step
-  the Router tries. One missing credential then gives the wrong answer, with
-  nothing having failed.
-  **Check:** `rg -n 'reads_images' apps/services/customer_console/customer_console/router.py`
-  → a single read, on `chat_chain[0].model`, means nobody has filtered the
-  chain yet.
-  **The fix shape:** keep only the steps that set `reads_images`, and fall to
-  `tier-vision` when none remain. One filter closes both shapes, because the
-  blind step never enters the chain in either. It is a SECOND resolution rule,
-  so §3.2 owes the decision first — slice 4 did not mint one alone
-  (CLAUDE.md §5).
-  **Not urgent, and say why:** nothing populates `reads_images` today and
-  nothing binds `tier-vision`, so the lift cannot fire.
-  ⚠️ **Arming the lift takes TWO acts, not one** *(corrected 2026-08-31 — this
-  said "runs the vendor feed")*. `feed.sync` writes `vendor_price_feed` alone.
-  `model_profile.reads_images` has ONE writer, `POST /catalog/profiles`
-  (`main.py:2296`), which the console reaches per MODEL through the declare
-  click (`declareBodies`, `workbench/operator_console/src/lib/feed.ts:95-110`).
-  So this becomes reachable on the day somebody syncs the feed AND saves a
-  profile. **Fix it before H-69.**
-  **Authority:** `ai_metering_and_analytics.md` §8.5 (the 🔴 that states it).
+- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
+  WS-31 slice 4, and the router-guards slice filtered the chain.
+  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
+  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
+  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
+  done-when.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
   → only `/v1/chat/completions` and `/v1/audio/transcriptions` means the image
   endpoint and the speak endpoint are still not built.
