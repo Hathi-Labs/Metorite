@@ -648,19 +648,61 @@ class TestOperatorSpendReads:
         slug = conn.execute(
             text("SELECT slug FROM organization WHERE id = :i"), {"i": org}
         ).scalar_one()
-        # ⚠️ **Asked for a page big enough to hold every organization.** The
-        # default page is capped and rows sort by credits DESC, so a zero-usage
+        # 🔴 **FILTERED, and never paged wide** (HANDOFF H-83). The default
+        # page is capped and rows sort by credits DESC, so a zero-usage
         # organization sorts LAST — asserting against the default page tests
-        # the pagination, and passes or fails on whether this fixture's random
-        # slug happened to sort into the first hundred. That is the defect
-        # below, not the LEFT JOIN this test is about.
-        page = store.usage_by_org(conn, days=30, limit=10_000)
-        mine = [r for r in page["rows"] if r["slug"] == slug]
+        # the pagination. The first repair asked for a page of 10,000, which
+        # is a bet on the size of the table: somebody sized that bound at 563
+        # organizations, the scratch database reached 25,959 by 2026-08-31,
+        # the zero-usage block moved past the page, and this fence became a
+        # steady red that read as volume noise. That count is a MEASUREMENT on
+        # that date, not the size today. A filter cannot expire that way.
+        page = store.usage_by_org(conn, days=30, slug=slug)
+        mine = page["rows"]
         assert mine, (
             "usage_by_org must LEFT JOIN — an organization with no usage is "
             "the row an operator most needs to see"
         )
         assert mine[0]["credits"] == 0 and mine[0]["calls"] == 0
+
+    def test_the_slug_filter_holds_a_page_of_ONE_against_richer_rows(
+            self, conn, org):
+        """🔴 **R7 — the fence for H-83.** Delete the filter and this goes red.
+
+        Three neighbours with real spend outrank this fixture's zero-usage
+        organization on every column the ORDER BY reads. A page of one then
+        carries the top spender, and only the filter can put this row on it.
+
+        ⚠️ **The volume is the point, and three rows are enough to prove it.**
+        The shape this replaces asked for a page of 10,000, which passed on a
+        small database and failed on a large one — so it measured how many
+        organizations the box held rather than what the read returns. This
+        fence gives the same answer at three rows and at 25,959.
+        """
+        slug = conn.execute(
+            text("SELECT slug FROM organization WHERE id = :i"), {"i": org},
+        ).scalar_one()
+        for _ in range(3):
+            rich = store.ensure_organization(
+                conn, slug=f"zz-rich-{uuid.uuid4().hex[:8]}", name="Rich Ltd",
+            )
+            store.record_usage(
+                conn, org_id=rich, request_id=f"req-{uuid.uuid4().hex}",
+                billed_credits=Decimal("1000"),
+            )
+
+        page = store.usage_by_org(conn, days=30, limit=1, slug=slug)
+
+        assert [r["slug"] for r in page["rows"]] == [slug], (
+            "the page of one must carry the organization the caller named, "
+            "and not the biggest spender on the box"
+        )
+        assert page["rows"][0]["credits"] == 0
+        assert page["total"] == 1, (
+            "a filtered page counts what it filtered — a total over the whole "
+            "table would render as '1 of 25,959' and claim a truncation that "
+            "never happened"
+        )
 
     def test_a_quiet_customer_can_fall_OFF_the_default_page(self, conn, org):
         """🔴 The known defect, pinned so nobody rediscovers it (H-76).
@@ -876,17 +918,21 @@ class TestARefusalIsNotACall:
         assert all(r["calls"] == 0 for r in rows)
 
     def _row_for(self, conn, org) -> dict:
-        """This organization's row from the UNCAPPED operator page.
+        """This organization's row from the operator page, BY SLUG.
 
-        ⚠️ Uncapped on purpose: the default page sorts by credits and a
-        zero-usage organization sorts LAST, so asserting against it would test
-        the pagination instead.
+        🔴 **Filtered, and never paged wide** (HANDOFF H-83). Six tests read
+        through this helper. It asked for a page of 10,000 until 2026-08-31,
+        and a limit is a bet on the size of the table: it was sized at 563
+        organizations, the scratch database reached 25,959, and the zero-usage
+        block moved past the page. All six then failed for a reason that had
+        nothing to do with what they assert, which is how a real regression
+        gets read as volume noise. A filter cannot expire that way.
         """
         slug = conn.execute(
             text("SELECT slug FROM organization WHERE id = :i"), {"i": org},
         ).scalar_one()
-        page = store.usage_by_org(conn, days=30, limit=10_000)
-        mine = [r for r in page["rows"] if r["slug"] == slug]
+        page = store.usage_by_org(conn, days=30, slug=slug)
+        mine = page["rows"]
         assert mine, "the LEFT JOIN must keep this organization on the page"
         return mine[0]
 

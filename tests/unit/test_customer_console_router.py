@@ -532,16 +532,34 @@ class TestProviderCredentials:
         assert own[0] == "customer-own-key"
         assert platform[0] == "platform-key"
 
-    def test_a_missing_credential_is_a_503_not_a_crash(self, client, org_key, db):
+    def test_a_missing_credential_is_a_503_not_a_crash(
+            self, client, org_key, bound_tier):
+        """🔴 **Through `bound_tier`, because this test used to LEAK** (H-84).
+
+        It wrote a raw `tier-orphan` row and removed nothing. `ON CONFLICT DO
+        NOTHING` never fired either: migration 011 keys the table on
+        `(task, tier, effective_from, rank)` and the row was stamped
+        `now() - interval '1 day'`, which is a fresh key on every run. 83 rows
+        had collected on the shared scratch database by 2026-08-31, and each
+        one names a model that declares no capability — the shape
+        `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
+        fails on. So the leak reddened a SIBLING suite, in another worktree.
+
+        🔴 **The leak also MANUFACTURED the row that hid it.** Migration 010
+        backfills `model_capability` from every chat binding in the table, and
+        `apply_ladder` replays the ladder on every module setup. So a leaked
+        binding declares its own capability on the NEXT run, the catalog fence
+        then reads the pair as served, and the leak goes quiet again. Measured
+        on 2026-08-31 by deleting both rows and running this test twice. That
+        is why a sweep must take BOTH rows: sweep the capability alone and the
+        fence reddens over a row nobody wrote on purpose, sweep the binding
+        alone and the stale capability keeps hiding the next leak.
+        """
         _, key = org_key
-        with db.begin() as c:
-            c.execute(text(
-                "INSERT INTO tier_binding (tier, model, effective_from) "
-                "VALUES ('tier-orphan', 'nosuchprovider/model', "
-                "        now() - interval '1 day') ON CONFLICT DO NOTHING"))
+        tier = bound_tier("nosuchprovider/model", reads_images=None)
 
         r = client.post("/v1/chat/completions", headers=key, json={
-            "model": "tier-orphan", "messages": [{"role": "user", "content": "hi"}]})
+            "model": tier, "messages": [{"role": "user", "content": "hi"}]})
 
         assert r.status_code == 503
         assert "nosuchprovider" in r.json()["detail"]
@@ -2150,6 +2168,107 @@ def bound_tier(db):
             for step in models:
                 c.execute(text("DELETE FROM model_profile WHERE model = :m"),
                           {"m": step})
+
+
+#: The tables a test in this file can leak a row into, and the columns that
+#: identify one row. `tier_binding` is the leak of record (H-84 shape 1).
+#: `model_capability` is its shadow: migration 010 backfills a capability row
+#: from every chat binding, so a sweep that took only the binding left the
+#: second row on the database.
+#:
+#: Every column named here is NOT NULL (migrations 010 and 011), so a tuple of
+#: them is a total key and it sorts.
+_WATCHED_TABLES = {
+    "tier_binding": ("tier", "task", "model", "rank", "effective_from"),
+    "model_capability": ("model", "task", "invocation", "streams"),
+}
+
+
+def _watch_read(engine) -> dict[str, set[tuple]]:
+    """Read one set of row keys per watched table."""
+    seen: dict[str, set[tuple]] = {}
+    with engine.begin() as c:
+        for table, cols in _WATCHED_TABLES.items():
+            rows = c.execute(text(f"SELECT {', '.join(cols)} FROM {table}")).all()
+            seen[table] = {tuple(row) for row in rows}
+    return seen
+
+
+def _watch_escaped(before: dict[str, set[tuple]],
+                   after: dict[str, set[tuple]]) -> dict[str, list[tuple]]:
+    """Name the rows that appeared and STAYED. An empty dict is the pass."""
+    return {table: sorted(after[table] - before[table], key=repr)
+            for table in before if after[table] - before[table]}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _binding_watch(_schema):
+    """🔴 **R7 — the fence for H-84 shape 1.** It watches the DATABASE.
+
+    `test_a_missing_credential_is_a_503_not_a_crash` wrote a `tier-orphan`
+    binding and removed nothing, and 83 rows collected on the shared scratch
+    database. Each row names a model that declares no capability, so the leak
+    reddens
+    `test_customer_console_catalog.py::test_the_seeded_world_has_NO_unserved_binding`
+    — a SIBLING suite, in whichever worktree sweeps next.
+
+    🔴 **The first version of this fence read the source, and it was
+    out-spelled twice.** It looked for the literal ``INSERT INTO tier_binding``
+    in this file. A verifier defeated it with lower case, and again by
+    splitting the keyword over two adjacent string literals — which is this
+    file's own house style for multi-line SQL. Both leaked real rows while the
+    fence read green. A scan over spellings can always lose that race, so this
+    one measures the harm instead of one way of causing it.
+
+    **What it catches.** Any row that a test in THIS module commits to
+    `tier_binding` or `model_capability` and does not take back, whatever SQL
+    spelling wrote it, through whatever helper, in a test written today or
+    tomorrow. It also catches the `rollback()` hole: a test may call
+    ``rollback()`` on one transaction and commit a binding on another, and the
+    row is still here at the end.
+
+    **What it does NOT catch.** Four things, and the docstring says so because
+    a fence that overstates its reach is the defect it repairs.
+    1. A leak into any other table. `_WATCHED_TABLES` is the whole list.
+    2. A leak by a SIBLING suite. The window opens and closes around this
+       module, so `test_customer_console_sql.py` gets no cover from it.
+    3. A row written and taken back inside the window. That is correct — no
+       row escapes, so there is no harm to report.
+    4. Whose row it is. The scratch database is shared between worktrees. A
+       run beside this one can put a row in this window, and the fence names
+       it as an offender. The row keys in the message tell you which.
+
+    The failure lands as an ERROR at module teardown, not as a test failure.
+    That is the price of watching to the last test.
+    """
+    engine = create_engine(_URL, future=True)
+    before = _watch_read(engine)
+    yield before
+    escaped = _watch_escaped(before, _watch_read(engine))
+    assert not escaped, (
+        "rows escaped this module — route the write through `bound_tier`, or "
+        f"delete what the test wrote: {escaped}"
+    )
+
+
+def test_the_binding_watch_over_this_file_is_armed(_binding_watch) -> None:
+    """The fence has a fence. Disarm `_binding_watch` and this goes red.
+
+    `_binding_watch` reports at module teardown, so a change that deletes it,
+    empties `_WATCHED_TABLES`, or breaks the read fails NOTHING on its own.
+    This test makes that silent disarming loud. It also proves the comparison
+    step names a new row, rather than trusting that it does.
+    """
+    assert set(_binding_watch) == set(_WATCHED_TABLES), (
+        "the watch reads a different set of tables than it declares")
+    assert _binding_watch["tier_binding"], (
+        "the ladder binds tiers, so an empty snapshot means the watch read "
+        "the wrong database")
+
+    planted = ("tier-not-a-real-tier", "chat", "x/y", 1, "2000-01-01")
+    after = dict(_binding_watch)
+    after["tier_binding"] = _binding_watch["tier_binding"] | {planted}
+    assert _watch_escaped(_binding_watch, after) == {"tier_binding": [planted]}
 
 
 @pytest.fixture

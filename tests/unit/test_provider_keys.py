@@ -6,7 +6,12 @@ whens 1 and 2. Decision: **D56.7**.
 ⚠️ **Done-when 1 is the point of this suite, and it is worded carefully:** the
 key must be installed *through the route*, on a database *where nothing seeded
 it*, and ``router.provider_credential()`` must then return it. Every fixture
-here therefore starts from an empty table.
+here therefore starts from a table that holds none of ITS OWN rows.
+
+🔴 **Its own rows, and never the whole table** (HANDOFF H-84 shape 2). This
+database is shared across worktrees, so an unqualified delete here reddens
+whatever runs beside it. ``_clear_ours`` owns that rule and ``OURS`` names the
+one provider this suite may write or remove.
 
 Run::
 
@@ -44,6 +49,45 @@ INTERNAL = "test-internal-token"
 ENCRYPTION_KEY = "test-encryption-key-not-a-real-one"
 SECRET = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
 
+#: 🔴 **The ONE provider this suite owns**, and the whole of what it may
+#: delete. Every install below writes this name, and the three spellings the
+#: normalisation fence sends all land on it.
+OURS = "anthropic"
+
+#: 🔴 **The WHERE is the whole repair, so it stays on ONE line.** Split across
+#: two, the first line reads as a whole-table delete to anybody grepping for
+#: one — and that shape is exactly what H-84 keeps out of this file.
+_CLEAR = "DELETE FROM provider_credential WHERE lower(btrim(provider)) = :p"
+
+
+def _clear_ours(eng) -> None:
+    """Take back this suite's own credential rows, and nobody else's.
+
+    🔴 **This statement carried no WHERE at all** (H-84 shape 2). The console
+    suites share ONE scratch database across worktrees, so it emptied the whole
+    table for every run beside this one. They lost the platform `deepseek` row
+    their own fixtures had installed, and then answered 503 naming
+    `'deepseek'` until the next fixture re-inserted it. Measured 2026-08-31:
+    three of twenty-four runs went red that way, and one sweep took the table
+    from 30 rows to 1.
+
+    ⚠️ **Do not repair that by removing the delete.** Done-when 1 says the key
+    must be installed *through the route*, on a database *where nothing seeded
+    it*. The fixture needs a clean slate. It just does not need everyone's.
+    """
+    with eng.begin() as conn:
+        conn.execute(text(_CLEAR), {"p": OURS})
+
+
+def _ours(payload: dict) -> list[dict]:
+    """The credentials in a list response that belong to this suite.
+
+    ⚠️ The route reads the whole table by design — it is the operator's key
+    inventory. A suite that asserts on its LENGTH is asserting on what every
+    other worktree left behind, which is the same defect one seam over.
+    """
+    return [c for c in payload["credentials"] if c["provider"] == OURS]
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _schema():
@@ -66,9 +110,9 @@ def client(monkeypatch, eng):
     monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", INTERNAL)
     monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENCRYPTION_KEY)
     # ⚠️ Done-when 1 says "on a database where the key was installed through
-    # the route and NOT seeded". Clearing first is what makes that true.
-    with eng.begin() as conn:
-        conn.execute(text("DELETE FROM provider_credential"))
+    # the route and NOT seeded". Clearing OUR rows is what makes that true —
+    # see `_clear_ours` for why it is scoped and must stay scoped.
+    _clear_ours(eng)
     from customer_console.main import app
     return TestClient(app)
 
@@ -176,7 +220,8 @@ def test_the_secret_is_encrypted_at_rest(client, eng):
     _install(client, token)
     with eng.begin() as conn:
         stored = conn.execute(
-            text("SELECT secret_enc FROM provider_credential")).scalar()
+            text("SELECT secret_enc FROM provider_credential "
+                 "WHERE provider = :p"), {"p": OURS}).scalar()
     assert stored is not None
     assert SECRET not in stored
     assert stored.startswith("gAAAAA"), "not a Fernet token"
@@ -228,8 +273,10 @@ def test_no_read_route_returns_the_secret(client, eng):
     listed = client.get("/providers/credentials", headers=_auth(token))
     assert listed.status_code == 200
     assert SECRET not in listed.text
-    body = listed.json()["credentials"][0]
-    assert body["provider"] == "anthropic"
+    mine = _ours(listed.json())
+    assert len(mine) == 1, mine
+    body = mine[0]
+    assert body["provider"] == OURS
     assert body["label"] == "prod key"
     assert body["scope"] == "platform"
     assert "secret" not in body and "secret_enc" not in body
@@ -384,7 +431,8 @@ def test_revoking_stops_the_router_and_keeps_the_row(client, eng):
     with eng.begin() as conn:
         assert provider_credential(conn, provider="anthropic") is None
         assert conn.execute(text(
-            "SELECT count(*) FROM provider_credential")).scalar() == 1
+            "SELECT count(*) FROM provider_credential WHERE provider = :p"),
+            {"p": OURS}).scalar() == 1
 
 
 def test_revoking_the_platform_key_leaves_a_byok_org_working(client, eng):
@@ -436,11 +484,12 @@ def test_a_revoked_credential_is_hidden_unless_asked_for(client, eng):
                 json={"provider": "anthropic"})
 
     live = client.get("/providers/credentials", headers=_auth(token)).json()
-    assert live["credentials"] == []
+    assert _ours(live) == []
     everything = client.get("/providers/credentials?include_revoked=true",
                             headers=_auth(token)).json()
-    assert len(everything["credentials"]) == 1
-    assert everything["credentials"][0]["revoked_at"] is not None
+    mine = _ours(everything)
+    assert len(mine) == 1
+    assert mine[0]["revoked_at"] is not None
 
 
 # ── There is no UPDATE path, and that is load-bearing twice ────────────────
@@ -510,18 +559,26 @@ def test_a_malformed_provider_name_is_refused(client, eng, bad):
 
 def test_the_provider_name_is_normalised_so_one_row_stays_one_row(client, eng):
     """⚠️ Load-bearing for the partial unique index, which is over the literal
-    column. Two spellings would both be "the one live credential"."""
+    column. Two spellings would both be "the one live credential".
+
+    ⚠️ **Both reads match on the NORMALISED name, never on the stored one.**
+    That is what keeps the claim intact while the table also holds other
+    suites' rows: every spelling that folds to `anthropic` must be stored as
+    exactly `anthropic`, and there must be one live row among them.
+    """
     token = _admin(eng)
     _install(client, token, provider="Anthropic")
     _install(client, token, provider=" ANTHROPIC ")
     with eng.begin() as conn:
         live = conn.execute(text(
             "SELECT count(*) FROM provider_credential "
-            "WHERE revoked_at IS NULL")).scalar()
-        name = conn.execute(text(
-            "SELECT DISTINCT provider FROM provider_credential")).scalar()
+            "WHERE revoked_at IS NULL AND lower(btrim(provider)) = :p"),
+            {"p": OURS}).scalar()
+        names = conn.execute(text(
+            "SELECT DISTINCT provider FROM provider_credential "
+            "WHERE lower(btrim(provider)) = :p"), {"p": OURS}).scalars().all()
     assert live == 1, "two spellings became two live credentials"
-    assert name == "anthropic"
+    assert names == [OURS], "a spelling was stored as it was sent"
 
 
 @pytest.mark.parametrize("bad", ["not-a-url", "ftp://x.example", "//x.example",
@@ -550,7 +607,8 @@ def test_an_unset_encryption_key_is_503_and_writes_nothing(
     assert _install(client, token).status_code == 503
     with eng.begin() as conn:
         assert conn.execute(text(
-            "SELECT count(*) FROM provider_credential")).scalar() == 0
+            "SELECT count(*) FROM provider_credential WHERE provider = :p"),
+            {"p": OURS}).scalar() == 0
 
 
 # ── The role matrix ────────────────────────────────────────────────────────
@@ -602,6 +660,66 @@ def test_an_unauthenticated_caller_reaches_nothing(client):
     assert client.post("/providers/credentials",
                        json={"provider": "x", "secret": SECRET}).status_code \
         == 401
+
+
+# ── This suite shares a database, and must leave it usable ─────────────────
+
+
+def test_the_slate_this_suite_wipes_is_only_its_own(eng) -> None:
+    """🔴 **R7 — the fence for H-84 shape 2.** Widen the delete and this goes red.
+
+    The console suites share ONE scratch database across worktrees. An
+    unqualified delete over the whole credential table, in the `client`
+    fixture, took the platform `deepseek` row that
+    `test_customer_console_router.py::org_key` installs. The run beside it then
+    answered 503 naming `'deepseek'`.
+    Three of twenty-four runs went red that way on 2026-08-31, and each red
+    named a different test — which is what makes the cause so hard to see.
+
+    So this plants a row that belongs to somebody else, runs the same clearing
+    helper the fixture runs, and demands it survive. The second half matters
+    as much: the suite's OWN row must still go, because done-when 1 needs a
+    slate nothing seeded.
+    """
+    # ⚠️ Ciphertext nothing decrypts. This fence is about WHICH rows go, and
+    # a real Fernet token would drag the encryption key in for no assertion.
+    foreign = f"h84-{uuid.uuid4().hex[:8]}"
+    # A live row this suite left behind would collide with the partial unique
+    # index below, so start from the state the fixture starts from.
+    _clear_ours(eng)
+    with eng.begin() as conn:
+        for provider in (foreign, OURS):
+            conn.execute(
+                text("INSERT INTO provider_credential (provider, secret_enc, "
+                     "label) VALUES (:p, 'not-a-real-secret', 'platform')"),
+                {"p": provider},
+            )
+
+    _clear_ours(eng)
+
+    try:
+        with eng.begin() as conn:
+            survived = conn.execute(
+                text("SELECT count(*) FROM provider_credential "
+                     "WHERE provider = :p"), {"p": foreign}).scalar()
+            swept = conn.execute(
+                text("SELECT count(*) FROM provider_credential "
+                     "WHERE provider = :p"), {"p": OURS}).scalar()
+        assert survived == 1, (
+            "the fixture emptied another suite's credential — every worktree "
+            "sharing this database now serves 503 until its own fixture "
+            "re-installs the row"
+        )
+        assert swept == 0, (
+            "the fixture kept its own row, so done-when 1 no longer proves "
+            "the key arrived through the route"
+        )
+    finally:
+        with eng.begin() as conn:
+            conn.execute(
+                text("DELETE FROM provider_credential WHERE provider = :p"),
+                {"p": foreign},
+            )
 
 
 # ── The R8 gate cannot silently disarm ─────────────────────────────────────
