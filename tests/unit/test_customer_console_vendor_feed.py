@@ -659,3 +659,151 @@ def test_a_poisoned_entry_is_skipped_never_fatal():
     assert by["bad/inf"].input_per_1m is None
     assert by["bad/inf"].context_window is None
     assert by["bad/nan"].output_per_1m is None
+
+
+# ── The FEED READ is the only x60 (§6A.11a clause 5) ────────────────────────
+#
+# 🔴 **The trap this section exists for.** litellm prices transcription per
+# SECOND. `task_catalog` (010) prices `transcribe` per MINUTE. The two tables
+# hold the same price in different units ON PURPOSE, and exactly one piece of
+# code is allowed to know it — the feed-read projection in `_feed_wire`.
+#
+# ⚠️ R8 earns its keep here. The conversion runs on a value psycopg read out
+# of a NUMERIC(18, 10) column, and a hermetic fake would hand the projection
+# a float and then agree with whatever came back.
+
+
+def _declare(conn, model: str, task: str, invocation: str) -> None:
+    """`feed.rows` covers DECLARED models only, so a fixture row needs a
+    capability before the read will show it."""
+    conn.execute(text(
+        "INSERT INTO model_capability (model, task, invocation, streams) "
+        "VALUES (:m, :t, :i, false) ON CONFLICT DO NOTHING"),
+        {"m": model, "t": task, "i": invocation})
+
+
+def _feed_row_for(client, model: str) -> dict:
+    body = client.get("/catalog/models", headers=OP)
+    assert body.status_code == 200, body.text
+    return next(r for r in body.json()["feed"]["rows"] if r["model"] == model)
+
+
+@pytestmark_db
+def test_the_feed_read_serves_transcription_PER_MINUTE(client, db, vendor):
+    """A per-second 0.0001 in the table reads as 0.006 on the wire.
+
+    Drop the ``* Decimal(60)`` in ``_feed_wire`` and this test reports
+    0.0001000000 against 0.006.
+    """
+    model = f"{vendor}/whisper"
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "whisper", mode="audio_transcription", task="transcribe",
+            invocation="atranscription", per_second=Decimal("0.0001"),
+            input_per_1m=None, output_per_1m=None, cached_per_1m=None,
+        )], "github", datetime.now(UTC))
+        _declare(conn, model, "transcribe", "atranscription")
+
+    try:
+        row = _feed_row_for(client, model)
+    finally:
+        with db.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_capability WHERE model = :m"), {"m": model})
+
+    # Decimal-exact: 0.0001 x 60 is 0.006, never 0.005999999999999999.
+    assert Decimal(row["vendor_per_minute_usd"]) == Decimal("0.006")
+    assert Decimal(row["vendor_per_minute_usd"]) == (
+        Decimal("0.0001") * Decimal(60))
+    # ⚠️ The per-SECOND number never crosses the wire. A browser that saw
+    # both would have to choose, and the one it chose would be wrong.
+    assert "vendor_per_second_usd" not in row
+
+
+@pytestmark_db
+def test_the_other_two_per_unit_prices_cross_VERBATIM(client, db, vendor):
+    """`speak` and `image` already speak the task's own unit, so the read
+    copies them. A x60 on either would be a plain error."""
+    model = f"{vendor}/tts"
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "tts", mode="audio_speech", task="speak",
+            invocation="aspeech", per_character=Decimal("0.000015"),
+            per_image=Decimal("0.04"),
+            input_per_1m=None, output_per_1m=None, cached_per_1m=None,
+        )], "github", datetime.now(UTC))
+        _declare(conn, model, "speak", "aspeech")
+
+    try:
+        row = _feed_row_for(client, model)
+    finally:
+        with db.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_capability WHERE model = :m"), {"m": model})
+
+    assert Decimal(row["vendor_per_character_usd"]) == Decimal("0.000015")
+    assert Decimal(row["vendor_per_image_usd"]) == Decimal("0.04")
+    assert row["vendor_per_minute_usd"] is None
+
+
+@pytestmark_db
+def test_an_unpriced_feed_row_serves_null_and_never_zero(client, db, vendor):
+    """NULL means litellm does not know. A zero on this wire reads as "this
+    vendor charges nothing", and somebody would price against it."""
+    model = f"{vendor}/chatty"
+    with db.begin() as conn:
+        feed.sync(conn, [_row(vendor, "chatty")], "github", datetime.now(UTC))
+        _declare(conn, model, "chat", "acompletion")
+
+    try:
+        row = _feed_row_for(client, model)
+    finally:
+        with db.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_capability WHERE model = :m"), {"m": model})
+
+    assert row["vendor_per_minute_usd"] is None
+    assert row["vendor_per_character_usd"] is None
+    assert row["vendor_per_image_usd"] is None
+
+
+def test_only_the_feed_read_multiplies_a_PRICE_by_sixty():
+    """🔴 The source-text half of "the x60 happens ONCE".
+
+    A second conversion is the failure §6A.11a exists to prevent, and it is
+    invisible in behaviour until a transcription bill is 60 or 3600 times the
+    right number. Behaviour cannot show the ABSENCE of a conversion, so this
+    counts the sites instead.
+
+    ⚠️ **The Console holds TWO x60s, and they convert different things.**
+    `_feed_wire` converts a PRICE (USD per second → USD per minute), which is
+    §6A.11a's subject. `_SECONDS_PER_MINUTE` on the transcribe route converts
+    a QUANTITY (seconds of audio → minutes billed), which §6A.10a owns and
+    which this slice does not touch. Both are legitimate. A THIRD is not, and
+    a second PRICE conversion is the bug.
+    """
+    import pathlib
+
+    import customer_console
+
+    pkg = pathlib.Path(customer_console.__file__).parent
+
+    def _code_sites(src: str) -> list[str]:
+        return [
+            ln.strip() for ln in src.splitlines()
+            if "Decimal(60)" in ln and not ln.strip().startswith("#")
+        ]
+
+    assert _code_sites((pkg / "main.py").read_text(encoding="utf-8")) == [
+        # The PRICE conversion (§6A.11a clause 5) — the feed read, once.
+        "else str(Decimal(per_second) * Decimal(60)),",
+        # The QUANTITY conversion (§6A.10a) — audio seconds to billed
+        # minutes, on the transcribe route. A different number entirely.
+        "_SECONDS_PER_MINUTE = Decimal(60)",
+    ]
+
+    for path in sorted(pkg.glob("*.py")):
+        if path.name == "main.py":
+            continue
+        src = path.read_text(encoding="utf-8")
+        assert not _code_sites(src), f"a third x60 landed in {path.name}"

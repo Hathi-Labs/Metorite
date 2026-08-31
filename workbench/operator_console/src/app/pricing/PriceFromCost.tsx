@@ -11,10 +11,15 @@
 // as the manual form.
 //
 // ⚠️ **No fake numbers.** A costs-blind model gets no suggestion and a
-// pointer to record its vendor price. A per-unit job (image, minute,
-// second) asks for the vendor's own dollar price per unit, because the
-// feed does not carry those columns yet (H-78) — typed here, used for the
-// suggestion, stored nowhere.
+// pointer to record its vendor price.
+//
+// ⚠️ **A per-unit job READS its cost from the model's profile** (H-78,
+// §6A.11a clauses 5-7, 2026-08-31). `recordedVendorUsd` picks the column the
+// task prices in — per minute for `transcribe`, per character for `speak`,
+// per image for `image` — and the box opens on that number. The box still
+// accepts a typed figure, because a model nobody has profiled still has no
+// cost. *(This read "the feed does not carry those columns yet" until
+// 2026-08-31. Migration 019 added them and the seam now fills them.)*
 //
 // ⚠️ Judgements live in `lib/priceboard.ts`; `priceboard.test.ts` fences.
 
@@ -25,9 +30,11 @@ import type { AiCatalog } from "@/lib/contract";
 import {
   boundJobs,
   parseMarginPct,
+  recordedVendorUsd,
   savedAssumptions,
   tokenSuggestion,
   unitSuggestion,
+  vendorUsdBox,
 } from "@/lib/priceboard";
 import { singular } from "@/lib/catalog";
 import { chipClass, pricingTone } from "@/lib/tone";
@@ -142,7 +149,8 @@ export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
                       j.tokenPriced && m && margin !== null
                         ? tokenSuggestion(m, a, margin)
                         : null;
-                    const usd = vendorUsd[key] ?? "";
+                    const recorded = recordedVendorUsd(j.task, m);
+                    const usd = vendorUsdBox(vendorUsd[key], recorded);
                     const perUnit =
                       !j.tokenPriced && margin !== null
                         ? unitSuggestion(Number(usd) > 0 ? Number(usd) : null, a, margin)
@@ -185,6 +193,12 @@ export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
                                   → {perUnit} per {singular(j.unit)}
                                 </span>
                               )}
+                              {vendorUsd[key] === undefined &&
+                                recorded !== null && (
+                                  <span className="muted small">
+                                    from the model&apos;s recorded vendor cost
+                                  </span>
+                                )}
                             </span>
                           )}
                         </td>

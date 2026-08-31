@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { CatalogModel } from "./contract";
 import type { Assumptions } from "./pricing";
 import {
   boundJobs,
@@ -13,9 +14,11 @@ import {
   inrRateLine,
   parseMarginPct,
   priceGroups,
+  recordedVendorUsd,
   savedAssumptions,
   tokenSuggestion,
   unitSuggestion,
+  vendorUsdBox,
 } from "./priceboard";
 import { SAMPLE_CATALOG } from "./sample";
 
@@ -105,6 +108,53 @@ describe("per-unit suggestions", () => {
   it("empty without a usable vendor price", () => {
     expect(unitSuggestion(null, A, 0.7)).toBe("");
     expect(unitSuggestion(0, A, 0.7)).toBe("");
+  });
+});
+
+describe("the recorded per-unit vendor cost (H-78)", () => {
+  const M = (over: Partial<CatalogModel> = {}): CatalogModel => ({
+    id: "openai/whisper-1", label: "Whisper", provider: "openai",
+    kinds: ["transcribe"], contextWindow: null, maxOutput: null,
+    inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+    perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+    description: "", declared: true, ...over,
+  });
+
+  it("🔴 one task, one column — and the units already agree", () => {
+    // `task_catalog` (010) prices transcribe in MINUTES and the profile
+    // column holds minutes, because the Console did the per-second to
+    // per-minute conversion once, in the feed read. Nothing here converts.
+    const m = M({ perMinuteUsd: 0.006, perCharacterUsd: 0.000015,
+                  perImageUsd: 0.04 });
+    expect(recordedVendorUsd("transcribe", m)).toBe(0.006);
+    expect(recordedVendorUsd("speak", m)).toBe(0.000015);
+    expect(recordedVendorUsd("image", m)).toBe(0.04);
+  });
+
+  it("no cost source at all for a task nothing prices per unit", () => {
+    // `video` and `music` sit on the slate with no vendor data behind them.
+    // A made-up number on the pricing board is worse than a blank box.
+    const m = M({ perMinuteUsd: 0.006, perImageUsd: 0.04 });
+    expect(recordedVendorUsd("video", m)).toBeNull();
+    expect(recordedVendorUsd("music", m)).toBeNull();
+    expect(recordedVendorUsd("chat", m)).toBeNull();
+  });
+
+  it("a model with no profile row has no recorded cost", () => {
+    expect(recordedVendorUsd("image", undefined)).toBeNull();
+    expect(recordedVendorUsd("image", M())).toBeNull();
+  });
+
+  it("the box opens on the recorded price and a typed one wins", () => {
+    expect(vendorUsdBox(undefined, 0.04)).toBe("0.04");
+    expect(vendorUsdBox(undefined, null)).toBe("");
+    expect(vendorUsdBox("0.09", 0.04)).toBe("0.09");
+  });
+
+  it("🔴 a CLEARED box stays cleared", () => {
+    // An operator who empties the box means "ignore the recorded price".
+    // Re-filling it under their cursor makes the box impossible to empty.
+    expect(vendorUsdBox("", 0.04)).toBe("");
   });
 });
 

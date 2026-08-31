@@ -858,48 +858,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
 
-### H-78 · Teach the vendor feed the per-unit costs (image, second, character) · [AGENT]
-- **Check:** `grep -c "vendor_per_minute_usd" apps/services/customer_console/customer_console/main.py`
-  → `0` means nobody built the feed-read seam (§6A.11a clauses 5 to 7). This
-  entry stays.
-  ⚠️ **The earlier Check read INVERTED, and this line replaces it.** It counted
-  `cost_per_image` in `feed.py`, and that count now returns `3`. `/handoff`
-  would read the `3` as done and delete this entry, while clauses 5 to 7 stay
-  open. Do not restore that Check.
-  ✅ **Clauses 1 to 4 and clause 8 shipped on branch `ws-31-h78-build`.**
-  Migration `019_per_unit_vendor_costs.sql` adds the six columns and widens the
-  two CHECK constraints. `feed.py` parses the three per-unit prices, and the
-  upsert writes them.
-- **Why:** The "Price from cost" board on `/pricing` suggests a charge from the
-  chain's first model and its vendor price. For a token job the cost comes from
-  the feed. For `image`, `transcribe` and `speak` the litellm map carries
-  per-unit fields that `vendor_price_feed` (`014`) did not store. Migration
-  `019` and `feed.py` closed that half. The operator still types the vendor's
-  dollar price into the board by hand, because no read serves the price yet.
-  **What remains:** the ×60 conversion in the feed-read projection, three
-  optional fields on the profile write, and a board that reads the profile.
-  R6 applies.
-- **Done when:** `customer_console.md` **§6A.11a** holds the eight clauses.
-  Build to that section, and to nothing written in this entry.
-  Clauses 1 to 4 and clause 8 are built. Clauses 5, 6 and 7 remain, and the
-  section's "The seam" addendum names where each one goes.
-  ⚠️ **`music` is struck from this entry.** litellm has no `music` mode, so the
-  feed can never fill the `music` task. The task row and the `tier-music` tier
-  both stay.
-  ⚠️ **`video` is a named follow-up, and not part of this entry.** A map of
-  `video_generation` needs a sixth verb in `KNOWN_INVOCATIONS`
-  (`catalog.py:26`). `check_invocation` (`catalog.py:100`) is the refuser, and
-  it rejects a video capability until that verb lands. *(This entry named
-  `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
-  the refusal, and it enforces nothing.)* The follow-up rides with **H-46**.
-  📌 Migration number: an agent took `019` on 2026-08-30, and the merge
-  re-checks it (R1). Clauses 5, 6 and 7 add no migration, because `019` already
-  holds every column they read.
-- **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·
-  §6A.13 · `ai_metering_and_analytics.md` §3.7 · §9
-- **Added:** 2026-08-30 · pricing-method session · **amended 2026-08-30** after a
-  dispatch audit returned NO-GO on scope, on acceptance and on a stale header
-
 ### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
 - **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`
   → `1` means the Console still sends floats.
@@ -1017,16 +975,26 @@ line — never reclaim a number by deleting the other entry.
   measured call sites. This bounds the multimodal reach, not the next two tickets.
 - **Done when:** `customer_console.md` **§6A.10a** holds the nine clauses.
   Build to that section, and to nothing written in this entry.
-  📌 **H-78 lands FIRST.** Clause 5 reads `model_profile.vendor_per_minute_usd`,
-  and H-78 builds that column. Until a profile holds the price,
-  `provider_cost_usd` stays NULL (D-AI-7 rule 3).
+  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
+  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
+  seam that fills it. A profile with no price still leaves
+  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
+  the profile.
   📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
   WITH its first caller (D57.3). §6A.10b clause 7 says so.
+  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
+  litellm's `video_generation` mode needs a sixth verb in
+  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
+  refuser, and it rejects a video capability until that verb lands. This slice
+  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
+  apps/services/customer_console/customer_console/catalog.py` — five verbs
+  means the follow-up is open.
 - **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
   `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
 - **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
   done-when section and the H-78 order · **amended 2026-08-31** with the
-  mixed-lift-chain finding from WS-31 slice 4
+  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
+  with H-78's `video` follow-up, after H-78 closed
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present

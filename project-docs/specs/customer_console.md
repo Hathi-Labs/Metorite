@@ -327,9 +327,10 @@ the rupee side of H-42 (§6A.13). `018` adds the credit-reference unique index.
 Four §6A sections carry the 2026-08-30 work. They are **§6A.11** the vendor
 feed, **§6A.11a** the per-unit vendor costs, **§6A.12** tier pricing and the
 slate, and **§6A.13** the credit's own price.
-**§6A.11a is HALF BUILT.** It holds the per-unit vendor costs (H-78). Clauses
-1 to 4 and clause 8 are built. Clauses 5 to 7 are not built. Each remaining
-default stays an agent-proposed answer the owner may overrule (D16/D17). ⚠️ The
+**§6A.11a is BUILT, 2026-08-31.** It holds the per-unit vendor costs (H-78).
+Clauses 5, 6 and 7 landed on 2026-08-31, beside clauses 1 to 4 and clause 8.
+The projection in the feed read does the one conversion. The profile write
+passes the price through, and the board reads the profile. ⚠️ The
 sentence further down that reads *"the ladder is 001–007 … the next free number
 is 008"* was true on 2026-08-18. This line supersedes it. ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
@@ -8172,24 +8173,46 @@ against a real Postgres (R8). Frontend: `feed.test.ts` inside
 ⚠️ **The feed also stores PER-UNIT prices since migration `019`, and
 §6A.11a owns them.** `014` held three per-million-token columns alone, so
 an `image`, `transcribe` or `speak` job had no cost source. H-78 is that
-gap. The feed half is built. The board half is not, so §6A.11a below
-carries the rest of the rules and the done-when.
+gap. Both halves are built since 2026-08-31, and §6A.11a below carries the
+rules and the done-when.
 
-### 6A.11a The per-unit vendor costs (H-78) — HALF BUILT, 2026-08-30
+### 6A.11a The per-unit vendor costs (H-78) — BUILT, 2026-08-31
 
-**Status: done-when clauses 1, 2, 3, 4 and 8 are BUILT.** Migration
-`019_per_unit_vendor_costs.sql` adds the six columns and widens the two
-CHECK constraints. `feed.py` parses the three per-unit prices, and the
-upsert writes them.
+**Status: all eight done-when clauses are BUILT.** Clauses 1, 2, 3, 4 and 8
+landed on 2026-08-30. Migration `019_per_unit_vendor_costs.sql` adds the six
+columns and widens the two CHECK constraints. `feed.py` parses the three
+per-unit prices, and the upsert writes them.
 
-**Clauses 5, 6 and 7 are NOT built.** No seam converts a per-second price
-to a per-minute one. `GET /catalog/models` sends no new field. The board
-reads no per-unit cost, so the operator still types it.
+**Clauses 5, 6 and 7 landed on 2026-08-31 — the per-unit cost seam.**
+`_feed_wire` in `main.py` multiplies the stored per-second price by
+`Decimal(60)` and serves `vendor_per_minute_usd`. The other two per-unit
+prices cross the wire verbatim. `ProfileRequest` and the `set_model_profile`
+INSERT carry the three fields as optional `Decimal` values, and that route
+does no arithmetic. `GET /catalog/models` sends the profile's three fields as
+strings.
 
-Each remaining default is an **agent-proposed answer the owner may
-overrule**, which is the D16/D17 convention CP-2b and CP-2c used. Where a
-name or a number below disagrees with the tree, the tree wins. Re-verify
-every anchor at dispatch.
+`CatalogModel` gains `perMinuteUsd`, `perCharacterUsd` and `perImageUsd`,
+each read from the profile. `PriceFromCost.tsx` fills the vendor-cost box for
+an `image`, `transcribe` or `speak` job, through `recordedVendorUsd` in
+`priceboard.ts`.
+
+⚠️ **`CatalogModel`'s three new fields are `number | null`, not
+`string | null`.** They follow the `num()` rule every other price on that
+shape follows, because the board only DISPLAYS them and derives a suggestion
+from them. `FeedModel`'s three stay `string | null`. Those values get POSTed
+back into `model_profile`, and a float round trip would write its own noise
+into the database.
+
+⚠️ **The Console holds TWO multiplications by 60, and they convert different
+things.** `_feed_wire` converts a PRICE, which this section owns.
+`_SECONDS_PER_MINUTE` on the transcribe route converts a QUANTITY, which
+§6A.10a owns. Both are correct. A third is a defect, and
+`test_only_the_feed_read_multiplies_a_PRICE_by_sixty` names both sites.
+
+Each default below was an **agent-proposed answer the owner may overrule**,
+which is the D16/D17 convention CP-2b and CP-2c used. Where a name or a
+number below disagrees with the tree, the tree wins. Re-verify every anchor
+at dispatch.
 
 **The problem.** The "Price from cost" panel (§6A.13) reads a job's cost
 from the first model of its chain. That model carries token prices and
@@ -8455,14 +8478,16 @@ section exists to prevent.
 | An image entry prefers the output field | `test_customer_console_vendor_feed.py` — an entry carrying both fields takes `output_cost_per_image` |
 | A pixel-priced image model declares no cost | `test_customer_console_vendor_feed.py` — an `azure/*/gpt-image-1` entry leaves the per-image column NULL |
 | A small per-character price survives the round trip | `test_customer_console_vendor_feed.py` — `0.000015` reads back exact |
-| The board reads the profile, never the feed | `read.test.ts` — a feed row with a cost and no profile row yields no cost |
-| The FEED READ is the only ×60 | `test_customer_console_vendor_feed.py` — the read serves `vendor_per_minute_usd` at 60 times the stored per-second value |
-| The profile write converts nothing | `test_customer_console_vendor_feed.py` — a posted per-minute price reads back byte-identical |
-| Drift compares in PROFILE units | `feed.test.ts` — an equal per-minute pair reports no drift, and no client code multiplies |
+| The board reads the profile, never the feed | `read.test.ts` — `THE BOARD READS THE PROFILE, NEVER THE FEED`: a feed row with a cost and no profile row yields no cost |
+| The FEED READ is the only price ×60 | `test_customer_console_vendor_feed.py` — `test_the_feed_read_serves_transcription_PER_MINUTE`, plus `test_only_the_feed_read_multiplies_a_PRICE_by_sixty`, which names both legal sites |
+| The profile write converts nothing | `test_customer_console_model_profile.py` — `test_the_per_unit_prices_read_back_BYTE_IDENTICAL`: a posted per-minute price reads back unchanged |
+| The wire sends the three as strings | `test_customer_console_model_profile.py` — `test_the_catalog_read_sends_the_three_as_STRINGS` |
+| Drift compares in PROFILE units | `feed.test.ts` — an equal per-minute pair reports no drift, and a source-text assert proves no client code multiplies by 60 |
+| The board's per-unit half reads the profile through a PURE function | `feed.test.ts` — `PriceFromCost reads the RECORDED cost through priceboard.ts`, plus `priceboard.test.ts` for `recordedVendorUsd` and `vendorUsdBox` |
 
-**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py`
-against a real Postgres (R8). Frontend: `npx vitest run` in
-`workbench/operator_console`.
+**Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py
+tests/unit/test_customer_console_model_profile.py` against a real Postgres
+(R8). Frontend: `npx vitest run` in `workbench/operator_console`.
 
 ### 6A.12 Tier pricing and the tier slate (D67, 2026-08-30)
 

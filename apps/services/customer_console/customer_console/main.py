@@ -1733,12 +1733,21 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
              "vendor_output_per_1m_usd": None if r[5] is None else str(r[5]),
              "vendor_cached_input_per_1m_usd":
                  None if r[9] is None else str(r[9]),
+             # The three per-unit costs (019, H-78). Each one already speaks
+             # the TASK's unit, so this projection converts nothing — the
+             # feed read did the x60 before anything copied a price here.
+             "vendor_per_minute_usd": None if r[10] is None else str(r[10]),
+             "vendor_per_character_usd":
+                 None if r[11] is None else str(r[11]),
+             "vendor_per_image_usd": None if r[12] is None else str(r[12]),
              "description": r[6], "reads_images": r[7], "thinks_first": r[8]}
             for r in conn.execute(text(
                 "SELECT model, label, context_window, max_output, "
                 "       vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
                 "       description, reads_images, thinks_first, "
-                "       vendor_cached_input_per_1m_usd "
+                "       vendor_cached_input_per_1m_usd, "
+                "       vendor_per_minute_usd, vendor_per_character_usd, "
+                "       vendor_per_image_usd "
                 "FROM model_profile ORDER BY model"))
         ]
         rates = [
@@ -1824,6 +1833,20 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
 
         def _feed_wire(r: Any) -> dict[str, Any]:
             # ⚠️ Money as STRINGS, same rule as profiles above.
+            #
+            # 🔴 **The x60 lives HERE, and it lives nowhere else** (H-78,
+            # §6A.11a clause 5). litellm prices transcription per SECOND, and
+            # `task_catalog` (010) prices `transcribe` per MINUTE. The feed
+            # keeps the vendor's own unit, the profile keeps the task's unit,
+            # and this projection is the ONE seam between them. So the wire
+            # carries `vendor_per_minute_usd` and never
+            # `vendor_per_second_usd`. The browser copies the number it reads
+            # and converts nothing, because a conversion in TypeScript is a
+            # float conversion, and a float rewrites the number it copies.
+            #
+            # `Decimal(60)` keeps the maths exact: 0.0001 becomes "0.0060000"
+            # and never 0.005999999999999999.
+            per_second = r[13]
             return {
                 "model": r[0], "provider": r[1], "mode": r[2], "task": r[3],
                 "invocation": r[4], "context_window": r[5], "max_output": r[6],
@@ -1834,13 +1857,24 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     None if r[9] is None else str(r[9]),
                 "reads_images": r[10], "thinks_first": r[11],
                 "deprecated_on": None if r[12] is None else r[12].isoformat(),
+                "vendor_per_minute_usd":
+                    None if per_second is None
+                    else str(Decimal(per_second) * Decimal(60)),
+                # The other two already speak the task's unit, so they cross
+                # verbatim.
+                "vendor_per_character_usd":
+                    None if r[14] is None else str(r[14]),
+                "vendor_per_image_usd": None if r[15] is None else str(r[15]),
             }
 
+        # ⚠️ `_feed_wire` reads BY POSITION, so a column inserted in the
+        # middle renames three fields without a word of warning. Append.
         _FEED_COLS = (
             "model, provider, mode, task, invocation, context_window, "
             "max_output, vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
             "vendor_cached_input_per_1m_usd, reads_images, thinks_first, "
-            "deprecated_on"
+            "deprecated_on, vendor_per_second_usd, vendor_per_character_usd, "
+            "vendor_per_image_usd"
         )
         feed_rows = [
             _feed_wire(r) for r in conn.execute(text(
@@ -2288,6 +2322,16 @@ class ProfileRequest(BaseModel):
     #: rather than bill cached reads at the full input price.
     vendor_cached_input_per_1m_usd: Decimal | None = Field(
         default=None, ge=0)
+    #: 🔴 The per-unit costs (019, H-78), for the jobs a token price cannot
+    #: cost: `transcribe`, `speak` and `image`. Each one carries the unit
+    #: `task_catalog` (010) names for that task, so **this route converts
+    #: nothing**. The x60 that turns litellm's per-SECOND transcription price
+    #: into a per-MINUTE one already happened, once, in the feed-read
+    #: projection (`_feed_wire`). A second conversion here would multiply the
+    #: price by 3600, and the operator would never see why.
+    vendor_per_minute_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_per_character_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_per_image_usd: Decimal | None = Field(default=None, ge=0)
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
@@ -2321,6 +2365,11 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
     the break-glass token for routine work, which is the opposite of what §5 is
     for.
 
+    ⚠️ **This route is a PASS-THROUGH, and it does no arithmetic** (H-78).
+    Every price arrives in the unit the column keeps. The one unit change in
+    this feature — per second to per minute — happens in the feed-read
+    projection, once. A second conversion here would be silent and wrong.
+
     ⚠️ **The model does not have to exist in `model_capability` yet.** Writing
     the profile first and declaring the capability second is a legitimate order
     — an operator researching models fills these in before deciding which to
@@ -2338,9 +2387,12 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                     model, label, context_window, max_output,
                     vendor_input_per_1m_usd, vendor_output_per_1m_usd,
                     vendor_cached_input_per_1m_usd,
+                    vendor_per_minute_usd, vendor_per_character_usd,
+                    vendor_per_image_usd,
                     description, reads_images, thinks_first, updated_at
                 ) VALUES (
                     :model, :label, :ctx, :out, :vin, :vout, :vcached,
+                    :vmin, :vchar, :vimg,
                     :descr, :imgs, :think, now()
                 )
                 ON CONFLICT (model) DO UPDATE SET
@@ -2351,6 +2403,10 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                     vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
                     vendor_cached_input_per_1m_usd =
                         EXCLUDED.vendor_cached_input_per_1m_usd,
+                    vendor_per_minute_usd = EXCLUDED.vendor_per_minute_usd,
+                    vendor_per_character_usd =
+                        EXCLUDED.vendor_per_character_usd,
+                    vendor_per_image_usd = EXCLUDED.vendor_per_image_usd,
                     description = EXCLUDED.description,
                     reads_images = EXCLUDED.reads_images,
                     thinks_first = EXCLUDED.thinks_first,
@@ -2365,6 +2421,10 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                 "vin": req.vendor_input_per_1m_usd,
                 "vout": req.vendor_output_per_1m_usd,
                 "vcached": req.vendor_cached_input_per_1m_usd,
+                # Straight through, unconverted. See ProfileRequest above.
+                "vmin": req.vendor_per_minute_usd,
+                "vchar": req.vendor_per_character_usd,
+                "vimg": req.vendor_per_image_usd,
                 "descr": (req.description or "").strip(),
                 "imgs": req.reads_images,
                 "think": req.thinks_first,

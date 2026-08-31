@@ -306,6 +306,95 @@ class TestTheProfileRoute:
                 "DELETE FROM model_profile WHERE model = :m"), {"m": name})
         assert actor, "the profile audit row must name who saved it"
 
+    def test_the_per_unit_prices_read_back_BYTE_IDENTICAL(
+            self, client, engine):
+        """🔴 §6A.11a clause 6: the profile write is a PASS-THROUGH.
+
+        The one unit change in this feature — per second to per minute —
+        happens in the FEED READ, once. If this route also converted, a
+        transcription price would be multiplied by 3600 between the box the
+        operator typed it into and the column billing reads, and nothing on
+        any screen would say so.
+
+        So: post three per-unit prices, read the three columns, and demand
+        the same numbers. Add any arithmetic to `set_model_profile` and this
+        test goes red.
+        """
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name,
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+        })
+        assert r.status_code == 200, r.text
+
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = (row["vendor_per_minute_usd"],
+                   row["vendor_per_character_usd"],
+                   row["vendor_per_image_usd"])
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == (Decimal("0.006"), Decimal("0.000015"), Decimal("0.04"))
+
+    def test_the_per_unit_prices_UPSERT_like_every_other_column(
+            self, client, engine):
+        """A second save must UPDATE. `set_model_profile` is the one catalog
+        write that is not insert-only, and a per-unit price left behind by
+        the ON CONFLICT list would freeze at whatever landed first."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        for price in ("0.006", "0.012"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": name, "vendor_per_minute_usd": price})
+            assert r.status_code == 200, r.text
+
+        with engine.begin() as conn:
+            row = read(conn, name)
+            assert row is not None
+            got = row["vendor_per_minute_usd"]
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+        assert got == Decimal("0.012")
+
+    def test_a_negative_per_unit_price_is_a_422_not_a_500(self, client):
+        """The route mirrors `model_profile_positive`'s new clauses too."""
+        for field in ("vendor_per_minute_usd", "vendor_per_character_usd",
+                      "vendor_per_image_usd"):
+            r = client.post("/catalog/profiles", headers=self.OP, json={
+                "model": f"test/{uuid.uuid4().hex[:8]}", field: "-1"})
+            assert r.status_code == 422, f"{field} answered {r.status_code}"
+
+    def test_the_catalog_read_sends_the_three_as_STRINGS(
+            self, client, engine):
+        """Money as strings, the rule every price on this wire follows. A
+        parsed float re-formatted is how 0.000015 stops matching itself."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name,
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+        })
+        assert r.status_code == 200, r.text
+        try:
+            body = client.get("/catalog/models", headers=self.OP)
+            assert body.status_code == 200, body.text
+            profile = next(
+                p for p in body.json()["profiles"] if p["model"] == name)
+        finally:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "DELETE FROM model_profile WHERE model = :m"),
+                    {"m": name})
+        assert profile["vendor_per_minute_usd"] == "0.0060000000"
+        assert profile["vendor_per_character_usd"] == "0.0000150000"
+        assert profile["vendor_per_image_usd"] == "0.0400000000"
+        # ⚠️ The per-SECOND name belongs to the FEED table alone. It must
+        # never appear on a profile.
+        assert "vendor_per_second_usd" not in profile
+
     def test_a_customer_key_may_NOT_write_our_reference_data(self, client):
         """The door also admitted `can_pay` customer keys - D66 in spirit:
         the customer never brings a model, so they never describe one
