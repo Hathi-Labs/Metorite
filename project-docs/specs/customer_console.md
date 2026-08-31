@@ -626,6 +626,16 @@ clause 10 for the refusal rows, it rewrote clause 3 around the
 `verbose_json` rule, and it made clause 5's ordering a preference. It also
 re-measured the `main.py` anchors on branch `ws-31-slice5-refusals`.
 
+🆕 **§6A.10c arrived on 2026-08-31, and it is now BUILT.** It holds the
+build contract for `POST /v1/images/generations` and `POST /v1/audio/speech`,
+in twelve clauses with their own fence table. §6A.10a clause 2 named both
+routes as non-goals of the transcribe slice, and that clause now cites
+§6A.10c. **So §6A.10b is the one section that stays SPEC ONLY.**
+
+⚠️ **§6A.10c seeds NO `tier_binding` row**, because the choice of the vendor
+model we resell is a commercial act. Its clause 4 holds that argument. So
+both routes answer 400 until the owner writes one binding row for each.
+
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
 
@@ -7921,6 +7931,12 @@ call.
 2. **Four named non-goals.** No image route. No speak route. No streaming.
    No tenant caller in this slice, per clause 7.
 
+   📌 **§6A.10c now scopes the image route and the speak route IN.** It
+   arrived on 2026-08-31, and it holds the build contract for
+   `POST /v1/images/generations` and `POST /v1/audio/speech`. This clause
+   stays as the audit wrote it, because it records what the transcribe slice
+   built. Read it as history from that date on.
+
    🔴 **The 400 on a stream request is NEW behaviour THIS SLICE builds.**
    *(Rewritten 2026-08-30. This clause read the refusal off
    `STREAMABLE_TASKS`, and that constant cannot serve it.)*
@@ -8134,6 +8150,423 @@ bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
+```
+
+### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — BUILT 2026-08-31 · REPAIRED 2026-08-31 · CORRECTED 2026-08-31
+
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-media`.** The routes are
+`main.py::images_generations` and `main.py::audio_speech`. All twelve clauses
+below hold.
+
+🔴 **REPAIRED on 2026-08-31, review round 2, on the same branch.** An
+adversarial review returned REQUEST-CHANGES on one P1 and four P2s. This
+section carries the answer to each one.
+
+- **P1, a revenue defect.** The image body forwarded a caller-chosen `size`,
+  and the vendor prices a picture by size. Clause 1 holds the removal and the
+  measurement behind it.
+- **P2 (a).** The speak door billed what went OUT and never read what came
+  BACK. Clause 6 holds the repair.
+- **P2 (b).** `router.image_count`'s `None` arm cannot fire against a real
+  litellm answer. Clause 5 holds the ruling, and the fence name carries it.
+- **P2 (c).** `SpeechRequest.input` held no `min_length`, while
+  `ImageRequest.prompt` held one. Clause 6 holds the floor.
+- **P2 (d).** Fence row 10 cited a line number that had drifted onto a blank
+  line. **NO row of the table below cites a line number now.** *(Corrected
+  2026-08-31. This bullet said every row carries a test NAME, and nine of
+  them do not.)* Nine of the eighteen rows cite `file::test_name`, and the
+  other nine cite the file alone. A bare file name does not drift either, so
+  this defect closes and the table needs no further edit.
+
+🔴 **CORRECTED on 2026-08-31, a truth-repair round on the same branch. It
+changes NO behaviour.** Review round 2 returned APPROVE and recorded three
+statements that measurement refutes. This round replaces each with the
+measured one, and it touches no code path.
+
+- **Clause 1 said `input_cost_per_character` was the one per-unit key on all
+  27 speech models.** SIX of the 27 carry no such key. The ruling stands on
+  the half the review did measure: no speech model prices by voice or by
+  format. Clause 1 now says that, and it names the six.
+- **Clause 5 said a deleted `None` arm would cost a picture call against three
+  token rates.** It would not — `vendor_cost_usd` answers NULL for a call with
+  no tokens. The KEEP ruling stands on H-47 alone, and clause 5 now rests
+  there.
+- **P2 (d) above said every fence row carries a test name.** Nine of the
+  eighteen carry the file alone. The bullet now says so.
+
+📌 **Three follow-ups left the round as HANDOFF entries, and this section
+builds none of them.** **H-87** asks for a size dimension on the vendor price,
+which is what offering `size` needs first. **H-85** asks for an unmeasured-call
+log a person can reconcile. `router.unmeasured_quantity` names no organization
+and no request id, and the transcribe route wrote that shape before these two
+doors copied it. **H-86** asks for one `_serving_prelude` across all four
+Router doors, because the transcribe route still keeps its own copy of the same
+body.
+
+`tests/unit/test_customer_console_tasks.py` carries seventeen of the eighteen
+fences, and `tests/unit/test_customer_console_payments.py` carries the
+eighteenth. The clause text stays as the audit wrote it, because it is the
+contract the build answers. The repair round ADDS to a clause and rewrites
+none of it. Match a `main.py` anchor by handler name, because the two new
+routes moved every line number below them.
+
+⚠️ **Every default here is an agent-proposed answer the owner may
+overrule.** Clause 3 records the one the build had to take.
+
+🔴 **Neither tier is BOUND, so both routes answer 400 today.** Clause 4 holds
+that argument, and it stays true after the build. Arming each route is ONE
+`tier_binding` INSERT, and it is the owner's act.
+
+**Gate: AGENT-SAFE.** D61.1 decided the endpoint shape, so no owner act stands
+in front of the build. Two owner acts stand in front of the SERVING, and
+clause 4 names both. `ROUTER_SERVING_ENABLED` stays the owner's flip (H-69).
+
+**The problem, in one line.** G-1 measured it, and §6A.10a closed one third of
+it. The Router serves two of D60's six tasks today.
+`015_tier_pricing.sql:52,54` registers `tier-image` and `tier-tts`, and
+`016_tier_task.sql:33,35` maps them to `image` and `speak`. Neither tier has a
+door.
+
+**Scope.** This section holds the build contract for two routes, and for
+nothing else. Both routes copy §6A.10a line for line:
+
+- The DOOR declares the task. The `model` field names a TIER.
+- The three customer walls stand before the provider call.
+- `_record_completion` writes the one usage row.
+
+📌 **§6A.10a clause 2 named these two routes as non-goals of the transcribe
+slice.** This section scopes them in, and that clause now cites this one.
+
+#### Twelve clauses
+
+1. **Scope: the image route.** `POST /v1/images/generations`, on the existing
+   `KeyCaller` auth. The body is JSON, and it carries `model` and `prompt`.
+   **That `model` field is a TIER ALIAS**, never a model id.
+   `016_tier_task.sql:33` maps `tier-image` to the `image` task, so the alias
+   declares the task.
+
+   D61.1 fixed the OpenAI shape, and D61.3 and D60.4 bind the alias rule. A
+   bare model id answers **400**, and the Router never sniffs the payload
+   (D61 G-3). The route names its own task in a module constant, as
+   `TRANSCRIBE_TASK` does (`main.py:5410`).
+
+   🔴 **THE BODY CARRIES NO `size` FIELD, and that is a REVENUE rule**
+   *(repaired 2026-08-31, review round 2)*. The vendor prices a picture by
+   size. Our own profile column carries no size axis at all. `feed.py` reads
+   `output_cost_per_image` off the bare model key, and
+   `019_per_unit_vendor_costs.sql:97` states `vendor_per_image_usd` as *"USD
+   per generated image"*. So exactly one number lands in that column.
+
+   The build shipped `size` as a forwarded field for one round. A caller
+   sending `{"model": "tier-image", "n": 4, "size": "1024x1792"}` against
+   `openai/dall-e-3` costs us 4 x $0.080. The row would have recorded
+   4 x $0.04, and half of the recorded cost is fiction.
+
+   **Measured in litellm 1.86.0.** `standard/1024-x-1024/dall-e-3` is
+   3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
+   4.359e-08 per pixel, which is $0.080.
+
+   📌 **This clause names `model` and `prompt` alone, so the removal returns
+   the code to its own contract.** The body clamps `n` at four because `n`
+   multiplies our cost. `size` multiplied the same cost with no ceiling. The
+   chat route states the house rule at `main.py::chat_completions`, in
+   `_kwargs_for`: *"the ones that multiply our cost are clamped."* Nothing
+   can clamp a size, because each size the vendor sells holds its own price.
+   With `extra="forbid"` in place, a caller who sends `size` reads a 422
+   instead of buying an under-charge.
+
+   ⚠️ **Offering sizes is a real feature, and it needs a price shape first.**
+   `HANDOFF.md` **H-87** holds it: a size dimension on the vendor price, in
+   the feed and in `model_profile`. It must land before the owner offers
+   image sizes to a customer.
+
+   📌 **The sibling question, asked and answered.** No other forwarded field
+   picks a price axis our profile cannot see. On the speak door, `voice` and
+   `response_format` are not price axes. 🔴 **No speech model prices by voice
+   or by format.** Measured 2026-08-31 in litellm 1.86.0. 27 entries carry
+   `mode: audio_speech`, and a regex over all 27 keys for
+   `alloy|nova|shimmer|mp3|opus|wav|pcm|flac|aac` returns zero hits.
+
+   The litellm map prices each speech model by a whole model id (`tts-1`
+   against `tts-1-hd`, `aws_polly/standard` against `aws_polly/neural`).
+
+   ⚠️ **SIX of the 27 carry no `input_cost_per_character`** *(corrected
+   2026-08-31 — this clause said one per-unit key served all of them, and it
+   does not)*. They are `gpt-4o-mini-tts`, `azure/gpt-4o-mini-tts`, the two
+   dated `gpt-4o-mini-tts` builds, and both `gemini-2.5-flash-preview-tts`
+   keys. They price on tokens and on seconds. Binding one is an OPERATOR
+   choice through `tier_binding`, and never a caller's. `feed.py:242` finds
+   no character key for them, so `vendor_per_character_usd` lands NULL. That
+   is D-AI-7 rule 3 working as designed.
+
+   📌 **The feed keys on a model id, so it holds 26 speak rows and 5 NULLs.**
+   It folds `gemini-2.5-flash-preview-tts` and
+   `gemini/gemini-2.5-flash-preview-tts` onto one row. The count of 27 is a
+   count of ENTRIES in the litellm map.
+
+   📌 **Two image axes exist, and neither body accepts one.** `quality` and
+   `style` do move the vendor price (`hd/1024-x-1024/dall-e-3` is 7.629e-08
+   per pixel, twice `standard`). A later diff that adds either field takes
+   this clause's argument with it.
+
+2. **Scope: the speak route.** `POST /v1/audio/speech`, on the same
+   `KeyCaller` auth. The body is JSON, and it carries `model`, `input` and
+   `voice`. `016_tier_task.sql:35` maps `tier-tts` to the `speak` task.
+   **The `model` field is a TIER ALIAS here too**, and a bare model id answers
+   **400**.
+
+   The response is **audio bytes**, and not JSON. So the route answers the
+   caller with the bytes the provider returned, under the provider's own
+   content type. Clause 3 holds the streaming question that this shape opens.
+
+3. **Four named non-goals.**
+   - **No streaming speech.** The route serves the buffered bytes alone.
+
+     🔴 **A caller-sent `stream: true` on the speak route is a 400.** This
+     clause named the non-goal and did not say what such a request gets.
+     The build takes §6A.10a clause 2's answer, which the transcribe door
+     already gives. **It is a D16 agent default, and the owner may overrule
+     it.** The refusal stands before anything resolves, so it costs the
+     customer nothing. It writes no usage row, because migration `020`'s
+     CHECK holds three slugs and this wall is not one of them.
+     `test_customer_console_tasks.py::TestASpeakCallNeverStreams` fences
+     both halves. *(Recorded 2026-08-31, in the same change that built it.)*
+   - **No tenant caller.** Nothing in the tenant plane posts to either route
+     in this slice.
+   - **No `tier_binding` seed.** Clause 4 holds the reason.
+   - **No native handler.** Clause 9 holds the reason.
+
+   🔴 **`speak` IS in `STREAMABLE_TASKS` (`catalog.py:36`), and this slice
+   still does not stream it.** The OpenAI speech endpoint answers with audio
+   bytes, and never with SSE frames. Slice 11's failover walk is built for
+   SSE. Its first-frame boundary has no meaning for an audio body, so a
+   streamed speak call would run that walk against a shape it cannot read.
+
+   ⚠️ **Name the ONE path that membership makes reachable.**
+   `STREAMABLE_TASKS` has one reader, `check_streams` (`catalog.py:108`). It
+   guards the OPERATOR capability write at `main.py:2002`, so an operator MAY
+   set `streams = TRUE` on a `speak` capability row. **Nothing on the serving
+   path reads that column.** The chat route branches on the request body
+   instead (`main.py:5301`). The fence must prove that such a row changes
+   nothing about what this route answers.
+
+4. **THE BINDING GAP: this slice seeds NO `tier_binding` row.** Which vendor
+   model we resell for pictures, and which one we resell for speech, is a
+   COMMERCIAL decision. It belongs to the owner, and an agent must not take
+   it. `010:212` seeded `groq/whisper-large-v3-turbo` for `tier-stt`, and no
+   such row exists for `tier-image` or for `tier-tts`.
+
+   The slice MAY seed `model_capability` rows. *"This model answers
+   `aimage_generation`"* is a vendor fact, and not a choice about what we
+   sell. `010:219` seeds the `transcribe` capability the same way.
+
+   ⚠️ **The consequence, stated plainly.** Until the owner binds `tier-image`
+   and `tier-tts`, each route answers **400** with the `tier_unknown` refusal
+   and writes one refusal row. That is the SAME wall §6A.10a clause 10
+   already specifies, on a second door and a third. A fence seeds its own
+   binding in its test fixture, so the fences pass against an unbound
+   database.
+
+   📌 **Arming each route is therefore ONE owner act — one `tier_binding`
+   INSERT.** It sits beside the three prerequisites H-69 already lists, and it
+   is not a fourth kind of act.
+
+5. **Quantity, the image route: the COUNT OF IMAGES the provider RETURNED.**
+   The unit is `images`, which `task_catalog` gives the `image` task
+   (`010:49`). The route counts the pictures in the response, and it never
+   reads the request's `n`. A provider that returns fewer pictures than the
+   caller asked for must bill fewer. The count is a `Decimal`, and it bills
+   through the one `rate_call` seam, exactly as transcribe's minutes do.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A response that carries
+   no readable list of images logs `router.unmeasured_quantity` and bills
+   zero. It guesses at no count. §6A.10a clause 3 took that same answer for a
+   missing duration, and the reason holds here: the customer already holds
+   the pictures.
+
+   🔴 **THAT ALARM IS STUB-ONLY, and nobody may read it as a live one**
+   *(measured 2026-08-31, review round 2)*. `ImageResponse.__init__`
+   (`litellm/types/utils.py:2336`, litellm 1.86.0) turns a falsy `data` into
+   `[]`. So a real litellm answer always reaches `router.image_count` with a
+   list, and it takes the `Decimal(0)` arm and not the `None` arm. The
+   fence drives a dict stub that litellm does not produce, and its name now
+   ends in `_STUB_ONLY`.
+
+   📌 **The ruling: KEEP the arm, and record what it can and cannot do.**
+   The arm is the only reader H-47's native handler seam can rely on, because
+   that seam will answer a shape litellm never built. That reason carries the
+   ruling on its own. An alarm that cannot ring is a defect only while nobody
+   has written down that it cannot ring.
+
+   🔴 **THE SECOND REASON WAS FALSE, and this clause no longer states it**
+   *(measured 2026-08-31, review round 2)*. It said a deleted arm would cost
+   the picture call against three TOKEN rates it never consumed.
+   `router.vendor_cost_usd` returns `None` when prompt and completion are
+   both zero, which is every image call. So the token branch would record
+   `provider_cost_usd` NULL. That is the same value the per-unit branch
+   records for a quantity of zero, so the claimed harm is nil. The route
+   coerces a `None` count to zero before the meter runs, so nothing hands
+   `_record_completion` a `None` quantity either.
+
+6. **Quantity, the speak route: the COUNT OF CHARACTERS in the input text.**
+   The unit is `characters`, which `task_catalog` gives the `speak` task
+   (`010:48`). The route measures the text it SENDS upstream, and never a
+   figure the caller reports. The count is a `Decimal`, and it bills through
+   the same `rate_call` seam.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A request that carries
+   no readable input text logs `router.unmeasured_quantity` and bills zero.
+
+   📌 **The two routes measure at opposite ends, on purpose.** A picture count
+   is a fact only the RESPONSE holds. A character count is a fact the REQUEST
+   holds, and an audio body reports nothing we can count.
+
+   🔴 **THE COUNTING RULE: we count CODEPOINTS** *(recorded 2026-08-31, review
+   round 2)*. `len()` on a Python `str` counts codepoints, and pydantic's
+   `max_length` counts them too. So the guard and the meter agree by
+   construction, and a caller cannot pass the ceiling and then bill under it.
+   ⚠️ **The vendor's own rule may differ, and somebody must check it before
+   the owner binds `tier-tts`.** A vendor that bills UTF-8 bytes charges us
+   more for one Devanagari character than this row records.
+
+   🔴 **AN EMPTY INPUT IS A 422 NOW, and never a served call**
+   *(repaired 2026-08-31, review round 2)*. `SpeechRequest.input` carries
+   `min_length=1`, the same floor `ImageRequest.prompt` already held. An
+   empty string used to resolve the chain, open the provider call and buy a
+   vendor refusal for text the vendor will not read. It then tripped
+   `router.unmeasured_quantity` for a quantity that is genuinely zero, which
+   hid a real alarm behind a shape pydantic refuses for free.
+
+   🔴 **A CALL THAT ANSWERED NO AUDIO BILLS ZERO, whatever we sent**
+   *(repaired 2026-08-31, review round 2)*. This clause measures the request,
+   and the response still decides whether the count bought anything.
+   `router.speech_audio` never raises — a body it cannot read answers
+   `(b"", "audio/mpeg")` by design. So the route used to hand the customer an
+   empty 200 and charge them for every character. The route now reads the
+   audio BEFORE the meter runs. Zero bytes log `router.unmeasured_quantity`
+   and bill zero, which is what the image door has always done.
+
+7. **`unit` and `quantity` reuse H-46's plumbing. Build no second path.**
+   `_record_completion` (`main.py:4635`) already takes a `quantity`, and
+   `_rate_completion` (`main.py:1038`) already hands it to `rate_call`.
+   `rate_call` prices a per-unit card from the quantity alone, so neither
+   function changes for these two routes. The usage row then holds that
+   quantity and the unit the tier card names.
+
+   `_task_unit` (`main.py:2307`) reads `task_catalog.natural_unit`. So it
+   answers `images` for `image` and `characters` for `speak` with no change at
+   all, because both rows already exist (`010:48`, `010:49`).
+
+   ⚠️ **`unit` lands NULL while no `tier_rate_card` row exists for the pair.**
+   `_rate_completion` reads the unit off the CARD, and it returns `(0, None)`
+   when it finds none. Migration `015` seeds no tier rates, so a NULL unit is
+   the SHIPPED state until the owner prices the two tiers (H-42, a commercial
+   act). An absent card does not touch `quantity`. The route measures the
+   count, and the row records it whether or not a card exists.
+
+8. **Vendor cost: `vendor_per_image_usd` and `vendor_per_character_usd`.**
+   `019_per_unit_vendor_costs.sql:81-83` built both columns, so this slice
+   adds no column. Guard each read the way `_vendor_per_minute`
+   (`main.py:4613`) guards `vendor_per_minute_usd`. Ask
+   `information_schema` first, and answer NULL when the column is absent.
+   NULL means nobody told us, and it never means zero (D-AI-7 rule 3,
+   `ai_metering_and_analytics.md` §3.7).
+
+   🔴 **A MEASURED defect the implementer must repair.**
+   `_record_completion`'s per-unit cost branch (`main.py:4704`) is hard-wired
+   to the MINUTE column. It calls `_vendor_per_minute` for every call that
+   carries a quantity. An image call would then take its cost from a
+   per-minute price. The branch must pick its column by the task's UNIT, and
+   never by the presence of a quantity.
+
+9. **Dispatch through the ONE seam. Add no second dispatch table.**
+   `resolve_invocation` (`router.py:397`) answers which verb serves the
+   `(model, task)` pair, and `010:219` shows the shape of a capability seed.
+   The verbs are `aimage_generation` and `aspeech`, and `KNOWN_INVOCATIONS`
+   (`catalog.py:26-32`) already holds both. So this slice adds no verb to that
+   set.
+
+   🔴 **`SERVING_INVOCATIONS` (`router.py:509`) holds two verbs today**,
+   `acompletion` and `atranscription`. It is the set the Router may CALL, and
+   `_litellm_call` raises `UnservableInvocation` for anything outside it. This
+   slice adds `aimage_generation` and `aspeech` to that set, and nothing else.
+
+   📌 **H-47 gets NO first caller here.** Both verbs are litellm verbs, so
+   neither route needs a native handler. H-47 stays open and unbundled per
+   D57.3 — the handler seam lands with its first NATIVE caller, and never
+   before it. Do not fold H-47 into this slice.
+
+10. **The three walls write refusal rows, through slice 5's writer.**
+    `_record_refusal` (`main.py:4851`) is that writer. Each route calls it on
+    each of its three customer walls: the 400 `tier_unknown`, the 402
+    `insufficient_credits` and the 403 `run_ceiling_exceeded`.
+    `020_usage_refusal.sql:47-49` closes the vocabulary at those three slugs,
+    so this slice mints no fourth one. Each route passes its own task, so
+    `_task_unit` writes a `unit` of `images` or of `characters`.
+
+    ⚠️ **Carry the refusal OUT of the serving transaction before you call the
+    writer.** A row written on the serving connection rolls back with the
+    raise, and then the meter records nothing. `_record_refusal`'s own
+    docstring names that hazard.
+
+    🔴 **The 401 CANNOT write a row, and the reason is structural.** The key
+    check refuses before the code knows the organization, and
+    `usage_event.organization_id` is NOT NULL.
+    `ai_metering_and_analytics.md` §8.1 holds that reason.
+
+11. **`METERING_EXEMPTION` grows by EXACTLY two doors, in this same diff.**
+    `tests/unit/test_customer_console_payments.py:133` holds the constant, and
+    it names `chat_completions` and `audio_transcriptions` today. The two new
+    routes join it, so the set holds four pairs. Update the
+    count-and-contents fence in the SAME change, or the suite goes red.
+
+    📌 **§9's owner-ratification item already predicts this growth.** Item 6
+    reads *"The image endpoint and the speak endpoint will each add one
+    more."* So this is the same argument on the third door and the fourth, and
+    it is not a new argument. Both routes take a customer key, and our own
+    infrastructure decides both amounts.
+
+12. **No migration, and no new suite.** `usage_event` has carried `task`,
+    `quantity` and `unit` since `010_tasks_units_capabilities.sql`.
+    `task_catalog` has carried `image` and `speak` since the same migration.
+    `019` built both vendor columns, and `020` built the refusal vocabulary.
+    §7's command block already names `test_customer_console_tasks.py` and
+    `test_customer_console_catalog.py`, which §6A.10a clause 8 added. The new
+    fences land in those files and in `test_customer_console_payments.py`, so
+    §7 needs no edit.
+
+#### Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| The `model` field is a tier alias on both routes, never a model id | `test_customer_console_tasks.py` — a bare model id returns 400 on `POST /v1/images/generations` and on `POST /v1/audio/speech` |
+| A speak call never streams | `test_customer_console_tasks.py` — the test writes a `speak` capability row with `streams = TRUE`, DRIVES the route, and reads one buffered body |
+| An image usage row records the count of images AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route against a stub that returns TWO pictures for a request that asked for THREE. It then SELECTs the `usage_event` row that call wrote, and reads `quantity` of 2 and `unit` of `images`. A hand-inserted row does not satisfy this fence |
+| A speak usage row records the count of characters AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route with a known input string, SELECTs the row it wrote, and reads that length off `quantity` with a `unit` of `characters` |
+| An unreadable count bills zero and does not fail the call — **stub-only** | `test_customer_console_tasks.py::test_a_response_with_no_image_list_bills_zero_STUB_ONLY` — a response with no image list returns 200 and the row bills 0. The name carries the ruling: litellm never produces that shape |
+| An unpriced vendor cost stays NULL | `test_customer_console_tasks.py` — no `vendor_per_image_usd` writes NULL, never 0 |
+| An image call costs off `vendor_per_image_usd`, never off `vendor_per_minute_usd` | `test_customer_console_tasks.py` — a profile priced on the MINUTE column alone leaves `provider_cost_usd` NULL for an image call |
+| Neither route serves without a `tier_binding` row | `test_customer_console_tasks.py` — with no binding, both routes return 400 and each writes one `tier_unknown` refusal row |
+| A refused POST writes ONE refusal row, with the task's own unit | `test_customer_console_tasks.py` — the test SELECTs the one row and reads `refusal_reason` plus a `unit` of `images` or of `characters` |
+| `SERVING_INVOCATIONS` gains the two verbs and stays inside `KNOWN_INVOCATIONS` | `test_customer_console_tasks.py::test_the_operator_vocabulary_is_wider_than_the_serving_one` — the subset assertion stands, and the test names both new verbs |
+| `METERING_EXEMPTION` holds exactly four pairs | `test_customer_console_payments.py` — the count-and-contents assertion names all four |
+| A caller may NOT pick the picture size | `test_customer_console_tasks.py::test_a_caller_may_NOT_pick_the_picture_SIZE` — a body carrying `size` returns 422 and writes no usage row |
+| No `size` reaches the vendor kwargs | `test_customer_console_tasks.py::test_no_SIZE_reaches_the_vendor_kwargs` — the test pins the served call's kwarg keys, and a sized request reaches the provider seam not at all |
+| `ImageRequest` declares no `size` field | `test_customer_console_tasks.py::test_the_image_body_declares_no_size_field_at_all` — the test pins the field set at `model`, `prompt`, `n`, `client_ref` |
+| No speak field multiplies the vendor price | `test_customer_console_tasks.py::test_no_speak_field_multiplies_the_vendor_price` — the test pins the `SpeechRequest` field set, and the clause holds the litellm measurement behind it |
+| An empty speech input never resolves a chain | `test_customer_console_tasks.py::test_an_empty_input_is_refused_before_anything_resolves` — a body with `input: ""` returns 422 and writes no usage row |
+| A speech call that answered no audio bills zero | `test_customer_console_tasks.py::test_a_call_that_answers_NO_AUDIO_bills_zero` and `::test_an_UNREADABLE_body_bills_zero_too` — a 200 with an empty body writes a row of 0 credits |
+| A speech call that DID answer audio still bills its characters | `test_customer_console_tasks.py::test_audio_that_DID_come_back_still_bills_the_characters` — the mutation guard, so a "bill zero" fence cannot pass on a route that bills nothing |
+
+**Verification.** The suites are database-gated (R8), so start the database
+first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_customer_console_catalog.py \
+  tests/unit/test_customer_console_payments.py -q
 ```
 
 ---

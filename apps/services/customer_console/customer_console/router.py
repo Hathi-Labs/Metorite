@@ -41,6 +41,7 @@ from customer_console.credits import RateCard, TierRate, UnpricedModel
 
 __all__ = [
     "CHAT_TASK",
+    "DEFAULT_SPEECH_MEDIA_TYPE",
     "SERVING_INVOCATIONS",
     "SSE_DONE",
     "TRANSCRIPTION_RESPONSE_FORMAT",
@@ -56,6 +57,7 @@ __all__ = [
     "duration_seconds",
     "encrypt_secret",
     "frame_of",
+    "image_count",
     "provider_credential",
     "reads_images",
     "relay_stream",
@@ -64,9 +66,10 @@ __all__ = [
     "resolve_tier",
     "resolve_tier_rate",
     "set_provider_call",
+    "speech_audio",
     "usage_from_frame",
     "usage_from_response",
-    "vendor_cost_per_minute_usd",
+    "vendor_cost_per_unit_usd",
     "vendor_cost_usd",
 ]
 
@@ -230,6 +233,45 @@ def reads_images(conn: Connection, model: str) -> bool:
     return bool(row and row[0])
 
 
+def _models_that_read_images(
+    conn: Connection, models: Sequence[str]
+) -> set[str]:
+    """The subset of *models* that reads an image, in ONE query.
+
+    🔴 **The chain resolves on the serving path, and inside the serving
+    transaction.** :func:`reads_images` answers for one model, so a filter
+    built on it runs one single-row SELECT per step. Measured on a five-step
+    chain: the resolve cost 7 queries before this helper and costs 3 after it.
+    The schema puts no ceiling on chain length, and ``MAX_CHAIN_ATTEMPTS`` caps
+    the WALK rather than the resolve, so that cost grows with the chain an
+    operator binds.
+
+    ⚠️ **Three states read the same, and they must.** A model with no
+    ``model_profile`` row is absent from the result. A SQL NULL flag fails
+    ``AND reads_images``. A FALSE flag fails it too. All three mean *does not
+    see*, exactly as :func:`reads_images` answers for one model.
+
+    ⚠️ **This function is the ONE reader on the serving path, and
+    :func:`reads_images` has NO caller today** (measured 2026-08-31, whole
+    tree, source and tests). The single-model form stays in ``__all__`` for a
+    caller that holds exactly one model. Such a caller reads the flag through
+    this module, and it writes no second SELECT against ``model_profile``.
+    This is the set form of the same question, and never a second source for
+    the flag.
+    """
+    wanted = list(models)
+    if not wanted:
+        return set()
+    rows = conn.execute(
+        text(
+            "SELECT model FROM model_profile "
+            "WHERE model = ANY(:models) AND reads_images"
+        ),
+        {"models": wanted},
+    ).all()
+    return {r[0] for r in rows}
+
+
 def resolve_vision_chain(
     conn: Connection, tier: str
 ) -> list[ResolvedTier]:
@@ -253,7 +295,7 @@ def resolve_vision_chain(
 
     1. The chosen tier's own ``vision`` chain, when the tier binds one. The
        call bills (chosen tier, ``vision``), exactly as it did before D-AI-2.
-    2. The chosen tier's CHAT chain, when its rank-1 model sets
+    2. The chosen tier's CHAT chain, FILTERED to the steps that set
        ``reads_images``. One model answers, and the call bills the (chosen
        tier, ``chat``) pair. A second call to a vision model would cost a
        second call.
@@ -262,19 +304,35 @@ def resolve_vision_chain(
        rule 1 does not forbid it: the tier the customer picked does not drop,
        and every chat turn beside it stays where it was.
 
-    ⚠️ **The flag is read on the RANK-1 chat binding**, which is *the model
-    bound to the chosen tier* that §3.2 step 1 names. A chain whose rank-2 step
-    disagrees with its rank-1 step is an operator warning the Console owes, and
-    §8.5 names the wrong answer that gap produces. It is not a second
-    resolution rule, and this function does not build one.
+    🔴 **A BLIND STEP NEVER ENTERS THE LIFT CHAIN** (§3.2 step 3b, D16). The
+    flag is read on EVERY step of the chat chain, and a step that clears it is
+    dropped. An empty result falls to :data:`VISION_TIER`, exactly as a chain
+    whose every step clears the flag does. ONE query answers for the whole
+    chain (:func:`_models_that_read_images`), because this resolves on the
+    serving path and a per-step read cost one query per rank.
+
+    ⚠️ **The rank-1 read was a shipped wrong answer, and this is the repair.**
+    Rank 1 reads images, rank 1 fails, and the walk moves to a blind rank 2.
+    That model then answers about a picture it never saw, with a confident 200.
+    The route also drops every step it holds no key for, so an UNKEYED rank 1
+    made the blind rank 2 the FIRST step, with nothing having failed. A wrong
+    answer is worse than a refusal, which is the whole reason §3.2 step 4
+    refuses rather than serving.
+
+    ⚠️ **The fall is a RESOLUTION act, and never a failover act.** This
+    function picks the chain before the walk starts. A step that fails at
+    runtime therefore falls to the next SEEING step and to nothing else. A
+    chain that spliced two tiers together would bill two pairs out of one walk,
+    and §3.2 records no decision on that.
 
     Raises:
         TierUnknown: the chosen tier binds neither ``vision`` nor ``chat``
             (§3.2 step 0). The caller answers this with the wall it already
             had, unchanged.
-        VisionUnbound: the chat model reads no image and nothing binds
-            :data:`VISION_TIER`. Both halves are down, and the sentence names
-            both.
+        VisionUnbound: no step of the chat chain reads an image, and nothing
+            binds :data:`VISION_TIER`. Both halves are down, and the sentence
+            names both. The wording stays singular *"the chat model for tier
+            <slug>"*, because §3.2 step 4 fixes it word for word.
     """
     try:
         return resolve_chain(conn, tier, VISION_TASK)
@@ -285,8 +343,14 @@ def resolve_vision_chain(
         # yet a wall.
         pass
     chat_chain = resolve_chain(conn, tier, CHAT_TASK)
-    if reads_images(conn, chat_chain[0].model):
-        return chat_chain
+    # ONE query for the whole chain, and the comprehension keeps the RANK
+    # order. The result is a SUBSEQUENCE of the chain, which is what makes
+    # `served_rank` true — `ResolvedTier.rank` comes off the column and never
+    # off a list index.
+    sees = _models_that_read_images(conn, [s.model for s in chat_chain])
+    seeing = [s for s in chat_chain if s.model in sees]
+    if seeing:
+        return seeing
     try:
         return resolve_chain(conn, VISION_TIER, VISION_TASK)
     except TierUnknown as unbound:
@@ -506,7 +570,17 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: Router can CALL. A capability row may legally name a verb no route serves
 #: yet — §6A.9 rule 3 says capability is not availability — and the gap must
 #: raise here rather than reach litellm as an attribute nobody checked.
-SERVING_INVOCATIONS = frozenset({"acompletion", "atranscription"})
+#:
+#: 🔴 **``aimage_generation`` and ``aspeech`` joined on 2026-08-31** (§6A.10c
+#: clause 9). Each one has a door now, so the Router may call it. The set
+#: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
+#: serving route, and an operator may still declare it.
+SERVING_INVOCATIONS = frozenset({
+    "acompletion",
+    "atranscription",
+    "aimage_generation",
+    "aspeech",
+})
 
 #: The verb a caller that names none gets. Every chat call made this exact
 #: request before ``invocation`` existed, so the default keeps that path byte
@@ -624,25 +698,33 @@ def vendor_cost_usd(
     return (total / Decimal(1_000_000)).quantize(Decimal("0.00000001"))
 
 
-def vendor_cost_per_minute_usd(
-    minutes: Decimal | None, per_minute_usd: Decimal | None
+def vendor_cost_per_unit_usd(
+    quantity: Decimal | None, per_unit_usd: Decimal | None
 ) -> Decimal | None:
-    """What one per-minute call cost us at the vendor, or ``None``.
+    """What one per-unit call cost us at the vendor, or ``None``.
 
     The sibling of :func:`vendor_cost_usd` for a task the vendor sells by
-    time rather than by token. ``transcribe`` is the first one (D19.2).
+    a natural unit rather than by token. ``transcribe`` was the first one
+    (D19.2), and ``image`` and ``speak`` joined it on 2026-08-31.
+
+    🔴 **ONE multiply for every per-unit task, and the CALLER picks the
+    price** (§6A.10c clause 8). This function never learns which unit it
+    holds. ``_record_completion`` reads the task's own unit and hands over
+    the matching ``model_profile`` column, so a picture is never costed at a
+    per-minute price. *(This was ``vendor_cost_per_minute_usd`` until
+    2026-08-31, and the name said what only the caller can know.)*
 
     ⚠️ **``None`` means UNKNOWN and never zero** — D-AI-7 rule 3. Two things
-    produce it. Nobody has priced the model, so ``per_minute_usd`` is
-    ``None``. Or nothing measured the audio, so ``minutes`` is ``None`` or
+    produce it. Nobody has priced the model, so ``per_unit_usd`` is
+    ``None``. Or nothing measured the call, so ``quantity`` is ``None`` or
     zero. Recording $0.00 for a call we could not read would be a
     measurement nobody made, and it would report a margin of 100 percent.
     """
-    if per_minute_usd is None or minutes is None:
+    if per_unit_usd is None or quantity is None:
         return None
-    if minutes <= 0:
+    if quantity <= 0:
         return None
-    return (Decimal(minutes) * Decimal(per_minute_usd)).quantize(
+    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(
         Decimal("0.00000001")
     )
 
@@ -703,6 +785,105 @@ def duration_seconds(response: Any) -> Decimal | None:
         return _number(_get(response, "duration"))
     except Exception:
         return None
+
+
+def image_count(response: Any) -> Decimal | None:
+    """How many pictures the provider RETURNED. Never raises.
+
+    🔴 **The count comes off the RESPONSE, and never off the request's
+    ``n``** (§6A.10c clause 5). A provider that answers with fewer pictures
+    than the caller asked for must bill fewer. Only the response holds that
+    fact.
+
+    ``None`` means the body carried no readable list of images. The caller
+    bills zero and says so out loud, because the customer already holds
+    whatever came back.
+
+    Two shapes, and both reach us. litellm answers with an ``ImageResponse``
+    whose ``data`` is a list of objects. The stub seam in the tests answers
+    with a plain dict.
+
+    ⚠️ **THE ``None`` ARM IS STUB-ONLY TODAY, and nobody may read it as a
+    live alarm.** ``ImageResponse.__init__``
+    (``litellm/types/utils.py:2336``, measured in litellm 1.86.0) turns a
+    falsy ``data`` into ``[]``, so a real litellm answer reaches this
+    function with a list every time and takes the ``Decimal(0)`` arm. The arm
+    is KEPT rather than deleted for ONE reason. H-47's native handler seam
+    will hand this function a shape litellm never built. Its fence drives a
+    dict stub, and it says so.
+
+    📌 **The SECOND reason was false, and review round 2 measured it away.**
+    This docstring said a deleted arm would cost the picture call against
+    three TOKEN rates. It would not. :func:`vendor_cost_usd` returns ``None``
+    when prompt and completion are both zero, as its own docstring states,
+    and that is every image call. So the token branch would record
+    ``provider_cost_usd`` NULL — the same value the per-unit branch records
+    for a quantity of zero. The route coerces a ``None`` count to zero before
+    the meter runs, so nothing hands one down either.
+    """
+    try:
+        if isinstance(response, dict):
+            data = response.get("data")
+        else:
+            data = getattr(response, "data", None)
+        # A string is a sequence too, and its length is not a picture count.
+        if isinstance(data, (str, bytes)) or not isinstance(data, Sequence):
+            return None
+        return Decimal(len(data))
+    except Exception:
+        return None
+
+
+#: What we answer a speech caller with when the provider named no type.
+#:
+#: *Agent default*, anchored on the vendor: the OpenAI speech endpoint sends
+#: MP3 unless the caller asks for another format. A body with no type at all
+#: makes a browser guess, and a wrong guess plays nothing.
+DEFAULT_SPEECH_MEDIA_TYPE = "audio/mpeg"
+
+
+def speech_audio(response: Any) -> tuple[bytes, str]:
+    """The audio bytes a speech call answered with, and their media type.
+
+    🔴 **The caller reads the provider's own bytes** (§6A.10c clause 2). This
+    endpoint answers audio and never JSON, so nothing here re-encodes the
+    body or wraps it in a field.
+
+    Three shapes reach us. litellm answers with an
+    ``HttpxBinaryResponseContent``, which holds the httpx response and its
+    headers. A provider client may answer with bare ``bytes``. The stub seam
+    in the tests answers with a plain dict.
+
+    Empty bytes are a legal answer, and this function never raises: a body we
+    cannot read reaches the customer as an empty one, which their own player
+    reports far better than a 500 does.
+    """
+    def _media_type(source: Any) -> str | None:
+        headers = getattr(getattr(source, "response", None), "headers", None)
+        if headers is None:
+            return None
+        try:
+            value = headers.get("content-type")
+        except Exception:
+            return None
+        return value.split(";", 1)[0].strip() if isinstance(value, str) else None
+
+    try:
+        if isinstance(response, dict):
+            body = response.get("content")
+            declared = response.get("media_type")
+        elif isinstance(response, (bytes, bytearray)):
+            body, declared = response, None
+        else:
+            body = getattr(response, "content", None)
+            declared = _media_type(response)
+        if not isinstance(body, (bytes, bytearray)):
+            body = b""
+        if not isinstance(declared, str) or not declared.strip():
+            declared = DEFAULT_SPEECH_MEDIA_TYPE
+        return bytes(body), declared
+    except Exception:
+        return b"", DEFAULT_SPEECH_MEDIA_TYPE
 
 
 def usage_from_response(response: Any) -> ExtractedUsage:
