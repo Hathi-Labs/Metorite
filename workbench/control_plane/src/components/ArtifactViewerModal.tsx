@@ -93,8 +93,9 @@ function formatBytes(bytes: number): string {
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
   const [html, setHtml] = useState<string | null>(null);
-  // Follows the active THEME, not just the colour mode: Fluent highlights with
-  // VS Code's own dark-plus, Material with material-theme, and so on.
+  // Shiki ships a closed set of named themes and cannot read our tokens, so a
+  // code view names one. With the theming engine retired it follows the colour
+  // mode alone — `lib/theme/surfaces.ts` owns which name that is.
   const shikiTheme = useShikiTheme();
 
   useEffect(() => {

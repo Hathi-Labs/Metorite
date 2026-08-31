@@ -57,11 +57,21 @@ export default function Icon({
   // `<LucideGlyph />` is indistinguishable from creating a component per render
   // to the lint rule. Same call shape used by genUITemplates and
   // GenerativeUINode for the same reason.
+  //
+  // ⚠️ `fill` is set ONLY when the caller gave one, and this is not tidiness.
+  // Lucide's `Icon` destructures `color`/`size`/`strokeWidth` out and applies
+  // `??` defaults to them, but `fill` is not destructured — it rides `...rest`,
+  // which is spread AFTER `defaultAttributes` (lucide-react v1.17.0). So
+  // `fill: undefined` OVERRIDES their `fill: "none"`, React then omits the
+  // attribute entirely, and the SVG default takes over — which is `black`.
+  // Every closed path in every icon fills black, in both colour modes.
+  // Passing the key unconditionally is what did it. Fence: `Icon.test.ts`.
+  const paint = fill === undefined ? {} : { fill };
   return createElement(resolveIcon(name), {
     size,
     className,
     strokeWidth,
-    fill,
+    ...paint,
     color,
     style,
     onClick,
