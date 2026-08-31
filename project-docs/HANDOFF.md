@@ -1626,7 +1626,7 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-28 · operator-console deploy session · **escalated
   2026-08-31** after run `33397261968` failed
 
-### H-88 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
+### H-91 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
 - **Check:** count `organization` on the console scratch database, run
   `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
   again. A rise means this entry is still real. ⚠️ Do NOT check by reading
@@ -1676,7 +1676,9 @@ line — never reclaim a number by deleting the other entry.
   some table size nobody has chosen.
 - **Authority:** `engineering_practice.md` §1.1 (the R8 loop) · the H-83 and
   H-84 closures on branch `ws-31-fixture-hygiene`
-- **Added:** 2026-08-31 · WS-31 fixture-hygiene slice
+- **Added:** 2026-08-31 · WS-31 fixture-hygiene slice · **renumbered from H-88
+  on 2026-08-31.** A second branch minted H-88 against a different base, and
+  that entry merged first. The queue fence named the collision.
 
 ### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
 - **Check:** read the docstring of `usage_by_org` in
