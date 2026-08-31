@@ -17,11 +17,12 @@ import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 
 import type { ProjectRow } from "../lib/api";
 import { type ProjectMenuHandlers, projectMenuItems } from "../lib/projectMenu";
 import { accentForSlot } from "@/lib/categorical";
+import { type TreeDropTarget, planTreeDrop } from "../lib/treeDrop";
 
 import {
   childCreationOptions,
@@ -241,6 +242,11 @@ interface Props {
   onOpenSettings?: (space: ProjectRow) => void;
   /** WS-27bk §9.12.4 — open the "Move to…" picker for a row. */
   onMove?: (node: ProjectRow) => void;
+  /**
+   * WS-27bk §9.12.4 slice 2 — a completed drag. Absent makes the tree
+   * read-only for dragging, and no row becomes draggable.
+   */
+  onDropNode?: (movingId: string, target: TreeDropTarget) => void;
   /** The node being named, drawn in place. Null = nothing is being created. */
   creating?: CreatingDraft | null;
   onCommitCreate?: (name: string) => void;
@@ -249,10 +255,69 @@ interface Props {
   actions?: ProjectMenuHandlers;
 }
 
+/**
+ * ── The drag, as context (WS-27bk §9.12.4 slice 2) ─────────────────────────
+ *
+ * A context rather than props, because `Node` is recursive and a drag concerns
+ * every row at once. Threading four more props through the recursion would put
+ * the drag's state in the shape of the tree, and the drag is not tree-shaped —
+ * exactly one row is being dragged and exactly one target is lit, wherever
+ * they sit.
+ *
+ * ⚠️ **The planner decides, and it lives in `lib/treeDrop.ts`.** Nothing here
+ * works out where a node lands, whether a target is legal, or what position to
+ * write. This file turns mouse coordinates into a `TreeDropTarget` and draws
+ * the answer. That split is what lets the hard part be tested without a DOM.
+ */
+interface TreeDragValue {
+  roots: readonly ProjectRow[];
+  draggingId: string | null;
+  over: TreeDropTarget | null;
+  begin: (id: string) => void;
+  hover: (target: TreeDropTarget | null) => void;
+  drop: (target: TreeDropTarget) => void;
+  end: () => void;
+}
+
+const TreeDrag = createContext<TreeDragValue | null>(null);
+
+/**
+ * Which third of a row the cursor is in.
+ *
+ * ⚠️ **The middle band is the BIGGEST**, and deliberately. Re-parenting is the
+ * act people mean most often, and the two reorder bands only have to be wide
+ * enough to aim at. Equal thirds make "into this folder" the hardest of the
+ * three gestures to hit, which is backwards.
+ */
+export function dropZoneAt(offsetY: number, height: number): "before" | "into" | "after" {
+  if (height <= 0) return "into";
+  const edge = height * 0.25;
+  if (offsetY < edge) return "before";
+  if (offsetY > height - edge) return "after";
+  return "into";
+}
+
+/** The target a zone means, for a row at `index` under `parentId`. */
+export function targetFor(
+  zone: "before" | "into" | "after",
+  node: { id: string },
+  parentId: string | null,
+  index: number,
+): TreeDropTarget {
+  if (zone === "into") return { kind: "onto", nodeId: node.id };
+  return {
+    kind: "between",
+    parentId,
+    index: zone === "before" ? index : index + 1,
+  };
+}
+
 function Node({
   node,
   depth,
   parentGen,
+  parentId,
+  index,
   selectedId,
   onSelect,
   onAddChild,
@@ -272,12 +337,20 @@ function Node({
    * numbers `childCreationOptions` keys on.
    */
   parentGen: number;
+  /** This row's parent, and its slot among its siblings. The drag needs both. */
+  parentId: string | null;
+  index: number;
   selectedId: string | null;
   onSelect: (project: ProjectRow) => void;
   onAddChild?: (parent: ProjectRow, option: ChildOption) => void;
   onOpenSettings?: (space: ProjectRow) => void;
   /** WS-27bk §9.12.4 — open the "Move to…" picker for a row. */
   onMove?: (node: ProjectRow) => void;
+  /**
+   * WS-27bk §9.12.4 slice 2 — a completed drag. Absent makes the tree
+   * read-only for dragging, and no row becomes draggable.
+   */
+  onDropNode?: (movingId: string, target: TreeDropTarget) => void;
   creating?: CreatingDraft | null;
   onCommitCreate?: (name: string) => void;
   onCancelCreate?: () => void;
@@ -320,13 +393,83 @@ function Node({
   const draftHere = creating != null && creating.parentId === node.id;
   const expanded = open || draftHere;
 
+  /**
+   * The drag, for THIS row. `null` when the tree is read-only, and then every
+   * handler below is `undefined` and the row is not draggable at all.
+   */
+  const drag = useContext(TreeDrag);
+  const dragging = drag?.draggingId === node.id;
+  const over = drag?.over;
+  const litInto =
+    over?.kind === "onto" && over.nodeId === node.id && !dragging;
+  const litBefore =
+    over?.kind === "between" &&
+    over.parentId === parentId &&
+    over.index === index;
+  const litAfter =
+    over?.kind === "between" &&
+    over.parentId === parentId &&
+    over.index === index + 1;
+
+  const rowDragProps = drag
+    ? {
+        draggable: true,
+        onDragStart: (event: React.DragEvent) => {
+          event.dataTransfer.effectAllowed = "move";
+          // Firefox refuses to start a drag with no payload. The id is also
+          // the honest thing to carry, although the state below is what the
+          // drop reads — dataTransfer is unreadable during dragover.
+          event.dataTransfer.setData("text/plain", node.id);
+          drag.begin(node.id);
+        },
+        onDragEnd: () => drag.end(),
+        onDragOver: (event: React.DragEvent) => {
+          if (!drag.draggingId || drag.draggingId === node.id) return;
+          const box = event.currentTarget.getBoundingClientRect();
+          const zone = dropZoneAt(event.clientY - box.top, box.height);
+          const target = targetFor(zone, node, parentId, index);
+          // ⚠️ A target the grammar refuses is NOT a drop target. Skipping
+          // `preventDefault` leaves the browser's "no drop" cursor, so the
+          // refusal arrives as the pointer rather than as an error later.
+          const planned = planTreeDrop(drag.roots, drag.draggingId, target);
+          if (planned && "refusal" in planned) {
+            drag.hover(null);
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          drag.hover(target);
+        },
+        onDrop: (event: React.DragEvent) => {
+          event.preventDefault();
+          if (!drag.draggingId || drag.draggingId === node.id) return;
+          const box = event.currentTarget.getBoundingClientRect();
+          const zone = dropZoneAt(event.clientY - box.top, box.height);
+          drag.drop(targetFor(zone, node, parentId, index));
+        },
+      }
+    : {};
+
   return (
-    <li>
+    <li className="relative">
+      {/* The reorder line. Drawn on the row rather than between rows so it
+          cannot fall out of step with the list it describes. */}
+      {litBefore ? (
+        <div className="pointer-events-none absolute left-0 right-0 top-0 h-0.5 bg-primary" />
+      ) : null}
+      {litAfter ? (
+        <div className="pointer-events-none absolute left-0 right-0 bottom-0 h-0.5 bg-primary" />
+      ) : null}
       <div
+        {...rowDragProps}
         className={`flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${
-          isSelected
-            ? "bg-primary/10 text-primary"
-            : "text-foreground hover:bg-muted"
+          dragging ? "opacity-40" : ""
+        } ${
+          litInto
+            ? "ring-1 ring-primary"
+            : isSelected
+              ? "bg-primary/10 text-primary"
+              : "text-foreground hover:bg-muted"
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onContextMenu={
@@ -508,12 +651,14 @@ function Node({
           show what you are naming, or the field appears nowhere. */}
       {expanded && (children.length > 0 || draftHere) ? (
         <ul>
-          {children.map((child) => (
+          {children.map((child, childIndex) => (
             <Node
               key={child.id}
               node={child}
               depth={depth + 1}
               parentGen={gen}
+              parentId={node.id}
+              index={childIndex}
               selectedId={selectedId}
               onSelect={onSelect}
               onAddChild={onAddChild}
@@ -548,12 +693,48 @@ export function ProjectTree({
   onAddChild,
   onOpenSettings,
   onMove,
+  onDropNode,
   creating,
   onCommitCreate,
   onCancelCreate,
   actions,
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
+
+  /**
+   * The drag's state, held once for the whole tree.
+   *
+   * `onDropNode` absent means a read-only tree: no context, so no row is
+   * draggable and every handler above is `undefined`. That is the same shape
+   * the menu already uses for `actions`.
+   */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [over, setOver] = useState<TreeDropTarget | null>(null);
+
+  const dragValue: TreeDragValue | null = onDropNode
+    ? {
+        roots,
+        draggingId,
+        over,
+        begin: (id) => {
+          setDraggingId(id);
+          setOver(null);
+        },
+        hover: setOver,
+        drop: (target) => {
+          const moving = draggingId;
+          setDraggingId(null);
+          setOver(null);
+          if (moving) onDropNode(moving, target);
+        },
+        end: () => {
+          setDraggingId(null);
+          setOver(null);
+        },
+      }
+    : null;
+
+
 
   // The empty state yields to the draft: a first space being named must not
   // sit under a line telling you to create one.
@@ -567,13 +748,16 @@ export function ProjectTree({
     );
   }
   return (
+    <TreeDrag.Provider value={dragValue}>
     <ul className="space-y-0.5">
-      {roots.map((root) => (
+      {roots.map((root, rootIndex) => (
         <Node
           key={root.id}
           node={root}
           depth={0}
           parentGen={0}
+          parentId={null}
+          index={rootIndex}
           selectedId={selectedId}
           onSelect={onSelect}
           onAddChild={onAddChild}
@@ -594,5 +778,6 @@ export function ProjectTree({
         />
       ) : null}
     </ul>
+    </TreeDrag.Provider>
   );
 }

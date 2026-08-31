@@ -31,6 +31,8 @@ export interface ProjectRow {
   kind?: string | null;
   status?: string | null;
   lead?: string | null;
+  /** Sibling order, a float. `ORDER BY position NULLS LAST, name` on the server. */
+  position?: number | null;
   // ⚠️ Provenance of rows imported BEFORE the 2026-08-24 retirement (D52).
   // Nothing writes these any more; the columns survive under R6 (D52.3) and
   // are dropped in a later, owner-gated release. Do not read them in new code.

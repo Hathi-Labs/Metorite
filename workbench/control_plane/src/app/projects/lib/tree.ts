@@ -20,6 +20,16 @@ export interface ProjectNode {
   icon_slot?: number | null;
   status?: string | null;
   lead?: string | null;
+  /**
+   * WS-27bk §9.12.4 — the sibling order, as a float.
+   *
+   * The server has returned this since the tree existed (`ProjectModel`) and
+   * orders by it (`ORDER BY position NULLS LAST, name`). The client simply
+   * never declared it, so nothing could read the order it was already drawn
+   * in. A fractional index: a drop between two siblings takes their midpoint
+   * and writes ONE row.
+   */
+  position?: number | null;
   children?: ProjectNode[];
 }
 
