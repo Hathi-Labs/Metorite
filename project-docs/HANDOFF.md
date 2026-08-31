@@ -75,7 +75,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-91 · A Projects test passes alone and fails in the suite · [AGENT]
+### H-92 · A Projects test passes alone and fails in the suite · [AGENT]
 - **Check:** run `uv run pytest tests/unit -k "projects" -q`. A failure on
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
   means this is open. Then run that test on its own. It passes. Measured
@@ -94,7 +94,13 @@ line — never reclaim a number by deleting the other entry.
   blame back. Do that control first.
 - **Not caused by the watching filter (WS-27bk).** The suite fails the same way
   with `main`'s `tasks.py` in place.
-- **Added:** 2026-09-01 · WS-27bk Wave 1
+- **Same CLASS as [[H-91]], and a different defect.** H-91 leaks rows into a
+  shared database, and this leaks state inside one process. The lesson is the
+  same one H-91 states: a red that comes and goes hides a real red. Whoever
+  takes either should read both.
+- **Added:** 2026-09-01 · WS-27bk Wave 1 · minted as H-91 and renumbered to
+  H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
+  `test_handoff_ids_are_unique` caught the collision.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
