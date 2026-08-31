@@ -4205,9 +4205,16 @@ The endpoint exists. This is the affordance.
   under the visible one. Without it the feature reads as broken.
 - The blocked task's own bar keeps its indicator until the last blocker goes.
 - Removing a link is undoable — it is a create with an inverse.
-- ⚠️ **Hover is mouse-only, so the panel gets the same act.** `TaskPanel` lists
-  relations already. Each row gains a remove control. That is the keyboard path
-  and the discoverable one.
+- ⚠️ **Hover is mouse-only, so the keyboard path is the panel — and it ALREADY
+  EXISTS.** *(Corrected 2026-09-01, during the build. The line here said each
+  row "gains" a remove control.)* `RelationsBlock` renders every relation with an
+  `Unlink` button, per-row pending state and a per-row failure message.
+  `relations` returns links in BOTH directions, and `SECTIONS` already draws
+  "Blocked by" from them. So the accessible half was complete before this
+  ticket, and the slice is the timeline affordance alone.
+- 📌 **The delete route takes either end.** `delete_link` matches
+  `source_task_id = :tid OR target_task_id = :tid`. So the id in the path is a
+  visibility check, not a direction.
 
 **Done when:** an edge is removable from the timeline and from the panel. The
 hit area is the wide stroke. Undo restores the link. The blocked indicator
