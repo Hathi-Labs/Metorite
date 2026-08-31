@@ -741,6 +741,17 @@ def image_count(response: Any) -> Decimal | None:
     Two shapes, and both reach us. litellm answers with an ``ImageResponse``
     whose ``data`` is a list of objects. The stub seam in the tests answers
     with a plain dict.
+
+    ⚠️ **THE ``None`` ARM IS STUB-ONLY TODAY, and nobody may read it as a
+    live alarm.** ``ImageResponse.__init__``
+    (``litellm/types/utils.py:2336``, measured in litellm 1.86.0) turns a
+    falsy ``data`` into ``[]``, so a real litellm answer reaches this
+    function with a list every time and takes the ``Decimal(0)`` arm. The arm
+    is KEPT rather than deleted for two reasons. It is the only thing between
+    a non-litellm answer and a ``None`` quantity, which
+    ``_record_completion`` would then cost as a TOKEN call. And H-47's native
+    handler seam will hand this function a shape litellm never built. Its
+    fence drives a dict stub, and it says so.
     """
     try:
         if isinstance(response, dict):

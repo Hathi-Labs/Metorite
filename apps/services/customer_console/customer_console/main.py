@@ -5824,11 +5824,25 @@ class ImageRequest(BaseModel):
     model: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     #: ⚠️ **What the caller ASKS for, and never what we bill.** The meter
-    #: counts the pictures the provider RETURNED (clause 5).
+    #: counts the pictures the provider RETURNED (clause 5). It is CLAMPED
+    #: because it multiplies what one request costs us.
     n: int | None = Field(default=None, ge=1, le=_MAX_IMAGES_PER_CALL)
-    size: str | None = Field(default=None, max_length=32)
     #: The caller's own correlation id, trusted for nothing.
     client_ref: str | None = None
+
+    # 🔴 **THERE IS NO `size` FIELD, and the absence is the rule** (clause 1).
+    # The vendor prices a picture BY SIZE. litellm 1.86.0 holds
+    # `standard/1024-x-1024/dall-e-3` at 3.81469e-08 per pixel, which is
+    # $0.040, and `standard/1024-x-1792/dall-e-3` at 4.359e-08, which is
+    # $0.080. Our own price column carries NO size axis:
+    # `feed.py` reads `output_cost_per_image` off the BARE model key, and
+    # `019_per_unit_vendor_costs.sql` states `vendor_per_image_usd` as "USD
+    # per generated image". So one number lands in the column, and a caller
+    # who picked the size would pick which half of our bill we record. `n` is
+    # clamped for exactly that reason, and `size` multiplied the same cost
+    # with no ceiling at all. `extra="forbid"` turns a `size` field into a
+    # 422. Offering sizes needs a size dimension on the vendor price first —
+    # `HANDOFF.md` H-84 carries the shape.
 
     model_config = {"extra": "forbid"}
 
@@ -5841,7 +5855,12 @@ class SpeechRequest(BaseModel):
     model: str = Field(min_length=1)
     #: 🔴 **The text we SEND is what the meter counts** (clause 6). A figure
     #: the caller reports is never read.
-    input: str = Field(max_length=_MAX_SPEECH_CHARACTERS)
+    #:
+    #: ⚠️ **`min_length=1`, the same floor `ImageRequest.prompt` carries.**
+    #: An empty string resolves the chain, opens the provider call and buys a
+    #: vendor refusal for text the vendor will not read. The two bodies in
+    #: one door pair must not disagree about that.
+    input: str = Field(min_length=1, max_length=_MAX_SPEECH_CHARACTERS)
     voice: str = Field(min_length=1, max_length=100)
     response_format: str | None = Field(default=None, max_length=32)
     #: 📌 **Declared so the refusal can be a 400 rather than a 422.** Clause 3
@@ -5957,7 +5976,10 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
     two pictures for a request that asked for three bills two.
 
     ⚠️ **A response with no readable list of images bills ZERO, loudly.** It
-    guesses at no count.
+    guesses at no count. 📌 That arm is STUB-ONLY today — litellm's
+    ``ImageResponse`` always carries a list, so the ``None`` never arrives
+    from a live vendor. ``router.image_count`` holds the measurement and the
+    reason it stays.
 
     Declared ``def`` for the reason the module docstring gives — the engine
     is synchronous, and the provider coroutine is driven with ``asyncio.run``
@@ -5974,7 +5996,13 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
 
         ⚠️ ALLOWLIST, exactly as the chat and transcribe routes build one.
         ``api_base`` is ours alone, and nothing the caller sent reaches the
-        provider except the prompt and the two shape fields.
+        provider except the prompt and the clamped ``n``.
+
+        🔴 **NO ``size`` REACHES THE VENDOR.** The chat route states the house
+        rule — the fields that multiply our cost are clamped. A size cannot be
+        clamped, because every size the vendor sells has its own price and our
+        profile holds one number. So the field is refused at the body instead.
+        ``ImageRequest`` carries the whole argument.
         """
         cred = credentials[step.model.split("/", 1)[0]]
         assert cred is not None  # the attempts filter removed keyless steps
@@ -5989,8 +6017,6 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         }
         if req.n is not None:
             out["n"] = req.n
-        if req.size is not None:
-            out["size"] = req.size
         if cred.api_base:
             out["api_base"] = cred.api_base
         return out
@@ -6050,6 +6076,12 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
     6), and never a figure the caller reports. A character count is a fact
     the REQUEST holds, while a picture count is a fact only the RESPONSE
     holds — the two routes measure at opposite ends on purpose.
+
+    ⚠️ **A call that answered NO AUDIO bills zero, whatever we sent.** The
+    request holds the count, and the response holds whether the count bought
+    anything. ``speech_audio`` never raises, so a 200 with a body we cannot
+    read is what an empty answer looks like from here. Billing the full text
+    for it charges the customer for silence.
 
     🔴 **A truthy ``stream`` field is a 400** (clause 3, a D16 agent
     default). ``speak`` IS in ``STREAMABLE_TASKS``, and that membership
@@ -6126,11 +6158,20 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
     except router_mod.UpstreamFailed as failed:
         raise _upstream_refusal(failed) from failed
 
-    if spoken:
+    # 🔴 **READ THE ANSWER BEFORE THE METER RUNS.** `speech_audio` never
+    # raises — a body it cannot read answers `(b"", "audio/mpeg")` by design.
+    # So a provider that says 200 and sends nothing usable used to bill every
+    # character we sent, while the customer got an empty 200. The image door
+    # already bills what came BACK, and this door now agrees with it.
+    audio, media_type = router_mod.speech_audio(response)
+
+    if audio:
         characters = Decimal(len(spoken))
     else:
-        # ⚠️ BILL ZERO, LOUDLY (clause 6). There is no text to count, and we
-        # guess at no length.
+        # ⚠️ BILL ZERO, LOUDLY (clause 6). No audio came back, so nothing
+        # measured this call and we guess at no length. The customer keeps
+        # the 200 — an empty body their own player reports is better than a
+        # 500 — and they keep their credits with it.
         _unmeasured(resolved, SPEAK_TASK)
         characters = Decimal(0)
 
@@ -6143,7 +6184,6 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         quantity=characters,
     )
 
-    audio, media_type = router_mod.speech_audio(response)
     return Response(content=audio, media_type=media_type)
 
 

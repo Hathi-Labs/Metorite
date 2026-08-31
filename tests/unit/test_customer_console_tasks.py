@@ -437,6 +437,37 @@ def gate_on(monkeypatch):
     monkeypatch.setenv("CUSTOMER_CONSOLE_SPEND_GATE", "1")
 
 
+@pytest.fixture
+def org_deepseek_key(db, org_id):
+    """A DeepSeek credential for ONE organization, for the life of one test.
+
+    🔴 **Scoped to THIS organization, never to the platform.**
+    `test_customer_console_router.py` owns the live PLATFORM DeepSeek row and
+    asserts on its secret. Writing one here with `ON CONFLICT DO NOTHING`
+    left that suite reading OUR secret and turned it red — measured
+    2026-08-31, on a shared scratch database. An organization-scoped row wins
+    the `NULLS LAST` order for this org alone, so the sibling suite sees
+    exactly what it wrote.
+
+    ⚠️ **REMOVED AFTERWARDS** *(repaired 2026-08-31, review round 2)*. This
+    write lived inline in its one test and tore nothing down, so every run of
+    the suite left one more row in `provider_credential`. Every fixture here
+    cleans up after itself.
+    """
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO provider_credential (provider, secret_enc, "
+            " label, organization_id) "
+            "VALUES ('deepseek', :s, 'tasks-suite', CAST(:o AS uuid))"),
+            {"s": router_mod.encrypt_secret("sk-deepseek"), "o": org_id})
+    yield
+    with db.begin() as c:
+        c.execute(text(
+            "DELETE FROM provider_credential "
+            "WHERE label = 'tasks-suite' AND organization_id = CAST(:o AS uuid)"),
+            {"o": org_id})
+
+
 def _transcribe(client, key, *, model="tier-stt", audio=AUDIO,
                 filename="meeting.wav", headers=None, **fields):
     return client.post(
@@ -809,7 +840,7 @@ class TestTheUsageRowCarriesTheQuantityAndTheUnit:
         assert _rows(db, org_id)[0].billed_credits == CALL_COST
 
     def test_a_token_call_still_writes_a_NULL_quantity(
-            self, client, db, org_key, org_id, provider):
+            self, client, db, org_key, org_id, provider, org_deepseek_key):
         """The hard-coded `quantity=None` is gone, and a chat call must
         still record NULL — the three token columns already carry it."""
         _, key = org_key
@@ -819,19 +850,6 @@ class TestTheUsageRowCarriesTheQuantityAndTheUnit:
                          "message": {"role": "assistant", "content": "hi"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 2},
         }
-        # 🔴 **Scoped to THIS organization, never to the platform.**
-        # `test_customer_console_router.py` owns the live PLATFORM DeepSeek
-        # row and asserts on its secret. Writing one here with
-        # `ON CONFLICT DO NOTHING` left that suite reading OUR secret and
-        # turned it red — measured 2026-08-31, on a shared scratch database.
-        # An organization-scoped row wins the `NULLS LAST` order for this org
-        # alone, so the sibling suite sees exactly what it wrote.
-        with db.begin() as c:
-            c.execute(text(
-                "INSERT INTO provider_credential (provider, secret_enc, "
-                " label, organization_id) "
-                "VALUES ('deepseek', :s, 'tasks-suite', CAST(:o AS uuid))"),
-                {"s": router_mod.encrypt_secret("sk-deepseek"), "o": org_id})
         answer = client.post("/v1/chat/completions", headers=key, json={
             "model": "tier-balanced",
             "messages": [{"role": "user", "content": "hi"}]})
@@ -1247,11 +1265,23 @@ class TestAnImageRowRecordsThePicturesTheProviderReturned:
         assert provider["calls"][-1]["n"] == IMAGES_ASKED
         assert _rows(db, org_id)[0].quantity == Decimal(IMAGES_RETURNED)
 
-    def test_a_response_with_no_image_list_bills_zero(
+    def test_a_response_with_no_image_list_bills_zero_STUB_ONLY(
             self, client, db, org_key, org_id, bound_image, priced_image,
             provider):
         """Fence row 5. An unreadable count bills zero and does NOT fail the
-        call — the customer already holds whatever came back."""
+        call — the customer already holds whatever came back.
+
+        ⚠️ **STUB-ONLY, and the name says so.** `ImageResponse.__init__`
+        (`litellm/types/utils.py:2336`, measured in litellm 1.86.0) turns a
+        falsy `data` into `[]`, so a real litellm answer never reaches
+        `image_count`'s `None` arm — it takes the `Decimal(0)` arm instead
+        and bills the same zero. The dict below is a shape litellm does not
+        produce. Nobody may read this as an alarm that can ring in
+        production. The arm is kept because it is the only thing between a
+        NON-litellm answer and a `None` quantity, which `_record_completion`
+        would then cost as a token call, and because H-47's native handler
+        seam will hand this reader a shape litellm never built.
+        """
         provider["reply"] = {"created": 1}
         _, key = org_key
         answer = _generate(client, key)
@@ -1307,17 +1337,67 @@ class TestASpeechRowRecordsTheCharactersWeSent:
         assert provider["calls"][-1]["input"] == longer
         assert _rows(db, org_id)[0].quantity == Decimal(len(longer))
 
-    def test_an_empty_input_bills_zero(
+    def test_an_empty_input_is_refused_before_anything_resolves(
             self, client, db, org_key, org_id, bound_tts, priced_tts):
-        """There is no text to count, so the row bills zero and says so."""
+        """`SpeechRequest.input` carries `min_length=1`, the floor
+        `ImageRequest.prompt` already had.
+
+        🔴 **The two bodies in one door pair must not disagree.** An empty
+        string used to resolve the chain, open the provider call and buy a
+        vendor refusal for text the vendor will not read. It then tripped
+        `_unmeasured` for a quantity that is genuinely zero, which hid a real
+        alarm behind a shape pydantic can refuse for free.
+        """
         _, key = org_key
-        assert _speak(client, key, text_="").status_code == 200
+        assert _speak(client, key, text_="").status_code == 422
+        # Refused at the body, so nothing resolved and nothing metered.
+        assert _rows(db, org_id) == []
+
+    def test_a_call_that_answers_NO_AUDIO_bills_zero(
+            self, client, db, org_key, org_id, bound_tts, priced_tts,
+            provider):
+        """🔴 **BILL WHAT CAME BACK.** `router.speech_audio` never raises —
+        an unreadable body answers `(b"", "audio/mpeg")` by design. So a
+        provider that says 200 and sends nothing usable would otherwise
+        charge the customer for every character we sent, and hand them an
+        empty 200 for it. The image door bills the response, and this door
+        agrees with it now.
+        """
+        provider["reply"] = {"content": b"", "media_type": "audio/mpeg"}
+        _, key = org_key
+        answer = _speak(client, key)
+
+        # The customer keeps the 200 and the empty body — their own player
+        # reports that far better than a 500 does.
+        assert answer.status_code == 200
+        assert answer.content == b""
 
         rows = _rows(db, org_id)
         assert len(rows) == 1
         assert rows[0].quantity == Decimal(0)
         assert rows[0].billed_credits == Decimal(0)
+        # The unit stays, because the history has to stay readable.
         assert rows[0].unit == "characters"
+
+    def test_an_UNREADABLE_body_bills_zero_too(
+            self, client, db, org_key, org_id, bound_tts, priced_tts,
+            provider):
+        """The same wall, reached by the other road. A body of the wrong type
+        reads as empty here, and it must bill the same zero."""
+        provider["reply"] = {"content": None, "media_type": "audio/mpeg"}
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+        assert _rows(db, org_id)[0].billed_credits == Decimal(0)
+
+    def test_audio_that_DID_come_back_still_bills_the_characters(
+            self, client, db, org_key, org_id, bound_tts, priced_tts):
+        """The mutation guard on the two fences above. A served call must
+        keep billing the text, or "bill zero" would pass by billing nothing
+        at all."""
+        _, key = org_key
+        assert _speak(client, key).status_code == 200
+        assert _rows(db, org_id)[0].quantity == CHARACTERS
+        assert _rows(db, org_id)[0].billed_credits == SPEECH_CALL_COST
 
     def test_the_caller_reads_the_providers_own_bytes_and_type(
             self, client, org_key, bound_tts, provider):
@@ -1581,6 +1661,80 @@ class TestTheMediaBodiesAreAnAllowlist:
         assert sent["model"] == SPEECH_MODEL
         assert sent["input"] == SPOKEN
         assert sent["voice"] == "alloy"
+
+    def test_a_caller_may_NOT_pick_the_picture_SIZE(
+            self, client, db, org_id, org_key, bound_image, priced_image):
+        """🔴 **A CALLER MUST NOT PICK OUR BILL.**
+
+        The vendor prices a picture BY SIZE. litellm 1.86.0 holds
+        `standard/1024-x-1024/dall-e-3` at 3.81469e-08 per pixel, which is
+        $0.040, and `standard/1024-x-1792/dall-e-3` at 4.359e-08, which is
+        $0.080. Our own column carries NO size axis — `feed.py` reads
+        `output_cost_per_image` off the BARE model key, and
+        `019_per_unit_vendor_costs.sql` states `vendor_per_image_usd` as
+        "USD per generated image". So a caller who picked the size picked
+        which half of our own cost we recorded, and `n` is clamped for
+        exactly that reason. `extra="forbid"` answers 422.
+        """
+        _, key = org_key
+        answer = client.post("/v1/images/generations", headers=key, json={
+            "model": "tier-image", "prompt": "a red bicycle",
+            "size": "1024x1792"})
+
+        assert answer.status_code == 422
+        # Refused at the body, so nothing resolved and nothing metered.
+        assert _rows(db, org_id) == []
+
+    def test_no_SIZE_reaches_the_vendor_kwargs(
+            self, client, org_key, bound_image, provider):
+        """The second half of the same rule, read at the WIRE.
+
+        The body refusal above reads the status code. This one reads what the
+        route hands the provider, so restoring `size` on the model AND in
+        `_kwargs_for` fails here as well as there.
+        """
+        _, key = org_key
+        # A served call first, so the kwargs pin has something to read.
+        assert _generate(client, key).status_code == 200
+        assert set(provider["calls"][-1]) == {
+            "model", "prompt", "api_key", "invocation", "num_retries",
+            "timeout", "n"}
+        served = len(provider["calls"])
+
+        # Now the same call with a size on it. The vendor must not see it,
+        # and the only way to guarantee that is that no call happens.
+        sized = client.post("/v1/images/generations", headers=key, json={
+            "model": "tier-image", "prompt": "a red bicycle",
+            "size": "1024x1792"})
+        assert sized.status_code == 422
+        assert len(provider["calls"]) == served
+
+    def test_the_image_body_declares_no_size_field_at_all(self):
+        """The rule at the model, where no request has to reach.
+
+        `ImageRequest` names every field a caller may send. A `size` back on
+        it re-opens the axis whether or not `_kwargs_for` forwards it.
+        """
+        from customer_console import main as main_mod
+        assert "size" not in main_mod.ImageRequest.model_fields
+        assert set(main_mod.ImageRequest.model_fields) == {
+            "model", "prompt", "n", "client_ref"}
+
+    def test_no_speak_field_multiplies_the_vendor_price(self):
+        """The sibling question, asked and ANSWERED on the other door.
+
+        `voice` and `response_format` are the two shape fields the speak body
+        forwards. Neither is a price axis: litellm prices every speech model
+        by a whole model id (`tts-1` against `tts-1-hd`, `aws_polly/standard`
+        against `aws_polly/neural`), and `input_cost_per_character` is the one
+        per-unit key on all 27 of them. `input` is counted AND clamped, and
+        `stream` is a 400. So no forwarded field here picks a price our
+        profile cannot see.
+        """
+        from customer_console import main as main_mod
+        assert set(main_mod.SpeechRequest.model_fields) == {
+            "model", "input", "voice", "response_format", "stream",
+            "client_ref"}
 
     def test_the_picture_count_is_bounded(self, client, org_key):
         """R7 for an AGENT DEFAULT the twelve clauses do not state.

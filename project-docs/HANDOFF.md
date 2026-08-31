@@ -75,6 +75,69 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-84 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
+- **Check:** `rg -n 'size' apps/services/customer_console/customer_console/main.py | rg 'ImageRequest|"size"|req\.size'`.
+  No hit means the image door still refuses `size`, and this entry is still real.
+- **Why:** the vendor prices a picture BY SIZE. Our own price column carries no
+  size axis at all. `feed.py:245` reads `output_cost_per_image` and
+  `input_cost_per_image` off the BARE model key, so exactly one number reaches
+  the profile. `019_per_unit_vendor_costs.sql:97` states
+  `model_profile.vendor_per_image_usd` as *"USD per generated image"*, with no
+  size in it. Measured in litellm 1.86.0: `standard/1024-x-1024/dall-e-3` is
+  3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
+  4.359e-08 per pixel, which is $0.080.
+- 🔴 **This was a live revenue defect for one round.** The build forwarded a
+  caller-chosen `size` to the vendor. A caller who sent
+  `{"model": "tier-image", "n": 4, "size": "1024x1792"}` cost us 4 x $0.080
+  while the row recorded 4 x $0.04. Review round 2 removed the field, and
+  `extra="forbid"` answers 422 for it now.
+- 📌 **The fix shape:** a size dimension on the vendor price, in the feed
+  projection and in `model_profile`. The feed already holds the sized keys —
+  it reads the bare key by choice, not by lack. `quality` is the same shape of
+  axis (`hd/1024-x-1024/dall-e-3` is twice `standard`), so one dimension
+  should carry both.
+- ⚠️ **It must land BEFORE the owner offers image sizes to customers.** Until
+  it does, one number per model is the only honest thing we can record.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 1 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
+- **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
+  An `extra` block carrying no organization and no request id means this entry
+  is still real.
+- **Why:** `router.unmeasured_quantity` is the alarm that says nothing measured
+  a call we served. It logs the model, the tier and the task, and it names
+  neither the organization nor the request. So nobody can join the alarm to the
+  `usage_event` row it belongs to. Nobody can tell one customer's unmeasured
+  calls from another customer's either. The revenue path deserves a log a
+  person can reconcile.
+- 📌 **PRE-EXISTING, and wider than the two media doors.** The transcribe route
+  writes the same three fields (`main.py:5749`). The two H-46 doors copied that
+  shape, so a repair here should move all three onto one helper.
+- 📌 **The fix shape:** carry `org_id` and the server-generated `request_id`
+  into the log line. `_record_completion` mints the id, so the ORDER matters —
+  the alarm fires before the row exists today.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 5 · clause 6
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
+- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
+  A count under 5 means fewer than four doors share it, and this entry is still
+  real. One definition plus four call sites reads 5.
+- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
+  verbs, and stands the three customer walls. H-46 built it for the image door
+  and the speak door. The transcribe route keeps its own copy of the same body,
+  and the chat route wrote the shape first. Three implementations of one gate
+  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
+  that drifts.
+- 📌 **The fix shape:** move the transcribe route and the chat route onto the
+  prelude. The chat route needs one extra return, because it resolves a vision
+  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
+- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
 ### H-80 · Give the stream walk its own thread budget, off the shared 40 · [AGENT]
 - **Check:** `grep -n "CapacityLimiter\|Semaphore" apps/services/customer_console/customer_console/main.py`.
   No hit inside `_open_stream_chain` means this entry is still real.
@@ -935,6 +998,12 @@ line — never reclaim a number by deleting the other entry.
   beside the three prerequisites H-69 lists.
   📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
   are litellm verbs already, so neither route needed a native handler.
+- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
+  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
+  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
+  `size`, and the vendor prices a picture by size. **H-84** now carries the
+  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
+  carries the one prelude for four doors. §6A.10c holds each answer.
 - 🔴 **A SECOND finding rides here, from WS-31 slice 4 (D-AI-2), 2026-08-31.**
   **A mixed lift chain answers about an image it never saw.**
   `resolve_vision_chain` reads `model_profile.reads_images` on the RANK-1 step
