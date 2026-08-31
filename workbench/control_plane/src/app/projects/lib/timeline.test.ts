@@ -26,23 +26,35 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { TaskRow } from "./api";
-import { fromDayKey } from "./calendar";
+import { fromDayKey, shiftDay } from "./calendar";
 import {
   MIN_BAR_PX,
   PAD_DAYS,
   PX_PER_DAY,
   ROW_H,
+  ZOOMS,
+  ZOOM_ORDER,
   bar,
+  barForSpan,
   canLink,
   conflictLabel,
   conflicts,
+  dayAtPx,
+  dayCells,
   dayPx,
+  dayStep,
+  dragRefusal,
   edgePath,
   interval,
+  isWeekend,
   monthCells,
+  resizeEnd,
+  resizeStart,
   rowInterval,
+  spanFor,
   timelineRange,
   timelineRows,
+  weekCells,
 } from "./timeline";
 
 /** The module's own source, with comments stripped.
@@ -499,5 +511,279 @@ describe("canLink", () => {
     expect(SOURCE).not.toMatch(/MAX_DEPTH|frontier|\bvisited\b/);
     const body = SOURCE.slice(SOURCE.indexOf("export function canLink"));
     expect(body).not.toMatch(/\bwhile\b|\bfor\s*\(/);
+  });
+});
+
+// ── S2: zoom ────────────────────────────────────────────────────────────────
+
+describe("zoom", () => {
+  it("keeps the default at the width the chart has always drawn", () => {
+    // Every geometry fence above measures against PX_PER_DAY. If the default
+    // zoom's width moves, all of them are silently re-baselined and the chart
+    // re-lays-out inside whatever change did it.
+    expect(ZOOMS.month.dayWidth).toBe(PX_PER_DAY);
+    expect(timelineRange([], "2026-08-15").pxPerDay).toBe(PX_PER_DAY);
+  });
+
+  it("lays the same range out wider or narrower per zoom", () => {
+    const rows = [
+      { task: task({ start_date: "2026-08-01", due_at: at("2026-08-10") }), depth: 0, children: [] },
+    ];
+    const week = timelineRange(rows, "2026-08-05", "week");
+    const quarter = timelineRange(rows, "2026-08-05", "quarter");
+
+    // Same days, three widths — the range is the data's, the pixels are the zoom's.
+    expect(week.days).toBe(quarter.days);
+    expect(week.widthPx).toBe(week.days * ZOOMS.week.dayWidth);
+    expect(quarter.widthPx).toBe(quarter.days * ZOOMS.quarter.dayWidth);
+    expect(week.widthPx).toBeGreaterThan(quarter.widthPx);
+  });
+
+  it("draws a day tier only where a day column can hold a label", () => {
+    // A day tier at 7px per day is seven pixels of unreadable text.
+    for (const key of ZOOM_ORDER) {
+      const spec = ZOOMS[key];
+      if (spec.tier === "day") expect(spec.dayWidth).toBeGreaterThanOrEqual(28);
+    }
+  });
+
+  it("measures every x from the range's own pxPerDay, not the constant", () => {
+    const subject = task({ start_date: "2026-08-01", due_at: at("2026-08-03") });
+    const range = timelineRange(
+      [{ task: subject, depth: 0, children: [] }],
+      "2026-08-02",
+      "week",
+    );
+    // The bug this catches: a helper reaching for PX_PER_DAY while the chart
+    // was laid out at another zoom. Every bar is then wrong by the ratio
+    // between the two, which reads as a rendering bug rather than a unit one.
+    expect(dayPx("2026-08-02", range) - dayPx("2026-08-01", range)).toBe(
+      ZOOMS.week.dayWidth,
+    );
+    expect(bar(subject, [], range)?.widthPx).toBe(3 * ZOOMS.week.dayWidth);
+  });
+});
+
+// ── S2: the drag → day arithmetic ───────────────────────────────────────────
+
+describe("dayStep", () => {
+  it("snaps to the NEAREST day, so a half-day drag resolves where it leans", () => {
+    expect(dayStep(0, RANGE)).toBe(0);
+    expect(dayStep(PX_PER_DAY, RANGE)).toBe(1);
+    expect(dayStep(PX_PER_DAY * 0.6, RANGE)).toBe(1);
+    expect(dayStep(PX_PER_DAY * 0.4, RANGE)).toBe(0);
+  });
+
+  it("goes backwards symmetrically", () => {
+    // `Math.floor` would make a leftward drag lag a rightward one by a day —
+    // the asymmetry nobody notices until they drag a bar back to where it was
+    // and it lands a day early.
+    expect(dayStep(-PX_PER_DAY * 2, RANGE)).toBe(-2);
+    expect(dayStep(-PX_PER_DAY * 0.6, RANGE)).toBe(-1);
+  });
+
+  it("is measured in the range's own pixels", () => {
+    const week = timelineRange([], "2026-08-15", "week");
+    expect(dayStep(ZOOMS.week.dayWidth * 3, week)).toBe(3);
+    // The same travel is more days when a day is narrower.
+    expect(dayStep(ZOOMS.week.dayWidth * 3, RANGE)).toBeGreaterThan(3);
+  });
+});
+
+describe("dayAtPx", () => {
+  it("returns the day a pixel column belongs to", () => {
+    expect(dayAtPx(0, RANGE)).toBe(RANGE.from);
+    expect(dayAtPx(PX_PER_DAY, RANGE)).toBe(shiftDay(RANGE.from, 1));
+    // Anywhere INSIDE a day's column is that day — floor, not round, or the
+    // second half of every day reads as the next one.
+    expect(dayAtPx(PX_PER_DAY * 1.9, RANGE)).toBe(shiftDay(RANGE.from, 1));
+  });
+
+  it("clamps rather than inventing days off either end", () => {
+    // A cursor dragged past the chart's edge must land on a real day: the
+    // create gesture writes whatever this returns straight into `start_date`.
+    expect(dayAtPx(-500, RANGE)).toBe(RANGE.from);
+    expect(dayAtPx(RANGE.widthPx + 500, RANGE)).toBe(RANGE.to);
+  });
+});
+
+// ── S2: what a drag writes ──────────────────────────────────────────────────
+
+describe("resizeStart", () => {
+  const subject = task({ start_date: "2026-08-10", due_at: at("2026-08-20") });
+
+  it("moves the start", () => {
+    expect(resizeStart(subject, "2026-08-12")).toEqual({ start_date: "2026-08-12" });
+  });
+
+  it("CLAMPS at the due date instead of inverting the bar", () => {
+    // Swapping the ends would write an inverted span as real dates, and the bar
+    // turns inside out under the cursor on the way there. Stopping is the only
+    // outcome the user could have meant.
+    expect(resizeStart(subject, "2026-08-25")).toEqual({ start_date: "2026-08-20" });
+  });
+
+  it("writes nothing when the start did not move", () => {
+    // A no-op PATCH is an activity row saying a task moved from the 10th to the
+    // 10th, in the one place people look to find out what changed.
+    expect(resizeStart(subject, "2026-08-10")).toBeNull();
+  });
+
+  it("gives a due-only task a start", () => {
+    // The one case where a resize legitimately fills a null field: it is how an
+    // open-ended task gains a span without opening the panel.
+    expect(resizeStart(task({ due_at: at("2026-08-20") }), "2026-08-14")).toEqual({
+      start_date: "2026-08-14",
+    });
+  });
+
+  it("refuses a task with no dates at all", () => {
+    expect(resizeStart(task(), "2026-08-14")).toBeNull();
+  });
+});
+
+describe("resizeEnd", () => {
+  const subject = task({ start_date: "2026-08-10", due_at: at("2026-08-20") });
+
+  it("moves the due date and KEEPS its time of day", () => {
+    // "Due Friday at 5" extended to Monday is due Monday at 5, not Monday at
+    // midnight — the rule `rescheduleTo` already holds for a whole-bar move.
+    const patch = resizeEnd(subject, "2026-08-25");
+    expect(patch).not.toBeNull();
+    const moved = new Date((patch as { due_at: string }).due_at);
+    expect(moved.getDate()).toBe(25);
+    expect(moved.getHours()).toBe(12);
+  });
+
+  it("clamps at the start date", () => {
+    const patch = resizeEnd(subject, "2026-08-01");
+    expect(new Date((patch as { due_at: string }).due_at).getDate()).toBe(10);
+  });
+
+  it("writes nothing when the day did not change", () => {
+    expect(resizeEnd(subject, "2026-08-20")).toBeNull();
+  });
+
+  it("gives a start-only task a due date", () => {
+    const patch = resizeEnd(task({ start_date: "2026-08-10" }), "2026-08-14");
+    expect(new Date((patch as { due_at: string }).due_at).getDate()).toBe(14);
+  });
+
+  it("refuses a task with no dates at all", () => {
+    expect(resizeEnd(task(), "2026-08-14")).toBeNull();
+  });
+});
+
+describe("spanFor", () => {
+  it("writes BOTH ends, so a task never passes through half-scheduled", () => {
+    const patch = spanFor("2026-08-10", "2026-08-14");
+    expect(patch.start_date).toBe("2026-08-10");
+    expect(new Date(patch.due_at).getDate()).toBe(14);
+  });
+
+  it("orders the ends however the drag was swept", () => {
+    // Right-to-left is the same gesture. Writing it unordered stores a span
+    // that `interval` then silently un-inverts, so the chart looks right while
+    // the stored dates are backwards.
+    expect(spanFor("2026-08-14", "2026-08-10").start_date).toBe("2026-08-10");
+  });
+});
+
+describe("dragRefusal", () => {
+  it("refuses a DERIVED bar, which has no dates of its own to write", () => {
+    expect(dragRefusal(barForSpan("2026-08-01", "2026-08-05", RANGE, true))).toMatch(
+      /subtask/i,
+    );
+  });
+
+  it("refuses a row with no bar", () => {
+    expect(dragRefusal(null)).not.toBeNull();
+  });
+
+  it("allows a bar the task owns", () => {
+    expect(dragRefusal(barForSpan("2026-08-01", "2026-08-05", RANGE))).toBeNull();
+  });
+});
+
+describe("barForSpan", () => {
+  it("agrees with `bar` for the same interval", () => {
+    // The drag preview goes through `barForSpan` and the settled bar through
+    // `bar`. A pixel of disagreement is a bar that jumps on release.
+    const subject = task({ start_date: "2026-08-04", due_at: at("2026-08-09") });
+    expect(barForSpan("2026-08-04", "2026-08-09", RANGE)).toEqual(
+      bar(subject, [], RANGE),
+    );
+  });
+});
+
+// ── S2: the header's lower tier ─────────────────────────────────────────────
+
+describe("dayCells", () => {
+  const range = timelineRange(
+    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-16") }), depth: 0, children: [] }],
+    "2026-08-10",
+  );
+  const cells = dayCells(range, "2026-08-10");
+
+  it("draws one cell per day of the range, in order", () => {
+    expect(cells).toHaveLength(range.days);
+    expect(cells[0]?.day).toBe(range.from);
+    expect(cells.at(-1)?.day).toBe(range.to);
+  });
+
+  it("puts every cell where dayPx says it goes", () => {
+    // Two ways to compute an x is one way to have the shading a day out of step
+    // with the bars it is shading.
+    for (const cell of cells) expect(cell.px).toBe(dayPx(cell.day, range));
+  });
+
+  it("marks Saturday and Sunday, on a MONDAY week", () => {
+    // 2026-08-08 is a Saturday, 08-09 a Sunday, 08-10 a Monday.
+    expect(cells.find((c) => c.day === "2026-08-08")?.weekend).toBe(true);
+    expect(cells.find((c) => c.day === "2026-08-09")?.weekend).toBe(true);
+    expect(cells.find((c) => c.day === "2026-08-10")?.weekend).toBe(false);
+    expect(cells.find((c) => c.day === "2026-08-10")?.weekStart).toBe(true);
+    // `isWeekend` and the cell flag are one rule, read twice.
+    expect(isWeekend("2026-08-08")).toBe(true);
+    expect(isWeekend("2026-08-10")).toBe(false);
+  });
+
+  it("marks exactly one day today", () => {
+    expect(cells.filter((c) => c.today)).toHaveLength(1);
+    expect(cells.find((c) => c.today)?.day).toBe("2026-08-10");
+  });
+});
+
+describe("weekCells", () => {
+  const range = timelineRange(
+    [{ task: task({ start_date: "2026-08-03", due_at: at("2026-08-25") }), depth: 0, children: [] }],
+    "2026-08-10",
+  );
+  const cells = weekCells(range, "2026-08-10");
+
+  it("tiles the range exactly, with no gap and no overhang", () => {
+    // A week cell that overhangs the chart is how a Gantt header ends up one
+    // day out of step with the bars underneath it.
+    expect(cells[0]?.from).toBe(range.from);
+    expect(cells.at(-1)?.to).toBe(range.to);
+    expect(cells.reduce((sum, c) => sum + c.widthPx, 0)).toBe(range.widthPx);
+    for (let i = 1; i < cells.length; i += 1) {
+      expect(cells[i]?.px).toBe((cells[i - 1]?.px ?? 0) + (cells[i - 1]?.widthPx ?? 0));
+    }
+  });
+
+  it("starts its full weeks on a Monday", () => {
+    // The first cell is clipped by the range, so the rule is checked on the
+    // ones after it. `getDay()` is 1 on Monday.
+    for (const cell of cells.slice(1)) {
+      expect(fromDayKey(cell.from).getDay()).toBe(1);
+    }
+  });
+
+  it("marks the week containing today, and only that one", () => {
+    const marked = cells.filter((c) => c.today);
+    expect(marked).toHaveLength(1);
+    expect("2026-08-10" >= (marked[0]?.from ?? "")).toBe(true);
+    expect("2026-08-10" <= (marked[0]?.to ?? "")).toBe(true);
   });
 });

@@ -24,18 +24,69 @@
  * anywhere west of Greenwich.
  */
 
-import { dayKey, fromDayKey, shiftDay } from "./calendar";
+import { dayKey, fromDayKey, mondayOffset, shiftDay } from "./calendar";
+import { dueInstantForDay } from "./quickAdd";
 
 import type { TaskRow } from "./api";
 
-/** Chart pixels per calendar day. */
-export const PX_PER_DAY = 24;
+/**
+ * ── ZOOM (WS-27t S2) ──────────────────────────────────────────────────────
+ *
+ * One pixels-per-day number was the single worst thing about the first
+ * timeline: at 24px a quarter of work is four screens wide, and a one-day task
+ * is a 24px stub with no room for its own name. Plane solves it with three
+ * fixed zooms rather than a continuous slider (`gantt-chart/data/index.ts`,
+ * AGPL-3.0 — read, not copied), and fixed steps are the right call: a slider
+ * gives you infinite widths that all need a header layout, and the header is
+ * the part that has to stay legible.
+ *
+ * `tier` is what the LOWER header row draws. Day cells need ~28px to fit a
+ * weekday letter and a date, so only the widest zoom gets them.
+ *
+ * ⚠️ `month` is 24px because that is what the chart has always drawn, and the
+ * existing geometry fences assert against `PX_PER_DAY`. Changing the default
+ * would have been a silent re-layout hiding inside a feature.
+ */
+export type TimelineZoom = "week" | "month" | "quarter";
+
+export interface ZoomSpec {
+  key: TimelineZoom;
+  label: string;
+  dayWidth: number;
+  /** Granularity of the lower header row. */
+  tier: "day" | "week";
+}
+
+export const ZOOMS: Record<TimelineZoom, ZoomSpec> = {
+  week: { key: "week", label: "Week", dayWidth: 44, tier: "day" },
+  month: { key: "month", label: "Month", dayWidth: 24, tier: "week" },
+  quarter: { key: "quarter", label: "Quarter", dayWidth: 7, tier: "week" },
+};
+
+export const ZOOM_ORDER: readonly TimelineZoom[] = ["week", "month", "quarter"];
+
+export const DEFAULT_ZOOM: TimelineZoom = "month";
+
+/**
+ * Chart pixels per calendar day at the DEFAULT zoom.
+ *
+ * Kept as a named export because the geometry fences read it, and because a
+ * chart drawn at one zoom is still the common case. Anything that has a
+ * `TimelineRange` in hand must read `range.pxPerDay` instead — that is the
+ * value the chart was actually laid out with.
+ */
+export const PX_PER_DAY = ZOOMS[DEFAULT_ZOOM].dayWidth;
+
 /** Height of one task row, in pixels. Rows are uniform so `y` is index × this. */
-export const ROW_H = 34;
+export const ROW_H = 40;
+/** Height of the bar inside a row, leaving the rest as the row's own padding. */
+export const BAR_H = 26;
 /** Days of breathing room either side of the data's own range. */
 export const PAD_DAYS = 7;
 /** Narrowest a bar may be drawn — a one-day task must still be clickable. */
 export const MIN_BAR_PX = 10;
+/** A bar narrower than this cannot hold its own title, so the label sits beside it. */
+export const LABEL_INSIDE_PX = 72;
 
 const DAY_MS = 86_400_000;
 
@@ -44,6 +95,10 @@ export interface TimelineRange {
   to: string;
   days: number;
   widthPx: number;
+  /** The zoom this range was laid out at. */
+  zoom: TimelineZoom;
+  /** Pixels per day at that zoom — every x in this chart derives from it. */
+  pxPerDay: number;
 }
 
 export interface Bar {
@@ -145,6 +200,7 @@ export function timelineRows(tasks: readonly TaskRow[]): TimelineRow[] {
 export function timelineRange(
   rows: readonly TimelineRow[],
   todayKey: string,
+  zoom: TimelineZoom = DEFAULT_ZOOM,
 ): TimelineRange {
   const spans = rows
     .map((r) => rowInterval(r.task, r.children))
@@ -159,14 +215,47 @@ export function timelineRange(
 
   const days =
     Math.round((fromDayKey(to).getTime() - fromDayKey(from).getTime()) / DAY_MS) + 1;
-  return { from, to, days, widthPx: days * PX_PER_DAY };
+  const pxPerDay = ZOOMS[zoom].dayWidth;
+  return { from, to, days, widthPx: days * pxPerDay, zoom, pxPerDay };
 }
 
 /** Pixels from the chart's left edge to the START of a day. */
 export function dayPx(day: string, range: TimelineRange): number {
   const offset =
     (fromDayKey(day).getTime() - fromDayKey(range.from).getTime()) / DAY_MS;
-  return Math.round(offset) * PX_PER_DAY;
+  return Math.round(offset) * range.pxPerDay;
+}
+
+/**
+ * ── DRAGGING (WS-27t S2) ──────────────────────────────────────────────────
+ *
+ * How many whole days a horizontal drag of `dx` pixels means.
+ *
+ * **A drag is a DELTA, never an absolute position.** Plane's resize maps the
+ * cursor's absolute x onto a day (`use-gantt-resizable.ts`), which forces it to
+ * carry an `offsetX` correction for where inside the bar you grabbed — and gets
+ * it only for the move, so grabbing a resize handle three pixels off its centre
+ * jumps the edge by a day before you have moved the mouse. A delta has no
+ * origin to correct: wherever you grabbed, the edge moves exactly as far as
+ * your hand did.
+ *
+ * `Math.round` rather than `floor`, so the snap goes to the NEAREST day
+ * boundary and a half-day drag resolves the way the cursor is leaning.
+ */
+export function dayStep(dx: number, range: TimelineRange): number {
+  return Math.round(dx / range.pxPerDay);
+}
+
+/** The day occupying a pixel column, clamped into the range. */
+export function dayAtPx(px: number, range: TimelineRange): string {
+  const index = Math.floor(px / range.pxPerDay);
+  const clamped = Math.min(Math.max(index, 0), range.days - 1);
+  return shiftDay(range.from, clamped);
+}
+
+/** Saturday or Sunday — the shaded columns. Monday-week, as `calendar.ts` says. */
+export function isWeekend(day: string): boolean {
+  return mondayOffset(fromDayKey(day)) >= 5;
 }
 
 /**
@@ -183,13 +272,31 @@ export function bar(
 ): Bar | null {
   const span = rowInterval(task, children);
   if (!span) return null;
-  const leftPx = dayPx(span.from, range);
-  const rightPx = dayPx(span.to, range) + PX_PER_DAY;
+  return barForSpan(span.from, span.to, range, span.derived);
+}
+
+/**
+ * The same geometry from two explicit days, for the bar being DRAGGED.
+ *
+ * A drag has no committed dates yet — the whole point is that nothing is
+ * written until the mouse comes up — so the preview cannot go through `bar()`,
+ * which reads the task. One function computes both, because a preview that
+ * lands a pixel away from where the bar settles is the tell that there are two
+ * geometries.
+ */
+export function barForSpan(
+  from: string,
+  to: string,
+  range: TimelineRange,
+  derived = false,
+): Bar {
+  const leftPx = dayPx(from, range);
+  const rightPx = dayPx(to, range) + range.pxPerDay;
   return {
     leftPx,
     widthPx: Math.max(MIN_BAR_PX, rightPx - leftPx),
-    singleDate: span.from === span.to,
-    derived: span.derived,
+    singleDate: from === to,
+    derived,
   };
 }
 
@@ -218,9 +325,94 @@ export function monthCells(range: TimelineRange): MonthCell[] {
       key: cursor.slice(0, 7),
       label: `${MONTHS[month - 1]} ${year}`,
       px,
-      widthPx: dayPx(end, range) + PX_PER_DAY - px,
+      widthPx: dayPx(end, range) + range.pxPerDay - px,
     });
     cursor = firstOfNext;
+  }
+  return out;
+}
+
+const WEEKDAY = ["M", "T", "W", "T", "F", "S", "S"];
+
+export interface DayCell {
+  day: string;
+  px: number;
+  widthPx: number;
+  /** Weekday initial — "" at zooms with no room to draw one. */
+  label: string;
+  /** Day of the month, for the day tier. */
+  date: number;
+  weekend: boolean;
+  today: boolean;
+  /** This day starts a Monday week — where the vertical rule goes. */
+  weekStart: boolean;
+}
+
+/**
+ * Every day in the range, with the flags the chart shades by.
+ *
+ * One pass rather than a predicate called per cell per render, because the
+ * chart draws this list three times over — the header tier, the column
+ * shading and the gridlines — and they must agree about which column is
+ * Saturday. Cheap: a year at quarter zoom is 365 objects, built once per range.
+ */
+export function dayCells(range: TimelineRange, todayKey: string): DayCell[] {
+  const out: DayCell[] = [];
+  for (let i = 0; i < range.days; i += 1) {
+    const day = shiftDay(range.from, i);
+    const offset = mondayOffset(fromDayKey(day));
+    out.push({
+      day,
+      px: i * range.pxPerDay,
+      widthPx: range.pxPerDay,
+      label: WEEKDAY[offset] as string,
+      date: Number(day.slice(8, 10)),
+      weekend: offset >= 5,
+      today: day === todayKey,
+      weekStart: offset === 0,
+    });
+  }
+  return out;
+}
+
+export interface WeekCell {
+  key: string;
+  /** First day of the week, clipped to the range. */
+  from: string;
+  to: string;
+  px: number;
+  widthPx: number;
+  label: string;
+  /** Today falls inside this week. */
+  today: boolean;
+}
+
+/**
+ * Monday weeks across the range, clipped at both ends.
+ *
+ * The lower header tier at the two narrower zooms, where a per-day cell would
+ * be seven pixels of nothing. Clipped rather than overhanging so the first and
+ * last cell line up with the chart's own edges — an overhanging week is how a
+ * Gantt header ends up one day out of step with the bars underneath it.
+ */
+export function weekCells(range: TimelineRange, todayKey: string): WeekCell[] {
+  const out: WeekCell[] = [];
+  let cursor = range.from;
+  while (cursor <= range.to) {
+    const offset = mondayOffset(fromDayKey(cursor));
+    const weekEnd = shiftDay(cursor, 6 - offset);
+    const to = weekEnd <= range.to ? weekEnd : range.to;
+    const px = dayPx(cursor, range);
+    out.push({
+      key: cursor,
+      from: cursor,
+      to,
+      px,
+      widthPx: dayPx(to, range) + range.pxPerDay - px,
+      label: String(Number(cursor.slice(8, 10))),
+      today: todayKey >= cursor && todayKey <= to,
+    });
+    cursor = shiftDay(to, 1);
   }
   return out;
 }
@@ -296,6 +488,109 @@ export function edgePath(
   return (
     `M ${x1} ${y1} H ${x1 + stub} V ${lane} H ${x2 - stub} V ${y2} H ${x2}`
   );
+}
+
+/**
+ * ── WHAT A DRAG WRITES (WS-27t S2) ────────────────────────────────────────
+ *
+ * Three gestures, three patches, all of them one `PATCH /tasks/{id}` through
+ * the page's existing `moveTask` — the same seam the calendar's drag already
+ * uses, so a date moved on the timeline produces the same activity row, the
+ * same validation and the same revert as one moved on the calendar.
+ *
+ * **A move reuses `rescheduleTo` outright** rather than growing a second
+ * whole-bar shift here. That function already owns the two rules this needed —
+ * the span is preserved, and the due TIME of day survives the move — and both
+ * are rules a second implementation would get wrong in the same order.
+ *
+ * ⚠️ **Dragging still never touches anything but the task you dragged.**
+ * D-PM-12 says an arrow warns and does not push, and that survives here: move a
+ * blocker onto its dependent and the arrow turns red, exactly as it would if
+ * you had typed the date. Nothing cascades.
+ */
+
+/** A due instant on `day`, keeping the time of day the task already had. */
+function dueAtOnDay(day: string, previous: string | null | undefined): string {
+  if (!previous) return dueInstantForDay(day);
+  const had = new Date(previous);
+  const moved = fromDayKey(day);
+  moved.setHours(had.getHours(), had.getMinutes(), had.getSeconds(), had.getMilliseconds());
+  return moved.toISOString();
+}
+
+/**
+ * Drag the LEFT edge to `day` — the task starts then.
+ *
+ * **Clamped, never swapped.** Pushing the start past the due date could either
+ * flip the interval or stop at it; stopping is right, because a bar that turns
+ * inside out under the cursor is not something anybody meant to ask for, and
+ * the inverted span would then be written as real dates.
+ *
+ * **A task with only a due date gains a start** — that is how you give an
+ * open-ended task a span without opening the panel, and it is the one case
+ * where a resize legitimately writes a field that was null.
+ */
+export function resizeStart(
+  task: TaskRow,
+  day: string,
+): { start_date: string } | null {
+  const span = interval(task);
+  if (!span) return null;
+  const capped = day > span.to ? span.to : day;
+  const current = task.start_date ? task.start_date.slice(0, 10) : null;
+  if (capped === current) return null;
+  return { start_date: capped };
+}
+
+/**
+ * Drag the RIGHT edge to `day` — the task is due then.
+ *
+ * Clamped at the start for the same reason, and a task with only a start date
+ * gains a due date. The time of day is preserved when there was one.
+ */
+export function resizeEnd(
+  task: TaskRow,
+  day: string,
+): { due_at: string } | null {
+  const span = interval(task);
+  if (!span) return null;
+  const floored = day < span.from ? span.from : day;
+  const current = task.due_at ? dayKey(new Date(task.due_at)) : null;
+  if (floored === current) return null;
+  return { due_at: dueAtOnDay(floored, task.due_at) };
+}
+
+/**
+ * Draw a span on an UNSCHEDULED row — the task runs `from` to `to`.
+ *
+ * The row of a task with no dates is otherwise dead space carrying the word
+ * "unscheduled", which names the problem and offers nothing. Dragging across it
+ * is the shortest path from "no dates" to "these dates", and it writes both
+ * ends at once so the task never passes through a half-scheduled state.
+ */
+export function spanFor(
+  from: string,
+  to: string,
+): { start_date: string; due_at: string } {
+  const [a, b] = from <= to ? [from, to] : [to, from];
+  return { start_date: a, due_at: dueInstantForDay(b) };
+}
+
+/**
+ * Why this bar cannot be dragged, or `null` when it can.
+ *
+ * A DERIVED bar has no dates of its own — the span is its children's — so there
+ * is no field for a drag to write. Dragging it would have to either invent
+ * dates on the parent or silently rewrite every child, and both are worse than
+ * refusing. This is the same rule the link handle already applied, said once
+ * and now read by both.
+ */
+export function dragRefusal(barToDrag: Bar | null): string | null {
+  if (!barToDrag) return "This task has no dates to move.";
+  if (barToDrag.derived) {
+    return "These dates come from the subtasks. Move those instead.";
+  }
+  return null;
 }
 
 /**

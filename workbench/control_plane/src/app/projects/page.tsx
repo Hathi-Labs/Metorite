@@ -1896,6 +1896,7 @@ function ProjectsWorkspace() {
               shownFields={shownFields}
               tags={tags}
               onSelect={(task) => void openWithStatuses(task)}
+              onMove={(task, patch) => void moveTask(task, patch)}
               onLink={(blockerId, blockedId) => void linkTasks(blockerId, blockedId)}
               onRefuse={(reason) => setError(reason)}
             />
