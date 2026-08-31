@@ -1634,12 +1634,23 @@ line — never reclaim a number by deleting the other entry.
   2026-08-31, and the fences no longer care how large the table grows. This
   entry is about the TABLE, and never about the fence.
 - **Why:** 🔴 **This is the root cause behind the two entries closed on
-  2026-08-31, and neither of them fixed it.** The verification set leaks about
-  **170 organizations and 150 `usage_event` rows on every run**. The
-  provisioning fixtures in the router suite and the keys suite each create an
-  organization, and nothing takes it back. Measured over three runs on
-  2026-08-31: `organization` went 1598 to 2117, and `usage_event` went 961 to
-  1405.
+  2026-08-31, and neither of them fixed it.** The `org_key` fixture at
+  `tests/unit/test_customer_console_router.py:128-142` posts `/orgs/provision`
+  with a fresh `router-<hex>` slug for every test, and it removes nothing.
+- **📌 Measured per suite on 2026-08-31, by an independent verifier.** An
+  earlier estimate of 170 rows a run was wrong, and these numbers replace it.
+
+  | suite | organizations a run | `usage_event` a run |
+  |---|---|---|
+  | `test_customer_console_router.py` | **+99** | **+86** |
+  | `test_provider_keys.py` | +3 | 0 |
+  | `test_customer_console_sql.py` | 0 | 0 |
+  | `test_customer_console_catalog.py` | 0 | 0 |
+  | **the console family, 16 files** | **+647** | **+288** |
+
+  The router figure repeated exactly over three separate runs. Attribution by
+  slug prefix: of 5278 organizations, `router-` held **3144**, which is 60
+  percent. Of 3720 `usage_event` rows, those organizations held **2752**.
 - **📌 The number this reached, and what it cost.** The shared database held
   **25,959 organizations, 15,159 usage events and 8,643 credit-ledger rows**
   before an operator rebuilt it. At that size
@@ -1651,11 +1662,13 @@ line — never reclaim a number by deleting the other entry.
   GROWTH.** A slug filter reads one organization whatever the table holds. The
   table still grows by 170 rows a run, and the next assertion that pages the
   table inherits the same trap.
-- **The repair:** give each provisioning fixture a teardown, the way
-  `bound_tier` already does for tier bindings. One fixture, one teardown, and
-  a source fence that fails when a test writes an organization nothing takes
-  back — `test_every_binding_this_file_writes_is_taken_back` is the shape to
-  copy.
+- **The repair:** give `org_key` and its siblings a teardown, the way
+  `bound_tier` already does for tier bindings. One fixture, one teardown.
+  ⚠️ **The fence must read the TABLE, and never the source text.** A verifier
+  defeated a source scan on 2026-08-31 with two spellings. One was a
+  lower-case `insert into`. The other split the keyword over adjacent string
+  literals, which is this repository's own house style. A fixture that
+  snapshots the row count before and after cannot be out-spelled.
 - **📌 Two smaller leaks ride here.** `test_customer_console_vendor_feed.py`
   leaks `ptv*` provider credentials and `model_profile` rows, measured 2 to 16
   in one run. And `test_customer_console_pricing_truth.py:497,530` carry the
