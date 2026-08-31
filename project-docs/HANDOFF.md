@@ -922,6 +922,17 @@ line — never reclaim a number by deleting the other entry.
   `customer_console.md` §6A.10a is now BUILT. The image endpoint, the speak
   endpoint and H-47's handler seam are what is left. Keep this entry until
   those three land.
+- 📌 **The remaining half now has a contract: `customer_console.md` §6A.10c**,
+  minted 2026-08-31. It holds twelve clauses and a fence table for
+  `POST /v1/images/generations` and `POST /v1/audio/speech`. Build to that
+  section.
+  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
+  we resell for pictures and for speech is a commercial act, and it belongs to
+  the owner. So each route answers 400 `tier_unknown` until the owner binds
+  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
+  beside the three prerequisites H-69 lists.
+  📌 **§6A.10c gives H-47 no first caller.** `aimage_generation` and `aspeech`
+  are litellm verbs already, so neither route needs a native handler.
 - 🔴 **A SECOND finding rides here, from WS-31 slice 4 (D-AI-2), 2026-08-31.**
   **A mixed lift chain answers about an image it never saw.**
   `resolve_vision_chain` reads `model_profile.reads_images` on the RANK-1 step
@@ -973,8 +984,10 @@ line — never reclaim a number by deleting the other entry.
   mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
   ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
   measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Done when:** `customer_console.md` **§6A.10a** holds the nine clauses.
-  Build to that section, and to nothing written in this entry.
+- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
+  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
+  the speak endpoint. Build to those two sections, and to nothing written in
+  this entry.
   ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
   `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
   seam that fills it. A profile with no price still leaves
@@ -989,12 +1002,14 @@ line — never reclaim a number by deleting the other entry.
   of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
   apps/services/customer_console/customer_console/catalog.py` — five verbs
   means the follow-up is open.
-- **Authority:** `customer_console.md` **§6A.10a** (the done-when) ·
+- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
+  done-when) ·
   `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
 - **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
   done-when section and the H-78 order · **amended 2026-08-31** with the
   mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
-  with H-78's `video` follow-up, after H-78 closed
+  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
+  2026-08-31** with §6A.10c, the contract for the two routes that are left
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present

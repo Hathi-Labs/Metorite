@@ -626,6 +626,14 @@ clause 10 for the refusal rows, it rewrote clause 3 around the
 `verbose_json` rule, and it made clause 5's ordering a preference. It also
 re-measured the `main.py` anchors on branch `ws-31-slice5-refusals`.
 
+🆕 **§6A.10c arrived on 2026-08-31, and it is SPEC ONLY.** It holds the
+build contract for `POST /v1/images/generations` and `POST /v1/audio/speech`,
+in twelve clauses with their own fence table. §6A.10a clause 2 named both
+routes as non-goals of the transcribe slice, and that clause now cites
+§6A.10c. **So §6A.10b and §6A.10c are the two sections that stay SPEC ONLY.**
+⚠️ **§6A.10c seeds NO `tier_binding` row**, because the choice of the vendor
+model we resell is a commercial act. Its clause 4 holds that argument.
+
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
 
@@ -7921,6 +7929,12 @@ call.
 2. **Four named non-goals.** No image route. No speak route. No streaming.
    No tenant caller in this slice, per clause 7.
 
+   📌 **§6A.10c now scopes the image route and the speak route IN.** It
+   arrived on 2026-08-31, and it holds the build contract for
+   `POST /v1/images/generations` and `POST /v1/audio/speech`. This clause
+   stays as the audit wrote it, because it records what the transcribe slice
+   built. Read it as history from that date on.
+
    🔴 **The 400 on a stream request is NEW behaviour THIS SLICE builds.**
    *(Rewritten 2026-08-30. This clause read the refusal off
    `STREAMABLE_TASKS`, and that constant cannot serve it.)*
@@ -8134,6 +8148,238 @@ bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
+```
+
+### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — SPEC ONLY, 2026-08-31
+
+**Nothing below is built.** Every default here is an **agent-proposed answer
+the owner may overrule**. Re-verify every anchor at dispatch.
+
+**Gate: AGENT-SAFE.** D61.1 decided the endpoint shape, so no owner act stands
+in front of the build. Two owner acts stand in front of the SERVING, and
+clause 4 names both. `ROUTER_SERVING_ENABLED` stays the owner's flip (H-69).
+
+**The problem, in one line.** G-1 measured it, and §6A.10a closed one third of
+it. The Router serves two of D60's six tasks today.
+`015_tier_pricing.sql:52,54` registers `tier-image` and `tier-tts`, and
+`016_tier_task.sql:33,35` maps them to `image` and `speak`. Neither tier has a
+door.
+
+**Scope.** This section holds the build contract for two routes, and for
+nothing else. Both routes copy §6A.10a line for line:
+
+- The DOOR declares the task. The `model` field names a TIER.
+- The three customer walls stand before the provider call.
+- `_record_completion` writes the one usage row.
+
+📌 **§6A.10a clause 2 named these two routes as non-goals of the transcribe
+slice.** This section scopes them in, and that clause now cites this one.
+
+#### Twelve clauses
+
+1. **Scope: the image route.** `POST /v1/images/generations`, on the existing
+   `KeyCaller` auth. The body is JSON, and it carries `model` and `prompt`.
+   **That `model` field is a TIER ALIAS**, never a model id.
+   `016_tier_task.sql:33` maps `tier-image` to the `image` task, so the alias
+   declares the task.
+
+   D61.1 fixed the OpenAI shape, and D61.3 and D60.4 bind the alias rule. A
+   bare model id answers **400**, and the Router never sniffs the payload
+   (D61 G-3). The route names its own task in a module constant, as
+   `TRANSCRIBE_TASK` does (`main.py:5410`).
+
+2. **Scope: the speak route.** `POST /v1/audio/speech`, on the same
+   `KeyCaller` auth. The body is JSON, and it carries `model`, `input` and
+   `voice`. `016_tier_task.sql:35` maps `tier-tts` to the `speak` task.
+   **The `model` field is a TIER ALIAS here too**, and a bare model id answers
+   **400**.
+
+   The response is **audio bytes**, and not JSON. So the route answers the
+   caller with the bytes the provider returned, under the provider's own
+   content type. Clause 3 holds the streaming question that this shape opens.
+
+3. **Four named non-goals.**
+   - **No streaming speech.** The route serves the buffered bytes alone.
+   - **No tenant caller.** Nothing in the tenant plane posts to either route
+     in this slice.
+   - **No `tier_binding` seed.** Clause 4 holds the reason.
+   - **No native handler.** Clause 9 holds the reason.
+
+   🔴 **`speak` IS in `STREAMABLE_TASKS` (`catalog.py:36`), and this slice
+   still does not stream it.** The OpenAI speech endpoint answers with audio
+   bytes, and never with SSE frames. Slice 11's failover walk is built for
+   SSE. Its first-frame boundary has no meaning for an audio body, so a
+   streamed speak call would run that walk against a shape it cannot read.
+
+   ⚠️ **Name the ONE path that membership makes reachable.**
+   `STREAMABLE_TASKS` has one reader, `check_streams` (`catalog.py:108`). It
+   guards the OPERATOR capability write at `main.py:2002`, so an operator MAY
+   set `streams = TRUE` on a `speak` capability row. **Nothing on the serving
+   path reads that column.** The chat route branches on the request body
+   instead (`main.py:5301`). The fence must prove that such a row changes
+   nothing about what this route answers.
+
+4. **THE BINDING GAP: this slice seeds NO `tier_binding` row.** Which vendor
+   model we resell for pictures, and which one we resell for speech, is a
+   COMMERCIAL decision. It belongs to the owner, and an agent must not take
+   it. `010:212` seeded `groq/whisper-large-v3-turbo` for `tier-stt`, and no
+   such row exists for `tier-image` or for `tier-tts`.
+
+   The slice MAY seed `model_capability` rows. *"This model answers
+   `aimage_generation`"* is a vendor fact, and not a choice about what we
+   sell. `010:219` seeds the `transcribe` capability the same way.
+
+   ⚠️ **The consequence, stated plainly.** Until the owner binds `tier-image`
+   and `tier-tts`, each route answers **400** with the `tier_unknown` refusal
+   and writes one refusal row. That is the SAME wall §6A.10a clause 10
+   already specifies, on a second door and a third. A fence seeds its own
+   binding in its test fixture, so the fences pass against an unbound
+   database.
+
+   📌 **Arming each route is therefore ONE owner act — one `tier_binding`
+   INSERT.** It sits beside the three prerequisites H-69 already lists, and it
+   is not a fourth kind of act.
+
+5. **Quantity, the image route: the COUNT OF IMAGES the provider RETURNED.**
+   The unit is `images`, which `task_catalog` gives the `image` task
+   (`010:49`). The route counts the pictures in the response, and it never
+   reads the request's `n`. A provider that returns fewer pictures than the
+   caller asked for must bill fewer. The count is a `Decimal`, and it bills
+   through the one `rate_call` seam, exactly as transcribe's minutes do.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A response that carries
+   no readable list of images logs `router.unmeasured_quantity` and bills
+   zero. It guesses at no count. §6A.10a clause 3 took that same answer for a
+   missing duration, and the reason holds here: the customer already holds
+   the pictures.
+
+6. **Quantity, the speak route: the COUNT OF CHARACTERS in the input text.**
+   The unit is `characters`, which `task_catalog` gives the `speak` task
+   (`010:48`). The route measures the text it SENDS upstream, and never a
+   figure the caller reports. The count is a `Decimal`, and it bills through
+   the same `rate_call` seam.
+
+   ⚠️ **The unmeasured case bills ZERO, and loudly.** A request that carries
+   no readable input text logs `router.unmeasured_quantity` and bills zero.
+
+   📌 **The two routes measure at opposite ends, on purpose.** A picture count
+   is a fact only the RESPONSE holds. A character count is a fact the REQUEST
+   holds, and an audio body reports nothing we can count.
+
+7. **`unit` and `quantity` reuse H-46's plumbing. Build no second path.**
+   `_record_completion` (`main.py:4635`) already takes a `quantity`, and
+   `_rate_completion` (`main.py:1038`) already hands it to `rate_call`.
+   `rate_call` prices a per-unit card from the quantity alone, so neither
+   function changes for these two routes. The usage row then holds that
+   quantity and the unit the tier card names.
+
+   `_task_unit` (`main.py:2307`) reads `task_catalog.natural_unit`. So it
+   answers `images` for `image` and `characters` for `speak` with no change at
+   all, because both rows already exist (`010:48`, `010:49`).
+
+   ⚠️ **`unit` lands NULL while no `tier_rate_card` row exists for the pair.**
+   `_rate_completion` reads the unit off the CARD, and it returns `(0, None)`
+   when it finds none. Migration `015` seeds no tier rates, so a NULL unit is
+   the SHIPPED state until the owner prices the two tiers (H-42, a commercial
+   act). An absent card does not touch `quantity`. The route measures the
+   count, and the row records it whether or not a card exists.
+
+8. **Vendor cost: `vendor_per_image_usd` and `vendor_per_character_usd`.**
+   `019_per_unit_vendor_costs.sql:81-83` built both columns, so this slice
+   adds no column. Guard each read the way `_vendor_per_minute`
+   (`main.py:4613`) guards `vendor_per_minute_usd`. Ask
+   `information_schema` first, and answer NULL when the column is absent.
+   NULL means nobody told us, and it never means zero (D-AI-7 rule 3,
+   `ai_metering_and_analytics.md` §3.7).
+
+   🔴 **A MEASURED defect the implementer must repair.**
+   `_record_completion`'s per-unit cost branch (`main.py:4704`) is hard-wired
+   to the MINUTE column. It calls `_vendor_per_minute` for every call that
+   carries a quantity. An image call would then take its cost from a
+   per-minute price. The branch must pick its column by the task's UNIT, and
+   never by the presence of a quantity.
+
+9. **Dispatch through the ONE seam. Add no second dispatch table.**
+   `resolve_invocation` (`router.py:397`) answers which verb serves the
+   `(model, task)` pair, and `010:219` shows the shape of a capability seed.
+   The verbs are `aimage_generation` and `aspeech`, and `KNOWN_INVOCATIONS`
+   (`catalog.py:26-32`) already holds both. So this slice adds no verb to that
+   set.
+
+   🔴 **`SERVING_INVOCATIONS` (`router.py:509`) holds two verbs today**,
+   `acompletion` and `atranscription`. It is the set the Router may CALL, and
+   `_litellm_call` raises `UnservableInvocation` for anything outside it. This
+   slice adds `aimage_generation` and `aspeech` to that set, and nothing else.
+
+   📌 **H-47 gets NO first caller here.** Both verbs are litellm verbs, so
+   neither route needs a native handler. H-47 stays open and unbundled per
+   D57.3 — the handler seam lands with its first NATIVE caller, and never
+   before it. Do not fold H-47 into this slice.
+
+10. **The three walls write refusal rows, through slice 5's writer.**
+    `_record_refusal` (`main.py:4851`) is that writer. Each route calls it on
+    each of its three customer walls: the 400 `tier_unknown`, the 402
+    `insufficient_credits` and the 403 `run_ceiling_exceeded`.
+    `020_usage_refusal.sql:47-49` closes the vocabulary at those three slugs,
+    so this slice mints no fourth one. Each route passes its own task, so
+    `_task_unit` writes a `unit` of `images` or of `characters`.
+
+    ⚠️ **Carry the refusal OUT of the serving transaction before you call the
+    writer.** A row written on the serving connection rolls back with the
+    raise, and then the meter records nothing. `_record_refusal`'s own
+    docstring names that hazard.
+
+    🔴 **The 401 CANNOT write a row, and the reason is structural.** The key
+    check refuses before the code knows the organization, and
+    `usage_event.organization_id` is NOT NULL.
+    `ai_metering_and_analytics.md` §8.1 holds that reason.
+
+11. **`METERING_EXEMPTION` grows by EXACTLY two doors, in this same diff.**
+    `tests/unit/test_customer_console_payments.py:133` holds the constant, and
+    it names `chat_completions` and `audio_transcriptions` today. The two new
+    routes join it, so the set holds four pairs. Update the
+    count-and-contents fence in the SAME change, or the suite goes red.
+
+    📌 **§9's owner-ratification item already predicts this growth.** Item 6
+    reads *"The image endpoint and the speak endpoint will each add one
+    more."* So this is the same argument on the third door and the fourth, and
+    it is not a new argument. Both routes take a customer key, and our own
+    infrastructure decides both amounts.
+
+12. **No migration, and no new suite.** `usage_event` has carried `task`,
+    `quantity` and `unit` since `010_tasks_units_capabilities.sql`.
+    `task_catalog` has carried `image` and `speak` since the same migration.
+    `019` built both vendor columns, and `020` built the refusal vocabulary.
+    §7's command block already names `test_customer_console_tasks.py` and
+    `test_customer_console_catalog.py`, which §6A.10a clause 8 added. The new
+    fences land in those files and in `test_customer_console_payments.py`, so
+    §7 needs no edit.
+
+#### Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| The `model` field is a tier alias on both routes, never a model id | `test_customer_console_tasks.py` — a bare model id returns 400 on `POST /v1/images/generations` and on `POST /v1/audio/speech` |
+| A speak call never streams | `test_customer_console_tasks.py` — the test writes a `speak` capability row with `streams = TRUE`, DRIVES the route, and reads one buffered body |
+| An image usage row records the count of images AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route against a stub that returns TWO pictures for a request that asked for THREE. It then SELECTs the `usage_event` row that call wrote, and reads `quantity` of 2 and `unit` of `images`. A hand-inserted row does not satisfy this fence |
+| A speak usage row records the count of characters AND the unit | `test_customer_console_tasks.py` — the test DRIVES the route with a known input string, SELECTs the row it wrote, and reads that length off `quantity` with a `unit` of `characters` |
+| An unreadable count bills zero and does not fail the call | `test_customer_console_tasks.py` — a response with no image list returns 200 and the row bills 0 |
+| An unpriced vendor cost stays NULL | `test_customer_console_tasks.py` — no `vendor_per_image_usd` writes NULL, never 0 |
+| An image call costs off `vendor_per_image_usd`, never off `vendor_per_minute_usd` | `test_customer_console_tasks.py` — a profile priced on the MINUTE column alone leaves `provider_cost_usd` NULL for an image call |
+| Neither route serves without a `tier_binding` row | `test_customer_console_tasks.py` — with no binding, both routes return 400 and each writes one `tier_unknown` refusal row |
+| A refused POST writes ONE refusal row, with the task's own unit | `test_customer_console_tasks.py` — the test SELECTs the one row and reads `refusal_reason` plus a `unit` of `images` or of `characters` |
+| `SERVING_INVOCATIONS` gains the two verbs and stays inside `KNOWN_INVOCATIONS` | `test_customer_console_tasks.py:938` — the subset assertion already stands, and the test names both new verbs |
+| `METERING_EXEMPTION` holds exactly four pairs | `test_customer_console_payments.py` — the count-and-contents assertion names all four |
+
+**Verification.** The suites are database-gated (R8), so start the database
+first.
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_customer_console_catalog.py \
+  tests/unit/test_customer_console_payments.py -q
 ```
 
 ---
