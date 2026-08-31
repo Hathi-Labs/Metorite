@@ -248,8 +248,13 @@ def _models_that_read_images(
     ``AND reads_images``. A FALSE flag fails it too. All three mean *does not
     see*, exactly as :func:`reads_images` answers for one model.
 
-    :func:`reads_images` stays as it is for its own callers. This is the set
-    form of the same question, and never a second source for the flag.
+    ⚠️ **This function is the ONE reader on the serving path, and
+    :func:`reads_images` has NO caller today** (measured 2026-08-31, whole
+    tree, source and tests). The single-model form stays in ``__all__`` for a
+    caller that holds exactly one model. Such a caller reads the flag through
+    this module, and it writes no second SELECT against ``model_profile``.
+    This is the set form of the same question, and never a second source for
+    the flag.
     """
     wanted = list(models)
     if not wanted:

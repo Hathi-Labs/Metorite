@@ -21,6 +21,11 @@ chain. **H-81** holds both decisions, and neither one is an agent's to take.
 The same round gave the resolver a one-query flag read, and every `router.py`
 anchor in this file moved 41 lines down.
 
+📌 **A truth-repair round corrected the record on 2026-08-31, and it changed
+no behaviour.** `reads_images` has NO caller, and §8.5 clause 7 said it kept
+its own callers. `router.py` and `apps/AGENTS.md` carried the same wrong
+sentence, and all three now say what is true.
+
 **One slice is SPEC ONLY, and it holds a contract.** Slice 3 is §8.4, and it is
 AGENT-SAFE. Its clause 6 is the only unbuilt clause left in this file. The
 contract names its done-when clauses, its fences (R7) and its verification
@@ -1272,7 +1277,8 @@ the `tier-vision` chain when it is FALSE.
    `WHERE model = ANY(:models) AND reads_images`, and the comprehension over
    the chain keeps the rank order. A missing profile row, a SQL NULL flag and
    a FALSE flag all stay out of the set, exactly as `reads_images` answers for
-   one model. `reads_images` keeps its own callers and its own shape.
+   one model. `reads_images` has no caller today, and it keeps its shape as
+   the single-model form.
 
    📌 **The cost this removed.** The per-step filter ran one query for each
    rank. It ran on the serving path and inside the serving transaction. The

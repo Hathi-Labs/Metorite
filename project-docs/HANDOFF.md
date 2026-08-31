@@ -120,26 +120,38 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-83 · Scope the `usage_by_org` fence to its own organization · [AGENT]
 - **Check:** `grep -n "limit=10_000" tests/unit/test_customer_console_sql.py`.
-  A hit means the fence still asks for a page sized by a bound that the data
+  TWO hits mean the fence still asks for a page sized by a bound that the data
   has passed, and this entry is still real.
 - 🔴 **IT HIDES REGRESSIONS, and that is why it is here.**
-  `test_an_org_with_no_usage_still_appears` passes about 27 percent of runs on
+  `test_an_org_with_no_usage_still_appears` passed about 27 percent of runs on
   a full scratch database. A true red then reads as volume noise. This is the
   41-failures-then-22 swing that moved with no code change.
 - **Why:** `store.usage_by_org` orders by `credits DESC, calls DESC, slug ASC`
-  with `LIMIT :lim` (`store.py:808-809`). The fence asks for `limit=10_000`
-  (`test_customer_console_sql.py:657`). Somebody sized that bound when the
-  database held 563 organizations.
-- 📌 **Measured 2026-08-31 on the scratch console database.** It holds 22,787
-  organizations and 12,721 `usage_event` rows. The zero-usage block starts at
-  row 9,428 and holds 13,360 rows. So the page admits 573 of the 2,265
-  `acme-` organizations, and the cut falls at slug `acme-457ea6e3`.
+  with `LIMIT :lim` (`store.py:808-809`). The fence asks for `limit=10_000`.
+  Somebody sized that bound when the database held 563 organizations.
+- 🔴 **SEVEN tests carry the shape, and not one** *(a reviewer found this on
+  2026-08-31, and an agent counted the callers the same day)*. The direct call
+  is `test_customer_console_sql.py:657`. The helper `_row_for` (`:878`) runs
+  the identical uncapped read at `:888`, and SIX tests call it — lines 835,
+  861, 947, 963, 970 and 1002.
+- 📌 **Re-measured 2026-08-31 at 14:33, and every figure had moved UP.** The
+  scratch console database holds 25,761 organizations, 14,987 `usage_event`
+  rows and 2,377 `acme-` organizations. The earlier read the same day gave
+  22,787 and 12,721 and 2,265.
+- 🔴 **The cut has now passed the zero-usage block.** Organizations with usage
+  in the window fill ranks 1 to 10,857. The zero-usage block starts at rank
+  10,858 and holds 14,904 rows. So `limit=10_000` admits NO zero-usage
+  organization, and the first `acme-` row sits at rank 10,858.
 - 🔴 **The `org` fixture mints `acme-<8 random hex>`**
-  (`test_customer_console_sql.py:79`). The test passes only when that hex sorts
-  below `457ea6e3`. That is `0x457ea6e3 / 0x100000000`, or about 27 percent.
+  (`test_customer_console_sql.py:79`). The test passed only when that hex
+  sorted below `457ea6e3`, which was about 27 percent. Today no hex value
+  passes it. The flake has become a steady red. This comes from the page query
+  above, and not from a run of that suite.
 - ✅ **The smallest correct repair is a slug filter in the query.** Scope the
-  assertion to the fixture's OWN organization. Do NOT raise the limit again.
-  The last raise bought 563 organizations of headroom, and it has expired.
+  assertion to the fixture's OWN organization. Repair BOTH sites. A filter at
+  `:657` alone leaves the six `_row_for` tests on the coin flip. Do NOT raise
+  the limit again. The last raise bought 563 organizations of headroom, and it
+  has expired.
 - **Authority:** `customer_console.md` §5 · board row WS-31 · beside H-76
 - **Added:** 2026-08-31 · WS-31 router-guards final repair round
 
@@ -169,10 +181,18 @@ line — never reclaim a number by deleting the other entry.
 ### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
   and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
-  and `grep -n "return resolve_chain(conn, tier, VISION_TASK)" apps/services/customer_console/customer_console/router.py`.
+  and `grep -n "_models_that_read_images" apps/services/customer_console/customer_console/router.py`.
   This entry is still real on three conditions. The resolver takes
   `(conn, tier)` alone, the empty-`attempts` branch answers 503 with no second
   resolve, and the declared-task resolve carries no `reads_images` filter.
+  ⚠️ **The third grep keys on the SYMBOL, and never on a whole source line.**
+  A literal match of the `return resolve_chain(conn, tier, VISION_TASK)` line
+  read as done the moment somebody reformatted it, while shape 2 still stood.
+  `_models_that_read_images` is the ONE reader of the flag, so any filter must
+  call it. Today the grep answers three lines: the definition, one docstring
+  reference, and ONE call inside the LIFT path. The declared-task resolve
+  calls it NOWHERE. A second call means somebody filtered another chain, and
+  shape 2 may be closed.
   ⚠️ Do NOT grep `provider_credential` on its own. `router.py:527`
   already reads that table for the SERVING path, so that grep hits today and
   reads as done.
