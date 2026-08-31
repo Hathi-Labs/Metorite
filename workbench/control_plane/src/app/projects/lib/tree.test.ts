@@ -28,6 +28,7 @@ import {
   pathTo,
   showsDashboard,
   spaceMarker,
+  spansMultipleProjects,
   subtreeIds,
 } from "./tree";
 
@@ -45,6 +46,50 @@ const GRANTS = [
   { project_id: "sales", subject: "group:sales" },
   { project_id: "finance", subject: "group:finance" },
 ];
+
+describe("spansMultipleProjects — when 'Project' is a real axis", () => {
+  it("is false for a leaf, which can only ever have one project", () => {
+    // A subproject is a leaf by the grammar, and a project with no
+    // subprojects is one in practice. Both group into exactly one bucket,
+    // today and after any amount of work lands — which is what makes the
+    // option worth hiding rather than merely empty.
+    expect(spansMultipleProjects({ id: "lp", name: "Landing page" })).toBe(false);
+    expect(
+      spansMultipleProjects({ id: "p", name: "Project", children: [] })
+    ).toBe(false);
+  });
+
+  it("is true for a project that carries subprojects", () => {
+    expect(spansMultipleProjects(FOREST[0])).toBe(true);
+    expect(spansMultipleProjects(FOREST[0].children![0])).toBe(true);
+  });
+
+  it("sees through a folder, which holds no work of its own", () => {
+    // project → folder → subproject still spans two PROJECTS. Counting the
+    // folder as the second one, or stopping at it, both give the wrong answer.
+    const viaFolder: ProjectNode = {
+      id: "p",
+      name: "Firmware",
+      children: [
+        {
+          id: "f",
+          name: "Subsystems",
+          kind: "folder",
+          children: [{ id: "sp", name: "Bootloader" }],
+        },
+      ],
+    };
+    expect(spansMultipleProjects(viaFolder)).toBe(true);
+    // …and an EMPTY folder adds no project, so it does not.
+    expect(
+      spansMultipleProjects({
+        id: "p2",
+        name: "Firmware",
+        children: [{ id: "f2", name: "Empty", kind: "folder", children: [] }],
+      })
+    ).toBe(false);
+  });
+});
 
 describe("subtreeIds / flatten / pathTo", () => {
   it("collects a subtree including its own root", () => {

@@ -186,6 +186,29 @@ export function subtreeIds(node: ProjectNode): string[] {
   return out;
 }
 
+/**
+ * Does this node's board span more than one project?
+ *
+ * The board loads its tasks with `include_subtree: true`, so a node's task
+ * set is its whole subtree's. That makes "Project" a real grouping axis on a
+ * node that HAS descendant projects, and a structurally dead one everywhere
+ * else: a leaf's tasks all carry the same `project_id`, so grouping by it
+ * yields exactly one group, today and after any amount of work lands.
+ *
+ * ⚠️ The distinction is **structural, not contingent**. Grouping by assignee
+ * can also produce one group — but that changes as people are assigned.
+ * Project on a leaf cannot ever produce two, which is why this one is worth
+ * hiding and the others are not.
+ *
+ * Folders are transparent, as everywhere in this grammar: a project whose
+ * only child is a folder holding a subproject still spans two projects.
+ */
+export function spansMultipleProjects(node: ProjectNode): boolean {
+  return (node.children ?? []).some(
+    (child) => nodeKind(child) === "project" || spansMultipleProjects(child)
+  );
+}
+
 /** Flatten a forest to `[node, depth]` pairs, for a sidebar that indents. */
 export function flatten(
   nodes: readonly ProjectNode[],

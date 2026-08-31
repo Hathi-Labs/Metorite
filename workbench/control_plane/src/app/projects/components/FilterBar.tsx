@@ -90,6 +90,13 @@ interface Props {
    * its own opinion about what a canvas can draw.
    */
   mode: ViewMode;
+  /**
+   * The selected node's board spans more than one project — i.e. it has
+   * descendant projects (`tree.spansMultipleProjects`). False on a leaf, and
+   * on a project with no subprojects, where grouping by project would always
+   * yield exactly one group.
+   */
+  spansProjects: boolean;
   groupBy: GroupBy;
   onGroupBy: (next: GroupBy) => void;
   /**
@@ -131,6 +138,7 @@ export function FilterBar({
   filters,
   onFilters,
   mode,
+  spansProjects,
   groupBy,
   onGroupBy,
   lanes,
@@ -150,6 +158,19 @@ export function FilterBar({
   onExport,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
+
+  /**
+   * The axes worth offering here.
+   *
+   * "Project" drops out on a node with no descendant projects, where it can
+   * only ever produce one group. ⚠️ It stays if it is the CURRENT value —
+   * removing the selected option from a `<select>` renders it blank, and a
+   * saved view that grouped by project is honoured rather than silently
+   * rewritten when you open it on a leaf. So you can switch away from it and
+   * not back, which is exactly the availability the tree describes.
+   */
+  const axisOffered = (option: GroupBy, current: GroupBy): boolean =>
+    option !== "project" || spansProjects || current === "project";
   // The search box is held locally and pushed up on a delay. Refetching on
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
@@ -257,7 +278,9 @@ export function FilterBar({
               value={groupBy}
               onChange={(e) => onGroupBy(e.target.value as GroupBy)}
             >
-              {GROUP_OPTIONS.map((option) => (
+              {GROUP_OPTIONS.filter((option) =>
+                axisOffered(option, groupBy)
+              ).map((option) => (
                 <option key={option} value={option}>
                   {GROUP_LABELS[option]}
                 </option>
@@ -279,7 +302,9 @@ export function FilterBar({
               onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
             >
               {GROUP_OPTIONS.filter(
-                (option) => option === "none" || option !== groupBy
+                (option) =>
+                  (option === "none" || option !== groupBy) &&
+                  axisOffered(option, subGroupBy)
               ).map((option) => (
                 <option key={option} value={option}>
                   {option === "none" ? "No lanes" : GROUP_LABELS[option]}

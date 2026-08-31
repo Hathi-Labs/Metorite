@@ -109,6 +109,7 @@ import {
   filterByCenter,
   flatten,
   levelOf,
+  spansMultipleProjects,
   type NodeKind,
   type NodeLevel,
   nodeKind,
@@ -732,6 +733,19 @@ function ProjectsWorkspace() {
     () => (selected ? levelOf(visibleRoots, selected.id) : "space"),
     [visibleRoots, selected]
   );
+  /**
+   * Does the selected node's board span more than one project?
+   *
+   * Read from the TREE rather than from `summary.projects`, though both
+   * answer it: the tree is already in memory, so the "Project" axis is
+   * offered or withheld on the first paint instead of appearing a moment
+   * later when the roll-up lands.
+   */
+  const spansProjects = useMemo(() => {
+    if (!selected) return false;
+    const row = flatten(visibleRoots).find((e) => e.node.id === selected.id);
+    return row ? spansMultipleProjects(row.node) : false;
+  }, [visibleRoots, selected]);
   const dashboardOnly =
     !app && Boolean(selected) && showsDashboard(selectedLevel);
   /** Any surface that is not a project's board — no views, no composer. */
@@ -1737,6 +1751,7 @@ function ProjectsWorkspace() {
           filters={filters}
           onFilters={changeFilters}
           mode={mode}
+          spansProjects={spansProjects}
           groupBy={groupBy}
           onGroupBy={(next) => {
             setGroupBy(next);
