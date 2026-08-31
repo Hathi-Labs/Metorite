@@ -2,10 +2,15 @@
  * GET /api/settings/appearance — the organisation's appearance defaults
  * PUT /api/settings/appearance — update them (admin-only, enforced upstream)
  *
- * Only the ORGANISATION half lives here. A member's own theme, density and
- * accent stay in their browser: they are per-device preferences with no
- * server-side consequence, and round-tripping them would add a request to
- * every page load to render something the boot script has already applied.
+ * Only the ORGANISATION half lives here. A member's own density and accent
+ * stay in their browser: they are per-device preferences with no server-side
+ * consequence, and round-tripping them would add a request to every page load
+ * to render something the boot script has already applied.
+ *
+ * ⚠️ `themeId` was removed on 2026-08-31 with the theming engine. The route
+ * still ACCEPTS and discards it (see `normaliseOrg`) rather than 400-ing,
+ * because a gateway row written before that day still carries the key and a
+ * stored value must not break the read for the whole org.
  *
  * The gateway serves the org half from the `org_settings` table (migration
  * 145). A deployment that has not applied that migration, or whose gateway is
@@ -23,7 +28,6 @@ import {
   requireIdentity,
   unauthenticated,
 } from "@/lib/gateway";
-import { DEFAULT_THEME_ID, findTheme } from "@/lib/theme/themes";
 import { isSafeColor } from "@/lib/theme/css";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
@@ -33,14 +37,12 @@ export const dynamic = "force-dynamic";
 const GATEWAY_PATH = "/settings/appearance";
 
 const BUILTIN_DEFAULTS: AppearanceSettings["org"] = {
-  themeId: DEFAULT_THEME_ID,
   mode: "dark",
   density: "default",
   allowUserOverride: true,
 };
 
 const EMPTY_USER: AppearanceSettings["user"] = {
-  themeId: null,
   mode: null,
   density: null,
   accent: null,
@@ -57,16 +59,15 @@ function isDensity(v: unknown): v is Density {
 /**
  * Coerce whatever the gateway returned into a usable org default.
  *
- * Every field is validated rather than trusted: a theme id that no longer
- * exists (removed, renamed, or from a newer deployment) would otherwise put
- * `data-theme` into a state no stylesheet matches, leaving the app unstyled.
- * Unrecognised values fall back field by field, so one bad key does not
- * discard an otherwise good response.
+ * Every field is validated rather than trusted, and the result is built by
+ * NAMING the keys we keep — which is also what drops a stored `themeId` from
+ * a row written before the theming engine was retired. Unrecognised values
+ * fall back field by field, so one bad key does not discard an otherwise
+ * good response.
  */
 function normaliseOrg(raw: unknown): AppearanceSettings["org"] {
   const o = (raw ?? {}) as Record<string, unknown>;
   return {
-    themeId: findTheme(String(o.themeId ?? "")) ? String(o.themeId) : BUILTIN_DEFAULTS.themeId,
     mode: isMode(o.mode) ? o.mode : BUILTIN_DEFAULTS.mode,
     density: isDensity(o.density) ? o.density : BUILTIN_DEFAULTS.density,
     allowUserOverride:
@@ -121,11 +122,8 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   const input = (body ?? {}) as Record<string, unknown>;
 
   // Validate here rather than forwarding blindly: these values end up driving
-  // a CSS selector and a colour declaration for every member of the org, so a
-  // bad write is a broken app for everyone, not just the admin who made it.
-  if (input.themeId !== undefined && !findTheme(String(input.themeId))) {
-    return NextResponse.json({ error: `Unknown theme: ${String(input.themeId)}` }, { status: 400 });
-  }
+  // a colour declaration for every member of the org, so a bad write is a
+  // broken app for everyone, not just the admin who made it.
   if (input.mode !== undefined && !isMode(input.mode)) {
     return NextResponse.json({ error: "mode must be 'dark' or 'light'" }, { status: 400 });
   }

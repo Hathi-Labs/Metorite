@@ -227,6 +227,148 @@ ACTIVITY_TYPES: tuple[str, ...] = (
 PROJECT_SOURCES: tuple[str, ...] = ("manual", "import", "agent")
 TASK_SOURCES: tuple[str, ...] = ("manual", "import", "email", "agent", "automation")
 
+#: Node kinds in the projects tree (migration 193). Mirrors the CHECK the
+#: migration adds — test_projects_node_kind.py reads the SQL file, because a
+#: hand-mirrored constraint without that test is a comment claiming to be an
+#: invariant (the migration-150 lesson).
+NODE_KINDS: tuple[str, ...] = ("project", "folder")
+
+#: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
+#: Folders are transparent to this count and never extend it.
+MAX_PROJECT_GENERATIONS = 3
+
+
+def node_kind(value: object) -> str:
+    """Resolve a row's kind. NULL reads as 'project' (R6 expand)."""
+    return str(value or "project")
+
+
+#: The four LEVELS a node can occupy. A level is derived from kind plus
+#: position — it is never stored, because storing it would let the row and
+#: the tree disagree, and the tree is the fact.
+NODE_LEVELS: tuple[str, ...] = ("space", "folder", "project", "subproject")
+
+#: The levels that own a run state (owner directive 2026-08-31). A space
+#: summarises and a folder groups; neither DOES work, so neither starts,
+#: pauses or stops. `RUN_STATES` still describes the axis itself.
+RUN_STATE_LEVELS: frozenset[str] = frozenset({"project", "subproject"})
+
+
+def node_level(kind: str, generation: int) -> str:
+    """Which of the four levels this node occupies.
+
+    ``generation`` counts PROJECT ancestors including the node itself — the
+    number ``assert_node_grammar`` caps. So generation 1 is a space, 2 a
+    project and 3 a subproject; a folder is a folder wherever it sits.
+    """
+    if node_kind(kind) == "folder":
+        return "folder"
+    if generation <= 1:
+        return "space"
+    return "project" if generation == 2 else "subproject"
+
+
+#: Slots on the categorical ramp (`src/lib/categorical.ts`), 1-based on the
+#: wire. Mirrors migration 195's CHECK (194 widened by 195) —
+#: test_projects_space_identity.py reads the range out of the SQL.
+ICON_SLOT_RANGE: tuple[int, int] = (1, 12)
+
+
+def validate_icon_slot(value: object) -> None:
+    """Refuse a ramp slot the theme has no hue for.
+
+    ⚠️ **Checked HERE and not left to the CHECK constraint.** A value the
+    database rejects arrives as an IntegrityError, which this app answers
+    with a 500 — an input error reported as a server fault, and unactionable
+    to the caller. Measured 2026-08-31: `icon_slot: 9` did exactly that.
+    The constraint stays as the backstop; this is the door.
+    """
+    if value is None:
+        return
+    low, high = ICON_SLOT_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not (
+        low <= value <= high
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"icon_slot must be a whole number from {low} to {high} — "
+                f"a slot on the theme's categorical ramp, not a colour."
+            ),
+        )
+
+
+def assert_run_state_allowed(level: str) -> None:
+    """Only a project or a subproject carries a run state.
+
+    Refused rather than ignored: a PATCH that silently dropped `status`
+    would report 200 and change nothing, which is the shape of bug that
+    takes a week to notice. The menu does not offer the states on these
+    levels either — this is the fence behind that courtesy.
+    """
+    if level in RUN_STATE_LEVELS:
+        return
+    does = "summarises the work below it" if level == "space" else (
+        "groups the projects below it"
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            f"A {level} has no run state. It {does}, and only a project or "
+            f"a subproject can be started or paused."
+        ),
+    )
+
+
+def assert_node_grammar(
+    *,
+    kind: str,
+    parent_kind: str | None,
+    parent_generation: int,
+    subtree_depth: int = 1,
+) -> None:
+    """The tree grammar, as one pure function (owner directive 2026-08-31).
+
+    space (root) → [folder] → project → [folder] → subproject — and stop.
+
+    ``parent_kind`` is None at a root. ``parent_generation`` counts the
+    parent's PROJECT ancestors, itself included (a folder reports its
+    nearest project ancestor's count). ``subtree_depth`` is the longest
+    project chain inside the node being placed, itself included — 1 for a
+    new project, 0 for a new folder, larger when a move carries a subtree.
+
+    Pure on purpose: create and move both call it, and the hermetic suite
+    can exercise every refusal without a database (R8 stays honest — the
+    SQL that FEEDS these numbers is proven against a real ladder).
+    """
+    if kind == "folder":
+        if parent_kind is None:
+            raise HTTPException(
+                status_code=422,
+                detail="A folder cannot be a space. Create it inside a "
+                       "space or a project.",
+            )
+        if parent_kind == "folder":
+            raise HTTPException(
+                status_code=422, detail="A folder cannot hold another folder.",
+            )
+        # max(_, 1): an EMPTY folder still reserves one generation for the
+        # children it exists to hold — a folder under a subproject could
+        # legally contain nothing, which is a refusal, not a placement.
+        if parent_generation + max(subtree_depth, 1) > MAX_PROJECT_GENERATIONS:
+            raise HTTPException(
+                status_code=422,
+                detail="Too deep: a folder here could only hold nodes below "
+                       "the subproject level, and subprojects are the floor.",
+            )
+        return
+    if parent_generation + subtree_depth > MAX_PROJECT_GENERATIONS:
+        raise HTTPException(
+            status_code=422,
+            detail="A subproject is the lowest level — it cannot contain "
+                   "projects. Break the work down with tasks and subtasks.",
+        )
+
 #: The one system task type. Its only rule — an Epic cannot have a parent —
 #: makes it structurally the root level (§3.4). There is deliberately no
 #: 'Subtask' type: a subtask is a task with a parent.
@@ -263,6 +405,13 @@ class ProjectModel(BaseModel):
     name: str
     description: str | None = None
     parent_project_id: str | None = None
+    #: 'project' or 'folder' (migration 193). NULL rows read as 'project' —
+    #: resolve through `node_kind`, never `row.kind` directly.
+    kind: str | None = None
+    #: Migration 194 — a themed icon NAME and a categorical ramp SLOT (1..8),
+    #: never a colour. Meaningful on a space; NULL = the level's default.
+    icon: str | None = None
+    icon_slot: int | None = None
     task_prefix: str | None = None
     status: str = "active"
     lead: str | None = None
@@ -289,6 +438,12 @@ class ProjectIn(BaseModel):
     name: str | None = None
     description: str | None = None
     parent_project_id: str | None = None
+    # Create-time only: the write path refuses a kind change on PATCH — a
+    # folder full of subprojects becoming a project would dodge the grammar.
+    kind: str | None = None
+    # Migration 194 — Space Settings writes these two. Root nodes only.
+    icon: str | None = None
+    icon_slot: int | None = None
     task_prefix: str | None = None
     status: str | None = None
     lead: str | None = None

@@ -8,11 +8,9 @@
  * fighting over `g t`, a sheet advertising something the keyboard forgot.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { describe, expect, it, vi } from "vitest";
 
+import { isKnownIcon } from "@/lib/icons";
 import { PANES } from "@/lib/nav";
 
 import { PANEL_MODE_ICONS } from "./panelMode";
@@ -24,6 +22,8 @@ import {
   type CommandActions,
   type CommandContext,
   VIEW_MODES,
+  honoursGroupBy,
+  honoursLanes,
   availableCommands,
   isSequenceKey,
   isTypingTarget,
@@ -40,7 +40,6 @@ const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   hasProject: true,
   isRoot: true,
   filtered: false,
-  mine: false,
   panelOpen: false,
   panelMode: "side",
   canToggleRail: true,
@@ -55,7 +54,6 @@ function spyActions(): CommandActions & { calls: string[] } {
     navigate: (href) => calls.push(`navigate:${href}`),
     setMode: (mode) => calls.push(`setMode:${mode}`),
     setPanelMode: (mode) => calls.push(`setPanelMode:${mode}`),
-    showMyWork: (mine) => calls.push(`showMyWork:${mine}`),
     clearFilters: () => calls.push("clearFilters"),
     toggleRail: () => calls.push("toggleRail"),
     manage: (what) => calls.push(`manage:${what}`),
@@ -73,21 +71,18 @@ describe("the registry itself", () => {
     }
   });
 
-  it("every glyph is mapped in the icon registry, for every pack", () => {
-    // An unmapped name renders the LUCIDE glyph whatever the theme — one
-    // stranger in a column of Material Symbols, and nothing else catches it.
-    const registry = JSON.parse(
-      readFileSync(
-        resolve(__dirname, "../../../lib/theme/icon-data/registry.json"),
-        "utf-8",
-      ),
-    ) as Record<string, Record<string, string>>;
+  it("every glyph is a real Lucide icon", () => {
+    // An unknown name resolves to the `Zap` fallback, so a typo ships as a
+    // lightning bolt in the palette rather than as a failure. (Until
+    // 2026-08-31 this asserted a mapping in the multi-pack registry; with one
+    // pack, existence is the stronger check — the registry could not tell a
+    // real name from an invented one.)
     const names = [
       ...COMMANDS.map((c) => c.icon),
       ...Object.values(PANEL_MODE_ICONS),
     ];
-    const unmapped = names.filter((name) => !registry[name]);
-    expect(unmapped, "add these to lib/theme/icon-data/registry.json").toEqual([]);
+    const unknown = names.filter((name) => !isKnownIcon(name));
+    expect(unknown, "these are not Lucide icon names").toEqual([]);
   });
 
   it("every id is unique", () => {
@@ -142,6 +137,35 @@ describe("the registry itself", () => {
     );
   });
 
+  it("offers each grouping axis only where the canvas draws it", () => {
+    // Measured against the canvases on 2026-08-31: TaskBoard reads `lanes`,
+    // and TaskBoard/TaskList/TableView/TimelineView read `groupBy` for their
+    // columns, section headers, quick-add prefill and bands. Calendar reads
+    // neither. Offering a control that cannot act is a dead click — and here a
+    // worse one, because setting it still writes the view's config from a
+    // surface that shows no effect.
+    //
+    // ⚠️ **Timeline joined the grouped list on 2026-08-31 (S5)** and did NOT
+    // join the laned one. Its x-axis is already spent on time, which is the
+    // only reason the canvas exists, so a second grouping axis would nest rows
+    // inside rows and say nothing a second level could not say more plainly.
+    // `commands.ts` carries the argument.
+    expect(VIEW_MODES.map((m) => m.id).filter(honoursLanes)).toEqual(["board"]);
+    expect(VIEW_MODES.map((m) => m.id).filter(honoursGroupBy)).toEqual([
+      "board",
+      "list",
+      "table",
+      "timeline",
+    ]);
+  });
+
+  it("never offers lanes where it does not offer grouping", () => {
+    // A second axis with no first axis would be a grid with one column.
+    for (const { id } of VIEW_MODES) {
+      if (honoursLanes(id)) expect(honoursGroupBy(id), id).toBe(true);
+    }
+  });
+
   it("labels a go command exactly as the sidebar does", () => {
     const projects = COMMANDS.find((c) => c.href === "/projects");
     expect(projects?.label).toBe(PANES.find((p) => p.href === "/projects")?.label);
@@ -161,11 +185,10 @@ describe("the registry itself", () => {
 });
 
 describe("what is offered where", () => {
-  it("hides the canvases while My work is up", () => {
-    const ids = availableCommands(ctx({ mine: true })).map((c) => c.id);
-    expect(ids.some((id) => id.startsWith("view."))).toBe(false);
-    expect(ids).toContain("project.board");
+  it("offers no My work entry — /tasks is the personal lens (D52-D54)", () => {
+    const ids = COMMANDS.map((c) => c.id);
     expect(ids).not.toContain("project.mywork");
+    expect(ids).not.toContain("project.board");
   });
 
   it("hides everything project-scoped when no project is selected", () => {
@@ -242,8 +265,8 @@ describe("matching a typed query", () => {
   });
 
   it("is case-insensitive", () => {
-    expect(matchCommands(all, "MY WORK").map((c) => c.id)).toContain(
-      "project.mywork",
+    expect(matchCommands(all, "CHEATSHEET").map((c) => c.id)).toContain(
+      "help.shortcuts",
     );
   });
 
@@ -287,9 +310,9 @@ describe("key sequences", () => {
   });
 
   it("only runs sequences whose command is applicable here", () => {
-    const onMyWork = availableCommands(ctx({ mine: true }));
-    expect(stepSequence(["v"], "b", onMyWork).command).toBeNull();
-    expect(stepSequence([], "v", onMyWork).claimed).toBe(false);
+    const noProject = availableCommands(ctx({ hasProject: false }));
+    expect(stepSequence(["v"], "b", noProject).command).toBeNull();
+    expect(stepSequence([], "v", noProject).claimed).toBe(false);
   });
 
   it("takes single characters without Meta/Ctrl/Alt, and Shift is fine", () => {

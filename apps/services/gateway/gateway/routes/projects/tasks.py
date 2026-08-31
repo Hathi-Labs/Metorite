@@ -49,6 +49,7 @@ from gateway.routes.projects.core import (
     load_visible_project,
     load_visible_task,
     next_task_number,
+    node_kind,
     now,
     record_activity,
     record_field_change,
@@ -284,7 +285,15 @@ async def create_task(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(project_id))
+        target = await load_visible_project(db, vis, str(project_id))
+        # Migration 193 — a folder is a grouping node. Tasks live on
+        # projects; a task filed on a folder would sit outside every board.
+        if node_kind(getattr(target, "kind", None)) == "folder":
+            raise HTTPException(
+                status_code=422,
+                detail="A folder holds projects, not tasks. Create the "
+                       "task in a project inside it.",
+            )
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
 
@@ -474,7 +483,15 @@ async def move_task(
             values["parent_task_id"] = new_parent
 
         if payload.project_id and str(payload.project_id) != str(task.project_id):
-            await load_visible_project(db, vis, str(payload.project_id))
+            dest = await load_visible_project(db, vis, str(payload.project_id))
+            # Migration 193 — after the visibility load, same as the privacy
+            # guard below: a caller who cannot see the folder still gets 404.
+            if node_kind(getattr(dest, "kind", None)) == "folder":
+                raise HTTPException(
+                    status_code=422,
+                    detail="A folder holds projects, not tasks. Move the "
+                           "task into a project inside it.",
+                )
             # Before anything is computed: a task may only move INTO a personal
             # project it already lives in. Checked after the visibility load so
             # a caller who cannot see the destination still gets 404 and never

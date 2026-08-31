@@ -13,9 +13,8 @@ import { describe, expect, it } from "vitest";
 
 import { statusAccent } from "@/lib/statusAccent";
 
-import { accentForDisposition, accentForGroup, accentForStatus } from "./accent";
+import { accentForGroup, accentForStatus } from "./accent";
 import type { StatusRow } from "./api";
-import { DISPOSITION_LANES, LANE_LABELS, OTHER_LANE } from "./mywork";
 
 const status = (over: Partial<StatusRow>): StatusRow => ({
   id: "s1",
@@ -90,45 +89,5 @@ describe("accentForGroup", () => {
       (index) => accentForGroup("assignee", `p${index}`, index, 4, statuses).dot,
     );
     expect(new Set(hues).size).toBe(4);
-  });
-});
-
-describe("accentForDisposition", () => {
-  /**
-   * True when the shared vocabulary can read a hue out of the label itself.
-   *
-   * `keywordHue` is private to `statusAccent.ts`, so this asks the question the
-   * only way a caller can: if the answer does not move when the positional
-   * index moves, a keyword decided it.
-   */
-  const keywordDecides = (label: string) =>
-    JSON.stringify(statusAccent({ name: label, index: 0 })) ===
-    JSON.stringify(statusAccent({ name: label, index: 1 }));
-
-  it("agrees with the keyword route wherever that route has an opinion", () => {
-    // AGENTS.md rule 5: a category and a name must resolve to the same colour,
-    // or "Waiting on" is amber in one app and something else in the other.
-    const pinned = [...DISPOSITION_LANES, OTHER_LANE].filter((lane) =>
-      keywordDecides(LANE_LABELS[lane] ?? lane),
-    );
-    expect(pinned, "no lane label carries a keyword — check LANE_LABELS").not.toEqual([]);
-    for (const lane of pinned) {
-      expect(accentForDisposition(lane), `${lane} disagrees with its own name`).toEqual(
-        statusAccent({ name: LANE_LABELS[lane] ?? lane }),
-      );
-    }
-  });
-
-  it("gives the four work lanes four different hues", () => {
-    // They are read side by side in one scrolling pane; two lanes wearing one
-    // colour is the /projects-board-in-grey failure at a smaller scale.
-    const dots = DISPOSITION_LANES.map((lane) => accentForDisposition(lane).dot);
-    expect(new Set(dots).size).toBe(DISPOSITION_LANES.length);
-  });
-
-  it("renders an unmapped disposition rather than failing", () => {
-    // `REFERENCE`, `PROJECT`, and whatever the server grows next.
-    expect(accentForDisposition("REFERENCE").dot).toBeTruthy();
-    expect(accentForDisposition("")).toEqual(statusAccent({ name: "" }));
   });
 });

@@ -1722,6 +1722,36 @@ line — never reclaim a number by deleting the other entry.
   (enforcement flips)
 - **Added:** 2026-08-30 · vendor-feed session
 
+### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+- **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
+  personal" -q` three times. If
+  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
+  fails on some runs and passes on others, this is still open. Measured
+  2026-08-31: it failed on 2 runs out of 5.
+- **What happens:** `_coalescible_prior` in
+  `apps/services/gateway/gateway/routes/projects/core.py` reads the last
+  activity with `ORDER BY created_at DESC, id DESC LIMIT 1`. The test writes
+  a field change, then a comment, then a second field change. All three land
+  inside one clock tick on a fast box. `created_at` then ties, and `id DESC`
+  decides — but `id` is a random UUID. So the query returns the comment or
+  the field change at random. When it returns the field change, the two
+  edits coalesce and the count is 1 instead of 2.
+- **Why it is real, not only a test problem:** the same tie decides
+  production behaviour. Two activities written in the same tick coalesce or
+  do not coalesce at random, so an edit can fold over a comment that came
+  after it. The timeline then shows the wrong order.
+- **The likely fix:** order on a monotonic tiebreak instead of the UUID. The
+  table needs a sequence, or `created_at` needs a guaranteed-distinct value
+  per row. Do not "fix" the test — the test states the correct rule.
+- **NOT caused by the Spaces work.** The baseline commit flakes the same way.
+  `git stash` the branch and run the same selection to see it.
+- **Authority:** `project_management_app.md` §9.10 (the coalescing rule)
+- **Added:** 2026-08-31 · projects UI/UX session · **minted as H-80, renumbered
+  to H-88 on 2026-08-31** — `main` had meanwhile taken H-80 for "Decide the
+  thread budget for the stream walk" and run on to H-87. Two branches minted
+  the same next-free id against different bases, which is R1 one level up. This
+  entry merged second, so this entry moved.
+
 ---
 
 # DONE — deleted, not archived

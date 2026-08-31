@@ -126,6 +126,9 @@ const STRICT_PATH = [
  */
 const NOT_OURS = [
   /^skills\/upstream\//,
+  // Vendored verbatim from github.com/dickwu/apple-design-skill @ d0bac1e.
+  // A refresh re-copies the upstream files, so a rewrite here is undone too.
+  /^\.claude\/skills\/apple-design\//,
   /(^|\/)node_modules\//,
   /(^|\/)(CHANGELOG|LICENSE|NOTICE)(\.md)?$/i,
 ]

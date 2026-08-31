@@ -271,7 +271,7 @@ describe("both apps reach the shared modules", () => {
     ["projects", "lib/taskCard"],
     ["projects", "components/TaskMeta"],
     // WS-27bd — the right-click menu, consumed by BOTH apps. /projects reaches
-    // it directly (`TaskBoard`, `MyWork`); /tasks through the shim at its old
+    // it directly (`TaskBoard`); /tasks through the shim at its old
     // path, which is what keeps its five call sites unedited.
     ["projects", "components/ContextMenu"],
     ["tasks", "components/ContextMenu"],
