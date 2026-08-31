@@ -821,6 +821,92 @@ describe("resizeEnd", () => {
   });
 });
 
+describe("a resize moves one edge and PINS the other", () => {
+  /**
+   * The owner's bug, 2026-08-31, and the shape of my own test gap.
+   *
+   * `resizeStart` was tested on a due-only task and `resizeEnd` on a start-only
+   * task — the two combinations that already worked. The other two were never
+   * asked, and both were broken the same way: the moving edge was written, the
+   * far edge was left implied, and a one-day bar RELOCATED instead of growing.
+   *
+   * So the assertion is the invariant rather than the field: apply the patch,
+   * re-read the interval, and check the edge you did not touch has not moved.
+   */
+  const apply = (subject: TaskRow, patch: Record<string, string> | null) =>
+    interval({ ...subject, ...patch } as TaskRow);
+
+  it("extends a DUE-ONLY task rightwards instead of moving it", () => {
+    const dueOnly = task({ due_at: at("2026-08-20") });
+    const before = interval(dueOnly);
+    const after = apply(dueOnly, resizeEnd(dueOnly, "2026-08-25"));
+
+    expect(after?.from).toBe(before?.from); // the left edge did not move
+    expect(after?.to).toBe("2026-08-25");
+    // And it is a SPAN now, not a point that travelled.
+    expect(after?.from).not.toBe(after?.to);
+  });
+
+  it("extends a START-ONLY task leftwards instead of moving it", () => {
+    const startOnly = task({ start_date: "2026-08-20" });
+    const before = interval(startOnly);
+    const after = apply(startOnly, resizeStart(startOnly, "2026-08-15"));
+
+    expect(after?.to).toBe(before?.to); // the right edge did not move
+    expect(after?.from).toBe("2026-08-15");
+    expect(after?.from).not.toBe(after?.to);
+  });
+
+  it("pins the far edge for every task shape and every edge", () => {
+    // All four combinations, stated once. A task with both dates was never
+    // broken; it is here so the rule reads as one rule.
+    const shapes: Array<[string, TaskRow]> = [
+      ["both", task({ start_date: "2026-08-10", due_at: at("2026-08-20") })],
+      ["due only", task({ due_at: at("2026-08-20") })],
+      ["start only", task({ start_date: "2026-08-10" })],
+    ];
+    for (const [name, subject] of shapes) {
+      const span = interval(subject);
+      if (!span) continue;
+
+      const pulledRight = apply(subject, resizeEnd(subject, shiftDay(span.to, 4)));
+      expect(pulledRight?.from, `${name}: right edge pull moved the start`).toBe(
+        span.from,
+      );
+
+      const pulledLeft = apply(subject, resizeStart(subject, shiftDay(span.from, -4)));
+      expect(pulledLeft?.to, `${name}: left edge pull moved the due date`).toBe(
+        span.to,
+      );
+    }
+  });
+
+  it("agrees with the bar the drag PREVIEWED", () => {
+    // The tell that this was wrong: the preview drew the correct span the whole
+    // time and the bar jumped on release. Two geometries, one of them written.
+    const shapes = [
+      task({ start_date: "2026-08-10", due_at: at("2026-08-20") }),
+      task({ due_at: at("2026-08-20") }),
+      task({ start_date: "2026-08-10" }),
+    ];
+    for (const subject of shapes) {
+      const span = interval(subject) as { from: string; to: string };
+
+      const endDay = shiftDay(span.to, 3);
+      const previewed = barForSpan(span.from, endDay, RANGE);
+      const committed = apply(subject, resizeEnd(subject, endDay));
+      expect(barForSpan(committed!.from, committed!.to, RANGE)).toEqual(previewed);
+
+      const startDay = shiftDay(span.from, -3);
+      const previewedLeft = barForSpan(startDay, span.to, RANGE);
+      const committedLeft = apply(subject, resizeStart(subject, startDay));
+      expect(barForSpan(committedLeft!.from, committedLeft!.to, RANGE)).toEqual(
+        previewedLeft,
+      );
+    }
+  });
+});
+
 describe("spanFor", () => {
   it("writes BOTH ends, so a task never passes through half-scheduled", () => {
     const patch = spanFor("2026-08-10", "2026-08-14");

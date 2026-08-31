@@ -89,14 +89,34 @@ import {
   weekCells,
 } from "../lib/timeline";
 
-const LEFT_COL = 280;
+const LEFT_COL = 340;
+
+/**
+ * ── The meta column (WS-27t S4) ───────────────────────────────────────────
+ *
+ * The two facts the timeline's rail reserves a slot for, in this order.
+ *
+ * **Why they left the bar.** The bar carried the full chip strip, and a chip
+ * strip is VARIABLE width inside a box whose width is the task's duration —
+ * so a short task with a priority, a due date and a tag simply ran out of bar
+ * and clipped mid-chip. No threshold fixes that: the content and the container
+ * are sized by unrelated things. Plane reaches the same conclusion from the
+ * other direction (`issue-layouts/gantt/blocks.tsx`) — their bar renders
+ * `issueDetails.name` and nothing else, and the sidebar carries the metadata.
+ *
+ * **Two FIXED slots, not the strip moved sideways.** A rail that renders
+ * whatever chips a task earned would overflow exactly as the bar did, one
+ * column to the left. Reserving two named slots is what makes the width
+ * knowable.
+ *
+ * These are still `visibleChips` output, so the field picker, the overdue rule
+ * and the priority vocabulary are the same ones every other surface reads —
+ * this is a filter on the shared seam, not a second chip vocabulary.
+ */
+const RAIL_CHIPS: readonly string[] = ["importance", "due"];
 /** Two header tiers, each ROW_H/2-ish. Kept as one number the chart and the
  *  task column both read, so the two cannot start at different heights. */
 const HEAD_H = 52;
-/** Chips only earn their space on a bar this wide — below it they are the
- *  reason a one-day bar renders as an unreadable icon. */
-const CHIPS_FROM_PX = 168;
-
 type DragMode = "move" | "start" | "end" | "create";
 
 interface DragState {
@@ -562,10 +582,19 @@ export function TimelineView({
         </div>
       ) : null}
 
+      {/* ⚠️ `isolate` is load-bearing, not decoration.
+          A Gantt needs real stacking INSIDE itself — a sticky task column over
+          a sticky header over bars over arrows — and those z-indexes climb to
+          30. Without a stacking context of its own they all land in the ROOT
+          one, where they outrank every dropdown in the app: the Fields menu
+          (`FilterBar`, z-20) rendered *underneath* the chart's header, which is
+          what the owner saw. `isolation: isolate` confines the whole ladder, so
+          the chart stacks correctly against itself and as a single flat layer
+          against everything else. */}
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className={`overflow-auto rounded-lg border border-border ${
+        className={`isolate overflow-auto rounded-lg border border-border ${
           busy ? "select-none" : ""
         }`}
         style={{ maxHeight: "68vh" }}
@@ -628,6 +657,19 @@ export function TimelineView({
                 >
                   {row.task.title}
                 </button>
+                {/* The meta column. `shrink-0` against the title's `flex-1`,
+                    so the NAME gives way first — a truncated title is still
+                    recognisable, a truncated date is a lie. */}
+                <div className="shrink-0">
+                  <TaskMeta
+                    chips={visibleChips(
+                      row.task,
+                      shownFields,
+                      undefined,
+                      tagHues
+                    ).filter((chip) => RAIL_CHIPS.includes(chip.key))}
+                  />
+                </div>
               </div>
             ))}
           </div>
@@ -847,8 +889,6 @@ export function TimelineView({
                         blockerTitle={blockerTask?.title}
                         dragging={isDragging ? drag : null}
                         hovered={hoverRow === row.task.id}
-                        shownFields={shownFields}
-                        tagHues={tagHues}
                         // A drag that travelled must not ALSO open the panel
                         // over the chart you were just arranging.
                         onOpen={() => {
@@ -1029,8 +1069,6 @@ function TimelineBar({
   blockerTitle,
   dragging,
   hovered,
-  shownFields,
-  tagHues,
   onOpen,
   onGrab,
   onLinkFrom,
@@ -1041,14 +1079,11 @@ function TimelineBar({
   blockerTitle?: string;
   dragging: DragState | null;
   hovered: boolean;
-  shownFields: readonly string[];
-  tagHues: ReturnType<typeof tagColours>;
   onOpen: () => void;
   onGrab: (event: React.MouseEvent, mode: DragMode) => void;
   onLinkFrom: (event: React.MouseEvent) => void;
 }) {
   const inside = drawnBar.widthPx >= LABEL_INSIDE_PX;
-  const chips = drawnBar.widthPx >= CHIPS_FROM_PX;
   const title = bad && blockerTitle ? conflictLabel(blockerTitle) : task.title;
   const span = interval(task);
 
@@ -1116,12 +1151,10 @@ function TimelineBar({
               className="h-3 w-3 shrink-0 text-destructive"
             />
           ) : null}
+          {/* The title, and nothing else. Metadata lives in the rail — see
+              RAIL_CHIPS for why a chip strip and a duration-sized box cannot
+              share a width. */}
           {inside ? <span className="truncate">{task.title}</span> : null}
-          {chips ? (
-            <TaskMeta
-              chips={visibleChips(task, shownFields, undefined, tagHues)}
-            />
-          ) : null}
         </button>
 
         {/* Right edge. */}

@@ -614,45 +614,64 @@ function dueAtOnDay(day: string, previous: string | null | undefined): string {
 }
 
 /**
+ * ⚠️ **A resize moves ONE edge and PINS the other.** This is the whole rule,
+ * and getting it half-right is the bug the owner hit on 2026-08-31.
+ *
+ * A task with only a due date draws as a one-day bar on that day. Pull its
+ * right edge three days out and the obvious implementation writes
+ * `due_at += 3` — which is correct as far as it goes, and completely wrong as a
+ * gesture: the task still has no start date, so it is still a ONE-DAY bar,
+ * three days later. The bar does not grow. **It jumps.** The same defect
+ * mirrors on a start-only task pulled by its left edge.
+ *
+ * So when the far edge has no stored date, the resize writes it, using where
+ * the bar already is. Extending a point makes a span; it never relocates the
+ * point. `previewBar` in the view has always drawn it this way — which is why
+ * the bar looked right during the drag and moved on release.
+ */
+
+/**
  * Drag the LEFT edge to `day` — the task starts then.
  *
  * **Clamped, never swapped.** Pushing the start past the due date could either
  * flip the interval or stop at it; stopping is right, because a bar that turns
  * inside out under the cursor is not something anybody meant to ask for, and
  * the inverted span would then be written as real dates.
- *
- * **A task with only a due date gains a start** — that is how you give an
- * open-ended task a span without opening the panel, and it is the one case
- * where a resize legitimately writes a field that was null.
  */
 export function resizeStart(
   task: TaskRow,
   day: string,
-): { start_date: string } | null {
+): { start_date: string; due_at?: string } | null {
   const span = interval(task);
   if (!span) return null;
   const capped = day > span.to ? span.to : day;
   const current = task.start_date ? task.start_date.slice(0, 10) : null;
   if (capped === current) return null;
-  return { start_date: capped };
+  // Pin the right edge. Without a stored `due_at` the bar's right edge is only
+  // implied by the start, so moving the start would carry it along.
+  return task.due_at
+    ? { start_date: capped }
+    : { start_date: capped, due_at: dueInstantForDay(span.to) };
 }
 
 /**
  * Drag the RIGHT edge to `day` — the task is due then.
  *
- * Clamped at the start for the same reason, and a task with only a start date
- * gains a due date. The time of day is preserved when there was one.
+ * Clamped at the start for the same reason. The time of day is preserved when
+ * there was one.
  */
 export function resizeEnd(
   task: TaskRow,
   day: string,
-): { due_at: string } | null {
+): { due_at: string; start_date?: string } | null {
   const span = interval(task);
   if (!span) return null;
   const floored = day < span.from ? span.from : day;
   const current = task.due_at ? dayKey(new Date(task.due_at)) : null;
   if (floored === current) return null;
-  return { due_at: dueAtOnDay(floored, task.due_at) };
+  const due_at = dueAtOnDay(floored, task.due_at);
+  // Pin the left edge — the case the owner reported.
+  return task.start_date ? { due_at } : { due_at, start_date: span.from };
 }
 
 /**

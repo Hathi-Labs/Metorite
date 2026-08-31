@@ -85,9 +85,11 @@ import {
   type Filters,
   type GroupBy,
   NO_LANES,
+  assigneesIn,
   fromConfig,
   groupTasks,
   isFiltered,
+  mergeAssignees,
   toConfig,
   toQuery,
 } from "./lib/grouping";
@@ -524,6 +526,22 @@ function ProjectsWorkspace() {
    * borrow the calendar's one-month window, so dragging a task past the end of
    * the month made it disappear on the reload that followed.
    */
+  /**
+   * WS-27af — who the assignee filter offers.
+   *
+   * **Accumulated, never recomputed from what is on screen.** The obvious
+   * version reads the assignees off the loaded tasks — but those tasks are
+   * already filtered, so choosing "Priya" reloads to Priya's tasks only, and
+   * the dropdown collapses to Priya. The filter becomes one you cannot leave
+   * except by clearing it, which is the kind of trap that reads as a bug in
+   * the data.
+   *
+   * So the set only ever GROWS while you are in a project, and is emptied when
+   * you leave it. The cost is that somebody whose last task closed stays in the
+   * list until you switch projects, which is the harmless direction to be
+   * wrong in.
+   */
+  const [people, setPeople] = useState<string[]>([]);
   const [zoom, setZoom] = useState<TimelineZoom>("month");
   const [timeWindow, setTimeWindow] = useState<TimelineWindow>(() =>
     windowFor("month", dayKey(new Date()))
@@ -1044,6 +1062,20 @@ function ProjectsWorkspace() {
     // resource, and calendar and timeline are two renderings of it.
     if (mode === "calendar" || mode === "timeline") void loadMonth();
   }, [mode, loadMonth]);
+
+  // WS-27af — the assignee filter's options, accumulated from whatever has
+  // been loaded. `mergeAssignees` returns the same array when nothing is new,
+  // so this settles after the first load instead of re-rendering the bar.
+  useEffect(() => {
+    const found = assigneesIn([...tasks, ...month.rows]);
+    setPeople((current) => mergeAssignees(current, found));
+  }, [tasks, month.rows]);
+
+  // A different project is a different set of people. Emptied rather than
+  // carried, so one project's members never appear in another's filter.
+  useEffect(() => {
+    setPeople([]);
+  }, [selected?.id]);
 
   useEffect(() => {
     if (!selected) {
@@ -1814,6 +1846,7 @@ function ProjectsWorkspace() {
             }));
           }}
           me={me}
+          people={people}
           tags={tags}
           shownFields={shownFields}
           onShownFields={changeShownFields}

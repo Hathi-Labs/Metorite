@@ -33,7 +33,7 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import { Input, Select } from "@/components/ui/Input";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
@@ -43,8 +43,10 @@ import {
   type Filters,
   GROUP_OPTIONS,
   type GroupBy,
+  UNSET,
   describeDivergence,
   isFiltered,
+  personLabel,
   viewDivergence,
 } from "../lib/grouping";
 import { type ViewMode, honoursGroupBy, honoursLanes } from "../lib/commands";
@@ -107,8 +109,16 @@ interface Props {
    */
   lanes: BoardLanes;
   onSubGroupBy: (next: GroupBy) => void;
-  /** The signed-in member's address, for the "Mine" toggle. Empty while loading. */
+  /** The signed-in member's address, for the "Me" option. Empty while loading. */
   me: string;
+  /**
+   * WS-27af — who the assignee filter offers, from the tasks in this project.
+   *
+   * ⚠️ Must be built from an UNFILTERED task set (`grouping.assigneesIn` says
+   * why): derived from the rows currently on screen it collapses to whoever is
+   * already selected, and the filter becomes one you cannot leave.
+   */
+  people: readonly string[];
   /** WS-27m — the project's registered tags, for the tag row. */
   tags: TagRow[];
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
@@ -144,6 +154,7 @@ export function FilterBar({
   lanes,
   onSubGroupBy,
   me,
+  people,
   tags,
   shownFields,
   onShownFields,
@@ -194,7 +205,22 @@ export function FilterBar({
   }, [draft]);
 
   const set = (patch: Partial<Filters>) => onFilters({ ...filters, ...patch });
-  const mine = Boolean(me) && filters.assignee.toLowerCase() === me.toLowerCase();
+
+  /**
+   * A filtered-to address that is neither "me" nor anyone with work here.
+   *
+   * A saved view can name somebody whose tasks have all closed, or who has
+   * left. The `<select>` would then have no matching option, render BLANK, and
+   * read as "Anyone" while the filter is still applied — the worst outcome, a
+   * control lying about the state it is in. Given its own option instead.
+   */
+  const chosen = filters.assignee.trim();
+  const orphanAssignee =
+    chosen &&
+    chosen.toLowerCase() !== me.toLowerCase() &&
+    !people.some((who) => who.toLowerCase() === chosen.toLowerCase())
+      ? chosen
+      : null;
 
   // Resolved from the list rather than trusted: `activeViewId` outlives a
   // project switch and a delete, and a chip lit for a view that is no longer
@@ -231,29 +257,60 @@ export function FilterBar({
           ))}
         </select>
 
-        {/* "Mine" writes the viewer's own address into the assignee filter
-            rather than being a separate server-side flag: one filter, so a
-            saved view carries WHOSE work it meant instead of resolving to
-            whoever opens it later. */}
-        <Button
-          variant={mine ? "primary" : "secondary"}
-          size="sm"
-          disabled={!me}
-          aria-pressed={mine}
-          onClick={() => set({ assignee: mine ? "" : me, unassigned: false })}
-        >
-          Mine
-        </Button>
-        <Button
-          variant={filters.unassigned ? "primary" : "secondary"}
-          size="sm"
-          aria-pressed={filters.unassigned}
-          onClick={() =>
-            set({ unassigned: !filters.unassigned, assignee: "" })
-          }
-        >
-          Unassigned
-        </Button>
+        {/* ── Assignee (WS-27af) ───────────────────────────────────────────
+            One axis, one control. This was two toggle buttons — "Mine" and
+            "Unassigned" — which offered the viewer exactly two of the people
+            who might hold work, and could not express "Priya's". The server
+            has always accepted any address here; only the UI was narrow.
+
+            A `Select`, matching the Status control beside it, because that is
+            what this is: pick one value on one axis. It is deliberately NOT
+            the directory-backed `AssigneePicker` — that control exists to
+            ASSIGN, and its warnings ("away until the 20th", "more committed
+            than contracted") are advice about giving someone work, which means
+            nothing when you are reading it.
+
+            "Mine" survives as an OPTION rather than a button. It still writes
+            the viewer's own address rather than a server-side flag, so a saved
+            view carries whose work it meant instead of resolving to whoever
+            opens it later. */}
+        <div className="w-40">
+          <Select
+            inputSize="sm"
+            aria-label="Assignee"
+            value={filters.unassigned ? UNSET : filters.assignee}
+            onChange={(e) => {
+              const picked = e.target.value;
+              // `unassigned` is its own server flag, so the two are set as a
+              // pair — every path here writes both and they cannot drift into
+              // "nobody's tasks, assigned to Priya".
+              set(
+                picked === UNSET
+                  ? { assignee: "", unassigned: true }
+                  : { assignee: picked, unassigned: false }
+              );
+            }}
+          >
+            <option value="">Anyone</option>
+            {me ? <option value={me}>Me</option> : null}
+            <option value={UNSET}>Unassigned</option>
+            {people.length > 0 ? (
+              <optgroup label="Assignees">
+                {people.map((who) => (
+                  <option key={who} value={who}>
+                    {personLabel(who)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {/* A saved view can name somebody who holds nothing right now.
+                Without this the select would render blank and silently read
+                as "Anyone" while still filtering to them. */}
+            {orphanAssignee ? (
+              <option value={orphanAssignee}>{personLabel(orphanAssignee)}</option>
+            ) : null}
+          </Select>
+        </div>
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"
