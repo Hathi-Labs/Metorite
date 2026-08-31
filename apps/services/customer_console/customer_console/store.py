@@ -470,6 +470,12 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
 
     Both statements share the caller's transaction, so they commit or roll back
     together.
+
+    ⚠️ **A REFUSAL comes through this same door** (migration 020, §8.1). Pass
+    ``refusal_reason`` and the row records a wall the customer hit instead of a
+    call that served. It needs no second writer: a refusal bills 0, and the
+    ledger draw below is already conditional on a non-zero charge. A parallel
+    insert would be a second seam for one table.
     """
     row = conn.execute(
         text(
@@ -478,12 +484,13 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
-                 task, quantity, unit, served_rank, byok_served)
+                 task, quantity, unit, served_rank, byok_served, refusal_reason)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
-                 :task, :quantity, :unit, :served_rank, :byok_served)
+                 :task, :quantity, :unit, :served_rank, :byok_served,
+                 :refusal_reason)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -514,6 +521,11 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             # its rows must not claim rank-1 service nobody observed.
             "served_rank": fields.get("served_rank"),
             "byok_served": bool(fields.get("byok_served", False)),
+            # Migration 020. NULL means the call SERVED, which is what every
+            # row written before this column existed did. The database CHECK
+            # holds the vocabulary closed, so a fourth slug fails here rather
+            # than becoming a second name for one wall.
+            "refusal_reason": fields.get("refusal_reason"),
         },
     ).first()
 
@@ -585,6 +597,11 @@ def usage_by_activity(
             FROM usage_event
             WHERE organization_id = :org
               AND created_at >= now() - make_interval(days => :days)
+              -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Without
+              -- this the call count inflates while the credit sum stays
+              -- right, because a refusal bills 0 — so the two columns
+              -- disagree and nothing on the page says why.
+              AND refusal_reason IS NULL
               -- ⚠️ The CAST is load-bearing, not decoration. A bare
               -- `:member IS NULL` gives Postgres no type to infer and the
               -- statement fails to PREPARE with AmbiguousParameter — every
@@ -641,6 +658,10 @@ def usage_by_member(
             FROM usage_event
             WHERE organization_id = :org
               AND created_at >= now() - make_interval(days => :days)
+              -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Same
+              -- argument as `usage_by_activity`: the count inflates and the
+              -- credits do not, so the admin reads two numbers that disagree.
+              AND refusal_reason IS NULL
             GROUP BY user_email
             ORDER BY credits DESC, calls DESC, member ASC
             LIMIT :lim
@@ -652,6 +673,49 @@ def usage_by_member(
     return [
         {"member": r.member, "calls": int(r.calls), "credits": Decimal(r.credits)}
         for r in rows
+    ]
+
+
+# ── The tier words a customer may see (WS-31 slice 3) ───────────────────────
+#
+# Spec: `ai_metering_and_analytics.md` §8.4 clauses 3 and 5, and D-AI-1.
+#
+# 🔴 **The label is a display name the operator owns, and there is ONE source
+# for it.** `tier_catalog` holds the words. A picker that types its own labels
+# is a second source, and the two disagree the first time an operator edits
+# one. The customer app reads this function instead.
+#
+# ⚠️ **`tier_catalog` is a PLATFORM table, not a tenant one.** The slate is the
+# same product for every organization, so this read takes no `org_id` and holds
+# no `organization_id` predicate. That is not an exemption a caller may copy:
+# the route above it still authenticates the customer, and every read that
+# touches a customer's OWN rows still scopes by the key.
+
+
+def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
+    """The tiers a customer may pick, in the order the operator set.
+
+    ⚠️ **Three kinds of fact stay behind, and D66 binds the list.** No model,
+    no provider and no rate. A tier is the product and a model is supply, so a
+    model name here would tell a customer what we buy, and it would let a
+    picker save a raw model id (H-72). The price lives on the billing routes,
+    which keeps one surface for money instead of two.
+
+    A hidden tier is absent, and it is absent HERE rather than in the browser.
+    A filter in the caller is a filter somebody removes.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT slug, label, blurb
+            FROM tier_catalog
+            WHERE customer_visible
+            ORDER BY sort_order, slug
+            """
+        )
+    )
+    return [
+        {"slug": r.slug, "label": r.label, "blurb": r.blurb} for r in rows
     ]
 
 
@@ -741,7 +805,15 @@ def usage_by_org(
             """
             SELECT o.slug                                AS slug,
                    o.name                                AS name,
-                   COUNT(u.id)                           AS calls,
+                   -- 🔴 **A FILTER clause, never a WHERE clause** (migration
+                   -- 020, §8.1). A WHERE on the right-hand table turns the
+                   -- LEFT JOIN below into an inner join, and the zero-usage
+                   -- organization this read exists to show disappears. An ON
+                   -- clause keeps the join and still hides the refusal from
+                   -- `MAX(u.created_at)`, which makes a customer at a wall
+                   -- read as SILENT to A3.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NULL)  AS calls,
                    COALESCE(SUM(u.billed_credits), 0)    AS credits,
                    -- The COSTED slice: SUM skips NULL cost rows, so a ratio
                    -- of all-calls credits over some-calls cost overstates
@@ -752,8 +824,23 @@ def usage_by_org(
                    COALESCE(SUM(u.billed_credits) FILTER
                        (WHERE u.provider_cost_usd IS NOT NULL), 0)
                                                          AS costed_credits,
-                   COUNT(DISTINCT u.user_email)          AS members,
+                   -- The same FILTER, for the same reason: a member who only
+                   -- hit a wall this month made no call, and counting them
+                   -- here would report activity nobody had.
+                   COUNT(DISTINCT u.user_email) FILTER
+                       (WHERE u.refusal_reason IS NULL) AS members,
+                   -- 🔴 **A5's whole point, on the operator's page.** Without
+                   -- this the refusal column is written and read by nobody:
+                   -- a walled customer loses `silent` (their `last_seen`
+                   -- moved) and gains NOTHING, so the wall makes them HARDER
+                   -- to find than silence did. The inverted FILTER, over the
+                   -- same window, so `calls` and `refusals` are comparable.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NOT NULL) AS refusals,
                    COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
+                   -- ⚠️ `last_seen` takes NO filter, on purpose. A refusal
+                   -- MUST move it — a customer at a wall is a customer who is
+                   -- trying, and hiding that makes them read as silent.
                    MAX(u.created_at)                     AS last_seen
             FROM organization o
             LEFT JOIN usage_event u
@@ -775,6 +862,8 @@ def usage_by_org(
             "costed_calls": int(r.costed_calls),
             "costed_credits": Decimal(r.costed_credits),
             "members": int(r.members),
+            # A plain count, never money. It is how many times we said no.
+            "refusals": int(r.refusals),
             "cost_usd": Decimal(r.cost_usd),
             "last_seen": r.last_seen.isoformat() if r.last_seen else None,
         }
@@ -818,7 +907,13 @@ def usage_daily(
                      ) AS day
             )
             SELECT s.day::date                        AS day,
-                   COUNT(u.id)                        AS calls,
+                   -- 🔴 **A FILTER clause, never a WHERE clause** (migration
+                   -- 020, §8.1). The LEFT JOIN onto `generate_series` is the
+                   -- whole gap fill: a WHERE on `u` drops every day that has
+                   -- only refusals, and the chart draws a straight line
+                   -- across it as if usage were steady.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NULL) AS calls,
                    COALESCE(SUM(u.billed_credits), 0) AS credits
             FROM span s
             LEFT JOIN usage_event u

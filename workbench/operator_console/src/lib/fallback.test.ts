@@ -39,6 +39,9 @@ const model = (
   inputPer1M: null,
   outputPer1M: null,
   cachedInputPer1M: null,
+  perMinuteUsd: null,
+  perCharacterUsd: null,
+  perImageUsd: null,
   description: "",
   declared,
 });
@@ -194,21 +197,21 @@ describe("what if a provider goes down", () => {
       slug: "fast",
       label: "Fast",
       blurb: "",
-      registered: true,
+      registered: true, customerVisible: true,
       jobs: [job("chat", "anthropic/haiku", "openai/gpt-4o")],
     },
     {
       slug: "powerful",
       label: "Powerful",
       blurb: "",
-      registered: true,
+      registered: true, customerVisible: true,
       jobs: [job("chat", "anthropic/sonnet")],
     },
     {
       slug: "media",
       label: "Media",
       blurb: "",
-      registered: true,
+      registered: true, customerVisible: true,
       jobs: [job("transcribe", "openai/whisper")],
     },
   ];
@@ -245,7 +248,7 @@ describe("what if a provider goes down", () => {
     // ⚠️ Counting a broken job as an outage casualty sends somebody to the
     // wrong place, and hides that it was broken before anything went down.
     const broken: Tier[] = [
-      { slug: "x", label: "X", blurb: "", registered: true, jobs: [job("chat", "deepseek/r1")] },
+      { slug: "x", label: "X", blurb: "", registered: true, customerVisible: true, jobs: [job("chat", "deepseek/r1")] },
     ];
     const r = outageReport(withTier(broken), ["anthropic"], CTX);
     expect(r[0].status).toBe("already-broken");
@@ -253,7 +256,7 @@ describe("what if a provider goes down", () => {
 
   it("skips a job with nothing set rather than reporting it down", () => {
     const empty: Tier[] = [
-      { slug: "x", label: "X", blurb: "", registered: true, jobs: [job("chat")] },
+      { slug: "x", label: "X", blurb: "", registered: true, customerVisible: true, jobs: [job("chat")] },
     ];
     expect(outageReport(withTier(empty), ["anthropic"], CTX)).toEqual([]);
   });
@@ -279,7 +282,7 @@ describe("what if a provider goes down", () => {
 
 describe("the one instruction", () => {
   const tier = (slug: string, ...jobs: TierJob[]): Tier => ({
-    slug, label: slug, blurb: "", registered: true,
+    slug, label: slug, blurb: "", registered: true, customerVisible: true,
     jobs: jobs.map((j) => ({ ...j, tier: slug })),
   });
 
@@ -342,7 +345,7 @@ describe("the one instruction", () => {
 describe("capacity we are not selling", () => {
   it("names a declared model no tier points at", () => {
     const tiers: Tier[] = [
-      { slug: "a", label: "A", blurb: "", registered: true, jobs: [job("chat", "anthropic/haiku")] },
+      { slug: "a", label: "A", blurb: "", registered: true, customerVisible: true, jobs: [job("chat", "anthropic/haiku")] },
     ];
     const out = unusedModels(tiers, MODELS);
     expect(out).toContain("openai/gpt-4o");
@@ -358,7 +361,7 @@ describe("capacity we are not selling", () => {
   it("counts every step of a chain as used, not only the first", () => {
     const tiers: Tier[] = [
       {
-        slug: "a", label: "A", blurb: "", registered: true,
+        slug: "a", label: "A", blurb: "", registered: true, customerVisible: true,
         jobs: [job("chat", "anthropic/haiku", "openai/gpt-4o")],
       },
     ];

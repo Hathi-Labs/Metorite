@@ -384,6 +384,28 @@ def test_the_catalog_reports_the_failover_that_happened(
     assert mine[0]["requests"] >= 1
 
 
+def test_a_REFUSAL_is_NOT_reported_as_a_failover(client, db, org, serve):
+    """§8.1: the failover read is one of three that take NO refusal filter.
+
+    It selects ``served_rank > 1``, and a refusal carries no served rank at
+    all — so it cannot reach this read. Driven through the route rather than
+    reasoned about, because "cannot" is a claim about a NULL comparison and
+    only a real server settles one of those.
+    """
+    _slug, org_id, key = org
+    tier = f"tier-pt-unbound-{uuid.uuid4().hex[:6]}"
+
+    assert _ask(client, key, tier).status_code == 400
+
+    with db.begin() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM usage_event "
+            "WHERE organization_id = :o AND refusal_reason IS NOT NULL"),
+            {"o": org_id}).scalar_one() == 1
+    catalog = client.get("/catalog/models", headers=OP).json()
+    assert [f for f in catalog["failovers"] if f["tier"] == tier] == []
+
+
 def test_a_primary_answer_is_NOT_reported_as_a_failover(
         client, db, org, vendor, serve):
     # Rank 1 is the system working. Reporting it would bury the real rows.
@@ -484,3 +506,33 @@ def test_margin_is_judged_over_the_COSTED_calls_only(client, db):
     # And the wire carries the coverage for every row it does show.
     view = client.get("/admin/usage/orgs", headers=OP).json()
     assert all("costedShare" in r for r in view["rows"][:3])
+
+
+def test_the_operator_board_carries_the_REFUSAL_count(client, db, org, serve):
+    """§8.1, A5 — the wall reaches the operator, not only the table.
+
+    🔴 **This is the end of the signal, and without it the slice is
+    write-only.** A refusal moves `last_seen`, so a walled customer stops
+    reading as `silent`. If the count never reached the board, hitting a wall
+    would make a customer HARDER to find than saying nothing did.
+    """
+    from customer_console import store as store_mod
+
+    slug, _org_id, key = org
+    tier = f"tier-pt-walled-{uuid.uuid4().hex[:6]}"
+
+    # A real 400 through the real route, so the row is the Router's own.
+    assert _ask(client, key, tier).status_code == 400
+
+    # Through the STORE, uncapped, for the reason the margin test gives: the
+    # board's page is capped and this org has spent nothing, so it sorts last.
+    with db.begin() as c:
+        rows = store_mod.usage_by_org(c, days=30, limit=1_000_000)["rows"]
+    mine = next(r for r in rows if r["slug"] == slug)
+    assert mine["refusals"] == 1
+    assert mine["calls"] == 0, "a refusal is not a call"
+
+    # The wire names the field on every row it shows, so the console's
+    # `walled` chip has a number to read.
+    view = client.get("/admin/usage/orgs", headers=OP).json()
+    assert all("refusals" in r for r in view["rows"][:3])
