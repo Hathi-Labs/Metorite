@@ -560,29 +560,146 @@ export function conflictLabel(blockerTitle: string): string {
  * has nowhere to land, and drawing it to the row's left margin would invent a
  * date the task does not have.
  */
-export function edgePath(
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** How much of each corner is rounded away, in pixels. */
+export const CORNER_R = 7;
+
+/** The point `d` pixels from `a` along the line towards `b`. */
+function towards(a: Point, b: Point, d: number): Point {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: a.x, y: a.y };
+  return { x: a.x + (dx / len) * d, y: a.y + (dy / len) * d };
+}
+
+/**
+ * A polyline drawn with ROUNDED corners.
+ *
+ * Right-angle joins are what make a dense dependency graph unreadable: every
+ * corner is a hard visual stop, so six arrows crossing look like a circuit
+ * diagram and the eye cannot follow any single one of them. A fillet keeps the
+ * line continuous, and continuity is the whole thing a dependency arrow has to
+ * express.
+ *
+ * Quadratic Béziers with the corner itself as the control point, rather than
+ * SVG arcs: the curve is tangent to both segments by construction, so there is
+ * no radius/sweep arithmetic to get wrong and no case where a arc flips
+ * direction on a near-straight join.
+ *
+ * ⚠️ **The radius is clamped to HALF the shorter adjacent segment.** Without
+ * that, a corner near the end of a short leg eats past the next corner and the
+ * path folds back on itself — which happens constantly here, because the stubs
+ * either side of a bar are deliberately short.
+ */
+export function roundedPath(
+  points: readonly Point[],
+  radius = CORNER_R,
+): string {
+  if (points.length < 2) return "";
+  const first = points[0] as Point;
+  const out: string[] = [`M ${round(first.x)} ${round(first.y)}`];
+
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const prev = points[i - 1] as Point;
+    const corner = points[i] as Point;
+    const next = points[i + 1] as Point;
+    const r = Math.min(
+      radius,
+      Math.hypot(corner.x - prev.x, corner.y - prev.y) / 2,
+      Math.hypot(next.x - corner.x, next.y - corner.y) / 2,
+    );
+    // A vertex that does not turn needs no fillet. The curve would be visually
+    // straight — a quadratic whose control point is on the line IS the line —
+    // but it is path data describing nothing, and this is a general helper.
+    const turn =
+      (corner.x - prev.x) * (next.y - corner.y) -
+      (corner.y - prev.y) * (next.x - corner.x);
+    if (r <= 0.5 || Math.abs(turn) < 1e-6) {
+      out.push(`L ${round(corner.x)} ${round(corner.y)}`);
+      continue;
+    }
+    const enter = towards(corner, prev, r);
+    const leave = towards(corner, next, r);
+    out.push(`L ${round(enter.x)} ${round(enter.y)}`);
+    out.push(
+      `Q ${round(corner.x)} ${round(corner.y)} ${round(leave.x)} ${round(leave.y)}`,
+    );
+  }
+
+  const last = points[points.length - 1] as Point;
+  out.push(`L ${round(last.x)} ${round(last.y)}`);
+  return out.join(" ");
+}
+
+/** Half-pixel precision — enough for a 1.5px stroke, and keeps `d` readable. */
+function round(n: number): number {
+  return Math.round(n * 2) / 2;
+}
+
+/**
+ * The corners an edge turns, before rounding.
+ *
+ * Separated from the path string so the ROUTING can be asserted as geometry —
+ * "it leaves the source rightwards and arrives at the target leftwards" — and
+ * the rounding as a shape. Testing them together means testing a `d` attribute,
+ * which is how a geometry test becomes a change-detector.
+ */
+export function edgePoints(
   from: { bar: Bar | null; row: number },
   to: { bar: Bar | null; row: number },
-): string | null {
+): Point[] | null {
   if (!from.bar || !to.bar) return null;
   const y1 = from.row * ROW_H + ROW_H / 2;
   const y2 = to.row * ROW_H + ROW_H / 2;
   const x1 = from.bar.leftPx + from.bar.widthPx;
   const x2 = to.bar.leftPx;
-  const stub = 10;
+  const stub = 12;
 
-  // Room to route forwards: out, across, in.
-  if (x2 >= x1 + stub * 2) {
-    const mid = (x1 + x2) / 2;
-    return `M ${x1} ${y1} H ${mid} V ${y2} H ${x2}`;
+  // Same row with room ahead: a straight line. A dogleg between two bars on
+  // one line is a corner drawn for nothing.
+  if (y1 === y2 && x2 >= x1 + stub) {
+    return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
   }
+
+  // Room to route forwards: out, across, in. The turn is held `stub` clear of
+  // both bars so the corner never touches the thing it is pointing at.
+  if (x2 >= x1 + stub * 2) {
+    const mid = Math.max(x1 + stub, Math.min((x1 + x2) / 2, x2 - stub));
+    return [
+      { x: x1, y: y1 },
+      { x: mid, y: y1 },
+      { x: mid, y: y2 },
+      { x: x2, y: y2 },
+    ];
+  }
+
   // The blocked bar starts at or before the blocker ends — the conflict case,
-  // and the one a naive path draws backwards through both bars. Route around
-  // below/above instead so the arrow stays readable while it is wrong.
-  const lane = (Math.max(y1, y2) + ROW_H / 2 + Math.min(y1, y2)) / 2;
-  return (
-    `M ${x1} ${y1} H ${x1 + stub} V ${lane} H ${x2 - stub} V ${y2} H ${x2}`
-  );
+  // and the one a naive path draws backwards through both bars. Route out,
+  // into the gap between the rows, back, and in. It stays followable while it
+  // is wrong, which is when it matters most.
+  const lane =
+    y1 === y2 ? y1 + ROW_H / 2 : (y1 + y2) / 2;
+  return [
+    { x: x1, y: y1 },
+    { x: x1 + stub, y: y1 },
+    { x: x1 + stub, y: lane },
+    { x: x2 - stub, y: lane },
+    { x: x2 - stub, y: y2 },
+    { x: x2, y: y2 },
+  ];
+}
+
+export function edgePath(
+  from: { bar: Bar | null; row: number },
+  to: { bar: Bar | null; row: number },
+): string | null {
+  const points = edgePoints(from, to);
+  return points ? roundedPath(points) : null;
 }
 
 /**

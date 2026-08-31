@@ -794,6 +794,19 @@ export function TimelineView({
                   >
                     <path d="M0,0 L6,3 L0,6 z" className="fill-destructive" />
                   </marker>
+                  {/* A marker cannot inherit the stroke of the path that uses
+                      it, so a lit edge needs its own head or the line brightens
+                      and its arrow stays grey. */}
+                  <marker
+                    id="pm-arrow-lit"
+                    markerWidth="6"
+                    markerHeight="6"
+                    refX="5"
+                    refY="3"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L6,3 L0,6 z" className="fill-primary" />
+                  </marker>
                 </defs>
                 {links.map((edge) => {
                   const from = indexById.get(edge.blocker_id);
@@ -808,14 +821,35 @@ export function TimelineView({
                   const blocked = taskById.get(edge.blocked_id);
                   const bad =
                     !!blocker && !!blocked && conflicts(blocker, blocked);
+                  /**
+                   * Hovering a row lifts ITS edges and fades the rest.
+                   *
+                   * Rounded corners make one arrow followable; they do nothing
+                   * for six crossing arrows, where the problem is not the
+                   * corner but that every line looks equally important. Hover
+                   * answers the question actually being asked — "what does
+                   * THIS depend on" — without a mode, a click or a legend.
+                   */
+                  const lit =
+                    hoverRow === edge.blocker_id || hoverRow === edge.blocked_id;
+                  const dimmed = hoverRow !== null && !lit;
                   return (
                     <path
                       key={edge.id}
                       d={d}
                       fill="none"
-                      strokeWidth={bad ? 2 : 1.5}
-                      className={bad ? "stroke-destructive" : "stroke-muted-foreground"}
-                      markerEnd={`url(#${bad ? "pm-arrow-bad" : "pm-arrow"})`}
+                      strokeWidth={bad || lit ? 2 : 1.5}
+                      // Rounded joins as well as rounded corners: the arrowhead
+                      // sits on a butt end otherwise and reads as a notch.
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={dimmed ? 0.25 : 1}
+                      className={`transition-opacity ${
+                        bad ? "stroke-destructive" : lit ? "stroke-primary" : "stroke-muted-foreground"
+                      }`}
+                      markerEnd={`url(#${
+                        bad ? "pm-arrow-bad" : lit ? "pm-arrow-lit" : "pm-arrow"
+                      })`}
                     />
                   );
                 })}
@@ -1189,13 +1223,20 @@ function TimelineBar({
         )}
       </div>
 
-      {/* The label for a bar too narrow to hold one. */}
+      {/* The label for a bar too narrow to hold one.
+
+          ⚠️ The plate (`bg-card`) is not decoration. An outgoing dependency
+          leaves the bar's right edge at the row's mid-height — exactly where
+          this label sits — so the line runs between the letters and reads as a
+          STRIKETHROUGH on the task's own name. An opaque backing occludes it.
+          Routing the arrow around the label instead would mean the geometry
+          layer knowing how wide a piece of rendered text is. */}
       {inside ? null : (
         <button
           type="button"
           onClick={onOpen}
           title={title}
-          className="absolute top-1/2 max-w-[240px] -translate-y-1/2 truncate text-left text-[11px] text-foreground hover:underline"
+          className="absolute top-1/2 max-w-[240px] -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-left text-[11px] text-foreground hover:underline"
           style={{ left: drawnBar.leftPx + drawnBar.widthPx + 8 }}
         >
           {task.title}

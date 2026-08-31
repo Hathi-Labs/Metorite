@@ -45,7 +45,10 @@ import {
   dayStep,
   dragRefusal,
   edgePath,
+  edgePoints,
   interval,
+  type Point,
+  roundedPath,
   isWeekend,
   monthCells,
   resizeEnd,
@@ -445,28 +448,54 @@ describe("conflicts", () => {
 
 // ── arrows ──────────────────────────────────────────────────────────────────
 
-describe("edgePath", () => {
+describe("edgePoints — where an edge turns", () => {
   const barAt = (leftPx: number, widthPx: number) =>
     ({ leftPx, widthPx, singleDate: false, derived: false });
 
   it("routes forwards when there is room", () => {
-    const d = edgePath(
+    const pts = edgePoints(
       { bar: barAt(0, 50), row: 0 },
       { bar: barAt(200, 50), row: 2 },
-    );
-    expect(d).toBe(`M 50 ${ROW_H / 2} H 125 V ${2 * ROW_H + ROW_H / 2} H 200`);
+    ) as Point[];
+    // Out of the source's right edge, across, into the target's left edge.
+    expect(pts[0]).toEqual({ x: 50, y: ROW_H / 2 });
+    expect(pts.at(-1)).toEqual({ x: 200, y: 2 * ROW_H + ROW_H / 2 });
+    expect(pts).toHaveLength(4);
+    // The vertical leg is held clear of both bars, so a rounded corner never
+    // curves into the thing it points at.
+    expect(pts[1]?.x).toBeGreaterThan(50);
+    expect(pts[1]?.x).toBeLessThan(200);
+    expect(pts[1]?.x).toBe(pts[2]?.x);
+  });
+
+  it("draws a STRAIGHT line between two bars on one row", () => {
+    // A dogleg between two bars on the same line is a corner drawn for nothing,
+    // and it was drawn for nothing until now.
+    const pts = edgePoints(
+      { bar: barAt(0, 10), row: 3 },
+      { bar: barAt(500, 10), row: 3 },
+    ) as Point[];
+    expect(pts).toHaveLength(2);
+    expect(pts[0]?.y).toBe(pts[1]?.y);
   });
 
   it("routes around when the target starts before the source ends", () => {
     // The conflict geometry: a straight path would run backwards through both
-    // bars. It stays readable while it is wrong.
-    const d = edgePath(
+    // bars. It stays followable while it is wrong, which is when it matters.
+    const pts = edgePoints(
       { bar: barAt(100, 100), row: 0 },
       { bar: barAt(120, 60), row: 1 },
-    ) as string;
-    expect(d.split("V").length).toBe(3);
-    expect(d.startsWith("M 200")).toBe(true);
-    expect(d.endsWith("H 120")).toBe(true);
+    ) as Point[];
+    expect(pts).toHaveLength(6);
+    expect(pts[0]).toEqual({ x: 200, y: ROW_H / 2 });
+    expect(pts.at(-1)).toEqual({ x: 120, y: ROW_H + ROW_H / 2 });
+    // It leaves rightwards and arrives leftwards — never backwards through a bar.
+    expect(pts[1]!.x).toBeGreaterThan(pts[0]!.x);
+    expect(pts.at(-2)!.x).toBeLessThan(pts.at(-1)!.x);
+    // And it detours through the gap BETWEEN the two rows.
+    const lane = pts[2]!.y;
+    expect(lane).toBeGreaterThan(ROW_H / 2);
+    expect(lane).toBeLessThan(ROW_H + ROW_H / 2);
   });
 
   it("is null when either end has no bar", () => {
@@ -477,11 +506,102 @@ describe("edgePath", () => {
   });
 
   it("centres on the row, so the arrow meets the middle of a bar", () => {
-    const d = edgePath(
+    const pts = edgePoints(
       { bar: barAt(0, 10), row: 3 },
       { bar: barAt(500, 10), row: 3 },
-    ) as string;
-    expect(d).toContain(`M 10 ${3 * ROW_H + ROW_H / 2}`);
+    ) as Point[];
+    expect(pts[0]?.y).toBe(3 * ROW_H + ROW_H / 2);
+  });
+});
+
+describe("roundedPath", () => {
+  it("curves every interior corner and neither end", () => {
+    // Right-angle joins are what make a dense dependency graph unreadable:
+    // each corner is a hard visual stop, so six crossing arrows read as a
+    // circuit diagram and no single one can be followed.
+    const d = roundedPath([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ]);
+    expect(d.startsWith("M 0 0")).toBe(true);
+    expect(d.endsWith("L 100 100")).toBe(true);
+    expect(d.match(/Q/g)).toHaveLength(1);
+  });
+
+  it("CLAMPS the radius to half the shorter leg", () => {
+    // Without the clamp a corner near the end of a short leg eats past the
+    // next corner and the path folds back on itself — which would happen
+    // constantly here, because the stubs either side of a bar are short.
+    const d = roundedPath(
+      [
+        { x: 0, y: 0 },
+        { x: 4, y: 0 },
+        { x: 4, y: 100 },
+      ],
+      20,
+    );
+    // The fillet may not start before the path does.
+    const firstL = /L (-?[\d.]+) /.exec(d);
+    expect(Number(firstL?.[1])).toBeGreaterThanOrEqual(0);
+    expect(d).not.toContain("-");
+  });
+
+  it("leaves a straight line straight", () => {
+    const d = roundedPath([
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+    ]);
+    expect(d).toBe("M 0 0 L 50 0");
+    expect(d).not.toContain("Q");
+  });
+
+  it("does not curve a collinear vertex", () => {
+    // A rounding artefact on a straight run reads as a kink in the line.
+    const d = roundedPath([
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+      { x: 100, y: 0 },
+    ]);
+    expect(d).not.toContain("Q");
+  });
+
+  it("survives duplicate points instead of emitting NaN", () => {
+    // A zero-length leg makes the direction vector undefined. `NaN` in a `d`
+    // attribute drops the whole path silently — no error, no arrow.
+    const d = roundedPath([
+      { x: 10, y: 10 },
+      { x: 10, y: 10 },
+      { x: 60, y: 10 },
+    ]);
+    expect(d).not.toContain("NaN");
+  });
+
+  it("emits nothing for fewer than two points", () => {
+    expect(roundedPath([])).toBe("");
+    expect(roundedPath([{ x: 1, y: 1 }])).toBe("");
+  });
+
+  it("produces a path with no NaN for every edge shape", () => {
+    // The integration guard: whatever `edgePoints` returns must be drawable.
+    const barAt = (leftPx: number, widthPx: number) =>
+      ({ leftPx, widthPx, singleDate: false, derived: false });
+    const cases: Array<[number, number, number, number, number, number]> = [
+      [0, 50, 0, 200, 50, 2], // forward, different rows
+      [0, 10, 3, 500, 10, 3], // forward, same row
+      [100, 100, 0, 120, 60, 1], // backward, adjacent rows
+      [100, 100, 2, 0, 60, 0], // backward, upwards
+      [100, 40, 1, 100, 40, 1], // exactly overlapping, one row
+    ];
+    for (const [l1, w1, r1, l2, w2, r2] of cases) {
+      const d = edgePath(
+        { bar: barAt(l1, w1), row: r1 },
+        { bar: barAt(l2, w2), row: r2 },
+      ) as string;
+      expect(d).not.toContain("NaN");
+      expect(d).not.toContain("undefined");
+      expect(d.startsWith("M ")).toBe(true);
+    }
   });
 });
 
