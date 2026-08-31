@@ -5842,7 +5842,7 @@ class ImageRequest(BaseModel):
     # clamped for exactly that reason, and `size` multiplied the same cost
     # with no ceiling at all. `extra="forbid"` turns a `size` field into a
     # 422. Offering sizes needs a size dimension on the vendor price first —
-    # `HANDOFF.md` H-84 carries the shape.
+    # `HANDOFF.md` H-87 carries the shape.
 
     model_config = {"extra": "forbid"}
 

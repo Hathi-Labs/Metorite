@@ -233,6 +233,45 @@ def reads_images(conn: Connection, model: str) -> bool:
     return bool(row and row[0])
 
 
+def _models_that_read_images(
+    conn: Connection, models: Sequence[str]
+) -> set[str]:
+    """The subset of *models* that reads an image, in ONE query.
+
+    🔴 **The chain resolves on the serving path, and inside the serving
+    transaction.** :func:`reads_images` answers for one model, so a filter
+    built on it runs one single-row SELECT per step. Measured on a five-step
+    chain: the resolve cost 7 queries before this helper and costs 3 after it.
+    The schema puts no ceiling on chain length, and ``MAX_CHAIN_ATTEMPTS`` caps
+    the WALK rather than the resolve, so that cost grows with the chain an
+    operator binds.
+
+    ⚠️ **Three states read the same, and they must.** A model with no
+    ``model_profile`` row is absent from the result. A SQL NULL flag fails
+    ``AND reads_images``. A FALSE flag fails it too. All three mean *does not
+    see*, exactly as :func:`reads_images` answers for one model.
+
+    ⚠️ **This function is the ONE reader on the serving path, and
+    :func:`reads_images` has NO caller today** (measured 2026-08-31, whole
+    tree, source and tests). The single-model form stays in ``__all__`` for a
+    caller that holds exactly one model. Such a caller reads the flag through
+    this module, and it writes no second SELECT against ``model_profile``.
+    This is the set form of the same question, and never a second source for
+    the flag.
+    """
+    wanted = list(models)
+    if not wanted:
+        return set()
+    rows = conn.execute(
+        text(
+            "SELECT model FROM model_profile "
+            "WHERE model = ANY(:models) AND reads_images"
+        ),
+        {"models": wanted},
+    ).all()
+    return {r[0] for r in rows}
+
+
 def resolve_vision_chain(
     conn: Connection, tier: str
 ) -> list[ResolvedTier]:
@@ -256,7 +295,7 @@ def resolve_vision_chain(
 
     1. The chosen tier's own ``vision`` chain, when the tier binds one. The
        call bills (chosen tier, ``vision``), exactly as it did before D-AI-2.
-    2. The chosen tier's CHAT chain, when its rank-1 model sets
+    2. The chosen tier's CHAT chain, FILTERED to the steps that set
        ``reads_images``. One model answers, and the call bills the (chosen
        tier, ``chat``) pair. A second call to a vision model would cost a
        second call.
@@ -265,19 +304,35 @@ def resolve_vision_chain(
        rule 1 does not forbid it: the tier the customer picked does not drop,
        and every chat turn beside it stays where it was.
 
-    ⚠️ **The flag is read on the RANK-1 chat binding**, which is *the model
-    bound to the chosen tier* that §3.2 step 1 names. A chain whose rank-2 step
-    disagrees with its rank-1 step is an operator warning the Console owes, and
-    §8.5 names the wrong answer that gap produces. It is not a second
-    resolution rule, and this function does not build one.
+    🔴 **A BLIND STEP NEVER ENTERS THE LIFT CHAIN** (§3.2 step 3b, D16). The
+    flag is read on EVERY step of the chat chain, and a step that clears it is
+    dropped. An empty result falls to :data:`VISION_TIER`, exactly as a chain
+    whose every step clears the flag does. ONE query answers for the whole
+    chain (:func:`_models_that_read_images`), because this resolves on the
+    serving path and a per-step read cost one query per rank.
+
+    ⚠️ **The rank-1 read was a shipped wrong answer, and this is the repair.**
+    Rank 1 reads images, rank 1 fails, and the walk moves to a blind rank 2.
+    That model then answers about a picture it never saw, with a confident 200.
+    The route also drops every step it holds no key for, so an UNKEYED rank 1
+    made the blind rank 2 the FIRST step, with nothing having failed. A wrong
+    answer is worse than a refusal, which is the whole reason §3.2 step 4
+    refuses rather than serving.
+
+    ⚠️ **The fall is a RESOLUTION act, and never a failover act.** This
+    function picks the chain before the walk starts. A step that fails at
+    runtime therefore falls to the next SEEING step and to nothing else. A
+    chain that spliced two tiers together would bill two pairs out of one walk,
+    and §3.2 records no decision on that.
 
     Raises:
         TierUnknown: the chosen tier binds neither ``vision`` nor ``chat``
             (§3.2 step 0). The caller answers this with the wall it already
             had, unchanged.
-        VisionUnbound: the chat model reads no image and nothing binds
-            :data:`VISION_TIER`. Both halves are down, and the sentence names
-            both.
+        VisionUnbound: no step of the chat chain reads an image, and nothing
+            binds :data:`VISION_TIER`. Both halves are down, and the sentence
+            names both. The wording stays singular *"the chat model for tier
+            <slug>"*, because §3.2 step 4 fixes it word for word.
     """
     try:
         return resolve_chain(conn, tier, VISION_TASK)
@@ -288,8 +343,14 @@ def resolve_vision_chain(
         # yet a wall.
         pass
     chat_chain = resolve_chain(conn, tier, CHAT_TASK)
-    if reads_images(conn, chat_chain[0].model):
-        return chat_chain
+    # ONE query for the whole chain, and the comprehension keeps the RANK
+    # order. The result is a SUBSEQUENCE of the chain, which is what makes
+    # `served_rank` true — `ResolvedTier.rank` comes off the column and never
+    # off a list index.
+    sees = _models_that_read_images(conn, [s.model for s in chat_chain])
+    seeing = [s for s in chat_chain if s.model in sees]
+    if seeing:
+        return seeing
     try:
         return resolve_chain(conn, VISION_TIER, VISION_TASK)
     except TierUnknown as unbound:

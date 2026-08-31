@@ -8195,7 +8195,7 @@ measured one, and it touches no code path.
   eighteen carry the file alone. The bullet now says so.
 
 📌 **Three follow-ups left the round as HANDOFF entries, and this section
-builds none of them.** **H-84** asks for a size dimension on the vendor price,
+builds none of them.** **H-87** asks for a size dimension on the vendor price,
 which is what offering `size` needs first. **H-85** asks for an unmeasured-call
 log a person can reconcile. `router.unmeasured_quantity` names no organization
 and no request id, and the transcribe route wrote that shape before these two
@@ -8276,7 +8276,7 @@ slice.** This section scopes them in, and that clause now cites this one.
    instead of buying an under-charge.
 
    ⚠️ **Offering sizes is a real feature, and it needs a price shape first.**
-   `HANDOFF.md` **H-84** holds it: a size dimension on the vendor price, in
+   `HANDOFF.md` **H-87** holds it: a size dimension on the vendor price, in
    the feed and in `model_profile`. It must land before the owner offers
    image sizes to a customer.
 
