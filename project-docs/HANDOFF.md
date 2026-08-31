@@ -75,6 +75,51 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-89 · A root-owned file on the box blocks EVERY deploy · [OWNER]
+- **Check:** `curl -s https://api.metorite.com/version` and compare `sha` with
+  `git rev-parse origin/main`. Different means the box has not converged and
+  this is still open. Measured 2026-08-31 14:18 UTC: box on `3ad494bd`, main on
+  `0f8fdb5a` — **two merges behind**.
+- **What happens:** the deploy's `git` step cannot replace one file, so nothing
+  new ever lands:
+
+      error: unable to unlink old
+      'workbench/operator_console/src/app/models/ModelDetails.tsx':
+      Permission denied
+
+  Three deploy+verify rounds, then `App still unreachable after 3 rounds`. The
+  file on `/opt/acb/app` is owned by a user the deploy's SSH user cannot
+  unlink — a build or container that ran as root, most likely.
+- **It is NOT the code, and not one branch's fault.** The same error, on the
+  same file, failed PR #190's deploy at 13:29 and PR #198's at 13:57. Both had
+  fully green CI. It began before either.
+- **⚠️ The app is UP and serving OLD code.** `api.metorite.com/health` returns
+  200 and `app.metorite.com` returns 307. That is the dangerous shape: nothing
+  alarms, and every merge since 2026-08-30 17:07 is absent from production. A
+  failed deploy that took the site down would have told somebody hours ago.
+- **The fix needs a shell on the box** — roughly `sudo chown -R acb:acb
+  /opt/acb/app`, then re-run the deploy workflow. No workflow can do it:
+  `deploy.yml` takes only `skip_tests`, and `vps-forensics.yml` only collects.
+  An agent cannot do it either — SSH needs `HOSTINGER_SSH_KEY`, which is the
+  `secrets` gate, and a `deploy` grant does not open it.
+- **Then check WHY it recurs.** A one-off `chown` clears today's block and not
+  the cause. Something on that box writes into the checkout as root, and it
+  will do it again.
+- **Authority:** `work_plan.md` §6 (deploy is owner-gated) · CLAUDE.md §3.8
+  (verify by evidence, never by a green job)
+- **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy
+
+### H-90 · Production reports `env=dev` · [OWNER]
+- **Check:** `curl -s https://api.metorite.com/version` → `"env":"dev"` means
+  still open. Measured 2026-08-31.
+- **Why it matters:** `ACB_ENV` is read for more than a label. Anything that
+  branches on environment — log verbosity, cookie flags, seeding, and any
+  future "is this production" guard — reads the wrong answer on the box that
+  serves real customers.
+- **Not investigated here.** Spotted while reading `/version` for the H-89
+  SHA comparison. It may be deliberate. Someone should say which.
+- **Added:** 2026-08-31 · projects UI/UX session
+
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
 - **Check:** the DELIVERABLE first, and the request body only after it.
   *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
