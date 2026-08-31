@@ -859,18 +859,30 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-26 · AI credits + keys session
 
 ### H-78 · Teach the vendor feed the per-unit costs (image, second, character) · [AGENT]
-- **Check:** `grep -c "cost_per_image" apps/services/customer_console/customer_console/feed.py`
-  → `0` means the feed still reads only the three per-token columns.
+- **Check:** `grep -c "vendor_per_minute_usd" apps/services/customer_console/customer_console/main.py`
+  → `0` means nobody built the feed-read seam (§6A.11a clauses 5 to 7). This
+  entry stays.
+  ⚠️ **The earlier Check read INVERTED, and this line replaces it.** It counted
+  `cost_per_image` in `feed.py`, and that count now returns `3`. `/handoff`
+  would read the `3` as done and delete this entry, while clauses 5 to 7 stay
+  open. Do not restore that Check.
+  ✅ **Clauses 1 to 4 and clause 8 shipped on branch `ws-31-h78-build`.**
+  Migration `019_per_unit_vendor_costs.sql` adds the six columns and widens the
+  two CHECK constraints. `feed.py` parses the three per-unit prices, and the
+  upsert writes them.
 - **Why:** The "Price from cost" board on `/pricing` suggests a charge from the
   chain's first model and its vendor price. For a token job the cost comes from
   the feed. For `image`, `transcribe` and `speak` the litellm map carries
-  per-unit fields that `vendor_price_feed` (`014`) does not store. Until it
-  does, the operator types the vendor's dollar price into the board by hand.
-  The work is a new migration with nullable columns, a read in `feed.py`,
-  matching columns on `model_profile`, and a board that reads the profile.
+  per-unit fields that `vendor_price_feed` (`014`) did not store. Migration
+  `019` and `feed.py` closed that half. The operator still types the vendor's
+  dollar price into the board by hand, because no read serves the price yet.
+  **What remains:** the ×60 conversion in the feed-read projection, three
+  optional fields on the profile write, and a board that reads the profile.
   R6 applies.
 - **Done when:** `customer_console.md` **§6A.11a** holds the eight clauses.
   Build to that section, and to nothing written in this entry.
+  Clauses 1 to 4 and clause 8 are built. Clauses 5, 6 and 7 remain, and the
+  section's "The seam" addendum names where each one goes.
   ⚠️ **`music` is struck from this entry.** litellm has no `music` mode, so the
   feed can never fill the `music` task. The task row and the `tier-music` tier
   both stay.
@@ -880,8 +892,9 @@ line — never reclaim a number by deleting the other entry.
   it rejects a video capability until that verb lands. *(This entry named
   `015_tier_pricing.sql` until 2026-08-30. Line `015:63` is a COMMENT about
   the refusal, and it enforces nothing.)* The follow-up rides with **H-46**.
-  📌 Migration number: list `infra/customer_console/` at build time, and list it
-  again at merge (R1). It was `019` on 2026-08-30.
+  📌 Migration number: an agent took `019` on 2026-08-30, and the merge
+  re-checks it (R1). Clauses 5, 6 and 7 add no migration, because `019` already
+  holds every column they read.
 - **Authority:** `customer_console.md` **§6A.11a** (the done-when) · §6A.11 ·
   §6A.13 · `ai_metering_and_analytics.md` §3.7 · §9
 - **Added:** 2026-08-30 · pricing-method session · **amended 2026-08-30** after a

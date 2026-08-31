@@ -75,6 +75,21 @@ MODE_MAP: dict[str, tuple[str, str]] = {
 _PER_1M = Decimal(1_000_000)
 _CENT6 = Decimal("0.000001")
 
+#: Ten decimal places, the width of the per-unit columns (019). A per-unit
+#: price is far smaller than a per-million-token one: OpenAI text-to-speech
+#: charges 0.000015 per character today, and six places would round a cheaper
+#: future model to zero.
+_UNIT10 = Decimal("0.0000000001")
+
+#: The ceiling the COLUMN imposes, restated where the parser can enforce it.
+#: NUMERIC(18, 10) keeps ten digits after the point, so eight remain in front
+#: of it and 1E8 is the first value that will not fit. A wider value raises
+#: NumericValueOutOfRange at the upsert, and `_UPSERT` is one executemany —
+#: so Postgres discards EVERY row in the batch over one poisoned entry. That
+#: is the same all-or-nothing failure the is_finite check below prevents, and
+#: it deserves the same answer: unknown beats poisoned.
+_UNIT_MAX = Decimal("1E8")
+
 
 class FeedRow(NamedTuple):
     """One model's upstream facts, in this system's vocabulary."""
@@ -92,6 +107,17 @@ class FeedRow(NamedTuple):
     reads_images: bool
     thinks_first: bool
     deprecated_on: date | None
+    # ⚠️ The vendor's own unit, unconverted (019, §6A.11a). Per SECOND, not
+    # per minute: `task_catalog` prices `transcribe` per minute, and the x60
+    # conversion belongs to the FEED-READ projection alone (`_FEED_COLS` in
+    # main.py, which §6A.11a clauses 5 to 7 build). Nothing on this path
+    # multiplies by 60, and neither does the browser.
+    # (This named "the declare-and-prefill seam" until 2026-08-31. No such
+    # seam exists — §6A.11a retracted it. The copy to a profile is
+    # client-side, and it converts nothing.)
+    per_second: Decimal | None = None
+    per_character: Decimal | None = None
+    per_image: Decimal | None = None
 
 
 def _per_1m(entry: dict[str, Any], key: str) -> Decimal | None:
@@ -111,6 +137,52 @@ def _per_1m(entry: dict[str, Any], key: str) -> Decimal | None:
         return d.quantize(_CENT6, rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+def _per_unit(entry: dict[str, Any], *keys: str) -> Decimal | None:
+    """A per-unit price in the VENDOR's own unit, or None for absent/garbage.
+
+    :func:`_per_1m`'s rule without the per-million multiply — same is_finite
+    check before the comparison, same "unknown beats poisoned" answer — so a
+    negative, a NaN, an Infinity or a non-number leaves the field NULL.
+
+    ⚠️ Several keys mean a FALLBACK on ABSENCE, never a sum and never a
+    second chance for garbage. An image entry carries ``output_cost_per_image``
+    or ``input_cost_per_image``, and the first one the entry CARRIES decides.
+    Summing is the whisper-1 trap one field up: two fields that both describe
+    the same price charge twice when they are added.
+
+    ⚠️ Two guards the per-million path does not need, because the per-unit
+    column is narrower at one end and finer at the other.
+
+    * **Too big** — at or above :data:`_UNIT_MAX` the value cannot fit
+      ``NUMERIC(18, 10)``, and the upsert would roll the WHOLE batch back.
+    * **Too small to survive quantizing** — a nonzero price under 5E-11
+      rounds to ``Decimal('0E-10')``, and a stored zero reads as FREE. §9's
+      fence says an unknown measurement is never zero, so it answers NULL.
+
+    ⚠️ **A source of exactly zero still parses to zero, and that is on
+    purpose.** A vendor can publish a free model, `019`'s header admits it,
+    and the CHECK allows it. Only a nonzero price that COLLAPSES to zero is a
+    lie the reader cannot see, so only that case answers unknown. (The
+    whisper-1 ``output_cost_per_second`` of 0.0 never reaches here — the
+    transcribe rule reads the input field alone.)
+    """
+    for key in keys:
+        v = entry.get(key)
+        if v is None:
+            continue
+        try:
+            d = Decimal(str(v))
+            if not d.is_finite() or d < 0 or d >= _UNIT_MAX:
+                return None
+            q = d.quantize(_UNIT10, rounding=ROUND_HALF_UP)
+            if q == 0 and d != 0:
+                return None
+            return q
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+    return None
 
 
 def _tokens(entry: dict[str, Any], *keys: str) -> int | None:
@@ -159,6 +231,21 @@ def parse_feed(raw: dict[str, Any]) -> list[FeedRow]:
             continue
         model = key if key.startswith(provider + "/") else f"{provider}/{key}"
         task, invocation = MODE_MAP.get(mode, (None, None))
+        # ⚠️ One field per TASK, and a task reads only its own unit. Several
+        # chat models on Vertex price per character, so an ungated read would
+        # give a chat row a speak model's column.
+        per_second = (
+            _per_unit(entry, "input_cost_per_second")
+            if task == "transcribe" else None
+        )
+        per_character = (
+            _per_unit(entry, "input_cost_per_character")
+            if task == "speak" else None
+        )
+        per_image = (
+            _per_unit(entry, "output_cost_per_image", "input_cost_per_image")
+            if task == "image" else None
+        )
         rows[model] = FeedRow(
             model=model,
             provider=provider,
@@ -176,6 +263,9 @@ def parse_feed(raw: dict[str, Any]) -> list[FeedRow]:
             reads_images=bool(entry.get("supports_vision")),
             thinks_first=bool(entry.get("supports_reasoning")),
             deprecated_on=_deprecated(entry),
+            per_second=per_second,
+            per_character=per_character,
+            per_image=per_image,
         )
     return list(rows.values())
 
@@ -223,10 +313,12 @@ _UPSERT = text(
         context_window, max_output,
         vendor_input_per_1m_usd, vendor_output_per_1m_usd,
         vendor_cached_input_per_1m_usd,
+        vendor_per_second_usd, vendor_per_character_usd, vendor_per_image_usd,
         reads_images, thinks_first, deprecated_on, synced_at
     ) VALUES (
         :model, :provider, :mode, :task, :invocation,
         :ctx, :out, :vin, :vout, :vcached,
+        :vsec, :vchar, :vimg,
         :imgs, :think, :dep, now()
     )
     ON CONFLICT (model) DO UPDATE SET
@@ -240,6 +332,9 @@ _UPSERT = text(
         vendor_output_per_1m_usd = EXCLUDED.vendor_output_per_1m_usd,
         vendor_cached_input_per_1m_usd =
             EXCLUDED.vendor_cached_input_per_1m_usd,
+        vendor_per_second_usd = EXCLUDED.vendor_per_second_usd,
+        vendor_per_character_usd = EXCLUDED.vendor_per_character_usd,
+        vendor_per_image_usd = EXCLUDED.vendor_per_image_usd,
         reads_images = EXCLUDED.reads_images,
         thinks_first = EXCLUDED.thinks_first,
         deprecated_on = EXCLUDED.deprecated_on,
@@ -264,6 +359,8 @@ def sync(conn: Any, rows: list[FeedRow], source: str,
                 "ctx": r.context_window, "out": r.max_output,
                 "vin": r.input_per_1m, "vout": r.output_per_1m,
                 "vcached": r.cached_per_1m,
+                "vsec": r.per_second, "vchar": r.per_character,
+                "vimg": r.per_image,
                 "imgs": r.reads_images, "think": r.thinks_first,
                 "dep": r.deprecated_on,
             }

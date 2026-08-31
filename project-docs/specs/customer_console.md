@@ -315,16 +315,21 @@ verification once** and rebuilt (see its ticket) ·
 stays unwired, because the member identity it would rest on is a request
 header (**H-73**) · CP-8 spec only ·
 **⚠️ THE MIGRATION LADDER AND THE §6A SECTIONS, REFRESHED 2026-08-30.**
-`infra/customer_console/` holds **001–018**. The next free number is **019**.
-R1 says list the directory at build time and re-check at merge. `014` is the
-vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
+`infra/customer_console/` holds **001–019** on this branch. The next free
+number is **020**. ⚠️ **§8.1 (slice 5) of `ai_metering_and_analytics.md`
+claims 020**, and a sibling branch builds it. Re-check at merge (R1). R1 also
+says an agent lists the directory at build time. `014` is
+the vendor price feed plus `feed_sync_log` (§6A.11). `015` is `tier_catalog`,
 `tier_rate_card`, the eleven-tier slate and the `video` and `music` task rows
 (§6A.12, D67). `016` adds `tier_catalog.task` (D68). `017` adds `credit_price`,
 the rupee side of H-42 (§6A.13). `018` adds the credit-reference unique index.
-Three §6A sections carry the 2026-08-30 work: **§6A.11** the vendor feed,
-**§6A.12** tier pricing and the slate, and **§6A.13** the credit's own price.
-**§6A.11a is SPEC ONLY.** It holds the per-unit vendor costs (H-78), written
-2026-08-30 as agent-proposed defaults the owner may overrule (D16/D17). ⚠️ The
+`019` adds the six columns for per-unit vendor cost (§6A.11a).
+Four §6A sections carry the 2026-08-30 work. They are **§6A.11** the vendor
+feed, **§6A.11a** the per-unit vendor costs, **§6A.12** tier pricing and the
+slate, and **§6A.13** the credit's own price.
+**§6A.11a is HALF BUILT.** It holds the per-unit vendor costs (H-78). Clauses
+1 to 4 and clause 8 are built. Clauses 5 to 7 are not built. Each remaining
+default stays an agent-proposed answer the owner may overrule (D16/D17). ⚠️ The
 sentence further down that reads *"the ladder is 001–007 … the next free number
 is 008"* was true on 2026-08-18. This line supersedes it. ·
 **CP-4b (streaming pass-through) ✅ BUILT 2026-08-27** — it carried the
@@ -8164,18 +8169,27 @@ Decimal from the first parse, so trailing zeros never read as drift.
 against a real Postgres (R8). Frontend: `feed.test.ts` inside
 `npx vitest run` in `workbench/operator_console`.
 
-⚠️ **The feed stores TOKEN prices only, and §6A.11a is the ticket that
-widens it.** `014` holds three per-million-token columns and no per-second,
-per-character or per-image column. So an `image`, `transcribe` or `speak`
-job has no cost source. H-78 is that gap, and §6A.11a below carries its
-rules and its done-when.
+⚠️ **The feed also stores PER-UNIT prices since migration `019`, and
+§6A.11a owns them.** `014` held three per-million-token columns alone, so
+an `image`, `transcribe` or `speak` job had no cost source. H-78 is that
+gap. The feed half is built. The board half is not, so §6A.11a below
+carries the rest of the rules and the done-when.
 
-### 6A.11a The per-unit vendor costs (H-78) — SPEC ONLY, 2026-08-30
+### 6A.11a The per-unit vendor costs (H-78) — HALF BUILT, 2026-08-30
 
-**Nothing below is built.** Every default here is an **agent-proposed
-answer the owner may overrule**, which is the D16/D17 convention CP-2b and
-CP-2c used. Where a name or a number below disagrees with the tree, the
-tree wins. Re-verify every anchor at dispatch.
+**Status: done-when clauses 1, 2, 3, 4 and 8 are BUILT.** Migration
+`019_per_unit_vendor_costs.sql` adds the six columns and widens the two
+CHECK constraints. `feed.py` parses the three per-unit prices, and the
+upsert writes them.
+
+**Clauses 5, 6 and 7 are NOT built.** No seam converts a per-second price
+to a per-minute one. `GET /catalog/models` sends no new field. The board
+reads no per-unit cost, so the operator still types it.
+
+Each remaining default is an **agent-proposed answer the owner may
+overrule**, which is the D16/D17 convention CP-2b and CP-2c used. Where a
+name or a number below disagrees with the tree, the tree wins. Re-verify
+every anchor at dispatch.
 
 **The problem.** The "Price from cost" panel (§6A.13) reads a job's cost
 from the first model of its chain. That model carries token prices and
@@ -8193,10 +8207,10 @@ seam. Clauses 1 to 4 and clause 8 are unchanged.
 
 #### The feed columns — migration `019`
 
-⚠️ **Take the migration number at build time, and again at merge (R1).**
-The highest number on disk on 2026-08-30 is `018_credit_ref_unique.sql`, so
-`019` is free today. List `infra/customer_console/` before you name the
-file.
+⚠️ **An agent took the number at build time, and the merge re-checks it (R1).**
+The file is `019_per_unit_vendor_costs.sql`. A renumber at merge changes
+the name and nothing else, because every suite reads the ladder off the
+directory.
 
 R6 binds the migration. Add nullable columns. Rename nothing. Drop nothing.
 

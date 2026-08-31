@@ -136,6 +136,183 @@ def test_garbage_prices_become_unknown_not_zero():
     assert by["x/txt"].input_per_1m is None
 
 
+# ── The per-unit prices (H-78, §6A.11a) ─────────────────────────────────────
+#
+# 🔴 An image, transcribe or speak job had NO cost source: the feed stored
+# per-million-token prices alone, so the operator typed the vendor's dollar
+# price by hand. These parse the vendor's own unit, verbatim.
+
+
+def test_transcribe_reads_the_input_second_field_and_never_sums():
+    """🔴 whisper-1 sets input AND output per second to the same 0.0001, so a
+    sum charges twice. assemblyai/best sets the output field to 0.0, so a sum
+    is right for one vendor and wrong for the other. One field holds for
+    both. The two entries are litellm's real numbers."""
+    rows = feed.parse_feed({
+        "whisper-1": {"litellm_provider": "openai",
+                      "mode": "audio_transcription",
+                      "input_cost_per_second": 0.0001,
+                      "output_cost_per_second": 0.0001},
+        "assemblyai/best": {"litellm_provider": "assemblyai",
+                            "mode": "audio_transcription",
+                            "input_cost_per_second": 3.333e-05,
+                            "output_cost_per_second": 0.0},
+    })
+    by = {r.model: r for r in rows}
+    assert by["openai/whisper-1"].per_second == Decimal("0.0001")
+    assert by["openai/whisper-1"].per_second != Decimal("0.0002")
+    assert by["assemblyai/best"].per_second == Decimal("0.00003333")
+
+
+def test_the_packaged_snapshot_carries_the_same_two_per_second_prices():
+    """The rule against the REAL file, not against a hand-built pair — the
+    day litellm re-prices whisper-1 this fails here, not in production."""
+    by = {r.model: r for r in feed.parse_feed(feed.packaged_feed())}
+    assert by["openai/whisper-1"].per_second == Decimal("0.0001")
+    assert by["assemblyai/best"].per_second == Decimal("0.00003333")
+    # And the vendor's own unit stays SECONDS in the feed. task_catalog
+    # prices transcribe per minute, and the x60 belongs to the FEED-READ
+    # projection alone (§6A.11a clauses 5 to 7 build it). This named "the
+    # declare-and-prefill seam" until 2026-08-31, and no such seam exists.
+    assert by["openai/whisper-1"].per_second < Decimal("0.001")
+
+
+def test_speak_reads_the_per_character_price():
+    rows = feed.parse_feed({
+        "tts-1": {"litellm_provider": "openai", "mode": "audio_speech",
+                  "input_cost_per_character": 1.5e-05},
+    })
+    (r,) = rows
+    assert r.task == "speak"
+    assert r.per_character == Decimal("0.000015")
+    assert r.per_second is None and r.per_image is None
+
+
+def test_an_image_entry_prefers_the_output_field():
+    """Output first, then input. A fallback, never a sum."""
+    rows = feed.parse_feed({
+        "both": {"litellm_provider": "x", "mode": "image_generation",
+                 "output_cost_per_image": 0.08,
+                 "input_cost_per_image": 0.04},
+        "dall-e-3": {"litellm_provider": "openai", "mode": "image_generation",
+                     "input_cost_per_image": 0.04},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/both"].per_image == Decimal("0.08")
+    # dall-e-3 carries the INPUT field alone in litellm's real map.
+    assert by["openai/dall-e-3"].per_image == Decimal("0.04")
+
+
+def test_a_pixel_priced_image_model_declares_no_cost():
+    """⚠️ Named non-goal. A pixel or token price needs an image size before
+    it becomes a price per image, and the feed holds no size. The row lands,
+    the column stays NULL, and the console draws a dash. These are
+    azure/gpt-image-1's real fields."""
+    rows = feed.parse_feed({
+        "azure/gpt-image-1": {"litellm_provider": "azure",
+                              "mode": "image_generation",
+                              "input_cost_per_image_token": 1e-05,
+                              "output_cost_per_image_token": 4e-05,
+                              "input_cost_per_token": 5e-06},
+        "pixels": {"litellm_provider": "x", "mode": "image_generation",
+                   "input_cost_per_pixel": 1e-09,
+                   "output_cost_per_pixel": 2e-09},
+    })
+    by = {r.model: r for r in rows}
+    assert by["azure/gpt-image-1"].per_image is None
+    assert by["x/pixels"].per_image is None
+    # The row still LANDS — prices inform even when they cannot declare.
+    assert by["x/pixels"].task == "image"
+
+
+def test_a_task_reads_only_its_own_unit():
+    """⚠️ Several Vertex chat models price per character. An ungated read
+    would give a chat row a speak model's column."""
+    rows = feed.parse_feed({
+        "wordy": {"litellm_provider": "vertex_ai", "mode": "chat",
+                  "input_cost_per_character": 2.5e-07,
+                  "input_cost_per_second": 0.0455},
+    })
+    (r,) = rows
+    assert r.task == "chat"
+    assert r.per_character is None
+    assert r.per_second is None
+    assert r.per_image is None
+
+
+def test_per_unit_garbage_becomes_unknown_not_zero():
+    """`_per_1m`'s rule, unchanged: a negative, a NaN, an Infinity or a
+    non-number leaves the field NULL. Zero is never the answer, because zero
+    reads as free."""
+    rows = feed.parse_feed({
+        "neg": {"litellm_provider": "x", "mode": "audio_transcription",
+                "input_cost_per_second": -1},
+        "nan": {"litellm_provider": "x", "mode": "audio_speech",
+                "input_cost_per_character": float("nan")},
+        "inf": {"litellm_provider": "x", "mode": "image_generation",
+                "output_cost_per_image": float("inf")},
+        "txt": {"litellm_provider": "x", "mode": "image_generation",
+                "output_cost_per_image": "cheap"},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/neg"].per_second is None
+    assert by["x/nan"].per_character is None
+    assert by["x/inf"].per_image is None
+    assert by["x/txt"].per_image is None
+
+
+def test_a_zero_per_unit_price_survives_as_zero():
+    # ⚠️ Unlike garbage. A free model is a fact upstream claims, and the
+    # CHECK admits it. Only NULL means "nobody has told us".
+    rows = feed.parse_feed({
+        "free": {"litellm_provider": "x", "mode": "audio_transcription",
+                 "input_cost_per_second": 0},
+    })
+    (r,) = rows
+    assert r.per_second == Decimal(0)
+
+
+def test_an_absurd_per_unit_price_is_unknown_not_stored():
+    """🔴 NUMERIC(18, 10) holds eight digits in front of the point, so 1e9
+    does not fit. `_UPSERT` is ONE executemany, so the overflow Postgres
+    raises discards every row in the batch — 3,000 good models lost to one
+    poisoned entry, which is exactly what the is_finite check exists to
+    stop. The guard belongs in the parser, where one field can fail alone."""
+    rows = feed.parse_feed({
+        "huge": {"litellm_provider": "x", "mode": "image_generation",
+                 "output_cost_per_image": 1e9},
+        "edge": {"litellm_provider": "x", "mode": "image_generation",
+                 "output_cost_per_image": 99_999_999.5},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/huge"].per_image is None
+    # And the widest value that DOES fit still lands.
+    assert by["x/edge"].per_image == Decimal("99999999.5")
+
+
+def test_a_price_too_small_to_store_is_unknown_never_free():
+    """🔴 §9's fence: an unknown measurement is never zero. A nonzero price
+    below 5e-11 quantizes to `Decimal('0E-10')`, and a stored zero reads as
+    FREE — `019`'s own header says so. Unknown is the honest answer.
+
+    ⚠️ A source of EXACTLY zero is different, and it survives as zero. A
+    vendor can publish a free model. Only a real price that collapses to
+    zero is a lie."""
+    rows = feed.parse_feed({
+        "tiny": {"litellm_provider": "x", "mode": "audio_speech",
+                 "input_cost_per_character": 4e-11},
+        "free": {"litellm_provider": "x", "mode": "audio_speech",
+                 "input_cost_per_character": 0.0},
+        "small": {"litellm_provider": "x", "mode": "audio_speech",
+                  "input_cost_per_character": 6e-11},
+    })
+    by = {r.model: r for r in rows}
+    assert by["x/tiny"].per_character is None
+    assert by["x/free"].per_character == Decimal(0)
+    # Just above the rounding floor, so it keeps a real value.
+    assert by["x/small"].per_character == Decimal("0.0000000001")
+
+
 def test_every_invocation_the_feed_can_emit_is_one_we_know():
     for _task, invocation in feed.MODE_MAP.values():
         assert invocation in catalog.KNOWN_INVOCATIONS
@@ -244,6 +421,125 @@ def test_sync_upserts_idempotently_and_writes_its_evidence(db, vendor):
             "ORDER BY id DESC LIMIT 2")).fetchall()
         assert [tuple(r) for r in logs] == [
             ("packaged:litellm", 2), ("github", 2)]
+
+
+@pytestmark_db
+def test_the_per_unit_prices_round_trip_decimal_exact(db, vendor):
+    """🔴 The 019 columns are NUMERIC(18, 10) because a per-unit price is
+    tiny. OpenAI text-to-speech charges 0.000015 per character today, and the
+    feed's six-decimal token columns would round a cheaper future model to
+    zero. The number that goes in comes back out."""
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "tts",
+            per_second=Decimal("0.0001"),
+            per_character=Decimal("0.000015"),
+            per_image=Decimal("0.04"),
+        )], "github", datetime.now(UTC))
+
+    with db.begin() as conn:
+        got = conn.execute(text(
+            "SELECT vendor_per_second_usd, vendor_per_character_usd, "
+            "vendor_per_image_usd FROM vendor_price_feed WHERE model = :m"),
+            {"m": f"{vendor}/tts"}).fetchone()
+    assert got is not None
+    assert got[0] == Decimal("0.0001")
+    assert got[1] == Decimal("0.000015")
+    assert got[2] == Decimal("0.04")
+
+
+@pytestmark_db
+def test_an_unknown_per_unit_price_lands_as_NULL(db, vendor):
+    # NULL means litellm does not know, and it is never zero (012's rule).
+    with db.begin() as conn:
+        feed.sync(conn, [_row(vendor, "chatty")], "github",
+                  datetime.now(UTC))
+        got = conn.execute(text(
+            "SELECT vendor_per_second_usd, vendor_per_character_usd, "
+            "vendor_per_image_usd FROM vendor_price_feed WHERE model = :m"),
+            {"m": f"{vendor}/chatty"}).fetchone()
+    assert got is not None
+    assert list(got) == [None, None, None]
+
+
+@pytestmark_db
+def test_a_negative_per_unit_price_is_REFUSED_by_the_database(db, vendor):
+    """The guard sits in the schema rather than in whichever caller happens
+    to be careful. The parser already answers NULL for a negative, so a row
+    that reaches here with one arrived by another door."""
+    # ⚠️ The `raises` sits OUTSIDE the transaction block, so the failed
+    # INSERT rolls back before the assertion reads it.
+    def _insert() -> None:
+        with db.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO vendor_price_feed (model, provider, mode, "
+                "vendor_per_second_usd) "
+                "VALUES (:m, :v, 'audio_transcription', -1)"
+            ), {"m": f"{vendor}/bad", "v": vendor})
+
+    with pytest.raises(Exception) as exc:
+        _insert()
+    assert "vendor_price_feed_sane" in str(exc.value)
+
+
+@pytestmark_db
+def test_one_absurd_price_never_rolls_the_whole_batch_back(db, vendor):
+    """🔴 The magnitude guard earns its place against a REAL Postgres. Take
+    the guard out and this test reports NumericValueOutOfRange, with the
+    healthy row missing too — because `_UPSERT` is one executemany and the
+    server discards the batch whole. R8: a hermetic fake would agree with
+    whatever SQL it was handed and never show this."""
+    rows = feed.parse_feed({
+        "absurd": {"litellm_provider": vendor, "mode": "image_generation",
+                   "output_cost_per_image": 1e9},
+        "sane": {"litellm_provider": vendor, "mode": "image_generation",
+                 "output_cost_per_image": 0.04},
+    })
+    with db.begin() as conn:
+        feed.sync(conn, rows, "github", datetime.now(UTC))
+
+    with db.begin() as conn:
+        got = dict(conn.execute(text(
+            "SELECT model, vendor_per_image_usd FROM vendor_price_feed "
+            "WHERE provider = :v"), {"v": vendor}).fetchall())
+    # The healthy row survived, which is the whole point.
+    assert got[f"{vendor}/sane"] == Decimal("0.04")
+    # And the poisoned one landed as unknown rather than as a number.
+    assert got[f"{vendor}/absurd"] is None
+
+
+@pytestmark_db
+def test_a_dropped_per_unit_field_overwrites_the_old_price_with_NULL(
+        db, vendor):
+    """🔴 The feed is a CACHE OF UPSTREAM CLAIMS, so it must forget on
+    command. A model litellm still ships, minus a price it used to carry,
+    reads NULL here — never the stale number.
+
+    ⚠️ This is the LIMIT of `sync`'s upsert-never-delete rule. That rule
+    protects a model litellm DROPS. It must not preserve a FIELD litellm
+    drops, because a price nobody publishes any more is not a fact."""
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "tts",
+            per_second=Decimal("0.0001"),
+            per_character=Decimal("0.000015"),
+        )], "github", datetime.now(UTC))
+        before = conn.execute(text(
+            "SELECT vendor_per_character_usd FROM vendor_price_feed "
+            "WHERE model = :m"), {"m": f"{vendor}/tts"}).scalar()
+    assert before == Decimal("0.000015")
+
+    # The same model comes back, and upstream no longer prices it.
+    with db.begin() as conn:
+        feed.sync(conn, [_row(vendor, "tts", per_second=Decimal("0.0001"))],
+                  "github", datetime.now(UTC))
+        after = conn.execute(text(
+            "SELECT vendor_per_character_usd, vendor_per_second_usd "
+            "FROM vendor_price_feed WHERE model = :m"),
+            {"m": f"{vendor}/tts"}).fetchone()
+    assert after[0] is None, "a dropped field must not keep a stale price"
+    # The field upstream still carries is untouched.
+    assert after[1] == Decimal("0.0001")
 
 
 @pytestmark_db
