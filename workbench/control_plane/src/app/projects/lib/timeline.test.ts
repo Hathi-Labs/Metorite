@@ -34,9 +34,11 @@ import {
   ROW_H,
   ZOOMS,
   ZOOM_ORDER,
+  bandSpan,
   bar,
   barForSpan,
   canLink,
+  timelineBands,
   conflictLabel,
   conflicts,
   dayAtPx,
@@ -642,6 +644,84 @@ describe("canLink", () => {
     expect(SOURCE).not.toMatch(/MAX_DEPTH|frontier|\bvisited\b/);
     const body = SOURCE.slice(SOURCE.indexOf("export function canLink"));
     expect(body).not.toMatch(/\bwhile\b|\bfor\s*\(/);
+  });
+});
+
+// ── S5: bands ───────────────────────────────────────────────────────────────
+
+describe("timelineBands", () => {
+  const dated = (id: string, from: string, to: string) =>
+    task({ id, start_date: from, due_at: at(to) });
+
+  it("DROPS an empty band", () => {
+    // The board keeps an empty status column, because a missing column there
+    // reads as a missing state and the column is a drop target. A timeline
+    // band is neither — it is a heading with nothing under it, on the canvas
+    // whose vertical space is already the scarce axis.
+    const bands = timelineBands([
+      { key: "a", label: "Doing", tasks: [dated("t1", "2026-08-01", "2026-08-05")] },
+      { key: "b", label: "Blocked", tasks: [] },
+    ]);
+    expect(bands.map((b) => b.key)).toEqual(["a"]);
+  });
+
+  it("counts the GROUP's tasks, not the drawn rows", () => {
+    // A subtask folds into its parent and draws no row of its own, but it is
+    // still a task in this band. A count that disagreed with the board's for
+    // the same group would be the tell that there are two groupings.
+    const parent = dated("p", "2026-08-01", "2026-08-10");
+    const kid = task({
+      id: "k", parent_task_id: "p", start_date: "2026-08-02", due_at: at("2026-08-04"),
+    });
+    const [band] = timelineBands([{ key: "a", label: "Doing", tasks: [parent, kid] }]);
+    expect(band?.count).toBe(2);
+    expect(band?.rows).toHaveLength(1);
+  });
+
+  it("folds each band's hierarchy independently", () => {
+    const bands = timelineBands([
+      { key: "a", label: "A", tasks: [dated("t1", "2026-08-01", "2026-08-05")] },
+      { key: "b", label: "B", tasks: [dated("t2", "2026-08-06", "2026-08-09")] },
+    ]);
+    expect(bands.map((b) => b.rows.map((r) => r.task.id))).toEqual([["t1"], ["t2"]]);
+  });
+});
+
+describe("bandSpan", () => {
+  it("covers every task in the band", () => {
+    const rows = timelineRows([
+      task({ id: "a", start_date: "2026-08-04", due_at: at("2026-08-06") }),
+      task({ id: "b", start_date: "2026-08-01", due_at: at("2026-08-03") }),
+      task({ id: "c", start_date: "2026-08-09", due_at: at("2026-08-11") }),
+    ]);
+    expect(bandSpan(rows)).toEqual({ from: "2026-08-01", to: "2026-08-11" });
+  });
+
+  it("reaches into a parent's CHILDREN for their dates", () => {
+    // A parent with no dates of its own still contributes the span its
+    // subtasks carry, exactly as `rowInterval` gives it a derived bar. Without
+    // this the roll-up would be shorter than the rows it summarises.
+    const rows = timelineRows([
+      task({ id: "p" }),
+      task({
+        id: "k", parent_task_id: "p", start_date: "2026-08-02", due_at: at("2026-08-08"),
+      }),
+    ]);
+    expect(bandSpan(rows)).toEqual({ from: "2026-08-02", to: "2026-08-08" });
+  });
+
+  it("is null when nothing in the band has a date", () => {
+    // The honest answer. Inventing a span from the chart's own edges would be
+    // a bar that nobody's dates produced.
+    expect(bandSpan(timelineRows([task({ id: "a" }), task({ id: "b" })]))).toBeNull();
+  });
+
+  it("ignores undated tasks rather than stretching to them", () => {
+    const rows = timelineRows([
+      task({ id: "a", start_date: "2026-08-04", due_at: at("2026-08-06") }),
+      task({ id: "b" }),
+    ]);
+    expect(bandSpan(rows)).toEqual({ from: "2026-08-04", to: "2026-08-06" });
   });
 });
 

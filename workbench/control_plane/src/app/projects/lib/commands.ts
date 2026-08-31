@@ -74,15 +74,29 @@ export type ViewMode = (typeof VIEW_MODES)[number]["id"];
  * | board    | columns                          | swimlane rows    |
  * | list     | section headers + quick-add fill | —                |
  * | table    | section headers + quick-add fill | —                |
+ * | timeline | banded row sections              | —                |
  * | calendar | —                                | —                |
- * | timeline | —                                | —                |
  * | overview | — (a roll-up, not a task canvas) | —                |
  *
  * ⚠️ These HIDE a control, they do not clear the value. Switching to
  * Calendar and back must not silently drop the grouping somebody chose, and
  * a saved view keeps carrying both axes whichever canvas saved it.
+ *
+ * ── Why the timeline groups but has no LANES (WS-27t S5) ──────────────────
+ *
+ * A grouped timeline is bands of rows, which is the same idea the list draws
+ * as headed sections — so it reads the SAME `groupBy`, and a view grouped by
+ * project on the board opens grouped by project here. One axis, four canvases.
+ *
+ * A second axis has nowhere to go. The board can afford lanes because its two
+ * axes are both arbitrary: columns are one field, rows another. **The
+ * timeline's x-axis is already spent** — it is time, which is the only reason
+ * the canvas exists. Sub-dividing the bands would nest rows inside rows and
+ * express nothing a second grouping level could not say more plainly. So
+ * `honoursLanes` stays board-only, deliberately, and this is the note that
+ * says it was considered rather than missed.
  */
-const GROUPED_CANVASES = new Set<ViewMode>(["board", "list", "table"]);
+const GROUPED_CANVASES = new Set<ViewMode>(["board", "list", "table", "timeline"]);
 
 /** True when this canvas draws something with `groupBy`. */
 export function honoursGroupBy(mode: ViewMode): boolean {

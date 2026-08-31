@@ -1160,6 +1160,19 @@ function ProjectsWorkspace() {
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
 
+  /**
+   * The same grouping, over the TIMELINE's rows (WS-27t S5).
+   *
+   * A separate memo rather than reusing `groups`, because the two canvases
+   * load different windows — the board holds `tasks`, the timeline holds
+   * `month.rows` over its own date span. Grouping the timeline by the board's
+   * list would silently drop every task outside the board's window.
+   */
+  const monthGroups = useMemo(
+    () => groupTasks(month.rows, groupBy, { statuses, projectName }),
+    [month.rows, groupBy, statuses, projectName]
+  );
+
   // A selection that outlives its filter is how a bulk edit hits tasks nobody
   // can see any more: select forty, narrow to three, press Done believing you
   // are acting on the three in front of you.
@@ -2023,6 +2036,14 @@ function ProjectsWorkspace() {
               tags={tags}
               zoom={zoom}
               window={timeWindow}
+              // S5 — the same grouping the board and list read. `groups` is
+              // built from the BOARD's task list, so the timeline is grouped
+              // from `month.rows` instead: the two canvases load different
+              // windows, and grouping one by the other's rows would silently
+              // drop everything outside it.
+              groupBy={groupBy}
+              groups={monthGroups}
+              statuses={statuses}
               onZoom={(next) => {
                 // The window is re-scoped around what you are LOOKING at, not
                 // around today: changing zoom to see more context should not

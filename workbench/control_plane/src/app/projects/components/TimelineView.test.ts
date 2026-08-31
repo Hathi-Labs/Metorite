@@ -168,6 +168,55 @@ describe("TimelineView", () => {
     expect(widthOf(wide)).toBeGreaterThanOrEqual(240 * PX_PER_DAY);
   });
 
+  it("draws a band heading per group, with its count", () => {
+    const html = draw({
+      groupBy: "status",
+      groups: [
+        { key: "s1", label: "In progress", tasks: [LONG, SHORT] },
+        { key: "s2", label: "Done", tasks: [UNDATED] },
+      ],
+    });
+    expect(html).toContain("In progress");
+    expect(html).toContain("Done");
+    // Counts come from the GROUP, so they agree with the board's for the same
+    // group even when a subtask folds into its parent and draws no row.
+    expect(html).toMatch(/In progress[\s\S]{0,200}>2</);
+  });
+
+  it("drops an empty band rather than heading nothing", () => {
+    const html = draw({
+      groupBy: "status",
+      groups: [
+        { key: "s1", label: "In progress", tasks: [LONG] },
+        { key: "s2", label: "Nothing here", tasks: [] },
+      ],
+    });
+    expect(html).toContain("In progress");
+    expect(html).not.toContain("Nothing here");
+  });
+
+  it("draws no band at all when the axis is none", () => {
+    // Grouping is a control the canvas HONOURS, not one it forces: the
+    // ungrouped timeline must be exactly what it was before bands existed.
+    const html = draw({ groupBy: "none", groups: [] });
+    expect(html).toContain(LONG.title);
+    expect(html).not.toContain("aria-expanded");
+  });
+
+  it("keeps arrows on the right rows once a heading takes one", () => {
+    // The regression a band introduces: headings occupy a row index, so an
+    // arrow placed from a task's index lands a row high for every heading
+    // above it. Both bars still carry their dependency after grouping.
+    const html = draw({
+      groupBy: "status",
+      groups: [{ key: "s1", label: "Everything", tasks: [LONG, SHORT] }],
+    });
+    expect(html).toContain("pm-arrow");
+    // Heading at index 0 pushes the first task's bar to row 1, so no bar may
+    // sit at the very top of the chart body.
+    expect(html).not.toMatch(/class="absolute inset-x-0[^"]*"style="top:0px/);
+  });
+
   it("reports a truncated window", () => {
     expect(draw({ truncated: true })).toContain("narrow the filters");
   });

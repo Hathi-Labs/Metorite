@@ -266,6 +266,78 @@ export function timelineRows(tasks: readonly TaskRow[]): TimelineRow[] {
 }
 
 /**
+ * ── BANDS (WS-27t S5) ─────────────────────────────────────────────────────
+ *
+ * A grouped timeline is bands of rows — the same idea the list draws as headed
+ * sections, and it reads the same `groupBy`, so a view grouped by project on
+ * the board opens grouped by project here.
+ *
+ * **An empty band is dropped.** The board keeps an empty status column, because
+ * a missing column there reads as a missing state and the column is a drop
+ * target. A timeline band is neither: it is a heading with no rows under it,
+ * and on a canvas whose vertical space is already the scarce axis it is a line
+ * of nothing. The list drops them for the same reason.
+ */
+export interface TimelineBand {
+  key: string;
+  label: string;
+  rows: TimelineRow[];
+  /** Everything in the band, as one interval — the bar drawn when collapsed. */
+  span: { from: string; to: string } | null;
+  /** How many tasks the band holds, INCLUDING folded subtasks. */
+  count: number;
+}
+
+/**
+ * The interval covering every task in a set of rows, subtasks included.
+ *
+ * What a collapsed band draws. Collapsing is otherwise pure loss — the rows go
+ * and nothing takes their place — whereas a roll-up bar turns it into the
+ * summarising gesture it should be: twelve rows become one line that still says
+ * when the group runs. MS Project's summary task, and the same arithmetic
+ * `rowInterval` already does one level down.
+ *
+ * `null` when nothing in the band has a date, which is the honest answer — a
+ * band of unscheduled work has no span to draw, and inventing one from the
+ * chart's own edges would be a bar nobody's dates produced.
+ */
+export function bandSpan(
+  rows: readonly TimelineRow[],
+): { from: string; to: string } | null {
+  const spans = rows
+    .map((row) => rowInterval(row.task, row.children))
+    .filter(Boolean) as { from: string; to: string }[];
+  if (spans.length === 0) return null;
+  return {
+    from: spans.reduce((lo, s) => (s.from < lo ? s.from : lo), spans[0]!.from),
+    to: spans.reduce((hi, s) => (s.to > hi ? s.to : hi), spans[0]!.to),
+  };
+}
+
+/** Group output → the bands the chart draws, empty ones dropped. */
+export function timelineBands(
+  groups: readonly { key: string; label: string; tasks: TaskRow[] }[],
+): TimelineBand[] {
+  const out: TimelineBand[] = [];
+  for (const group of groups) {
+    if (group.tasks.length === 0) continue;
+    const rows = timelineRows(group.tasks);
+    out.push({
+      key: group.key,
+      label: group.label,
+      rows,
+      span: bandSpan(rows),
+      // The group's own total, not the row count: a subtask folded into its
+      // parent is still a task in this band, and a count that disagreed with
+      // the board's for the same group would be the tell that there are two
+      // groupings.
+      count: group.tasks.length,
+    });
+  }
+  return out;
+}
+
+/**
  * The date range the chart covers: the data's own span, padded.
  *
  * Fitted to the data rather than to a fixed month, because a timeline's

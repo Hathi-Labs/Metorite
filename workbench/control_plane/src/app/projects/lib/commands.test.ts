@@ -139,16 +139,23 @@ describe("the registry itself", () => {
 
   it("offers each grouping axis only where the canvas draws it", () => {
     // Measured against the canvases on 2026-08-31: TaskBoard reads `lanes`,
-    // and TaskBoard/TaskList/TableView read `groupBy` for their columns,
-    // section headers and quick-add prefill. Calendar and Timeline read
-    // neither. Offering a control that cannot act is a dead click — and here
-    // a worse one, because setting it still writes the view's config from a
+    // and TaskBoard/TaskList/TableView/TimelineView read `groupBy` for their
+    // columns, section headers, quick-add prefill and bands. Calendar reads
+    // neither. Offering a control that cannot act is a dead click — and here a
+    // worse one, because setting it still writes the view's config from a
     // surface that shows no effect.
+    //
+    // ⚠️ **Timeline joined the grouped list on 2026-08-31 (S5)** and did NOT
+    // join the laned one. Its x-axis is already spent on time, which is the
+    // only reason the canvas exists, so a second grouping axis would nest rows
+    // inside rows and say nothing a second level could not say more plainly.
+    // `commands.ts` carries the argument.
     expect(VIEW_MODES.map((m) => m.id).filter(honoursLanes)).toEqual(["board"]);
     expect(VIEW_MODES.map((m) => m.id).filter(honoursGroupBy)).toEqual([
       "board",
       "list",
       "table",
+      "timeline",
     ]);
   });
 

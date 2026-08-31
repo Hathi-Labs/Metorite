@@ -55,8 +55,10 @@ import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { TagRow, TaskRow } from "../lib/api";
+import type { StatusRow, TagRow, TaskRow } from "../lib/api";
+import { accentForGroup } from "../lib/accent";
 import { tagColours, visibleChips } from "../lib/card";
+import type { GroupBy, TaskGroup } from "../lib/grouping";
 import { anchorDay, dayKey, rescheduleTo, shiftDay } from "../lib/calendar";
 import {
   BAR_H,
@@ -64,6 +66,8 @@ import {
   type Edge,
   LABEL_INSIDE_PX,
   ROW_H,
+  type TimelineBand,
+  type TimelineRow,
   type TimelineWindow,
   type TimelineZoom,
   ZOOMS,
@@ -84,6 +88,7 @@ import {
   resizeEnd,
   resizeStart,
   spanFor,
+  timelineBands,
   timelineRange,
   timelineRows,
   weekCells,
@@ -117,6 +122,25 @@ const RAIL_CHIPS: readonly string[] = ["importance", "due"];
 /** Two header tiers, each ROW_H/2-ish. Kept as one number the chart and the
  *  task column both read, so the two cannot start at different heights. */
 const HEAD_H = 52;
+/**
+ * One drawn line of the chart — a band heading or a task.
+ *
+ * ⚠️ **One list, one index space.** A row's position here IS its y, and the
+ * dependency arrows are placed from that index. Keeping headings in the same
+ * list rather than nesting rows inside band objects is what makes an arrow
+ * between two bands land on the right rows without a second traversal to work
+ * out how many headings it crossed.
+ */
+type DrawnRow =
+  | { kind: "band"; band: TimelineBand; collapsed: boolean }
+  | {
+      kind: "task";
+      task: TaskRow;
+      children: TaskRow[];
+      depth: number;
+      hasKids: boolean;
+    };
+
 type DragMode = "move" | "start" | "end" | "create";
 
 interface DragState {
@@ -161,6 +185,18 @@ interface Props {
   zoom?: TimelineZoom;
   window?: TimelineWindow;
   onZoom?: (zoom: TimelineZoom) => void;
+  /**
+   * S5 — the grouping axis and the groups it produced.
+   *
+   * The SAME pair the board and list read. A grouped timeline is bands of
+   * rows, which is the list's headed sections drawn against a time axis, so
+   * inventing a timeline-only grouping would be a second vocabulary for one
+   * idea. `commands.honoursGroupBy` is what decides the control is offered.
+   */
+  groupBy?: GroupBy;
+  groups?: TaskGroup[];
+  /** For a band's accent — one group, one colour, on every canvas. */
+  statuses?: StatusRow[];
   onSelect: (task: TaskRow) => void;
   /** S2 — a committed drag. The page's existing task-date write path. */
   onMove: (task: TaskRow, patch: Record<string, string | null>) => void;
@@ -179,12 +215,17 @@ export function TimelineView({
   zoom = "month",
   window: fetched,
   onZoom,
+  groupBy = "none",
+  groups = [],
+  statuses = [],
   onSelect,
   onMove,
   onLink,
   onRefuse,
 }: Props) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  /** Collapsed bands, by group key — local, like the list's folded sections. */
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const [drag, setDrag] = useState<DragState | null>(null);
   const [link, setLink] = useState<LinkState | null>(null);
   const [hoverRow, setHoverRow] = useState<string | null>(null);
@@ -218,31 +259,62 @@ export function TimelineView({
   // One flat list of drawn lines — parents, then their children when expanded —
   // so a row's index IS its y. Arrows are positioned from that index, and a
   // second traversal to find it would be a second chance to disagree.
+  /**
+   * The bands, when a grouping axis is on (WS-27t S5).
+   *
+   * Built from the SAME `groups` the board and list read, so a view grouped by
+   * project opens grouped by project on every canvas that can draw it.
+   */
+  const bands = useMemo(
+    () => (groupBy === "none" ? [] : timelineBands(groups)),
+    [groupBy, groups]
+  );
+  const grouped = groupBy !== "none";
+
   const drawn = useMemo(() => {
-    const out: {
-      task: TaskRow;
-      children: TaskRow[];
-      depth: number;
-      hasKids: boolean;
-    }[] = [];
-    for (const row of rows) {
-      out.push({
-        task: row.task, children: row.children, depth: 0,
-        hasKids: row.children.length > 0,
-      });
-      if (expanded.has(row.task.id)) {
-        for (const kid of row.children) {
-          out.push({ task: kid, children: [], depth: 1, hasKids: false });
+    const out: DrawnRow[] = [];
+    /** One band's task rows, honouring the subtask fold. */
+    const pushRows = (source: readonly TimelineRow[]) => {
+      for (const row of source) {
+        out.push({
+          kind: "task",
+          task: row.task,
+          children: row.children,
+          depth: 0,
+          hasKids: row.children.length > 0,
+        });
+        if (expanded.has(row.task.id)) {
+          for (const kid of row.children) {
+            out.push({
+              kind: "task", task: kid, children: [], depth: 1, hasKids: false,
+            });
+          }
         }
       }
+    };
+
+    if (!grouped) {
+      pushRows(rows);
+      return out;
+    }
+    for (const band of bands) {
+      const isFolded = folded.has(band.key);
+      out.push({ kind: "band", band, collapsed: isFolded });
+      // A folded band's rows are off-screen, so they take no index — the same
+      // rule the list applies to a folded section, and what keeps a row's
+      // position in this list equal to its y on the chart.
+      if (!isFolded) pushRows(band.rows);
     }
     return out;
-  }, [rows, expanded]);
+  }, [grouped, bands, rows, expanded, folded]);
 
-  const indexById = useMemo(
-    () => new Map(drawn.map((row, i) => [row.task.id, i])),
-    [drawn],
-  );
+  const indexById = useMemo(() => {
+    const map = new Map<string, number>();
+    drawn.forEach((row, i) => {
+      if (row.kind === "task") map.set(row.task.id, i);
+    });
+    return map;
+  }, [drawn]);
   const taskById = useMemo(
     () => new Map(tasks.map((t) => [t.id, t])),
     [tasks],
@@ -259,6 +331,7 @@ export function TimelineView({
   const barById = useMemo(() => {
     const out = new Map<string, Bar | null>();
     for (const row of drawn) {
+      if (row.kind !== "task") continue;
       const settled = bar(row.task, row.children, range);
       if (!drag || drag.taskId !== row.task.id) {
         out.set(row.task.id, settled);
@@ -618,7 +691,28 @@ export function TimelineView({
             >
               Task
             </div>
-            {drawn.map((row) => (
+            {drawn.map((row, index) =>
+              row.kind === "band" ? (
+                <BandHeading
+                  key={`band-${row.band.key}`}
+                  band={row.band}
+                  collapsed={row.collapsed}
+                  accent={accentForGroup(
+                    groupBy,
+                    row.band.key,
+                    bands.findIndex((b) => b.key === row.band.key),
+                    bands.length,
+                    statuses
+                  )}
+                  onToggle={() =>
+                    setFolded((current) => {
+                      const next = new Set(current);
+                      if (!next.delete(row.band.key)) next.add(row.band.key);
+                      return next;
+                    })
+                  }
+                />
+              ) : (
               <div
                 key={row.task.id}
                 onMouseEnter={() => setHoverRow(row.task.id)}
@@ -626,7 +720,12 @@ export function TimelineView({
                 className={`flex items-center gap-1 border-b border-border/50 px-2 ${
                   hoverRow === row.task.id ? "bg-muted/50" : ""
                 }`}
-                style={{ height: ROW_H, paddingLeft: 8 + row.depth * 14 }}
+                style={{
+                  height: ROW_H,
+                  // Indented under its band heading, so the rail reads as a
+                  // hierarchy rather than a flat list with dividers in it.
+                  paddingLeft: 8 + row.depth * 14 + (grouped ? 12 : 0),
+                }}
               >
                 {row.hasKids ? (
                   <Button
@@ -671,7 +770,8 @@ export function TimelineView({
                   />
                 </div>
               </div>
-            ))}
+              )
+            )}
           </div>
 
           {/* Chart */}
@@ -861,6 +961,17 @@ export function TimelineView({
               </svg>
 
               {drawn.map((row, index) => {
+                if (row.kind === "band") {
+                  return (
+                    <BandLane
+                      key={`band-${row.band.key}`}
+                      band={row.band}
+                      collapsed={row.collapsed}
+                      top={index * ROW_H}
+                      range={range}
+                    />
+                  );
+                }
                 const drawnBar = barById.get(row.task.id) ?? null;
                 const blocker = links.find((l) => l.blocked_id === row.task.id);
                 const blockerTask = blocker
@@ -989,6 +1100,104 @@ function previewBar(
   }
   const moved = shiftDay(span.to, drag.steps);
   return barForSpan(span.from, moved < span.from ? span.from : moved, range);
+}
+
+/**
+ * A band's heading, in the rail (WS-27t S5).
+ *
+ * The /tasks and list grammar, so a grouped timeline and a grouped list read
+ * identically: chevron, accent dot, label, count as a pill. The accent comes
+ * from `accentForGroup` — the same call the list makes — because a grouped
+ * list and a grouped timeline are two drawings of one grouping and must not
+ * disagree about what colour "Done" is.
+ */
+function BandHeading({
+  band,
+  collapsed,
+  accent,
+  onToggle,
+}: {
+  band: TimelineBand;
+  collapsed: boolean;
+  accent: { soft: string; bar: string; text: string; dot: string };
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`flex items-center border-b border-border/50 ${accent.soft}`}
+      style={{ height: ROW_H }}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className={`flex min-w-0 flex-1 items-center gap-2 border-l-2 px-2 text-left text-xs font-medium ${accent.bar} ${accent.text}`}
+        style={{ height: ROW_H }}
+      >
+        <Icon
+          name="ChevronRight"
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${
+            collapsed ? "" : "rotate-90"
+          }`}
+        />
+        <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
+        <span className="truncate">{band.label}</span>
+        <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+          {band.count}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * A band's row on the CHART.
+ *
+ * Open, it is a tinted spacer that lines the heading up with the grid.
+ *
+ * Collapsed, it draws the band's whole span as one bar — MS Project's summary
+ * task. Collapsing is otherwise pure loss: the rows go and nothing takes their
+ * place. A roll-up makes it the summarising gesture it should be, so twelve
+ * rows become one line that still says when the group runs.
+ *
+ * The bar is deliberately inert. It is a reading of other tasks' dates, not a
+ * thing with dates of its own — the same argument that stops a `derived`
+ * parent bar being dragged, one level up.
+ */
+function BandLane({
+  band,
+  collapsed,
+  top,
+  range,
+}: {
+  band: TimelineBand;
+  collapsed: boolean;
+  top: number;
+  range: ReturnType<typeof timelineRange>;
+}) {
+  const rolled =
+    collapsed && band.span
+      ? barForSpan(band.span.from, band.span.to, range)
+      : null;
+  return (
+    <div
+      className="absolute inset-x-0 border-b border-border/50 bg-muted/30"
+      style={{ top, height: ROW_H }}
+    >
+      {rolled ? (
+        <div
+          className="pointer-events-none absolute rounded-md border border-primary/50 bg-primary/15"
+          style={{
+            left: rolled.leftPx,
+            width: rolled.widthPx,
+            height: 8,
+            top: (ROW_H - 8) / 2,
+          }}
+          title={`${band.label}: ${band.span?.from} to ${band.span?.to}`}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 /**
