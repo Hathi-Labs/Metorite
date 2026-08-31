@@ -39,12 +39,16 @@ from sqlalchemy.engine import Connection
 from customer_console.credits import RateCard, TierRate, UnpricedModel
 
 __all__ = [
+    "SERVING_INVOCATIONS",
     "SSE_DONE",
+    "TRANSCRIPTION_RESPONSE_FORMAT",
     "Credential",
     "ResolvedTier",
     "TierUnknown",
+    "UnservableInvocation",
     "call_provider",
     "decrypt_secret",
+    "duration_seconds",
     "encrypt_secret",
     "frame_of",
     "provider_credential",
@@ -56,6 +60,7 @@ __all__ = [
     "set_provider_call",
     "usage_from_frame",
     "usage_from_response",
+    "vendor_cost_per_minute_usd",
     "vendor_cost_usd",
 ]
 
@@ -371,11 +376,52 @@ def provider_credential(conn: Connection, *, provider: str,
 
 ProviderCall = Callable[..., Awaitable[Any]]
 
+#: The litellm verbs a SERVING route may dispatch to today.
+#:
+#: ⚠️ **Narrower than ``catalog.KNOWN_INVOCATIONS`` on purpose.** That set is
+#: what an operator may WRITE into ``model_capability``. This one is what the
+#: Router can CALL. A capability row may legally name a verb no route serves
+#: yet — §6A.9 rule 3 says capability is not availability — and the gap must
+#: raise here rather than reach litellm as an attribute nobody checked.
+SERVING_INVOCATIONS = frozenset({"acompletion", "atranscription"})
+
+#: The verb a caller that names none gets. Every chat call made this exact
+#: request before ``invocation`` existed, so the default keeps that path byte
+#: for byte the same.
+DEFAULT_INVOCATION = "acompletion"
+
+
+class UnservableInvocation(Exception):
+    """The capability row names a verb no route serves yet.
+
+    Raised rather than defaulted to ``acompletion``. Guessing is how audio
+    reaches a chat endpoint (D60.2), and the provider answers that with a
+    charge and a paragraph.
+    """
+
 
 async def _litellm_call(**kwargs: Any) -> Any:
-    from litellm import acompletion
+    """Send one call to litellm through the verb the capability row names.
 
-    return await acompletion(**kwargs)
+    🔴 **``invocation`` is the Router's OWN instruction and never a provider
+    parameter.** It is removed here, so litellm and the vendor behind it see
+    exactly the keys the route built. ``resolve_invocation`` reads the name
+    off ``model_capability`` (D60 step two), and the route passes it in.
+
+    ⚠️ **The verb is looked up through an allowlist, not by free attribute
+    access.** A capability row is operator-written data, and
+    ``getattr(litellm, <anything>)`` on operator data is a way to call a
+    function nobody reviewed.
+    """
+    import litellm
+
+    invocation = kwargs.pop("invocation", DEFAULT_INVOCATION)
+    if invocation not in SERVING_INVOCATIONS:
+        raise UnservableInvocation(
+            f"no serving route calls {invocation!r}; this Router serves "
+            f"{', '.join(sorted(SERVING_INVOCATIONS))}"
+        )
+    return await getattr(litellm, invocation)(**kwargs)
 
 
 _PROVIDER_CALL: list[ProviderCall] = [_litellm_call]
@@ -453,6 +499,87 @@ def vendor_cost_usd(
         total += Decimal(completion) * output_per_1m
 
     return (total / Decimal(1_000_000)).quantize(Decimal("0.00000001"))
+
+
+def vendor_cost_per_minute_usd(
+    minutes: Decimal | None, per_minute_usd: Decimal | None
+) -> Decimal | None:
+    """What one per-minute call cost us at the vendor, or ``None``.
+
+    The sibling of :func:`vendor_cost_usd` for a task the vendor sells by
+    time rather than by token. ``transcribe`` is the first one (D19.2).
+
+    ⚠️ **``None`` means UNKNOWN and never zero** — D-AI-7 rule 3. Two things
+    produce it. Nobody has priced the model, so ``per_minute_usd`` is
+    ``None``. Or nothing measured the audio, so ``minutes`` is ``None`` or
+    zero. Recording $0.00 for a call we could not read would be a
+    measurement nobody made, and it would report a margin of 100 percent.
+    """
+    if per_minute_usd is None or minutes is None:
+        return None
+    if minutes <= 0:
+        return None
+    return (Decimal(minutes) * Decimal(per_minute_usd)).quantize(
+        Decimal("0.00000001")
+    )
+
+
+#: What the meter asks the provider to answer with on a transcription.
+#:
+#: 🔴 **The METER owns this field, not the caller** (§6A.10a clause 3).
+#: litellm's ``TranscriptionResponse`` declares ``text`` and ``usage`` alone,
+#: and it copies a ``duration`` on only when the provider sent one. An
+#: OpenAI-family provider sends one only under this format. Without the rule
+#: every transcribe call falls to the zero-bill arm, so the meter records
+#: zero for all of them. Our own ``acb_stt`` sets the same field before it
+#: reads the duration (``packages/acb_stt/acb_stt/litellm_provider.py``).
+TRANSCRIPTION_RESPONSE_FORMAT = "verbose_json"
+
+
+def duration_seconds(response: Any) -> Decimal | None:
+    """How many seconds of audio the provider says it heard. Never raises.
+
+    ``None`` means the response carried no duration we recognise. The caller
+    bills zero and says so out loud — a completion the customer already holds
+    must never fail because the meter could not read it.
+
+    Two shapes, read in this order. litellm 1.86.0 gives
+    ``usage.type == "duration"`` with ``usage.seconds`` on the providers that
+    report a usage object. The older shape is a bare ``duration`` attribute
+    that litellm copies across from the provider body. Reading the usage
+    object FIRST matters, because it is the reported one rather than the
+    inferred one.
+    """
+    def _get(obj: Any, key: str) -> Any:
+        if obj is None:
+            return None
+        if hasattr(obj, "get"):
+            try:
+                return obj.get(key)
+            except Exception:
+                return None
+        return getattr(obj, key, None)
+
+    def _number(value: Any) -> Decimal | None:
+        # A bool is an int in Python, and `True` seconds is not a duration.
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            seconds = Decimal(str(value))
+        except Exception:
+            return None
+        # A negative duration is a broken report, not a credit.
+        return seconds if seconds >= 0 else None
+
+    try:
+        usage = _get(response, "usage")
+        if _get(usage, "type") == "duration":
+            reported = _number(_get(usage, "seconds"))
+            if reported is not None:
+                return reported
+        return _number(_get(response, "duration"))
+    except Exception:
+        return None
 
 
 def usage_from_response(response: Any) -> ExtractedUsage:

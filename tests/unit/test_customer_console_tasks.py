@@ -1,17 +1,22 @@
 """WS-31 CP-10 slice 2 — tasks, units and capabilities.
 
 Spec: ``project-docs/specs/customer_console.md`` §6A.9 order steps 1 and 2 ·
-D60 · D61 (G-3, G-4, G-5) · D19.2.
+D60 · D61 (G-3, G-4, G-5) · D19.2. The transcribe ENDPOINT is §6A.10a (H-46).
 
 🔴 **The hole this closes was live.** ``credits.rate_call`` was tokens-only, so
 ``tier-stt`` — which ships in the production seed — could not be priced, and
 neither could ``speak`` or ``image``. Three of six tasks.
+
+🔴 **H-46 closed the other half.** ``tier-stt`` was bound and priceable, and
+no route could call it. The last section of this file DRIVES
+``POST /v1/audio/transcriptions`` and then reads the row that call wrote.
 
 **R8.** Every clause here runs against a real Postgres 16 through
 ``tests/unit/_customer_console_ladder.py``. A skipped R8 test proves nothing.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import uuid
@@ -20,11 +25,18 @@ from decimal import Decimal
 import pytest
 
 pytest.importorskip("fastapi")
+from customer_console import catalog
+from customer_console import router as router_mod
 from customer_console.credits import UnpricedModel
 from customer_console.router import TierUnknown, resolve_invocation, resolve_rate_card, resolve_tier
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder
+from tests.unit._customer_console_ladder import (
+    DEFAULT_DEPLOYMENT_LABEL,
+    apply_ladder,
+    ensure_deployment,
+)
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
@@ -277,6 +289,680 @@ class TestTheMigrationIsR6Safe:
         binding_block = seed[seed.index("INSERT INTO tier_binding"):]
         binding_block = binding_block[:binding_block.index(";")]
         assert "tier-stt" not in binding_block
+
+
+# ── The transcribe endpoint (H-46, §6A.10a) ─────────────────────────────────
+#
+# 🔴 **These fences DRIVE the route.** Every claim below about a `usage_event`
+# row is read off the row that a real `POST /v1/audio/transcriptions` wrote,
+# never off a row the test inserted. A hand-inserted row proves the column
+# exists and proves nothing about the writer.
+
+TOKEN = "test-operator-token"
+OP = {"Authorization": f"Bearer {TOKEN}"}
+
+#: The Router's own token — the only credential that may write the meter.
+INT = {"Authorization": "Bearer internal"}
+
+#: The same constant every Console suite uses. `provider_credential` decrypts
+#: with the env key at READ time, so a suite that minted its row under a
+#: different key would 503 here.
+ENC_KEY = "test-encryption-key-not-a-real-one"
+
+#: litellm 1.86.0's `TranscriptionUsageDurationObject`, which reaches the
+#: Router only because the Router asked for `verbose_json`.
+NINETY_SECONDS = {"type": "duration", "seconds": 90}
+
+TRANSCRIPT = "Sixteen pumps are overdue."
+
+#: 90 seconds of audio, in the unit `task_catalog` prices `transcribe` in.
+MINUTES = Decimal("1.5")
+
+#: What the fixture card charges per minute, and what 90 seconds costs at it.
+CREDITS_PER_MINUTE = Decimal("0.4")
+CALL_COST = Decimal("0.6")
+
+#: A few bytes that stand in for audio. The provider is stubbed, so nothing
+#: decodes them — the Router's job is to carry them across unread.
+AUDIO = b"RIFF....WAVEfake-audio-bytes"
+
+
+@pytest.fixture
+def provider():
+    """The stubbed provider call: what the Router SENT, and what it answers.
+
+    The seam is `set_provider_call`, which exists so the Router can be tested
+    without an audio bill at Groq on every run.
+
+    ⚠️ **The original call is restored afterwards.** A stub left installed
+    reaches every suite that shares this process.
+    """
+    state: dict = {
+        "calls": [],
+        "reply": {"text": TRANSCRIPT, "usage": dict(NINETY_SECONDS)},
+    }
+
+    async def _stub(**kwargs):
+        state["calls"].append(kwargs)
+        return dict(state["reply"])
+
+    original = router_mod._PROVIDER_CALL[0]
+    router_mod.set_provider_call(_stub)
+    yield state
+    router_mod.set_provider_call(original)
+
+
+@pytest.fixture
+def client(monkeypatch, provider):
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", "internal")
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
+    from customer_console.main import app
+    return TestClient(app)
+
+
+@pytest.fixture
+def db():
+    """A COMMITTING engine. The sibling `conn` fixture rolls back, and a
+    route driven through the app opens its own connection — so a row written
+    inside that rollback would be invisible to the route."""
+    return create_engine(_URL, future=True)
+
+
+@pytest.fixture
+def org_key(client, db, monkeypatch):
+    """A provisioned org, a live key, and a platform Groq credential.
+
+    Groq because `010` binds `tier-stt` to `groq/whisper-large-v3-turbo`.
+    """
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
+    with db.begin() as c:
+        ensure_deployment(c)
+    slug = f"stt-{uuid.uuid4().hex[:8]}"
+    client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "N", "owner_email": f"o@{slug}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    token = client.post(
+        "/keys", headers=OP, json={"org_slug": slug}).json()["token"]
+
+    with db.begin() as c:
+        c.execute(
+            # ⚠️ `provider_credential_live_uniq` admits ONE live platform row
+            # per provider, and this fixture runs once per test. Every
+            # Console suite mints under the same `ENC_KEY`, so the row an
+            # earlier test left behind decrypts here.
+            text("INSERT INTO provider_credential (provider, secret_enc, "
+                 " label) VALUES ('groq', :s, 'platform') "
+                 "ON CONFLICT DO NOTHING"),
+            {"s": router_mod.encrypt_secret("sk-groq-secret")},
+        )
+    return slug, {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def org_id(db, org_key):
+    slug, _ = org_key
+    with db.begin() as c:
+        return str(c.execute(
+            text("SELECT id FROM organization WHERE slug = :s"), {"s": slug}
+        ).scalar_one())
+
+
+@pytest.fixture
+def priced_stt(db):
+    """A per-MINUTE tier card for `tier-stt`, for the life of one test.
+
+    ⚠️ **Removed afterwards.** Migration 015 seeds no tier rates, and pricing
+    the slate is the owner's commercial act (D19.2, H-42). A fixture that
+    left its row behind would break the sibling fence whose claim is about
+    what the seed ships.
+    """
+    with db.begin() as c:
+        c.execute(text(
+            "INSERT INTO tier_rate_card (tier, task, unit, credits_per_unit, "
+            " input_credits_per_1k, output_credits_per_1k, "
+            " cached_input_credits_per_1k, pricing_mode, effective_from) "
+            "VALUES ('tier-stt', 'transcribe', 'minutes', :c, 0, 0, 0, "
+            " 'priced', now())"), {"c": CREDITS_PER_MINUTE})
+    yield
+    with db.begin() as c:
+        c.execute(text(
+            "DELETE FROM tier_rate_card "
+            "WHERE tier = 'tier-stt' AND task = 'transcribe'"))
+
+
+@pytest.fixture
+def gate_on(monkeypatch):
+    """Turn the CP-6 refusals on. They ship OFF (CLAUDE.md §4, ship dark)."""
+    monkeypatch.setenv("CUSTOMER_CONSOLE_SPEND_GATE", "1")
+
+
+def _transcribe(client, key, *, model="tier-stt", audio=AUDIO,
+                filename="meeting.wav", headers=None, **fields):
+    return client.post(
+        "/v1/audio/transcriptions", headers={**key, **(headers or {})},
+        files={"file": (filename, audio, "audio/wav")},
+        data={"model": model, **fields},
+    )
+
+
+def _grant(client, slug: str, credits: str):
+    return client.post("/credits/grant", headers=OP,
+                       json={"org_slug": slug, "credits": credits})
+
+
+def _charge(client, org_id: str, credits: str, run_id: str):
+    """Draw a RUN down through the REAL metering path, never by editing it.
+
+    The internal token is the Router's own, and a customer key deliberately
+    cannot reach it. Seeding the run this way asserts the ceiling rather than
+    the test's patience — 500 credits is 388 stubbed completions.
+    """
+    return client.post("/usage/record", headers=INT, json={
+        "organization_id": org_id,
+        "request_id": f"seed-{uuid.uuid4().hex}",
+        "billed_credits": credits, "run_id": run_id, "model": "m"})
+
+
+_ROW_COLUMNS = (
+    "SELECT task, tier, model, quantity, unit, billed_credits, "
+    "       provider_cost_usd, refusal_reason, run_id "
+    "FROM usage_event WHERE organization_id = CAST(:o AS uuid)"
+)
+
+
+def _rows(db, org_id: str) -> list:
+    """Every `usage_event` this organization has. A fresh org has none, so
+    the count is a real assertion rather than a filter."""
+    with db.begin() as c:
+        return c.execute(text(_ROW_COLUMNS), {"o": org_id}).all()
+
+
+def _refusals(db, org_id: str) -> list:
+    """Only the rows that record a WALL.
+
+    ⚠️ Needed where the test SEEDS spend through `/usage/record`, which
+    writes a served row of its own. Counting every row would then count the
+    seed and say nothing about the refusal writer.
+    """
+    with db.begin() as c:
+        return c.execute(
+            text(_ROW_COLUMNS + " AND refusal_reason IS NOT NULL"),
+            {"o": org_id}).all()
+
+
+class TestTheModelFieldIsATierAlias:
+    """Clause 1. The DOOR declares the task and the field names a TIER."""
+
+    def test_a_bare_model_id_is_refused(self, client, org_key):
+        _, key = org_key
+        answer = _transcribe(client, key, model=WHISPER)
+        assert answer.status_code == 400
+        assert "name a tier, not a model" in answer.json()["detail"]
+
+    def test_a_chat_tier_cannot_serve_audio(self, client, org_key):
+        """D60.2 in one line. `tier-fast` is bound to `chat` alone, so it
+        has no binding on this task and the request stops here."""
+        _, key = org_key
+        assert _transcribe(client, key, model="tier-fast").status_code == 400
+
+    def test_the_bound_tier_serves(self, client, org_key):
+        _, key = org_key
+        answer = _transcribe(client, key)
+        assert answer.status_code == 200
+        assert answer.json() == {"text": TRANSCRIPT}
+
+
+class TestATranscribeCallNeverStreams:
+    """Clause 2. NEW behaviour: `STREAMABLE_TASKS` cannot serve this."""
+
+    def test_a_truthy_stream_field_is_refused(self, client, org_key, provider):
+        _, key = org_key
+        answer = _transcribe(client, key, stream="true")
+        assert answer.status_code == 400
+        assert "does not stream" in answer.json()["detail"]
+        # Refused BEFORE the provider call. A wall after it would refuse a
+        # request we had already paid for.
+        assert provider["calls"] == []
+
+    def test_the_other_spellings_of_yes_are_refused_too(self, client, org_key):
+        """A form field is a STRING, so every truthy spelling has to be
+        named — `bool("false")` is True and would let a stream through."""
+        _, key = org_key
+        for spelling in ("1", "True", "YES", "on"):
+            answer = _transcribe(client, key, stream=spelling)
+            assert answer.status_code == 400, spelling
+
+    def test_a_falsy_stream_field_still_serves(self, client, org_key):
+        _, key = org_key
+        assert _transcribe(client, key, stream="false").status_code == 200
+
+
+class TestTheRouterSendsVerboseJson:
+    """Clause 3. Without this the zero-bill arm is the only arm that runs."""
+
+    def test_a_served_call_sends_verbose_json_upstream(
+            self, client, org_key, provider):
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        assert provider["calls"][-1]["response_format"] == "verbose_json"
+
+    def test_the_caller_cannot_change_the_meters_format(
+            self, client, org_key, provider):
+        """The METER owns the field. A caller who asks for `text` would
+        take the duration off every row they wrote."""
+        _, key = org_key
+        assert _transcribe(
+            client, key, response_format="text").status_code == 200
+        assert provider["calls"][-1]["response_format"] == "verbose_json"
+
+    def test_the_caller_reads_a_transcript_not_the_verbose_body(
+            self, client, org_key, provider):
+        """So the meter's choice never changes the customer contract."""
+        provider["reply"] = {
+            "text": TRANSCRIPT, "usage": dict(NINETY_SECONDS),
+            "language": "en", "segments": [{"id": 0, "text": TRANSCRIPT}],
+        }
+        _, key = org_key
+        assert _transcribe(client, key).json() == {"text": TRANSCRIPT}
+
+    def test_the_verb_comes_from_the_capability_row(
+            self, client, org_key, provider):
+        """Clause 6. D60 step two, on the serving path for the first time."""
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        assert provider["calls"][-1]["invocation"] == "atranscription"
+
+    def test_the_audio_reaches_the_provider_unread(
+            self, client, org_key, provider):
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        sent = provider["calls"][-1]["file"]
+        assert sent.read() == AUDIO
+        # The name carries the FORMAT, and an OpenAI-family provider needs it.
+        assert sent.name == "meeting.wav"
+
+
+class TestTheUsageRowCarriesTheQuantityAndTheUnit:
+    """Clause 4. The plumbing this slice built, read off the written row."""
+
+    def test_a_served_call_writes_the_minutes_and_the_unit(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.task == "transcribe"
+        assert row.tier == "tier-stt"
+        assert row.model == WHISPER
+        assert row.quantity == MINUTES
+        assert row.unit == "minutes"
+        assert row.refusal_reason is None
+
+    def test_the_minutes_are_billed_at_the_per_minute_card(
+            self, client, db, org_key, org_id, priced_stt):
+        """1.5 minutes at 0.4 credits a minute. Not a token rate — a minute
+        of audio rated per 1k tokens is a number, and a plausible one, and
+        wrong."""
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        assert _rows(db, org_id)[0].billed_credits == CALL_COST
+
+    def test_a_token_call_still_writes_a_NULL_quantity(
+            self, client, db, org_key, org_id, provider):
+        """The hard-coded `quantity=None` is gone, and a chat call must
+        still record NULL — the three token columns already carry it."""
+        _, key = org_key
+        provider["reply"] = {
+            "id": "chatcmpl-1", "object": "chat.completion",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+        # 🔴 **Scoped to THIS organization, never to the platform.**
+        # `test_customer_console_router.py` owns the live PLATFORM DeepSeek
+        # row and asserts on its secret. Writing one here with
+        # `ON CONFLICT DO NOTHING` left that suite reading OUR secret and
+        # turned it red — measured 2026-08-31, on a shared scratch database.
+        # An organization-scoped row wins the `NULLS LAST` order for this org
+        # alone, so the sibling suite sees exactly what it wrote.
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO provider_credential (provider, secret_enc, "
+                " label, organization_id) "
+                "VALUES ('deepseek', :s, 'tasks-suite', CAST(:o AS uuid))"),
+                {"s": router_mod.encrypt_secret("sk-deepseek"), "o": org_id})
+        answer = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced",
+            "messages": [{"role": "user", "content": "hi"}]})
+
+        assert answer.status_code == 200
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].quantity is None
+
+
+class TestAMissingDurationBillsZero:
+    """Clause 3's last arm. A completion never fails on metering."""
+
+    def test_no_duration_still_answers_the_caller(
+            self, client, org_key, provider):
+        provider["reply"] = {"text": TRANSCRIPT}
+        _, key = org_key
+        answer = _transcribe(client, key)
+        assert answer.status_code == 200
+        assert answer.json() == {"text": TRANSCRIPT}
+
+    def test_no_duration_bills_zero_and_still_writes_the_row(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        provider["reply"] = {"text": TRANSCRIPT}
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].billed_credits == Decimal(0)
+        assert rows[0].quantity == Decimal(0)
+        # The unit stays, because the history has to stay readable.
+        assert rows[0].unit == "minutes"
+
+    def test_the_older_bare_duration_shape_is_read_too(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        """litellm copies a bare `duration` across from providers that send
+        one. Reading only the usage object would bill those calls zero."""
+        provider["reply"] = {"text": TRANSCRIPT, "duration": 30}
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        assert _rows(db, org_id)[0].quantity == Decimal("0.5")
+
+    def test_the_usage_object_wins_over_the_bare_duration(self):
+        """It is the REPORTED number rather than the inferred one."""
+        answer = router_mod.duration_seconds(
+            {"usage": dict(NINETY_SECONDS), "duration": 5})
+        assert answer == Decimal(90)
+
+    def test_a_broken_duration_reads_as_unmeasured(self):
+        for broken in ({"duration": "loud"}, {"duration": -4},
+                       {"duration": True}, {}, None):
+            assert router_mod.duration_seconds(broken) is None
+
+
+class TestAnUnpricedVendorCostStaysNull:
+    """Clause 5, and D-AI-7 rule 3. NULL means nobody told us."""
+
+    def test_no_vendor_price_writes_NULL_never_zero(
+            self, client, db, org_key, org_id, priced_stt):
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 200
+        assert _rows(db, org_id)[0].provider_cost_usd is None
+
+    def test_an_absent_column_answers_NULL_and_does_not_raise(
+            self, conn, monkeypatch):
+        """🔴 H-78 builds `vendor_per_minute_usd` and H-46 landed FIRST.
+
+        ⚠️ The scratch database this suite runs on may already carry the
+        column, because a sibling branch applied its migration to it. So the
+        guard is proved against a column name that certainly does not exist
+        rather than against the state of one shared box.
+        """
+        from customer_console import main as main_mod
+        monkeypatch.setattr(main_mod, "_PER_MINUTE_COLUMN", "vendor_per_furlong_usd")
+
+        assert main_mod._vendor_per_minute(conn, WHISPER) is None
+        # The transaction survives, which is the whole point of asking the
+        # catalog instead of catching the error: a failed statement poisons
+        # a Postgres transaction and would take the metering write with it.
+        assert conn.execute(text("SELECT 1")).scalar_one() == 1
+
+    def test_zero_minutes_cost_NULL_rather_than_zero_dollars(self):
+        """Recording $0.00 for a call we could not read would report a
+        margin of 100 percent on a call nobody measured."""
+        assert router_mod.vendor_cost_per_minute_usd(
+            Decimal(0), Decimal("0.004")) is None
+        assert router_mod.vendor_cost_per_minute_usd(
+            MINUTES, None) is None
+        assert router_mod.vendor_cost_per_minute_usd(
+            MINUTES, Decimal("0.004")) == Decimal("0.00600000")
+
+
+class TestARefusedCallWritesOneRow:
+    """Clause 10. The meter records the WALL as well as the call (§8.1)."""
+
+    def test_the_400_writes_a_tier_unknown_row_in_minutes(
+            self, client, db, org_key, org_id):
+        _, key = org_key
+        assert _transcribe(client, key, model="tier-nope").status_code == 400
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "tier_unknown"
+        assert rows[0].task == "transcribe"
+        assert rows[0].tier == "tier-nope"
+        # `_task_unit` reads `task_catalog.natural_unit`, so the refusal row
+        # reads beside a served one.
+        assert rows[0].unit == "minutes"
+        assert rows[0].billed_credits == Decimal(0)
+
+    def test_the_402_writes_an_insufficient_credits_row_in_minutes(
+            self, client, db, org_key, org_id, gate_on):
+        """A fresh trial organization holds no credits, and the gate stands
+        BEFORE the provider call."""
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 402
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "insufficient_credits"
+        assert rows[0].unit == "minutes"
+
+    def test_the_403_writes_a_run_ceiling_row_in_minutes(
+            self, client, db, org_key, org_id, gate_on):
+        """The THIRD wall clause 10 names. §4.4's circuit breaker.
+
+        The balance is deliberately not the issue — 10,000 credits granted,
+        so a 402 here would be the wrong refusal. The RUN is spent to its
+        ceiling instead, which is the tripwire on one loop.
+        """
+        slug, key = org_key
+        _grant(client, slug, "10000")
+        _charge(client, org_id, "500", run_id="run-hot")
+
+        answer = _transcribe(client, key, headers={"X-CC-Run": "run-hot"})
+
+        assert answer.status_code == 403, answer.text
+        assert answer.json()["detail"]["reason"] == "run_ceiling_exceeded"
+
+        rows = _refusals(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].refusal_reason == "run_ceiling_exceeded"
+        assert rows[0].task == "transcribe"
+        assert rows[0].unit == "minutes"
+        # A `run_ceiling_exceeded` row without its run is not actionable, and
+        # the breaker reads the same field.
+        assert rows[0].run_id == "run-hot"
+        assert rows[0].billed_credits == Decimal(0)
+
+    def test_a_refused_call_never_reaches_the_provider(
+            self, client, org_key, gate_on, provider):
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 402
+        assert provider["calls"] == []
+
+    def test_the_401_writes_no_row_at_all(self, client, db):
+        """🔴 Structural, not an omission. The key check refuses before the
+        code knows the organization, and `usage_event.organization_id` is
+        NOT NULL. Do not invent a system organization to make it fit."""
+        before = _count_all(db)
+        answer = client.post(
+            "/v1/audio/transcriptions",
+            headers={"Authorization": "Bearer cc_live_not_a_key"},
+            files={"file": ("m.wav", AUDIO, "audio/wav")},
+            data={"model": "tier-stt"})
+        assert answer.status_code == 401
+        assert _count_all(db) == before
+
+
+class TestTheUploadCeilingAndTheEmptyFile:
+    """What the route does with the BODY, measured rather than assumed.
+
+    ⚠️ **The 413 bounds what we SEND, not what we accept.** Starlette parses
+    the whole multipart body into the `UploadFile` dependency before this
+    handler runs, and it spools above 1 MB to disk. So an over-large body is
+    read in full and then refused. §6A.10a records that bound and names the
+    acceptance-side cap as follow-up work for the owner.
+    """
+
+    def test_an_empty_file_is_forwarded_and_not_refused(
+            self, client, org_key, provider):
+        """🔴 DELIBERATE, and pinned so a change is visible.
+
+        The provider answers for empty audio, and the meter bills the zero
+        duration it reports. The Router does not decode audio, so refusing
+        here would mean guessing what is inside a file we never read.
+        """
+        _, key = org_key
+        answer = _transcribe(client, key, audio=b"", filename="silence.wav")
+
+        assert answer.status_code == 200
+        assert provider["calls"][-1]["file"].read() == b""
+
+    def test_an_empty_file_bills_the_duration_the_provider_reports(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        provider["reply"] = {"text": "", "usage": {"type": "duration",
+                                                   "seconds": 0}}
+        _, key = org_key
+        assert _transcribe(client, key, audio=b"").status_code == 200
+
+        rows = _rows(db, org_id)
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal(0)
+        assert rows[0].billed_credits == Decimal(0)
+
+    def test_an_oversize_upload_is_refused_413(
+            self, client, org_key, monkeypatch, provider):
+        from customer_console import main as main_mod
+        # The ceiling is lowered rather than a 26 MB body sent, because the
+        # subject is the REFUSAL and not the parser's throughput.
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        answer = _transcribe(client, key)
+
+        assert answer.status_code == 413
+        assert "is refused" in answer.json()["detail"]
+        assert provider["calls"] == []
+
+    def test_the_413_writes_no_usage_row(
+            self, client, db, org_key, org_id, monkeypatch):
+        """Migration 020's CHECK holds three slugs. A fourth spelling minted
+        for this wall is the thing §8.1 forbids."""
+        from customer_console import main as main_mod
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        assert _transcribe(client, key).status_code == 413
+        assert _rows(db, org_id) == []
+
+    def test_the_body_read_comes_BEFORE_the_stream_check(
+            self, client, org_key, monkeypatch):
+        """📌 The ORDER, pinned. An over-large `stream=true` request answers
+        413 and never 400, because the handler cannot see the form field
+        until the body it rides on is already parsed."""
+        from customer_console import main as main_mod
+        monkeypatch.setattr(main_mod, "_MAX_AUDIO_BYTES", 8)
+
+        _, key = org_key
+        answer = _transcribe(client, key, stream="true")
+
+        assert answer.status_code == 413
+
+    def test_a_body_under_the_ceiling_but_over_the_spool_still_serves(
+            self, client, org_key, provider):
+        """Starlette spools above 1 MB to disk, and the route reads it back.
+        A cap that only worked in memory would refuse real audio."""
+        _, key = org_key
+        big = b"x" * (2 * 1024 * 1024)
+        assert _transcribe(client, key, audio=big).status_code == 200
+        assert len(provider["calls"][-1]["file"].read()) == len(big)
+
+
+class TestTheProviderCallDispatchesOnTheCapabilityVerb:
+    """Clause 6, tested where the stub cannot reach.
+
+    🔴 **Every fence above replaces the WHOLE provider call**, so not one of
+    them ever runs the litellm dispatch. A defect there would ship green and
+    then answer audio from a chat verb in production, which is D60.2.
+    """
+
+    def test_an_unserved_verb_raises_rather_than_defaulting(self):
+        """Guessing `acompletion` is how audio reaches a chat endpoint. The
+        capability table can legally name a verb no route serves yet."""
+        with pytest.raises(router_mod.UnservableInvocation):
+            asyncio.run(router_mod._litellm_call(invocation="aspeech"))
+
+    def test_the_named_verb_is_the_one_called(self, monkeypatch):
+        import litellm
+        seen: dict = {}
+
+        async def _fake(**kwargs):
+            seen.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(litellm, "atranscription", _fake, raising=False)
+        answer = asyncio.run(
+            router_mod._litellm_call(invocation="atranscription", model="m"))
+
+        assert answer == "ok"
+        # The Router's own instruction never reaches litellm or the vendor.
+        assert seen == {"model": "m"}
+
+    def test_a_caller_that_names_nothing_gets_acompletion(self, monkeypatch):
+        """Every chat call made this exact request before `invocation`
+        existed, and the default keeps that path unchanged."""
+        import litellm
+        called: list = []
+
+        async def _fake(**kwargs):
+            called.append(kwargs)
+            return "ok"
+
+        monkeypatch.setattr(litellm, "acompletion", _fake, raising=False)
+        asyncio.run(router_mod._litellm_call(model="m"))
+        assert called == [{"model": "m"}]
+
+    def test_the_operator_vocabulary_is_wider_than_the_serving_one(self):
+        """§6A.9 rule 3: capability is not availability. `KNOWN_INVOCATIONS`
+        is what an operator may WRITE, and this slice added nothing to it."""
+        assert router_mod.SERVING_INVOCATIONS < catalog.KNOWN_INVOCATIONS
+        assert "atranscription" in router_mod.SERVING_INVOCATIONS
+
+
+class TestTheEndpointHasNoTenantCaller:
+    """Clause 7. The hop is CP-11's, behind `ROUTER_SERVING_ENABLED`."""
+
+    def test_no_tenant_code_posts_to_the_transcribe_route(self):
+        """D57.3's lesson: an endpoint nobody calls is CP-4's mistake. The
+        caller slice follows, and until it does this stays true."""
+        hits = []
+        for base in ("apps", "packages", "workbench/control_plane/src"):
+            root = ROOT / base
+            for path in root.rglob("*"):
+                if path.suffix not in {".py", ".ts", ".tsx"}:
+                    continue
+                if "customer_console" in path.parts:
+                    continue
+                if "/v1/audio/transcriptions" in path.read_text(
+                        encoding="utf-8", errors="ignore"):
+                    hits.append(str(path.relative_to(ROOT)))
+        assert hits == []
+
+
+def _count_all(db) -> int:
+    with db.begin() as c:
+        return c.execute(
+            text("SELECT count(*) FROM usage_event")).scalar_one()
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():

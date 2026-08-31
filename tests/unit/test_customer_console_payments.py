@@ -119,11 +119,23 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: **Recorded as a finding for the board** (CLAUDE.md §5: existing violations
 #: are findings, not refactors) — and stated in the PR rather than left for a
 #: reviewer to discover.
+#:
+#: ⚠️ **`audio_transcriptions` joined it on 2026-08-31 (H-46, §6A.10a).** The
+#: transcribe route is the Router's second serving door, and clauses 4 and 10
+#: require it to write the SAME meter through the SAME writer. So the
+#: argument above holds word for word: the customer's key opens the route,
+#: and our infrastructure decides the amount from a duration the provider
+#: reported and a tier card the customer cannot reach.
+#:
+#: 🔴 **This is not a third argument.** It is the second door on the one the
+#: entry above already states. A THIRD entry that is not another Router
+#: serving route is the thing this list exists to stop.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
+    ("audio_transcriptions", "store.add_credit"),
 })
 
-#: What the walk may cross. Two entries, two arguments, two fences.
+#: What the walk may cross. Three entries, two arguments, two fences.
 PERMITTED_EDGES = FULFIL_ALLOW_LIST | METERING_EXEMPTION
 
 _PACKAGE = Path(__file__).resolve().parents[2] / (
@@ -869,8 +881,8 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
             ("redeem_discount_code", "payments.fulfil"),
         }) == FULFIL_ALLOW_LIST
 
-    def test_the_metering_exemption_has_exactly_one_entry(self):
-        """The DECLARED deviation, pinned so it cannot grow either.
+    def test_the_metering_exemption_holds_the_two_router_serving_routes(self):
+        """The DECLARED deviation, pinned so it cannot grow past the Router.
 
         ``POST /v1/chat/completions`` is organization-key authenticated (CP-3)
         and CP-6 made it write the metering draw. That predates CP-9 by six
@@ -880,13 +892,20 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         fence, because an exemption smuggled into the list the ticket counts is
         worse than an exemption argued in the open.
 
-        If you are here to add a second entry: the answer is almost certainly
-        that the write belongs behind the internal token, which is what
-        ``/usage/record`` had to become after verification minted 100,000
-        credits through it.
+        ``POST /v1/audio/transcriptions`` joined it on 2026-08-31 (H-46). It
+        is the SAME argument on the SAME writer, one door along: §6A.10a
+        clause 4 gives it the quantity and clause 10 gives it the refusal row,
+        and both go through ``store.record_usage``. The amount comes from a
+        duration the provider reported, never from the caller.
+
+        If you are here to add an entry that is NOT a Router serving route:
+        the answer is almost certainly that the write belongs behind the
+        internal token, which is what ``/usage/record`` had to become after
+        verification minted 100,000 credits through it.
         """
         assert frozenset({
             ("chat_completions", "store.add_credit"),
+            ("audio_transcriptions", "store.add_credit"),
         }) == METERING_EXEMPTION
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):
@@ -914,6 +933,11 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         # Two draws would mean two places to forget a gate.
         assert "main._streamed_completion" in edges["main.chat_completions"]
         assert "main._record_completion" in edges["main._streamed_completion"]
+        # H-46's transcribe door, on the SAME writer. A dead exemption is one
+        # nobody notices has stopped being true, so the second entry carries
+        # the same proof as the first.
+        assert "main._record_completion" in edges["main.audio_transcriptions"]
+        assert "audio_transcriptions" in _org_key_routes()
 
     def test_the_fence_actually_walks_into_the_store(self):
         """Guards the fence itself: a walk that stops at depth 1 proves nothing.

@@ -889,12 +889,17 @@ Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
 **Verification.** `uv run pytest tests/unit/test_customer_console_pricing_truth.py -q`.
 The suite is database-gated (R8), so run `bash scripts/dev_db.sh` first.
 
-### 8.4 The label seam (slice 3, C6) — SPEC ONLY, 2026-08-30
+### 8.4 The label seam (slice 3, C6) — BACKEND BUILDING · CLAUSE 6 SPECCED, 2026-08-31
 
-**The table is built. The seam is not.** Every default here is an
-**agent-proposed answer the owner may overrule**, which is the D16/D17
-convention CP-2b and CP-2c used. Where a name or a number below disagrees with
-the tree, the tree wins. Re-verify every anchor at dispatch.
+**Where the slice stands, 2026-08-31.** An agent builds the backend half on a
+sibling branch. That half is clauses 1 to 5 and clause 7. Clause 6 is the
+Control Plane half, and a re-audit held it out on four gaps. The seven edits
+dated 2026-08-31 below close those gaps, so clause 6 is now specced.
+
+**The table is built. The Console half of the seam is not.** Every default
+here is an **agent-proposed answer the owner may overrule**, which is the
+D16/D17 convention CP-2b and CP-2c used. Where a name or a number below
+disagrees with the tree, the tree wins. Re-verify every anchor at dispatch.
 
 **Gate: AGENT-SAFE.** No owner act stands in front of this slice.
 
@@ -919,6 +924,71 @@ see. One customer-authenticated read serves the visible rows with their words.
 | `Tier` | `contract.ts:133-148` | The operator console type. It gains the field |
 | The chat picker | `AgentChat.tsx:46-53` | `MODELS_FALLBACK`, the loading placeholder. Its three labels go |
 | The live model list | `route.ts:79-81` and `route.ts:294` | The SECOND copy of the three labels. Its labels go, its ids stay |
+| `CONSOLE_SLUG_BY_WIRE_ID` | `route.ts`, beside `LITELLM_MODELS` | The join table. It maps a wire id to a Console slug |
+| `GET /api/tiers` | `src/app/api/tiers/route.ts` | The Control Plane proxy of the Console read |
+
+*(The last two rows are edits of 2026-08-31.)*
+
+#### The join table between the two id sets
+
+*(Edits 1 to 7 are of 2026-08-31. Below them, a bare `route.ts` means the live
+model list at `workbench/control_plane/src/app/api/models/all/route.ts`. Every
+other route carries its full path.)*
+
+The two id sets do not match, and clause 6 moves neither one. So one file
+holds the map between them.
+
+| Wire id (`route.ts`) | Console slug (`tier_catalog`) |
+|---|---|
+| `tier1-local-qwen3` | `tier-fast` |
+| `tier2-sonnet` | `tier-balanced` |
+| `tier3-opus` | `tier-powerful` |
+
+**Its home is `workbench/control_plane/src/app/api/models/all/route.ts`,
+beside `LITELLM_MODELS` (`route.ts:77-81`).** The map is a wire fact of that
+file. That file already declares the three wire ids, so the map belongs with
+the ids it names. `CONSOLE_SLUG_BY_WIRE_ID` is an agent-proposed name.
+
+**The map carries ids only. It holds no label string.** A label enters the
+file at request time, from the proxy route. A label inside the map would be a
+third copy of the words D-AI-1 gives the operator.
+
+#### The proxy route, and its client
+
+**The route is `src/app/api/tiers/route.ts`.** It reads `GET /my/tiers` on the
+Console and serves the rows to the browser. Shape it on
+`src/app/api/billing/summary/route.ts:57-80`: one `fetch` with no store, a
+status branch that relays no upstream body, and a `catch` that degrades.
+
+**It writes no second Console client.** The route imports `consoleConfig` and
+`consoleHeaders` from `src/app/api/billing/_console.ts`. CLAUDE.md §4 gives one
+seam per concern, and `_console.ts` is the Console seam. A second client is a
+defect, not a feature.
+
+#### Which tiers the picker shows
+
+**Rule.** `route.ts` serves a tier only when the join table names it. This is a
+rule of the file, and it is not a task for later.
+
+§3.3 marks five tiers `customer_visible` TRUE. The join table names three of
+them. So `tier-code` and `tier-image` stay out of the chat picker. Each
+one enters the picker on the day it gains a wire id, and the join table gains
+that row in the same change. Nothing else in this slice moves for them.
+
+#### What the picker shows when the Console does not answer
+
+**Rule.** `route.ts` always serves the three tier aliases. When
+`consoleConfig()` returns null, or when the Console does not answer, the route
+serves them with the labels `Tier 1`, `Tier 2` and `Tier 3`.
+
+These three short labels are deliberate. They are not the three strings fence 4
+bans, so fence 4 holds through a Console outage. A picker that loses its words
+is worse than a picker that shows a plain number.
+
+`route.ts` already degrades in four places — `route.ts:154`, `route.ts:190`,
+`route.ts:222` and `route.ts:349`. Each one wraps a `fetch` in `try`, sets a
+timeout with `AbortSignal.timeout`, and keeps a default on failure. Follow that
+pattern. Add no fifth pattern.
 
 #### Done when — one clause per artefact
 
@@ -947,6 +1017,19 @@ see. One customer-authenticated read serves the visible rows with their words.
    so a rename here changes what a picker saves. A saved raw model id then
    breaks on the `ROUTER_SERVING_ENABLED` flip, and **H-72** owns that hazard.
    Change no id on either side.
+
+   **The two files do not do the same work.** *(Split on 2026-08-31. The one
+   clause hid that only one file needs the join table.)*
+
+   **6a. `AgentChat.tsx` needs NO join.** Its three ids at `AgentChat.tsx:48-50`
+   read `tier-fast`, `tier-balanced` and `tier-powerful`. Those are already the
+   Console slugs. The file keeps all three ids, and it replaces its three label
+   strings with the words the proxy route serves. It does not read the join
+   table.
+
+   **6b. `route.ts` needs the join table.** Its three ids are wire ids, and the
+   Console knows none of them. So the file reads `CONSOLE_SLUG_BY_WIRE_ID`,
+   takes the slug, and puts the Console label on the wire id it keeps serving.
 7. **The operator catalog read carries the column**, so an operator sees which
    tiers a customer can pick.
 
@@ -957,7 +1040,8 @@ see. One customer-authenticated read serves the visible rows with their words.
 | A hidden tier never reaches a customer | `test_customer_console_tier_pricing.py` — a `customer_visible` FALSE row is absent from `GET /my/tiers` |
 | A tier read carries the label, never the slug alone | `test_customer_console_tier_pricing.py` — every row holds `label` and `blurb` |
 | A customer tier read crosses no tenant | `test_customer_console_tier_pricing.py` — organization A reads no row of organization B |
-| NEITHER file holds a hard-coded tier label | `npx vitest run` in `workbench/control_plane` — one test reads the source of `AgentChat.tsx` AND of `route.ts`, and fails while either one holds `Tier 1 (fast / cheap)`, `Tier 2 (balanced)` or `Tier 3 (powerful)` |
+| NEITHER file holds a hard-coded tier label, and the degrade says the short words | `npx vitest run` in `workbench/control_plane` — one test reads the source of `AgentChat.tsx` AND of `route.ts`, and fails while either one holds `Tier 1 (fast / cheap)`, `Tier 2 (balanced)` or `Tier 3 (powerful)`. **The same test calls `route.ts` with an unreachable Console, and reads back the labels `Tier 1`, `Tier 2` and `Tier 3`** *(second half added 2026-08-31, so the degrade and the ban cannot drift apart)* |
+| A picker tier holds a wire id | `npx vitest run` in `workbench/control_plane` — `route.ts` serves no tier that `CONSOLE_SLUG_BY_WIRE_ID` does not name *(added 2026-08-31)* |
 | The three wire ids do not move | `npx vitest run` in `workbench/control_plane` — `route.ts` still serves `tier1-local-qwen3`, `tier2-sonnet` and `tier3-opus` |
 
 **Verification.** The suite is database-gated (R8), so start the database

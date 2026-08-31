@@ -597,12 +597,16 @@ unique index and the cap against a real database). Line anchors re-derived
 in session). D15, D19.2, D19.3, D22, D23, D24 are carried unchanged and must not
 be re-litigated here.
 
-🆕 **Three sections gained a build contract on 2026-08-30, and all three are
-SPEC ONLY.** **§6A.10a** holds H-46's nine clauses, which build
-`POST /v1/audio/transcriptions`. **§6A.10b** holds H-47's seven clauses, which
-build the provider-handler seam. **§6A.11a** gained an addendum, because a
-re-audit found that its clause 5 named a copy seam the tree does not hold.
-**Order: H-78 first, then H-46 with H-47 folded in as its dispatch clause.**
+🆕 **Three sections gained a build contract on 2026-08-30. ONE of the three
+is now BUILT, and TWO stay SPEC ONLY.** **§6A.10a** held H-46's ten clauses,
+which build `POST /v1/audio/transcriptions`. **H-46 landed on 2026-08-31.**
+**§6A.10b** holds H-47's seven clauses, which build the provider-handler seam.
+**§6A.11a** gained an addendum, because a re-audit found that its clause 5
+named a copy seam the tree does not hold.
+
+**Order: we prefer H-78 first, then H-46 with H-47 folded in as its dispatch
+clause.** §6A.10a clause 5 holds that preference. H-46 landed ahead of H-78,
+which clause 5 permits.
 
 ⚠️ **A diff review then corrected SIX statements in those sections, also on
 2026-08-30.** §6A.10a clause 2 and clause 4 each stated as built a behaviour
@@ -610,6 +614,11 @@ no code holds. §6A.11a named the wrong home for the ×60, and the wrong route
 for the capability body. It also gave one spelling to two frontend types, and
 it credited `015_tier_pricing.sql` for a refusal `catalog.py` makes. Each
 correction carries its own date. Re-verify every anchor at dispatch.
+
+⚠️ **A second re-audit then changed §6A.10a again on 2026-08-31.** It added
+clause 10 for the refusal rows, it rewrote clause 3 around the
+`verbose_json` rule, and it made clause 5's ordering a preference. It also
+re-measured the `main.py` anchors on branch `ws-31-slice5-refusals`.
 
 > ### `The Customer Console is one central service. Tenancy is still a ROW.`
 > ### `Customers buy seats and credits. They never see a model.`
@@ -7839,12 +7848,54 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ---
 
-### 6A.10a The transcribe endpoint (H-46) — SPEC ONLY, 2026-08-30
+### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**, which is the D16/D17 convention CP-2b and CP-2c
-used. Where a name or a number below disagrees with the tree, the tree wins.
-Re-verify every anchor at dispatch.
+✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
+`main.py::audio_transcriptions`, and all ten clauses below hold.
+`tests/unit/test_customer_console_tasks.py` carries the seven fences.
+The clause text stays as the audit wrote it, because it is the contract the
+build answers. Match a `main.py` anchor by handler name, because the route
+moved every line number below it.
+
+⚠️ **The build measured three things about the BODY. The owner may overrule
+the first, and the third is a deliberate non-wall.**
+
+1. **The route refuses an upload above 25 MB with a 413.** 25 MB is the
+   ceiling the OpenAI Whisper API states. A larger file buys a round trip and
+   a vendor refusal.
+
+   🔴 **That 413 bounds what we SEND, and NOT what we accept.** Measured on
+   Starlette 1.1.0. Starlette parses the whole multipart body into the
+   `UploadFile` dependency before the handler runs. It spools above 1 MB to
+   disk. So a 60 MB chunked body is read in full, written to disk, and only
+   then refused.
+
+   ⚠️ **Per-request memory, recorded as a KNOWN BOUND.** The route holds up
+   to 25 MB, and it copies those bytes again for each failover step it tries.
+   So one request in flight can hold about 50 MB. FastAPI's threadpool
+   defaults to 40 workers, and no global ceiling stands above that.
+
+   📌 **The acceptance-side cap is FOLLOW-UP WORK.** A body limit belongs in
+   the proxy in front of the service. That is deployment configuration, and
+   the owner owns it. Nothing added to `main.py` can refuse a body that
+   Starlette has already read.
+
+2. **The ORDER is body, then stream, then tier.** A handler cannot read a
+   form field until the body it rides on is parsed. So an over-large
+   `stream=true` request answers 413, and never the clause 2 400.
+
+3. **An empty file SERVES, and it is not a wall.** The provider answers for
+   empty audio, and the meter bills the zero duration it reports. The Router
+   never decodes audio. A refusal here would guess at what is inside a file
+   we did not read. `test_customer_console_tasks.py` pins the behaviour, so a
+   change to it stays visible.
+
+📌 **The audit measured every `main.py` anchor below on branch
+`ws-31-slice5-refusals`**, because this build stacks on the slice-5 base. That
+branch adds nine lines above the metering block. So the same line on `main` is
+nine lower, and a dispatch that reads `main` must add the nine back.
+⚠️ **`_record_refusal` and `_task_unit` exist on that branch alone.** `main`
+holds neither one today.
 
 **Gate: AGENT-SAFE.** D61.1 decided the shape, so no owner act stands in front
 of the build. `ROUTER_SERVING_ENABLED` stays the owner's flip (H-69).
@@ -7853,7 +7904,7 @@ of the build. `ROUTER_SERVING_ENABLED` stays the owner's flip (H-69).
 D60's six tasks, and `tier-stt` has had a binding since `010` that nothing can
 call.
 
-#### Nine clauses
+#### Ten clauses
 
 1. **Scope: ONE route.** `POST /v1/audio/transcriptions`, on the existing
    `KeyCaller` auth. The body is multipart. It carries the audio file and a
@@ -7877,26 +7928,66 @@ call.
    contract instead. *Agent default:* any `stream` form field with a truthy
    value returns 400. The route reads that form field. It reads no JSON body,
    and it reads `STREAMABLE_TASKS` for nothing.
-3. **Quantity: the provider's own duration, divided by 60** *(agent
+3. **Quantity: the duration the provider reports, divided by 60** *(agent
    default)*. The result is `Decimal` minutes, which is what
-   `task_catalog.natural_unit` names for `transcribe`. A provider that
-   reports no duration bills **zero** and logs `router.unmeasured_quantity`.
-   ⚠️ **A completion never fails on metering.** `main.py:4437` wraps the whole
+   `task_catalog.natural_unit` names for `transcribe`.
+
+   🔴 **The Router SENDS `response_format="verbose_json"` upstream on the
+   litellm transcription call, and that is a RULE.** *(Rewritten 2026-08-31.
+   The clause read a duration off a response that carries no such field.)*
+   Measured on litellm 1.86.0: `TranscriptionResponse` declares two fields,
+   `text` and `usage`. litellm copies a `duration` attribute on only when the
+   provider sent one. An OpenAI-family provider sends it only under
+   `response_format="verbose_json"`. Our own `acb_stt` sets exactly that field
+   (`packages/acb_stt/acb_stt/litellm_provider.py:252`) before it reads the
+   duration (`:162`).
+
+   ⚠️ **Without this rule the zero-bill arm is the only arm that ever runs**,
+   so the meter records zero for every transcribe call.
+
+   The Router reads the duration in this order:
+   - **First** `response.usage.seconds`, when `response.usage.type` is
+     `"duration"`.
+   - **Then** `response.duration`.
+   - **Last** the zero-bill fallback. It bills **zero** and logs
+     `router.unmeasured_quantity`.
+
+   **The meter owns `response_format`.** The route ignores a caller-supplied
+   value in this slice. *Agent default:* the route answers the caller with
+   `{"text": <text>}` whatever format the upstream call used. So the meter's
+   choice of format never changes the customer-visible contract, and the
+   response the caller reads is not the upstream verbose body.
+
+   ⚠️ **A completion never fails on metering.** `main.py:4446` wraps the whole
    metering block in one `try`, and that rule holds here without change.
 4. **THIS SLICE builds the plumbing that carries the quantity.** *(Rewritten
    2026-08-30. The clause stated the plumbing as a fact, and none of it
    exists.)* TODAY `_rate_completion` (`main.py:1029`) and
-   `_record_completion` (`main.py:4410`) take no quantity argument at all.
-   `main.py:4481` hard-codes `quantity=None`, and the comment above it
-   (`main.py:4477-4480`) defends that choice for a token-priced call.
+   `_record_completion` (`main.py:4419`) take no quantity argument at all.
+   `main.py:4490` hard-codes `quantity=None`, and the comment above it
+   (`main.py:4486-4489`) defends that choice for a token-priced call.
 
    The slice adds a quantity parameter to BOTH functions, and it deletes that
    hard-coded `None`. A token call keeps NULL, so the defending comment stays
    true for it. A `transcribe` call carries the minutes instead. The usage row
    then holds that quantity and a `unit` of `minutes`.
    `tests/unit/test_customer_console_tasks.py` is the fence.
-5. **Vendor cost reads `model_profile.vendor_per_minute_usd`.** **H-78 builds
-   that column, so H-78 LANDS FIRST.** Until a profile holds the price,
+
+   ⚠️ **`unit` lands NULL while NO `tier_rate_card` row exists for the
+   pair.** `_rate_completion` reads the unit off the CARD, and it returns
+   `(0, None)` when it finds none. That behaviour predates this slice, and
+   the slice did not change it. Migration 015 seeds no tier rates, so a NULL
+   unit is the SHIPPED state until the owner prices `tier-stt` (H-42, a
+   commercial act). The fence proves the plumbing against a priced fixture
+   card. Do not read it as a production guarantee.
+   📌 **An absent card does not touch `quantity`.** The route measures the
+   minutes, and the row records them whether or not a card exists.
+5. **Vendor cost reads `model_profile.vendor_per_minute_usd`.** H-78 builds
+   that column. **The order is a PREFERENCE, not a condition.** *(Resolved
+   2026-08-31. The clause held two arms that disagreed — one made H-78 a
+   precondition, the other let the cost stay NULL.)* We prefer H-78 first.
+   H-46 can land before it and write NULL, because the endpoint reads the
+   column only when the column exists. Until a profile holds the price,
    `provider_cost_usd` stays NULL. That is D-AI-7 rule 3 in
    `ai_metering_and_analytics.md` §3.7 — NULL means nobody told us, and it
    never means zero.
@@ -7921,6 +8012,22 @@ call.
    since `010_tasks_units_capabilities.sql`. `task_catalog` has carried
    `transcribe` and its `minutes` unit since the same migration. This slice
    adds no column.
+10. **The three walls write refusal rows.** Slice 5 shipped `_record_refusal`
+    (`main.py:4575`), and this route calls it on each of its three customer
+    walls: the 400 `tier_unknown`, the 402 `insufficient_credits` and the 403
+    `run_ceiling_exceeded`. The route passes `task='transcribe'`, so
+    `_task_unit` (`main.py:2211`) writes a `unit` of `minutes`.
+
+    ⚠️ **The route carries the refusal OUT of the serving transaction before
+    it calls the writer.** `_record_refusal`'s own docstring names that
+    hazard. A row written on the serving connection rolls back with the raise,
+    and then the meter records nothing.
+
+    🔴 **The 401 CANNOT write a row, and the reason is structural.** The key
+    check refuses before the code knows the organization, and
+    `usage_event.organization_id` is NOT NULL.
+    `ai_metering_and_analytics.md` §8.1 holds that reason. Do not invent a
+    system organization to make it fit.
 
 #### Fences (R7)
 
@@ -7931,6 +8038,8 @@ call.
 | A transcribe usage row records the quantity AND the unit | `test_customer_console_tasks.py` — the test DRIVES `POST /v1/audio/transcriptions`, then SELECTs the `usage_event` row that call wrote. It reads `quantity` of the audio minutes and `unit` of `minutes` off that ROW. A hand-inserted row does not satisfy this fence |
 | A missing duration bills zero and does not fail the call | `test_customer_console_tasks.py` — the completion returns 200 and the row bills 0 |
 | An unpriced vendor cost stays NULL | `test_customer_console_tasks.py` — no profile price writes NULL, never 0 |
+| The Router sends `verbose_json` upstream on a served transcribe call | `test_customer_console_tasks.py` — the test stubs the provider call through `set_provider_call` and reads the `response_format` the Router sent. The seam is `router.py`, and the assertion is on the kwargs the Router hands it |
+| A refused transcribe POST writes one refusal row | `test_customer_console_tasks.py` — the test DRIVES a refused `POST /v1/audio/transcriptions`, then SELECTs the ONE `usage_event` row it wrote. `refusal_reason` holds the wall's slug and `unit` holds `minutes` |
 
 **Verification.** The suites are database-gated (R8), so start the database
 first.
@@ -8807,6 +8916,17 @@ gates only how WS-30 wires it, not whether):
    credits through it. `test_the_metering_exemption_is_still_needed_and_still_that_shape`
    goes red the day the draw moves, so the exemption is deleted rather than
    inherited either way.
+
+   ⚠️ **The exemption grew to TWO ROUTES on 2026-08-31, and the owner has
+   still not ratified it.** H-46 built `POST /v1/audio/transcriptions`, and
+   §6A.10a clause 4 and clause 10 both send it through `store.record_usage`.
+   So the constant now names `chat_completions` and `audio_transcriptions`.
+   **This is the same argument on a second door, and it is NOT a third
+   argument.** Both routes take a customer key, and our own infrastructure
+   decides both amounts. So what the owner ratifies or overrules is the
+   RULE, not the count. An amended §9.3(4) should read "one carve-out plus
+   the Router's own serving routes". The image endpoint and the speak
+   endpoint will each add one more.
 7. ✅ **RESOLVED 2026-08-21 (owner call) — the GATEWAY TIER carries the customer
    seat WRITE; the deployment key stays gateway-side.** *(Opened 2026-08-21 with
    WS-31 `ws-31-seat-assign`; not commercial, and it gates the WS-30 "manage
