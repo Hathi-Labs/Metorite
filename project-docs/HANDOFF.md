@@ -1261,7 +1261,7 @@ line — never reclaim a number by deleting the other entry.
   (enforcement flips)
 - **Added:** 2026-08-30 · vendor-feed session
 
-### H-80 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
 - **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
   personal" -q` three times. If
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
@@ -1285,7 +1285,11 @@ line — never reclaim a number by deleting the other entry.
 - **NOT caused by the Spaces work.** The baseline commit flakes the same way.
   `git stash` the branch and run the same selection to see it.
 - **Authority:** `project_management_app.md` §9.10 (the coalescing rule)
-- **Added:** 2026-08-31 · projects UI/UX session
+- **Added:** 2026-08-31 · projects UI/UX session · **minted as H-80, renumbered
+  to H-88 on 2026-08-31** — `main` had meanwhile taken H-80 for "Decide the
+  thread budget for the stream walk" and run on to H-87. Two branches minted
+  the same next-free id against different bases, which is R1 one level up. This
+  entry merged second, so this entry moved.
 
 ---
 
