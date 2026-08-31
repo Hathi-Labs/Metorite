@@ -8152,7 +8152,7 @@ uv run pytest tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
 ```
 
-### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — BUILT 2026-08-31 · REPAIRED 2026-08-31
+### 6A.10c The image endpoint and the speak endpoint (H-46, second half) — BUILT 2026-08-31 · REPAIRED 2026-08-31 · CORRECTED 2026-08-31
 
 ✅ **BUILT on 2026-08-31, on branch `ws-31-h46-media`.** The routes are
 `main.py::images_generations` and `main.py::audio_speech`. All twelve clauses
@@ -8172,8 +8172,27 @@ section carries the answer to each one.
 - **P2 (c).** `SpeechRequest.input` held no `min_length`, while
   `ImageRequest.prompt` held one. Clause 6 holds the floor.
 - **P2 (d).** Fence row 10 cited a line number that had drifted onto a blank
-  line. Every row of the table below cites a test NAME now, and a name does
-  not drift.
+  line. **NO row of the table below cites a line number now.** *(Corrected
+  2026-08-31. This bullet said every row carries a test NAME, and nine of
+  them do not.)* Nine of the eighteen rows cite `file::test_name`, and the
+  other nine cite the file alone. A bare file name does not drift either, so
+  this defect closes and the table needs no further edit.
+
+🔴 **CORRECTED on 2026-08-31, a truth-repair round on the same branch. It
+changes NO behaviour.** Review round 2 returned APPROVE and recorded three
+statements that measurement refutes. This round replaces each with the
+measured one, and it touches no code path.
+
+- **Clause 1 said `input_cost_per_character` was the one per-unit key on all
+  27 speech models.** SIX of the 27 carry no such key. The ruling stands on
+  the half the review did measure: no speech model prices by voice or by
+  format. Clause 1 now says that, and it names the six.
+- **Clause 5 said a deleted `None` arm would cost a picture call against three
+  token rates.** It would not — `vendor_cost_usd` answers NULL for a call with
+  no tokens. The KEEP ruling stands on H-47 alone, and clause 5 now rests
+  there.
+- **P2 (d) above said every fence row carries a test name.** Nine of the
+  eighteen carry the file alone. The bullet now says so.
 
 📌 **Three follow-ups left the round as HANDOFF entries, and this section
 builds none of them.** **H-84** asks for a size dimension on the vendor price,
@@ -8263,10 +8282,27 @@ slice.** This section scopes them in, and that clause now cites this one.
 
    📌 **The sibling question, asked and answered.** No other forwarded field
    picks a price axis our profile cannot see. On the speak door, `voice` and
-   `response_format` are not price axes. The litellm map prices each of its
-   27 speech models by a whole model id (`tts-1` against `tts-1-hd`,
-   `aws_polly/standard` against `aws_polly/neural`). One per-unit key,
-   `input_cost_per_character`, serves all of them.
+   `response_format` are not price axes. 🔴 **No speech model prices by voice
+   or by format.** Measured 2026-08-31 in litellm 1.86.0. 27 entries carry
+   `mode: audio_speech`, and a regex over all 27 keys for
+   `alloy|nova|shimmer|mp3|opus|wav|pcm|flac|aac` returns zero hits.
+
+   The litellm map prices each speech model by a whole model id (`tts-1`
+   against `tts-1-hd`, `aws_polly/standard` against `aws_polly/neural`).
+
+   ⚠️ **SIX of the 27 carry no `input_cost_per_character`** *(corrected
+   2026-08-31 — this clause said one per-unit key served all of them, and it
+   does not)*. They are `gpt-4o-mini-tts`, `azure/gpt-4o-mini-tts`, the two
+   dated `gpt-4o-mini-tts` builds, and both `gemini-2.5-flash-preview-tts`
+   keys. They price on tokens and on seconds. Binding one is an OPERATOR
+   choice through `tier_binding`, and never a caller's. `feed.py:242` finds
+   no character key for them, so `vendor_per_character_usd` lands NULL. That
+   is D-AI-7 rule 3 working as designed.
+
+   📌 **The feed keys on a model id, so it holds 26 speak rows and 5 NULLs.**
+   It folds `gemini-2.5-flash-preview-tts` and
+   `gemini/gemini-2.5-flash-preview-tts` onto one row. The count of 27 is a
+   count of ENTRIES in the litellm map.
 
    📌 **Two image axes exist, and neither body accepts one.** `quality` and
    `style` do move the vendor price (`hd/1024-x-1024/dall-e-3` is 7.629e-08
@@ -8357,12 +8393,20 @@ slice.** This section scopes them in, and that clause now cites this one.
    ends in `_STUB_ONLY`.
 
    📌 **The ruling: KEEP the arm, and record what it can and cannot do.**
-   Deleting it hands a `None` quantity to `_record_completion`. Its
-   `elif quantity is not None` branch would then miss, and it would cost the
-   picture call against three TOKEN rates it never consumed. The arm is also the only
-   reader H-47's native handler seam can rely on, because that seam will
-   answer a shape litellm never built. An alarm that cannot ring is a defect
-   only while nobody has written down that it cannot ring.
+   The arm is the only reader H-47's native handler seam can rely on, because
+   that seam will answer a shape litellm never built. That reason carries the
+   ruling on its own. An alarm that cannot ring is a defect only while nobody
+   has written down that it cannot ring.
+
+   🔴 **THE SECOND REASON WAS FALSE, and this clause no longer states it**
+   *(measured 2026-08-31, review round 2)*. It said a deleted arm would cost
+   the picture call against three TOKEN rates it never consumed.
+   `router.vendor_cost_usd` returns `None` when prompt and completion are
+   both zero, which is every image call. So the token branch would record
+   `provider_cost_usd` NULL. That is the same value the per-unit branch
+   records for a quantity of zero, so the claimed harm is nil. The route
+   coerces a `None` count to zero before the meter runs, so nothing hands
+   `_record_completion` a `None` quantity either.
 
 6. **Quantity, the speak route: the COUNT OF CHARACTERS in the input text.**
    The unit is `characters`, which `task_catalog` gives the `speak` task

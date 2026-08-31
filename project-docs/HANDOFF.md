@@ -76,8 +76,22 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-84 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
-- **Check:** `rg -n 'size' apps/services/customer_console/customer_console/main.py | rg 'ImageRequest|"size"|req\.size'`.
-  No hit means the image door still refuses `size`, and this entry is still real.
+- **Check:** the DELIVERABLE first, and the request body only after it.
+  *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
+  who restored `size` with no size dimension behind it flipped this entry to
+  "done". That is the exact P1 below, and the Check deleted its own guard.)*
+  1. **The price.** `rg -c 'size' apps/services/customer_console/customer_console/feed.py`
+     reads **0** today, and `rg -n 'vendor_per_image' infra/customer_console/`
+     shows ONE image column on `model_profile` and one on `vendor_price_feed`.
+     Together that means the vendor image price still holds one number per
+     model and carries NO size axis. This entry stays real while that holds,
+     whatever the request body does.
+  2. **The body.** `rg -n 'size' apps/services/customer_console/customer_console/main.py | rg 'ImageRequest|"size"|req\.size'`.
+     A hit here while step 1 still reads one bare column is the P1 back. Reopen
+     it, and never close this entry on it.
+  🔴 **Close this entry only when step 1 shows a size dimension on
+  `model_profile` and a feed that fills it.** The body field is the last step
+  of the work, and never the measure of it.
 - **Why:** the vendor prices a picture BY SIZE. Our own price column carries no
   size axis at all. `feed.py:245` reads `output_cost_per_image` and
   `input_cost_per_image` off the BARE model key, so exactly one number reaches
@@ -114,6 +128,13 @@ line — never reclaim a number by deleting the other entry.
 - 📌 **PRE-EXISTING, and wider than the two media doors.** The transcribe route
   writes the same three fields (`main.py:5749`). The two H-46 doors copied that
   shape, so a repair here should move all three onto one helper.
+- 🔴 **SPLIT THE NAME TOO — two different incidents share one alarm today.**
+  On the image door and the transcribe door, `router.unmeasured_quantity`
+  means *we could not count what the provider returned*. On the speak door it
+  also fires when the vendor answered ZERO BYTES of audio. That is not a
+  counting failure at all. We counted the characters fine, and the vendor
+  sent nothing back. One alarm cannot page for both. This entry is the place
+  to give the empty-audio case its own name.
 - 📌 **The fix shape:** carry `org_id` and the server-generated `request_id`
   into the log line. `_record_completion` mints the id, so the ORDER matters —
   the alarm fires before the row exists today.

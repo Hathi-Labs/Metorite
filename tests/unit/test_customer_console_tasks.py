@@ -1724,12 +1724,25 @@ class TestTheMediaBodiesAreAnAllowlist:
         """The sibling question, asked and ANSWERED on the other door.
 
         `voice` and `response_format` are the two shape fields the speak body
-        forwards. Neither is a price axis: litellm prices every speech model
-        by a whole model id (`tts-1` against `tts-1-hd`, `aws_polly/standard`
-        against `aws_polly/neural`), and `input_cost_per_character` is the one
-        per-unit key on all 27 of them. `input` is counted AND clamped, and
-        `stream` is a 400. So no forwarded field here picks a price our
-        profile cannot see.
+        forwards. 🔴 **NO SPEECH MODEL PRICES BY VOICE OR BY FORMAT.**
+        Measured 2026-08-31 in litellm 1.86.0. 27 entries carry
+        `mode: audio_speech`. A regex over all 27 keys for
+        `alloy|nova|shimmer|mp3|opus|wav|pcm|flac|aac` returns ZERO hits.
+        litellm prices a speech model by a whole model id (`tts-1` against
+        `tts-1-hd`, `aws_polly/standard` against `aws_polly/neural`). `input`
+        is counted AND clamped, and `stream` is a 400. So no forwarded field
+        here picks a price our profile cannot see.
+
+        ⚠️ **The per-unit key is NOT universal, and this docstring no longer
+        says it is** *(corrected 2026-08-31 — it said
+        `input_cost_per_character` was the one per-unit key on all 27)*. SIX
+        of the 27 carry no such key: `gpt-4o-mini-tts`,
+        `azure/gpt-4o-mini-tts`, the two dated `gpt-4o-mini-tts` builds, and
+        both `gemini-2.5-flash-preview-tts` keys. They price on tokens and on
+        seconds. Binding one is an OPERATOR choice through `tier_binding`,
+        and never a caller's. `feed.py:242` finds no character key for them,
+        so `vendor_per_character_usd` lands NULL. That is D-AI-7 rule 3
+        working as designed.
         """
         from customer_console import main as main_mod
         assert set(main_mod.SpeechRequest.model_fields) == {

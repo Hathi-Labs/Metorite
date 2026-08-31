@@ -747,11 +747,18 @@ def image_count(response: Any) -> Decimal | None:
     (``litellm/types/utils.py:2336``, measured in litellm 1.86.0) turns a
     falsy ``data`` into ``[]``, so a real litellm answer reaches this
     function with a list every time and takes the ``Decimal(0)`` arm. The arm
-    is KEPT rather than deleted for two reasons. It is the only thing between
-    a non-litellm answer and a ``None`` quantity, which
-    ``_record_completion`` would then cost as a TOKEN call. And H-47's native
-    handler seam will hand this function a shape litellm never built. Its
-    fence drives a dict stub, and it says so.
+    is KEPT rather than deleted for ONE reason. H-47's native handler seam
+    will hand this function a shape litellm never built. Its fence drives a
+    dict stub, and it says so.
+
+    📌 **The SECOND reason was false, and review round 2 measured it away.**
+    This docstring said a deleted arm would cost the picture call against
+    three TOKEN rates. It would not. :func:`vendor_cost_usd` returns ``None``
+    when prompt and completion are both zero, as its own docstring states,
+    and that is every image call. So the token branch would record
+    ``provider_cost_usd`` NULL — the same value the per-unit branch records
+    for a quantity of zero. The route coerces a ``None`` count to zero before
+    the meter runs, so nothing hands one down either.
     """
     try:
         if isinstance(response, dict):
