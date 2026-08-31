@@ -182,7 +182,7 @@ reads the payload.
 
 *(The opening line read "The Router decides, and the customer does not" until
 2026-08-30. It fought three live decisions. G-3 and D61 put the declaration on
-the caller, and `CompletionRequest.task` (`main.py:834-852`) carries it today.
+the caller, and `CompletionRequest.task` (`main.py:835-853`) carries it today.
 The Router still picks WHICH MODEL answers, and the four steps below are that
 choice.)*
 
@@ -243,7 +243,7 @@ call. A chat model that already reads images costs one.
 
 ⚠️ **Both bills read the (tier, task) pair, never a model rate card.** Step 2
 bills (chosen tier, `chat`). Step 3 bills (`tier-vision`, `vision`). Both go
-through `resolve_tier_rate` (`router.py:408`). D67 moved the customer price onto
+through `resolve_tier_rate` (`router.py:416`). D67 moved the customer price onto
 the tier, and the model-keyed write endpoint answers 410
 (`015_tier_pricing.sql:16-19`). This section said "rate card" and meant the
 retired one until 2026-08-30.
@@ -263,7 +263,7 @@ no vision model is bound; the chat model for tier <slug> does not read images
 
 An operator reads it and knows which half to fix. The wording follows the shape
 the unbound-tier refusal beside it already uses (`_resolve_serving_chain`,
-`main.py:4983`). A silent drop of the image makes the model answer about text
+`main.py:5017`). A silent drop of the image makes the model answer about text
 it cannot see, and the answer looks correct.
 
 ### 3.3 A specialised tier stays invisible
@@ -351,21 +351,21 @@ is half answered. A retry would join two different completions into one
 response, which is worse than the error. §8.6 holds the contract.
 
 **The boundary, stated once.** The route walks the chain, opens each step and
-pulls its FIRST CHUNK (`open_stream_chain`, `router.py:1066`). Only then does it
+pulls its FIRST CHUNK (`open_stream_chain`, `router.py:1191`). Only then does it
 hand Starlette a body generator, and only then does the 200 status line go out.
 Every failure up to that chunk may fail over. Every failure after it may not.
 
 **The stream path reuses one policy and adds none of its own.**
-`TERMINAL_STATUSES` (`router.py:931`) and `CREDENTIAL_STATUSES`
-(`router.py:935`) are read in `walk_chain` (`router.py:969`), through
-`is_retryable`, and in no other function. Both `call_chain` (`router.py:1019`)
-and `open_stream_chain` (`router.py:1066`) walk through it. A second failover
+`TERMINAL_STATUSES` (`router.py:1056`) and `CREDENTIAL_STATUSES`
+(`router.py:1060`) are read in `walk_chain` (`router.py:1094`), through
+`is_retryable`, and in no other function. Both `call_chain` (`router.py:1144`)
+and `open_stream_chain` (`router.py:1191`) walk through it. A second failover
 policy beside the first is the CLAUDE.md §5 defect, not a feature.
 
-⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:923`) is the ONE exception, and it is a
+⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:1048`) is the ONE exception, and it is a
 trap.** `walk_chain` does not read it. Each ROUTE caps its own list before it
 hands the list over, with `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
-(`main.py:5224` chat, `main.py:5647` transcribe).
+(`main.py:5258` chat, `main.py:5681` transcribe).
 
 So a third caller of `walk_chain` that forgets that slice inherits NO ceiling.
 An unbounded chain is an unbounded bill and an unbounded wait. *(This
@@ -951,7 +951,7 @@ Merged as `537147b2` in **#168**. §3.6 said this column did not exist until
 |---|---|---|
 | `served_rank`, `byok_served` | `013_pricing_truth.sql:26-40` | The two columns, plus the `served_rank >= 1` CHECK |
 | `record_usage` | `store.py:487`, `store.py:522` | Persists both. NULL rank from a caller that does not say |
-| The Router hand-off | `main.py:4635` | Passes the rank the Router walked, from `router.py:85` and `router.py:166` (`tier_binding.rank`) |
+| The Router hand-off | `main.py:4656` | Passes the rank the Router walked, from `router.py:85` and `router.py:166` (`tier_binding.rank`) |
 | The failover read | `main.py:1789-1804` | 14 days of `served_rank > 1`, one row per day, tier, task and model |
 | `TierBoard` | operator console | Shows the failovers that happened |
 | `test_customer_console_pricing_truth.py` | tests | `:201`, `:257`, `:298`, `:353` |
@@ -1180,7 +1180,7 @@ lands AT the operator's first act.)*
    *(Corrected 2026-08-31. This named the vendor feed alone, and the feed is
    only half of it.)* `feed.sync` writes `vendor_price_feed` and writes
    nothing to `model_profile`. The ONE writer of `model_profile.reads_images`
-   is `POST /catalog/profiles` (`main.py:2433`), which the console reaches per
+   is `POST /catalog/profiles` (`main.py:2434`), which the console reaches per
    MODEL through the declare click (`declareBodies`,
    `workbench/operator_console/src/lib/feed.ts:95-110`).
 
@@ -1217,7 +1217,7 @@ the `tier-vision` chain when it is FALSE.
    *(Reworded 2026-08-31. It read "on a FALSE flag", and clause 7 made that
    sentence conditional.)* Take a tier whose chat chain clears the flag on
    every step. The same call resolves `tier-vision` for the `vision` task. It
-   then walks that chain (`resolve_chain`, `router.py:152-193`).
+   then walks that chain (`resolve_chain`, `router.py:155-196`).
    **The test writes its own `tier_binding` rows** for both halves, and it
    removes the `tier-vision` one afterwards. F3 measured that tier as unbound,
    and clause 3's fence needs it to stay unbound.
@@ -1232,7 +1232,7 @@ the `tier-vision` chain when it is FALSE.
 
    🔴 **The refusal row says `tier_unknown`, and the HTTP detail says the
    vision sentence.** These are two different things. `_REFUSAL_REASONS`
-   (`main.py:4827-4831`) and `020_usage_refusal.sql`'s CHECK both close the
+   (`main.py:4861-4865`) and `020_usage_refusal.sql`'s CHECK both close the
    vocabulary at three slugs. A fourth slug needs a migration, and it is a
    second spelling of one wall. The row is true as it stands, because
    nothing binds `tier-vision`. It names `tier-vision` as the tier and
@@ -1241,7 +1241,7 @@ the `tier-vision` chain when it is FALSE.
    `task_catalog` (`010_tasks_units_capabilities.sql:46`).
 4. **The bills follow the pair, and the ROW follows the customer.** Step 1
    above bills (chosen tier, `chat`). Step 2 bills (`tier-vision`, `vision`).
-   Both read `tier_rate_card` through `resolve_tier_rate` (`router.py:408`).
+   Both read `tier_rate_card` through `resolve_tier_rate` (`router.py:416`).
 
    🔴 **`usage_event.task` reads `vision` on BOTH served paths.** The customer
    asked for vision, so analytics must answer with vision — otherwise the lift
@@ -1249,7 +1249,7 @@ the `tier-vision` chain when it is FALSE.
    `_record_completion` takes a `declared_task` argument for exactly this
    split, and `served_rank` still records the step that answered.
 5. **The Router still reads no payload.** The caller declares the task
-   (`CompletionRequest.task`, `main.py:834-852`). Nothing added by this slice
+   (`CompletionRequest.task`, `main.py:835-853`). Nothing added by this slice
    looks inside `messages`. `resolve_vision_chain` takes a connection and a
    tier slug, and it takes nothing else.
 6. **The tier does not drop.** §6A.9 rule 1 forbids a degradation across
@@ -1303,13 +1303,13 @@ the `tier-vision` chain when it is FALSE.
    📌 **The RANK is true, and only the MEANING slipped.** `resolve_chain`
    builds `rank` from the column and never from a list index, and the filter
    returns a SUBSEQUENCE of the chain. So the row names the step that served.
-   The credential filter (`main.py:5221-5224`) already produces the same
+   The credential filter (`main.py:5255-5258`) already produces the same
    slippage on the chat path, so this widens a shape rather than minting a
    new one. **`HANDOFF.md` H-82** carries the correction the failover read
    owes, and no code changes here.
 8. **An unkeyed rank 1 does not promote a blind rank 2.** Same chain, and the
    service holds no credential for the rank-1 vendor. The credential filter
-   (`main.py:5221-5224`) then empties the chain, and the route answers the 503
+   (`main.py:5255-5258`) then empties the chain, and the route answers the 503
    it already gives an unconfigured vendor. It reaches no provider, and it
    never reaches the blind model.
 
@@ -1345,7 +1345,7 @@ the `tier-vision` chain when it is FALSE.
 9. 🔴 **DISCLOSED and OPEN: A BLIND STEP CAN STILL ENTER A TIER'S OWN VISION
    CHAIN** *(a reviewer found this on 2026-08-31)*. §3.2 step 0.5 returns
    `resolve_chain(conn, tier, VISION_TASK)` with NO `reads_images` filter
-   (`router.py:330`). Step 3b narrows the LIFT chain and narrows nothing else.
+   (`router.py:338`). Step 3b narrows the LIFT chain and narrows nothing else.
 
    **The shape, stated exactly.** An operator binds `tier-vision` to
    `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 answers a retryable 500.
@@ -1426,10 +1426,10 @@ goes out, and walk the chain until then.
 
 #### The mechanism — where the walk lives, and why it cannot live elsewhere
 
-1. **The route walks.** `open_stream_chain` (`router.py:1066`) opens each step
-   and pulls ONE chunk from it. The route calls this at `main.py:5332`, in
+1. **The route walks.** `open_stream_chain` (`router.py:1191`) opens each step
+   and pulls ONE chunk from it. The route calls this at `main.py:5366`, in
    place of the old `resolved = attempts[0]`.
-2. **The generator replays.** `_streamed_completion` (`main.py:5084`) yields
+2. **The generator replays.** `_streamed_completion` (`main.py:5118`) yields
    the chunk the route already holds, then relays the rest of the same open
    stream. `relay_stream` sees one unbroken source, so byte-identity, the
    single usage row and the `[DONE]` sentinel all keep working unchanged.
@@ -1440,7 +1440,7 @@ status line has gone out by the time a body iterator runs. The code has said
 so since CP-4b. A generator has no failover left to express.
 
 ⚠️ **The route runs the walk on the SERVING loop, through
-`anyio.from_thread.run`** (`_open_stream_chain`, `main.py:5039`). The route is
+`anyio.from_thread.run`** (`_open_stream_chain`, `main.py:5073`). The route is
 `def`, so FastAPI runs it in an anyio worker thread. `asyncio.run` would build
 a private loop, and closing that loop calls `shutdown_asyncgens()` — which
 throws `GeneratorExit` into the stream just opened. Measured 2026-08-31 on a
@@ -1458,7 +1458,7 @@ meter writes no row either. Fence:
 `test_an_EMPTY_stream_is_an_answer_and_not_a_failure`.
 
 ⚠️ **The Router CLOSES every provider stream, at both ends of the walk.**
-`router.aclose_quietly` (`router.py:1041`) is the one close. The walk closes a
+`router.aclose_quietly` (`router.py:1166`) is the one close. The walk closes a
 LOSER before it moves on, because the open already succeeded and the socket is
 ours. The route closes the WINNER in `_streamed_completion`'s `finally`,
 because Starlette 1.1.0 never calls `aclose` on a body iterator. Both fences
@@ -1492,14 +1492,14 @@ in front of them. This slice does not build it.
 #### The boundary — §3.6 states it, and this section builds it
 
 Every failure before the first chunk may fail over. Every failure after it may
-not. The stream path reads `TERMINAL_STATUSES` (`router.py:931`) and
-`CREDENTIAL_STATUSES` (`router.py:935`) through `walk_chain`
-(`router.py:969`), the one function `call_chain` (`router.py:1019`) also walks
+not. The stream path reads `TERMINAL_STATUSES` (`router.py:1056`) and
+`CREDENTIAL_STATUSES` (`router.py:1060`) through `walk_chain`
+(`router.py:1094`), the one function `call_chain` (`router.py:1144`) also walks
 through. It adds no second policy.
 
-⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:923`) does NOT come with it.** The cap
+⚠️ **`MAX_CHAIN_ATTEMPTS` (`router.py:1048`) does NOT come with it.** The cap
 lives in the route's list slice, `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]`
-(`main.py:5224`), which the stream branch reuses because it walks the SAME
+(`main.py:5258`), which the stream branch reuses because it walks the SAME
 `attempts` the buffered branch built. §3.6 records the trap for a future third
 caller.
 
@@ -1514,14 +1514,14 @@ one-query flag read.)*
    step 2, and the client sees one clean stream.
 2. **A terminal failure stops the walk.** A 400 on step 1 calls no step 2.
 3. **The usage row records the step that answered.** It carries that step's
-   `served_rank`, the same way `_record_completion` (`main.py:4635`) does for
+   `served_rank`, the same way `_record_completion` (`main.py:4656`) does for
    a non-streamed call. The route passes the answering step as `resolved`.
 4. **A chain that fails at every step writes NO usage row.** This preserves
    `test_customer_console_router.py:750`
    (`test_a_stream_that_never_starts_writes_no_usage_row`), the phantom-row
    fence.
 5. **An exhausted chain still answers 200 with `data: [DONE]`.**
-   `_stream_closed` (`main.py:5064`) sends the sentinel and nothing else. That
+   `_stream_closed` (`main.py:5098`) sends the sentinel and nothing else. That
    keeps the body assertion at `test_customer_console_router.py:764` true.
 
 ⚠️ **Clause 5's 200 is a CHOICE now, and it was a constraint before.** While
@@ -1533,7 +1533,7 @@ decision records the alternative.** A later slice may prefer a 502 for an
 exhausted streamed chain, and it would edit the fence at
 `test_customer_console_router.py:764`.
 
-⚠️ **`_REFUSAL_REASONS` (`main.py:4827`) stays CLOSED.** An exhausted chain
+⚠️ **`_REFUSAL_REASONS` (`main.py:4861`) stays CLOSED.** An exhausted chain
 writes no refusal row and mints no new reason slug. The three reasons in §8.1
 are customer walls — no credits, the run ceiling, an unknown tier. An upstream
 outage is our supplier failing, and not the customer meeting a limit. A refusal

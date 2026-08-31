@@ -127,15 +127,26 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: and our infrastructure decides the amount from a duration the provider
 #: reported and a tier card the customer cannot reach.
 #:
-#: 🔴 **This is not a third argument.** It is the second door on the one the
-#: entry above already states. A THIRD entry that is not another Router
-#: serving route is the thing this list exists to stop.
+#: ⚠️ **`images_generations` and `audio_speech` joined it on 2026-08-31
+#: (H-46, §6A.10c clause 11).** They are the Router's third serving door and
+#: its fourth, and clause 7 and clause 10 send both through the SAME writer.
+#: So the argument above holds word for word again: the customer's key opens
+#: the route, and our infrastructure decides the amount — from a count of the
+#: pictures the provider returned, or a count of the characters we sent, and
+#: a tier card the customer cannot reach.
+#:
+#: 🔴 **This is still not a second argument.** It is one argument on four
+#: doors, and §9's owner-ratification item 6 predicted exactly this growth.
+#: An entry that is NOT another Router serving route is the thing this list
+#: exists to stop.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
     ("audio_transcriptions", "store.add_credit"),
+    ("images_generations", "store.add_credit"),
+    ("audio_speech", "store.add_credit"),
 })
 
-#: What the walk may cross. Three entries, two arguments, two fences.
+#: What the walk may cross. Five entries, two arguments, two fences.
 PERMITTED_EDGES = FULFIL_ALLOW_LIST | METERING_EXEMPTION
 
 _PACKAGE = Path(__file__).resolve().parents[2] / (
@@ -881,7 +892,7 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
             ("redeem_discount_code", "payments.fulfil"),
         }) == FULFIL_ALLOW_LIST
 
-    def test_the_metering_exemption_holds_the_two_router_serving_routes(self):
+    def test_the_metering_exemption_holds_the_four_router_serving_routes(self):
         """The DECLARED deviation, pinned so it cannot grow past the Router.
 
         ``POST /v1/chat/completions`` is organization-key authenticated (CP-3)
@@ -898,6 +909,13 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         and both go through ``store.record_usage``. The amount comes from a
         duration the provider reported, never from the caller.
 
+        ``POST /v1/images/generations`` and ``POST /v1/audio/speech`` joined
+        the same day (§6A.10c clause 11), and §9's owner-ratification item 6
+        predicted both. The amount is a count of the pictures the provider
+        RETURNED, or a count of the characters we SENT — measured on our own
+        infrastructure in each case, exactly as the tokens and the duration
+        are.
+
         If you are here to add an entry that is NOT a Router serving route:
         the answer is almost certainly that the write belongs behind the
         internal token, which is what ``/usage/record`` had to become after
@@ -906,7 +924,10 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         assert frozenset({
             ("chat_completions", "store.add_credit"),
             ("audio_transcriptions", "store.add_credit"),
+            ("images_generations", "store.add_credit"),
+            ("audio_speech", "store.add_credit"),
         }) == METERING_EXEMPTION
+        assert len(METERING_EXEMPTION) == 4
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):
         """A dead exemption is one nobody notices has stopped being true.
@@ -938,6 +959,11 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         # the same proof as the first.
         assert "main._record_completion" in edges["main.audio_transcriptions"]
         assert "audio_transcriptions" in _org_key_routes()
+        # §6A.10c's image door and speak door, carrying the same proof again.
+        assert "main._record_completion" in edges["main.images_generations"]
+        assert "images_generations" in _org_key_routes()
+        assert "main._record_completion" in edges["main.audio_speech"]
+        assert "audio_speech" in _org_key_routes()
 
     def test_the_fence_actually_walks_into_the_store(self):
         """Guards the fence itself: a walk that stops at depth 1 proves nothing.

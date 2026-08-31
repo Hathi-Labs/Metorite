@@ -41,6 +41,7 @@ from customer_console.credits import RateCard, TierRate, UnpricedModel
 
 __all__ = [
     "CHAT_TASK",
+    "DEFAULT_SPEECH_MEDIA_TYPE",
     "SERVING_INVOCATIONS",
     "SSE_DONE",
     "TRANSCRIPTION_RESPONSE_FORMAT",
@@ -56,6 +57,7 @@ __all__ = [
     "duration_seconds",
     "encrypt_secret",
     "frame_of",
+    "image_count",
     "provider_credential",
     "reads_images",
     "relay_stream",
@@ -64,9 +66,10 @@ __all__ = [
     "resolve_tier",
     "resolve_tier_rate",
     "set_provider_call",
+    "speech_audio",
     "usage_from_frame",
     "usage_from_response",
-    "vendor_cost_per_minute_usd",
+    "vendor_cost_per_unit_usd",
     "vendor_cost_usd",
 ]
 
@@ -567,7 +570,17 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: Router can CALL. A capability row may legally name a verb no route serves
 #: yet — §6A.9 rule 3 says capability is not availability — and the gap must
 #: raise here rather than reach litellm as an attribute nobody checked.
-SERVING_INVOCATIONS = frozenset({"acompletion", "atranscription"})
+#:
+#: 🔴 **``aimage_generation`` and ``aspeech`` joined on 2026-08-31** (§6A.10c
+#: clause 9). Each one has a door now, so the Router may call it. The set
+#: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
+#: serving route, and an operator may still declare it.
+SERVING_INVOCATIONS = frozenset({
+    "acompletion",
+    "atranscription",
+    "aimage_generation",
+    "aspeech",
+})
 
 #: The verb a caller that names none gets. Every chat call made this exact
 #: request before ``invocation`` existed, so the default keeps that path byte
@@ -685,25 +698,33 @@ def vendor_cost_usd(
     return (total / Decimal(1_000_000)).quantize(Decimal("0.00000001"))
 
 
-def vendor_cost_per_minute_usd(
-    minutes: Decimal | None, per_minute_usd: Decimal | None
+def vendor_cost_per_unit_usd(
+    quantity: Decimal | None, per_unit_usd: Decimal | None
 ) -> Decimal | None:
-    """What one per-minute call cost us at the vendor, or ``None``.
+    """What one per-unit call cost us at the vendor, or ``None``.
 
     The sibling of :func:`vendor_cost_usd` for a task the vendor sells by
-    time rather than by token. ``transcribe`` is the first one (D19.2).
+    a natural unit rather than by token. ``transcribe`` was the first one
+    (D19.2), and ``image`` and ``speak`` joined it on 2026-08-31.
+
+    🔴 **ONE multiply for every per-unit task, and the CALLER picks the
+    price** (§6A.10c clause 8). This function never learns which unit it
+    holds. ``_record_completion`` reads the task's own unit and hands over
+    the matching ``model_profile`` column, so a picture is never costed at a
+    per-minute price. *(This was ``vendor_cost_per_minute_usd`` until
+    2026-08-31, and the name said what only the caller can know.)*
 
     ⚠️ **``None`` means UNKNOWN and never zero** — D-AI-7 rule 3. Two things
-    produce it. Nobody has priced the model, so ``per_minute_usd`` is
-    ``None``. Or nothing measured the audio, so ``minutes`` is ``None`` or
+    produce it. Nobody has priced the model, so ``per_unit_usd`` is
+    ``None``. Or nothing measured the call, so ``quantity`` is ``None`` or
     zero. Recording $0.00 for a call we could not read would be a
     measurement nobody made, and it would report a margin of 100 percent.
     """
-    if per_minute_usd is None or minutes is None:
+    if per_unit_usd is None or quantity is None:
         return None
-    if minutes <= 0:
+    if quantity <= 0:
         return None
-    return (Decimal(minutes) * Decimal(per_minute_usd)).quantize(
+    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(
         Decimal("0.00000001")
     )
 
@@ -764,6 +785,105 @@ def duration_seconds(response: Any) -> Decimal | None:
         return _number(_get(response, "duration"))
     except Exception:
         return None
+
+
+def image_count(response: Any) -> Decimal | None:
+    """How many pictures the provider RETURNED. Never raises.
+
+    🔴 **The count comes off the RESPONSE, and never off the request's
+    ``n``** (§6A.10c clause 5). A provider that answers with fewer pictures
+    than the caller asked for must bill fewer. Only the response holds that
+    fact.
+
+    ``None`` means the body carried no readable list of images. The caller
+    bills zero and says so out loud, because the customer already holds
+    whatever came back.
+
+    Two shapes, and both reach us. litellm answers with an ``ImageResponse``
+    whose ``data`` is a list of objects. The stub seam in the tests answers
+    with a plain dict.
+
+    ⚠️ **THE ``None`` ARM IS STUB-ONLY TODAY, and nobody may read it as a
+    live alarm.** ``ImageResponse.__init__``
+    (``litellm/types/utils.py:2336``, measured in litellm 1.86.0) turns a
+    falsy ``data`` into ``[]``, so a real litellm answer reaches this
+    function with a list every time and takes the ``Decimal(0)`` arm. The arm
+    is KEPT rather than deleted for ONE reason. H-47's native handler seam
+    will hand this function a shape litellm never built. Its fence drives a
+    dict stub, and it says so.
+
+    📌 **The SECOND reason was false, and review round 2 measured it away.**
+    This docstring said a deleted arm would cost the picture call against
+    three TOKEN rates. It would not. :func:`vendor_cost_usd` returns ``None``
+    when prompt and completion are both zero, as its own docstring states,
+    and that is every image call. So the token branch would record
+    ``provider_cost_usd`` NULL — the same value the per-unit branch records
+    for a quantity of zero. The route coerces a ``None`` count to zero before
+    the meter runs, so nothing hands one down either.
+    """
+    try:
+        if isinstance(response, dict):
+            data = response.get("data")
+        else:
+            data = getattr(response, "data", None)
+        # A string is a sequence too, and its length is not a picture count.
+        if isinstance(data, (str, bytes)) or not isinstance(data, Sequence):
+            return None
+        return Decimal(len(data))
+    except Exception:
+        return None
+
+
+#: What we answer a speech caller with when the provider named no type.
+#:
+#: *Agent default*, anchored on the vendor: the OpenAI speech endpoint sends
+#: MP3 unless the caller asks for another format. A body with no type at all
+#: makes a browser guess, and a wrong guess plays nothing.
+DEFAULT_SPEECH_MEDIA_TYPE = "audio/mpeg"
+
+
+def speech_audio(response: Any) -> tuple[bytes, str]:
+    """The audio bytes a speech call answered with, and their media type.
+
+    🔴 **The caller reads the provider's own bytes** (§6A.10c clause 2). This
+    endpoint answers audio and never JSON, so nothing here re-encodes the
+    body or wraps it in a field.
+
+    Three shapes reach us. litellm answers with an
+    ``HttpxBinaryResponseContent``, which holds the httpx response and its
+    headers. A provider client may answer with bare ``bytes``. The stub seam
+    in the tests answers with a plain dict.
+
+    Empty bytes are a legal answer, and this function never raises: a body we
+    cannot read reaches the customer as an empty one, which their own player
+    reports far better than a 500 does.
+    """
+    def _media_type(source: Any) -> str | None:
+        headers = getattr(getattr(source, "response", None), "headers", None)
+        if headers is None:
+            return None
+        try:
+            value = headers.get("content-type")
+        except Exception:
+            return None
+        return value.split(";", 1)[0].strip() if isinstance(value, str) else None
+
+    try:
+        if isinstance(response, dict):
+            body = response.get("content")
+            declared = response.get("media_type")
+        elif isinstance(response, (bytes, bytearray)):
+            body, declared = response, None
+        else:
+            body = getattr(response, "content", None)
+            declared = _media_type(response)
+        if not isinstance(body, (bytes, bytearray)):
+            body = b""
+        if not isinstance(declared, str) or not declared.strip():
+            declared = DEFAULT_SPEECH_MEDIA_TYPE
+        return bytes(body), declared
+    except Exception:
+        return b"", DEFAULT_SPEECH_MEDIA_TYPE
 
 
 def usage_from_response(response: Any) -> ExtractedUsage:
