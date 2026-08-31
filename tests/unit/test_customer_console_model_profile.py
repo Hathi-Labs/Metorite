@@ -395,6 +395,43 @@ class TestTheProfileRoute:
         # never appear on a profile.
         assert "vendor_per_second_usd" not in profile
 
+    def test_a_MISNAMED_per_unit_price_is_refused_not_swallowed(self, client):
+        """🔴 The seconds-against-minutes confusion, caught at the door.
+
+        `vendor_price_feed` holds a per-SECOND column and `model_profile`
+        holds a per-MINUTE one. So `vendor_per_second_usd` is the exact key
+        somebody posts here by mistake. Pydantic ignores an unknown key by
+        default, which answered 200 and stored nothing - a green save that
+        left the price a dash, and that is the worst shape this failure could
+        take. `extra="forbid"` turns it into a 422 that names the field.
+        """
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": f"test/{uuid.uuid4().hex[:8]}",
+            "vendor_per_second_usd": "0.0001"})
+        assert r.status_code == 422, r.text
+        assert "vendor_per_second_usd" in r.text
+
+    def test_the_consoles_own_body_still_passes_the_forbid(
+            self, client, engine):
+        """`extra="forbid"` is only safe because the console sends known
+        fields. This posts `declareBodies`' exact shape, so a field added
+        there without a matching model field fails HERE and not live."""
+        name = f"test/{uuid.uuid4().hex[:8]}"
+        r = client.post("/catalog/profiles", headers=self.OP, json={
+            "model": name, "label": None,
+            "context_window": 131072, "max_output": 8192,
+            "vendor_input_per_1m_usd": "0.280000",
+            "vendor_output_per_1m_usd": "0.420000",
+            "vendor_cached_input_per_1m_usd": "0.070000",
+            "vendor_per_minute_usd": "0.006",
+            "vendor_per_character_usd": "0.000015",
+            "vendor_per_image_usd": "0.04",
+            "description": "", "reads_images": False, "thinks_first": False})
+        assert r.status_code == 200, r.text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_profile WHERE model = :m"), {"m": name})
+
     def test_a_customer_key_may_NOT_write_our_reference_data(self, client):
         """The door also admitted `can_pay` customer keys - D66 in spirit:
         the customer never brings a model, so they never describe one

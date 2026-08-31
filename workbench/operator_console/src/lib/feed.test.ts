@@ -118,22 +118,109 @@ describe("driftFor", () => {
       driftFor(M({}), F({ perImageUsd: "0.0400000000" })),
     ).toEqual([]);
   });
+
+  it("🔴 a per-unit price that DOUBLED at 3e-10 reports drift", () => {
+    // The absolute 1e-9 epsilon is dollar-scale, and these columns are
+    // NUMERIC(18,10) exactly so a tiny price fits. Under the old rule the
+    // vendor could double this price and the gap (3e-10) stayed under the
+    // epsilon, so the board said "no drift" about a 2x move. The per-unit
+    // pairs compare relatively, so magnitude stops hiding a change.
+    const d = driftFor(
+      M({ perCharacterUsd: 3e-10 }),
+      F({ perCharacterUsd: "0.0000000006" }),
+    );
+    expect(d).toHaveLength(1);
+    expect(d[0].label).toBe("per character");
+  });
+
+  it("the relative rule still calls an equal tiny pair equal", () => {
+    expect(
+      driftFor(M({ perCharacterUsd: 6e-10 }),
+               F({ perCharacterUsd: "0.0000000006" })),
+    ).toEqual([]);
+    // Trailing zeros are still the same price, at any magnitude.
+    expect(
+      driftFor(M({ perImageUsd: 0.04 }), F({ perImageUsd: "0.0400000000" })),
+    ).toEqual([]);
+  });
+
+  it("two zeros are equal, and never divide by zero", () => {
+    expect(
+      driftFor(M({ perImageUsd: 0 }), F({ perImageUsd: "0.0000000000" })),
+    ).toEqual([]);
+  });
+
+  it("the TOKEN pairs keep their absolute rule, unchanged", () => {
+    // Scope: H-78 changed the per-unit comparison only. A dollar-scale
+    // price has no magnitude problem, and re-tuning it here would be an
+    // unrequested change to what the drift chip says about chat models.
+    expect(
+      driftFor(M({ inputPer1M: 0.28 }), F({ inputPer1M: "0.280000" })),
+    ).toEqual([]);
+    expect(
+      driftFor(M({ inputPer1M: 0.14 }), F({ inputPer1M: "0.280000" })),
+    ).toHaveLength(1);
+  });
 });
 
 describe("🔴 no client code converts a unit (H-78)", () => {
-  it("feed.ts multiplies nothing by 60", () => {
+  // ⚠️ **A reviewer smuggled three conversions past the first version of
+  // this scan**, which looked for `* 60` alone: `Number("60") * x`, `x*60`
+  // and `x / 60` all read green. Each pattern below exists because one of
+  // those got through.
+  const SIXTY = [
+    /[*/]\s*60\b/, // x * 60, x*60, x / 60, x/60
+    /\b60\s*\*/, // 60 * x
+    /\(\s*["']?60["']?\s*\)/, // Number(60), Number("60")
+  ];
+
+  /** Code lines that spell a literal sixty, `//` comments stripped. */
+  const sixtySites = (src: string): string[] =>
+    src
+      .split("\n")
+      .map((ln) => ln.split("//")[0])
+      .filter((code) => SIXTY.some((re) => re.test(code)))
+      .map((code) => code.trim());
+
+  it("the scan catches every spelling it claims to", () => {
+    // The fence's own fence. A scan that silently stops matching is worse
+    // than no scan, because it reports green while the rule rots.
+    for (const smuggled of [
+      "const x = Number('60') * p;",
+      'const x = Number("60")*p;',
+      "const x = p * 60;",
+      "const x = p*60;",
+      "const x = p / 60;",
+      "const x = p/60;",
+      "const x = 60 * p;",
+    ]) {
+      expect(sixtySites(smuggled).length).toBeGreaterThan(0);
+    }
+    for (const innocent of [
+      "const ctx = 600;",
+      "const ms = 3600;",
+      "// multiply the per-second price by 60 here",
+    ]) {
+      expect(sixtySites(innocent)).toEqual([]);
+    }
+  });
+
+  it("feed.ts and the two components convert nothing", () => {
     // The ×60 that turns litellm's per-SECOND transcription price into the
     // per-MINUTE one lives in the Console's feed-read projection, server
-    // side, in Decimal. A second one here would be a FLOAT multiply, and a
-    // float rewrites the number it was asked to copy. Source-text assert,
-    // because there is no way to observe the absence of a conversion.
-    const src = readFileSync(join(__dirname, "feed.ts"), "utf8");
-    expect(src).not.toMatch(/\*\s*60\b/);
-    expect(src).not.toMatch(/60\s*\*/);
-    // And the same for the two components that copy these values.
-    for (const p of ["../app/models/ModelDetails.tsx",
-                     "../app/pricing/PriceFromCost.tsx"]) {
-      expect(readFileSync(join(__dirname, p), "utf8")).not.toMatch(/\*\s*60\b/);
+    // side, in Decimal. One here would be a FLOAT multiply, and a float
+    // rewrites the number it was asked to copy.
+    //
+    // ⚠️ This bounds SPELLINGS, not semantics. A conversion hidden behind a
+    // name (`const SIXTY = 60` then `p * SIXTY`) still passes, because the
+    // operand carries no literal. Nothing source-scanned can close that, and
+    // claiming otherwise would make the fence lie about its own reach.
+    for (const p of [
+      "feed.ts",
+      "../app/models/ModelDetails.tsx",
+      "../app/pricing/PriceFromCost.tsx",
+    ]) {
+      expect(sixtySites(readFileSync(join(__dirname, p), "utf8"))).toEqual([]);
     }
   });
 });

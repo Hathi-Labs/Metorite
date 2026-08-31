@@ -767,43 +767,191 @@ def test_an_unpriced_feed_row_serves_null_and_never_zero(client, db, vendor):
     assert row["vendor_per_image_usd"] is None
 
 
+@pytestmark_db
+def test_a_per_second_price_that_x60_CANNOT_FIT_serves_null(client, db, vendor):
+    """🔴 The copy button must never be able to answer 500.
+
+    `feed._per_unit` admits anything below 1E8 per second, so x60 reaches
+    6E9 — and `model_profile.vendor_per_minute_usd` is NUMERIC(18, 10),
+    which holds eight digits in front of the point. Serving the number
+    anyway hands the console a value whose only use is the copy, and the
+    copy would POST it and take an unhandled psycopg DataError.
+
+    Unknown beats poisoned, which is the rule the parser already applies on
+    the way in. The read applies the same rule on the way out.
+    """
+    model = f"{vendor}/absurd"
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "absurd", mode="audio_transcription", task="transcribe",
+            invocation="atranscription",
+            # Legal in the feed (below 1E8), fatal in the profile after x60.
+            per_second=Decimal("99000000"),
+            input_per_1m=None, output_per_1m=None, cached_per_1m=None,
+        )], "github", datetime.now(UTC))
+        _declare(conn, model, "transcribe", "atranscription")
+
+    try:
+        row = _feed_row_for(client, model)
+    finally:
+        with db.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_capability WHERE model = :m"), {"m": model})
+
+    assert row["vendor_per_minute_usd"] is None, (
+        "a price the profile column cannot hold must read as unknown")
+
+    # And the whole point: the copy the console would make is now harmless.
+    body = {"model": model, "vendor_per_minute_usd":
+            row["vendor_per_minute_usd"]}
+    r = client.post("/catalog/profiles", headers=OP, json=body)
+    assert r.status_code == 200, r.text
+    with db.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM model_profile WHERE model = :m"), {"m": model})
+
+
+@pytestmark_db
+def test_a_tiny_per_unit_price_crosses_as_FIXED_POINT(client, db, vendor):
+    """🔴 `str(Decimal)` goes scientific below 1e-6, and `6.0E-9` is not a
+    number an operator can read in a form box.
+
+    These columns are NUMERIC(18, 10) precisely so a cheap model fits, so
+    the small value is the expected case rather than the odd one. The
+    console copies this string into the box and POSTs it back unchanged, so
+    E-notation here would also be what we store.
+    """
+    model = f"{vendor}/tiny"
+    with db.begin() as conn:
+        feed.sync(conn, [_row(
+            vendor, "tiny", mode="audio_speech", task="speak",
+            invocation="aspeech",
+            per_second=Decimal("0.0000000001"),
+            per_character=Decimal("0.0000000060"),
+            input_per_1m=None, output_per_1m=None, cached_per_1m=None,
+        )], "github", datetime.now(UTC))
+        _declare(conn, model, "speak", "aspeech")
+
+    try:
+        row = _feed_row_for(client, model)
+    finally:
+        with db.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM model_capability WHERE model = :m"), {"m": model})
+
+    for field in ("vendor_per_minute_usd", "vendor_per_character_usd"):
+        assert "E" not in row[field].upper(), (
+            f"{field} rendered as E-notation: {row[field]}")
+    # Exact, and still the right number after the x60.
+    assert Decimal(row["vendor_per_minute_usd"]) == Decimal("0.000000006")
+    assert row["vendor_per_character_usd"] == "0.0000000060"
+
+
+#: Every SPELLING of a literal sixty that could convert a unit.
+#:
+#: ⚠️ **A reviewer smuggled three conversions past the first version of this
+#: fence**, which matched the exact text ``Decimal(60)`` alone:
+#: ``Decimal("60") * x``, ``x * 60`` and ``x / 60`` all read green. Each
+#: pattern below exists because one of those got through.
+_SIXTY_SPELLINGS = (
+    r"Decimal\(\s*[\"']?60[\"']?\s*\)",   # Decimal(60), Decimal("60")
+    r"[*/]\s*60\b",                       # x * 60, x*60, x / 60, x/60
+    r"\b60\s*\*",                         # 60 * x
+)
+
+
+def _sixty_sites(src: str) -> list[str]:
+    """Code lines that spell a literal sixty, comments stripped.
+
+    ⚠️ Comment stripping is naive — it cuts at the first ``#``, so a ``#``
+    inside a string literal would truncate that line. That costs a false
+    NEGATIVE on one line and never a false positive, and no line in this
+    package puts a conversion after a quoted hash.
+    """
+    import re
+
+    out = []
+    for raw in src.splitlines():
+        code = raw.split("#", 1)[0]
+        if any(re.search(p, code) for p in _SIXTY_SPELLINGS):
+            out.append(code.strip())
+    return out
+
+
+def test_the_sixty_fence_catches_every_spelling_it_claims_to():
+    """The fence's own fence. A scan that silently stops matching is worse
+    than no scan, because it reports green while the rule rots."""
+    for smuggled in (
+        'x = Decimal("60") * price',
+        "x = Decimal('60')*price",
+        "x = Decimal( 60 ) * price",
+        "x = price * 60",
+        "x = price*60",
+        "x = price / 60",
+        "x = price/60",
+        "x = 60 * price",
+    ):
+        assert _sixty_sites(smuggled), f"the scan missed {smuggled!r}"
+
+    # And it does not fire on innocent text.
+    for innocent in (
+        "context_window = 60000",
+        "x = price * 600",
+        "timeout = 3600",
+        "# multiply the per-second price by 60 here",
+    ):
+        assert not _sixty_sites(innocent), f"false positive on {innocent!r}"
+
+
 def test_only_the_feed_read_multiplies_a_PRICE_by_sixty():
     """🔴 The source-text half of "the x60 happens ONCE".
 
     A second conversion is the failure §6A.11a exists to prevent, and it is
     invisible in behaviour until a transcription bill is 60 or 3600 times the
     right number. Behaviour cannot show the ABSENCE of a conversion, so this
-    counts the sites instead.
+    names every site instead.
 
-    ⚠️ **The Console holds TWO x60s, and they convert different things.**
-    `_feed_wire` converts a PRICE (USD per second → USD per minute), which is
-    §6A.11a's subject. `_SECONDS_PER_MINUTE` on the transcribe route converts
-    a QUANTITY (seconds of audio → minutes billed), which §6A.10a owns and
-    which this slice does not touch. Both are legitimate. A THIRD is not, and
-    a second PRICE conversion is the bug.
+    ⚠️ **The Console holds TWO sixties, and they convert different things.**
+    `_per_minute_wire` converts a PRICE (USD per second to USD per minute),
+    which is §6A.11a's subject. `_SECONDS_PER_MINUTE` on the transcribe route
+    converts a QUANTITY (seconds of audio to minutes billed), which §6A.10a
+    owns and which this slice does not touch. Both are legitimate. A third is
+    the bug.
+
+    ⚠️ **This fence bounds SPELLINGS, not semantics, and says so on purpose.**
+    A conversion hidden behind a name — ``SIXTY = 60`` and then ``x * SIXTY``
+    — still passes, because the operand carries no literal. Nothing
+    source-scanned can close that, and claiming otherwise would make the
+    fence lie about its own reach. It catches the spellings a person actually
+    writes, which is every one the reviewer tried.
     """
     import pathlib
 
     import customer_console
 
-    pkg = pathlib.Path(customer_console.__file__).parent
-
-    def _code_sites(src: str) -> list[str]:
-        return [
-            ln.strip() for ln in src.splitlines()
-            if "Decimal(60)" in ln and not ln.strip().startswith("#")
-        ]
-
-    assert _code_sites((pkg / "main.py").read_text(encoding="utf-8")) == [
+    #: Every legal sixty in the package, and what each one converts. A new
+    #: entry needs a reason on this list, which is the point: the reason is
+    #: what a reviewer checks, and "it is a price" is the one that fails.
+    legal = {
         # The PRICE conversion (§6A.11a clause 5) — the feed read, once.
-        "else str(Decimal(per_second) * Decimal(60)),",
-        # The QUANTITY conversion (§6A.10a) — audio seconds to billed
-        # minutes, on the transcribe route. A different number entirely.
-        "_SECONDS_PER_MINUTE = Decimal(60)",
-    ]
+        "main.py": [
+            "minutes = Decimal(per_second) * Decimal(60)",
+            # The QUANTITY conversion (§6A.10a) — audio seconds to billed
+            # minutes, on the transcribe route. A different number entirely.
+            "_SECONDS_PER_MINUTE = Decimal(60)",
+        ],
+        # Minutes in twelve hours — a session TTL, and no money anywhere
+        # near it. Found by widening this scan, and kept because it is
+        # correct rather than because it was already there.
+        "operator_sessions.py": [
+            "DEFAULT_ABSOLUTE_TTL_MINUTES = 12 * 60",
+        ],
+    }
 
-    for path in sorted(pkg.glob("*.py")):
-        if path.name == "main.py":
-            continue
-        src = path.read_text(encoding="utf-8")
-        assert not _code_sites(src), f"a third x60 landed in {path.name}"
+    pkg = pathlib.Path(customer_console.__file__).parent
+    found = {
+        path.name: sites
+        for path in sorted(pkg.glob("*.py"))
+        if (sites := _sixty_sites(path.read_text(encoding="utf-8")))
+    }
+    assert found == legal

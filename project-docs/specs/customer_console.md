@@ -8223,10 +8223,13 @@ the operator types the vendor's dollar price by hand.
 the vendor's own unit. The profile stores the same price in the task's
 natural unit. The board reads the profile.
 
-⚠️ **Read "The seam" below before you build clauses 5 to 7.** A re-audit on
-2026-08-30 found that clause 5 named a copy seam the tree does not hold, and
-that nothing writes the three profile columns. The addendum names the real
-seam. Clauses 1 to 4 and clause 8 are unchanged.
+⚠️ **"The seam" below is now a BUILD RECORD, and it reads as a plan.** A
+re-audit on 2026-08-30 found that clause 5 named a copy seam the tree did not
+hold, and that nothing wrote the three profile columns. The addendum named
+the real seam, and clauses 5 to 7 built it on 2026-08-31. Read that section
+for the reasoning, not for work that is left.
+*(This read "Read 'The seam' below before you build clauses 5 to 7" until
+2026-08-31, when the three clauses landed.)*
 
 #### The feed columns — migration `019`
 
@@ -8328,13 +8331,17 @@ copy. `read.ts` already builds `catalog.models` out of `model_profile`, and
 `PriceFromCost.tsx` already reads `catalog.models`. So the board gains
 three fields on a shape it consumes today.
 
-#### The seam — an addendum of 2026-08-30, after a re-audit
+#### The seam — an addendum of 2026-08-30, BUILT 2026-08-31
 
-🔴 **Clause 5 named a seam that does not exist.** "The declare-and-prefill
-seam" reads as one server-side function, and there is none. The copy is
-client-side. `prefillFrom` (`feed.ts:73`) fills the form boxes, and
-`declareBodies` (`feed.ts:95`) returns TWO bodies. Nothing on the server
-copies a feed row onto a profile row.
+⚠️ **This section is a build record.** A re-audit wrote it as a plan on
+2026-08-30, and clauses 5 to 7 built it on 2026-08-31. The present tense
+below describes the tree as it now stands. A 🔴 marks the state the addendum
+corrected.
+
+🔴 **Clause 5 named a seam that did not exist.** "The declare-and-prefill
+seam" reads as one server-side function, and there was none. The copy is
+client-side. `prefillFrom` fills the form boxes, and `declareBodies` returns
+TWO bodies. Nothing on the server copies a feed row onto a profile row.
 
 ⚠️ **The two bodies go to two DIFFERENT routes.** `FeedAvailable.tsx:52`
 posts the capability body to `POST /catalog/capabilities`.
@@ -8343,28 +8350,59 @@ posts the capability body to `POST /catalog/capabilities`.
 body carries the three per-unit fields. *(This read "Both post to
 `POST /catalog/profiles`" until 2026-08-30, and that was wrong.)*
 
-🔴 **And nothing writes the three profile columns.** `ProfileRequest`
-(`main.py:2238`) names ten fields, and the `set_model_profile` INSERT
-(`main.py:2270-2348`) names the same ten. Neither carries a per-unit price.
+🔴 **And nothing wrote the three profile columns.** `ProfileRequest` named
+ten fields, and the `set_model_profile` INSERT named the same ten. Neither
+carried a per-unit price.
+
+**Clause 6 closed this on 2026-08-31.** Both now carry thirteen.
+`ProfileRequest` also sets `extra="forbid"`, so a misnamed price answers 422
+instead of a silent 200. *(This read "nothing writes the three profile
+columns" until 2026-08-31.)*
 
 **The answer: NO new route.** A second door onto `model_profile` is the
 CLAUDE.md §5 defect. `POST /catalog/profiles` stays the one write.
 
 **The ×60 runs ONCE, and it runs in the FEED READ projection.** `_FEED_COLS`
-(`main.py:1821-1826`) gains the three per-unit columns. The projection that
-builds each feed row serves `vendor_per_minute_usd` **already converted**. It
-reads `vendor_per_second_usd`, multiplies by `Decimal(60)`, and serializes the
-result as a string. The other two fields need no conversion, so they cross
-verbatim.
+gains the three per-unit columns. The projection that builds each feed row
+serves `vendor_per_minute_usd` **already converted**. `_per_minute_wire`
+reads `vendor_per_second_usd`, multiplies by `Decimal(60)`, and serializes
+the result as a string. The other two fields need no conversion, so they
+cross verbatim.
 
 ⚠️ **The browser copies numbers, and it converts none of them.** That is why
 the multiply belongs in the read. A conversion in TypeScript is a float
 conversion, and a float rewrites the number it copies.
 
+⚠️ **A converted price that the PROFILE column cannot hold serves NULL**
+*(added 2026-08-31, from a review probe)*. `feed._per_unit` admits any value
+below `1E8` per second, so ×60 reaches `6E9`, and
+`model_profile.vendor_per_minute_usd` is `NUMERIC(18, 10)` with eight digits
+in front of the point. That number gave the console a value whose only use is
+the copy button. The copy then took an unhandled psycopg `DataError` — a
+measured **500**.
+
+The read now applies the parser's own rule: unknown beats poisoned. A dash is
+honest, and a 500 on a button is not.
+
+⚠️ **Money on this wire is FIXED-POINT, never E-notation** *(added
+2026-08-31)*. `str(Decimal)` goes scientific below `1e-6`, and these columns
+are `NUMERIC(18, 10)` precisely so a cheap model fits. An operator cannot
+read `6.0E-9` in a form box, and the console POSTs that box back verbatim.
+Both projections format with `f`.
+
 **The write is a plain pass-through.** `ProfileRequest` gains three optional
 `Decimal` fields. The `set_model_profile` INSERT gains the three columns in
 its column list, in its VALUES list, and in its `ON CONFLICT DO UPDATE SET`
 list. The profile form gains three boxes. No maths happens on this path.
+
+⚠️ **`ProfileRequest` sets `extra="forbid"`** *(added 2026-08-31, from a
+review probe)*. Pydantic ignores an unknown key by default, so a POST
+carrying `vendor_per_second_usd` answered **200 and stored nothing**. That is
+the exact confusion this feature invites, because the feed table holds a
+per-second column and the profile holds a per-minute one. A silent success is
+the worst shape that failure could take. The misnamed price now answers 422
+and names the field. The idiom matches the five request models already in
+`main.py`, and the console sends only known fields.
 
 | Profile column | Wire field | Where the value comes from |
 |---|---|---|
@@ -8397,6 +8435,18 @@ that is what makes the compare correct.
 The three new labels read "per minute", "per character" and "per image". A
 drift row with no unit invites the seconds-against-minutes mistake this whole
 section exists to prevent.
+
+⚠️ **The three per-unit pairs compare RELATIVELY, and the token pairs do
+not** *(added 2026-08-31, from a review probe)*. `driftFor` used one absolute
+epsilon of `1e-9`, which is dollar-scale. These columns are
+`NUMERIC(18, 10)` exactly so a tiny price fits. So a vendor could DOUBLE a
+price from `3e-10` to `6e-10` and the board still reported no drift. The gap
+fell under the epsilon.
+
+Each per-unit pair now flags a difference above one part in a million, at any
+size. Two zeros stay equal. The per-million-token pairs keep the absolute
+rule unchanged, because a dollar-scale price is never small enough to hide a
+move.
 
 #### Non-goals — four, each named
 
@@ -8483,6 +8533,11 @@ section exists to prevent.
 | The profile write converts nothing | `test_customer_console_model_profile.py` — `test_the_per_unit_prices_read_back_BYTE_IDENTICAL`: a posted per-minute price reads back unchanged |
 | The wire sends the three as strings | `test_customer_console_model_profile.py` — `test_the_catalog_read_sends_the_three_as_STRINGS` |
 | Drift compares in PROFILE units | `feed.test.ts` — an equal per-minute pair reports no drift, and a source-text assert proves no client code multiplies by 60 |
+| A converted price the profile cannot hold serves NULL | `test_customer_console_vendor_feed.py::test_a_per_second_price_that_x60_CANNOT_FIT_serves_null` — a 99000000/s feed row reads as unknown, and the copy that follows it cannot 500 |
+| Money on the wire is fixed-point | `test_customer_console_vendor_feed.py::test_a_tiny_per_unit_price_crosses_as_FIXED_POINT` — a sub-1e-6 price carries no `E` |
+| A misnamed per-unit price is refused, never swallowed | `test_customer_console_model_profile.py::test_a_MISNAMED_per_unit_price_is_refused_not_swallowed` — `vendor_per_second_usd` answers 422 |
+| Drift sees a change at any price size | `feed.test.ts` — a per-character price doubling from 3e-10 reports drift, which the old absolute epsilon hid |
+| Each ×60 scan catches every spelling it claims to | `test_customer_console_vendor_feed.py::test_the_sixty_fence_catches_every_spelling_it_claims_to` and its `feed.test.ts` twin — both self-check against the smuggles that beat the first version |
 | The board's per-unit half reads the profile through a PURE function | `feed.test.ts` — `PriceFromCost reads the RECORDED cost through priceboard.ts`, plus `priceboard.test.ts` for `recordedVendorUsd` and `vendorUsdBox` |
 
 **Verification:** `uv run pytest tests/unit/test_customer_console_vendor_feed.py

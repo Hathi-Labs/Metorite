@@ -1673,6 +1673,52 @@ def _catalog_refusal(exc: catalog.CatalogRefused) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+#: The ceiling `model_profile`'s per-unit columns impose, restated where the
+#: read can enforce it. It mirrors `feed._UNIT_MAX` exactly, and it must:
+#: NUMERIC(18, 10) keeps ten digits after the point, so eight remain in front
+#: and 1E8 is the first value that will not fit.
+_PER_UNIT_MAX = Decimal("1E8")
+
+
+def _fixed(v: Decimal | None) -> str | None:
+    """A money value as a FIXED-POINT string, or None for unknown.
+
+    🔴 **`str(Decimal)` goes scientific below 1e-6, and an operator cannot
+    read `6.0E-9`.** These per-unit columns are NUMERIC(18, 10), so a cheap
+    model really does land there — `0.0000000060` is a legal per-character
+    price. The console copies this string straight into a form box and then
+    POSTs it back, so E-notation would also be what we store. `format(v,
+    "f")` keeps every value in plain digits.
+    """
+    return None if v is None else format(v, "f")
+
+
+def _per_minute_wire(per_second: Decimal | None) -> str | None:
+    """The ONE place a per-SECOND vendor price becomes a per-MINUTE one.
+
+    🔴 **This is §6A.11a clause 5.** litellm prices transcription per second
+    and `task_catalog` (010) prices `transcribe` per minute, so the feed and
+    the profile hold the same price in different units on purpose. The
+    conversion happens here, server-side, in `Decimal`. The browser copies
+    the result and converts nothing, because a conversion in TypeScript is a
+    float conversion and a float rewrites the number it copies.
+
+    ⚠️ **A price at or above the column ceiling serves NULL, not a number.**
+    The feed admits anything under 1E8 per second, so x60 reaches 6E9 — which
+    `model_profile.vendor_per_minute_usd` cannot hold. Serving it anyway
+    hands the console a value whose only use is the copy button, and the copy
+    would answer 500 from an unhandled psycopg DataError. Unknown beats
+    poisoned, which is the rule `feed._per_unit` already applies on the way
+    in. A dash is honest. A 500 on a button is not.
+    """
+    if per_second is None:
+        return None
+    minutes = Decimal(per_second) * Decimal(60)
+    if minutes >= _PER_UNIT_MAX:
+        return None
+    return _fixed(minutes)
+
+
 @app.get("/catalog/models")
 def catalog_models(staff: Operator) -> dict[str, Any]:
     """Everything the operator manages, and the two GAPS between the tables.
@@ -1736,10 +1782,11 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
              # The three per-unit costs (019, H-78). Each one already speaks
              # the TASK's unit, so this projection converts nothing — the
              # feed read did the x60 before anything copied a price here.
-             "vendor_per_minute_usd": None if r[10] is None else str(r[10]),
-             "vendor_per_character_usd":
-                 None if r[11] is None else str(r[11]),
-             "vendor_per_image_usd": None if r[12] is None else str(r[12]),
+             # ⚠️ Fixed-point, because NUMERIC(18, 10) reaches values that
+             # `str(Decimal)` would render as `6.0E-9`.
+             "vendor_per_minute_usd": _fixed(r[10]),
+             "vendor_per_character_usd": _fixed(r[11]),
+             "vendor_per_image_usd": _fixed(r[12]),
              "description": r[6], "reads_images": r[7], "thinks_first": r[8]}
             for r in conn.execute(text(
                 "SELECT model, label, context_window, max_output, "
@@ -1834,19 +1881,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         def _feed_wire(r: Any) -> dict[str, Any]:
             # ⚠️ Money as STRINGS, same rule as profiles above.
             #
-            # 🔴 **The x60 lives HERE, and it lives nowhere else** (H-78,
-            # §6A.11a clause 5). litellm prices transcription per SECOND, and
-            # `task_catalog` (010) prices `transcribe` per MINUTE. The feed
-            # keeps the vendor's own unit, the profile keeps the task's unit,
-            # and this projection is the ONE seam between them. So the wire
-            # carries `vendor_per_minute_usd` and never
-            # `vendor_per_second_usd`. The browser copies the number it reads
-            # and converts nothing, because a conversion in TypeScript is a
-            # float conversion, and a float rewrites the number it copies.
-            #
-            # `Decimal(60)` keeps the maths exact: 0.0001 becomes "0.0060000"
-            # and never 0.005999999999999999.
-            per_second = r[13]
+            # 🔴 **The per-unit costs go through `_per_minute_wire`, which is
+            # the ONE place a price changes unit** (H-78, §6A.11a clause 5).
+            # The wire carries `vendor_per_minute_usd` and never
+            # `vendor_per_second_usd`, so the browser has nothing to convert.
             return {
                 "model": r[0], "provider": r[1], "mode": r[2], "task": r[3],
                 "invocation": r[4], "context_window": r[5], "max_output": r[6],
@@ -1857,14 +1895,11 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     None if r[9] is None else str(r[9]),
                 "reads_images": r[10], "thinks_first": r[11],
                 "deprecated_on": None if r[12] is None else r[12].isoformat(),
-                "vendor_per_minute_usd":
-                    None if per_second is None
-                    else str(Decimal(per_second) * Decimal(60)),
+                "vendor_per_minute_usd": _per_minute_wire(r[13]),
                 # The other two already speak the task's unit, so they cross
-                # verbatim.
-                "vendor_per_character_usd":
-                    None if r[14] is None else str(r[14]),
-                "vendor_per_image_usd": None if r[15] is None else str(r[15]),
+                # verbatim — fixed-point, never E-notation.
+                "vendor_per_character_usd": _fixed(r[14]),
+                "vendor_per_image_usd": _fixed(r[15]),
             }
 
         # ⚠️ `_feed_wire` reads BY POSITION, so a column inserted in the
@@ -2302,7 +2337,17 @@ class ProfileRequest(BaseModel):
     ⚠️ **Every measurement is OPTIONAL and defaults to `None`.** `None` means
     "nobody has told us", which the console draws as an em dash. A default of
     zero would render as "0 tokens" and "free", and both read as facts.
+
+    🔴 **`extra="forbid"`, and H-78 is why it had to be added.** Pydantic
+    ignores an unknown key by default, so a POST carrying
+    `vendor_per_second_usd` answered 200 and stored nothing. That is the
+    exact confusion this feature invites — the feed table holds a per-SECOND
+    column and the profile holds a per-MINUTE one — and a silent success is
+    the worst shape it could take. A misnamed price now answers 422 and names
+    the field. The idiom matches the five request models above.
     """
+
+    model_config = {"extra": "forbid"}
 
     model: str
     label: str | None = None

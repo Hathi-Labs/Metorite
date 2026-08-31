@@ -49,20 +49,35 @@ export type Drift = {
  *  number and a direct compare is the correct compare. */
 export function driftFor(m: CatalogModel, f: FeedModel | undefined): Drift[] {
   if (!f) return [];
-  const pairs: [string, number | null, string | null][] = [
-    ["per 1M in", m.inputPer1M, f.inputPer1M],
-    ["per 1M out", m.outputPer1M, f.outputPer1M],
-    ["per 1M cached in", m.cachedInputPer1M, f.cachedInputPer1M],
-    ["per minute", m.perMinuteUsd, f.perMinuteUsd],
-    ["per character", m.perCharacterUsd, f.perCharacterUsd],
-    ["per image", m.perImageUsd, f.perImageUsd],
+  //  Each pair carries the RULE it is compared under, because the two kinds
+  //  of price live at different magnitudes.
+  const pairs: [string, number | null, string | null, "abs" | "rel"][] = [
+    // Per-MILLION-token prices are dollar-scale. 1e-9 is far below the
+    // NUMERIC(12,4) the profile stores, so absolute is right and unchanged.
+    ["per 1M in", m.inputPer1M, f.inputPer1M, "abs"],
+    ["per 1M out", m.outputPer1M, f.outputPer1M, "abs"],
+    ["per 1M cached in", m.cachedInputPer1M, f.cachedInputPer1M, "abs"],
+    // 🔴 Per-UNIT prices are not. These columns are NUMERIC(18,10) exactly
+    // so a tiny price fits, and 019's own header cites 0.000015 as a real
+    // one. Under the absolute rule a vendor DOUBLING 3e-10 to 6e-10 reports
+    // no drift at all, because the gap is smaller than the epsilon. So they
+    // compare RELATIVELY: a pair differing by more than one part in a
+    // million drifts, at any magnitude.
+    ["per minute", m.perMinuteUsd, f.perMinuteUsd, "rel"],
+    ["per character", m.perCharacterUsd, f.perCharacterUsd, "rel"],
+    ["per image", m.perImageUsd, f.perImageUsd, "rel"],
   ];
   const out: Drift[] = [];
-  for (const [label, ours, upstream] of pairs) {
+  for (const [label, ours, upstream, rule] of pairs) {
     if (ours === null || upstream === null) continue;
     const up = Number(upstream);
     if (!Number.isFinite(up)) continue;
-    if (Math.abs(ours - up) > 1e-9) {
+    const gap = Math.abs(ours - up);
+    // Two zeros are equal, and a relative test on them divides by zero.
+    const scale = Math.max(Math.abs(ours), Math.abs(up));
+    const drifted =
+      rule === "abs" ? gap > 1e-9 : scale > 0 && gap / scale > 1e-6;
+    if (drifted) {
       out.push({ label, ours: String(ours), upstream });
     }
   }
