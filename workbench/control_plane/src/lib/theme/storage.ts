@@ -13,8 +13,6 @@ import { DENSITY_SCALE } from "./types";
 import { accentInk } from "./contrast";
 
 export const STORAGE_KEYS = {
-  /** The member's own theme choice. Absent means "follow the org default". */
-  theme: "cc-theme",
   /** The member's own density choice. Absent means "follow the org default". */
   density: "cc-density",
   /** Optional primary-colour override. */
@@ -30,12 +28,13 @@ export const STORAGE_KEYS = {
    * Settings still gets the company look on first paint instead of a flash of
    * the built-in default.
    */
-  orgTheme: "cc-theme-org",
   orgDensity: "cc-density-org",
 } as const;
 
-/** The DOM attribute carrying the active theme's id. */
-export const THEME_ATTRIBUTE = "data-theme";
+// ⚠️ `cc-theme`, `cc-theme-org` and the `data-theme` attribute were removed
+// on 2026-08-31 with the theming engine. A browser that still holds those
+// keys simply keeps two ignored strings — nothing reads them, and clearing
+// them would need a migration for no gain.
 
 /** Custom property the density setting drives. */
 export const DENSITY_PROPERTY = "--ui-scale";
@@ -47,7 +46,7 @@ export const ACCENT_PROPERTIES = ["--primary", "--ring", "--sidebar-primary"] as
  * The INK tokens that must follow the accent, not the theme.
  *
  * Setting `--primary` without these leaves the theme's own primary-foreground
- * painted on a colour it was never chosen for — black-on-red on Graphite dark.
+ * painted on a colour it was never chosen for — white ink on a pale accent.
  * Kept as a separate list because the value differs: these get
  * `accentInk(accent)`, the others get the accent itself.
  */
@@ -75,8 +74,6 @@ function write(key: string, value: string | null): void {
 }
 
 export const themeStorage = {
-  getTheme: () => read(STORAGE_KEYS.theme),
-  setTheme: (id: string | null) => write(STORAGE_KEYS.theme, id),
   getDensity: () => read(STORAGE_KEYS.density) as Density | null,
   setDensity: (d: Density | null) => write(STORAGE_KEYS.density, d),
   getAccent: () => read(STORAGE_KEYS.accent),
@@ -87,8 +84,6 @@ export const themeStorage = {
     // removing the accent cannot leave orphaned ink behind.
     write(STORAGE_KEYS.accentInk, c ? accentInk(c) || null : null);
   },
-  getOrgTheme: () => read(STORAGE_KEYS.orgTheme),
-  setOrgTheme: (id: string) => write(STORAGE_KEYS.orgTheme, id),
   getOrgDensity: () => read(STORAGE_KEYS.orgDensity) as Density | null,
   setOrgDensity: (d: Density) => write(STORAGE_KEYS.orgDensity, d),
   getMode: () => read(MODE_STORAGE_KEY) as ThemeMode | null,

@@ -33,7 +33,7 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import { Input, Select } from "@/components/ui/Input";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
@@ -43,10 +43,13 @@ import {
   type Filters,
   GROUP_OPTIONS,
   type GroupBy,
+  UNSET,
   describeDivergence,
   isFiltered,
+  personLabel,
   viewDivergence,
 } from "../lib/grouping";
+import { type ViewMode, honoursGroupBy, honoursLanes } from "../lib/commands";
 import {
   DEFAULT_SHOWN,
   FIELD_KEYS,
@@ -83,6 +86,19 @@ const SELECT =
 interface Props {
   filters: Filters;
   onFilters: (next: Filters) => void;
+  /**
+   * The canvas on screen — it decides which grouping axes this bar OFFERS.
+   * `honoursGroupBy` / `honoursLanes` own that table; the bar does not carry
+   * its own opinion about what a canvas can draw.
+   */
+  mode: ViewMode;
+  /**
+   * The selected node's board spans more than one project — i.e. it has
+   * descendant projects (`tree.spansMultipleProjects`). False on a leaf, and
+   * on a project with no subprojects, where grouping by project would always
+   * yield exactly one group.
+   */
+  spansProjects: boolean;
   groupBy: GroupBy;
   onGroupBy: (next: GroupBy) => void;
   /**
@@ -93,8 +109,16 @@ interface Props {
    */
   lanes: BoardLanes;
   onSubGroupBy: (next: GroupBy) => void;
-  /** The signed-in member's address, for the "Mine" toggle. Empty while loading. */
+  /** The signed-in member's address, for the "Me" option. Empty while loading. */
   me: string;
+  /**
+   * WS-27af — who the assignee filter offers, from the tasks in this project.
+   *
+   * ⚠️ Must be built from an UNFILTERED task set (`grouping.assigneesIn` says
+   * why): derived from the rows currently on screen it collapses to whoever is
+   * already selected, and the filter becomes one you cannot leave.
+   */
+  people: readonly string[];
   /** WS-27m — the project's registered tags, for the tag row. */
   tags: TagRow[];
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
@@ -109,7 +133,7 @@ interface Props {
   onDeleteView: (view: ViewRow) => void;
   /** WS-27ab — write what is on screen into the view that is applied. */
   onUpdateView: (view: ViewRow) => void;
-  /** Saving needs a project to hang the view off; My work has none. */
+  /** Saving needs a project to hang the view off. */
   canSave: boolean;
   /**
    * WS-27ae — export the filter that is on screen, with the columns it shows.
@@ -123,11 +147,14 @@ interface Props {
 export function FilterBar({
   filters,
   onFilters,
+  mode,
+  spansProjects,
   groupBy,
   onGroupBy,
   lanes,
   onSubGroupBy,
   me,
+  people,
   tags,
   shownFields,
   onShownFields,
@@ -142,6 +169,19 @@ export function FilterBar({
   onExport,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
+
+  /**
+   * The axes worth offering here.
+   *
+   * "Project" drops out on a node with no descendant projects, where it can
+   * only ever produce one group. ⚠️ It stays if it is the CURRENT value —
+   * removing the selected option from a `<select>` renders it blank, and a
+   * saved view that grouped by project is honoured rather than silently
+   * rewritten when you open it on a leaf. So you can switch away from it and
+   * not back, which is exactly the availability the tree describes.
+   */
+  const axisOffered = (option: GroupBy, current: GroupBy): boolean =>
+    option !== "project" || spansProjects || current === "project";
   // The search box is held locally and pushed up on a delay. Refetching on
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
@@ -165,7 +205,22 @@ export function FilterBar({
   }, [draft]);
 
   const set = (patch: Partial<Filters>) => onFilters({ ...filters, ...patch });
-  const mine = Boolean(me) && filters.assignee.toLowerCase() === me.toLowerCase();
+
+  /**
+   * A filtered-to address that is neither "me" nor anyone with work here.
+   *
+   * A saved view can name somebody whose tasks have all closed, or who has
+   * left. The `<select>` would then have no matching option, render BLANK, and
+   * read as "Anyone" while the filter is still applied — the worst outcome, a
+   * control lying about the state it is in. Given its own option instead.
+   */
+  const chosen = filters.assignee.trim();
+  const orphanAssignee =
+    chosen &&
+    chosen.toLowerCase() !== me.toLowerCase() &&
+    !people.some((who) => who.toLowerCase() === chosen.toLowerCase())
+      ? chosen
+      : null;
 
   // Resolved from the list rather than trusted: `activeViewId` outlives a
   // project switch and a delete, and a chip lit for a view that is no longer
@@ -202,29 +257,60 @@ export function FilterBar({
           ))}
         </select>
 
-        {/* "Mine" writes the viewer's own address into the assignee filter
-            rather than being a separate server-side flag: one filter, so a
-            saved view carries WHOSE work it meant instead of resolving to
-            whoever opens it later. */}
-        <Button
-          variant={mine ? "primary" : "secondary"}
-          size="sm"
-          disabled={!me}
-          aria-pressed={mine}
-          onClick={() => set({ assignee: mine ? "" : me, unassigned: false })}
-        >
-          Mine
-        </Button>
-        <Button
-          variant={filters.unassigned ? "primary" : "secondary"}
-          size="sm"
-          aria-pressed={filters.unassigned}
-          onClick={() =>
-            set({ unassigned: !filters.unassigned, assignee: "" })
-          }
-        >
-          Unassigned
-        </Button>
+        {/* ── Assignee (WS-27af) ───────────────────────────────────────────
+            One axis, one control. This was two toggle buttons — "Mine" and
+            "Unassigned" — which offered the viewer exactly two of the people
+            who might hold work, and could not express "Priya's". The server
+            has always accepted any address here; only the UI was narrow.
+
+            A `Select`, matching the Status control beside it, because that is
+            what this is: pick one value on one axis. It is deliberately NOT
+            the directory-backed `AssigneePicker` — that control exists to
+            ASSIGN, and its warnings ("away until the 20th", "more committed
+            than contracted") are advice about giving someone work, which means
+            nothing when you are reading it.
+
+            "Mine" survives as an OPTION rather than a button. It still writes
+            the viewer's own address rather than a server-side flag, so a saved
+            view carries whose work it meant instead of resolving to whoever
+            opens it later. */}
+        <div className="w-40">
+          <Select
+            inputSize="sm"
+            aria-label="Assignee"
+            value={filters.unassigned ? UNSET : filters.assignee}
+            onChange={(e) => {
+              const picked = e.target.value;
+              // `unassigned` is its own server flag, so the two are set as a
+              // pair — every path here writes both and they cannot drift into
+              // "nobody's tasks, assigned to Priya".
+              set(
+                picked === UNSET
+                  ? { assignee: "", unassigned: true }
+                  : { assignee: picked, unassigned: false }
+              );
+            }}
+          >
+            <option value="">Anyone</option>
+            {me ? <option value={me}>Me</option> : null}
+            <option value={UNSET}>Unassigned</option>
+            {people.length > 0 ? (
+              <optgroup label="Assignees">
+                {people.map((who) => (
+                  <option key={who} value={who}>
+                    {personLabel(who)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {/* A saved view can name somebody who holds nothing right now.
+                Without this the select would render blank and silently read
+                as "Anyone" while still filtering to them. */}
+            {orphanAssignee ? (
+              <option value={orphanAssignee}>{personLabel(orphanAssignee)}</option>
+            ) : null}
+          </Select>
+        </div>
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"
@@ -234,42 +320,56 @@ export function FilterBar({
           Overdue
         </Button>
 
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Group by
-          <select
-            aria-label="Group by"
-            className={SELECT}
-            value={groupBy}
-            onChange={(e) => onGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {GROUP_LABELS[option]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* Both axes are offered only where the canvas draws them. Calendar
+            and Timeline honour neither, and only the board has a second
+            axis — see `honoursGroupBy` / `honoursLanes`. Hiding the control
+            never clears the value: switching away and back keeps the
+            grouping, and a saved view carries both axes whichever canvas
+            saved it. */}
+        {honoursGroupBy(mode) ? (
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            Group by
+            <select
+              aria-label="Group by"
+              className={SELECT}
+              value={groupBy}
+              onChange={(e) => onGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.filter((option) =>
+                axisOffered(option, groupBy)
+              ).map((option) => (
+                <option key={option} value={option}>
+                  {GROUP_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          Lanes
-          <select
-            aria-label="Sub-group by (swimlanes)"
-            className={SELECT}
-            value={subGroupBy === groupBy ? "none" : subGroupBy}
-            onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.filter(
-              (option) => option === "none" || option !== groupBy
-            ).map((option) => (
-              <option key={option} value={option}>
-                {option === "none" ? "No lanes" : GROUP_LABELS[option]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {honoursLanes(mode) ? (
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            Lanes
+            <select
+              aria-label="Sub-group by (swimlanes)"
+              className={SELECT}
+              value={subGroupBy === groupBy ? "none" : subGroupBy}
+              onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.filter(
+                (option) =>
+                  (option === "none" || option !== groupBy) &&
+                  axisOffered(option, subGroupBy)
+              ).map((option) => (
+                <option key={option} value={option}>
+                  {option === "none" ? "No lanes" : GROUP_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         {/* WS-27x — which fields this view shows. ONE set feeding two
             consumers: the table's columns and every card's chip row, so

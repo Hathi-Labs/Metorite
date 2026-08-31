@@ -21,7 +21,7 @@ import { expect, test } from "@playwright/test";
 
 import { compileArtifact } from "../src/lib/compileArtifact";
 import { appTokenCss } from "../src/lib/theme/app-tokens";
-import { resolveTheme } from "../src/lib/theme/themes";
+import { THEME } from "../src/lib/theme/themes";
 
 /** An agent-authored artifact using the API surface agents are told to use. */
 const SOURCE = `
@@ -65,7 +65,7 @@ function buildHost(js: string): string {
   const srcDoc =
     `<!doctype html><html data-theme="dark"><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${CSP}">` +
-    `<style>:root{\n${appTokenCss(resolveTheme("rapidtool"), "dark")}\n}` +
+    `<style>:root{\n${appTokenCss(THEME, "dark")}\n}` +
     `.cc-eyebrow{color:var(--cc-primary)}</style>` +
     `</head><body>${mount}${BRIDGE}</body></html>`;
   return (

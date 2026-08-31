@@ -1,18 +1,20 @@
 "use client";
 
 /**
- * /settings/appearance — pick the look of the Control Plane.
+ * /settings/appearance — the few things you may change about the look.
  *
- * Two scopes, deliberately separated in the UI because they behave differently:
+ * ⚠️ **There is no theme picker** (owner directive 2026-08-31). The Control
+ * Plane has ONE look, carried by `globals.css`, and every app and sub-app
+ * renders in it. What remains here adjusts that look rather than replacing
+ * it: colour mode, density and accent. A gallery of themes is exactly what
+ * this page used to be, and exactly what was retired.
  *
- *   • Your appearance — theme, mode, density and accent for this browser.
- *     Applies the moment you click; nothing to save.
+ * Two scopes, deliberately separated because they behave differently:
+ *
+ *   • Your appearance — mode, density and accent for this browser. Applies
+ *     the moment you click; nothing to save.
  *   • Organisation default — what everyone gets who has not chosen for
  *     themselves. Admin-only, and needs a gateway that stores it.
- *
- * Each theme card renders a real preview built from that theme's own tokens
- * (its surfaces, its primary, its radius, its font), rather than a static
- * screenshot, so the gallery cannot go stale when a manifest changes.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -21,10 +23,9 @@ import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { THEMES, resolveTheme } from "@/lib/theme/themes";
-import { useAppearanceStore, effectiveThemeId, effectiveDensity } from "@/lib/theme/store";
+import { useAppearanceStore, effectiveDensity } from "@/lib/theme/store";
 import { isSafeColor } from "@/lib/theme/css";
-import type { AppearanceSettings, ColorTokens, Density, Theme, ThemeMode } from "@/lib/theme/types";
+import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 
 const DENSITY_LABELS: Record<Density, string> = {
@@ -33,9 +34,9 @@ const DENSITY_LABELS: Record<Density, string> = {
   comfortable: "Comfortable",
 };
 
-/** Accent suggestions — one per built-in theme's primary, plus a few extras. */
+/** Accent suggestions. `null` restores the app's own blue. */
 const ACCENT_PRESETS = [
-  { label: "Theme default", value: null },
+  { label: "Default", value: null },
   { label: "Azure", value: "hsl(206 100% 42%)" },
   { label: "Violet", value: "hsl(258 60% 55%)" },
   { label: "Emerald", value: "hsl(158 64% 38%)" },
@@ -86,7 +87,7 @@ function PageHeader() {
       <div>
         <h1 className="text-base font-bold text-foreground sm:text-lg">Appearance</h1>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          Themes, colour mode, density and accent across the Control Plane
+          Colour mode, density and accent across the Control Plane
         </p>
       </div>
     </div>
@@ -97,13 +98,9 @@ function PageHeader() {
 
 function PersonalSettings() {
   const { theme: mode, setTheme: setMode } = useTheme();
-  const activeId = useAppearanceStore(effectiveThemeId);
   const density = useAppearanceStore(effectiveDensity);
   const accent = useAppearanceStore((s) => s.accent);
-  const userThemeId = useAppearanceStore((s) => s.userThemeId);
-  const orgThemeId = useAppearanceStore((s) => s.orgThemeId);
   const allowUserOverride = useAppearanceStore((s) => s.allowUserOverride);
-  const setUserTheme = useAppearanceStore((s) => s.setUserTheme);
   const setUserDensity = useAppearanceStore((s) => s.setUserDensity);
   const setAccent = useAppearanceStore((s) => s.setAccent);
 
@@ -117,8 +114,8 @@ function PersonalSettings() {
           Appearance is managed by your organisation
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">
-          Everyone is on <span className="text-foreground">{resolveTheme(orgThemeId).name}</span>. An
-          administrator can allow personal overrides from the Organisation default tab.
+          An administrator can allow personal overrides from the Organisation default
+          tab.
         </p>
       </div>
     );
@@ -128,32 +125,8 @@ function PersonalSettings() {
     <div className="space-y-8">
       <section>
         <SectionHeading
-          title="Theme"
-          description="Changes colours, fonts, corner radius, effects and the icon pack across every page."
-        />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {THEMES.map((theme) => (
-            <ThemeCard
-              key={theme.id}
-              theme={theme}
-              mode={previewMode}
-              selected={activeId === theme.id}
-              isOrgDefault={orgThemeId === theme.id}
-              onSelect={() => setUserTheme(theme.id)}
-            />
-          ))}
-        </div>
-        {userThemeId && (
-          <Button variant="secondary" size="lg" className="mt-3" onClick={() => setUserTheme(null)}>
-            Reset to organisation default ({resolveTheme(orgThemeId).name})
-          </Button>
-        )}
-      </section>
-
-      <section>
-        <SectionHeading
           title="Colour mode"
-          description="Every theme ships both. Independent of your theme choice."
+          description="The same look, lit two ways."
         />
         <div className="flex gap-2">
           {(["dark", "light"] as const).map((m) => (
@@ -189,7 +162,7 @@ function PersonalSettings() {
       <section>
         <SectionHeading
           title="Accent colour"
-          description="Overrides the theme's primary colour. Leave on Theme default unless you have a reason."
+          description="Overrides the primary colour. Leave on Default unless you have a reason."
         />
         <div className="flex flex-wrap gap-2">
           {ACCENT_PRESETS.map((preset) => (
@@ -350,25 +323,9 @@ function OrganisationSettings() {
 
       <section>
         <SectionHeading
-          title="Default theme"
-          description="What members see before they choose one for themselves."
+          title="Default colour mode"
+          description="What members see before they choose for themselves."
         />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {THEMES.map((theme) => (
-            <ThemeCard
-              key={theme.id}
-              theme={theme}
-              mode={settings.org.mode}
-              selected={settings.org.themeId === theme.id}
-              onSelect={() => save({ themeId: theme.id })}
-              disabled={saving || !settings.orgManaged}
-            />
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <SectionHeading title="Default colour mode" description="" />
         <div className="flex gap-2">
           {(["dark", "light"] as const).map((m) => (
             <OptionPill
@@ -386,7 +343,7 @@ function OrganisationSettings() {
       <section>
         <SectionHeading
           title="Personal overrides"
-          description="Turn off to standardise the whole company on the default theme."
+          description="Turn off to standardise the whole company on the defaults above."
         />
         <OptionPill
           selected={settings.org.allowUserOverride}
@@ -459,125 +416,3 @@ function OptionPill({
   );
 }
 
-/**
- * A theme card whose preview is drawn with the theme's own tokens.
- *
- * The swatch is a miniature of the real UI — surface, card, a primary button,
- * a muted line — rendered with inline custom properties rather than Tailwind
- * classes, because the classes resolve against the ACTIVE theme and would show
- * every card in the same colours.
- */
-function ThemeCard({
-  theme,
-  mode,
-  selected,
-  isOrgDefault,
-  onSelect,
-  disabled,
-}: {
-  theme: Theme;
-  mode: ThemeMode;
-  selected: boolean;
-  isOrgDefault?: boolean;
-  onSelect: () => void;
-  disabled?: boolean;
-}) {
-  const c: ColorTokens = theme.colors[mode];
-
-  return (
-    <button
-      onClick={onSelect}
-      disabled={disabled}
-      aria-pressed={selected}
-      className={`w-full rounded-xl border p-3 text-left tech-transition disabled:cursor-not-allowed disabled:opacity-50 sm:p-4 ${
-        selected
-          ? "border-primary bg-primary/5 ring-1 ring-primary/20"
-          : "border-border bg-card hover:border-primary/40 hover:bg-secondary/30"
-      }`}
-    >
-      <div
-        className="mb-3 overflow-hidden rounded-lg border"
-        style={{
-          background: c.background,
-          borderColor: c.border,
-          borderRadius: theme.shape.radius,
-          fontFamily: theme.typography.app,
-        }}
-      >
-        <div className="flex items-center gap-1.5 px-2.5 py-2" style={{ background: c.sidebarBackground ?? c.background }}>
-          <span
-            className="inline-block h-3.5 w-3.5"
-            style={{ background: c.primary, borderRadius: theme.shape.radius }}
-          />
-          <span className="text-[10px] font-semibold" style={{ color: c.foreground }}>
-            Metorite
-          </span>
-        </div>
-        <div className="space-y-1.5 p-2.5">
-          <div
-            className="space-y-1.5 p-2"
-            style={{
-              background: c.card,
-              borderRadius: theme.shape.radius,
-              border: `${theme.shape.borderWidth} solid ${c.border}`,
-            }}
-          >
-            <div className="h-1.5 w-2/3 rounded-full" style={{ background: c.foreground, opacity: 0.85 }} />
-            <div className="h-1.5 w-full rounded-full" style={{ background: c.mutedForeground, opacity: 0.5 }} />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="px-2 py-1 text-[9px] font-medium"
-              style={{
-                background: c.primary,
-                color: c.primaryForeground,
-                borderRadius: theme.shape.radius,
-                fontWeight: theme.typography.labelWeight,
-              }}
-            >
-              Action
-            </span>
-            <span
-              className="px-2 py-1 text-[9px]"
-              style={{
-                color: c.mutedForeground,
-                borderRadius: theme.shape.radius,
-                border: `${theme.shape.borderWidth} solid ${c.border}`,
-              }}
-            >
-              Cancel
-            </span>
-            <span className="ml-auto flex gap-1">
-              {[c.success, c.warning, c.destructive, c.accent].map((color, i) => (
-                <span key={i} className="h-2 w-2 rounded-full" style={{ background: color }} />
-              ))}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-semibold text-foreground">{theme.name}</span>
-            {selected && <Icon name="Check" size={13} className="shrink-0 text-primary" />}
-          </div>
-          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{theme.description}</p>
-        </div>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge>{theme.iconPack} icons</Badge>
-        <Badge>{theme.shape.radius === "0.25rem" ? "square" : theme.shape.radius === "1rem" ? "rounded" : "radius " + theme.shape.radius}</Badge>
-        {isOrgDefault && <Badge>org default</Badge>}
-      </div>
-    </button>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded-md bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
-      {children}
-    </span>
-  );
-}

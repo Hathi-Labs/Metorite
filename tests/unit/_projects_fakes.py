@@ -1309,6 +1309,59 @@ class FakeProjectsDB:
                 pid = str(row.get("parent_project_id") or "")
             return _Result([], scalar=verdict)
 
+        # `WITH RECURSIVE anc AS (…) SELECT count(*) … kind = 'project'` —
+        # migration 193's generation count, walked UP from a node. Answered
+        # explicitly for the `chain` reason above: the fall-through is 0,
+        # which reads as "at the root" and would silently pass every depth
+        # check in the suite while the grammar refused nothing.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+anc\b", statement, re.I):
+            pid = str(args.get("pid") or "")
+            generations = 0
+            seen: set[str] = set()
+            while pid and pid not in seen:
+                seen.add(pid)
+                row = next(
+                    (r for r in self.rows("pm_projects") if str(r["id"]) == pid),
+                    None,
+                )
+                if row is None:
+                    break
+                if str(row.get("kind") or "project") == "project":
+                    generations += 1
+                pid = str(row.get("parent_project_id") or "")
+            return _Result([], scalar=generations)
+
+        # `WITH RECURSIVE sub AS (… d …) SELECT coalesce(max(d), 0)` —
+        # migration 193's subtree depth, walked DOWN. Checked BEFORE the
+        # plain `sub` shape below, whose count answer would be a plausible
+        # wrong number here (a node count is not a chain length).
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+sub\b", statement, re.I) and \
+                re.search(r"coalesce\(max\(d\)", statement, re.I):
+            by_parent: dict[str, list[dict]] = {}
+            for row in self.rows("pm_projects"):
+                by_parent.setdefault(
+                    str(row.get("parent_project_id") or ""), [],
+                ).append(row)
+
+            def _depth(node_id: str, guard: frozenset[str]) -> int:
+                if node_id in guard:
+                    return 0
+                row = next(
+                    (r for r in self.rows("pm_projects")
+                     if str(r["id"]) == node_id),
+                    None,
+                )
+                if row is None:
+                    return 0
+                own = 1 if str(row.get("kind") or "project") == "project" else 0
+                below = [
+                    _depth(str(child["id"]), guard | {node_id})
+                    for child in by_parent.get(node_id, [])
+                ]
+                return own + (max(below) if below else 0)
+
+            return _Result([], scalar=_depth(str(args.get("pid") or ""), frozenset()))
+
         # `WITH RECURSIVE sub AS (…) SELECT count(*) FROM sub` — the subtree
         # size, asked by the project delete before it destroys anything. It does
         # not start with SELECT, so the generic count path never sees it and the

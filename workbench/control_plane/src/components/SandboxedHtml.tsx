@@ -46,9 +46,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { buildIconMap } from "@/lib/iconSvg";
 import { appTokenMap } from "@/lib/theme/app-tokens";
-import { ensureIconPack, useIconPackReady } from "@/lib/theme/icon-packs";
 import { BRIDGE, buildSrcDoc } from "@/lib/theme/sandbox-frame";
-import { useActiveTheme, useIconPack } from "@/lib/theme/store";
+import { THEME } from "@/lib/theme/themes";
 import { useMode } from "@/lib/theme/surfaces";
 
 interface SandboxedHtmlProps {
@@ -107,33 +106,21 @@ export default function SandboxedHtml({
   // Read live rather than taking a prop. Every call site used to derive the
   // colour mode with the identical two lines and thread it down (in
   // GenerativeUINode, through the whole node tree) purely to reach this
-  // component — five copies of one expression, and none of them knew about the
-  // theme axis at all.
-  const theme = useActiveTheme();
+  // component — five copies of one expression.
   const mode = useMode();
-  const pack = useIconPack();
-  // Subscribing is what makes the swap happen: the offline collection loads
-  // asynchronously, so the first render of a themed pack legitimately falls
-  // back to Lucide and this re-renders once the glyphs are actually available.
-  const packReady = useIconPackReady(pack);
-  if (typeof window !== "undefined") ensureIconPack(pack);
 
-  // `packReady` is a load SIGNAL, not an input: `buildIconMap` reads the pack's
-  // registered glyphs, which only exist after the collection resolves, so this
-  // is what re-runs the resolution once they arrive.
-  const icons = useMemo(
-    () => buildIconMap(iconNames, 18, 40, pack),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [iconNames, pack, packReady],
-  );
+  // One pack, in the bundle, resolved synchronously — so this no longer waits
+  // on an Iconify collection or re-runs when one arrives (the theming engine
+  // was retired 2026-08-31).
+  const icons = useMemo(() => buildIconMap(iconNames, 18, 40), [iconNames]);
 
-  // `theme`, `mode` and `icons` are all deliberately absent: every one of them
-  // changes when somebody switches theme, and rebuilding srcDoc remounts the
-  // document — a published app would lose whatever the person had typed into
-  // it. First paint reads them here; every change after that arrives as a patch
-  // in the effect below.
+  // `mode` and `icons` are deliberately absent: both change when somebody
+  // switches colour mode, and rebuilding srcDoc remounts the document — a
+  // published app would lose whatever the person had typed into it. First
+  // paint reads them here; every change after that arrives as a patch in the
+  // effect below.
   const srcDoc = useMemo(
-    () => buildSrcDoc(html, theme, mode, icons),
+    () => buildSrcDoc(html, THEME, mode, icons),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [html],
   );
@@ -147,10 +134,10 @@ export default function SandboxedHtml({
     // Safe here: the payload is CSS variable values, and the frame is the only
     // recipient (we hold its window handle directly).
     win.postMessage(
-      { __cc: true, kind: "theme", mode, vars: appTokenMap(theme, mode), icons },
+      { __cc: true, kind: "theme", mode, vars: appTokenMap(THEME, mode), icons },
       "*",
     );
-  }, [theme, mode, icons, srcDoc]);
+  }, [mode, icons, srcDoc]);
 
   useEffect(() => {
     function onMessage(ev: MessageEvent) {

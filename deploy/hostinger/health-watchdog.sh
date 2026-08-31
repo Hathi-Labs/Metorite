@@ -34,6 +34,45 @@ log() { echo "$(ts) $*" | tee -a "$LOG"; }
 ACTIONS=0
 FAILED=0
 
+# ── Startup grace (H-13c) ─────────────────────────────────────────────────
+#
+# ⚠️ WITHOUT THIS THE WATCHDOG IS A KILL LOOP, and it was one on the box.
+#
+# The gateway cold-starts in roughly 90–105 seconds — awaited warm-clone
+# timeouts, not a hang. The watchdog probes far sooner, gets no answer because
+# the service is still starting, restarts it, and the clock goes back to zero.
+# The next run does the same. The service never reaches "startup complete", and
+# every restart looks like the watchdog working.
+#
+# So a unit that only RECENTLY entered its current state is left alone. 180s is
+# comfortably past the observed cold start with room for a slow boot; below
+# ~120s the loop can still close.
+#
+# This lived only on the box until 2026-08-31, which meant every git-reset
+# deploy re-armed the loop until somebody noticed and re-patched by hand.
+GRACE_SECONDS="${WATCHDOG_GRACE_SECONDS:-180}"
+
+# Seconds since a unit last entered the active state. Prints a huge number when
+# systemd has no timestamp for it (never started, or the property is empty), so
+# an unparseable answer NEVER reads as "just started" and never suppresses a
+# restart that is genuinely needed. Failing towards acting is the safe
+# direction for a watchdog.
+unit_age_seconds() {
+  local stamp epoch
+  stamp="$(systemctl show -p ActiveEnterTimestamp --value "$1" 2>/dev/null || true)"
+  [ -z "$stamp" ] && { echo 999999; return; }
+  epoch="$(date -d "$stamp" +%s 2>/dev/null || true)"
+  [ -z "$epoch" ] && { echo 999999; return; }
+  echo $(( $(date +%s) - epoch ))
+}
+
+# True while a unit is inside its startup grace.
+starting_up() {
+  local age
+  age="$(unit_age_seconds "$1")"
+  [ "$age" -lt "$GRACE_SECONDS" ]
+}
+
 # ── Units that must be running ────────────────────────────────────────────
 # acb.service is the docker compose stack (postgres/redis). The gateway
 # Requires= it, so if it is down the gateway cannot come up — check it first
@@ -45,7 +84,16 @@ for unit in $UNITS; do
     log "OK      unit $unit active"
     continue
   fi
-  log "DOWN    unit $unit is $(systemctl is-active "$unit" 2>&1)"
+  state="$(systemctl is-active "$unit" 2>&1)"
+  # `is-active --quiet` fails for `activating` too, so a unit part-way through
+  # its own startup reads as DOWN here. Restarting it is the same kill loop the
+  # HTTP grace prevents, one level up: systemd is already doing the thing we
+  # would be asking it to do.
+  if [ "$state" = "activating" ]; then
+    log "WAIT    unit $unit is activating, leaving it alone"
+    continue
+  fi
+  log "DOWN    unit $unit is $state"
   if [ "$DRY_RUN" = "1" ]; then
     log "DRYRUN  would restart $unit"
     continue
@@ -80,6 +128,13 @@ probe_http() {
   code="$(curl -s -k -o /dev/null -m 15 -w '%{http_code}' "$@" "$url" 2>/dev/null || echo 000)"
   if http_ok "$code"; then
     log "OK      $label responding (HTTP $code)"
+    return 0
+  fi
+  # ⚠️ The kill loop lived HERE, not in the unit check above. A cold-starting
+  # gateway is `active` to systemd long before it answers /health, so the unit
+  # loop passes and this probe is what used to restart it — every run, forever.
+  if starting_up "$unit"; then
+    log "WAIT    $label not up yet, $unit started $(unit_age_seconds "$unit")s ago (grace ${GRACE_SECONDS}s)"
     return 0
   fi
   log "DOWN    $label not responding at $url"

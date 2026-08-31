@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ICON_REGISTRY } from "@/lib/theme/icon-registry";
+import { isKnownIcon } from "@/lib/icons";
 
 import { EMPTY_FILTERS, isFiltered } from "./grouping";
 import { emptyStateCopy } from "./emptyState";
@@ -149,11 +149,10 @@ describe("the no-permission state", () => {
     }
   });
 
-  it("names icons that are mapped in every pack", () => {
+  it("names icons that actually exist", () => {
     for (const name of [denied().icon, denied().action?.icon]) {
       expect(name, "an unnamed icon renders nothing").toBeTruthy();
-      expect(ICON_REGISTRY[name!]?.fluent, `${name} has no Fluent mapping`).toBeTruthy();
-      expect(ICON_REGISTRY[name!]?.material, `${name} has no Material mapping`).toBeTruthy();
+      expect(isKnownIcon(name!), `${name} is not a real Lucide icon`).toBe(true);
     }
   });
 });
@@ -166,18 +165,19 @@ describe("the two states are distinguishable", () => {
     expect(filtered.icon).not.toBe(empty.icon);
   });
 
-  it("every icon is mapped in every pack", () => {
-    // An unmapped name renders the Lucide glyph on Fluent and Material — one
-    // outline icon in a screen of Material Symbols, which reads as a bug. The
-    // first draft used `FilterX`, which is mapped nowhere.
+  it("every icon actually exists", () => {
+    // An unknown name silently renders the `Zap` fallback — a lightning bolt
+    // where an empty state should be, which reads as a bug rather than as a
+    // missing glyph. (This asserted pack mappings until 2026-08-31; with one
+    // pack, "is it real" is both the stronger question and the only one left,
+    // because a hallucinated name was always mapped nowhere AND unreal.)
     const icons = [
       emptyStateCopy({ canvas: "list", filtered: true }).icon,
       emptyStateCopy({ canvas: "list", filtered: false }).icon,
       emptyStateCopy({ canvas: "board", filtered: false, onStatusAxis: true }).icon,
     ];
     for (const icon of icons) {
-      expect(ICON_REGISTRY[icon]?.fluent, `${icon} has no Fluent mapping`).toBeTruthy();
-      expect(ICON_REGISTRY[icon]?.material, `${icon} has no Material mapping`).toBeTruthy();
+      expect(isKnownIcon(icon), `${icon} is not a real Lucide icon`).toBe(true);
     }
   });
 

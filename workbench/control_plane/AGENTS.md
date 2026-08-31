@@ -9,22 +9,31 @@ This version has breaking changes — APIs, conventions, and file structure may 
 `DESIGN_SYSTEM.md` in this directory is the contract, not a style suggestion.
 The short version, because these are the three mistakes that actually happen:
 
+⚠️ **The theming engine is RETIRED (owner directive 2026-08-31).** There is one
+look, `src/app/globals.css` is the source, and every app renders in it. Four
+themes, the `data-theme` attribute and the per-theme icon packs are deleted. A
+member may still change **colour mode, density and accent** — those adjust the
+one look rather than replacing it, and every rule below still binds because of
+them. `DESIGN_SYSTEM.md` §0 is the detail.
+
 1. **Never write a colour.** `bg-primary`, `text-muted-foreground`,
    `var(--success)` — never `#0ea5e9`, `hsl(…)`, or `bg-[#1a1b1e]`. On a
    coloured fill use the `-foreground` partner, not `text-white`.
    **`bg-sky-500` counts** — Tailwind's own palette is a hardcoded colour with a
    friendly name. See rule 7 for what to use instead.
-2. **Never `import … from "lucide-react"`.** Use `<Icon name="Plus" />` — the
-   active theme decides which pack draws it.
+2. **Never `import … from "lucide-react"`.** Use `<Icon name="Plus" />`, which
+   owns the default size, the class contract and the unknown-name fallback.
+   Only `lib/icons.tsx` may name the library.
 3. **Never hand-roll a control.** `Button` / `Input` / `Select` / `Textarea` /
-   `Badge` from `src/components/ui/`. Material makes every button a pill,
-   Graphite uppercases every label; no class string can express that.
+   `Badge` from `src/components/ui/`. The `--control-*` tokens carry the
+   focus ring, the state layer and the label treatment, and no class string can
+   express those. An accent override moves `--primary` under every one of them.
    **`Select` exists since S5** — a bare `<select>` wears the OS's own
    disclosure triangle, and 38 files had each copied their own class string
    instead. A **file input must be hidden** (`className="hidden"`) behind a
    `<Button>` that raises it, with the chosen filenames listed by the app:
    "Choose Files / No file chosen" is the browser's string in the browser's
-   font and no theme can reach it.
+   font, and the app cannot reach it.
 
 All three are enforced by `src/lib/theme/conformance.test.ts` (**eight** rules:
 literals, `lucide-react`, bracket classes, solid-button chrome, raw palette
@@ -52,11 +61,16 @@ considers it." It applies to every surface, not only Projects.)*
 
 An app inside Metorite is a **projection of one product**, not a product
 with its own visual identity. `/projects`, `/tasks`, `/email`, `/notes`, `/crm`
-and everything after them draw from the same engine, so switching the org to
-Fluent or Material or Graphite repaints all of them together. The moment one
-app carries its own palette, that app is the one that looks broken on the day
-somebody changes the theme — and nobody notices until then, because a hardcoded
-value renders *fine*.
+and everything after them draw from the same tokens, so a change to
+`globals.css` repaints all of them together. The moment one app carries its own
+palette, that app is the one that looks broken on the day somebody edits a
+token, switches to light mode, or sets an accent — and nobody notices until
+then, because a hardcoded value renders *fine*.
+
+⚠️ Retiring the four themes (2026-08-31) did **not** relax this rule. It removed
+the thing that used to EXPOSE a breach for free: one theme switch and every
+hardcoded value announced itself. The breach is still a breach. Nothing shows
+it to you now.
 
 Five rules on top of the three above. Each one exists because it was broken:
 
@@ -144,14 +158,18 @@ Five rules on top of the three above. Each one exists because it was broken:
    `lib/statusAccent.ts` is excepted with its argument. `hover:bg-accent` and
    `bg-accent/10` are deliberately not matched. The radius half is **advisory**: nothing tests it, and
    nothing should — see the correction above.
-7. **Categorical hues are a theme decision too.** A set of colours that only
-   has to be *mutually distinguishable* (contexts, tags, labels) still belongs to
-   the theme. **The ramp now exists**: `--cat-1` … `--cat-8`, eight slots every
-   theme supplies in both modes (WS-27af; values in `src/lib/theme/themes.ts`,
+7. **Categorical hues are a design-system decision too.** A set of colours that
+   only has to be *mutually distinguishable* (contexts, tags, labels) still
+   belongs to the tokens. **The ramp**: `--cat-1` … `--cat-12` in both modes
+   (values in `src/app/globals.css`, mirrored in `src/lib/theme/themes.ts`,
    class strings in **`src/lib/categorical.ts`** — `categoricalAccent(name)`,
    never a hand-written `bg-cat-*` table). Pick the slot by hashing the item's
-   NAME, never by array index; never reorder the slots, which silently repaints
-   everything already assigned. `app/tasks/lib/contextColors.ts` is the worked
+   NAME, never by array index. Never reorder the slots, which silently repaints
+   everything already assigned.
+   ⚠️ **A hash may only land on the first EIGHT.** `hashSlot`'s modulus is
+   frozen at `HASH_SLOTS = 8`. Slots 9–12 (2026-08-31) exist for an explicit
+   pick — a space's marker in Space Settings — and widening the modulus would
+   recolour every context and tag in the product at once. `app/tasks/lib/contextColors.ts` is the worked
    adapter — it keeps only the hand-assigned @context slots and delegates the
    rest, the same shape `stageColors.ts` has over `statusAccent.ts`.
    This does **not** compete with rule 4, it completes it: a status resolves to
@@ -190,8 +208,15 @@ two apps draw a card the same way. The conformance suite checks eight regexes.
 (`src/lib/sharedTaskUi.test.ts` is the nearest thing to a structural test and is
 narrower than it sounds: it pins that a shared module is declared **once** and
 that each app still imports it — never that a surface actually uses it.)
-So the real check is `DESIGN_SYSTEM.md` §8: **switch the theme to Fluent, then
-Material, then Graphite, and look at the surface you changed** — and at the
-neighbouring app, because continuity between two apps is exactly what no test in
-this repo measures. That check is what would have caught every divergence listed
-above before it landed.
+So the real check is `DESIGN_SYSTEM.md` §8: **look at the surface you changed
+in a state you did not build it in** — light mode first, then compact density,
+then a changed accent — and look at the neighbouring app too, because
+continuity between two apps is exactly what no test in this repo measures.
+
+⚠️ That check used to read "switch the theme to Fluent, then Material, then
+Graphite", and it was the strongest tool in this document: a theme switch made
+every hardcoded value announce itself for free. Retiring the themes
+(2026-08-31) removed the tool and kept the problem. **Light mode is now the
+highest-yield substitute** — most work happens in dark, so light is where a
+hardcoded `#fff` or a missing `-foreground` partner surfaces. It is weaker than
+what it replaces. Compensate by reviewing for the rule, not only by looking.

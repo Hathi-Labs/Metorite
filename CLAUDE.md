@@ -147,18 +147,29 @@ Rules that make it work:
   validator, one task store, one Center registry (`lib/centers.ts`), one status
   colour vocabulary (`src/lib/statusAccent.ts`). A second implementation of an
   existing seam is a defect, not a feature.
-- **The UI is one product, themed centrally.** Every app is a projection, never
-  a surface with its own look: no app-local palette, no second colour
+- **The UI is one product with ONE look.** Every app is a projection, never a
+  surface with its own look: no app-local palette, no second colour
   vocabulary, no hand-rolled control. `workbench/control_plane/DESIGN_SYSTEM.md`
   is the contract and `AGENTS.md` beside it carries the eight rules and their
-  fences — both are auto-loaded when you touch UI code. Owner directive
-  2026-08-10. Categorical hues (contexts, tags, labels) go through the
-  `--cat-1…8` ramp via `src/lib/categorical.ts`, never a raw Tailwind palette
-  class. Headless primitives come from `src/components/ui/` — `@base-ui/react`
-  is the one substrate (D-PM-15) and `Modal.tsx` is the only file allowed to
-  import it. The conformance suite checks eight regexes and **nothing tests layout
-  or cross-app continuity**, so the theme-switch check (Fluent → Material →
-  Graphite, on your surface *and* its neighbour) is the real gate.
+  fences — both are auto-loaded when you touch UI code. Owner directives
+  2026-08-10 and 2026-08-31.
+  ⚠️ **The theming engine is RETIRED (2026-08-31).** Four switchable themes,
+  the `data-theme` attribute and the per-theme icon packs are gone.
+  `src/app/globals.css` is the source of the one look — edit it to change how
+  the app looks. `lib/theme/themes.ts` keeps the same values as a mirror for
+  three data consumers (the app sandbox, Monaco/Shiki, the contrast gate), and
+  `themes.test.ts` fails if the two drift. A member may still change **colour
+  mode, density and accent**, which adjust the look and never replace it.
+  Categorical hues (contexts, tags, labels) go through the `--cat-1…12` ramp
+  and `src/lib/categorical.ts`, never a raw Tailwind palette class — and a
+  HASH may only reach the first eight (`HASH_SLOTS`), or every assigned
+  context repaints. Headless primitives come from `src/components/ui/` —
+  `@base-ui/react` is the one substrate (D-PM-15) and `Modal.tsx` is the only
+  file allowed to import it. The conformance suite checks eight regexes and
+  **nothing tests layout or cross-app continuity**. The theme-switch check used
+  to be the real gate and no longer exists, so the gate is now: **look at your
+  surface in light mode, at compact density, and under a changed accent — and
+  at its neighbour.**
 - **Keep branches short and integrate often.** Long branches are the root cause
   behind the migration-renumber collisions, the green-alone/red-together PRs and
   a duplicated tenancy design. Three or four in flight is the ceiling.
@@ -167,7 +178,7 @@ Rules that make it work:
 
 ## 5. What not to do
 
-- **Do not re-litigate decisions.** **D1–D54** are taken *(this read "D1–D31" until 2026-08-26)*. If one looks wrong, say so
+- **Do not re-litigate decisions.** **D1–D69** are taken *(this read "D1–D31" until 2026-08-26, and "D1–D54" until 2026-08-31)*. If one looks wrong, say so
   and stop — do not build against your own alternative.
 - **Do not refactor the tree to conform** to R6/R7/R8. Those bind *new and
   changed* work. Existing violations are findings for the board.

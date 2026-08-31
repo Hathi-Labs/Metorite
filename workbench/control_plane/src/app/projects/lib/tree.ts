@@ -8,13 +8,170 @@
  * needs to be checkable without rendering anything.
  */
 
+import { CATEGORICAL_SLOTS, hashSlot } from "@/lib/categorical";
+
 export interface ProjectNode {
   id: string;
   name: string;
   parent_project_id?: string | null;
+  kind?: string | null;
+  /** Migration 194 — a themed icon NAME and a ramp SLOT (1..8), never a colour. */
+  icon?: string | null;
+  icon_slot?: number | null;
   status?: string | null;
   lead?: string | null;
   children?: ProjectNode[];
+}
+
+export type NodeKind = "project" | "folder";
+
+/** A row's kind. Absent/null reads as 'project' (R6 — migration 193). */
+export function nodeKind(node: Pick<ProjectNode, "kind">): NodeKind {
+  return node.kind === "folder" ? "folder" : "project";
+}
+
+/**
+ * The four LEVELS a node occupies. Derived from kind plus position, never
+ * stored — a stored level and the tree could disagree, and the tree is the
+ * fact. Mirrors `core.node_level` on the server.
+ */
+export type NodeLevel = "space" | "folder" | "project" | "subproject";
+
+export function nodeLevel(kind: NodeKind, generation: number): NodeLevel {
+  if (kind === "folder") return "folder";
+  if (generation <= 1) return "space";
+  return generation === 2 ? "project" : "subproject";
+}
+
+/**
+ * The levels that own a run state (owner directive 2026-08-31). A space
+ * summarises and a folder groups; neither DOES work, so neither starts,
+ * pauses or stops. The server refuses the write — this hides the control.
+ */
+export function hasRunState(level: NodeLevel): boolean {
+  return level === "project" || level === "subproject";
+}
+
+/**
+ * The levels that show a DASHBOARD instead of the project views. A space is
+ * not a project (owner directive 2026-08-31): it summarises everything
+ * beneath it and has none of a project's views. A folder does the same.
+ *
+ * A project with subprojects still shows its views — it aggregates the
+ * subtree into them rather than replacing them.
+ */
+export function showsDashboard(level: NodeLevel): boolean {
+  return level === "space" || level === "folder";
+}
+
+/**
+ * What Space Settings offers as an icon (migration 194).
+ *
+ * A curated list, not the whole registry: a picker showing every glyph is a
+ * picker nobody reads to the end, and every name here is verified present
+ * in the themed registry — a missing name renders as a hole, and the theme
+ * system has no way to warn about one. Listed four to a source line and
+ * grouped by domain; the picker draws eight to a row, two domains a line.
+ * Widened from 26 on the owner's ask (2026-08-31) — every addition is
+ * registry-checked by `tree.test.ts`.
+ */
+export const SPACE_ICON_CHOICES: readonly string[] = [
+  "Boxes", "Layers", "LayoutGrid", "Package",
+  "Rocket", "Target", "Flag", "Star",
+  "Building2", "Briefcase", "Users", "Globe",
+  "Cpu", "Code", "Wrench", "Zap",
+  "Palette", "Camera", "Megaphone", "ShoppingCart",
+  "BookOpen", "Lightbulb", "Shield", "Truck",
+  "Headphones", "Coffee", "Gem", "Puzzle",
+  "Factory", "FlaskConical", "Printer", "Hammer",
+  "Cog", "Database", "Server", "Cloud",
+  "Home", "Landmark", "Mountain", "Waves",
+  "Wallet", "CreditCard", "TrendingUp", "Activity",
+  "Mail", "Phone", "MessageSquare", "Video",
+  "Radio", "Mic", "PenTool", "Newspaper",
+  "Calendar", "Clock", "Timer", "Sun",
+  "Moon", "Flame", "Car", "Stethoscope",
+  "Bot", "Brain", "Sparkles", "Monitor",
+];
+
+/** The default glyph for a level, when a space has chosen no icon. */
+export const LEVEL_ICONS: Record<NodeLevel, string> = {
+  space: "Boxes",
+  folder: "Folder",
+  // A project and a subproject spend this slot on their run state
+  // (`StateDot`), so these are only the fallbacks a non-tree surface uses.
+  project: "Kanban",
+  subproject: "GitBranch",
+};
+
+/**
+ * A space's marker: which glyph, and which slot on the categorical ramp.
+ *
+ * ⚠️ **A SLOT, never a colour** (DESIGN_SYSTEM rule 7). The caller turns the
+ * slot into classes with `accentForSlot`, so the hue follows the theme in
+ * both light and dark. Returning `#7c3aed` here would be the hardcoded
+ * colour that rule exists to refuse.
+ *
+ * An unset space falls back to the default glyph and a slot HASHED from its
+ * own name — stable forever, distinct from its neighbours, and never the
+ * grey nothing that makes an unconfigured space look broken. `hashSlot` is
+ * 0-based and the column is 1-based, which is the one place those two
+ * conventions meet.
+ */
+export function spaceMarker(
+  node: Pick<ProjectNode, "name" | "icon" | "icon_slot">
+): { icon: string; slot: number } {
+  const chosen = node.icon_slot;
+  return {
+    icon: node.icon || LEVEL_ICONS.space,
+    slot:
+      typeof chosen === "number" && chosen >= 1 && chosen <= CATEGORICAL_SLOTS
+        ? chosen - 1
+        : hashSlot(node.name),
+  };
+}
+
+export interface ChildOption {
+  kind: NodeKind;
+  /** The LEVEL's own word — "New subproject", never "New project". */
+  label: string;
+  /**
+   * The level the child will occupy. Carried rather than re-derived by the
+   * caller: `kind` cannot express it (a project and a subproject are both
+   * `kind: "project"`), and this function is the only place that already
+   * knows the generation.
+   */
+  level: NodeLevel;
+}
+
+/**
+ * What the + on a row may create (owner directive 2026-08-31):
+ *
+ *     space (root) → [folder] → project → [folder] → subproject
+ *
+ * `generation` counts PROJECT levels at the node, itself included — a space
+ * is 1, a project 2, a subproject 3; a folder reports its parent's count
+ * (folders are transparent to depth). The server enforces the same grammar
+ * in `assert_node_grammar`; this table only decides which buttons exist,
+ * and the words on them.
+ */
+export function childCreationOptions(
+  kind: NodeKind,
+  generation: number
+): ChildOption[] {
+  const project: ChildOption =
+    generation === 1
+      ? { kind: "project", label: "New project", level: "project" }
+      : { kind: "project", label: "New subproject", level: "subproject" };
+  const folder: ChildOption = {
+    kind: "folder",
+    label: "New folder",
+    level: "folder",
+  };
+
+  if (generation > 2) return [];
+  // A folder offers only the one level it holds; it cannot hold a folder.
+  return kind === "folder" ? [project] : [project, folder];
 }
 
 export interface ProjectGrant {
@@ -27,6 +184,29 @@ export function subtreeIds(node: ProjectNode): string[] {
   const out = [node.id];
   for (const child of node.children ?? []) out.push(...subtreeIds(child));
   return out;
+}
+
+/**
+ * Does this node's board span more than one project?
+ *
+ * The board loads its tasks with `include_subtree: true`, so a node's task
+ * set is its whole subtree's. That makes "Project" a real grouping axis on a
+ * node that HAS descendant projects, and a structurally dead one everywhere
+ * else: a leaf's tasks all carry the same `project_id`, so grouping by it
+ * yields exactly one group, today and after any amount of work lands.
+ *
+ * ⚠️ The distinction is **structural, not contingent**. Grouping by assignee
+ * can also produce one group — but that changes as people are assigned.
+ * Project on a leaf cannot ever produce two, which is why this one is worth
+ * hiding and the others are not.
+ *
+ * Folders are transparent, as everywhere in this grammar: a project whose
+ * only child is a folder holding a subproject still spans two projects.
+ */
+export function spansMultipleProjects(node: ProjectNode): boolean {
+  return (node.children ?? []).some(
+    (child) => nodeKind(child) === "project" || spansMultipleProjects(child)
+  );
 }
 
 /** Flatten a forest to `[node, depth]` pairs, for a sidebar that indents. */
@@ -85,6 +265,27 @@ export function pathTo(
     if (below.length) return [root, ...below];
   }
   return [];
+}
+
+/**
+ * The level a node occupies within a forest — the answer a surface needs
+ * when it holds a row but not its depth.
+ *
+ * Counts PROJECT ancestors along `pathTo`, so folders are transparent
+ * exactly as they are on the server (`core._project_generation`). A node
+ * the forest does not contain reports 'space', which is what an
+ * unresolvable row looked like before this existed: it is the safest wrong
+ * answer, because a space offers no run state and no destructive control.
+ */
+export function levelOf(
+  roots: readonly ProjectNode[],
+  projectId: string
+): NodeLevel {
+  const path = pathTo(roots, projectId);
+  if (path.length === 0) return "space";
+  const node = path[path.length - 1];
+  const generations = path.filter((n) => nodeKind(n) === "project").length;
+  return nodeLevel(nodeKind(node), generations);
 }
 
 /**

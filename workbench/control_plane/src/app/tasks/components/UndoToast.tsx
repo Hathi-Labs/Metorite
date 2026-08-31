@@ -2,6 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
 import { useEffect } from "react";
 import { useTaskStore } from "../lib/taskStore";
 
@@ -28,20 +29,32 @@ export function UndoToast() {
     return () => clearTimeout(t);
   }, [undoSnapshot, dismissUndo]);
 
-  // Keyboard: `u` undoes, as long as the user isn't typing in a field.
+  /**
+   * Keyboard: Ctrl/Cmd+Z, or the bare `u` this app has always used.
+   *
+   * Ctrl+Z was added 2026-08-31 so the shortcut is the same across the product
+   * — undo is the one binding a user brings with them from every other
+   * application, and having it work in Projects but not here is worse than
+   * having it nowhere. `u` stays: it is in the toast's own kbd hint and in
+   * people's fingers.
+   *
+   * Both predicates come from `@/lib/keyboard` rather than the hand-rolled
+   * tag check that was here. That check missed `<select>`, so `u` fired while
+   * a dropdown had focus.
+   *
+   * ⚠️ **This is still ONE level and there is no redo.** The store's model is a
+   * snapshot of the rows before a change, and two snapshots of overlapping
+   * state cannot both be true, so it cannot become a history. The
+   * command-based stack in `@/lib/undo` is the shape that can; migrating
+   * `taskStore`'s dispose / clarify / delete / archive / schedule actions onto
+   * it is the outstanding work, not a missing wire.
+   */
   useEffect(() => {
     if (!undoSnapshot) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const el = e.target as HTMLElement | null;
-      if (
-        el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.isContentEditable)
-      )
-        return;
-      if (e.key === "u" || e.key === "U") {
+      if (isTypingTarget(e.target as HTMLElement | null)) return;
+      const bare = !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "u" || e.key === "U");
+      if (bare || isUndoShortcut(e)) {
         e.preventDefault();
         undoLastChange();
       }
@@ -65,7 +78,7 @@ export function UndoToast() {
         <Icon name="Undo2" className="h-3.5 w-3.5" />
         Undo
         <kbd className="ml-0.5 hidden rounded border border-border px-1 py-0.5 font-mono text-[9px] text-muted-foreground sm:inline">
-          u
+          Ctrl+Z
         </kbd>
       </button>
       <Button variant="text" size="none" radius="keep" layout="" type="button" onClick={dismissUndo} aria-label="Dismiss" className="rounded-md p-0.5">

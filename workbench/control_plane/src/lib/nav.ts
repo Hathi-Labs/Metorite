@@ -357,13 +357,15 @@ export const NAV_SECTIONS: NavSection[] = [
         launch: "live",
       },
       {
-        // Ungated on purpose: choosing your own theme is a personal
+        // Ungated on purpose: how the product looks to you is a personal
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
         label: "Appearance",
         icon: "Palette",
-        note: "Themes · colour mode · density · accent",
+        // "Themes ·" led this line until 2026-08-31. The theming engine is
+        // retired — there is one look, and these three adjust it.
+        note: "Colour mode · density · accent",
         launch: "live",
       },
       // ⚠️ NO MODELS ENTRY, and no route behind it either. CP-5 deleted

@@ -22,6 +22,11 @@ export interface ProjectRow {
   name: string;
   description?: string | null;
   parent_project_id?: string | null;
+  /**
+   * 'project' | 'folder' (migration 193). Absent/null reads as 'project' —
+   * resolve through `nodeKind()` in lib/tree.ts, never directly.
+   */
+  kind?: string | null;
   status?: string | null;
   lead?: string | null;
   // ⚠️ Provenance of rows imported BEFORE the 2026-08-24 retirement (D52).
@@ -45,6 +50,40 @@ export interface ProjectRow {
   archived_at?: string | null;
   archived_root_id?: string | null;
   children?: ProjectRow[];
+}
+
+/** One direct child in a node's roll-up. */
+export interface SummaryChild {
+  id: string;
+  name: string;
+  kind: string;
+  status?: string | null;
+  archived: boolean;
+  /** A space's chosen marker (migration 194) — portfolio children only. */
+  icon?: string | null;
+  icon_slot?: number | null;
+  /** Tasks in this child's WHOLE subtree, visible to the caller. */
+  tasks: number;
+  overdue: number;
+  by_category: Record<string, number>;
+}
+
+/**
+ * What `GET /nodes/{id}/summary` returns — the roll-up a space or folder
+ * shows instead of a board, and the aggregate a parent project folds into
+ * its own views (migration 194 / owner directive 2026-08-31).
+ */
+export interface NodeSummary {
+  id: string;
+  name: string;
+  level: "portfolio" | "space" | "folder" | "project" | "subproject";
+  /** Tasks in the whole subtree, the node's own included. */
+  tasks: number;
+  overdue: number;
+  by_category: Record<string, number>;
+  /** Descendant PROJECTS. Folders are not counted — they hold no work. */
+  projects: number;
+  children: SummaryChild[];
 }
 
 export interface TaskRow {
@@ -227,6 +266,13 @@ export { call as projectsCall };
 
 export const projectsApi = {
   tree: () => call<{ rows: ProjectRow[]; total: number }>("tree"),
+
+  /** The subtree roll-up behind every dashboard and every aggregate view. */
+  summary: (nodeId: string) =>
+    call<NodeSummary>(`nodes/${nodeId}/summary`),
+
+  /** The same shape one level up — every space the caller can see. */
+  portfolio: () => call<NodeSummary>("summary"),
 
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),
@@ -486,55 +532,9 @@ export const projectsApi = {
     }),
 };
 
-/**
- * The personal lens (WS-27e).
- *
- * Same store, same rows, same proxy — there is no second task API, because
- * there is no second task table. Identity comes from the session on the server
- * side, so nothing here takes a member parameter: no request can be shaped to
- * read or write somebody else's practice.
- */
-export const myWorkApi = {
-  inbox: (params: Record<string, string | boolean | undefined> = {}) => {
-    const qs = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== "") qs.set(key, String(value));
-    }
-    const query = qs.toString();
-    return call<{ rows: MyTaskApiRow[]; total: number }>(
-      `my/inbox${query ? `?${query}` : ""}`
-    );
-  },
-
-  contexts: () =>
-    call<{ rows: Array<{ context: string; total: number }>; total: number }>(
-      "my/contexts"
-    ),
-
-  capture: (payload: {
-    title: string;
-    next_action?: string | null;
-    context?: string | null;
-    due_at?: string | null;
-  }) => call<TaskRow>("my/tasks", { method: "POST", body: JSON.stringify(payload) }),
-
-  setPersonal: (taskId: string, payload: Record<string, unknown>) =>
-    call<Record<string, unknown>>(`tasks/${taskId}/personal`, {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    }),
-
-  // Completion moves the task's SHARED status — the cohesion the one-store
-  // design buys. Ticking something off here ticks it off on the team's board.
-  complete: (taskId: string) =>
-    call<TaskRow>(`tasks/${taskId}/complete`, { method: "POST", body: "{}" }),
-
-  defer: (taskId: string, until: string) =>
-    call<Record<string, unknown>>(`tasks/${taskId}/defer`, {
-      method: "POST",
-      body: JSON.stringify({ until }),
-    }),
-};
+// `myWorkApi` (WS-27e, the personal lens) was REMOVED with the My work
+// surface (owner directive 2026-08-31). /tasks is the personal lens, and
+// the gateway's `my/*` routes still serve it there.
 
 export interface AttachmentRow {
   attachment_id: string;
@@ -581,16 +581,6 @@ export const attachmentsApi = {
       method: "DELETE",
     }),
 };
-
-/** What `/my/inbox` returns: the task row with this member's overlay merged on. */
-export interface MyTaskApiRow extends TaskRow {
-  disposition: string;
-  is_triaged: boolean;
-  next_action?: string | null;
-  context?: string | null;
-  energy?: string | null;
-  is_two_minute?: boolean;
-}
 
 export interface NotificationRow {
   id: string;

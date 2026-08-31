@@ -150,7 +150,7 @@ export function RelationsBlock({
    * block where it could be read as being about any of them. The previous
    * error is deliberately NOT cleared on entry — it clears on success — so a
    * retry does not blank the explanation at the moment somebody is reading it
-   * (`lib/rowState.ts`, and the same rule `MyWork` already follows).
+   * (`lib/rowState.ts` writes the rule out).
    */
   async function removeLink(linkId: string) {
     dispatch({ kind: "start", id: linkId });

@@ -4,9 +4,9 @@
  * **A declared registry, not a chain of `if` branches inside a card.** This is
  * `lib/commands.ts`'s shape applied one scope down: every entry the menu can
  * draw is declared here with its label, its glyph, the context in which it is
- * offered, and what running it calls. The board and My work both read it, so
- * the two surfaces cannot end up offering different words for one action —
- * which is the whole "one registry, two surfaces" point of the ticket.
+ * offered, and what running it calls. Every card surface reads it, so two
+ * surfaces cannot end up offering different words for one action —
+ * which is the whole "one registry" point of the ticket.
  *
  * Everything is pure — no React, no DOM, no `navigator` — so the rules that are
  * wrong-but-plausible (an action offered on a surface that cannot perform it, a
@@ -43,8 +43,8 @@ export interface TaskMenuContext {
   task: TaskRow;
   /**
    * The statuses this task's project offers. Empty on a surface that has no
-   * status axis to move along (My work is a personal lens over many projects),
-   * which is what hides the whole block rather than drawing an empty heading.
+   * status axis to move along, which is what hides the whole block rather
+   * than drawing an empty heading.
    */
   statuses: readonly StatusRow[];
   /** The surface offers bulk selection — i.e. it drew a checkbox for this row. */

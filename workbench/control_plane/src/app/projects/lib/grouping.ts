@@ -334,6 +334,61 @@ export function personLabel(who: string): string {
   return localPart(who);
 }
 
+/**
+ * Every distinct assignee across a task set, ordered for a picker (WS-27af).
+ *
+ * The assignee filter's options. Read from the TASKS rather than from the
+ * directory, and that is the decision worth recording: `GET /projects/assignees`
+ * is a *suggestion* endpoint capped at eight people and six agents — "a picker
+ * is a short list, not a directory browse", in its own words — so it can leave
+ * out somebody who holds work here, which is the one thing a filter must never
+ * do. Who has tasks in this project is exactly the set worth filtering by.
+ *
+ * ⚠️ **Feed this an UNFILTERED task set.** Derived from the filtered rows it
+ * collapses to whoever is already selected, and the filter becomes a trap you
+ * cannot leave. The page unions it across loads for that reason.
+ *
+ * Case-insensitively unique — `Priya@x.com` and `priya@x.com` are one person to
+ * the server's own comparison — and sorted by the label people actually read
+ * rather than by raw address, so `agent:builder` files under B.
+ */
+export function assigneesIn(tasks: readonly TaskRow[]): string[] {
+  return orderPeople(
+    tasks.flatMap((task) => task.assignees ?? [])
+  );
+}
+
+/**
+ * Fold newly seen assignees into the set already known.
+ *
+ * **Returns `known` itself when nothing is new** — identity, not a copy. The
+ * page holds this in state and merges on every load, so a fresh array each time
+ * would re-render the filter bar on every poll for no change at all.
+ */
+export function mergeAssignees(
+  known: readonly string[],
+  found: readonly string[]
+): string[] {
+  const seen = new Set(known.map((who) => who.trim().toLowerCase()));
+  const fresh = found.filter((who) => !seen.has(who.trim().toLowerCase()));
+  if (fresh.length === 0) return known as string[];
+  return orderPeople([...known, ...fresh]);
+}
+
+/** Unique (case-insensitively) and sorted by the label people actually read. */
+function orderPeople(people: readonly string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const who of people) {
+    const trimmed = who.trim();
+    if (trimmed && !seen.has(trimmed.toLowerCase())) {
+      seen.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  return [...seen.values()].sort((a, b) =>
+    personLabel(a).localeCompare(personLabel(b), undefined, { sensitivity: "base" })
+  );
+}
+
 const IMPORTANCE_LABELS: Record<string, string> = {
   "3": "Urgent",
   "2": "High",
