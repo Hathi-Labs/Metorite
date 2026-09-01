@@ -1162,6 +1162,11 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
         identity = operator_signin.introspect(req.access_token)
     except operator_signin.SigninUnconfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except operators.OperatorUnconfigured as exc:
+        # `extract_identity` reads OPERATOR_SIGNIN_PROVIDER, which is staff-gate
+        # configuration and raises this class. A misconfigured box is a 503
+        # wherever the console notices it.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except operator_signin.SigninRejected as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -1175,7 +1180,26 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             # directory. Letting a stranger trigger it would consume the
             # one-time path before the owner reached it, which is a denial of
             # the bootstrap even though it grants the stranger nothing.
-            if row is None and identity.tid == operators.staff_tenant_id():
+            #
+            # ⚠️ **`directory_matches` decides, never a bare `==`** (spec §8.1
+            # done-when 32). This line read `identity.tid ==
+            # operators.staff_tenant_id()`. Two `None` values compare equal in
+            # Python, so the day that getter returned `None` for an
+            # unconfigured box, an identity carrying no directory claim would
+            # consume the one-time path. The getter raises instead, and the
+            # helper reads a missing claim as `False`. Both properties must
+            # hold, because the hole needs only one of them to fail.
+            #
+            # ⚠️ **This CALL is a SINGLE point, and no row count watches it.**
+            # The two properties above are guards inside the helper. The `and`
+            # clause here is not. Delete it and the bootstrap fires for every
+            # caller. The whole route runs in one transaction that rolls back
+            # on the 403, so `count(*) FROM operator` still reads zero.
+            # Measured 2026-09-01: that mutation left 148 tests green.
+            # The fence watches the CALL, and it is
+            # `test_operator_signin.py`
+            # `::test_the_bootstrap_never_fires_on_a_missing_directory_claim`.
+            if row is None and operators.directory_matches(identity.tid):
                 try:
                     operators.bootstrap(conn)
                 except operators.BootstrapRefused:

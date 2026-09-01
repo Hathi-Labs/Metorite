@@ -30,9 +30,13 @@ vi.mock("next/headers", () => ({
 
 import {
   IDENTITY_FLAG,
+  PROVIDER_LABELS,
   SESSION_COOKIE,
+  SIGNIN_PROVIDER_FLAG,
   identityMode,
   looksLikeSession,
+  providerLabel,
+  signinProvider,
   usesSessions,
 } from "./identity";
 import { STAFF_COOKIE } from "./staff";
@@ -76,6 +80,61 @@ describe("identityMode", () => {
       expect(identityMode({ [IDENTITY_FLAG]: value })).toBe("interim");
     },
   );
+});
+
+// ── Which directory — D70 ───────────────────────────────────────────────────
+
+describe("signinProvider", () => {
+  it("defaults to azure, so an unset variable moves nothing", () => {
+    // ⚠️ Ship dark, a second time. D70 changes the directory of a console
+    // that was told to change, and of no other.
+    expect(signinProvider({})).toBe("azure");
+    expect(providerLabel({})).toBe("Microsoft");
+  });
+
+  it.each(["google", "GOOGLE", "  google  "])("reads %s as Google", (v) => {
+    expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("google");
+    expect(providerLabel({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("Google");
+  });
+
+  it.each(["", "entra", "microsoft", "email", "okta"])(
+    "falls back to the default on %s",
+    (v) => {
+      // The Console refuses an unknown name with a 503, so no fallback can
+      // sign anybody in. This one keeps the page renderable.
+      expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("azure");
+    },
+  );
+
+  it.each(["constructor", "__proto__"])(
+    "🔴 rejects a prototype-chain name: %s",
+    (v) => {
+      // ⚠️ R7 — the fence for `Object.hasOwn` in `signinProvider`.
+      //
+      // The helper read `raw in PROVIDER_LABELS`, and `in` walks the
+      // prototype chain. Measured 2026-09-01: `constructor` returned the
+      // label `function Object() { [native code] }` and `__proto__` returned
+      // `[object Object]`. The only input is `process.env`, so nobody could
+      // reach it — but the comment above the helper claimed an unknown value
+      // "never" falls back to what the env said, and that was false.
+      //
+      // These two are the whole reachable set. `toString` and `valueOf` are
+      // camelCase, and the helper lower-cases before it looks, so `in` never
+      // found them either. Listing them would pad the fence, not widen it.
+      expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("azure");
+      expect(providerLabel({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("Microsoft");
+    },
+  );
+
+  it("⚠️ offers NO passwordless provider — D70.2", () => {
+    // A console that reaches every customer organization must not admit a
+    // person on inbox control alone. The Console's own allowlist is the
+    // boundary; this is the half a reader can see.
+    for (const bad of ["email", "magiclink", "otp", "phone", "sms"]) {
+      expect(Object.keys(PROVIDER_LABELS)).not.toContain(bad);
+    }
+    expect(Object.keys(PROVIDER_LABELS).sort()).toEqual(["azure", "google"]);
+  });
 });
 
 describe("looksLikeSession", () => {

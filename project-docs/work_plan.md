@@ -3982,7 +3982,7 @@ and one thing that cannot be written until a second person exists.
 | **B2** | **Create the Razorpay TEST account** + three env vars (**H-14**) | Fracktal's ₹0 onboarding (D42) is blocked; the checkout answers 503 |
 | **B3** | **Rotate the disclosed secrets** (**H-3**, **H-16**) and split `GATEWAY_INTERNAL_TOKEN` from `LITELLM_MASTER_KEY` (§6 item 1) | Every access control in this plan rests on an identity that a leaked key can forge |
 | **B4** | **The `.env*` edits** — H-13, H-30, H-34 | A fresh box is still told to configure a retired integration, and the Tasks-lens pair appears for the first time on cutover day |
-| **B5** | **Configure the Supabase Auth GOOGLE WORKSPACE provider for STAFF**, and set `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` and `OPERATOR_BOOTSTRAP_EMAIL` (**D70**, which amends **D64.1**, CP-12a). ⚠️ **Corrected 2026-09-01.** This named the Microsoft provider and `OPERATOR_ENTRA_TENANT_ID`. We have no Entra directory | 🔴 **The Operator Console stays on one shared passphrase.** It has been deployed and reachable since 2026-08-22 with no per-person identity, no roles, and an audit log that records the literal `operator` for every write. CP-12a…g are all AGENT-SAFE to build without this — but none of them can be turned on |
+| **B5** | **Configure the Supabase Auth GOOGLE WORKSPACE provider for STAFF**, and set **`OPERATOR_SIGNIN_PROVIDER=google`**, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` and `OPERATOR_BOOTSTRAP_EMAIL` (**D70**, which amends **D64.1**, CP-12a). ⚠️ **Corrected 2026-09-01.** This named the Microsoft provider and `OPERATOR_ENTRA_TENANT_ID`. We have no Entra directory. ⚠️ **Amended the same day**: the switch was missing, and without it the box stays on `azure` and answers 401 to every Google sign-in | 🔴 **The Operator Console stays on one shared passphrase.** It has been deployed and reachable since 2026-08-22 with no per-person identity, no roles, and an audit log that records the literal `operator` for every write. CP-12a…g are all AGENT-SAFE to build without this — but none of them can be turned on |
 
 #### C · Governance — settings and people
 
@@ -4084,8 +4084,16 @@ and one thing that cannot be written until a second person exists.
 > **AGENT-SAFE and unblocked.** Seven acts are **OWNER-GATE and must be refused by name**:
 > **(a)** configuring the Supabase Auth Google Workspace provider for staff, and holding
 > its client secret — the external-account class of §6.0 B.
-> **(b)** setting `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or
-> `OPERATOR_BOOTSTRAP_EMAIL` on the box — `env-write`.
+> **(b)** setting **`OPERATOR_SIGNIN_PROVIDER`**, `OPERATOR_GOOGLE_HD`,
+> `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box —
+> `env-write`. ⚠️ **This clause left `OPERATOR_SIGNIN_PROVIDER` out until
+> 2026-09-01, and it is the value that turns the rest on.** It holds `azure` or
+> `google`, and it defaults to `azure`. A box that carries every other value
+> and not this one stays on the Entra path. Every Google sign-in then answers
+> 401, and no message names the unset variable. H-54 lists all six values.
+> ⚠️ **The switch goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.**
+> The API and the Next console are separate processes. H-54 holds the table,
+> and the spec's §4.2a holds the same split beside the code.
 > **(c)** flipping `OPERATOR_IDENTITY_ENABLED` on a live box — `enforcement-flip`, and it
 > is the cutover from the shared passphrase to real identity.
 > **(d)** removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box — `env-write`. ⚠️ Doing
