@@ -880,7 +880,7 @@ An agent must **refuse these by name** and say so. They belong in
 | # | Act | Class |
 |---|---|---|
 | **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories. ⚠️ **`OPERATOR_SIGNIN_PROVIDER` goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.** §4.2 holds the split, and `HANDOFF.md` H-54 holds the owner's table | `env-write` |
+| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories. ⚠️ **`OPERATOR_SIGNIN_PROVIDER` goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.** §4.2a holds the split, and `HANDOFF.md` H-54 holds the owner's table | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |

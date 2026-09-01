@@ -1427,6 +1427,20 @@ line — never reclaim a number by deleting the other entry.
   all.** It is one read, and the second answer costs nothing.
   ⚠️ The old part 3 of this entry asked for the **Azure** claim shape. That
   question is dead. This one replaces it.
+- 📌 **HOW to read the payload, and what to do when the sign-in refuses you.**
+  A refusal at step 4 answers a deliberately uninformative 403, because §4.1
+  gives one refusal for every failed check. **The log holds the real answer.**
+  1. Read the payload directly. Sign in once, take the `access_token` the
+     callback puts in the URL fragment, then
+     `curl -H "apikey: $OPERATOR_SUPABASE_ANON_KEY"
+     -H "Authorization: Bearer $TOKEN" "$OPERATOR_SUPABASE_URL/auth/v1/user"`.
+     `identities[].identity_data` is the object both claims live in.
+  2. Read why the Console said no.
+     `journalctl -u acb-customer-console | grep operator.refused`.
+     The line carries `operator_check` and `operator_tid`. A `directory` check
+     with `operator_tid=<none>` means Supabase sent no `hd`, so part 1 above
+     answered NO and `_google_hd` is the one function to change.
+  ⚠️ Without this, a refused sign-in gives the owner a 403 and no next action.
 - ⚠️ **A payload with NO `hd` must refuse.** Google issues an account on any
   address it verifies by mail, and such an account carries `email_verified:
   true` and no `hd`. Do not read a missing claim as a pass. Spec §8.1 done-when

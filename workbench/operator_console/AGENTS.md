@@ -85,7 +85,13 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
 
 ## Ship dark
 Not deployed, no hostname/Caddy route, no secrets set. Deploy, hostname, the
-operator-token env and the staff Entra app are all OWNER-GATE.
+operator-token env and the staff Google Workspace app are all OWNER-GATE.
+
+⚠️ **This section describes what `deploy/` PROVISIONS, and not the world.**
+The `Caddyfile` declares `api.metorite.com` and `app.metorite.com` alone, and
+no `acb-operator-console.service` sits beside the six units. But
+`operator.metorite.com` serves today, because somebody stood the console up by
+hand. H-75 holds that gap, and only the box settles it.
 
 ## Verify
 `npm run typecheck` (whole app) · `npm run typecheck:lib` (pure lib only) ·
