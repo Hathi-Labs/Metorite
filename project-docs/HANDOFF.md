@@ -75,9 +75,58 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-97 · 🔴 A tenant DB password reached an agent transcript · [OWNER]
-- **Check:** has somebody rotated the `acb_app` password on the Supabase
-  project since 2026-09-01? Treat this as live until they confirm a rotation.
+### H-98 · A REACHABLE-but-wrong Console DSN kills every deploy, silently · [AGENT]
+- **Check:** `ssh metorite 'systemctl show acb-pull.service -p Result'`.
+  `Result=exit-code` means every deploy fails. Compare
+  `curl -s https://api.metorite.com/version` against `git rev-parse origin/main`.
+  A gap of hours with every service `active` is this defect.
+- **Measured 2026-09-02.** The owner deleted the Console Supabase project
+  during the Mumbai migration. The console `.env` still named it. Every deploy
+  then failed for hours, and NOTHING reported it.
+- **Why nothing reported it.** `vps_apply.sh` handles a MISSING DSN in three
+  named cases, and one of them exits 1 loudly. It does not handle a DSN that is
+  present and dead. That call sits under `set -e`, so the failure takes the
+  rest of the script with it — and the workbench rebuild is ~360 lines LATER.
+  So the box keeps serving old code from a healthy-looking stack.
+- **⚠️ Every signal stayed green.** All four units read `active`.
+  `vps-health.yml` probes the public URLs, and the app answers 307 on old code.
+  The gateway answers 200. Only `acb-pull.service` knew, and nothing reads it.
+- **The fix, and it is small.** Probe the Console DSN before the ladder runs,
+  and treat "present but unreachable" as its own named case beside the three
+  that already exist. Then have the health workflow compare the deployed SHA
+  against `origin/main` — a delivery check, not a reachability check.
+- **📌 This is the FOURTH time this shape has cost real time.** H-89 (the app
+  stayed up on old code for hours), the Operator Console drift of 2026-08-28,
+  the `.venv` ownership failure of 2026-08-26, and now this. Each time a deploy
+  died early, every probe stayed green, and somebody found it by accident. The
+  probes measure whether the machinery answers, never whether delivery landed.
+- **Authority:** `scripts/vps_apply.sh` (Console ladder block) ·
+  `.github/workflows/vps-health.yml` · CLAUDE.md §3.8 · [[H-89]]
+- **Added:** 2026-09-02 · Mumbai migration session
+
+### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
+- **Check:** has somebody rotated all four credentials below since 2026-09-02?
+  ⚠️ The original entry named the OLD Tokyo project, and the owner deleted it
+  on 2026-09-02. That half is now moot. The three from the Mumbai bring-up are
+  live and they are the ones that matter.
+- **🔴 The three live ones (2026-09-02).** All reached the transcript of the
+  Mumbai migration session. The owner pasted two, and the agent generated the
+  third and then echoed all three inside `ssh` and `psql` commands:
+  1. `postgres` owner on **Metorite Application Database** (`wbjpwtxigkileyjsgahk`)
+  2. `acb_app` on the same project — the role the gateway runs as
+  3. `postgres` owner on **Metorite Tenant Database** (`uttxlicdccfkramtjfpi`)
+  Together they reach all 157 application tables and the console's credit
+  ledger, operator rows and provider credentials.
+- **What to do:** reset all three in the Supabase dashboard. Then update
+  `PGPASSWORD` and `DATABASE_URL` in `/opt/acb/app/.env`, and
+  `CUSTOMER_CONSOLE_DATABASE_URL` in the console's `.env`. Restart
+  `acb-gateway` and `acb-customer-console`.
+- **📌 The lesson the original entry missed.** It names an ACCIDENT — `psql`
+  echoing a DSN on stderr. The 2026-09-02 exposure was deliberate and routine:
+  a credential travels in the command that uses it, and the command is the
+  transcript. An agent that runs `psql "postgresql://user:pass@host"` discloses
+  the password every time, even when the command succeeds. Pass credentials
+  through `PGPASSWORD` in the environment, never inside a URI on a command line.
 - **Why:** on 2026-09-01 an agent ran `psql "$DATABASE_URL"` on the box and
   piped **stderr** into the transcript. `psql` rejects the DSN, because
   `DATABASE_URL` carries the SQLAlchemy form `postgresql+psycopg://`. Its error
