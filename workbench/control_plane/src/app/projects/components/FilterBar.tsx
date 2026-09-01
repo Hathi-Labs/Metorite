@@ -319,6 +319,27 @@ export function FilterBar({
         >
           Overdue
         </Button>
+        {/*
+          WS-27bk §9.12.2 — "what am I watching", beside the other toggles.
+
+          ⚠️ A FILTER, not a fourth lens. One task store, three lenses
+          (D52/D53/D54): a watched-tasks view would fork that and would compose
+          with nothing. Here it stacks — "things I watch, in Ops, that are
+          overdue" is one query and one chip each.
+
+          The eye is the convention every tool that has this uses, and the
+          label says "Watching" rather than "Watched" because it describes a
+          standing subscription and not a past act.
+        */}
+        <Button
+          variant={filters.watching ? "primary" : "secondary"}
+          size="sm"
+          icon="Eye"
+          aria-pressed={filters.watching}
+          onClick={() => set({ watching: !filters.watching })}
+        >
+          Watching
+        </Button>
 
         {/* Both axes are offered only where the canvas draws them. Calendar
             and Timeline honour neither, and only the board has a second

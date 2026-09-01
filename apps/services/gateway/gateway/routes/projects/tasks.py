@@ -158,6 +158,11 @@ async def list_tasks(
     # WS-27u. Triage-parked tasks are invisible to every list surface unless
     # asked for — the ONE predicate lives in `core.triage_exclusion_clause`.
     include_triage: bool = False,
+    # WS-27bk §9.12.2. A BOOLEAN, resolved here to the caller — never an
+    # address from the query string. Letting a caller name whose watches to
+    # read would turn a filter into a way of asking what a colleague follows,
+    # which is not a question this endpoint should answer.
+    watching: bool = False,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -215,6 +220,7 @@ async def list_tasks(
             assignees=assignees, unassigned=unassigned, overdue=overdue,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
+            watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)

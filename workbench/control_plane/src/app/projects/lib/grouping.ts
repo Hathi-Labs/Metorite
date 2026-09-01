@@ -52,6 +52,13 @@ export interface Filters {
   assignee: string;
   unassigned: boolean;
   overdue: boolean;
+  /**
+   * WS-27bk §9.12.2 — only tasks the VIEWER watches.
+   *
+   * A boolean, never an address. The server resolves it to whoever is asking,
+   * so one shared saved view shows each person their own subscriptions.
+   */
+  watching: boolean;
   /** WS-27m — ANY of these tags. `tags_all` on the wire is not exposed here yet. */
   tags: string[];
 }
@@ -84,6 +91,7 @@ export const EMPTY_FILTERS: Filters = {
   assignee: "",
   unassigned: false,
   overdue: false,
+  watching: false,
   tags: [],
 };
 
@@ -102,6 +110,7 @@ export function toQuery(filters: Filters): Record<string, string> {
   if (filters.assignee.trim()) out.assignee = filters.assignee.trim();
   if (filters.unassigned) out.unassigned = "true";
   if (filters.overdue) out.overdue = "true";
+  if (filters.watching) out.watching = "true";
   // CSV, matching `split_csv` on the gateway. A tag containing a comma would
   // break this — which is why the picker treats a comma as a separator, so
   // one can never be stored.
@@ -139,6 +148,7 @@ export function fromConfig(config: unknown): {
       assignee: typeof stored.assignee === "string" ? stored.assignee : "",
       unassigned: stored.unassigned === true,
       overdue: stored.overdue === true,
+      watching: stored.watching === true,
       tags:
         typeof stored.tags === "string" && stored.tags
           ? stored.tags.split(",").map((s) => s.trim()).filter(Boolean)
@@ -184,6 +194,7 @@ export function toConfig(
   if (filters.assignee.trim()) stored.assignee = filters.assignee.trim();
   if (filters.unassigned) stored.unassigned = true;
   if (filters.overdue) stored.overdue = true;
+  if (filters.watching) stored.watching = true;
   // A CSV string here too, not an array: `build_task_filters` parses it with
   // `split_csv`, so a saved view and a typed query string must be the same
   // shape or the view would be the one that breaks.
