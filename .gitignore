@@ -47,6 +47,12 @@ htmlcov/
 # Node / workbench
 node_modules/
 .next/
+# The deploy builds into .next.staging and renames it onto .next only after the
+# build succeeds, so the live server never loses the directory it serves from.
+# .next.previous is the outgoing build, held for the moment the rename takes.
+# See build_next_staged in scripts/vps_apply.sh.
+.next.staging/
+.next.previous/
 out/
 
 # Data / runtime

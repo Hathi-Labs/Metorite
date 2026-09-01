@@ -155,10 +155,23 @@ line — never reclaim a number by deleting the other entry.
   13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
   root-owned, and the remaining 66681 were `.next` build output, which git
   ignores.
-- **The open question: which step runs as root and writes there?** A container
-  or build with a bind mount is the first suspect, because the operator console
-  is the only tree affected. Read the unit files and the compose file on the
-  box, find the writer, and stop it writing as root.
+- **🟢 ANSWERED 2026-09-01 — the writer is the deploy unit itself.**
+  `deploy/hostinger/acb-pull.service:29` sets `User=root`, and it runs
+  `vps_pull.sh` → `vps_apply.sh`. So every `npm ci` and `npm run build` that
+  script invokes writes root-owned files into an `acb`-owned
+  checkout. Measured on the box that morning, `.next` under
+  `workbench/control_plane` was `root root` inside an `acb acb` parent.
+  ⚠️ It is not a container and not a bind mount, which is where this entry
+  pointed. It is also **not only the operator console** — the same unit builds
+  the workbench, so the whole tree is exposed.
+  📌 `tests/unit/test_deploy_venv_ownership.py` had already recorded this
+  asymmetry for `.venv` in its own docstring. The fact was in the repo before
+  this entry asked the question.
+- **What is still owed.** The correct fix drops to `acb` for the build instead
+  of repairing ownership afterwards. A `chown` is another repair that hides
+  the next occurrence, which this entry already warns against. That change
+  touches how the deploy runs and nobody can test it off the box, so it stays
+  owner-gated.
 - **Why this stays open although the repair landed.** The repair lives inside
   `vps_apply.sh`. A hand-run deploy, or any other path that resets the
   checkout, meets the same failure with no repair. The repair also hides the
@@ -764,9 +777,25 @@ line — never reclaim a number by deleting the other entry.
   - (c) Accept it, and say so in the release notes.
   ⚠️ Do not "fix" this by making the health check gentler. The check is honest.
   It is watching the wrong moment.
+- 🟢 **The DOMINANT term is fixed, and it was not the restart (2026-09-01).**
+  This entry named the restart as the cause. Measured that morning, the restart
+  was the small half. `vps_apply.sh` ran `rm -rf .next` and then built, so the
+  live server lost the directory it serves from and answered **HTTP 500 on
+  every route for the whole build** — minutes, with two Next builds per deploy,
+  not the seconds a restart costs. `build_next_staged` now builds into
+  `.next.staging` and renames it in on success, so the window shrinks to the
+  restart alone and a FAILED build changes nothing.
+  ⚠️ **This entry stays OPEN.** The restart gap this entry describes is still
+  there, and options (a) and (b) remain the fix for it. What changed is the
+  size of the problem, not its existence.
+  📌 **Nothing saw the big half for a day.** `vps-health.yml` counted an HTTP
+  500 as proof of life. That is fixed in the same PR, and the two changes must
+  not be separated — alarming on 5xx is only correct once deploys stop serving
+  them routinely. Fence: `test_deploy_next_build_swap.py`.
 - **Authority:** `deploy/hostinger/` (owner-gated) · `.github/workflows/deploy.yml` ·
   D36 (Fracktal is customer zero)
-- **Added:** 2026-08-26 · guardrails + handoff session
+- **Added:** 2026-08-26 · guardrails + handoff session · build half measured and
+  fixed 2026-09-01
 
 ### H-61 · `.claude/OWNER_GRANTS.md` is untracked AND un-ignored · [OWNER]
 - **Check:** `git check-ignore -v .claude/OWNER_GRANTS.md` → no output means this
