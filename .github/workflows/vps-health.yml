@@ -64,20 +64,44 @@ jobs:
             code=000
             for attempt in 1 2 3; do
               code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
-              # Any HTTP response means the stack is serving; 2xx/3xx/401 are
-              # all "alive". Only a total absence of response is an outage.
-              if [ "$code" != "000" ]; then break; fi
-              echo "  $name attempt $attempt failed — retrying in 20s"
+              # 2xx/3xx/4xx are all "alive" — a redirect to sign-in and a 401
+              # both prove the stack compiled and is serving.
+              #
+              # 🔴 **A 5xx is NOT alive, and this line used to say it was.**
+              # Measured 2026-09-01: the workbench answered HTTP 500 on EVERY
+              # route, including `/`, for the whole of a deploy's build window,
+              # and this probe recorded it as "OK (HTTP 500)". A completely
+              # broken app passed the outage check. The rule was "any HTTP
+              # response means the stack is serving", and a Next.js server with
+              # no `.next` directory serves 500s perfectly.
+              case "$code" in
+                000|5[0-9][0-9]) ;;
+                *) break ;;
+              esac
+              echo "  $name attempt $attempt got HTTP ${code} — retrying in 20s"
               sleep 20
             done
-            if [ "$code" = "000" ]; then
-              HEALTHY=0
-              REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
-              echo "::error::${name} unreachable at ${url}"
-            else
-              REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
-              echo "${name} OK (HTTP ${code})"
-            fi
+            # ⚠️ Alarming on 5xx is only correct BECAUSE `vps_apply.sh` no
+            # longer deletes the live build before rebuilding it. While the
+            # deploy routinely served 500s for minutes, this would have paged
+            # on every release. The two changes ship together and the fence
+            # `test_deploy_next_build_swap.py` holds both ends.
+            case "$code" in
+              000)
+                HEALTHY=0
+                REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
+                echo "::error::${name} unreachable at ${url}"
+                ;;
+              5[0-9][0-9])
+                HEALTHY=0
+                REPORT="${REPORT}- **${name}**: SERVING ERRORS (HTTP ${code}) — \`${url}\`"$'\n'
+                echo "::error::${name} answers HTTP ${code} at ${url} — up, but broken for every user"
+                ;;
+              *)
+                REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
+                echo "${name} OK (HTTP ${code})"
+                ;;
+            esac
           done
 
           echo "healthy=${HEALTHY}" >> "$GITHUB_OUTPUT"
