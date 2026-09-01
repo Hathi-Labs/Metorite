@@ -775,6 +775,62 @@ export function edgePath(
 }
 
 /**
+ * ⚠️ **A DRAWN EDGE IS ABOUT 1.5 PIXELS WIDE AND CANNOT BE HIT.**
+ *
+ * So every edge is drawn TWICE: this transparent stroke underneath, which
+ * receives the pointer, and the visible line on top with pointer events off.
+ * Without the pair, hovering an arrow is a game of pixel-hunting and the
+ * feature reads as broken rather than as fussy.
+ *
+ * 12 is the same number `edgePoints` uses for its stub, which is not a
+ * coincidence — a hit area wider than the stub would overlap the bar it
+ * leaves, and the bar's own drag zones must win there.
+ */
+export const EDGE_HIT_PX = 12;
+
+/** Total length of a polyline. The corners are ignored — see `edgeMidpoint`. */
+export function polylineLength(points: readonly Point[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  }
+  return total;
+}
+
+/**
+ * The point half way ALONG the edge, for placing the remove control.
+ *
+ * ⚠️ Half way along, not half way between the ends. On a dogleg those are
+ * different points, and the midpoint of the endpoints can land nowhere near
+ * the line — often inside a bar, where the control would sit on top of the
+ * thing it is not about.
+ *
+ * Measured on the straight segments and not on the rounded corners. Each
+ * corner shaves a few pixels off the true arc, and a control a few pixels
+ * from centre is indistinguishable from one at centre.
+ */
+export function edgeMidpoint(points: readonly Point[]): Point | null {
+  if (points.length < 2) return null;
+  const half = polylineLength(points) / 2;
+  if (half === 0) return { x: points[0].x, y: points[0].y };
+  let walked = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len === 0) continue;
+    if (walked + len >= half) {
+      const t = (half - walked) / len;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    walked += len;
+  }
+  // Only reachable through floating-point drift on the last segment.
+  const last = points[points.length - 1];
+  return { x: last.x, y: last.y };
+}
+
+/**
  * ── WHAT A DRAG WRITES (WS-27t S2) ────────────────────────────────────────
  *
  * Three gestures, three patches, all of them one `PATCH /tasks/{id}` through

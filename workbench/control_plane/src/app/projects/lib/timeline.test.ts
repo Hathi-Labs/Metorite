@@ -46,8 +46,11 @@ import {
   dayPx,
   dayStep,
   dragRefusal,
+  EDGE_HIT_PX,
+  edgeMidpoint,
   edgePath,
   edgePoints,
+  polylineLength,
   interval,
   type Point,
   roundedPath,
@@ -1218,5 +1221,97 @@ describe("weekCells", () => {
     expect(marked).toHaveLength(1);
     expect("2026-08-10" >= (marked[0]?.from ?? "")).toBe(true);
     expect("2026-08-10" <= (marked[0]?.to ?? "")).toBe(true);
+  });
+});
+
+describe("edgeMidpoint — where the remove control sits", () => {
+  it("is half way ALONG a dogleg, not half way between its ends", () => {
+    // The whole reason this function exists. On an L the midpoint of the
+    // endpoints floats in empty space beside the line, and a control drawn
+    // there sits on top of something the edge is not about.
+    const points: Point[] = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ];
+    const mid = edgeMidpoint(points);
+    // Total length 200, so half is 100 — exactly the corner.
+    expect(mid).toEqual({ x: 100, y: 0 });
+    // The naive answer would have been the average of the two ends.
+    const naive = { x: 50, y: 50 };
+    expect(mid).not.toEqual(naive);
+  });
+
+  it("lands at the centre of a straight edge", () => {
+    expect(edgeMidpoint([{ x: 10, y: 5 }, { x: 30, y: 5 }])).toEqual({ x: 20, y: 5 });
+  });
+
+  it("interpolates INSIDE the segment that contains the half-way mark", () => {
+    // Lengths 10 then 30: half of 40 is 20, which is 10 into the second leg.
+    const mid = edgeMidpoint([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 40, y: 0 },
+    ]);
+    expect(mid).toEqual({ x: 20, y: 0 });
+  });
+
+  it("walks the six-point conflict route rather than averaging it", () => {
+    // The shape `edgePoints` returns when the blocked bar starts before the
+    // blocker ends — out, down into the lane, back, and in. The midpoint must
+    // land on the lane, which is the only part of that route with room for a
+    // control.
+    const stub = { singleDate: false, derived: false };
+    const from = { bar: { leftPx: 100, widthPx: 60, ...stub }, row: 0 };
+    const to = { bar: { leftPx: 20, widthPx: 60, ...stub }, row: 1 };
+    const points = edgePoints(from, to);
+    expect(points).not.toBeNull();
+    expect(points!.length).toBe(6);
+    const mid = edgeMidpoint(points!);
+    const lane = (ROW_H / 2 + (ROW_H + ROW_H / 2)) / 2;
+    expect(mid!.y).toBeCloseTo(lane, 5);
+  });
+
+  it("refuses a degenerate input rather than inventing a point", () => {
+    expect(edgeMidpoint([])).toBeNull();
+    expect(edgeMidpoint([{ x: 1, y: 1 }])).toBeNull();
+  });
+
+  it("survives a zero-length edge", () => {
+    // Two identical points: the length is 0 and the division would be NaN.
+    expect(edgeMidpoint([{ x: 7, y: 7 }, { x: 7, y: 7 }])).toEqual({ x: 7, y: 7 });
+  });
+
+  it("ignores a repeated vertex instead of dividing by zero", () => {
+    const mid = edgeMidpoint([
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+    ]);
+    expect(mid).toEqual({ x: 10, y: 0 });
+  });
+});
+
+describe("polylineLength", () => {
+  it("sums the segments, and a 3-4-5 stays honest", () => {
+    expect(polylineLength([{ x: 0, y: 0 }, { x: 3, y: 4 }])).toBe(5);
+    expect(
+      polylineLength([{ x: 0, y: 0 }, { x: 3, y: 4 }, { x: 3, y: 14 }]),
+    ).toBe(15);
+  });
+
+  it("is zero for fewer than two points", () => {
+    expect(polylineLength([])).toBe(0);
+    expect(polylineLength([{ x: 5, y: 5 }])).toBe(0);
+  });
+});
+
+describe("EDGE_HIT_PX — the reason the arrow is hittable", () => {
+  it("is wide enough to hit and no wider than the stub", () => {
+    // A drawn edge is 1.5px. Below about 8 the hover is pixel-hunting. Above
+    // the 12px stub the hit area reaches back over the bar it leaves, where
+    // the bar's own drag zones have to win.
+    expect(EDGE_HIT_PX).toBeGreaterThanOrEqual(8);
+    expect(EDGE_HIT_PX).toBeLessThanOrEqual(12);
   });
 });
