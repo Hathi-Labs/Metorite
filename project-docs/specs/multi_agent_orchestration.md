@@ -860,7 +860,7 @@ grep -n "def route_turn" apps/services/orchestrator/orchestrator/steer.py
 ### 8.2 Original prod probes (2026-07-17 · prod SSH · **not agent-runnable**)
 
 ```bash
-ssh acb@187.127.179.143
+ssh acb@187.127.172.200
 
 # A. planner's effective toolset — proves call_agent is stripped
 cd /opt/acb/app && .venv/bin/python - <<'PY'
