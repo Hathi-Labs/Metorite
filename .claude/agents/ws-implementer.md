@@ -58,8 +58,11 @@ anything other than `main` receive zero CI from pr-check.
 
 Stop and report rather than proceeding if:
 
-- The work turns out to require an OWNER-GATE action (flag flips, deploy,
-  credential rotation, force-push, prod reach). Refuse and say which gate.
+- The work needs an OWNER-GATE action that **no dated line in
+  `.claude/OWNER_GRANTS.md` covers**. ⚠️ Read `CLAUDE.md` §3a first — until
+  2026-09-30 the owner grants deploy, prod reach, `.env` and flag flips by date.
+  Check the file before you stop. If a line covers the gate id, do the work.
+  If none does, name the exact gate id the owner must grant.
 - The verified file anchors do not match reality — the spec moved under you.
 - Acceptance can't be met without a decision the spec doesn't record.
 - A verification command fails for a reason you cannot attribute to your change.

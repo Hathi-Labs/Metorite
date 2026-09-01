@@ -104,9 +104,13 @@ reference tied to code. Do not put product specs in `docs/`.
 
 1. **Never commit or push on `main`.** Cut a branch first. (`plan-guard.mjs`
    enforces this and will block you.)
-2. **Refuse owner-gated work by name** (§6): live credentials, VPS/deploy
-   reach, force-push, member/role writes, enforcement flips, cutovers,
-   production one-offs. Build the thing, write it up, stop, hand it over.
+2. **⚠️ DEV PHASE — THE OWNER RELAXED THIS RULE UNTIL 2026-09-30.** Owner
+   directive, 2026-09-01. Read §3a before you refuse anything as OWNER-GATE.
+
+   The standing rule, which returns on 2026-10-01: **refuse owner-gated work by
+   name** (§6). That means live credentials, VPS and deploy reach, force-push,
+   member and role writes, enforcement flips, cutovers, and production one-offs.
+   Build the thing, write it up, stop, hand it over.
 3. **R5 — tenant-ready by construction.** New tables are tenant-scoped; no new
    DB connection sites outside the seam; Redis keys go through the prefix
    wrapper; use the existing session idiom; never trust a tenant or identity
@@ -125,6 +129,66 @@ reference tied to code. Do not put product specs in `docs/`.
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
 
+## 3a. Dev phase — autonomy window (expires 2026-09-30)
+
+⚠️ **Owner directive, 2026-09-01. Delete this whole section on 2026-10-01.**
+On that date §3 rule 2 returns to full force with no further action.
+
+**Why this exists.** The gates did their job and then kept charging for it. The
+owner wrote 22 day-scoped grant lines in eight days. A permission you always
+give is not a decision, and it stopped carrying information. The cost showed as
+stalled sessions, not as safety.
+
+### What you may now do without asking
+
+The owner grants these by date in `.claude/OWNER_GRANTS.md`. Check that file
+first. If a dated line covers the gate id, **do the work — do not refuse, and
+do not ask again in chat**.
+
+| You may | Gate id | Notes |
+|---|---|---|
+| SSH to the box, read logs, restart units | `deploy` | Diagnose and fix, do not wait |
+| Run `deploy/*.sh` and the migration runner | `deploy` | ⚠️ Read the migration rule below |
+| Read `.env` on the box | `secrets` | Never paste a value into chat |
+| Write `.env` on the box | `env-write` | |
+| Write under `deploy/` | `deploy-write` | |
+| Flip a feature flag | `enforcement-flip` | Say which flag, and where |
+| Query and migrate the database | — | No gate ever blocked this |
+| **Merge your own PR** | — | See §4, the loop now ends at merge |
+
+### What you must still refuse
+
+Four acts. `plan-guard.mjs` blocks all four, and **no grant unlocks them**.
+
+1. **Force-push**, and any history rewrite.
+2. **Commit or push on `main`.** Cut a branch.
+3. **Write `.claude/OWNER_GRANTS.md`.** Only the owner writes a grant.
+4. **Destroy or restore infrastructure.** The VPS, the DNS zone, the domain.
+
+### Three rules that replace the refusals
+
+The gates bought care, not only delay. Keep the care and drop the delay.
+
+1. **A production migration is still one-way (R6).** Before you apply one to
+   production, confirm the pre-migration backup completed. Then apply it. You
+   do not need to ask, and you do need the evidence.
+2. **Report every production act in the same message.** Name the act, the box,
+   and the evidence. "I restarted `acb-gateway`, `/version` now serves `abc123`."
+   Autonomy without a record is the failure this replaces.
+3. **Money, identity and third parties still stop you.** Do not charge a card,
+   do not send mail to a real person, and do not write a live organization's
+   membership or credit balance. Ask first. These are cheap to ask about and
+   expensive to get wrong.
+
+### The failure mode to watch
+
+Do not treat this section as permission to skip verification. **Rule 8 of §3
+still binds**: verify by the migration ledger, the deployed SHA and the log
+line. Four deploys once reported success while they shipped nothing. Faster
+delivery makes that failure more likely, not less.
+
+---
+
 ## 4. How development proceeds
 
 **Feature by feature, app by app — one narrowed slice at a time.** The loop
@@ -132,7 +196,18 @@ reference tied to code. Do not put product specs in `docs/`.
 
 > **audit** the spec is dispatchable → **implement** one narrowed slice →
 > **verify** independently against the acceptance criteria → **review** the diff
-> adversarially → **open a PR** → **stop before merge**.
+> adversarially → **open a PR** → **merge it, and watch it deploy**.
+>
+> ⚠️ **The last step changed on 2026-09-01, and only until 2026-09-30.** It read
+> "stop before merge". That was the single largest brake on delivery, because
+> merging to `main` IS the deploy — `.github/workflows/deploy.yml` reaches the
+> box by itself. Stopping at the PR stopped the release.
+>
+> **Merging is not skipping the loop.** Audit, verify and review still run, and
+> the verifier is still not the implementer. What you drop is the wait. After
+> the merge, **watch the run to green and report the serving SHA** — an
+> unwatched merge is worse than an unmerged PR. On 2026-10-01 this reverts to
+> "stop before merge".
 
 Rules that make it work:
 
@@ -173,8 +248,10 @@ Rules that make it work:
 - **Keep branches short and integrate often.** Long branches are the root cause
   behind the migration-renumber collisions, the green-alone/red-together PRs and
   a duplicated tenancy design. Three or four in flight is the ceiling.
-- **Ship dark.** New behaviour lands behind a flag, default OFF; flipping it is
-  usually the owner's act.
+- **Ship dark.** New behaviour lands behind a flag, default OFF. ⚠️ **Until
+  2026-09-30 you may flip that flag yourself** (§3a, gate `enforcement-flip`).
+  Name the flag and the box in the same message. The three flags that move money
+  or reach a real person stay owner-only — see §3a rule 3.
 
 ## 5. What not to do
 

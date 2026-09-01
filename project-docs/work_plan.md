@@ -3951,6 +3951,32 @@ drawio §12's stray Hostinger-token action item moved to WS-2's list.
 
 ## 6. Owner-gate registry (agents must refuse these)
 
+> # ⚠️ DEV-PHASE WINDOW — MOST OF THIS SECTION IS OPEN UNTIL 2026-09-30
+>
+> **Owner directive, 2026-09-01. `CLAUDE.md` §3a is the contract. Read it before
+> you refuse anything here.** On 2026-10-01 this whole banner goes, and every
+> row below returns to full force with no further action.
+>
+> **Why.** The owner wrote 22 day-scoped grant lines in eight days. A permission
+> the owner always gives is not a decision. It became a toll, and the toll
+> showed up as stalled sessions instead of as safety.
+>
+> **What changed.** `plan-guard.mjs` now reads a second grant form,
+> `ALLOW-UNTIL <date> <gate-id>`, which holds through that date instead of for
+> one day. The window still closes by itself, on a date a human wrote.
+> `.claude/OWNER_GRANTS.md` holds the live lines — **read it, then act**.
+>
+> **What this does NOT open.** Four acts, which no grant unlocks: force-push,
+> history rewrite, committing on `main`, and an agent writing the grant file.
+> Three more need the owner's word each time: charging money, mailing a real
+> person, and writing a live organization's membership or credit balance.
+> §6.0 rows **A1, A2, A4, B2** and **D3** stay closed for that reason.
+>
+> **What this does NOT change.** R6 — a production migration is one-way. Confirm
+> the pre-migration backup completed, then apply it. And rule 8 of `CLAUDE.md`
+> §3 — verify by the migration ledger, the deployed SHA and the log line.
+> Faster delivery makes a silent no-op deploy more likely, not less.
+
 ### 6.0 Decisions the owner owes — the short list *(added 2026-08-26)*
 
 > ⚠️ **This sub-section lists DECISIONS, not actions.** The rest of §6 is the register of

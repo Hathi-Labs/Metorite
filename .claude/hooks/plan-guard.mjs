@@ -130,14 +130,29 @@ const PROTECTED_PATHS = [
 // lock with no key cut. Nothing reported the failure, because nothing read the
 // file at all.
 //
-// The owner — and only the owner — unlocks ONE named gate for ONE local day by
-// hand-writing into .claude/OWNER_GRANTS.md:
+// The owner — and only the owner — unlocks ONE named gate by hand-writing into
+// .claude/OWNER_GRANTS.md, in one of two forms:
 //
-//   ALLOW 2026-08-19 deploy — reason
+//   ALLOW       2026-08-19 deploy — reason      (that ONE local day)
+//   ALLOW-UNTIL 2026-09-30 deploy — reason      (every day THROUGH that date)
 //
 // The guard refuses every agent write to that file, and THAT refusal is not
 // grantable — so a grant can only originate in the owner's own editor.
 // In-chat permission is not a grant. Stale lines are inert.
+//
+// ⚠️ WHY THE RANGE FORM EXISTS (added 2026-09-01, owner directive). The
+// day-scoped form is right for a one-off act and WRONG for a phase. During a
+// build phase the owner grants the same four ids every morning, which is not
+// a decision — it is a toll. Twenty-two of those lines already sit above the
+// live ones in OWNER_GRANTS.md. A toll that is always paid stops carrying
+// information, and the pressure it creates is to delete the guard rather than
+// to date it.
+//
+// The range form keeps the property that matters — the window still CLOSES BY
+// ITSELF, on a date a human wrote, with no one needing to remember. What it
+// drops is the daily re-typing. An open-ended grant would drop the expiry too,
+// and that is the one thing this must not do: `ALLOW-UNTIL` with no date does
+// not parse, so it grants nothing.
 const GRANT_FILE_RE = /(^|[\\/])\.claude[\\/]OWNER_GRANTS\.md$/i
 
 function ownerGrants(projectDir) {
@@ -154,8 +169,14 @@ function ownerGrants(projectDir) {
   const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
   const ids = new Set()
   for (const line of text.split('\n')) {
-    const m = line.match(/^\s*ALLOW\s+(\d{4}-\d{2}-\d{2})\s+([\w-]+)/)
-    if (m && m[1] === today) ids.add(m[2])
+    // `\s+` after ALLOW is what keeps the two forms apart: `ALLOW-UNTIL` can
+    // never be read as a bare `ALLOW`, because a hyphen is not whitespace.
+    const m = line.match(/^\s*ALLOW(-UNTIL)?\s+(\d{4}-\d{2}-\d{2})\s+([\w-]+)/)
+    if (!m) continue
+    const [, ranged, date, id] = m
+    // ISO-8601 dates compare correctly as strings — no Date parsing, so no
+    // timezone can move the boundary. `ALLOW-UNTIL` is INCLUSIVE of its date.
+    if (ranged ? date >= today : date === today) ids.add(id)
   }
   return ids
 }
