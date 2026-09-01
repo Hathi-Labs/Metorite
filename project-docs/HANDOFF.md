@@ -1858,6 +1858,33 @@ line — never reclaim a number by deleting the other entry.
   65 for the plan-guard heredoc entry. This branch merged second. That is the
   case the numbering rule above names.)*
 
+### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
+- **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
+  case-insensitive string test against the whole command means the defect is
+  still there. A test that matches only a redirect, an editor or a `tee` means
+  it is fixed.
+- **⚠️ This entry deliberately never spells that filename.** An entry that spelt
+  it could not be written by a shell command, which is the defect itself.
+- **Why:** Line 231 refuses the command when the grants filename appears
+  **anywhere in the text**, and not only in a write. So a commit message that
+  names the file is refused as a write to it. Measured 2026-09-01: a
+  `git commit -F -` whose heredoc body named the file was blocked twice. The
+  same commit passed as soon as the message said "the owner grants file"
+  instead. Filing this entry hit the same wall a third time.
+- **⚠️ The refusal itself is correct and must stay.** D45 says the owner writes
+  that file. This entry asks for the test to be narrower, never for the gate to
+  be weaker. The failure mode is the expensive one. An agent that meets a
+  refusal it cannot explain will look for a way around it. The way around a
+  false positive also goes around the true one.
+- **What it needs:** match a WRITE, not a mention. Match the redirect, the
+  editor and the `tee` forms, the way the path regexp above it already does. A
+  mention inside a quoted string or a heredoc body is not a write.
+- **Related:** **H-65** is the same family. plan-guard cannot see a write an
+  interpreter makes from a heredoc. That entry is about a write it MISSES. This
+  one is about a write it INVENTS. Both read shell text as if it were an action.
+- **Authority:** `.claude/hooks/plan-guard.mjs` line 231 · D45 · `work_plan.md` §6
+- **Added:** 2026-09-01 · Projects UI session, met while merging `main`
+
 ---
 
 # DONE — deleted, not archived
