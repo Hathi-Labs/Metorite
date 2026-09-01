@@ -31,6 +31,8 @@ export interface ProjectRow {
   kind?: string | null;
   status?: string | null;
   lead?: string | null;
+  /** Sibling order, a float. `ORDER BY position NULLS LAST, name` on the server. */
+  position?: number | null;
   // ⚠️ Provenance of rows imported BEFORE the 2026-08-24 retirement (D52).
   // Nothing writes these any more; the columns survive under R6 (D52.3) and
   // are dropped in a later, owner-gated release. Do not read them in new code.
@@ -311,6 +313,30 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
+  /**
+   * WS-27bk §9.12.4 — re-parent or reorder a node.
+   *
+   * `parent_project_id: null` makes it a space. `position` is a fractional
+   * index between two siblings, omitted when only the parent changes.
+   *
+   * ⚠️ The server re-stamps `root_project_id` across the whole subtree, so a
+   * move changes which status set every task below it reads. That is why the
+   * caller must refetch rather than patch the tree in place.
+   */
+  moveNode: (
+    projectId: string,
+    parentProjectId: string | null,
+    position?: number,
+  ) =>
+    call<ProjectRow>(`nodes/${projectId}/move`, {
+      method: "POST",
+      body: JSON.stringify(
+        position === undefined
+          ? { parent_project_id: parentProjectId }
+          : { parent_project_id: parentProjectId, position },
+      ),
+    }),
 
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),

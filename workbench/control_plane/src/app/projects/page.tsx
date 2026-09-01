@@ -35,6 +35,8 @@ import {
   projectsKey,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
+import { MoveDialog } from "./components/MoveDialog";
+import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
@@ -119,6 +121,7 @@ import {
   filterByCenter,
   flatten,
   levelOf,
+  pathTo,
   spansMultipleProjects,
   type NodeKind,
   type NodeLevel,
@@ -240,6 +243,8 @@ function ProjectNav({
   onSelect,
   onAddChild,
   onOpenSettings,
+  onMove,
+  onDropNode,
   onNewSpace,
   creating,
   onCommitCreate,
@@ -256,6 +261,10 @@ function ProjectNav({
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
   onOpenSettings: (space: ProjectRow) => void;
+  /** WS-27bk §9.12.4 — open the "Move to…" picker for a row. */
+  onMove: (node: ProjectRow) => void;
+  /** WS-27bk §9.12.4 slice 2 — a completed drag in the rail. */
+  onDropNode: (movingId: string, target: TreeDropTarget) => void;
   /** The + on the Spaces heading. */
   onNewSpace: () => void;
   /** The row being named, drawn in place by the tree. */
@@ -354,6 +363,11 @@ function ProjectNav({
           onOpenSettings(space);
           onPicked?.();
         }}
+        onMove={(node) => {
+          onMove(node);
+          onPicked?.();
+        }}
+        onDropNode={onDropNode}
         creating={creating}
         onCommitCreate={onCommitCreate}
         onCancelCreate={onCancelCreate}
@@ -531,6 +545,9 @@ function ProjectsWorkspace() {
   // settings dialog is open (migration 194). Both null when not applicable.
   const [summary, setSummary] = useState<NodeSummary | null>(null);
   const [settingsFor, setSettingsFor] = useState<ProjectRow | null>(null);
+  /** WS-27bk §9.12.4 — the node whose "Move to…" picker is open. */
+  const [movingNode, setMovingNode] = useState<ProjectRow | null>(null);
+  const [moving, setMoving] = useState(false);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -1024,6 +1041,8 @@ function ProjectsWorkspace() {
               setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
             }}
             onOpenSettings={setSettingsFor}
+            onMove={setMovingNode}
+            onDropNode={dropNode}
             onNewSpace={() => {
               setCreating({
                 parent: null, kind: "project",
@@ -1720,6 +1739,118 @@ function ProjectsWorkspace() {
    * **Nothing is rescheduled (D-PM-12).** Creating the link may make the arrow
    * red; that is the whole intended effect.
    */
+  /**
+   * WS-27bk §9.12.4 — re-parent a node.
+   *
+   * ⚠️ **A move re-stamps `root_project_id` across the whole subtree**, which
+   * is what scopes every task's statuses, types and counter. So this refetches
+   * the tree rather than patching it in place — an optimistic edit here would
+   * leave the board drawing lanes from the OLD root's status set.
+   *
+   * Undoable. The inverse is the parent it came from, read before the write.
+   */
+  async function moveNodeTo(node: ProjectRow, parentId: string | null) {
+    const path = pathTo(roots, node.id);
+    const from = path.length > 1 ? path[path.length - 2].id : null;
+    setMoving(true);
+    setError(null);
+    try {
+      await projectsApi.moveNode(node.id, parentId);
+      setMovingNode(null);
+      setTreeKey((k) => k + 1);
+      undoApi.record({
+        label: `moved ${node.name}`,
+        undo: async () => {
+          await projectsApi.moveNode(node.id, from);
+          setTreeKey((k) => k + 1);
+        },
+        redo: async () => {
+          await projectsApi.moveNode(node.id, parentId);
+          setTreeKey((k) => k + 1);
+        },
+      });
+    } catch (err) {
+      // The server owns the grammar, and its refusal is the one worth
+      // showing. The dialog's greying is a courtesy in front of it, never a
+      // replacement. So the dialog stays OPEN on a refusal, with the reason
+      // beside the board and the choice still made.
+      setError(String((err as Error).message));
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  /**
+   * WS-27bk §9.12.4 slice 2 — a completed drag in the rail.
+   *
+   * ⚠️ **The planner decides, and it already refused the illegal ones.** A
+   * target the grammar rejects never became a drop target, so a refusal here
+   * is a race — the tree changed under the drag — and it is shown rather than
+   * swallowed.
+   *
+   * `null` means the drop changed nothing. Writing it would cost an activity
+   * row and a refetch to put a node back where it already was.
+   */
+  async function dropNode(movingId: string, target: TreeDropTarget) {
+    const planned = planTreeDrop(roots, movingId, target);
+    if (planned === null) return;
+    if ("refusal" in planned) {
+      setError(planned.refusal);
+      return;
+    }
+    const path = pathTo(roots, movingId);
+    const node = path[path.length - 1];
+    const from = path.length > 1 ? path[path.length - 2].id : null;
+    const previous =
+      typeof node?.position === "number" ? node.position : undefined;
+
+    setError(null);
+    try {
+      /**
+       * ⚠️ THE SPREAD FIRST, and every row of it.
+       *
+       * A sibling set that has never been ordered carries `null` on every
+       * row, and a midpoint needs numbers. `planTreeDrop` hands back the
+       * whole re-spread when that happens — once per set, never again — and
+       * every row of it must land before the move, or the order the user
+       * just chose is measured against positions that do not exist yet.
+       */
+      if (planned.spread) {
+        for (const row of planned.spread) {
+          if (row.id === movingId) continue;
+          await projectsApi.moveNode(row.id, planned.plan.parentId, row.position);
+        }
+      }
+      await projectsApi.moveNode(
+        movingId,
+        planned.plan.parentId,
+        planned.plan.position,
+      );
+      setTreeKey((k) => k + 1);
+      undoApi.record({
+        label: `moved ${node?.name ?? "a project"}`,
+        undo: async () => {
+          await projectsApi.moveNode(movingId, from, previous);
+          setTreeKey((k) => k + 1);
+        },
+        redo: async () => {
+          await projectsApi.moveNode(
+            movingId,
+            planned.plan.parentId,
+            planned.plan.position,
+          );
+          setTreeKey((k) => k + 1);
+        },
+      });
+    } catch (err) {
+      setError(String((err as Error).message));
+      // The tree on screen still shows the drag's optimistic nothing — this
+      // page never moves a row locally — so a refetch is what puts it back in
+      // step with a write that did not land.
+      setTreeKey((k) => k + 1);
+    }
+  }
+
   /**
    * ── The two halves of a dependency, WITHOUT the undo bookkeeping ────────
    *
@@ -2562,6 +2693,8 @@ function ProjectsWorkspace() {
                 setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
               }}
               onOpenSettings={setSettingsFor}
+              onMove={setMovingNode}
+              onDropNode={dropNode}
               onNewSpace={() => {
                 setCreating({
                   parent: null, kind: "project",
@@ -2645,6 +2778,20 @@ function ProjectsWorkspace() {
         onClose={() => setSettingsFor(null)}
         onSave={(space, values) => void saveSpaceSettings(space, values)}
       />
+
+      {/* WS-27bk §9.12.4 — "Move to…". Mounted here for the same reason Space
+          Settings is: the tree is drawn twice (rail and drawer), and a dialog
+          inside it would be too. */}
+      {movingNode ? (
+        <MoveDialog
+          open
+          moving={movingNode}
+          roots={roots}
+          busy={moving}
+          onClose={() => setMovingNode(null)}
+          onMove={(parentId) => void moveNodeTo(movingNode, parentId)}
+        />
+      ) : null}
 
       {overlays}
     </div>
