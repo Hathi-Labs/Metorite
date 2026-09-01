@@ -62,3 +62,22 @@ ALLOW 2026-08-25 deploy — CP-2h slice
 
 ALLOW 2026-08-25 deploy — go-live
 ALLOW 2026-08-26 deploy-write — pull unit for WS-25
+
+ALLOW 2026-08-28 deploy — autonomous deploy and operator console bring-up
+ALLOW 2026-08-28 deploy-write — commit the console unit and Caddy block (H-75)
+ALLOW 2026-08-28 secrets — read the box .env for the Console DSN
+ALLOW 2026-08-28 env-write — set the OPERATOR_* values on the box
+
+ALLOW 2026-08-29 deploy — diagnose the deploy convergence failure, verify the console
+ALLOW 2026-08-29 deploy-write — commit the console unit + Caddy block (H-75)
+
+ALLOW 2026-08-31 deploy — merge and deploy PR #198 (Projects UI/UX)
+ALLOW 2026-08-31 deploy-write — commit the H-13 deploy.sh and health-watchdog.sh patches
+ALLOW 2026-08-31 deploy — merge and deploy PR #198
+ALLOW 2026-09-01 deploy — merge and deploy PRs #205-#210
+
+ALLOW-UNTIL 2026-09-30 deploy — dev phase: autonomous ssh, deploy scripts, migration runner
+ALLOW-UNTIL 2026-09-30 secrets — dev phase: read .env on the box
+ALLOW-UNTIL 2026-09-30 env-write — dev phase: write .env on the box
+ALLOW-UNTIL 2026-09-30 deploy-write — dev phase: write under deploy/
+ALLOW-UNTIL 2026-09-30 enforcement-flip — dev phase: flip feature flags
