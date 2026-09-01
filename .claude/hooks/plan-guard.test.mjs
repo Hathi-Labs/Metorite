@@ -248,6 +248,98 @@ const CASES = [
   // Reading it is fine — an agent must be able to see what it may do.
   ['agent may READ the grant file', bash('cat .claude/OWNER_GRANTS.md'), false],
 
+  // ── the `-m` false positive (2026-09-01) ───────────────────────────────
+  // A `git add` of the grant file was refused because the commit message
+  // carried `Co-Authored-By: … <noreply@anthropic.com>`, and SHELL_WRITE read
+  // the `>` closing that address as a redirect. Nothing was written anywhere.
+  // Every commit that names a protected path and carries a standard trailer
+  // hit this — the shape that teaches people to drop a guard.
+  [
+    'a trailer with an email does not read as a redirect',
+    bash('git add .claude/OWNER_GRANTS.md && git commit -m "grant" -m "Co-Authored-By: A B <x@y.com>"'),
+    false,
+  ],
+  [
+    'a -m body mentioning .env is prose, not a write',
+    bash('git commit -m "document the .env layout for the box"'),
+    false,
+  ],
+  [
+    "a -m body mentioning deploy/ is prose too",
+    bash("git commit -m 'move the deploy/ notes into the README'"),
+    false,
+  ],
+  // ⚠️ THE STRIP MUST NOT BLIND THE GUARD. Each of these puts the write in the
+  // COMMAND half, where neither strip reaches.
+  [
+    'a real redirect to .env still blocks, trailer or not',
+    bash('echo SECRET=1 > .env && git commit -m "x <a@b.com>"'),
+    true,
+  ],
+  [
+    'a heredoc TARGETING .env still blocks',
+    bash("cat > .env <<'EOF'\nA=1\nEOF"),
+    true,
+  ],
+  [
+    'a real write under deploy/ still blocks after a -m',
+    bash('git commit -m "note" && cp x.service deploy/hostinger/x.service'),
+    true,
+  ],
+
+  // ── restoring the grant file out of history is a WRITE ─────────────────
+  // `git add`/`git commit` only record what the owner wrote. `git checkout --`
+  // and `git restore` REPLACE the working copy, which on this file could
+  // revive a grant the calendar already retired.
+  [
+    'git checkout of the grant file is a write',
+    bash('git checkout -- .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git restore of the grant file is a write',
+    bash('git restore .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git stash pop touching the grant file is a write',
+    bash('git stash pop && cat .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git add of the grant file is NOT a write',
+    bash('git add .claude/OWNER_GRANTS.md'),
+    false,
+  ],
+
+  // ── the guard protects itself (2026-09-01) ─────────────────────────────
+  // The cheapest bypass in the design was to edit the guard, or to delete its
+  // entry from settings.json. GRANTABLE, not sealed — a guard no agent can
+  // repair is a guard that rots.
+  ['agent may not Write plan-guard', write('.claude/hooks/plan-guard.mjs', 'x'), true],
+  ['agent may not Write the guard test', write('.claude/hooks/plan-guard.test.mjs', 'x'), true],
+  ['agent may not Write settings.json', write('.claude/settings.json', '{}'), true],
+  [
+    'guard-write unlocks the guard',
+    write('.claude/hooks/plan-guard.mjs', 'x'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} guard-write — repair`]),
+  ],
+  [
+    'a deploy grant does NOT unlock the guard',
+    write('.claude/hooks/plan-guard.mjs', 'x'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'a shell write to settings.json is blocked too',
+    bash('cp /tmp/settings.json .claude/settings.json'),
+    true,
+  ],
+  // Reading the guard is always fine.
+  ['agent may READ plan-guard', bash('cat .claude/hooks/plan-guard.mjs'), false],
+  ['agent may RUN the guard test', bash('node .claude/hooks/plan-guard.test.mjs'), false],
+
   ['plain pytest', bash('uv run pytest tests/unit/'), false],
   ['ruff', bash('uv run ruff check .'), false],
   ['git status', bash('git status --short'), false],

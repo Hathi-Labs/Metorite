@@ -155,6 +155,7 @@ do not ask again in chat**.
 | Flip a feature flag | `enforcement-flip` | Say which flag, and where |
 | Query and migrate the database | — | No gate ever blocked this |
 | **Merge your own PR** | — | See §4, the loop now ends at merge |
+| Edit `plan-guard.mjs` or `settings.json` | `guard-write` | ⚠️ Read the note below |
 
 ### ⚠️ D45 changed shape, and you should know how
 
@@ -179,7 +180,25 @@ Four acts. `plan-guard.mjs` blocks all four, and **no grant unlocks them**.
 1. **Force-push**, and any history rewrite.
 2. **Commit or push on `main`.** Cut a branch.
 3. **Write `.claude/OWNER_GRANTS.md`.** Only the owner writes a grant.
+   ⚠️ `git add` and `git commit` of that file are fine — they carry what the
+   owner wrote. `git checkout --` and `git restore` are **not**, because they
+   can revive a grant the calendar already retired.
 4. **Destroy or restore infrastructure.** The VPS, the DNS zone, the domain.
+
+### `guard-write` — the guard protects itself
+
+**Editing `plan-guard.mjs`, `plan-guard.test.mjs` or `.claude/settings.json`
+needs the `guard-write` grant.** Added 2026-09-01, and it closed the cheapest
+bypass in the design: the guard could rewrite itself, and deleting six lines
+from `settings.json` disabled every rule without touching the guard at all.
+
+**Why it matters now and did not before.** This window made the hook the ONLY
+enforcement layer for ssh, deploy, `.env` and flag flips. A sole guard that can
+edit itself is not a guard.
+
+**Grantable on purpose, never sealed.** Guard work is legitimate and frequent.
+A guard no agent can repair is a guard that rots, and a false positive that
+nobody can fix is what teaches people to delete the whole thing.
 
 ### Three rules that replace the refusals
 

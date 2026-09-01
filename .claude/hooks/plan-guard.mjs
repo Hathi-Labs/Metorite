@@ -118,7 +118,67 @@ const PROTECTED_PATHS = [
     test: /(^|[\\/])deploy[\\/]/,
     why: 'deploy/ changes are OWNER-GATE — they run against prod.',
   },
+  // ⚠️ THE GUARD PROTECTS ITSELF (added 2026-09-01).
+  //
+  // Until now the cheapest bypass in the whole design was to edit this file.
+  // Nothing stopped it. An agent that found a gate inconvenient could delete
+  // the gate, or delete the `plan-guard` entry from `.claude/settings.json`,
+  // and the next tool call would sail through with no trace at the boundary.
+  //
+  // That hole mattered little while permissions were narrow and a human
+  // approved most calls. It matters now: the 2026-09-30 dev window (CLAUDE.md
+  // §3a) made this hook the ONLY enforcement layer for ssh, deploy, `.env` and
+  // flag flips. A sole guard that can rewrite itself is not a guard.
+  //
+  // ⚠️ `settings.json` is in this list for a reason that is easy to miss: the
+  // gates are only reachable because that file registers this hook. Removing
+  // six lines of JSON disables every rule above without touching this file.
+  //
+  // GRANTABLE on purpose, not sealed. Guard work is legitimate and happens
+  // often — the ranged-grant arm and this very entry were written by an agent.
+  // Sealing it would mean no agent could ever repair a false positive, which
+  // is how a guard rots. The owner writes `guard-write` for that session.
+  {
+    id: 'guard-write',
+    test: /(^|[\\/])(plan-guard\.(test\.)?mjs|settings\.json)$/i,
+    why: 'plan-guard and the settings that register it are the enforcement layer itself.',
+  },
 ]
+
+/**
+ * Strip the parts of a command that are DATA, not instruction, before deciding
+ * whether the command writes.
+ *
+ * Two shapes, and both were found by a false positive on ordinary work:
+ *
+ * 1. **Heredoc bodies.** Found immediately when this rule blocked its own
+ *    commit, because the message mentioned `.env` in prose.
+ *
+ * 2. **`-m` / `--message` bodies.** Found 2026-09-01. A `git add` of the grant
+ *    file was refused because the commit message carried the trailer
+ *    `Co-Authored-By: … <noreply@anthropic.com>` — and `SHELL_WRITE` read the
+ *    `>` closing that email address as a file redirect. Nothing was written
+ *    anywhere. Every commit that names a protected path and carries a standard
+ *    trailer hit this, which is the shape that teaches people to drop a guard.
+ *
+ * A command that genuinely targets a protected path still blocks: in
+ * `cat > .env <<'EOF'` the `> .env` lives in the COMMAND half, and neither
+ * strip touches it. What goes is only the quoted payload.
+ */
+function stripNoise(cmd) {
+  return cmd
+    .replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ')
+    .replace(/(^|\s)(-m|--message)(=|\s+)(['"])[\s\S]*?\4/g, ' ')
+}
+
+// Git verbs that REPLACE a file's content from somewhere else. `git add` and
+// `git commit` only record what a human already wrote, so they are not here —
+// but `git checkout -- <path>` and `git restore <path>` overwrite the working
+// copy, which on the grant file would let an agent revive a lapsed grant out
+// of history. Scoped to the grant-file check, deliberately: adding `checkout`
+// to SHELL_WRITE would refuse `git checkout -b` on any command that happens to
+// mention `deploy/`.
+const GIT_CONTENT_RESTORE = /\bgit\s+(checkout|restore)\b|\bgit\s+stash\s+(pop|apply)\b/
 
 
 // --- Owner grants (D45) ------------------------------------------------------
@@ -246,11 +306,18 @@ const input = payload.tool_input || {}
 
 if (tool === 'Bash' || tool === 'PowerShell') {
   const cmd = String(input.command || '')
+  // Judge the command, never its quoted payload. See stripNoise().
+  const scanned = stripNoise(cmd)
 
   // The grant file itself is never shell-writable, and that refusal is the
   // one thing no grant can unlock — otherwise an agent could grant itself.
-  if (GRANT_FILE_RE.test(cmd.replace(/\s+/g, ' ')) || /OWNER_GRANTS/i.test(cmd)) {
-    if (SHELL_WRITE.test(cmd)) {
+  //
+  // `git add` and `git commit` are NOT writes here. They record a file the
+  // owner already wrote, and the owner committed this file on 2026-09-01 so
+  // that cloud sessions inherit the window. Restoring content out of history
+  // IS a write, because it can revive a grant the calendar already retired.
+  if (GRANT_FILE_RE.test(scanned.replace(/\s+/g, ' ')) || /OWNER_GRANTS/i.test(scanned)) {
+    if (SHELL_WRITE.test(scanned) || GIT_CONTENT_RESTORE.test(scanned)) {
       block(
         'shell write to .claude/OWNER_GRANTS.md — grants must be owner-authored (D45). '
           + 'This refusal is NOT grantable.',
@@ -288,22 +355,13 @@ if (tool === 'Bash' || tool === 'PowerShell') {
   // SPACE, so the anchor never matches and the guard waves it through.
   // Splitting the command into tokens hands each pattern the thing it was
   // written to judge.
-  // ⚠️ HEREDOC BODIES ARE DATA, NOT COMMAND — strip them before scanning.
-  // Found immediately: this rule blocked its own commit, because the commit
-  // message (passed through `git commit -m "$(cat <<'EOF' … EOF)"`) mentioned
-  // `.env` in prose while the surrounding command contained a redirect. Nothing
-  // was being written to `.env` at all.
+  // ⚠️ QUOTED PAYLOAD IS DATA, NOT COMMAND — `scanned` above already stripped
+  // it. stripNoise() carries the full rationale and both incidents.
   //
   // That matters beyond the annoyance. A guard with false positives on ordinary
   // work gets routed around on purpose — the next person writes the commit
   // message differently, or drops the guard from their loop, and the real block
   // goes with it. Precision IS the safety property here.
-  //
-  // A heredoc that genuinely targets a protected path still blocks: in
-  // `cat > .env <<'EOF'` the `> .env` lives in the COMMAND half, which survives
-  // this strip untouched.
-  const scanned = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ')
-
   if (SHELL_WRITE.test(scanned)) {
     const tokens = scanned.split(/[\s;|&()<>'"`]+/).filter(Boolean)
     for (const token of tokens) {
