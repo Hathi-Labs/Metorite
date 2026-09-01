@@ -75,6 +75,29 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-94 · A fresh box repeats H-90's exposure, because `.env.example` says `dev` · [AGENT]
+- **Check:** `grep -n ACB_ENV .env.example` and
+  `grep -rn "ACB_ENV" scripts/vps_apply.sh deploy/hostinger/bootstrap.sh`. This
+  entry is live while the template says `dev` and no deploy step writes `prod`.
+- **Why:** H-90 no longer applies to the CURRENT box. Somebody set `ACB_ENV=prod` by
+  hand, and `/openapi.json` and `/docs` now answer 404. **Nothing carries that
+  fix forward.** `Settings.acb_env` defaults to `"dev"`, `.env.example` ships
+  `ACB_ENV=dev`, and no bootstrap or apply step sets `prod`. The next fresh box
+  publishes its whole API schema again, exactly as before.
+  📌 **This is the half of H-90 that its Check could not see.** The Check probed
+  the live host, so it went green the moment somebody fixed one box. Deleting the
+  entry took the durable half with it, which is why this replacement exists.
+  📌 The fence already exists — `vps-health.yml` job `exposure` probes hourly
+  and fails while any path reports `dev`. It watches production only. It cannot
+  see a box that has not been built yet.
+- **Decide where production's value comes from.** A default flip in `Settings`
+  is the smallest fix and it changes every environment at once. A deploy-time
+  write is narrower and adds a step that somebody can skip. Take one, and name the
+  test that fails if somebody undoes it (R7).
+- **Authority:** H-90 (closed 2026-09-01) · `gateway/main.py` `docs_enabled` ·
+  `test_docs_are_dev_only` · `vps-health.yml` job `exposure`
+- **Added:** 2026-09-01 · guardrail-relaxation session, on closing H-90
+
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
 - **Check:** run this on the Console database.
 
