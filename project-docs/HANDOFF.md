@@ -1342,6 +1342,53 @@ line — never reclaim a number by deleting the other entry.
   done-when section and a repaired Check
 
 
+### H-96 · Moving a Supabase project changes NINE things, and eight of them are outside the database · [OWNER]
+- **Check:** compare the project ref the box uses against the ref in the
+  Supabase dashboard. `grep -h "supabase.co" /opt/acb/app/apps/services/customer_console/.env
+  /opt/acb/app/workbench/operator_console/.env.local` → every line must name the
+  SAME ref, and that ref must be the live project. A mismatch, or an unmoved
+  project, means this entry is still real.
+- **Why:** the owner moves the Supabase projects to the box's own region,
+  because the round trip across regions makes some interactions slow. Measured
+  2026-09-01: the Customer Console sits in `ap-southeast-1` and the Tenant
+  Plane sits in `ap-northeast-1`. So the two planes are in different regions
+  from each other, and both are away from the box.
+- 🔴 **A project ref appears in NINE places, and the database holds only one of
+  them.** A move that misses one leaves a service pointing at a project that no
+  longer answers. The list, measured on 2026-09-01:
+  1. `CUSTOMER_CONSOLE_DATABASE_URL`, in
+     `/opt/acb/app/apps/services/customer_console/.env` (H-64's file).
+  2. `OPERATOR_SUPABASE_URL`, in that SAME file.
+  3. `OPERATOR_SUPABASE_URL` **again**, in
+     `/opt/acb/app/workbench/operator_console/.env.local`. ⚠️ **Two files, one
+     value.** A reader who fixes one and not the other gets a silent 401, and
+     the console names no cause. Spec §4.2a holds the split.
+  4. `OPERATOR_SUPABASE_ANON_KEY`, in the API file. The key is minted per
+     project, so a move retires it.
+  5. The Google OAuth **redirect URI** in Google Cloud Console. It reads
+     `https://<ref>.supabase.co/auth/v1/callback` and it carries the ref.
+  6. The Supabase **redirect allowlist** entry for
+     `https://operator.metorite.com/login/callback`. It lives inside the
+     project, so a new project starts empty.
+  7. The Google provider itself, with its client id and secret. Same reason.
+  8. **Manual identity linking OFF.** A new project defaults it ON, and H-54
+     records why that is a bypass.
+  9. The owner's local MCP configuration.
+- 📌 **Do the move BEFORE the Google sign-in work of H-54.** Items 5 to 8 are
+  the whole of H-54's browser half. A move after that work repeats it.
+- ✅ **The timing is lucky, and it will not stay lucky.** Measured 2026-09-01:
+  `usage_event` holds ZERO rows and the Router has served no call, so no
+  billing record can be lost. `vendor_price_feed` holds 3378 rows, and a feed
+  sync rebuilds those. What must survive is small — 2 organizations, 2
+  operators, 2 provider credentials, 7 tier bindings.
+- ⚠️ **The ladder is the schema of record, and never a dump.** Apply
+  `infra/customer_console/0*.sql` in order against the new project, then move
+  the rows. `scripts/dev_db.sh` shows the idiom.
+- **Authority:** `work_plan.md` §6 (deploy reach, env-write) · H-64 · H-54 ·
+  `specs/operator_identity_and_access.md` §4.2a
+- **Added:** 2026-09-01 · WS-31 operator-identity session, from the owner's
+  region-latency plan
+
 ### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the SIX `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
 - **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
   Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
