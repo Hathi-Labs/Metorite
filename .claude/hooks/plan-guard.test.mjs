@@ -39,6 +39,17 @@ function projectWithGrants(lines) {
 const t = new Date()
 const TODAY = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
 
+// Offsets from today, for the ranged `ALLOW-UNTIL` form. Computed rather than
+// hard-coded: a fixture with a literal future date becomes a stale fixture the
+// day it passes, and it passes silently — the suite goes green while the arm it
+// covers has stopped being exercised.
+const dayOffset = (n) => {
+  const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const FUTURE = dayOffset(30)
+const YESTERDAY = dayOffset(-1)
+
 const NO_GRANTS = projectWithGrants([])
 
 const CASES = [
@@ -154,6 +165,69 @@ const CASES = [
     write('deploy/compose.yml', 'services: {}'),
     true,
     projectWithGrants(null),
+  ],
+
+  // ── the ranged form, ALLOW-UNTIL (2026-09-01) ──────────────────────────
+  // The window must CLOSE BY ITSELF. Every case below exists to hold one half
+  // of that: it opens while the date is ahead, and it is inert the moment the
+  // date is behind or missing.
+  [
+    'ALLOW-UNTIL a future date grants the gate',
+    write('deploy/compose.yml', 'services: {}'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy-write — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL today is INCLUSIVE of today',
+    write('deploy/compose.yml', 'services: {}'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${TODAY} deploy-write — last day`]),
+  ],
+  [
+    'ALLOW-UNTIL yesterday has EXPIRED',
+    write('deploy/compose.yml', 'services: {}'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${YESTERDAY} deploy-write — window closed`]),
+  ],
+  [
+    'ALLOW-UNTIL with NO date grants nothing',
+    write('deploy/compose.yml', 'services: {}'),
+    true,
+    projectWithGrants(['ALLOW-UNTIL deploy-write — open-ended, must not parse']),
+  ],
+  [
+    'ALLOW-UNTIL deploy covers ssh to the box',
+    bash('ssh acb@203.0.113.4 systemctl status acb-gateway'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL secrets covers reading .env on the box',
+    bash('cat /opt/acb/app/.env'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} secrets — dev phase`]),
+  ],
+  // ⚠️ THE RANGED FORM IS STILL PER-ID. A dev-phase window must not become a
+  // skeleton key: force-push and history-rewrite are the two gates the owner
+  // deliberately left OUT of the 2026-09-01 window, and nothing else's grant
+  // may reach them.
+  [
+    'ALLOW-UNTIL deploy does NOT grant force-push',
+    bash('git push --' + 'force origin main'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL deploy does NOT grant history-rewrite',
+    bash('git reset --hard origin/main'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL never unlocks writing the grant file',
+    write('.claude/OWNER_GRANTS.md', `ALLOW-UNTIL ${FUTURE} deploy — self-granted`),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
   ],
 
   // ⚠️ THE GRANT FILE IS NEVER AGENT-WRITABLE, AND THAT IS NOT GRANTABLE.

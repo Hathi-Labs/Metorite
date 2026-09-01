@@ -62,16 +62,29 @@ second implementer to route around a block.
 - Commit, push the branch, open a PR with `gh`. The PR body: WS id, the slice
   built, acceptance evidence, verification output, reviewer findings, and what
   was deferred.
-- **Stop there.** Merging and deploying are the owner's. Deploy auto-applies
-  migrations and you cannot undo a bad one.
+- **⚠️ DEV PHASE, until 2026-09-30 — merge it and watch it ship.** Wait for
+  `pr-check` to go green. Merge with `gh pr merge --squash`. Then watch the
+  `deploy` run, and report the SHA that `GET /version` serves.
+  **Do not report done until you have seen that SHA.** Merging to `main` is the
+  deploy, so an unwatched merge is an unverified release.
+- Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
+  migration reaches production, confirm the pre-migration backup completed.
+- On 2026-10-01 this step reverts to: **stop there, merging is the owner's**.
 
 ## Refusals
 
-If any step needs an OWNER-GATE action (`work_plan.md` §6 — flag flips,
-credential rotation, force-push, deploy, prod reach, external accounts), stop
-and hand it to the owner with the exact action needed. A guard hook enforces
-this independently; if it blocks you, that block is correct — do not work around
-it, and do not ask a subagent to do what you were blocked from doing.
+**⚠️ Read `CLAUDE.md` §3a first. The owner opened most of §6 until 2026-09-30.**
+Check `.claude/OWNER_GRANTS.md` for a dated line covering the gate id. If a line
+covers it, **do the work**. Do not refuse, and do not ask the owner again.
+
+Four acts stay refused, and no grant unlocks them: force-push, history rewrite,
+committing on `main`, and writing the grant file. Three more need the owner's
+word first: charging money, mailing a real person, and writing a live
+organization's membership or credit balance.
+
+A guard hook enforces all of this independently. If it blocks you, that block is
+correct — do not work around it, and do not ask a subagent to do what you were
+blocked from doing. Report the exact gate id the owner must grant.
 
 ## Final report
 
