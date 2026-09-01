@@ -185,44 +185,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
   rewritten the same day, after the block cleared and the repair landed
 
-### H-90 · ⚠️ Production publishes its whole API schema, because `env=dev` · [OWNER]
-- **Check:** `curl -s -o /dev/null -w '%{http_code} %{size_download}\n'
-  https://api.metorite.com/openapi.json`. A `200` means this is open. Measured
-  2026-08-31 17:05 UTC: **200, and 1121924 bytes, with no credential**. `/docs`
-  answers 200 too, and serves the Swagger UI.
-- **One variable causes it.** `/version` reports `"env":"dev"`.
-  `Settings.acb_env` defaults to `"dev"`, so an ABSENT `ACB_ENV` on the box
-  gives exactly this reading. `gateway/main.py:591` then returns
-  `env == "dev"` from `docs_enabled`, which wires `docs_url`, `redoc_url` and
-  `openapi_url`.
-- **The auth dependency cannot save us here.** FastAPI mounts the docs routes
-  as plain Starlette routes with NO dependency chain. `main.py:583` says so in
-  its own docstring, and `tests/unit/test_default_deny_auth.py` repeats it. The
-  app-level `require_authenticated` never reaches them. Switching the env off
-  is the ONLY guard this design has, and the box has it switched on.
-- **What the schema gives a reader.** Every route, every path parameter, every
-  request and response model, and the admin surface. It is a map of the attack
-  surface. It is not a credential, so this is exposure and not a breach.
-- **The fix, and why it is small.** Set `ACB_ENV=prod` in the box's `.env`, then
-  restart the gateway. The whole tree reads `acb_env` in six places: the startup
-  log, `docs_enabled`, `/health`, `/version`, the reconciler's start log and
-  `scripts/check_infra.py`. Nothing in the auth path reads it. So the flip
-  removes the docs and corrects two labels. Nothing else moves.
-- **Then close the same hole in the deploy.** `.env.example` carries
-  `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
-  this exactly. Decide where production's value comes from.
-- **The fence now exists (R7).** `vps-health.yml` gained an `exposure` job. It
-  probes the three paths and `/version` hourly from outside, and it fails the
-  run while any of them says `dev`. ⚠️ **So that job is RED until somebody sets
-  the variable.** That is the alarm working, not a broken job. It carries its
-  own job and never touches the outage issue, so it cannot mask a real
-  reachability alert, and a real outage cannot mask it.
-- **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
-  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only` ·
-  `vps-health.yml` job `exposure`
-- **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
-  "reports the wrong label", after the schema probe returned 200
-
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
 - **Check:** the DELIVERABLE first, and the request body only after it.
   *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
@@ -796,26 +758,6 @@ line — never reclaim a number by deleting the other entry.
   D36 (Fracktal is customer zero)
 - **Added:** 2026-08-26 · guardrails + handoff session · build half measured and
   fixed 2026-09-01
-
-### H-61 · `.claude/OWNER_GRANTS.md` is untracked AND un-ignored · [OWNER]
-- **Check:** `git check-ignore -v .claude/OWNER_GRANTS.md` → no output means this
-  entry is live. `git status --short` shows it as `??` every session.
-- **Why:** the file now DOES something — PR #119 landed the reading half of D45,
-  so plan-guard honours it. It sits in a bad third state. It is not committed,
-  and it is not ignored.
-  🔴 **`git clean -xdf` deletes it, silently, with every grant in it.** It also
-  shows as untracked noise in every `git status`, which is how people learn to
-  skim that output.
-  📌 **My recommendation, and it is the owner's call because D45 owns this.**
-  Add one `.gitignore` line. A grant is a LOCAL, one-day authorization by one
-  human at one keyboard. Committing it would make a grant travel to every
-  checkout, every cloud session and every worktree — which is the opposite of
-  what D45 is for.
-  📌 Measured 2026-08-26: 23 `ALLOW` lines, of which **1** was live. Stale lines
-  are inert by design, so this is tidiness, not risk. The file says to delete
-  them when convenient.
-- **Authority:** D45 · `.claude/OWNER_GRANTS.md` · `.claude/hooks/plan-guard.mjs`
-- **Added:** 2026-08-26 · guardrails + handoff session
 
 ### H-62 · Two WS-39 design questions block the first Tasks slice · [OWNER]
 - **Check:** these are decisions, not code. `rg -n "origin" workbench/control_plane/src/app/tasks/lib/types.ts`

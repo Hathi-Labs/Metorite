@@ -1,5 +1,41 @@
 # Deploying AI Company Brain on a Hostinger KVM VPS
 
+## ⚠️ The production box, as of 2026-09-01
+
+**This block is the ONE place that names the live host. Correct it here, and
+nowhere else.** Verified 2026-09-01 by an `ssh` that returned the hostname and
+the serving SHA.
+
+| | |
+|---|---|
+| Hostname | `srv1914284.hstgr.cloud` |
+| IPv4 | `187.127.172.200` |
+| Plan | KVM 2, Ubuntu 24.04 LTS |
+| Deploy user | `acb` (passwordless `sudo`) |
+| App root | `/opt/acb/app` |
+| Serves | `metorite.com`, `api.metorite.com`, `app.metorite.com` |
+
+**Reach it with `ssh metorite`.** Put this in your `~/.ssh/config`. The file is
+local to one machine, so a fresh checkout must add it again.
+
+    Host metorite metorite-prod
+      HostName 187.127.172.200
+      User acb
+      IdentityFile ~/.ssh/metorite_vps
+      IdentitiesOnly yes
+
+⚠️ **`187.127.179.143` and `srv1747539` are a DIFFERENT, OLDER box.** Eleven
+files carried that address on 2026-09-01, and four of them were runbooks that
+said "ssh here to reach production". They sent a session to the wrong host.
+Two files keep the old address on purpose, and both are historical records:
+`UPSTREAM-CONNECTIVITY-EVIDENCE.md` (a support ticket) and
+`backup_and_restore.md` (a dated measurement). Do not rewrite either.
+
+**Confirm before you trust this table:** `nslookup api.metorite.com` must
+return the IPv4 above. DNS is the authority, not this file.
+
+---
+
 Target spec (matches `system_architecture.md` §5 v1 baseline):
 
 | Plan | vCPU | RAM  | Disk        | Price (2-yr renewal) |

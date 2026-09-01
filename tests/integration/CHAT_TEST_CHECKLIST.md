@@ -1,6 +1,6 @@
 # Metorite Chat -- Manual UI Test Checklist
 
-Run these tests in the Control Plane (http://187.127.179.143:3001) against both
+Run these tests in the Control Plane (http://187.127.172.200:3001) against both
 MAF agents (e.g. `task-manager`) and Copilot SDK agents (e.g. `agent-project-manager`).
 
 ---
