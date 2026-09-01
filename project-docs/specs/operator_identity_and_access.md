@@ -147,10 +147,34 @@ staff instead, and the `hd` hosted-domain claim replaces the Entra `tid` as
 check 1. D35.3's intent stands, which is one directory, ours, admin-managed.
 Email OTP is refused for this console.
 
-⚠️ **Read the two halves apart.** Every ◐ BUILT note above is a true record of
-what CP-12a to CP-12g slice 1 shipped, and that code names Microsoft. §4.1 and
-§8.1 below now state what a later slice must build. The two disagree on
-purpose, and the gap is the work.
+**◐ CP-12h BUILT 2026-09-01** (`ws-31-google-signin`) — the Google Workspace
+gate. `OPERATOR_SIGNIN_PROVIDER` names the directory, and it defaults to
+`azure`. An unset variable keeps every byte of the built behaviour.
+
+`operators.signin_provider`, `operators.staff_directory_id` and
+`operators.directory_matches` hold the choice. `operator_signin._google_hd`
+reads the `hd` claim, and it is as strict as `_azure_tid`. The login page names
+the provider on the button and in the authorize link.
+
+Done-whens 1, 5, 30, 31, 32 and 33 are met. Done-whens 2 to 29 stay true, and
+their suites pass with no edit to an expectation. 117 Console tests and 624
+console tests, 0 skipped. Eleven mutations killed.
+
+⚠️ **Done-when 31 tightens the `azure` path too.** `_email_is_verified` read a
+top-level `email_confirmed_at` and then scanned every identity. It now reads
+one identity, the sign-in provider's. That is a real change to the built path,
+and D70 asks for it.
+
+🔴 **Nobody has proved this end to end.** Nobody has measured whether Supabase
+copies `hd` into `identities[].identity_data`. H-54 item 3 records it as
+unmeasured, and the fences here read a constructed payload. The code fails
+CLOSED on a missing `hd`. So a guess that is wrong refuses everybody, and it
+admits nobody. The owner must measure one real Google payload.
+
+⚠️ **Read the two halves apart.** Every ◐ BUILT note above CP-12h is a true
+record of what CP-12a to CP-12g slice 1 shipped, and that code named Microsoft.
+CP-12h closes the gap in the code. The English of those older notes still names
+Microsoft, and it stays as a record.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decisions of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -261,6 +285,11 @@ check failed.
    asserts that the `hd` hosted-domain claim equals `OPERATOR_GOOGLE_HD`.
    ⛔ **Changed 2026-09-01 by D70.** This read *"a Microsoft identity"* and
    `OPERATOR_ENTRA_TENANT_ID` until then.
+   **`OPERATOR_SIGNIN_PROVIDER` is the switch** (CP-12h). It holds `azure` or
+   `google`, and it defaults to `azure`, so an unset box behaves as it did
+   before D70. An unknown name is a **503**, and never a fall back to `azure`.
+   The `hd` comparison folds case, because a DNS domain is case-insensitive.
+   The Entra `tid` is a GUID, so that path still compares exactly.
 2. **The domain.** The email domain is in `OPERATOR_STAFF_DOMAINS`.
 3. **The registry.** A row exists in `operator` for that email, and its status is
    `active`.
@@ -541,6 +570,7 @@ out of a live console.
 | **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | ◐ **BUILT 2026-08-27.** `operator_activity.py` plus `GET /activity` and `GET /activity/actions`. Keyset-paginated, cross-org, `viewer`-readable. The `LEFT JOIN` keeps org-less and purged-company rows visible. 26 R8 tests, **13 mutations killed and 0 survived**. ⚠️ H-7 is reproduced by a test, not assumed. ⚠️ Found **F8** at build | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12f2** | ◐ **BUILT 2026-08-27. F8 is closed.** `operator_signin.py`, `POST` and `DELETE` `/operators/session`, and the one-time bootstrap through the door. Supabase verifies the token, then `operators.admit` runs the three checks. Done-whens 1 to 6 are reachable for the first time. 53 R8 tests, **19 mutations killed and two PAIRS**. ⚠️ A real bypass was closed at build, and 🔴 the owner must disable identity linking in Supabase. Was: The Supabase sign-in exchange: a route that takes a verified Microsoft identity, calls `operators.admit()`, and mints the `cc_sess_` session CP-12b already verifies. §8.1 done-whens 1 to 6 are UNREACHABLE without it. See **F8** | CP-12a | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration stays **OWNER-GATE** |
+| **CP-12h** | ◐ **BUILT 2026-09-01.** The Google Workspace gate of **D70**. `OPERATOR_SIGNIN_PROVIDER` picks the directory and **defaults to `azure`**, so the built behaviour is unchanged until the owner flips it. `operators.signin_provider` refuses an unknown name with a 503, and `ALLOWED_PROVIDERS` can hold no passwordless provider. `staff_directory_id` reads `OPERATOR_GOOGLE_HD` on the Google path, and it still raises instead of answering `None`. `directory_matches` is the ONE answer to *"did this sign-in come from our directory"*, and a missing claim is always `False`. `_google_hd` reads `hd` from the sign-in identity alone. `_email_is_verified` now reads one identity, which tightens the `azure` path too. The login page drives the button and the authorize link from the same variable. Done-whens 1, 5 and 30 to 33. 117 R8 tests and 624 console tests, 0 skipped, **11 mutations killed**. ⚠️ **The `hd` payload shape is still unmeasured** (H-54 item 3), and the gate fails CLOSED on it | CP-12f2, CP-12g slice 1 | 🟢 **AGENT-SAFE** to build. 🔴 Setting `OPERATOR_SIGNIN_PROVIDER` and `OPERATOR_GOOGLE_HD`, and configuring the Google provider, stay **OWNER-GATE** |
 | **CP-12g** | ◐ **SLICE 1 BUILT 2026-08-27, AMENDED 2026-09-01.** The amendment prints a recovery note on the login page. It names `OPERATOR_IDENTITY_ENABLED` and it adds no passphrase form, so done-when 29 holds. The console itself: `identity.ts`, the Operators and Activity surfaces, the Microsoft sign-in flow, six BFF routes, and BOTH F7 fences shown red first. 131 frontend tests, **14 mutations killed**. The fence found four already-merged page reads that dropped the caller session. ⚠️ **Slice 2 is the deletion, and it waits for the owner.** Was: Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
 ### 8.1 Done-when, per ticket
@@ -614,26 +644,49 @@ slice must build. Every other done-when below is unchanged and still binds.
 
 **The Google Workspace gate — added 2026-09-01 by D70**
 
+✅ **CP-12h met all four on 2026-09-01.** Each one carries a fence below, and
+each fence went red under a mutation before it passed.
+
 30. 🔴 **A Google identity carrying NO `hd` claim is refused 403.** This holds
     even when the email domain is in `OPERATOR_STAFF_DOMAINS` and an active
     `operator` row exists for that email. **This is the personal-Google-account
     attack, and it is the most important case on this list.** A missing claim
     is a refusal, and never a pass.
+    ✅ **MET.** `operators.directory_matches` reads an absent claim as `False`.
+    Fences: `test_operator_signin.py::test_a_google_identity_with_no_hosted_domain_is_refused_403`
+    and `test_operator_identity.py::test_a_google_identity_with_no_hosted_domain_is_refused`.
+    Each case also admits the same person WITH the claim, so a broken path
+    cannot pass for the wrong reason.
 31. **`_email_is_verified` reads `email_verified` only from the SIGN-IN
     provider's identity.** A second linked identity does not satisfy it. ⚠️ The
     built function scans EVERY identity in the payload today
     (`operator_signin.py`), so this done-when names a real gap, not a
     restatement.
+    ✅ **MET.** The function takes the provider and reads one identity. It no
+    longer accepts a top-level `email_confirmed_at`, which tightens the `azure`
+    path too. Fences:
+    `test_operator_signin.py::test_a_second_identity_cannot_prove_this_sign_in_s_address`,
+    `::test_a_top_level_confirmation_no_longer_stands_in` and
+    `::test_the_verified_flag_is_pinned_on_the_entra_path_too`.
 32. **The bootstrap gate fires on the `hd` match, and never on a missing
     directory claim.** The gate sits at `main.py:1178` and reads
     `identity.tid == operators.staff_tenant_id()` today. Two `None` values
     compare equal in Python, so an identity with no directory claim would
     consume the one-time bootstrap path. **Show this red first.**
+    ✅ **MET, with two guards.** The gate now calls
+    `operators.directory_matches`, and `operators.staff_directory_id` raises
+    instead of answering `None`. The hole needs only one of the two to open.
+    Fences: `test_operator_identity.py::test_the_directory_getter_never_returns_none`,
+    `::test_a_missing_claim_never_matches_the_directory` and
+    `test_operator_signin.py::test_the_bootstrap_never_fires_on_a_missing_directory_claim`.
 33. **The allowed sign-in provider set can never hold a passwordless
     provider.** `email`, `magiclink`, `otp`, `phone` and `sms` stay out of it,
     per **D70.2**. **R7 — the fence is
     `tests/unit/test_operator_signin.py::test_no_passwordless_provider_is_ever_allowed`**,
     which reads the allowlist constant and fails on any member of that set.
+    ✅ **MET.** `operators.ALLOWED_PROVIDERS` and
+    `operators.PASSWORDLESS_PROVIDERS` are the two constants, and
+    `operators.signin_provider` refuses any name outside the first one.
 
 ---
 
@@ -678,7 +731,7 @@ An agent must **refuse these by name** and say so. They belong in
 | # | Act | Class |
 |---|---|---|
 | **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID` | `env-write` |
+| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |

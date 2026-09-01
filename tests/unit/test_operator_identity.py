@@ -464,6 +464,226 @@ def test_the_directory_subject_is_written_once_and_never_overwritten(conn):
     ), "a second sign-in overwrote the recorded directory principal"
 
 
+# ── D70: the directory moves to Google Workspace ────────────────────────────
+#
+# Spec §4.1 check 1 · §8.1 done-whens 1, 5, 30 and 32. The switch is
+# ``OPERATOR_SIGNIN_PROVIDER`` and it DEFAULTS to ``azure``, so every case
+# above still describes this box with the variable unset.
+
+HD = "hathilabs.com"
+
+#: A configured GOOGLE box. Same shape as ``ENV``, one directory further on.
+GOOGLE_ENV = {
+    "OPERATOR_SIGNIN_PROVIDER": "google",
+    "OPERATOR_GOOGLE_HD": HD,
+    "OPERATOR_STAFF_DOMAINS": f"{HD}, metorite.com",
+}
+
+
+def _google_email() -> str:
+    return f"op-{uuid.uuid4().hex[:10]}@{HD}"
+
+
+def test_an_unset_provider_variable_still_means_entra():
+    """⚠️ **The ship-dark property, stated as a test.**
+
+    D70 moves the directory. It must not move a box that has not been told
+    to move. An unset variable is today's behaviour, unchanged.
+    """
+    from customer_console import operators
+
+    assert operators.signin_provider({}) == operators.AZURE_PROVIDER
+    assert operators.signin_provider({"OPERATOR_SIGNIN_PROVIDER": "  "}) == (
+        operators.AZURE_PROVIDER
+    )
+    assert operators.staff_directory_id(ENV) == TENANT
+
+
+def test_a_google_box_reads_the_hosted_domain_and_admits(conn):
+    """Done-when 1 on the Google path — the positive half.
+
+    Without it, every refusal below could pass because the whole path is
+    broken rather than because the right thing was refused.
+    """
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email, role="admin")
+    row = store.operator_by_email(conn, email)
+
+    admitted = operators.admit(row, tid=HD, email=email, env=GOOGLE_ENV)
+    assert admitted.email == email
+    assert admitted.role == "admin"
+
+
+def test_a_google_identity_with_no_hosted_domain_is_refused(conn):
+    """🔴 **Done-when 30, at the module.** The personal-account attack.
+
+    The row is an ACTIVE admin and the domain is one we named, so checks 2
+    and 3 both pass. Only the missing ``hd`` refuses, which is the whole
+    point: anybody who receives mail at a staff domain can mint a verified
+    Google account, and that account carries no ``hd``.
+    """
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email, role="admin")
+    row = store.operator_by_email(conn, email)
+
+    for absent in (None, "", "   "):
+        with pytest.raises(operators.OperatorForbidden):
+            operators.admit(row, tid=absent, email=email, env=GOOGLE_ENV)
+
+
+def test_another_workspace_domain_is_refused(conn):
+    """Done-when 1. A real Google Workspace, and not ours."""
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email, role="admin")
+    row = store.operator_by_email(conn, email)
+
+    with pytest.raises(operators.OperatorForbidden):
+        operators.admit(row, tid="other-company.com", email=email,
+                        env=GOOGLE_ENV)
+
+
+def test_the_entra_tenant_id_does_not_open_a_google_box(conn):
+    """The two directories share no value. Neither may stand in for the other."""
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email, role="admin")
+    row = store.operator_by_email(conn, email)
+
+    with pytest.raises(operators.OperatorForbidden):
+        operators.admit(row, tid=TENANT, email=email, env=GOOGLE_ENV)
+
+
+def test_the_hosted_domain_comparison_folds_case(conn):
+    """A DNS domain is case-insensitive, and ``_check_domain`` already folds
+    the email half. A capital letter in an env line must not lock the team
+    out of a live console."""
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email)
+    row = store.operator_by_email(conn, email)
+
+    shouty = dict(GOOGLE_ENV, OPERATOR_GOOGLE_HD="HathiLabs.COM")
+    assert operators.admit(row, tid=HD, email=email, env=shouty).email == email
+    assert operators.admit(
+        row, tid="HATHILABS.com", email=email, env=GOOGLE_ENV
+    ).email == email
+
+
+def test_an_unset_hosted_domain_refuses_everybody(conn):
+    """Done-when 5, rewritten by D70. ``OPERATOR_GOOGLE_HD`` fails CLOSED."""
+    from customer_console import operators, store
+
+    email = _google_email()
+    _seed(conn, email, role="admin")
+    row = store.operator_by_email(conn, email)
+
+    broken = dict(GOOGLE_ENV)
+    broken.pop("OPERATOR_GOOGLE_HD")
+    with pytest.raises(operators.OperatorUnconfigured):
+        operators.admit(row, tid=HD, email=email, env=broken)
+
+
+def test_the_directory_getter_never_returns_none():
+    """🔴 **Done-when 32's first guard.**
+
+    ``main.py`` compares an identity's claim against this value. Two ``None``
+    values compare equal in Python, so a getter that answered ``None`` for an
+    unconfigured box would let an identity with no directory claim consume
+    the one-time bootstrap. It must raise, on BOTH paths.
+    """
+    from customer_console import operators
+
+    for env in ({}, {"OPERATOR_SIGNIN_PROVIDER": "google"}):
+        with pytest.raises(operators.OperatorUnconfigured):
+            operators.staff_directory_id(env)
+
+    for env in (ENV, GOOGLE_ENV):
+        value = operators.staff_directory_id(env)
+        assert isinstance(value, str) and value.strip()
+
+
+def test_a_missing_claim_never_matches_the_directory():
+    """🔴 **Done-when 32's second guard**, and the one the gate reads.
+
+    ``directory_matches`` is the ONE place that answers "did this sign-in
+    come from our directory". A missing claim is ``False`` on every path.
+    """
+    from customer_console import operators
+
+    for env in (ENV, GOOGLE_ENV):
+        for absent in (None, "", "   "):
+            assert operators.directory_matches(absent, env) is False
+
+    assert operators.directory_matches(TENANT, ENV) is True
+    assert operators.directory_matches(HD, GOOGLE_ENV) is True
+
+
+def test_an_unconfigured_box_raises_even_for_a_missing_claim():
+    """The order the built code already had, kept through the rewrite.
+
+    A box with no directory pinned answers 503 rather than 403, and it does
+    so before it looks at the claim. Different incidents.
+    """
+    from customer_console import operators
+
+    with pytest.raises(operators.OperatorUnconfigured):
+        operators.directory_matches(None, {"OPERATOR_STAFF_DOMAINS": HD})
+
+
+def test_an_unknown_provider_refuses_rather_than_falling_back():
+    """A typo must not quietly return the box to the Entra path.
+
+    A silent fallback would admit every operator against a directory the
+    reader believed they had left.
+    """
+    from customer_console import operators
+
+    for bad in ("entra", "microsoft", "gmail", "google-workspace"):
+        with pytest.raises(operators.OperatorUnconfigured):
+            operators.signin_provider({"OPERATOR_SIGNIN_PROVIDER": bad})
+
+
+def test_a_passwordless_provider_can_never_be_configured():
+    """**D70.2** at the env door. See also done-when 33's constant fence in
+    ``test_operator_signin.py``."""
+    from customer_console import operators
+
+    for bad in sorted(operators.PASSWORDLESS_PROVIDERS):
+        with pytest.raises(operators.OperatorUnconfigured):
+            operators.signin_provider({"OPERATOR_SIGNIN_PROVIDER": bad})
+
+
+def test_the_bootstrap_binds_to_the_configured_directory(conn):
+    """The one-time path fails closed on the Google box too.
+
+    ``bootstrap`` reads the directory value before it counts rows, so a box
+    that has not pinned ``OPERATOR_GOOGLE_HD`` cannot mint its first
+    operator either.
+    """
+    from customer_console import operators
+
+    conn.execute(text("DELETE FROM operator_session"))
+    conn.execute(text("DELETE FROM operator_elevation"))
+    conn.execute(text("DELETE FROM operator"))
+
+    email = _google_email()
+    broken = dict(GOOGLE_ENV, OPERATOR_BOOTSTRAP_EMAIL=email)
+    broken.pop("OPERATOR_GOOGLE_HD")
+    with pytest.raises(operators.OperatorUnconfigured):
+        operators.bootstrap(conn, env=broken)
+
+    good = dict(GOOGLE_ENV, OPERATOR_BOOTSTRAP_EMAIL=email)
+    assert operators.bootstrap(conn, env=good) is not None
+
+
 # ── The R8 gate cannot silently disarm ──────────────────────────────────────
 
 _ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]

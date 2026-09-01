@@ -23,6 +23,54 @@
 
 export const IDENTITY_FLAG = "OPERATOR_IDENTITY_ENABLED";
 
+// ── Which directory signs staff in — D70, 2026-09-01 ───────────────────────
+//
+// ⚠️ **The owner told us we hold no Microsoft Entra directory.** `hathilabs.com`
+// is a Google Workspace domain with an admin console, so D70 moves the provider
+// to Google and the claim to `hd`. D35.3's intent is unchanged: one directory,
+// ours, admin-managed.
+//
+// ⚠️ **The default is `azure`, so this ships dark.** An unset variable keeps the
+// page byte-identical to what it printed before. The Console reads the SAME
+// variable name server-side (`customer_console.operators.signin_provider`), and
+// the two must agree: this page builds the Supabase authorize link, and the
+// Console reads the claim off whatever comes back. A page that offered Google
+// while the Console still expected `tid` would refuse every operator.
+
+export const SIGNIN_PROVIDER_FLAG = "OPERATOR_SIGNIN_PROVIDER";
+
+export type SigninProvider = "azure" | "google";
+
+//: What each provider is called on the button, and in a refusal. The slug is
+//: what Supabase wants in `?provider=`, and it is NOT the label — `azure` reads
+//: "Microsoft" to the person pressing it.
+export const PROVIDER_LABELS: Record<SigninProvider, string> = {
+  azure: "Microsoft",
+  google: "Google",
+};
+
+export const DEFAULT_SIGNIN_PROVIDER: SigninProvider = "azure";
+
+// The provider this deployment signs staff in with.
+//
+// ⚠️ **An unknown value falls back to the default and never to "anything the
+// env said".** The Console refuses an unknown name with a 503, so the page
+// would strand the reader either way. Falling back keeps the page able to
+// render the recovery note rather than throwing on a server component.
+export function signinProvider(
+  env: Record<string, string | undefined> = process.env,
+): SigninProvider {
+  const raw = (env[SIGNIN_PROVIDER_FLAG] ?? "").trim().toLowerCase();
+  return raw in PROVIDER_LABELS ? (raw as SigninProvider) : DEFAULT_SIGNIN_PROVIDER;
+}
+
+// The name a person reads on the sign-in button.
+export function providerLabel(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return PROVIDER_LABELS[signinProvider(env)];
+}
+
 //: The cookie the `cc_sess_` token rides in. A DIFFERENT name from
 //: `STAFF_COOKIE`, deliberately: flipping the flag must not make the console
 //: read a passphrase as though it were a session, and a shared name would let

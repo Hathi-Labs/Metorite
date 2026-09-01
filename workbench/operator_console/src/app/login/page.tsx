@@ -1,4 +1,9 @@
-import { IDENTITY_FLAG, usesSessions } from "@/lib/identity";
+import {
+  IDENTITY_FLAG,
+  providerLabel,
+  signinProvider,
+  usesSessions,
+} from "@/lib/identity";
 import InterimForm from "./InterimForm";
 
 export const dynamic = "force-dynamic";
@@ -10,21 +15,27 @@ export const dynamic = "force-dynamic";
 // `NEXT_PUBLIC_` variable, which would be a second place the same value lives
 // and a second thing to keep in step.
 
-//: Where Supabase sends the operator after Microsoft has answered. The token
-//: comes back in the URL FRAGMENT, which a server never sees — so the callback
-//: is a client page that reads it and posts it to the BFF.
+//: Where Supabase sends the operator after the directory has answered. The
+//: token comes back in the URL FRAGMENT, which a server never sees — so the
+//: callback is a client page that reads it and posts it to the BFF.
 //:
 //: ⚠️ This exact URL must be on the project's redirect allowlist. Supabase
 //: refuses anything else, which is correct and is why it is owner work (H-54).
 const CALLBACK_PATH = "/login/callback";
 
-function authorizeUrl(origin: string): string | null {
+// ⚠️ **The provider slug is NOT written here** (D70). `signinProvider()` is the
+// one place that answers "which directory does this deployment use", and the
+// Console reads the same variable server-side. Two opinions would mean a button
+// that sends the operator to Google while the Console still demands an Entra
+// `tid`, which refuses everybody.
+function authorizeUrl(origin: string, provider: string): string | null {
   const base = (process.env.OPERATOR_SUPABASE_URL ?? "").trim();
   if (!base) return null;
   const redirect = `${origin}${CALLBACK_PATH}`;
   return (
     `${base.replace(/\/$/, "")}/auth/v1/authorize` +
-    `?provider=azure&redirect_to=${encodeURIComponent(redirect)}`
+    `?provider=${encodeURIComponent(provider)}` +
+    `&redirect_to=${encodeURIComponent(redirect)}`
   );
 }
 
@@ -43,7 +54,9 @@ export default async function LoginPage({
   // host header is caller-controlled, and building a redirect target out of
   // one is how an open redirect happens.
   const origin = (process.env.OPERATOR_CONSOLE_ORIGIN ?? "").trim();
-  const href = origin ? authorizeUrl(origin) : null;
+  const provider = signinProvider();
+  const label = providerLabel();
+  const href = origin ? authorizeUrl(origin, provider) : null;
 
   // A real boolean, not the error string: JSX renders a truthy string, so
   // `params.error && …` in the guard would print the message a second time.
@@ -64,7 +77,7 @@ export default async function LoginPage({
 
         {href ? (
           <a className="primary-cta" href={href}>
-            Sign in with Microsoft
+            Sign in with {label}
           </a>
         ) : (
           <div className="banner">
@@ -88,7 +101,7 @@ export default async function LoginPage({
             passphrase box here would 400 on submit.
 
             It shows in the two states that strand a reader: sign-in not
-            configured, and a refused Microsoft sign-in. */}
+            configured, and a refused sign-in. */}
         {stranded && (
           <div className="field-hint">
             Cannot get in? Unset <code>{IDENTITY_FLAG}</code> server-side and

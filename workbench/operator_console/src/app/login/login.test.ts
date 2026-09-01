@@ -17,7 +17,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IDENTITY_FLAG } from "@/lib/identity";
+import {
+  IDENTITY_FLAG,
+  PROVIDER_LABELS,
+  SIGNIN_PROVIDER_FLAG,
+  signinProvider,
+} from "@/lib/identity";
 import LoginPage from "./page";
 import InterimForm from "./InterimForm";
 
@@ -61,6 +66,22 @@ function types(node: Node, out: unknown[] = []): unknown[] {
   return out;
 }
 
+//: The `href` of every anchor in the tree. The provider slug rides in a PROP,
+//: not in text, so the text walker above cannot see it.
+function hrefs(node: Node, out: string[] = []): string[] {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((child) => hrefs(child, out));
+    return out;
+  }
+  const el = node as { props?: { children?: Node; href?: unknown } };
+  if (typeof el.props?.href === "string") out.push(el.props.href);
+  if (el.props && "children" in el.props) hrefs(el.props.children, out);
+  return out;
+}
+
 async function render(params: { origin?: string; error?: string } = {}) {
   return await LoginPage({ searchParams: Promise.resolve(params) });
 }
@@ -71,6 +92,10 @@ beforeEach(() => {
   vi.unstubAllEnvs();
   vi.stubEnv("OPERATOR_SUPABASE_URL", "");
   vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+  // Unset means `azure`, which is what the six cases below describe. Stubbed
+  // rather than assumed, so a variable on the developer's box cannot change
+  // what these cases are testing.
+  vi.stubEnv(SIGNIN_PROVIDER_FLAG, "");
 });
 
 describe("flag ON, Supabase not configured", () => {
@@ -143,5 +168,70 @@ describe("flag OFF", () => {
     expect(types(page)).toContain(InterimForm);
     expect(text(page)).not.toContain(IDENTITY_FLAG);
     expect(text(page)).not.toContain(RECOVERY);
+  });
+});
+
+// ── Which directory the button sends you to — D70 ─────────────────────────
+//
+// Spec: `operator_identity_and_access.md` §4.1 check 1 · D70.1.
+//
+// ⚠️ **The slug and the label are ONE decision.** A page that said "Sign in
+// with Google" over a link carrying `?provider=azure` would send the reader to
+// Microsoft and then report a Google failure. Every case below asserts both.
+
+describe("the sign-in provider", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+  });
+
+  it("defaults to Microsoft, so an unset variable changes nothing", async () => {
+    // ⚠️ This is the ship-dark property. D70 moves a console that was told to
+    // move, and no other.
+    const page = await render();
+    expect(text(page)).toContain("Sign in with Microsoft");
+    expect(hrefs(page).join(" ")).toContain("provider=azure");
+    expect(signinProvider({})).toBe("azure");
+  });
+
+  it("names Google, and links to Google, when told to", async () => {
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "google");
+    const page = await render();
+    expect(text(page)).toContain(`Sign in with ${PROVIDER_LABELS.google}`);
+    expect(text(page)).not.toContain("Sign in with Microsoft");
+
+    const link = hrefs(page).find((h) => h.includes("/auth/v1/authorize"));
+    expect(link).toBeDefined();
+    expect(link).toContain("provider=google");
+    expect(link).not.toContain("provider=azure");
+    // The redirect target is unchanged by the provider. It is the console's
+    // own callback, and it must stay on the Supabase allowlist (H-54).
+    expect(link).toContain(encodeURIComponent(`${ORIGIN}/login/callback`));
+  });
+
+  it("⚠️ falls back to the default on a value it does not know", async () => {
+    // The Console answers 503 for an unknown name, so the page cannot sign
+    // anybody in either way. Rendering the default keeps the recovery note
+    // reachable rather than throwing inside a server component.
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "entra");
+    expect(signinProvider()).toBe("azure");
+    expect(hrefs(await render()).join(" ")).toContain("provider=azure");
+  });
+
+  it("reads the value case-insensitively and ignores padding", () => {
+    expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: "  GOOGLE " })).toBe(
+      "google",
+    );
+  });
+
+  it("⚠️ still renders no second door on the Google path", async () => {
+    // Done-when 29 does not weaken because the directory moved.
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "google");
+    const kinds = types(await render({ error: "refused" }));
+    expect(kinds).not.toContain(InterimForm);
+    expect(kinds).not.toContain("form");
+    expect(kinds).not.toContain("input");
+    expect(kinds).not.toContain("button");
   });
 });

@@ -12,9 +12,17 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   `@base-ui/react`, the `Icon`/`Button` primitives, the `--cat-*` ramp or the
   conformance suite. "One product, one look" is for surfaces customers see; a
   plain, clean staff UI is correct here. Plain CSS in `src/app/globals.css`.
-- **Staff directory is OURS (D35.3).** Auth pins our own Entra staff directory —
+- **Staff directory is OURS (D35.3).** Auth pins one staff directory, ours —
   the inverse of the customer product's multi-directory rule. Never gate on "any
   org owner": a customer's org-owner is not a platform operator.
+  ⛔ **D70 moved the mechanism on 2026-09-01.** We hold no Entra directory.
+  `hathilabs.com` is a Google Workspace domain, so the `hd` hosted-domain claim
+  replaces the Entra `tid`. `OPERATOR_SIGNIN_PROVIDER` is the switch and it
+  defaults to `azure`. The vocabulary lives in
+  `customer_console/operators.py`, and `src/lib/identity.ts` holds the console
+  half (`signinProvider`, `providerLabel`). **Email OTP is refused here**
+  (D70.2): this console reaches every customer organization, so inbox control
+  must never become staff access.
 - **Cross-org reads live ONLY here + on the Console.** No route of the customer
   workbench may reach one. The `GET /orgs` cross-org list is Operator-scheme on
   the Console; this app is its only consumer.
@@ -48,10 +56,13 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   is on (`operator_identity_and_access.md` §8 done-when 29). So the identity
   path carries a recovery NOTE and never a passphrase form. The note names
   the variable to unset, and it shows only when sign-in is not configured or
-  Microsoft refused the caller. A form there would answer 400 on submit, because
-  `POST /api/operator/session` wants a Supabase `access_token`. Fence:
-  `src/app/login/login.test.ts`, which walks the returned element tree because
-  vitest here is node-env and renders nothing.
+  the directory refused the caller. A form there would answer 400 on submit, because
+  `POST /api/operator/session` wants a Supabase `access_token`. The button copy
+  and the `?provider=` slug both come from `signinProvider()`, so the page can
+  never name one directory and link to another. `login/callback/page.tsx` names
+  NO provider: it is a client component and cannot read a server-only variable.
+  Fence: `src/app/login/login.test.ts`, which walks the returned element tree
+  because vitest here is node-env and renders nothing.
 
 ## Rules
 - Every Console call is server-side, through `src/lib/console.ts`. Never fetch
