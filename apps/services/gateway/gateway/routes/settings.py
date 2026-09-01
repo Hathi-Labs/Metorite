@@ -791,6 +791,38 @@ async def test_tier(
 
 
 # ---------------------------------------------------------------------------
+# BYOK off for the customer — the one guard both write doors call
+# ---------------------------------------------------------------------------
+#
+# `customer_console.md` §5.1: provider/model/tier tabs leave the customer
+# product. The `byok_enabled` setting (default False) is the server half.
+#
+# ⚠️ There are TWO doors to a provider key, not one, and closing either alone
+# closes nothing. `POST /settings/llm/key` is the front door. The workbench
+# route `api/settings/llm/key/route.ts` falls back to
+# `POST /integrations/configure` whenever the front door answers "No env var
+# for provider", and that endpoint writes an arbitrary env var. Both call
+# this guard.
+
+_BYOK_REFUSAL = (
+    "Provider API keys are managed by Metorite on this deployment. "
+    "Model and provider configuration is not part of the customer product "
+    "(customer_console.md 5.1)."
+)
+
+
+def byok_writes_allowed() -> bool:
+    """Whether this deployment lets the product write a provider API key."""
+    return bool(get_settings().byok_enabled)
+
+
+def refuse_if_byok_disabled() -> None:
+    """Raise 403 while BYOK is off. Reading an installed key is untouched."""
+    if not byok_writes_allowed():
+        raise HTTPException(status_code=403, detail=_BYOK_REFUSAL)
+
+
+# ---------------------------------------------------------------------------
 # POST /settings/llm/key  — write a provider API key to infra/.env + restart
 # ---------------------------------------------------------------------------
 
@@ -804,6 +836,7 @@ async def set_provider_key(
     req: ProviderKeyRequest,
     _user: UserContext = Depends(get_current_user),
 ) -> dict[str, str]:
+    refuse_if_byok_disabled()
     env_var = _PROVIDER_ENV_MAP.get(req.provider)
     if not env_var:
         raise HTTPException(status_code=400, detail=f"No env var for provider: {req.provider}")

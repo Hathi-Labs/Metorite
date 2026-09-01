@@ -80,7 +80,34 @@ LOCAL="$(git rev-parse HEAD)"
 TARGET="$(git rev-parse "origin/$RELEASE_REF")"
 printf "    local:  %s\n    target: %s\n" "${LOCAL:0:12}" "${TARGET:0:12}"
 
-if [ "$LOCAL" = "$TARGET" ] && [ "$MODE" != "force" ]; then
+# 🔴 **THE CHECKOUT IS NOT THE DELIVERY, AND CONFUSING THEM COST THREE DAYS.**
+#
+# `HEAD = TARGET` says the code ARRIVED. It says nothing about whether the apply
+# that follows it SUCCEEDED — and `vps_apply.sh` synchronises the checkout as
+# one of its first acts, hundreds of lines before it builds anything. So an
+# apply that dies in the middle still leaves HEAD on the target, and the next
+# tick reads that as "nothing to do". Forever. A box in this state never
+# retries, and every signal it emits says it is fine.
+#
+# Measured 2026-08-29 on the production box:
+#
+#   HEAD           16f5dccd   (four merges past the last success)
+#   last-pull-sha  24636e7c   written 14:10, and never since
+#   last-pull-ok   19:44      fresh, because a no-op touches it
+#
+# Both markers already existed. Only `last-pull-ok` was being read, and it is
+# the one that cannot distinguish "up to date" from "failing every time".
+#
+# ⚠️ So gate on the LAST SUCCESSFULLY APPLIED sha, not on HEAD. `last-pull-sha`
+# is written only inside the success branch below, which makes it the only
+# honest record of delivery on the box. A failed apply now retries on the next
+# tick instead of being latched out by its own partial progress.
+#
+# ⚠️ A box with no marker at all (fresh bring-up, or one that predates this)
+# applies once and then settles. That is the correct bias: re-applying is
+# idempotent, and never applying is the failure this exists to end.
+LAST_OK_SHA="$(cat "$STATE_DIR/last-pull-sha" 2>/dev/null || echo '')"
+if [ "$LOCAL" = "$TARGET" ] && [ "$LAST_OK_SHA" = "$TARGET" ] && [ "$MODE" != "force" ]; then
   echo "    already current"
   # Touch the marker even on a no-op: D3 asks whether delivery is WORKING, and
   # "nothing to do" is a healthy answer. Without this, a box that is simply

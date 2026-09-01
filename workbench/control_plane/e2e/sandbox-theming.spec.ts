@@ -22,7 +22,7 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 
 import { BRIDGE, buildSrcDoc } from "../src/lib/theme/sandbox-frame";
-import { resolveTheme } from "../src/lib/theme/themes";
+import { THEME } from "../src/lib/theme/themes";
 import { appTokenMap } from "../src/lib/theme/app-tokens";
 import type { ThemeMode } from "../src/lib/theme/types";
 
@@ -38,8 +38,8 @@ const APP = `
 </div>`;
 
 /** Host page with the real frame inside it, reachable as `#f`. */
-async function mount(page: Page, themeId: string, mode: ThemeMode = "dark") {
-  const srcDoc = buildSrcDoc(APP, resolveTheme(themeId), mode, {
+async function mount(page: Page, mode: ThemeMode = "dark") {
+  const srcDoc = buildSrcDoc(APP, THEME, mode, {
     Plus: '<svg data-pack="lucide"></svg>',
   });
   await page.setContent(
@@ -68,9 +68,9 @@ const readVar = (frame: FrameLocator, name: string) =>
     );
 
 test.describe("tokens cross the boundary", () => {
-  test("an app styled with tokens renders against the active theme", async ({ page }) => {
-    const frame = await mount(page, "rapidtool");
-    const t = resolveTheme("rapidtool").colors.dark;
+  test("an app styled with tokens renders against the real values", async ({ page }) => {
+    const frame = await mount(page);
+    const t = THEME.colors.dark;
 
     // The declarations survived the CSP and resolved — the baseline claim
     // everything else here depends on.
@@ -79,64 +79,62 @@ test.describe("tokens cross the boundary", () => {
     expect(await readVar(frame, "--cc-card")).toBe(t.card);
   });
 
-  test("switching theme changes what the app looks like", async ({ page }) => {
-    // THE regression. Before this, both of these were the same RapidTool blue.
-    const rapid = await readVar(await mount(page, "rapidtool"), "--cc-primary");
-    const material = await readVar(await mount(page, "material"), "--cc-primary");
-    expect(material).not.toBe(rapid);
-  });
-
   test("control personality crosses, not just colour", async ({ page }) => {
-    // An app built a year ago should pick up Material's pill buttons from a
-    // theme switch. Colour alone would make it "RapidTool with Material's
-    // palette", which is not the same product.
-    const material = await mount(page, "material");
-    expect(await readVar(material, "--cc-button-radius")).toBe("9999px");
-    expect(await readVar(material, "--cc-control-state-layer")).toBe("0.08");
-    const graphite = await mount(page, "graphite");
-    expect(await readVar(graphite, "--cc-control-label-transform")).toBe("uppercase");
+    // A generated app picks up the shell's button shape, not only its
+    // palette. Colour alone would make it "our colours on somebody else's
+    // controls", which is not the same product.
+    const frame = await mount(page);
+    expect(await readVar(frame, "--cc-button-radius")).toBe(THEME.shape.radius);
+    expect(await readVar(frame, "--cc-control-label-transform")).toBe(
+      THEME.controls.labelTransform,
+    );
   });
 
-  test("ink on a coloured fill is legible on every theme", async ({ page }) => {
+  test("ink on a coloured fill is legible in both modes", async ({ page }) => {
     // Was hardcoded `hsl(20 14% 12%)`, i.e. near-black, which is only legible
-    // over a YELLOW warning. A theme with a dark warning rendered black on dark.
-    for (const id of ["rapidtool", "fluent", "material", "graphite"]) {
-      const frame = await mount(page, id);
+    // over a YELLOW warning. A mode with a dark warning rendered black on dark.
+    for (const mode of ["dark", "light"] as const) {
+      const frame = await mount(page, mode);
       const fill = await readVar(frame, "--cc-warning");
       const ink = await readVar(frame, "--cc-warning-fg");
-      expect(ink, id).toBeTruthy();
-      expect(ink, id).not.toBe(fill);
+      expect(ink, mode).toBeTruthy();
+      expect(ink, mode).not.toBe(fill);
     }
   });
 
   test("the font stack resolves rather than collapsing to nothing", async ({ page }) => {
-    // Theme manifests write `var(--font-geist-sans), …` — a next/font handle
+    // The manifest writes `var(--font-geist-sans), …` — a next/font handle
     // registered on OUR <html> and undefined in here. An unresolvable var()
     // invalidates the whole font-family, so exporting it verbatim gave apps no
-    // themed font at all, silently.
-    const frame = await mount(page, "fluent");
+    // font at all, silently.
+    const frame = await mount(page);
     const font = await frame.locator("#mono").evaluate((el) => getComputedStyle(el).fontFamily);
     expect(font).not.toBe("");
     expect(font).not.toContain("var(");
-    expect(font.toLowerCase()).toContain("cascadia");
+    // The handle is stripped and the platform tail survives it.
+    expect(font.toLowerCase()).toMatch(/ui-monospace|sfmono|menlo|consolas/);
   });
 
-  test("light mode swaps colour without disturbing the theme's shape", async ({ page }) => {
-    const dark = await mount(page, "material", "dark");
+  test("light mode swaps colour without disturbing the shape", async ({ page }) => {
+    const dark = await mount(page, "dark");
     const darkBg = await readVar(dark, "--cc-bg");
     const radius = await readVar(dark, "--cc-button-radius");
-    const light = await mount(page, "material", "light");
+    const light = await mount(page, "light");
     expect(await readVar(light, "--cc-bg")).not.toBe(darkBg);
     expect(await readVar(light, "--cc-button-radius")).toBe(radius);
   });
 });
 
-test.describe("live theme changes", () => {
+test.describe("live appearance changes", () => {
   test("a running app restyles without being remounted", async ({ page }) => {
     // Why this must be a patch and not a srcDoc rebuild: a rebuild remounts the
     // document, and a published app would throw away whatever the person had
-    // typed into it every time somebody changed theme.
-    const frame = await mount(page, "rapidtool");
+    // typed into it every time somebody changed the look.
+    //
+    // The axis is MODE since 2026-08-31 — the theme axis this originally
+    // patched along is gone, and dark→light is the change that still happens
+    // at runtime while an app is holding state.
+    const frame = await mount(page, "dark");
     const before = await readVar(frame, "--cc-primary");
 
     // Stand in for user state the app is holding.
@@ -144,18 +142,17 @@ test.describe("live theme changes", () => {
       el.setAttribute("data-user-state", "typed-but-unsaved");
     });
 
-    const material = resolveTheme("material");
     await page.evaluate(
       ([vars, icons]) => {
         const win = (document.getElementById("f") as HTMLIFrameElement).contentWindow!;
-        win.postMessage({ __cc: true, kind: "theme", mode: "dark", vars, icons }, "*");
+        win.postMessage({ __cc: true, kind: "theme", mode: "light", vars, icons }, "*");
       },
-      [appTokenMap(material, "dark"), { Plus: '<svg data-pack="material"></svg>' }] as const,
+      [appTokenMap(THEME, "light"), { Plus: '<svg data-pack="lucide"></svg>' }] as const,
     );
 
     await expect
       .poll(() => readVar(frame, "--cc-primary"))
-      .toBe(material.colors.dark.primary);
+      .toBe(THEME.colors.light.primary);
     expect(await readVar(frame, "--cc-primary")).not.toBe(before);
 
     // The document was never rebuilt, so the state is still there.
@@ -166,7 +163,7 @@ test.describe("live theme changes", () => {
   });
 
   test("icon placeholders re-resolve to the new pack", async ({ page }) => {
-    const frame = await mount(page, "rapidtool");
+    const frame = await mount(page);
     await expect(frame.locator("#ico svg")).toHaveAttribute("data-pack", "lucide");
 
     await page.evaluate(() => {
@@ -190,7 +187,7 @@ test.describe("live theme changes", () => {
     // A sibling frame that got a handle to this window should at worst be able
     // to recolour it — not reach other properties, and not break out of the
     // declaration (setProperty is a value API, so a ';' is rejected, not parsed).
-    const frame = await mount(page, "rapidtool");
+    const frame = await mount(page);
     await page.evaluate(() => {
       const win = (document.getElementById("f") as HTMLIFrameElement).contentWindow!;
       win.postMessage(
@@ -208,7 +205,7 @@ test.describe("live theme changes", () => {
   });
 
   test("a message that is not ours is ignored", async ({ page }) => {
-    const frame = await mount(page, "rapidtool");
+    const frame = await mount(page);
     const before = await readVar(frame, "--cc-primary");
     await page.evaluate(() => {
       const win = (document.getElementById("f") as HTMLIFrameElement).contentWindow!;

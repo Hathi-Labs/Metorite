@@ -29,8 +29,13 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     LIFECYCLE_FIELDS,
+    NODE_KINDS,
     PROJECT_SOURCES,
     RUN_STATES,
+    assert_node_grammar,
+    assert_run_state_allowed,
+    node_kind,
+    node_level,
     GrantModel,
     ProjectIn,
     ProjectModel,
@@ -50,7 +55,9 @@ from gateway.routes.projects.core import (
     root_project_id,
     router,
     row_to_dict,
+    task_visibility_clause,
     update_row,
+    validate_icon_slot,
     validate_choice,
     validate_grant_subject,
     validate_lifecycle_settings,
@@ -66,7 +73,37 @@ _TRACKED_PROJECT_FIELDS: tuple[str, ...] = (
     # WS-27z — a lifecycle-policy change is exactly the edit somebody asks
     # "who turned this on, and when" about, six months later.
     "archive_after_months", "close_after_months", "timezone",
+    # Migration 194 — Space Settings. A space that changed colour overnight
+    # is the same "who did that" question, and the icon is how people find
+    # the space in a long sidebar.
+    "icon", "icon_slot",
 )
+
+
+#: Migration 194 — the two Space Settings fields. Grouped because they are
+#: written together by one dialog and refused together everywhere else.
+IDENTITY_FIELDS: tuple[str, ...] = ("icon", "icon_slot")
+
+
+def _refuse_identity_off_a_space(values: dict, level: str) -> None:
+    """The icon and its hue belong to a SPACE (owner directive 2026-08-31).
+
+    A project draws its run state in that slot and a folder draws a folder,
+    so a value here would be stored and never rendered. Refused rather than
+    ignored, for `assert_run_state_allowed`'s reason: a silently dropped
+    field answers 200 and changes nothing.
+    """
+    if level == "space":
+        return
+    offered = [f for f in IDENTITY_FIELDS if f in values]
+    if offered:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{offered} belong to a space. A {level} draws its own "
+                f"marker, so an icon set here would never be shown."
+            ),
+        )
 
 
 def _refuse_lifecycle_on_child(values: dict, parent_project_id: object) -> None:
@@ -88,6 +125,52 @@ def _refuse_lifecycle_on_child(values: dict, parent_project_id: object) -> None:
                 f"policy governs its whole subtree. Set them on the root."
             ),
         )
+
+async def _project_generation(db, node_id: str) -> int:
+    """How many PROJECT generations sit at *node_id*, itself included.
+
+    Folders are transparent: a folder reports its nearest project
+    ancestor's count. A space is 1, a project 2, a subproject 3 — the
+    numbers `assert_node_grammar` caps (migration 193).
+    """
+    return int((await db.execute(
+        text(
+            "WITH RECURSIVE anc AS ("
+            "  SELECT id, parent_project_id, kind FROM pm_projects"
+            "    WHERE id = CAST(:pid AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, p.parent_project_id, p.kind FROM pm_projects p"
+            "    JOIN anc a ON p.id = a.parent_project_id"
+            ") SELECT count(*) FROM anc"
+            "   WHERE coalesce(kind, 'project') = 'project'"
+        ),
+        {"pid": node_id},
+    )).scalar() or 0)
+
+
+async def _subtree_project_depth(db, node_id: str) -> int:
+    """The longest PROJECT chain inside *node_id*'s subtree, itself included.
+
+    Folders contribute nothing to any chain. A lone project is 1, a lone
+    folder 0, a project with subprojects 2. A move re-checks the grammar
+    with this number, because a subtree keeps its internal shape wherever
+    it lands.
+    """
+    return int((await db.execute(
+        text(
+            "WITH RECURSIVE sub AS ("
+            "  SELECT id, CASE WHEN coalesce(kind, 'project') = 'project'"
+            "    THEN 1 ELSE 0 END AS d"
+            "  FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, s.d + CASE WHEN coalesce(p.kind, 'project')"
+            "    = 'project' THEN 1 ELSE 0 END"
+            "  FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
+            ") SELECT coalesce(max(d), 0) FROM sub"
+        ),
+        {"pid": node_id},
+    )).scalar() or 0)
+
 
 #: Seeded on every ROOT project. The owner reshapes these in the app; they exist
 #: so a new project has a working board on its first render rather than an empty
@@ -194,6 +277,257 @@ async def get_node(
         return row_to_dict(row, ProjectModel)
 
 
+@router.get("/summary")
+async def get_portfolio_summary(
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The same roll-up, one level up: every space the caller can see.
+
+    Analytics inside the Projects app (owner directive 2026-08-31). It is
+    deliberately the SAME shape as a node's summary, so one dashboard
+    component draws both — a second response shape would be a second
+    component, and then two places for a counting rule to be wrong.
+
+    The scope here is the visible forest rather than one subtree, so
+    `children` are the SPACES and `projects` counts every project under
+    them.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        rows = await _visible_projects(db, user)
+
+        by_parent: dict[str, list] = {}
+        for row in rows:
+            by_parent.setdefault(str(row.parent_project_id or ""), []).append(row)
+        roots = by_parent.get("", [])
+
+        # Which space each node belongs to, so a task counts toward exactly
+        # one line. Walked down from the roots rather than up from each
+        # node: one pass over rows already in memory, no query per task.
+        space_of: dict[str, str] = {}
+
+        def _claim(node_id: str, space_id: str) -> None:
+            space_of[node_id] = space_id
+            for child in by_parent.get(node_id, []):
+                _claim(str(child.id), space_id)
+
+        for root in roots:
+            _claim(str(root.id), str(root.id))
+
+        counts = (await db.execute(
+            text(
+                f"SELECT t.project_id, s.category, count(*) AS n,"
+                f"       count(*) FILTER ("
+                f"         WHERE t.due_at IS NOT NULL"
+                f"           AND t.due_at < now()"
+                f"           AND s.category <> ALL(CAST(:closed AS text[]))"
+                f"       ) AS overdue"
+                f"  FROM pm_tasks t"
+                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+                f" WHERE t.archived_at IS NULL"
+                f"   AND ({task_visibility_clause(vis, 't')})"
+                f" GROUP BY t.project_id, s.category"
+            ),
+            {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
+        )).fetchall()
+
+    totals: dict[str, int] = {}
+    overdue_total = 0
+    per_space: dict[str, dict] = {}
+    for row in counts:
+        space_id = space_of.get(str(row.project_id))
+        # A task in a project the forest read did not return (a personal
+        # project, say) belongs to no space here and is not counted — the
+        # alternative is a total no line adds up to.
+        if space_id is None:
+            continue
+        category = str(row.category or "todo")
+        totals[category] = totals.get(category, 0) + int(row.n)
+        overdue_total += int(row.overdue or 0)
+        entry = per_space.setdefault(
+            space_id, {"tasks": 0, "overdue": 0, "by_category": {}},
+        )
+        entry["tasks"] += int(row.n)
+        entry["overdue"] += int(row.overdue or 0)
+        entry["by_category"][category] = (
+            entry["by_category"].get(category, 0) + int(row.n)
+        )
+
+    return {
+        "id": "portfolio",
+        "name": "All spaces",
+        "level": "portfolio",
+        "tasks": sum(totals.values()),
+        "overdue": overdue_total,
+        "by_category": totals,
+        "projects": sum(
+            1 for r in rows
+            if node_kind(getattr(r, "kind", None)) == "project"
+            and r.parent_project_id is not None
+        ),
+        "children": [
+            {
+                "id": str(root.id),
+                "name": root.name,
+                "kind": node_kind(getattr(root, "kind", None)),
+                "status": root.status,
+                "archived": root.archived_at is not None,
+                # The space's chosen marker (migration 194), so Analytics
+                # draws the same identity the sidebar does. NULL falls back
+                # client-side to the level glyph and a name-hashed slot.
+                "icon": getattr(root, "icon", None),
+                "icon_slot": getattr(root, "icon_slot", None),
+                **{
+                    k: per_space.get(str(root.id), {}).get(k, v)
+                    for k, v in (
+                        ("tasks", 0), ("overdue", 0), ("by_category", {}),
+                    )
+                },
+            }
+            for root in roots
+        ],
+    }
+
+
+@router.get("/nodes/{project_id}/summary")
+async def get_node_summary(
+    project_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The roll-up a space, a folder or a parent project shows instead of a board.
+
+    Owner directive 2026-08-31: *a space is not a project*. It shows a
+    dashboard of everything beneath it, and it has none of the views a
+    project has. A folder does the same, and a project with subprojects
+    aggregates them into its own view.
+
+    ⚠️ **The whole subtree, counted ONCE, in two queries.** A dashboard that
+    fetched each descendant's tasks separately would be N+1 across a real
+    workspace, and the numbers would drift while it walked. So the totals
+    and the per-child breakdown are each one grouped read over the same
+    subtree.
+
+    ⚠️ **Visibility is the caller's, not the node's.** The subtree walk runs
+    over `pm_projects` unrestricted — a subtree is a structural fact — but
+    every task count goes through `vis.task_clause()`. A member who can see
+    a space but only one project inside it therefore gets a dashboard whose
+    totals match what they could reach by clicking, which is the property
+    that keeps a roll-up from becoming a disclosure channel.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        level = node_level(
+            node_kind(getattr(node, "kind", None)),
+            await _project_generation(db, project_id),
+        )
+
+        # Every visible PROJECT under this node (folders excluded — they
+        # hold no work), each with the id of the child of `project_id` it
+        # sits under, so the dashboard can group by the row a user clicks.
+        descendants = (await db.execute(
+            text(
+                "WITH RECURSIVE sub AS ("
+                "  SELECT id, parent_project_id, name, kind, status,"
+                "         archived_at, id AS branch_id"
+                "    FROM pm_projects WHERE parent_project_id ="
+                "         CAST(:pid AS uuid)"
+                "  UNION ALL"
+                "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
+                "         p.status, p.archived_at, s.branch_id"
+                "    FROM pm_projects p JOIN sub s"
+                "      ON p.parent_project_id = s.id"
+                ") SELECT * FROM sub"
+            ),
+            {"pid": project_id},
+        )).fetchall()
+
+        # The node itself counts too: a project that carries subprojects
+        # aggregates ITS OWN tasks with theirs, which is what "selecting the
+        # project aggregates the subproject data" means.
+        scope_ids = [project_id] + [str(r.id) for r in descendants]
+        by_id = {str(r.id): r for r in descendants}
+
+        rows = (await db.execute(
+            text(
+                f"SELECT t.project_id, s.category, count(*) AS n,"
+                # CLOSING_CATEGORIES, not a second literal list: a category
+                # added to the closed set must not leave this one counting
+                # finished work as late.
+                f"       count(*) FILTER ("
+                f"         WHERE t.due_at IS NOT NULL"
+                f"           AND t.due_at < now()"
+                f"           AND s.category <> ALL(CAST(:closed AS text[]))"
+                f"       ) AS overdue"
+                f"  FROM pm_tasks t"
+                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+                f" WHERE t.project_id = ANY(CAST(:ids AS uuid[]))"
+                f"   AND t.archived_at IS NULL"
+                f"   AND ({task_visibility_clause(vis, 't')})"
+                f" GROUP BY t.project_id, s.category"
+            ),
+            {
+                **vis.params,
+                "ids": scope_ids,
+                "closed": sorted(CLOSING_CATEGORIES),
+            },
+        )).fetchall()
+
+    # Fold the grouped rows up two ways: the node's own totals, and one
+    # line per direct child. Done in Python because the second fold keys on
+    # `branch_id`, which the SQL above already carried down the walk.
+    totals: dict[str, int] = {}
+    overdue_total = 0
+    per_branch: dict[str, dict] = {}
+    for row in rows:
+        category = str(row.category or "todo")
+        totals[category] = totals.get(category, 0) + int(row.n)
+        overdue_total += int(row.overdue or 0)
+        pid = str(row.project_id)
+        branch = pid if pid == project_id else str(
+            getattr(by_id.get(pid), "branch_id", pid),
+        )
+        entry = per_branch.setdefault(
+            branch, {"tasks": 0, "overdue": 0, "by_category": {}},
+        )
+        entry["tasks"] += int(row.n)
+        entry["overdue"] += int(row.overdue or 0)
+        entry["by_category"][category] = (
+            entry["by_category"].get(category, 0) + int(row.n)
+        )
+
+    children = []
+    for row in descendants:
+        if str(row.parent_project_id) != project_id:
+            continue
+        stats = per_branch.get(str(row.id), {})
+        children.append({
+            "id": str(row.id),
+            "name": row.name,
+            "kind": node_kind(getattr(row, "kind", None)),
+            "status": row.status,
+            "archived": row.archived_at is not None,
+            "tasks": stats.get("tasks", 0),
+            "overdue": stats.get("overdue", 0),
+            "by_category": stats.get("by_category", {}),
+        })
+
+    return {
+        "id": project_id,
+        "name": node.name,
+        "level": level,
+        "tasks": sum(totals.values()),
+        "overdue": overdue_total,
+        "by_category": totals,
+        # Projects only — a folder holds no work of its own, so counting it
+        # as one would inflate every space's project count.
+        "projects": sum(
+            1 for r in descendants
+            if node_kind(getattr(r, "kind", None)) == "project"
+        ),
+        "children": children,
+    }
+
+
 # ── Writes ──────────────────────────────────────────────────────────────────
 
 async def _seed_root(db: Any, project_id: str, created_by: str) -> None:
@@ -252,19 +586,47 @@ async def create_node(
     # POST /nodes/{id}/archive.
     validate_choice(values.get("status"), RUN_STATES, "project status")
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
+    validate_choice(values.get("kind"), NODE_KINDS, "node kind")
+    validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
+    kind = node_kind(values.get("kind"))
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         parent_id = values.get("parent_project_id")
+        parent_row = None
         if parent_id:
             # Creating INSIDE a project requires seeing it — otherwise a caller
             # could graft a subtree onto another department by guessing an id,
             # and inherit that department's grants for it.
-            await load_visible_project(db, vis, str(parent_id))
+            parent_row = await load_visible_project(db, vis, str(parent_id))
+
+        # The tree grammar (migration 193): space → [folder] → project →
+        # [folder] → subproject, and stop. Checked before the org resolve so
+        # a bad shape is refused as a shape, not as a permission.
+        parent_gen = (
+            await _project_generation(db, str(parent_id)) if parent_id else 0
+        )
+        assert_node_grammar(
+            kind=kind,
+            parent_kind=(
+                node_kind(getattr(parent_row, "kind", None))
+                if parent_row is not None else None
+            ),
+            parent_generation=parent_gen,
+            subtree_depth=1 if kind == "project" else 0,
+        )
+
+        # Level-gated fields, checked once the level is knowable.
+        level = node_level(
+            kind, parent_gen + (1 if kind == "project" else 0),
+        )
+        if values.get("status") is not None:
+            assert_run_state_allowed(level)
+        _refuse_identity_off_a_space(values, level)
 
         # WS-29a. This is the ONE place in the package that decides a tenant:
         # `pm_projects` is the root of every other `pm_*` row, and migration
@@ -316,6 +678,7 @@ async def patch_node(
     # POST /nodes/{id}/archive.
     validate_choice(values.get("status"), RUN_STATES, "project status")
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
+    validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
     # Re-parenting is a MOVE, with its own cycle check and root re-stamping.
     # Accepting it here as an ordinary field would skip both.
@@ -324,6 +687,14 @@ async def patch_node(
             status_code=422,
             detail="Use POST /projects/nodes/{id}/move to re-parent a project.",
         )
+    # A kind is set at creation and never changes: a folder becoming a
+    # project (or back) would re-shape the tree without passing the grammar,
+    # and every rule in `assert_node_grammar` could be dodged that way.
+    if "kind" in values:
+        raise HTTPException(
+            status_code=422,
+            detail="A node's kind is set at creation and cannot change.",
+        )
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -331,6 +702,20 @@ async def patch_node(
         _refuse_lifecycle_on_child(
             values, getattr(before, "parent_project_id", None),
         )
+        # Level-gated fields (migrations 193/194): a run state belongs to a
+        # project or a subproject, an icon to a space. The generation walk
+        # is skipped unless one of those fields is actually offered — a
+        # rename must not pay for a recursive query.
+        if values.get("status") is not None or any(
+            f in values for f in IDENTITY_FIELDS
+        ):
+            level = node_level(
+                node_kind(getattr(before, "kind", None)),
+                await _project_generation(db, project_id),
+            )
+            if values.get("status") is not None:
+                assert_run_state_allowed(level)
+            _refuse_identity_off_a_space(values, level)
         if not values:
             return row_to_dict(before, ProjectModel)
         after = await update_row(db, "pm_projects", project_id, values)
@@ -364,11 +749,28 @@ async def move_node(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
+        moved = await load_visible_project(db, vis, project_id)
         new_parent = payload.parent_project_id
+        parent_row = None
         if new_parent:
-            await load_visible_project(db, vis, str(new_parent))
+            parent_row = await load_visible_project(db, vis, str(new_parent))
         await assert_no_project_cycle(db, project_id, new_parent)
+
+        # The grammar holds through a move, with the subtree's own shape in
+        # the sum: a project that carries subprojects cannot land under a
+        # project, and a folder cannot land under a folder (migration 193).
+        assert_node_grammar(
+            kind=node_kind(getattr(moved, "kind", None)),
+            parent_kind=(
+                node_kind(getattr(parent_row, "kind", None))
+                if parent_row is not None else None
+            ),
+            parent_generation=(
+                await _project_generation(db, str(new_parent))
+                if new_parent else 0
+            ),
+            subtree_depth=await _subtree_project_depth(db, project_id),
+        )
 
         values: dict[str, Any] = {"parent_project_id": new_parent}
         if payload.position is not None:

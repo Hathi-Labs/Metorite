@@ -76,6 +76,73 @@ export function readMembers(body: unknown): MemberRow[] {
 }
 
 /**
+ * One organization key as the Console reports it (CP-11 slice 1).
+ *
+ * ⚠️ **There is no `token` field, and there never can be.** `store.list_keys`
+ * excludes `key_hash` at the SQL level and the token itself was never stored at
+ * all. The mint response is the only moment the secret exists.
+ */
+export type KeyRow = {
+  prefix: string;
+  label: string | null;
+  created_at: string;
+  revoked: boolean;
+};
+
+/**
+ * Read the key list off a `GET /keys` body, tolerating its absence.
+ *
+ * Same contract as `readMembers`: `[]` means "no list arrived", the caller says
+ * which, and one malformed row is dropped rather than white-screening a surface
+ * an operator is using to revoke a leaked credential.
+ */
+export type LedgerRow = {
+  /** The STRING the Console sent — NUMERIC(14,4), never re-formatted. */
+  delta: string;
+  reason: string;
+  ref: string | null;
+  created_at: string;
+};
+
+/** The ledger entries, tolerant of a Console predating the read. */
+export function readLedger(body: unknown): LedgerRow[] {
+  const raw = (body as { entries?: unknown } | null)?.entries;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is LedgerRow => typeof (e as LedgerRow)?.delta === "string")
+    .map((e) => ({
+      delta: e.delta,
+      reason: typeof e.reason === "string" ? e.reason : "",
+      ref: typeof e.ref === "string" ? e.ref : null,
+      created_at: typeof e.created_at === "string" ? e.created_at : "",
+    }));
+}
+
+/** Whether a ledger row ADDS credits. `Number()` only to compare — what
+ *  renders stays the string the Console sent. */
+export function ledgerAdds(row: LedgerRow): boolean {
+  return Number(row.delta) > 0;
+}
+
+export function readKeys(body: unknown): KeyRow[] {
+  const raw = (body as { keys?: unknown } | null)?.keys;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((k): k is KeyRow => typeof (k as KeyRow)?.prefix === "string")
+    .map((k) => ({
+      prefix: k.prefix,
+      label: typeof k.label === "string" ? k.label : null,
+      created_at: typeof k.created_at === "string" ? k.created_at : "",
+      revoked: k.revoked === true,
+    }));
+}
+
+/** Live keys first, revoked ones after — a revoked key is history, not a tool. */
+export function liveKeys(keys: KeyRow[]): KeyRow[] {
+  return keys.filter((k) => !k.revoked);
+}
+
+/**
  * How many people hold a seat, and how many do not.
  *
  * ⚠️ **These count PEOPLE, not seats.** One person on two plans is one seated
@@ -282,7 +349,13 @@ export function statusHelp(status: string): string {
     case "trial":
       return "Trying Metorite for free. Activate a paid plan once they subscribe.";
     case "suspended":
-      return "Every sign-in for this customer is refused until you resume them.";
+      // ⚠️ Matches lifecycle.py's truth table: suspended keeps LOGIN working
+      // (so they can pay) while locking features. "Blocks sign-in" was the
+      // exact misread the backend's own module note warns about.
+      return (
+        "Sign-in still works so they can pay. AI and seat changes are " +
+        "locked until you resume them."
+      );
     case "past_due":
       return "Payment is overdue — access continues while you follow up.";
     case "cancelled":

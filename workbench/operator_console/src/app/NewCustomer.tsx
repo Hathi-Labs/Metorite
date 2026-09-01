@@ -14,14 +14,23 @@ import { suggestSlug } from "@/lib/format";
 
 type Result = { ok: boolean; text: string } | null;
 
+// ⚠️ Must not THROW: submit() flips a busy flag around the await, and a
+// rejected fetch would leave "Creating…" on screen forever with no message.
 async function post(path: string, body: unknown): Promise<Result> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { ok: res.ok, text };
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { ok: res.ok, text };
+  } catch {
+    return {
+      ok: false,
+      text: "no answer — the network dropped before the Console replied. Check the customer list before retrying: the create may or may not have landed.",
+    };
+  }
 }
 
 export default function NewCustomer({

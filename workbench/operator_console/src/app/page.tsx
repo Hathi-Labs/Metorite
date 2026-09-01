@@ -3,14 +3,14 @@ import { listOrganizations, ConsoleUnconfigured } from "@/lib/console";
 import { staffSession } from "@/lib/session";
 import {
   formatPaise,
-  formatDate,
   partitionRoster,
-  seatsTotals,
-  trialHint,
-  statusHelp,
   type OrgList,
   type OrgRow,
 } from "@/lib/format";
+import { readAiCatalog } from "@/lib/read";
+import { rosterTotals } from "@/lib/roster";
+import CustomerTable from "./CustomerTable";
+import GoLiveRail from "./GoLiveRail";
 import NewCustomer from "./NewCustomer";
 import Header from "./Header";
 
@@ -25,39 +25,9 @@ function defaultDeploymentLabel(): string {
   return (process.env.OPERATOR_CONSOLE_DEFAULT_DEPLOYMENT_LABEL ?? "").trim();
 }
 
-function StatusPill({ status }: { status: string }) {
-  // title= carries the plain-language meaning so hovering a pill answers
-  // "what does this mean?" without a docs page.
-  return (
-    <span className={`pill ${status}`} title={statusHelp(status)}>
-      {status.replace("_", " ")}
-    </span>
-  );
-}
-
-function SeatsCell({ org }: { org: OrgRow }) {
-  const totals = seatsTotals(org.seats);
-  if (!totals) return <span className="muted">—</span>;
-  const pct =
-    totals.purchased > 0
-      ? Math.min(100, Math.round((totals.assigned / totals.purchased) * 100))
-      : 0;
-  return (
-    <div className="seatcell">
-      <div>
-        {totals.assigned} of {totals.purchased} used
-        {totals.oversubscribed && (
-          <span className="warnbadge" title="More seats assigned than purchased">
-            over
-          </span>
-        )}
-      </div>
-      <div className="bar" aria-hidden="true">
-        <i style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
+// ⚠️ `StatusPill` and `SeatsCell` moved to `CustomerTable.tsx` with the rest of
+// the row rendering. They are not duplicated — searching the roster needs
+// client state, and a server component cannot hold a text box's value.
 
 export default async function CustomersPage() {
   const gate = await staffSession();
@@ -78,7 +48,10 @@ export default async function CustomersPage() {
   let all: OrgRow[] = [];
   let error: string | null = null;
   try {
-    const res = await listOrganizations();
+    // ⚠️ The CALLER's session, not the shared token. Without it this read
+    // reaches the Console as `breakglass`, which bypasses the role matrix
+    // and logs a warning on every page view.
+    const res = await listOrganizations({ authToken: gate.authToken });
     if (res.status === 200) {
       all = (JSON.parse(res.body) as OrgList).organizations;
     } else {
@@ -96,8 +69,12 @@ export default async function CustomersPage() {
   // collapsed section at the bottom.
   const { roster: rows, purged } = partitionRoster(all);
 
-  const now = new Date();
-  const count = (s: string) => rows.filter((o) => o.status === s).length;
+  // The go-live rail judges the AI pipeline from the same read its pages
+  // use. Its origin note is not repeated here — the rail is orientation, and
+  // the sample banner belongs to the pages that show sample DATA.
+  const aiCatalog = await readAiCatalog({ authToken: gate.authToken });
+
+  const totals = rosterTotals(rows, new Date());
 
   return (
     <main className="wrap">
@@ -115,23 +92,34 @@ export default async function CustomersPage() {
 
       {error && <div className="banner">{error}</div>}
 
+      <GoLiveRail catalog={aiCatalog.data} />
+
       {!error && rows.length > 0 && (
         <div className="stats">
+          {/* 🔴 MRR leads. It is the number the owner opens this page for and
+              it was not on it — four lifecycle counts said how many customers
+              exist and nothing said what they are worth. */}
+          <div className="stat good">
+            <div className="num">{formatPaise(totals.mrrPaise)}</div>
+            <div className="lbl">MRR</div>
+          </div>
+          {/* Attention is a JOIN of facts the Console has no column for, so it
+              cannot be a lifecycle count. See `lib/roster.ts`. */}
+          <div className={`stat ${totals.needsAttention > 0 ? "caution" : ""}`}>
+            <div className="num">{totals.needsAttention}</div>
+            <div className="lbl">need attention</div>
+          </div>
           <div className="stat">
-            <div className="num">{rows.length}</div>
+            <div className="num">{totals.customers}</div>
             <div className="lbl">customers</div>
           </div>
           <div className="stat">
-            <div className="num ok-t">{count("active")}</div>
+            <div className="num">{totals.active}</div>
             <div className="lbl">active</div>
           </div>
           <div className="stat">
-            <div className="num accent-t">{count("trial")}</div>
+            <div className="num">{totals.trial}</div>
             <div className="lbl">on trial</div>
-          </div>
-          <div className="stat">
-            <div className="num warn-t">{count("suspended")}</div>
-            <div className="lbl">suspended</div>
           </div>
         </div>
       )}
@@ -157,50 +145,7 @@ export default async function CustomersPage() {
         </div>
       )}
 
-      {!error && rows.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Customer</th>
-              <th>Status</th>
-              <th>Subscription</th>
-              <th>MRR</th>
-              <th>Seats</th>
-              <th>AI credits</th>
-              <th>Trial</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((o) => (
-              <tr key={o.slug}>
-                <td>
-                  <a href={`/customers/${encodeURIComponent(o.slug)}`}>
-                    {o.name}
-                  </a>
-                  <div className="muted small">{o.slug}</div>
-                </td>
-                <td>
-                  <StatusPill status={o.status} />
-                </td>
-                <td>{o.subscription_status ?? <span className="muted">none</span>}</td>
-                <td>{formatPaise(o.mrr_paise)}</td>
-                <td>
-                  <SeatsCell org={o} />
-                </td>
-                <td>{o.credit_balance}</td>
-                <td>
-                  {formatDate(o.trial_ends_at)}
-                  {o.status === "trial" && trialHint(o.trial_ends_at, now) && (
-                    <div className="muted small">
-                      {trialHint(o.trial_ends_at, now)}
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {!error && rows.length > 0 && <CustomerTable rows={rows} />}
 
       {!error && purged.length > 0 && (
         <details style={{ marginTop: 24 }}>

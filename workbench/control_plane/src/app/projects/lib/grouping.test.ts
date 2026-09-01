@@ -10,17 +10,12 @@ import { describe, expect, it } from "vitest";
 
 import type { StatusRow, TaskRow } from "./api";
 import {
-  ANYONE,
   type BoardLanes,
   DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   GROUP_OPTIONS,
   NO_LANES,
-  UNASSIGNED,
   UNSET,
-  assigneeChoice,
-  assigneeFilter,
-  assigneeOptions,
   fromConfig,
   groupTasks,
   isFiltered,
@@ -576,60 +571,6 @@ describe("divergence — when the board stopped being the view (WS-27ab)", () =>
   });
 });
 
-/**
- * The "Assigned to" control (WS-27at).
- *
- * One control replaced the "Mine" and "Unassigned" buttons. Those two could be
- * pressed together, and `assignee` + `unassigned` together is a filter that
- * matches nothing — work belonging to nobody that also belongs to Priya. The
- * mapping is a pure pair so that impossible state cannot be expressed at all.
- */
-describe("assignee choice", () => {
-  it("round-trips every legal state", () => {
-    for (const choice of [ANYONE, UNASSIGNED, "priya@example.com"]) {
-      const filters = { ...EMPTY_FILTERS, ...assigneeFilter(choice) };
-      expect(assigneeChoice(filters)).toBe(choice);
-    }
-  });
-
-  it("never sets both fields, whatever it is handed", () => {
-    for (const choice of [ANYONE, UNASSIGNED, "priya@example.com", "  "]) {
-      const next = assigneeFilter(choice);
-      expect(next.assignee !== "" && next.unassigned).toBe(false);
-    }
-  });
-
-  it("reads unassigned ahead of a stale address", () => {
-    // A config hand-edited to hold both. The flag wins, and the control shows
-    // one value rather than lighting two options.
-    const both = { ...EMPTY_FILTERS, assignee: "priya@example.com", unassigned: true };
-    expect(assigneeChoice(both)).toBe(UNASSIGNED);
-  });
-
-  it("puts me first and folds duplicates by case", () => {
-    const people = assigneeOptions(
-      ["ZARA@example.com", "priya@example.com", "me@example.com"],
-      "me@example.com",
-      ANYONE,
-    );
-    expect(people[0]).toBe("me@example.com");
-    expect(people.filter((p) => p.toLowerCase() === "me@example.com")).toHaveLength(1);
-    expect(people).toEqual(["me@example.com", "priya@example.com", "ZARA@example.com"]);
-  });
-
-  it("keeps the current choice even when the board no longer shows it", () => {
-    // The list is derived from the FILTERED tasks. Filter to one person and
-    // everyone else leaves it — including, without this, the person you
-    // filtered to, which would strand the control on a value it cannot show.
-    const people = assigneeOptions([], "me@example.com", "gone@example.com");
-    expect(people).toContain("gone@example.com");
-  });
-
-  it("drops blank addresses rather than offering an empty row", () => {
-    expect(assigneeOptions(["", "   "], "", ANYONE)).toEqual([]);
-  });
-});
-
 describe("the grouping default is named once", () => {
   it("is what an empty config resolves to", () => {
     // Two places defaulted this as a bare string and had to agree. If they
@@ -637,5 +578,60 @@ describe("the grouping default is named once", () => {
     expect(fromConfig(null).groupBy).toBe(DEFAULT_GROUP_BY);
     expect(fromConfig({}).groupBy).toBe(DEFAULT_GROUP_BY);
     expect(GROUP_OPTIONS).toContain(DEFAULT_GROUP_BY);
+  });
+});
+
+describe("the watching filter (WS-27bk §9.12.2)", () => {
+  it("is off in EMPTY_FILTERS, so nothing is hidden by default", () => {
+    expect(EMPTY_FILTERS.watching).toBe(false);
+    expect(toQuery(EMPTY_FILTERS).watching).toBeUndefined();
+  });
+
+  it("travels as a string on the query and a BOOLEAN in a view", () => {
+    // The two shapes differ on purpose. A query string carries only text, and
+    // a config is JSON that keeps a boolean a boolean — `fromConfig` refuses a
+    // string where a toggle belongs, so a view built from query shape would
+    // come back with its toggles silently cleared.
+    const on = { ...EMPTY_FILTERS, watching: true };
+    expect(toQuery(on).watching).toBe("true");
+    expect(toConfig(on, "status").filters).toMatchObject({ watching: true });
+  });
+
+  it("survives a saved view round trip", () => {
+    const on = { ...EMPTY_FILTERS, watching: true };
+    const back = fromConfig(toConfig(on, "status"));
+    expect(back.filters.watching).toBe(true);
+  });
+
+  it("reads a hand-edited string as OFF rather than as on", () => {
+    // `"false"` is truthy. A config that stored the query shape by mistake
+    // must not silently switch the filter on for everyone who opens the view.
+    expect(fromConfig({ filters: { watching: "true" } }).filters.watching).toBe(false);
+    expect(fromConfig({ filters: { watching: "false" } }).filters.watching).toBe(false);
+  });
+
+  it("counts as filtering, so the Clear affordance appears", () => {
+    expect(isFiltered(EMPTY_FILTERS)).toBe(false);
+    expect(isFiltered({ ...EMPTY_FILTERS, watching: true })).toBe(true);
+  });
+
+  it("stores nothing when off, so an untouched view stays byte-identical", () => {
+    const config = toConfig(EMPTY_FILTERS, "status");
+    expect(config.filters).toEqual({});
+  });
+
+  it("composes with the other filters rather than replacing them", () => {
+    // The whole argument for a filter over a fourth lens.
+    const query = toQuery({
+      ...EMPTY_FILTERS,
+      watching: true,
+      overdue: true,
+      statusCategory: "in_progress",
+    });
+    expect(query).toMatchObject({
+      watching: "true",
+      overdue: "true",
+      status_category: "in_progress",
+    });
   });
 });

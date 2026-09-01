@@ -25,8 +25,8 @@
  *
  * WS-27bd adds the right-click menu. The MENU is `@/components/ContextMenu` —
  * the one /tasks has used for five call sites, promoted rather than rewritten —
- * and its ITEMS come from `lib/taskMenu.ts`, the declared task-action registry
- * `MyWork` reads too. Nothing new arrives from `page.tsx`: Open is `onSelect`,
+ * and its ITEMS come from `lib/taskMenu.ts`, the declared task-action
+ * registry. Nothing new arrives from `page.tsx`: Open is `onSelect`,
  * Select is `onToggle`, and Change status is `onDrop` carrying an axis patch
  * and no reordering, which is exactly what dragging the card there would send.
  */

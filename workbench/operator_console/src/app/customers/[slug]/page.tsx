@@ -1,8 +1,11 @@
 import { redirect } from "next/navigation";
+import { categoricalBox, providerGlyph } from "@/lib/categorical";
 import {
   listOrganizations,
   catalog,
   billingSummary,
+  listKeys,
+  creditLedger,
   ConsoleUnconfigured,
 } from "@/lib/console";
 import { staffSession } from "@/lib/session";
@@ -15,7 +18,12 @@ import {
   plansNotice,
   lifecycleHint,
   readMembers,
+  readKeys,
+  readLedger,
+  ledgerAdds,
   type MemberRow,
+  type KeyRow,
+  type LedgerRow,
   type OrgList,
   type OrgRow,
   type Catalog,
@@ -46,18 +54,42 @@ type Loaded = {
    * operator reads "no members" off a failed request.
    */
   membersError: string | null;
+  /** The org's `cc_live_` keys, metadata only (CP-11 s1). Empty = none arrived. */
+  keys: KeyRow[];
+  /**
+   * Why the key list is empty, or null when it arrived.
+   *
+   * ⚠️ Separate from `error` for the reason `membersError` is, with one extra
+   * edge: `GET /keys` is `viewer`-readable, so a 403 here means the CONSOLE
+   * refused the caller — not that the customer has no keys. Rendering those two
+   * states the same way would tell an operator a leaked key does not exist.
+   */
+  keysError: string | null;
+  /** The credit ledger, newest first - the rows a bank transfer is verified
+   *  against BEFORE granting. Empty = none arrived. */
+  ledger: LedgerRow[];
+  /** Why the ledger is empty, or null when it arrived. A Console predating
+   *  the read answers 404; that is "this build cannot show it", never
+   *  "no entries". */
+  ledgerError: string | null;
   error: string | null;
 };
 
-async function loadOrg(slug: string): Promise<Loaded> {
+async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
   try {
-    // Three reads in parallel, all operator-door: the cross-org list (this
-    // org's numbers), the catalog (the plan pickers), and the per-org summary
-    // (the roster with seat state, LS-9).
-    const [listRes, catRes, sumRes] = await Promise.all([
-      listOrganizations(),
-      catalog(),
-      billingSummary(slug),
+    // Four reads in parallel, all operator-door: the cross-org list (this
+    // org's numbers), the catalog (the plan pickers), the per-org summary
+    // (the roster with seat state, LS-9) and the org's `cc_live_` keys (CP-11).
+    // ⚠️ All four carry the CALLER's session. A read that dropped it would
+    // reach the Console as `breakglass` — past the role matrix, and logged
+    // as a break-glass event on every page view.
+    const d = { authToken };
+    const [listRes, catRes, sumRes, keysRes, ledgerRes] = await Promise.all([
+      listOrganizations(d),
+      catalog(d),
+      billingSummary(slug, d),
+      listKeys(slug, d),
+      creditLedger(slug, d),
     ]);
     if (listRes.status !== 200) {
       return {
@@ -66,6 +98,10 @@ async function loadOrg(slug: string): Promise<Loaded> {
         plansError: null,
         members: [],
         membersError: null,
+        keys: [],
+        keysError: null,
+        ledger: [],
+        ledgerError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -90,12 +126,43 @@ async function loadOrg(slug: string): Promise<Loaded> {
           "This Console build does not report members (it predates the seat roster).";
       }
     }
+    let keys: KeyRow[] = [];
+    let keysError: string | null = null;
+    if (keysRes.status !== 200) {
+      // ⚠️ Say WHICH failure this is. "No keys" and "the Console would not tell
+      // me" look identical in an empty list, and the operator reading this
+      // surface may be trying to revoke a key that has leaked.
+      keysError = `The key list returned ${keysRes.status}.`;
+    } else {
+      try {
+        keys = readKeys(JSON.parse(keysRes.body));
+      } catch {
+        keysError = "The key list could not be parsed.";
+      }
+    }
+
+    let ledger: LedgerRow[] = [];
+    let ledgerError: string | null = null;
+    if (ledgerRes.status !== 200) {
+      ledgerError = `The ledger read returned ${ledgerRes.status}.`;
+    } else {
+      try {
+        ledger = readLedger(JSON.parse(ledgerRes.body));
+      } catch {
+        ledgerError = "The ledger read could not be parsed.";
+      }
+    }
+
     return {
       org,
       plans,
       plansError: plansNotice(catRes.status, plans.length),
       members,
       membersError,
+      keys,
+      keysError,
+      ledger,
+      ledgerError,
       error: null,
     };
   } catch (e) {
@@ -105,6 +172,10 @@ async function loadOrg(slug: string): Promise<Loaded> {
       plansError: null,
       members: [],
       membersError: null,
+      keys: [],
+      keysError: null,
+      ledger: [],
+      ledgerError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -123,8 +194,10 @@ export default async function CustomerDetailPage({
   if (!gate.ok) redirect("/login");
 
   const { slug } = await params;
-  const { org, plans, plansError, members, membersError, error } =
-    await loadOrg(slug);
+  const {
+    org, plans, plansError, members, membersError, keys, keysError,
+    ledger, ledgerError, error,
+  } = await loadOrg(slug, gate.authToken);
 
   if (error) {
     return (
@@ -167,19 +240,30 @@ export default async function CustomerDetailPage({
         <a href="/">← All customers</a>
       </p>
       <div className="pagehead">
-        <div>
-          <h1>{org.name}</h1>
-          <p className="muted">
-            {org.slug} ·{" "}
-            <span className={`pill ${org.status}`}>{org.status.replace("_", " ")}</span>
-          </p>
+        <div className="orghero">
+          <span
+            className={`${categoricalBox(org.name)} lg`}
+            aria-hidden="true"
+          >
+            {providerGlyph(org.name)}
+          </span>
+          <div>
+            <h1>{org.name}</h1>
+            <div className="herochips">
+              <span className={`pill ${org.status}`}>
+                {org.status.replace("_", " ")}
+              </span>
+              <span className="chip mono">{org.slug}</span>
+            </div>
+          </div>
         </div>
       </div>
 
       {org.status === "suspended" && (
         <div className="banner danger">
-          <strong>Suspended.</strong> Every sign-in for this customer is refused.
-          Use “Resume access” below to restore it.
+          <strong>Suspended.</strong> Sign-in still works so they can pay —
+          AI and seat changes are locked. Use “Resume access” below to
+          restore them.
         </div>
       )}
       {org.status === "trial" && (
@@ -274,6 +358,45 @@ export default async function CustomerDetailPage({
         </div>
       )}
 
+      <div className="panel">
+        <h2 style={{ marginTop: 0 }}>Credit ledger</h2>
+        <p className="muted">
+          Every addition and draw, newest first. Verify a bank transfer HERE
+          before granting - a reference already on this list is already
+          credited, and the grant form will refuse it.
+        </p>
+        {ledgerError ? (
+          <p className="muted small">{ledgerError}</p>
+        ) : ledger.length === 0 ? (
+          <p className="muted small">
+            No entries yet. The first grant starts the history.
+          </p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Change</th>
+                <th>Reason</th>
+                <th>Reference</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ledger.map((row, i) => (
+                <tr key={`${row.created_at}-${i}`}>
+                  <td className="muted small">{formatDate(row.created_at)}</td>
+                  <td className={ledgerAdds(row) ? "ok-t" : ""}>
+                    {ledgerAdds(row) ? `+${row.delta}` : row.delta}
+                  </td>
+                  <td>{row.reason}</td>
+                  <td className="mono small">{row.ref ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       <Actions
         slug={org.slug}
         status={org.status}
@@ -281,6 +404,8 @@ export default async function CustomerDetailPage({
         plans={plans}
         members={members}
         membersError={membersError}
+        keys={keys}
+        keysError={keysError}
       />
     </main>
   );

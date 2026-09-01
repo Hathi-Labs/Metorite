@@ -75,6 +75,353 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
+- **Check:** run this on the Console database.
+
+  ```sql
+  SELECT email, role, status FROM operator
+  WHERE role = 'admin' AND status = 'active';
+  ```
+
+  **Two or more rows means
+  four-eyes approval is no longer deferrable**, and this entry is still real.
+  One row, or none, would mean somebody deactivated an admin and the trigger
+  un-fired.
+- **What fired it, measured 2026-09-01.** The production read returned two
+  rows: `nithin@hathilabs.com` and `vjvarada@hathilabs.com`. Both are `admin`.
+  Both are `active`. Both were created 2026-08-30.
+- **Why this is an entry and not a note.** `operator_identity_and_access.md` §9
+  DEF-1 says the trigger *"must not be allowed to pass unnoticed"*, and the §9
+  table had no place to record a firing. §9.1 now records it. This entry is the
+  queue half, so the fact reaches a session that never opens the spec.
+- **What is deferred no longer.** Four-eyes approval on purge, suspend and
+  large credit grants. DEF-1 deferred it because *"four-eyes needs two people
+  to mean anything, and today it would only lock the owner out."* There are two
+  people now.
+- 🔴 **This entry does NOT authorize an agent to build four-eyes.** The control
+  needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
+  **C4** already says the two decisions arrive together and must not be
+  separated. The owner takes the shape. An agent then builds it.
+- **Authority:** `specs/operator_identity_and_access.md` §9 DEF-1 · §9.1 ·
+  `work_plan.md` §6.0 C4 · D64.6
+- **Added:** 2026-09-01 · WS-31 D70 documentation session
+
+### H-92 · A Projects test passes alone and fails in the suite · [AGENT]
+- **Check:** run `uv run pytest tests/unit -k "projects" -q`. A failure on
+  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
+  means this is open. Then run that test on its own. It passes. Measured
+  2026-09-01, on `main` and on a branch alike.
+- **What happens:** the test asserts two `field_change` activities and reads
+  one. On its own it reads two. So something survives between tests. The
+  `FakeProjectsDB` fixture and any module-level cache are the first two places
+  to look.
+- **⚠️ Why this is not a flake.** A flake fails at random. This one fails on
+  the suite and passes alone, every time, which is state that leaks across
+  tests. Two costs follow. The suite can go red for a change that did not
+  cause it, and — the worse one — it can go GREEN for a change that did.
+- **📌 It has already misled one investigation.** On 2026-09-01 it
+  first read as damage from a filter change. The control was to run the same
+  test alone, and then to run the whole suite against `main`. Both passed the
+  blame back. Do that control first.
+- **Not caused by the watching filter (WS-27bk).** The suite fails the same way
+  with `main`'s `tasks.py` in place.
+- **Same CLASS as [[H-91]], and a different defect.** H-91 leaks rows into a
+  shared database, and this leaks state inside one process. The lesson is the
+  same one H-91 states: a red that comes and goes hides a real red. Whoever
+  takes either should read both.
+- **Added:** 2026-09-01 · WS-27bk Wave 1 · minted as H-91 and renumbered to
+  H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
+  `test_handoff_ids_are_unique` caught the collision.
+
+### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
+  -name node_modules -prune -o ! -user acb -print | head`. Any line means a
+  root-owned path is back in the checkout, and the cause is still there.
+- **⚠️ Do NOT check this with the SHA comparison.** The old Check compared
+  `/version` against `origin/main`. That reads the SYMPTOM, and the symptom is
+  now repaired automatically. So the SHA check will pass while the cause runs
+  on. Read the ownership directly.
+- **A one-off `chown` CLEARED the block.** Measured 2026-08-31 16:40 UTC:
+  `/version` and `git rev-parse origin/main` both read `0f8fdb5a`. The tracked
+  tree now holds no root-owned path.
+  `scripts/vps_apply.sh` now normalises the checkout's ownership
+  before `git reset --hard`, so the next occurrence self-heals. That is the
+  repair, and this entry is the cause.
+- **What it was.** `workbench/operator_console/src/app/models/` was `root:root`,
+  created 2026-08-30 16:49. `git` unlinks a file through its parent directory,
+  so one root-owned directory blocks the rewrite of every file inside it. The
+  deploy's `git` step then failed with `unable to unlink old …
+  ModelDetails.tsx: Permission denied`, three rounds, twice — for PR #190 at
+  13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
+  root-owned, and the remaining 66681 were `.next` build output, which git
+  ignores.
+- **The open question: which step runs as root and writes there?** A container
+  or build with a bind mount is the first suspect, because the operator console
+  is the only tree affected. Read the unit files and the compose file on the
+  box, find the writer, and stop it writing as root.
+- **Why this stays open although the repair landed.** The repair lives inside
+  `vps_apply.sh`. A hand-run deploy, or any other path that resets the
+  checkout, meets the same failure with no repair. The repair also hides the
+  symptom, so nobody sees the next occurrence.
+- **⚠️ The shape to remember.** The app stayed UP on old code for hours.
+  `health` returned 200 and the workbench returned 307, so nothing alarmed. A
+  deploy that takes the site down reports itself. A deploy that silently does
+  not land does not.
+- **Authority:** `work_plan.md` §6 (box access is owner-gated) · CLAUDE.md §3.8
+  (verify by evidence, never by a green job)
+- **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
+  rewritten the same day, after the block cleared and the repair landed
+
+### H-90 · ⚠️ Production publishes its whole API schema, because `env=dev` · [OWNER]
+- **Check:** `curl -s -o /dev/null -w '%{http_code} %{size_download}\n'
+  https://api.metorite.com/openapi.json`. A `200` means this is open. Measured
+  2026-08-31 17:05 UTC: **200, and 1121924 bytes, with no credential**. `/docs`
+  answers 200 too, and serves the Swagger UI.
+- **One variable causes it.** `/version` reports `"env":"dev"`.
+  `Settings.acb_env` defaults to `"dev"`, so an ABSENT `ACB_ENV` on the box
+  gives exactly this reading. `gateway/main.py:591` then returns
+  `env == "dev"` from `docs_enabled`, which wires `docs_url`, `redoc_url` and
+  `openapi_url`.
+- **The auth dependency cannot save us here.** FastAPI mounts the docs routes
+  as plain Starlette routes with NO dependency chain. `main.py:583` says so in
+  its own docstring, and `tests/unit/test_default_deny_auth.py` repeats it. The
+  app-level `require_authenticated` never reaches them. Switching the env off
+  is the ONLY guard this design has, and the box has it switched on.
+- **What the schema gives a reader.** Every route, every path parameter, every
+  request and response model, and the admin surface. It is a map of the attack
+  surface. It is not a credential, so this is exposure and not a breach.
+- **The fix, and why it is small.** Set `ACB_ENV=prod` in the box's `.env`, then
+  restart the gateway. The whole tree reads `acb_env` in six places: the startup
+  log, `docs_enabled`, `/health`, `/version`, the reconciler's start log and
+  `scripts/check_infra.py`. Nothing in the auth path reads it. So the flip
+  removes the docs and corrects two labels. Nothing else moves.
+- **Then close the same hole in the deploy.** `.env.example` carries
+  `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
+  this exactly. Decide where production's value comes from.
+- **The fence now exists (R7).** `vps-health.yml` gained an `exposure` job. It
+  probes the three paths and `/version` hourly from outside, and it fails the
+  run while any of them says `dev`. ⚠️ **So that job is RED until somebody sets
+  the variable.** That is the alarm working, not a broken job. It carries its
+  own job and never touches the outage issue, so it cannot mask a real
+  reachability alert, and a real outage cannot mask it.
+- **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
+  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only` ·
+  `vps-health.yml` job `exposure`
+- **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
+  "reports the wrong label", after the schema probe returned 200
+
+### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
+- **Check:** the DELIVERABLE first, and the request body only after it.
+  *(Rewritten 2026-08-31. The old Check read the body field alone. So anybody
+  who restored `size` with no size dimension behind it flipped this entry to
+  "done". That is the exact P1 below, and the Check deleted its own guard.)*
+  1. **The price.** `rg -c 'size' apps/services/customer_console/customer_console/feed.py`
+     reads **0** today, and `rg -n 'vendor_per_image' infra/customer_console/`
+     shows ONE image column on `model_profile` and one on `vendor_price_feed`.
+     Together that means the vendor image price still holds one number per
+     model and carries NO size axis. This entry stays real while that holds,
+     whatever the request body does.
+  2. **The body.** `rg -n 'size' apps/services/customer_console/customer_console/main.py | rg 'ImageRequest|"size"|req\.size'`.
+     A hit here while step 1 still reads one bare column is the P1 back. Reopen
+     it, and never close this entry on it.
+  🔴 **Close this entry only when step 1 shows a size dimension on
+  `model_profile` and a feed that fills it.** The body field is the last step
+  of the work, and never the measure of it.
+- **Why:** the vendor prices a picture BY SIZE. Our own price column carries no
+  size axis at all. `feed.py:245` reads `output_cost_per_image` and
+  `input_cost_per_image` off the BARE model key, so exactly one number reaches
+  the profile. `019_per_unit_vendor_costs.sql:97` states
+  `model_profile.vendor_per_image_usd` as *"USD per generated image"*, with no
+  size in it. Measured in litellm 1.86.0: `standard/1024-x-1024/dall-e-3` is
+  3.81469e-08 per pixel, which is $0.040. `standard/1024-x-1792/dall-e-3` is
+  4.359e-08 per pixel, which is $0.080.
+- 🔴 **This was a live revenue defect for one round.** The build forwarded a
+  caller-chosen `size` to the vendor. A caller who sent
+  `{"model": "tier-image", "n": 4, "size": "1024x1792"}` cost us 4 x $0.080
+  while the row recorded 4 x $0.04. Review round 2 removed the field, and
+  `extra="forbid"` answers 422 for it now.
+- 📌 **The fix shape:** a size dimension on the vendor price, in the feed
+  projection and in `model_profile`. The feed already holds the sized keys —
+  it reads the bare key by choice, not by lack. `quality` is the same shape of
+  axis (`hd/1024-x-1024/dall-e-3` is twice `standard`), so one dimension
+  should carry both.
+- ⚠️ **It must land BEFORE the owner offers image sizes to customers.** Until
+  it does, one number per model is the only honest thing we can record.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 1 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
+  2026-08-31**. The router-guards slice took that id first.
+
+### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
+- **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
+  An `extra` block carrying no organization and no request id means this entry
+  is still real.
+- **Why:** `router.unmeasured_quantity` is the alarm that says nothing measured
+  a call we served. It logs the model, the tier and the task, and it names
+  neither the organization nor the request. So nobody can join the alarm to the
+  `usage_event` row it belongs to. Nobody can tell one customer's unmeasured
+  calls from another customer's either. The revenue path deserves a log a
+  person can reconcile.
+- 📌 **PRE-EXISTING, and wider than the two media doors.** The transcribe route
+  writes the same three fields (`main.py:5749`). The two H-46 doors copied that
+  shape, so a repair here should move all three onto one helper.
+- 🔴 **SPLIT THE NAME TOO — two different incidents share one alarm today.**
+  On the image door and the transcribe door, `router.unmeasured_quantity`
+  means *we could not count what the provider returned*. On the speak door it
+  also fires when the vendor answered ZERO BYTES of audio. That is not a
+  counting failure at all. We counted the characters fine, and the vendor
+  sent nothing back. One alarm cannot page for both. This entry is the place
+  to give the empty-audio case its own name.
+- 📌 **The fix shape:** carry `org_id` and the server-generated `request_id`
+  into the log line. `_record_completion` mints the id, so the ORDER matters —
+  the alarm fires before the row exists today.
+- **Authority:** `specs/customer_console.md` §6A.10c clause 5 · clause 6
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
+- **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
+  A count under 5 means fewer than four doors share it, and this entry is still
+  real. One definition plus four call sites reads 5.
+- **Why:** `main._serving_prelude` resolves the chain, loads the keys and the
+  verbs, and stands the three customer walls. H-46 built it for the image door
+  and the speak door. The transcribe route keeps its own copy of the same body,
+  and the chat route wrote the shape first. Three implementations of one gate
+  is root `CLAUDE.md` §5's defect by name, and the copy nobody edits is the one
+  that drifts.
+- 📌 **The fix shape:** move the transcribe route and the chat route onto the
+  prelude. The chat route needs one extra return, because it resolves a vision
+  chain (D-AI-2). Do it as its own slice, and not inside a feature diff.
+- **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 H-46 review round 2
+
+### H-82 · Correct the failover read, which now counts a resolution act · [AGENT]
+- **Check:** `grep -n "served_rank > 1" apps/services/customer_console/customer_console/main.py`
+  and `grep -n "Failovers, last 14 days" workbench/operator_console/src/app/tiers/TierBoard.tsx`.
+  A hit on both means the read still calls every `served_rank > 1` row a
+  failover, and this entry is still real.
+- **Why:** D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
+  starts. Take a tier that binds a blind rank 1 and a seeing rank 2, both
+  keyed. `_record_completion` (`main.py:4656`) then writes `served_rank = 2`
+  with `task = vision` on EVERY successful call, and no step ever failed.
+- 🔴 **The dashboard reads that as a failover.** `main.py:1858-1868` selects
+  `WHERE served_rank > 1`, and its own comment calls every such row a customer
+  request the rank-1 step did not answer. `TierBoard` would report 100 percent
+  of that tier's vision traffic as a failover.
+- ⚠️ **The emitted group joins to no `tier_binding` row.** It carries the
+  chosen tier with `task = vision`, and the chosen tier binds no `vision` task.
+- 📌 **The RANK is TRUE, and only the MEANING slipped.** `resolve_chain` builds
+  `rank` from the column and never from a list index, and the lift chain stays
+  a subsequence of the chain. So do not change the write.
+- 📌 **The credential filter (`main.py:5255-5258`) already does this on the
+  CHAT path.** So this widens a shape, and it mints no new class.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 7 · board row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards final repair round
+
+### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
+- **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
+  and `grep -n "if not attempts:" -A7 apps/services/customer_console/customer_console/main.py`
+  and `grep -n "_models_that_read_images" apps/services/customer_console/customer_console/router.py`.
+  This entry is still real on three conditions. The resolver takes
+  `(conn, tier)` alone, the empty-`attempts` branch answers 503 with no second
+  resolve, and the declared-task resolve carries no `reads_images` filter.
+  ⚠️ **The third grep keys on the SYMBOL, and never on a whole source line.**
+  A literal match of the `return resolve_chain(conn, tier, VISION_TASK)` line
+  read as done the moment somebody reformatted it, while shape 2 still stood.
+  `_models_that_read_images` is the ONE reader of the flag, so any filter must
+  call it. Today the grep answers three lines: the definition, one docstring
+  reference, and ONE call inside the LIFT path. The declared-task resolve
+  calls it NOWHERE. A second call means somebody filtered another chain, and
+  shape 2 may be closed.
+  ⚠️ Do NOT grep `provider_credential` on its own. `router.py:535`
+  already reads that table for the SERVING path, so that grep hits today and
+  reads as done.
+- ⚠️ **This entry carries TWO shapes** *(the second one arrived 2026-08-31)*.
+  Shape 1 costs a correct 200. Shape 2 lets a blind model answer. Close them
+  together, because both add a resolution rule to the same function.
+- **Why (shape 1):** WS-31's blind-step guard filters the lift chain on `reads_images`,
+  and one chain shape pays a CORRECT 200 for it. The shape is a BLIND rank 1,
+  then a SEEING rank 2 that the service holds no key for, with `tier-vision`
+  bound and healthy. The old rank-1 read found FALSE, fell to `tier-vision`,
+  and answered 200 from a model that saw the image. The filter keeps the
+  unkeyed seeing step, `main.py:5255-5258` empties the chain, and the route
+  answers 503. A verifier drove both sides on 2026-08-31.
+- 🔴 **The loss is AVAILABILITY, and never correctness.** No blind model
+  answers in either version. So the customer trades a right answer for a
+  refusal, and never a refusal for a wrong answer.
+- 🔴 **Two candidate closes, and each one is a THIRD resolution rule.**
+  (a) The resolver reads `provider_credential` BEFORE it filters, so a step
+  the service cannot call never enters the chain. (b) The credential filter
+  re-resolves to `tier-vision` when it empties `attempts` on a declared vision
+  task. §3.2 records no decision on either shape, so an agent may not mint one
+  (CLAUDE.md §5). That is why this entry is the owner's.
+- 🔴 **Why (shape 2) — a blind step can still enter a tier's OWN vision
+  chain.** §3.2 step 0.5 returns `resolve_chain(conn, tier, VISION_TASK)` with
+  NO `reads_images` filter (`router.py:338`). Step 3b narrows the LIFT chain
+  and narrows nothing else. So take an operator who binds `tier-vision` to
+  `[openai/gpt-4o, deepseek/deepseek-chat]`. Rank 1 returns a retryable 500.
+  `walk_chain` moves to the blind rank 2, and that model answers a confident
+  200 about a picture it never saw.
+- 🔴 **Shape 2 is a CORRECTNESS gap, and it is the older one.** It sits on the
+  path §3.2 step 3 sends the image down as the safe one. Shape 1 trades a right
+  answer for a refusal. Shape 2 gives a wrong answer.
+- 🔴 **Shape 2 needs two answers, and each one is a resolution rule.** Does a
+  declared `vision` chain drop its blind steps? Does an emptied declared chain
+  refuse, or does it fall to something? §3.2 records no decision on either, so
+  an agent may not mint one (CLAUDE.md §5).
+- 📌 **Both shapes are latent today.** Nothing binds `tier-vision` (F3) and
+  nothing writes `model_profile.reads_images` (§3.7 rule 4). Building either
+  shape takes all three operator acts of
+  `ai_metering_and_analytics.md` §8.5 clause 3.
+- ⏰ **Deadline: decide before H-69 arms the lift.** That flip is what makes
+  both shapes reachable on a live box.
+- **Authority:** `ai_metering_and_analytics.md` §8.5 clauses 8 and 9 · board
+  row WS-31
+- **Added:** 2026-08-31 · WS-31 router-guards repair round · **shape 2 added
+  2026-08-31**, WS-31 router-guards final repair round
+
+### H-80 · Decide the thread budget for the stream walk · [OWNER]
+- **Check:** `grep -n "CapacityLimiter\|Semaphore\|total_tokens" apps/services/customer_console/customer_console/main.py`.
+  No hit means nobody has capped the stream walk, and this entry is still real.
+  ⚠️ **The grep reads `main.py` alone** *(named 2026-08-31)*. A cap that lands
+  in a NEW module still reads as no hit, so this entry would say STILL PENDING
+  after the repair. Widen the path to the package when you close it.
+- **Why:** WS-31 slice 11 moved the provider stream open into the route. A
+  `def` route now holds one of anyio's 40 DEFAULT threadpool tokens for the
+  length of the walk. That is up to `3 x 120` seconds. The `asyncify` helper in
+  litellm borrows from the SAME default pool, because `asyncify.py:60` and
+  `:66` pass `limiter=None`. Then anyio resolves `limiter or
+  cls.current_default_thread_limiter()` (`anyio/_backends/_asyncio.py:2480`),
+  and that factory builds `CapacityLimiter(40)` (`:2957`). Put 40 stream walks
+  beside one asyncify-bound model, and nothing recovers.
+- ⛔ **The fix shape this entry carried is WITHDRAWN** *(2026-08-31)*. It read
+  "a bounded semaphore in front of `_open_stream_chain`". FastAPI takes the
+  threadpool token BEFORE the route body runs. `run_endpoint_function` calls
+  `run_in_threadpool(dependant.call, **values)` (`fastapi/routing.py:315`). So
+  a semaphore inside the route blocks a thread that ALREADY holds a token. It
+  reserves no headroom, and the deadlock stands.
+- 📌 **The scope is narrower than it looks.** Both buffered paths call
+  `asyncio.run` (`main.py:5398`, `:5733`), which builds a PRIVATE loop. A
+  `RunVar` (`_asyncio.py:2085`) keys anyio's default limiter, so a private loop
+  gets its own 40 tokens. Only `_open_stream_chain` shares the serving loop's
+  limiter, because it alone calls `anyio.from_thread.run`.
+- 🔴 **Two shapes WOULD work, and both change throughput.** An `async def`
+  dependency runs on the loop BEFORE FastAPI takes the token, so it can cap
+  stream requests. That cap makes the 9th concurrent stream WAIT. The other shape
+  raises `total_tokens` on the default limiter at startup, which changes the
+  thread budget of EVERY route. §3.6 records no decision on either, so this
+  entry is the owner's.
+- 📌 **Latent, and one row from live.** Every model bound today (deepseek,
+  groq) reaches httpx and borrows no thread. Two request-serving `asyncify(`
+  sites exist: Vertex AI (`vertex_llm_base.py:718`) and SageMaker
+  (`sagemaker/completion/handler.py:428`, `:499`). A vendor swap is one
+  `tier_binding` row, which is an operator act that no code review sees.
+- **Authority:** `ai_metering_and_analytics.md` §8.6 "The threadpool hazard"
+  · board row WS-31
+- **Added:** 2026-08-31 · WS-31 slice 11 review round 2 · **rewritten
+  2026-08-31**. The WS-31 router-guards slice withdrew the fix shape and moved
+  the label to OWNER.
+
 ### H-55 · Decide whether `pr-check.yml` runs the STE gate, and blocks · [OWNER]
 - **Check:** `grep -n ste-lint .github/workflows/pr-check.yml`. A hit means the
   owner decided and this entry is dead.
@@ -91,37 +438,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-08-26 · `docs/style_ste.md` §8 Q2
   · PR #115 · PR #116
 - **Added:** 2026-08-26 · STE harness session
-
-### H-24 · The Customer Console ladder does not travel with the deploy · [AGENT]
-- **Check:** `rg -n "customer_console" scripts/vps_apply.sh` → no hit means the
-  delivery path still applies only the tenant ladder and the gap is open.
-- **Why:** `infra/customer_console/` has its own DSN-driven applier
-  (`scripts/apply_customer_console_migrations.sh`) that **nothing invokes
-  automatically**, so the Console service can be delivered carrying code that
-  expects a schema its database does not have — the board's own "`platform_api`
-  is on the box but inert". **D47 named closing this as the obligation on the way
-  in.** Two clauses matter and neither is optional: the applier runs **before**
-  the Console unit restarts (the R6 window), and it **fails the deploy** when its
-  DSN is unset rather than skipping — a silent skip is how four deploys once
-  reported success while shipping nothing. Building it is AGENT-SAFE; running it
-  anywhere real is OWNER-GATE.
-- **Authority:** `specs/customer_console_infrastructure.md` §5 item 4 (D47) ·
-  `specs/development_and_delivery_framework.md` §4.1 · T-5
-- **Added:** 2026-08-24 · delivery-framework planning session
-
-### H-25 · The Console ladder's idempotency is an unchecked claim · [AGENT]
-- **Check:** `rg -n "infra/customer_console" .github/workflows/pr-check.yml` →
-  no hit means the gap is open.
-- **Why:** A cheap hole with the same shape as one this repo has already been
-  bitten by: `apply_customer_console_migrations.sh`'s header asserts every
-  ladder file is additive and re-runnable; **nothing verifies it** — the tenant
-  ladder earned its triple-replay job precisely because "idempotent" was a claim
-  about files nobody had checked together. (This entry originally also carried
-  "the Operator Console has no CI"; that half landed the same day it was
-  measured — PR #80, 2026-08-24, added the `frontend-operator` job to
-  `pr-check.yml` — so only the ladder half remains.)
-- **Authority:** `specs/development_and_delivery_framework.md` §4.2 · §5 · T-3
-- **Added:** 2026-08-24 · delivery-framework planning session
 
 ### H-19 · WS-34: theme-switch the new Organisation surface by eye · [AGENT]
 - **Check:** nothing in the repo can answer this — that is the point. Ask whether
@@ -223,16 +539,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §9.11 · `work_plan.md` §6
 - **Added:** 2026-08-14 · session that built WS-27bj
 
-### H-6 · `TagRow` is declared twice on the frontend · [AGENT]
-- **Check:** `rg -n "interface TagRow" workbench/control_plane/src/app/projects/lib/`
-  → two hits means still pending.
-- **Why:** `lib/tags.ts` and `lib/api.ts` each declare it, and `page.tsx` passes
-  rows between them, so they are assignable only while they agree. Widening one
-  for org-wide vocabularies is what surfaced it; both were widened to keep the
-  build green. Collapsing two public wire types is its own change (CLAUDE.md §5).
-- **Authority:** `specs/project_management_app.md` §9.11.1 ("findings for the board")
-- **Added:** 2026-08-14 · session that built WS-27bj
-
 ### H-7 · `now()` can move backwards, and migration 168's keyset cursor assumes it cannot · [AGENT]
 - **Check:** `rg -n "updated_at, id" infra/postgres/168*.sql` → the delta feed's
   cursor still ordering on `(updated_at, id)` with no monotonic guarantee means
@@ -288,27 +594,6 @@ line — never reclaim a number by deleting the other entry.
   WS-27 row (the R1-collision record) · R1
 - **Added:** 2026-08-14 · session that built WS-27bj · **halved 2026-08-25** by the
   push trigger (PR #46); re-pointed at T-6
-
-### H-13 · Commit the three plan-guard-gated patches (deploy.sh, .env.example, health-watchdog.sh) · [OWNER]
-- **Check:** `rg -n "3a83c19d" deploy/hostinger/deploy.sh` → a hit means still
-  pending. `rg -n "127.0.0.1:8000" .env.example` → a hit means still pending.
-  `rg -n "ActiveEnterTimestamp" deploy/hostinger/health-watchdog.sh` → NO hit
-  means still pending.
-- **Why:** plan-guard forbids agent writes under `deploy/` and to `.env*`, so
-  three fixes exist only where the owner (or a granted session) applied them:
-  (a) `deploy/hostinger/deploy.sh` still seeds one company's Entra directory
-  GUID into every fresh box (`scripts/vps_apply.sh`, the CI path, is already
-  fixed); (b) `.env.example` ships `GATEWAY_BASE_URL` on port 8000 while the
-  gateway listens on 8080, lacks `ACB_MASTER_KEY` entirely (load-bearing —
-  encrypts stored provider keys), and carries the dead `AUTH_ALLOWED_DOMAIN`
-  variable; (c) `health-watchdog.sh` needs the **180-second startup grace**
-  that is live on the box but absent from the repo — the gateway cold-starts
-  in ~90–105 s (awaited warm-clone timeouts) while the watchdog probes after
-  15 s, and without the grace it killed the gateway seconds before "startup
-  complete", in a permanent loop. ⚠️ (a) and (c) are patched **on the box
-  only** — the next git-reset deploy REVERTS them unless committed first.
-- **Authority:** plan-guard.mjs (D29) · `work_plan.md` §6
-- **Added:** 2026-08-17 · updated 2026-08-19 (VPS bring-up: watchdog grace)
 
 ### H-14 · Create the Razorpay TEST-mode account; set the three payment env vars · [OWNER]
 - **Check:** ask the owner whether a Razorpay test account exists; on the box or
@@ -750,29 +1035,6 @@ line — never reclaim a number by deleting the other entry.
   (verify by evidence, never by a green job)
 - **Added:** 2026-08-21 · session that built WS-27bg slice 2's rename
 
-### H-28 · The `mypy` pre-commit hook cannot run — it names no target · [AGENT]
-- **Check:** `rg -n "pass_filenames" -A 3 .pre-commit-config.yaml` → `pass_filenames:
-  false` with an `entry: uv run mypy` carrying **no** `args:` means still pending.
-  Reproduce: stage any `.py` file and commit — mypy exits 2 with *"Missing target
-  module, package, files, or command."*
-- **Why:** `pass_filenames: false` tells pre-commit not to append the staged paths,
-  and nothing supplies targets in their place, so the hook fails on **every** commit
-  that touches Python — it has never been able to pass. The comment above it says it
-  is "diff-scoped", which is the opposite of what `pass_filenames: false` does; the
-  intent and the setting disagree and only the setting runs. ⚠️ The fix is not
-  simply `args: [apps, packages]`: that type-checks the whole tree on every commit,
-  which is slow and would surface the existing strict-mode backlog as a block on
-  unrelated work. Wanted: the diff-scoped behaviour the comment describes, which
-  probably means dropping `pass_filenames: false` and letting the staged paths
-  through. Discovered 2026-08-21 while committing the H-10 fix, which had to be
-  landed with `SKIP=mypy` (every other hook ran and passed).
-  ⚠️ This hook failing on every Python commit is *why* `SKIP=mypy` gets typed by
-  habit, which is the second-order cost: a skip nobody questions is not a gate.
-- **Authority:** `specs/engineering_practice.md` (testing / definition of done) ·
-  CLAUDE.md §5 (an existing violation is a finding for the board, not a refactor
-  smuggled into an unrelated PR)
-- **Added:** 2026-08-21 · session that halved H-10 (PR #46)
-
 ### H-35 · Write the owning spec for WS-36 (per-tenant restore) · [AGENT]
 - **Check:** `rg -n "WS-36" project-docs/INDEX.md` → a hit in the **"BOARD ROWS WITH
   NO OWNING SPEC"** section (rather than in ACTIVE) means the spec is still unwritten
@@ -872,66 +1134,17 @@ line — never reclaim a number by deleting the other entry.
   §7.4 · §9 D-F · T-13
 - **Added:** 2026-08-26 · delivery + model-management decision session
 
-### H-40 · CP-10 slice 1: give `provider_credential` a write path · [AGENT]
-- **Check:** `rg -n "INSERT INTO provider_credential" apps/ infra/` → no hit means the
-  table still has **zero writers** and the Router still cannot call a provider on the
-  platform account.
-- **Why:** 🔴 **This is the measured blocker on the entire AI product**, and it is not
-  the one anybody assumed. `router.provider_credential()` SELECTs a table that no
-  migration seeds, no route writes and no script populates — so on a fresh Console
-  database it returns `None` and there is **no way to put our DeepSeek/Anthropic/Groq key
-  in at all.** Metering being unpriced is a separate, later problem; this one stops the
-  first call.
-  **Owner-directed 2026-08-26 as the NEXT thing built** (D56.7). Slice 1 is the operator
-  door: add / list (never returning plaintext) / rotate / revoke, Fernet at rest.
-  ⚠️ **Read `customer_console/router.py` and `infra/customer_console/004_provider_keys.sql`
-  first** — 004's header already argues why this store is *not* `acb_llm.key_store` and
-  must not be merged with it: these are **our** credentials, and putting them on a
-  customer's box is the precise thing D32.1 moved metering here to avoid.
-  ⚠️ **Do not build a new operator UI in slice 3** — the three-tab surface exists at
-  `workbench/control_plane/src/app/settings/models/page.tsx`, on the wrong side of the
-  boundary. Relocate it (D56.1).
-  🔴 Installing a **real** key against the live Console is §6 (e)/(f) — build against
-  fixtures and scratch, and stop.
-- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9 · §4 (single-owner) · **D56** ·
-  `specs/customer_console.md` **CP-10** slice 1 — ⭐ **and its §6A, the artefact-by-artefact refactor inventory** (measured 2026-08-26: what MOVEs, what is REUSEd, what is REWRITTEN-AS-PROXY, what is DELETEd, plus the four decisions the ticket must take deliberately). Read §6A before writing a line — the owner's constraint is **reuse and refactor, do not create new code**, and §6A is what makes that checkable
-- **Added:** 2026-08-26 · delivery + model-management decision session
-
-### H-41 · CP-11: nothing calls the Console Router, so operator configuration is inert · [AGENT]
-- **Check:** `rg -n "customer_console_url|CUSTOMER_CONSOLE_URL" apps/services/gateway/gateway/routes/v1_compat.py`
-  → no hit means the gateway still serves `/v1/chat/completions` from litellm directly and
-  the hop does not exist. ⚠️ Do **not** check by grepping for `CUSTOMER_CONSOLE_URL`
-  repo-wide — it is read by `console_resolve.py`, `seats.py` and `signin.py` for
-  **sign-in and seats**, never for an LLM call, so a repo-wide grep reads as "wired" while
-  the serving path is untouched.
-- **Why:** 🔴 **This is the ticket that makes CP-10 matter.** `v1_compat.py`'s own header
-  says it *"routes through the litellm SDK directly (no proxy)"*, so every model, tier
-  binding, rate card and provider key configured in the Operator Console is **inert as far
-  as the product is concerned**. `work_plan.md` §6 (d) recorded the shape of this on
-  2026-08-18 — *"CP-4 ships dark by having no caller, and this gate binds the first caller
-  ticket, which is where the flag arrives"* — and **that ticket was never minted**. It is
-  CP-11.
-  **Order (D57.5): CP-10 slice 1 → CP-11 → the rest of CP-10.** CP-11 cannot be proven
-  without a provider key to call with; the remaining CP-10 slices are not on its critical
-  path and must not delay it.
-  ⚠️ **Four things §6B.5 says will go wrong if not decided inside the slice:** streaming
-  (the Router's pass-through is **CP-4b, unbuilt** — either land it or refuse streaming
-  explicitly, never de-stream silently); latency (one hop on the interactive path —
-  measure it, do not assume); `_ensure_keys_loaded()` must not run for Router-served
-  calls; and the `X-CC-*` attribution headers are **slice 3's job**, because an
-  unattributed `usage_event` cannot become a per-member cap or a usage statement.
-  ⚠️ **Do not delete `v1_compat.py`'s local path** — it is BYOK and flag-off, and R6
-  forbids removing the old path in the release that adds the new one.
-  🔴 Wiring a live deployment's key and flipping `ROUTER_SERVING_ENABLED` are §6 (d)/(e).
-- **Authority:** `work_plan.md` §2 WS-31 · §2.0 M2.9b · §4 (single-owner) · §6 (d) ·
-  **D57** · `specs/customer_console.md` **CP-11** and ⭐ its **§6B**
-- **Added:** 2026-08-26 · AI credits + keys session
-
 ### H-42 · Price the AI rate card, then flip the spend gate — in that order · [OWNER]
 - **Check:** on the Console database,
-  `SELECT count(*) FROM model_rate_card WHERE input_credits_per_1k > 0;` → `0` means the
+  `SELECT count(*) FROM tier_rate_card WHERE pricing_mode = 'priced';` → `0` means the
   card is still unpriced and nothing draws credits down. Then
+  `SELECT count(*) FROM credit_price;` → `0` means the credit itself has no
+  rupee price, so a bank transfer has no official conversion. Then
   `env | grep -c CUSTOMER_CONSOLE_SPEND_GATE` on the box.
+  *(D67, 2026-08-30: the card billing reads is `tier_rate_card`, keyed on
+  the tier. `model_rate_card` is read-only history. The console's /pricing
+  page sets both numbers and shows the margin live. Migration `017` added
+  `credit_price` for the rupee side.)*
 - **Why:** Credit **assignment** works end to end already (§6B.1) — but a granted credit
   is currently a number that nothing consumes, because the shipped rate card is **all
   zero** and `test_the_rate_card_ships_unpriced` refuses a priced ladder by design.
@@ -947,6 +1160,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
+
+### H-79 · Flip the `/me/billing` money fields to strings (two releases, R6) · [AGENT]
+- **Check:** `grep -c "float(balance)" apps/services/customer_console/customer_console/main.py`
+  → `1` means the Console still sends floats.
+- **Why:** `GET /me/billing` sends `balanceCredits` and `burnThisCycle` as floats.
+  Every other money read sends strings. The float is exact for `NUMERIC(14,4)`
+  magnitudes, so the defect is latent. But this endpoint is the customer's
+  dispute surface, and one outlier invites the next. The flip takes two
+  releases (R6). Release one: the workbench billing page
+  (`workbench/control_plane/src/app/settings/billing/`) parses both shapes.
+  Release two: the Console sends strings.
+- **Authority:** the strings-for-money rule stated three times in `main.py`
+  (search "reformatted through a float")
+- **Added:** 2026-08-30 · console-review session
 
 ### H-43 · Close the process-global credential injection (D58.2) · [AGENT]
 - **Check:** `rg -n "os.environ\[" packages/acb_llm/acb_llm/key_store.py` → hits inside
@@ -991,48 +1218,54 @@ line — never reclaim a number by deleting the other entry.
   **D60.10**) · `specs/customer_console.md` **§6A.9**
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-45 · The rate card is tokens-only, so STT cannot be priced — and it ships · [AGENT]
-- **Check:** `rg -n "def rate_call" -A 20 apps/services/customer_console/customer_console/credits.py`
-  → a body that only divides token counters by 1000 (no `unit` branch) means the hole is
-  open. Separately, `rg -n "^\s+unit\s+TEXT" infra/customer_console/*.sql` → no hit means
-  `model_rate_card` still has no `unit` column.
-  ⚠️ **Do NOT grep for the bare word `unit` in that ladder** — it matches the word
-  "opport**unit**ies" in `usage_event`'s comment and reads as **done** while the column is
-  absent. (Caught while writing this entry, 2026-08-26; it is the same defect as H-31's
-  original Check and is recorded here because the class keeps recurring: a Check must
-  match the *artefact*, never a word that happens to appear near it.)
-- **Why:** 🔴 **A live gap that predates the multimodal question and was found by it.**
-  `credits.rate_call` divides `fresh_prompt_tokens` / `cached_tokens` /
-  `completion_tokens` by 1000 against per-1k rates and **knows no other unit**;
-  `model_rate_card` carries only those three rate columns and `usage_event` only those
-  three counters.
-  **`tier-stt` ships in production seed** (`002_seed_catalog.sql:76`,
-  `groq/whisper-large-v3-turbo`) and **D19.2 specifies per-minute STT metering** — which
-  the card cannot express. Image generation (per image) and TTS (per character or second)
-  are equally unpriceable.
-  ⚠️ **This is currently invisible because the whole card ships at zero** and
-  `test_the_rate_card_ships_unpriced` keeps it there. It becomes a revenue bug the day
-  somebody prices the card and assumes STT is covered — an unpriced call is billed as
-  free, and `rate_call` raises `UnpricedModel` rather than silently zero-rating, which is
-  the one mercy here.
-  **The fix (D60.5):** `model_rate_card` re-keys on `(model, task, effective_from)` —
-  because the same multimodal model costs differently per task — and gains a `unit` ∈
-  `{token_1k, second, character, image}`. `usage_event` gains `task`, `quantity`, `unit`
-  (**nullable, R6-safe**; the token columns stay, since chat is the common case and they
-  are indexed). `rate_call` grows a unit branch.
-  📌 **Do this inside CP-10 slice 2, not as a follow-up** — without it, three of the six
-  tasks in D60's model cannot be billed at all, so shipping the access model without it
-  would ship a catalog that can describe work we cannot charge for.
-  🔴 Pricing the card itself remains an owner act (D19.2, §6); this ticket builds the
-  mechanism and prices nothing.
-- **Authority:** `work_plan.md` §3 **D60.5** · D19.2 ·
-  `specs/customer_console.md` **§6A.9** · CP-10 slice 2 · CP-6
-- **Added:** 2026-08-26 · multimodal / future-proofing session
 
 ### H-46 · Build the Router's non-chat endpoints — shape DECIDED (D61.1) · [AGENT]
+- ✅ **The `transcribe` half is BUILT, 2026-08-31.**
+  `POST /v1/audio/transcriptions` serves the second of D60's six tasks, and
+  `customer_console.md` §6A.10a is now BUILT.
+- ✅ **The image half and the speak half are BUILT too, 2026-08-31.**
+  `POST /v1/images/generations` and `POST /v1/audio/speech` serve the third
+  task and the fourth, and §6A.10c is now BUILT. H-47's handler seam is what
+  is left. Keep this entry until it lands.
+- 📌 **Both media routes are BUILT to `customer_console.md` §6A.10c.** An
+  audit minted that section on 2026-08-31, and the build answered it the same
+  day. It holds twelve clauses and a fence table.
+  ⚠️ **§6A.10c seeds NO `tier_binding` row.** The choice of the vendor model
+  we resell for pictures and for speech is a commercial act, and it belongs to
+  the owner. So each route answers 400 `tier_unknown` until the owner binds
+  `tier-image` and `tier-tts`. Arming each route is ONE `tier_binding` INSERT,
+  beside the three prerequisites H-69 lists.
+  📌 **§6A.10c gave H-47 no first caller.** `aimage_generation` and `aspeech`
+  are litellm verbs already, so neither route needed a native handler.
+- ✅ **REPAIRED 2026-08-31, review round 2.** An adversarial review returned
+  REQUEST-CHANGES on one P1 and four P2s, and the same branch answered all
+  five. The P1 was a revenue defect: the image body forwarded a caller-chosen
+  `size`, and the vendor prices a picture by size. **H-87** now carries the
+  real follow-up. **H-85** carries the unmeasured-call log, and **H-86**
+  carries the one prelude for four doors. §6A.10c holds each answer.
+- ✅ **The mixed-lift-chain finding is CLOSED, 2026-08-31.** It rode here from
+  WS-31 slice 4, and the router-guards slice filtered the chain.
+  `resolve_vision_chain` now keeps only the steps that set `reads_images`, and
+  an empty result falls to `tier-vision`. `ai_metering_and_analytics.md` §3.2
+  step 3b holds the rule under a D16 marker, and §8.5 clauses 7 and 8 hold the
+  done-when.
+- **⚠️ Three review findings are still OPEN, and they ride with H-47
+  (recorded 2026-08-31):**
+  1. The Router sends `verbose_json` to EVERY transcribe model. The precedent
+     (`acb_stt/litellm_provider.py:252`) sends it to the whisper family alone.
+     A tier repointed at Deepgram or `gpt-4o-transcribe` gets a vendor 400,
+     which reads as "upstream provider error". The family branch belongs in
+     H-47's handler seam.
+  2. An unmeasured transcription writes `quantity` 0, and a silent file also
+     writes 0. Cost gets the NULL-means-unknown rule (D-AI-7) and quantity
+     does not. Decide one way when a reader of `quantity` exists.
+  3. A capability row with a wrong verb (for example `aspeech` on a
+     transcribe pair) burns the failover walk and answers 502 "upstream
+     provider error" for OUR configuration error. `_nothing_to_try` shows the
+     precise-503 shape the refusal should copy.
 - **Check:** `rg -n '@app\.post\("/v1/' apps/services/customer_console/customer_console/main.py`
-  → only `/v1/chat/completions` means the Router still serves exactly one of D60's six
-  tasks and the shape is still undecided.
+  → four routes means every endpoint D61.1 named is built. A tree missing
+  `/v1/images/generations` or `/v1/audio/speech` means this half regressed.
 - **Why:** D60's catalog can **describe** `transcribe` / `image` / `speak`; the Router has
   **nowhere to serve them**. The fork is real and is an owner call because it is a public
   wire-protocol commitment: **(a)** per-task OpenAI-shaped endpoints
@@ -1050,14 +1283,43 @@ line — never reclaim a number by deleting the other entry.
   mistake repeated — which is the entire lesson of the first-caller ticket (D57.3).
   ✅ **Not blocking:** CP-10 slice 1 and CP-11 both proceed — chat is **96 of the 110**
   measured call sites. This bounds the multimodal reach, not the next two tickets.
-- **Authority:** `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10a** holds the transcribe
+  clauses, and **§6A.10c** holds the twelve clauses for the image endpoint and
+  the speak endpoint. Build to those two sections, and to nothing written in
+  this entry.
+  ✅ **H-78 landed on 2026-08-31, and this change removes its entry.** Clause 5 reads
+  `model_profile.vendor_per_minute_usd`, and H-78 built that column and the
+  seam that fills it. A profile with no price still leaves
+  `provider_cost_usd` NULL (D-AI-7 rule 3), because only a staff save writes
+  the profile.
+  📌 **H-47 folds in as this entry's dispatch clause.** The handler seam lands
+  WITH its first caller (D57.3). §6A.10b clause 7 says so.
+  📌 **The `video` verb is H-78's one handover, and it rides here.** A map of
+  litellm's `video_generation` mode needs a sixth verb in
+  `KNOWN_INVOCATIONS` (`catalog.py`). `check_invocation` (`catalog.py`) is the
+  refuser, and it rejects a video capability until that verb lands. This slice
+  of H-46 adds no verb. Check: `rg -n "KNOWN_INVOCATIONS" -A8
+  apps/services/customer_console/customer_console/catalog.py` — five verbs
+  means the follow-up is open.
+- **Authority:** `customer_console.md` **§6A.10a** and **§6A.10c** (the
+  done-when) ·
+  `work_plan.md` §3 **D61.1** (the decision) · D60.11(b) · `specs/customer_console.md` **§6A.10 G-1**
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and the H-78 order · **amended 2026-08-31** with the
+  mixed-lift-chain finding from WS-31 slice 4. **Amended again 2026-08-31**
+  with H-78's `video` follow-up, after H-78 closed. **Amended a third time
+  2026-08-31** with §6A.10c, the contract for the two routes that are left.
+  **Amended a fourth time 2026-08-31**, after the build closed §6A.10c
 
 ### H-47 · Widen `acb_stt`'s provider pattern instead of inventing a handler abstraction (G-2) · [AGENT]
 - **Check:** `rg -n "class SttProvider|resolve_stt_provider" packages/acb_stt/` → present
-  and still STT-only means the generalisation has not happened. If a *second* dispatch
-  abstraction appears elsewhere (e.g. a `resolve_provider` in `customer_console/`), that is
-  the defect this entry exists to prevent, not progress.
+  and still STT-only means the generalisation has not happened.
+  ⚠️ **Repaired 2026-08-30. This Check read two things as one.** A DATA READ of
+  `model_capability.invocation` is **ALLOWED**. `resolve_invocation`
+  (`customer_console/router.py:269`) is that read, and §6A.10a clause 6 gives it
+  its first caller on the serving path. The defect this entry guards is a second
+  handler-OBJECT seam — a second provider hierarchy beside `acb_stt`'s. Read the
+  two apart before you call a hit a defect.
 - **Why:** D60 originally said the capability row carries *"the litellm verb"*. **That is
   wrong** — `acb_stt` exists because AssemblyAI's batch API is submit-then-poll and, in the
   package's own words, *"can't be expressed as a LiteLLM `atranscription` call"*. So
@@ -1071,51 +1333,59 @@ line — never reclaim a number by deleting the other entry.
   in the one place this design has been most careful to avoid it.
   ⚠️ Consequence for G-5: `invocation` values are an **allowlist the Router knows**, never
   free text — an operator must not be able to bind a handler that does not exist.
-- **Authority:** `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
-  G-2 / G-5** · CLAUDE.md §5
-- **Added:** 2026-08-26 · AI design audit
+- **Done when:** `customer_console.md` **§6A.10b** holds the seven clauses.
+  Build to that section, and to nothing written in this entry.
+  📌 **This entry gets NO dispatch of its own.** §6A.10b clause 7 folds it into
+  H-46's build order as that entry's dispatch clause. The seam lands with its
+  first caller, and never before it (D57.3).
+  📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
+  tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
+  rejected `acb_provider` alternative.
+- **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
+  `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
+  G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
+- **Added:** 2026-08-26 · AI design audit · **amended 2026-08-30** with a
+  done-when section and a repaired Check
 
-### H-48 · Implement D61's three slice-2 answers (G-3, G-4, G-5) · [AGENT]
-- **Check:** `rg -n "pricing_mode" infra/customer_console/*.sql` → no hit means D61.4's
-  three-state rate card is unbuilt, and by extension slice 2 has not landed.
-  ✅ **All three are DECIDED (D61.3/D61.4/D61.5) — this entry is now BUILD work, not
-  decision work.** The reasoning below is kept because an implementer who does not know
-  *why* will re-derive the wrong answer.
-- **Why:** All three are five-minute decisions that become expensive retrofits.
-  **G-3 → the CALLER declares; the Router never sniffs (D61.3).** It uses the same verb as
-  chat, so it differs only in which model is bound. Payload sniffing is inference, and
-  D32.7 refuses inference in this exact area. Consequence, intended: a
-  chat call carrying an image silently goes to whatever `(chat, tier)` binds — which may
-  not accept images — and fails at the provider with an error the customer cannot act on.
-  ⚠️ D32.7 is hostile to inference (*"rejected 400, not coerced"*), which argues for the
-  caller declaring.
-  **G-4 → `pricing_mode` ∈ {`unpriced`, `absorbed`, `priced`} (D61.4).** A zero cannot
-  carry three meanings; `absorbed` rates to zero deliberately **and still writes the
-  `usage_event`**, because we want the volume even when we do not charge for it. D19.2 absorbs
-  embeddings into the package price; D60 lists `embed` as a task with a rate card, which
-  reads as billable. The card must distinguish "free on purpose" from "not priced yet",
-  because `rate_call` raises `UnpricedModel` on a zero card **by design** — so an absorbed
-  task hitting that path would **refuse the call**. 📌 The three embedding sites are in
-  ingestion and none goes through `acb_llm/client.py`, so they are not on the Router path
-  today at all.
-  **G-5 → tasks are an allowlist the Router publishes; tiers stay free text (D61.5).** A free-text task lets an operator
-  create a binding the Router cannot serve: a row that looks configured and 500s.
-- **Authority:** `specs/customer_console.md` **§6A.10** · `work_plan.md` D60.11 · D19.2 ·
-  D32.7
-- **Added:** 2026-08-26 · AI design audit
 
-### H-54 · Configure the Supabase staff provider and the three `OPERATOR_*` values · [OWNER]
+### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+- **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
+  Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
+  no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
+  admin console.
 - **Check:** `ssh` to the box and read the operator console env for
-  `OPERATOR_ENTRA_TENANT_ID` → an unset value means still pending. From the repo
-  alone: `rg -n "OPERATOR_ENTRA_TENANT_ID" workbench/operator_console/` → a hit in
-  `src/lib/` with no hit in a deployed env is the same answer.
+  `OPERATOR_GOOGLE_HD` → an unset value means still pending. From the repo
+  alone: `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
+  → **no hit at all** means the code half is not built either, which is the
+  state on 2026-09-01.
 - **Why:** CP-12a builds the three-check staff gate. It cannot admit anybody
-  until the owner configures the provider and sets the three values. Until then
+  until the owner configures the provider and sets the values. Until then
   the console stays on **one shared passphrase**. That box has been reachable
   since 2026-08-22.
-- **Authority:** `specs/operator_identity_and_access.md` §10 G1–G2 ·
-  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · D64.1
-- **Added:** 2026-08-26 · operator-identity spec session
+- **The five values.** `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS`,
+  `OPERATOR_BOOTSTRAP_EMAIL`, `OPERATOR_SUPABASE_URL` and
+  `OPERATOR_SUPABASE_ANON_KEY`. ⚠️ `deploy/hostinger/customer_console.env.example`
+  still documents the Entra name. `deploy/` is OWNER-GATE, so an agent may not
+  correct it there.
+- **Turn manual identity linking OFF in the Supabase project.** A staff
+  account that links a second provider can be signed in through that
+  provider. The Console refuses such a sign-in, because it reads
+  `app_metadata.provider`. That claim is not per-session, so linking is
+  the condition the bypass needs, and removal is the durable fix.
+- 🔴 **Measure one real Supabase GOOGLE payload, and confirm whether `hd`
+  appears in `identities[].identity_data`.** This is **still unmeasured and
+  still load-bearing.** `operator_signin.extract_identity` reads a shape nobody
+  has seen. It fails CLOSED, so a wrong guess refuses everybody instead of
+  admits anybody. ⚠️ The old part 3 of this entry asked for the **Azure** claim
+  shape. That question is dead. This one replaces it.
+- ⚠️ **A payload with NO `hd` must refuse.** Google issues an account on any
+  address it verifies by mail, and such an account carries `email_verified:
+  true` and no `hd`. Do not read a missing claim as a pass. Spec §8.1 done-when
+  30 is the acceptance.
+- **Authority:** `specs/operator_identity_and_access.md` §4.1 · §10 G1–G2 ·
+  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · **D70.1** · D64.1
+- **Added:** 2026-08-26 · operator-identity spec session · **rewritten
+  2026-09-01** for D70
 
 ### H-58 · Name the first operators and their roles · [OWNER]
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
@@ -1131,31 +1401,395 @@ line — never reclaim a number by deleting the other entry.
   different base and merged first. `test_handoff_ids_are_unique` caught it. Ids
   are never reused, so H-55 stays with the STE entry.
 
-### H-56 · Build CP-12a…CP-12g — the spec is written and no code exists · [AGENT]
-- **Check:** `rg -n "OPERATOR_IDENTITY_ENABLED" apps/ workbench/` → no hit means
-  slice 1 has not started. `ls infra/customer_console/` → no `operator` migration
-  means the same.
-- **Why:** `specs/operator_identity_and_access.md` was minted 2026-08-26 and
-  audited nothing into existence. All seven slices are AGENT-SAFE. Each ships
-  behind a flag that defaults OFF, so the build does not wait on H-54. ⚠️ Start at
-  **CP-12a** and keep the order. CP-12g deletes `staff.ts`, and running it early
-  locks the team out of a live console.
+### H-56 · **CP-12g slice 2** — delete the passphrase, AFTER one real sign-in · [AGENT+OWNER]
+- **Check:** `rg -n "OPERATOR_CONSOLE_STAFF_SECRET" workbench/` → a hit means
+  the deletion has not run. That is the CORRECT state until the owner has
+  flipped the flag and signed in once.
+- **⚠️ Amended 2026-08-27.** CP-12a to CP-12g slice 1 are built. The console
+  now has both sign-in paths, and `OPERATOR_IDENTITY_ENABLED` chooses.
+- **The order, and it is the reverse of what it looks like:**
+  0. **[AGENT]** ⛔ **NEW, and it comes first. D70 changed the provider on
+     2026-09-01.** The built code names Microsoft and reads `tid`. The gate
+     must read the Google Workspace `hd` claim against `OPERATOR_GOOGLE_HD`.
+     Nobody can finish step 1 against a provider the code does not accept.
+     Acceptance: spec §8.1 done-whens 1, 5 and 30 to 33.
+  1. **[OWNER]** Finish **H-54**. Configure the Supabase **Google Workspace**
+     provider, set the five `OPERATOR_*` values, turn identity linking OFF, and
+     add `<origin>/login/callback` to the redirect allowlist.
+  2. ✅ **DONE.** The Console ladder is applied on production. Measured
+     2026-09-01: the `operator` table exists, and migrations 019 to 021 are
+     recorded. **H-64 carried this and the owner closed it**, so that entry is
+     deleted.
+  3. **[OWNER]** Set `OPERATOR_BOOTSTRAP_EMAIL` to your own address, then
+     flip `OPERATOR_IDENTITY_ENABLED` on the console app.
+     ⚠️ **The bootstrap is already spent.** The 2026-09-01 read found two
+     `active` `admin` rows. `operators.bootstrap` refuses once any row exists,
+     so this variable does nothing now. Set it anyway. It costs nothing, and it
+     matters again on a fresh box.
+  4. **[OWNER]** Sign in once. ⚠️ **You are already an `admin` row**, so the
+     sign-in proves the gate rather than creates you. Then add the rest of the
+     team (**H-58**).
+  5. **[AGENT]** ONLY THEN: delete `staff.ts`, `InterimForm.tsx` and the
+     interim branch of the session route. Remove the constant from
+     `route.ts`, `session.ts` and `identity.ts`.
+  6. **[OWNER]** Remove `OPERATOR_CONSOLE_STAFF_SECRET` from the box.
+- **⚠️ Run step 5 before step 4 and nobody can sign in at all.** That is why
+  slice 1 keeps both paths.
+- **Two console env values are still undocumented**, because
+  `deploy/` is OWNER-GATE and I may not write there. Add to the operator
+  console's env: `OPERATOR_IDENTITY_ENABLED` (the flag, default off) and
+  `OPERATOR_CONSOLE_ORIGIN` (the console's own public URL, used to build the
+  Supabase callback). `OPERATOR_SUPABASE_URL` is needed by BOTH services.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session
+### H-65 · plan-guard cannot see a write made by an interpreter reading a heredoc · [AGENT]
+- **Check:** read `.claude/hooks/plan-guard.mjs` near the `scanned` constant.
+  A regex still strips every heredoc body before the protected-path scan, and
+  `plan-guard.test.mjs` names no interpreter case. Both mean still open.
+- **What I did, by accident, on 2026-08-27.** I edited
+  `deploy/hostinger/customer_console.env.example` with `python - <<'PY'`. The
+  path is protected by the `deploy-write` gate. The guard did not fire.
+- **Why it does not fire.** The guard strips heredoc bodies on purpose, and
+  the reason is sound: a body is usually FILE CONTENT, and content that
+  mentions `.env` must not block an ordinary commit. The comment argues that a
+  real write still blocks, because in `cat > .env <<'EOF'` the `> .env` sits
+  in the command half.
+- **⚠️ That argument holds for `cat`. It does not hold for an INTERPRETER.**
+  In `python - <<'PY'` the body is a PROGRAM, and the program does the write.
+  The path never appears in the command half at all. The same is true of
+  `node -e`, `perl`, `ruby` and `sh` reading from a heredoc.
+- **Suggested fence:** when the command runs an interpreter that reads its
+  program from stdin or from `-e`, scan the body as COMMAND instead of
+  stripping it. Add a case to `plan-guard.test.mjs` first, and show it red.
+- **⚠️ Do not treat this as licence.** The gate is the rule. A gap in the
+  enforcement does not widen it.
+- **Authority:** `work_plan.md` §6 · D45 · `.claude/hooks/plan-guard.mjs`
+- **Added:** 2026-08-27 · WS-31 CP-12g session
 
-### H-57 · Nothing fences `INDEX.md` completeness, so a spec can go missing · [AGENT]
-- **Check:** `rg -l "INDEX.md" tests/ .github/workflows/` → no hit means no test
-  reads the index and the gap is open.
-- **Why:** CLAUDE.md §5 says a spec enters `INDEX.md` in the pull request that
-  creates it. INDEX.md's own header says a spec missing from it is a defect.
-  Neither statement has a fence, so both are advisory and **R7 calls that a
-  defect**. Measured 2026-08-26 while adding `operator_identity_and_access.md`.
-  The fix is small: one test that lists `project-docs/specs/*.md` and fails on a
-  file the index does not name.
-- **Authority:** CLAUDE.md §5 · `project-docs/INDEX.md` header · `work_plan.md`
-  §1 R7
-- **Added:** 2026-08-26 · operator-identity spec session
+### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
+- **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No
+  line, or `0`, means the hop is inert and this is still pending.
+- **What the flip does.** `/v1/chat/completions` stops calling litellm locally
+  and calls the Console Router instead. The tier binding, the rate card and OUR
+  provider account then decide every call, streamed or not.
+- **⚠️ Three things must be true FIRST, and none of them is code.**
+  1. A provider credential is installed on the Console (**H-40 built the door**,
+     and `provider_credential` held 0 rows when I measured it on 2026-08-27).
+  2. `CUSTOMER_CONSOLE_ORG_KEY` is on the box. Mint it from the operator
+     console's **API keys** panel, which CP-11 slice 1 added.
+  3. ~~Streaming stays unmetered.~~ ✅ **CLOSED 2026-08-27** — CP-4b and
+     CP-11 slice 5 route and meter a stream. The flip now covers ALL
+     traffic, which is what makes the revenue number readable.
+- **⚠️ A routed call that fails FAILS (D57.7).** It does not fall back to
+  litellm. So an unreachable Console means the AI stops, instead of quietly
+  serving unmetered traffic. That is the intended trade, and it is why the flag
+  is worth flipping deliberately and not by default.
+- **⚠️ On a SHARED box one org key cannot be right for every tenant.** The
+  setting is correct on a single-org silo only. Somebody must resolve the key
+  per-organization before this goes on anywhere else.
+- **Authority:** `work_plan.md` §6 (d)/(e) · **D57** · **D57.7** ·
+  `specs/customer_console.md` §6B.7
+- **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
+
+---
+
+
+---
+
+
+---
+
+### H-72 · A saved raw model id in a LIVE app breaks on the flag flip · [OWNER]
+- **Check:** on the box, look for a `task_settings` row whose
+  `chat_model` / `clarify_model` / `atomize_model` / `email_capture_model`
+  does not start with `tier-`. No such row means nobody ever picked one,
+  and this closes with no migration at all.
+  ⚠️ **The picker itself is already gone** (part 1 below). This entry is
+  now only about values ALREADY STORED.
+- **Why:** 🔴 **D32.7 says customers never see a model, and one does.** Found
+  while scoping CP-5, which targets the `preview` models page. This is a
+  different surface and a live one. The chain is measured, not inferred:
+  1. `/tasks` is `launch: "live"` in `nav.ts` — one of the nine panes.
+  2. `app/tasks/page.tsx` renders `<TaskSettingsModal />` twice.
+  3. The modal reads `/api/settings/llm/enabled-models` and offers each one
+     under an `optgroup` labelled **"Your enabled models"** (line 174).
+  4. The chosen value saves to `chatModel` / `clarifyModel` / `atomizeModel`
+     / `emailCaptureModel`.
+  5. `AssistantRail.tsx:276` passes `model={chatModel}` into the chat call.
+- **⚠️ The defaults are TIERS**, so nothing is broken today and nothing looks
+  wrong. `tier-powerful`, `tier-balanced`, `tier-fast`. **Only a customer who
+  deliberately picks a model from that group stores a bare model id.**
+- **🔴 That customer's Tasks AI breaks the day `ROUTER_SERVING_ENABLED` flips.**
+  The Console refuses a bare model id with **400**, and does not coerce it
+  (D32.7, and `resolve_tier` raises `TierUnknown`). The break stays silent
+  until the flip. It then lands on the customer most engaged with the
+  product. That is the one who went into settings and chose.
+- **So the trigger is H-69**, the same flip that arms metering.
+- **Two questions, and the second is the owner's:**
+  1. ✅ **DONE 2026-08-27.** The `optgroup` is gone, the fetch that fed it
+     is gone, and `modelVocabulary.test.ts` fails if either returns. This
+     stops NEW model ids. ⚠️ It heals nothing already saved.
+  2. ⚠️ **What happens to a value already saved?** A stored `openai/gpt-4o`
+     must become *some* tier, and choosing which is a product decision — a
+     migration that guessed would silently re-point somebody's work.
+     `test_byok_default.py` shows the old orchestrator coerced to
+     `tier-balanced`; D32.7 retired coercion precisely because it hides a
+     misconfiguration behind a bill.
+- **✅ `/email` is DONE (2026-08-28).** `ai-settings/SettingsTab.tsx` carried
+  the same picker and it is gone the same way. The fence moved with it:
+  `src/lib/modelVocabulary.test.ts` is now ONE table-driven test over both
+  surfaces, not a copy per app. Add a row when a third picker appears.
+- **⚠️ What is left here is the OWNER half only** — the stored-value query
+  below. No code change remains.
+- **Authority:** **D32.7** · `specs/customer_console.md` §6A CP-5 ·
+  `specs/launch_surface.md` §2 (the live nine)
+- **Added:** 2026-08-27 · WS-31 CP-5 scoping session
+
+### H-73 · CP-7's per-member cap rests on an identity the member controls · [AGENT+OWNER]
+- **Check:** `grep -n "x-cc-member" apps/services/gateway/gateway/routes/v1_compat.py`
+  → a `request.headers.get(...)` hit means the member identity is still taken
+  from the inbound request, and this is open. A hit that reads it from a
+  verified session means somebody fixed it, and CP-7's engine can proceed.
+- **Why:** 🔴 **The cap engine is built and must stay unwired.**
+  `credits.decide_member_cap` and the `member_ai_cap` table both exist. Wiring
+  them to today's inputs would ship a control that does not control anything.
+  The chain is measured, not inferred:
+  1. `auth.py:497` binds `Caller.member` from the **`X-CC-Member` header**.
+  2. `auth.py:211` says so out loud: *"Attribution only. Never used to select
+     rows, never used to authorise."*
+  3. `v1_compat.py:490` forwards it **verbatim from the inbound request** —
+     `request.headers.get("x-cc-member")`. It is not derived from the session.
+  4. So the capped party chooses which cap applies. **Omit the header and
+     there is no cap row, and no cap row means unlimited** — which is correct
+     behaviour for an absent policy and a total bypass for a present one.
+- **⚠️ This is migration 005's defect class, one column over.** 005 moved
+  `request_id` server-side because *"the party being invoiced must not control
+  whether it exists."* The same sentence with two words changed: **the party
+  being capped must not control which cap applies.**
+- **📌 Why the gateway cannot fix it alone.** On `/v1/chat/completions` there
+  is no session to derive from. `require_llm_api_auth` is a pure token check
+  that binds no identity. So `current_tenant()` is `None` by construction.
+  That is the `work_plan.md` §6 (f) H4 finding. `saas_multitenancy.md` §3082
+  records the same for `X-CC-Agent`. The gateway has nothing true to put in
+  the header.
+- **🟢 The reads did NOT wait for this, and shipped.** `/my/usage/activity`
+  and `/my/usage/members` (CP-7 slice 1) report the same attribution and are
+  safe, because a cost report is not an authorisation decision. **Attribution
+  is good enough to REPORT and not good enough to ENFORCE.**
+- **Two questions, and the second is the owner's:**
+  1. Where does a trustworthy member identity come from? A session-scoped
+     door beside the org key is the obvious shape, but it is a new auth
+     scheme and §4's registry says who owns that.
+  2. ⚠️ **Is a per-member cap worth a fifth auth scheme at all?** The org
+     pool, the balance gate and the run ceiling already stop runaway spend.
+     A cap is a *management* feature, not a *safety* one. Answering "not yet"
+     is a legitimate answer and it costs nothing to defer.
+- **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
+  `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
+- **Added:** 2026-08-28 · WS-31 CP-7 slice 1
+
+### H-74 · mypy is strict over a tree nobody has swept — 1508 errors · [AGENT]
+- **Check:** `uv run mypy apps packages --exclude '^apps/agents/' 2>&1 | tail -1`
+  → a count above zero means the sweep has not happened and this is open.
+- **Why:** **Two dead halves of one ratchet, both found while fixing H-28.**
+  The pre-commit hook passed no target, so it type-checked nothing. The CI step
+  ran `uv run mypy apps packages`, which aborts on a duplicate-module error and
+  checked almost nothing. CI is `continue-on-error`, so its "Found 1 error"
+  read as a clean report for as long as the step has existed.
+- **📌 Both halves now report.** The hook is diff-scoped and report-only. CI
+  excludes `apps/agents/` and reaches 418 files. **Neither blocks**, which is
+  the honest state — 1508 errors in 271 files, measured 2026-08-28.
+- **⚠️ Do not flip either one to blocking before the sweep.** A blocking
+  diff-scoped hook stops your commit on somebody else's errors in the file you
+  touched. The only thing that teaches is `--no-verify`, and a bypass habit is
+  worse than a report.
+- **📌 The seven colliding modules are the other half of the story.**
+  `apps/agents/*/agents.py` — seven files, one module name, no `__init__.py`.
+  Until they are packaged, no tool that walks the tree can see past them.
+- **Authority:** `work_plan.md` §1 R7 · `.pre-commit-config.yaml` ·
+  `.github/workflows/pr-check.yml`
+- **Added:** 2026-08-28 · H-28 fix session
+
+### H-75 · The Operator Console's systemd unit and Caddy block are NOT in the repo · [OWNER]
+- **Check:** `rg -l "operator" deploy/hostinger/` → no hit means the unit file
+  is still only on the box, and this is open.
+- **Why:** 🔴 **The console is deployed and was never reproducible.**
+  `operator.metorite.com` serves, Caddy routes it, a process answers — and
+  none of that exists in version control. Every other service here is copied
+  from `deploy/hostinger/*.service` by `vps_apply.sh`. This one was stood up
+  by hand.
+- **📌 The drift it caused is measured, not theoretical.** On 2026-08-28 both
+  `/models` (merged 08-27) and `/providers` (merged 08-28) answered **404** on
+  the live console. The site was up and the code was two days behind, because
+  nothing rebuilt it.
+- **✅ Half of this is now closed.** `scripts/vps_apply.sh` builds and restarts
+  the console on every deploy, guarded on the unit being enabled and
+  overridable by `OPERATOR_CONSOLE_UNIT`.
+  `test_operator_console_deploy_wiring.py` fences all three properties.
+- **⚠️ What is STILL open, and it is the owner's half:**
+  1. Commit `acb-operator-console.service` to `deploy/hostinger/` to match
+     what runs on the box, and add the `sudo cp` line the workbench block
+     already has. **`deploy/` is §6 owner-gate and plan-guard blocks an agent
+     from writing there** — the same wall as H-13's three patches.
+  2. Commit the Caddy site block for `operator.metorite.com`.
+  3. Confirm the running unit is called `acb-operator-console`. If it is not,
+     set `OPERATOR_CONSOLE_UNIT` on the box or rename the unit.
+- **📌 Until 1 and 2 land, the deploy manages an artefact it cannot
+  reproduce.** Losing the box loses the console's configuration entirely.
+- 🔴 **ESCALATED 2026-08-31. This entry now BLOCKS EVERY DEPLOY, and not only
+  the console.** Deploy run `33397261968` for SHA `301d0e59` failed all three
+  rounds on one line. `error: unable to unlink old
+  'workbench/operator_console/src/app/models/ModelDetails.tsx': Permission
+  denied`, and then `fatal: Could not reset index file to revision
+  'origin/main'`. The box builds the console in place. So files under
+  `workbench/operator_console/` belong to a user the deploy does not run as,
+  and `git reset --hard origin/main` stops there. No code lands. No migration
+  applies. No service restarts.
+- ⚠️ **Measured after that run. Migrations 019, 020 and 021 are ABSENT from
+  the production Console database, and the box still serves `3ad494bd`.** The
+  whole WS-31 stack merged to `main` and reached nothing.
+- ✅ **The deploy verifier did its work.** It refused to read a healthy app as
+  a landed deploy, and it said so. "The app is UP but on a DIFFERENT commit."
+  Nothing broke, and the commit from before still serves.
+- 📌 **The owner does the fix, and an agent must refuse it (§6 deploy reach).**
+  Correct the ownership of `/opt/acb/app/workbench/operator_console` to the
+  deploy user, then run the workflow again. Nothing needs a second merge,
+  because `main` already holds the stack.
+- 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
+  but does not OWN does this again on the next file it must replace.
+- **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
+  app) · `scripts/vps_apply.sh`
+- **Added:** 2026-08-28 · operator-console deploy session · **escalated
+  2026-08-31** after run `33397261968` failed
+
+### H-91 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
+- **Check:** count `organization` on the console scratch database, run
+  `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
+  again. A rise means this entry is still real. ⚠️ Do NOT check by reading
+  `test_customer_console_sql.py` for `limit=`. H-83 closed that shape on
+  2026-08-31, and the fences no longer care how large the table grows. This
+  entry is about the TABLE, and never about the fence.
+- **Why:** 🔴 **This is the root cause behind the two entries closed on
+  2026-08-31, and neither of them fixed it.** The `org_key` fixture at
+  `tests/unit/test_customer_console_router.py:128-142` posts `/orgs/provision`
+  with a fresh `router-<hex>` slug for every test, and it removes nothing.
+- **📌 Measured per suite on 2026-08-31, by an independent verifier.** An
+  earlier estimate of 170 rows a run was wrong, and these numbers replace it.
+
+  | suite | organizations a run | `usage_event` a run |
+  |---|---|---|
+  | `test_customer_console_router.py` | **+99** | **+86** |
+  | `test_provider_keys.py` | +3 | 0 |
+  | `test_customer_console_sql.py` | 0 | 0 |
+  | `test_customer_console_catalog.py` | 0 | 0 |
+  | **the console family, 16 files** | **+647** | **+288** |
+
+  The router figure repeated exactly over three separate runs. Attribution by
+  slug prefix: of 5278 organizations, `router-` held **3144**, which is 60
+  percent. Of 3720 `usage_event` rows, those organizations held **2752**.
+- **📌 The number this reached, and what it cost.** The shared database held
+  **25,959 organizations, 15,159 usage events and 8,643 credit-ledger rows**
+  before an operator rebuilt it. At that size
+  `test_customer_console_sql.py` and `test_customer_console_pricing_truth.py`
+  failed on volume alone. A wide sweep gave 41 failures on one run and 22 on
+  the next, with no code change between them. 🔴 **A red that comes and goes
+  hides a real red.**
+- **📌 H-83's repair makes the FENCES immune, and it does not stop the
+  GROWTH.** A slug filter reads one organization whatever the table holds. The
+  table still grows by 170 rows a run, and the next assertion that pages the
+  table inherits the same trap.
+- **The repair:** give `org_key` and its siblings a teardown, the way
+  `bound_tier` already does for tier bindings. One fixture, one teardown.
+  ⚠️ **The fence must read the TABLE, and never the source text.** A verifier
+  defeated a source scan on 2026-08-31 with two spellings. One was a
+  lower-case `insert into`. The other split the keyword over adjacent string
+  literals, which is this repository's own house style. A fixture that
+  snapshots the row count before and after cannot be out-spelled.
+- **📌 Two smaller leaks ride here.** `test_customer_console_vendor_feed.py`
+  leaks `ptv*` provider credentials and `model_profile` rows, measured 2 to 16
+  in one run. And `test_customer_console_pricing_truth.py:497,530` carry the
+  same volume bet with `limit=1_000_000`. Both pass today, and both fail at
+  some table size nobody has chosen.
+- **Authority:** `engineering_practice.md` §1.1 (the R8 loop) · the H-83 and
+  H-84 closures on branch `ws-31-fixture-hygiene`
+- **Added:** 2026-08-31 · WS-31 fixture-hygiene slice · **renumbered from H-88
+  on 2026-08-31.** A second branch minted H-88 against a different base, and
+  that entry merged first. The queue fence named the collision.
+
+### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
+- **Check:** read the docstring of `usage_by_org` in
+  `apps/services/customer_console/customer_console/store.py` and the `ORDER BY`
+  under it. An order that still sorts on credits alone means this is open.
+- **Why:** the read LEFT JOINs `organization` to `usage_event` so that an
+  organization with no use appears with zeros. "This customer bought credits
+  and used none" is the most actionable row on the page. The `ORDER BY` then
+  sorts on credits descending, and `SPEND_PAGE_SIZE` cuts the list. So that
+  row sorts LAST and drops off the end. The two rules cancel out.
+- **📌 Measured, not theoretical.** Found on 2026-08-30 against a scratch
+  database of 563 organizations. Dev, CI and production hold 2 organizations,
+  so all three agree the read is fine.
+- **What is already done:** the read returns `total`, and the console says
+  "100 of 563". The truncation is never silent.
+- **What is open:** the ordering itself. An operator wants the biggest
+  spenders **and** the quiet ones. That is two queries or one union, not one
+  `ORDER BY`. Nobody has chosen the shape.
+- **⚠️ The number stands even after the fix.** Handoff ids are never reused.
+  `store.py` cites "HANDOFF H-76" by name.
+- **Authority:** `specs/ai_metering_and_analytics.md` §5 O2 · `store.py`
+  `usage_by_org`
+- **⚠️ Widened 2026-08-31 by slice 5.** A walled organization bills 0, so it
+  also sorts last. The `walled` flag rides the capped table, and only `silent`
+  has the cap-proof banner. Above `SPEND_PAGE_SIZE` organizations, a walled
+  customer appears nowhere. The fix for the sort must cover both classes.
+- **Added:** 2026-08-30 · WS-31 spec remediation session
+
+### H-77 · Set the vendor feed's clock on the box · [OWNER]
+- **Check:** on the box, `grep CUSTOMER_CONSOLE_FEED_SYNC_HOURS /opt/acb/app/.env`.
+  No line, or `0`, means the feed only updates when somebody presses the
+  button, and this is still open.
+- **Why:** the owner's directive (2026-08-30) asks for vendor prices that
+  update on their own. Migration `014` and `feed.py` built the machinery.
+  The loop ships dark (CLAUDE.md §4), so the clock is an env var the owner
+  sets. `24` is the sensible value — litellm moves near-daily.
+- **What it does NOT touch:** `model_profile`, the rate card, or any billing
+  read. The sync fills `vendor_price_feed` and the console shows drift. The
+  operator still clicks to copy a price into a profile.
+- **The button works today.** "Fetch the latest" on `/models` syncs once with
+  the flag unset. The flag only adds the clock.
+- **Authority:** `customer_console.md` §6A.11 · `work_plan.md` §6
+  (enforcement flips)
+- **Added:** 2026-08-30 · vendor-feed session
+
+### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+- **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
+  personal" -q` three times. If
+  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
+  fails on some runs and passes on others, this is still open. Measured
+  2026-08-31: it failed on 2 runs out of 5.
+- **What happens:** `_coalescible_prior` in
+  `apps/services/gateway/gateway/routes/projects/core.py` reads the last
+  activity with `ORDER BY created_at DESC, id DESC LIMIT 1`. The test writes
+  a field change, then a comment, then a second field change. All three land
+  inside one clock tick on a fast box. `created_at` then ties, and `id DESC`
+  decides — but `id` is a random UUID. So the query returns the comment or
+  the field change at random. When it returns the field change, the two
+  edits coalesce and the count is 1 instead of 2.
+- **Why it is real, not only a test problem:** the same tie decides
+  production behaviour. Two activities written in the same tick coalesce or
+  do not coalesce at random, so an edit can fold over a comment that came
+  after it. The timeline then shows the wrong order.
+- **The likely fix:** order on a monotonic tiebreak instead of the UUID. The
+  table needs a sequence, or `created_at` needs a guaranteed-distinct value
+  per row. Do not "fix" the test — the test states the correct rule.
+- **NOT caused by the Spaces work.** The baseline commit flakes the same way.
+  `git stash` the branch and run the same selection to see it.
+- **Authority:** `project_management_app.md` §9.10 (the coalescing rule)
+- **Added:** 2026-08-31 · projects UI/UX session · **minted as H-80, renumbered
+  to H-88 on 2026-08-31** — `main` had meanwhile taken H-80 for "Decide the
+  thread budget for the stream walk" and run on to H-87. Two branches minted
+  the same next-free id against different bases, which is R1 one level up. This
+  entry merged second, so this entry moved.
 
 ### H-64 · Board drag-and-drop writes an order that nothing reads · [AGENT]
 - **Check:** `rg -n "view_position" apps/services/gateway/gateway/routes/projects/`
@@ -1191,7 +1825,7 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §2 WS-27 row · CLAUDE.md §5 (a finding for the board)
 - **Added:** 2026-08-26 · Projects UI session (owner asked to flag, not build)
 
-### H-65 · The Projects filter row is half-converted · [AGENT]
+### H-94 · The Projects filter row is half-converted · [AGENT]
 - **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
   → hits on `<Select` mean the controls are still selects, and the button
   conversion below is still owed.
@@ -1220,6 +1854,9 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `AGENTS.md` rule 8 (the substrate) ·
   `specs/project_management_app.md` §11.2 item 3 · board row WS-27
 - **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
+  *(minted H-65. Renumbered to H-94 on 2026-09-01, because `main` had taken
+  65 for the plan-guard heredoc entry. This branch merged second. That is the
+  case the numbering rule above names.)*
 
 ---
 

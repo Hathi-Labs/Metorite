@@ -5,18 +5,38 @@
  * done-when 4 — including the one claim that must not be misread as a security
  * boundary.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
+import { hashSlot } from "@/lib/categorical";
+import { isKnownIcon } from "@/lib/icons";
+
 import {
+  LEVEL_ICONS,
+  MAX_PROJECT_GENERATIONS,
   type ProjectNode,
+  SPACE_ICON_CHOICES,
   canMoveUnder,
+  childCreationOptions,
   effectiveState,
   filterByCenter,
   flatten,
+  hasRunState,
+  generationOf,
+  levelOf,
   moreRestrictive,
+  moveRefusal,
+  nodeKind,
+  nodeLevel,
   ownState,
   pathTo,
+  showsDashboard,
+  spaceMarker,
+  spansMultipleProjects,
   subtreeIds,
+  subtreeProjectDepth,
 } from "./tree";
 
 const FOREST: ProjectNode[] = [
@@ -33,6 +53,50 @@ const GRANTS = [
   { project_id: "sales", subject: "group:sales" },
   { project_id: "finance", subject: "group:finance" },
 ];
+
+describe("spansMultipleProjects — when 'Project' is a real axis", () => {
+  it("is false for a leaf, which can only ever have one project", () => {
+    // A subproject is a leaf by the grammar, and a project with no
+    // subprojects is one in practice. Both group into exactly one bucket,
+    // today and after any amount of work lands — which is what makes the
+    // option worth hiding rather than merely empty.
+    expect(spansMultipleProjects({ id: "lp", name: "Landing page" })).toBe(false);
+    expect(
+      spansMultipleProjects({ id: "p", name: "Project", children: [] })
+    ).toBe(false);
+  });
+
+  it("is true for a project that carries subprojects", () => {
+    expect(spansMultipleProjects(FOREST[0])).toBe(true);
+    expect(spansMultipleProjects(FOREST[0].children![0])).toBe(true);
+  });
+
+  it("sees through a folder, which holds no work of its own", () => {
+    // project → folder → subproject still spans two PROJECTS. Counting the
+    // folder as the second one, or stopping at it, both give the wrong answer.
+    const viaFolder: ProjectNode = {
+      id: "p",
+      name: "Firmware",
+      children: [
+        {
+          id: "f",
+          name: "Subsystems",
+          kind: "folder",
+          children: [{ id: "sp", name: "Bootloader" }],
+        },
+      ],
+    };
+    expect(spansMultipleProjects(viaFolder)).toBe(true);
+    // …and an EMPTY folder adds no project, so it does not.
+    expect(
+      spansMultipleProjects({
+        id: "p2",
+        name: "Firmware",
+        children: [{ id: "f2", name: "Empty", kind: "folder", children: [] }],
+      })
+    ).toBe(false);
+  });
+});
 
 describe("subtreeIds / flatten / pathTo", () => {
   it("collects a subtree including its own root", () => {
@@ -180,6 +244,341 @@ describe("effective run state", () => {
     expect(effectiveState(node(" ACTIVE "), "ON_HOLD")).toEqual({
       state: "on_hold",
       inherited: true,
+    });
+  });
+});
+
+describe("childCreationOptions — the grammar's UI half (migration 193)", () => {
+  // space (root) → [folder] → project → [folder] → subproject, and stop.
+  // The server refuses what these rows never offer (assert_node_grammar);
+  // this table decides which buttons exist and the words on them.
+
+  it("a space offers a project and a folder", () => {
+    expect(childCreationOptions("project", 1)).toEqual([
+      { kind: "project", label: "New project", level: "project" },
+      { kind: "folder", label: "New folder", level: "folder" },
+    ]);
+  });
+
+  it("a project offers a subproject and a folder", () => {
+    expect(childCreationOptions("project", 2)).toEqual([
+      { kind: "project", label: "New subproject", level: "subproject" },
+      { kind: "folder", label: "New folder", level: "folder" },
+    ]);
+  });
+
+  it("a subproject offers NOTHING — it is the floor", () => {
+    expect(childCreationOptions("project", 3)).toEqual([]);
+  });
+
+  it("a folder offers only the one kind its level holds", () => {
+    expect(childCreationOptions("folder", 1)).toEqual([
+      { kind: "project", label: "New project", level: "project" },
+    ]);
+    expect(childCreationOptions("folder", 2)).toEqual([
+      { kind: "project", label: "New subproject", level: "subproject" },
+    ]);
+  });
+
+  it("a folder at the floor offers nothing, same as the server refuses", () => {
+    expect(childCreationOptions("folder", 3)).toEqual([]);
+  });
+
+  it("a folder's option is named for the LEVEL, not the kind", () => {
+    // The defect this pins (2026-08-31): a folder under a project creates a
+    // SUBPROJECT, but both levels are `kind: "project"`, so a create form
+    // that derived its wording from the kind announced "New project". The
+    // label is the only thing that knows the level, which is why the whole
+    // option travels to the form rather than just its kind.
+    const underSpace = childCreationOptions("folder", 1);
+    const underProject = childCreationOptions("folder", 2);
+    expect(underSpace[0].kind).toBe(underProject[0].kind);
+    expect(underSpace[0].label).toBe("New project");
+    expect(underProject[0].label).toBe("New subproject");
+  });
+
+  it("every option a row offers is one the grammar would accept", () => {
+    // The UI table and `assert_node_grammar` must not disagree: an option
+    // offered where the server refuses it is a button that always errors.
+    for (const kind of ["project", "folder"] as const) {
+      for (const generation of [1, 2, 3]) {
+        for (const option of childCreationOptions(kind, generation)) {
+          // A folder child is transparent and keeps its parent's count; a
+          // project child is one generation deeper, whichever kind holds
+          // it. Three is the floor, so no offer may exceed it.
+          const childGen =
+            option.kind === "folder" ? generation : generation + 1;
+          expect(
+            childGen,
+            `${kind} at generation ${generation} offered "${option.label}"`
+          ).toBeLessThanOrEqual(3);
+        }
+      }
+    }
+  });
+});
+
+describe("nodeKind — NULL reads as project (R6)", () => {
+  it("resolves absent, null and unknown to project", () => {
+    expect(nodeKind({})).toBe("project");
+    expect(nodeKind({ kind: null })).toBe("project");
+    expect(nodeKind({ kind: "folder" })).toBe("folder");
+  });
+});
+
+describe("nodeLevel / levelOf — the four levels (migration 194)", () => {
+  it("maps kind plus generation onto a level", () => {
+    expect(nodeLevel("project", 1)).toBe("space");
+    expect(nodeLevel("project", 2)).toBe("project");
+    expect(nodeLevel("project", 3)).toBe("subproject");
+    expect(nodeLevel("folder", 2)).toBe("folder");
+  });
+
+  // space → folder → project → folder → subproject: the deepest legal
+  // shape, and the one where folders MUST be transparent or every level
+  // below the first folder reads one step too deep.
+  const forest = [
+    {
+      id: "space",
+      name: "Space",
+      children: [
+        {
+          id: "f1",
+          name: "Folder",
+          kind: "folder",
+          children: [
+            {
+              id: "proj",
+              name: "Project",
+              children: [
+                {
+                  id: "f2",
+                  name: "Phases",
+                  kind: "folder",
+                  children: [{ id: "sub", name: "Phase 1" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  it("reads a level off the forest, folders transparent", () => {
+    expect(levelOf(forest, "space")).toBe("space");
+    expect(levelOf(forest, "f1")).toBe("folder");
+    expect(levelOf(forest, "proj")).toBe("project");
+    expect(levelOf(forest, "f2")).toBe("folder");
+    expect(levelOf(forest, "sub")).toBe("subproject");
+  });
+
+  it("an unknown id reads as space — the safest wrong answer", () => {
+    // A space offers no run state and no destructive control, so guessing
+    // it cannot expose an action the row does not have.
+    expect(levelOf(forest, "nope")).toBe("space");
+  });
+
+  it("only a project and a subproject own a run state", () => {
+    expect(hasRunState("project")).toBe(true);
+    expect(hasRunState("subproject")).toBe(true);
+    expect(hasRunState("space")).toBe(false);
+    expect(hasRunState("folder")).toBe(false);
+  });
+
+  it("only a space and a folder show a dashboard instead of views", () => {
+    expect(showsDashboard("space")).toBe(true);
+    expect(showsDashboard("folder")).toBe(true);
+    // A parent project keeps its views and folds the subtree INTO them.
+    expect(showsDashboard("project")).toBe(false);
+    expect(showsDashboard("subproject")).toBe(false);
+  });
+});
+
+describe("spaceMarker — a name and a SLOT, never a colour", () => {
+  it("uses what the space chose, converting 1-based to 0-based", () => {
+    expect(spaceMarker({ name: "Ops", icon: "Cpu", icon_slot: 3 })).toEqual({
+      icon: "Cpu",
+      slot: 2,
+    });
+  });
+
+  it("falls back to the default glyph and a slot hashed from the name", () => {
+    const marker = spaceMarker({ name: "Operations" });
+    expect(marker.icon).toBe(LEVEL_ICONS.space);
+    expect(marker.slot).toBe(hashSlot("Operations"));
+    // Stable: the same name must never repaint between renders or users.
+    expect(spaceMarker({ name: "Operations" })).toEqual(marker);
+  });
+
+  it("ignores a slot outside the ramp rather than emitting a dead class", () => {
+    // `bg-cat-13` has no custom property behind it, and a declaration that
+    // resolves to nothing takes the whole rule with it. (9-12 became REAL
+    // slots when the ramp widened, 2026-08-31 — choice-only, so a stored
+    // choice may use them and the hash never does.)
+    for (const bad of [0, 13, -1, 99]) {
+      expect(spaceMarker({ name: "X", icon_slot: bad }).slot).toBe(
+        hashSlot("X")
+      );
+    }
+    expect(spaceMarker({ name: "X", icon_slot: 12 }).slot).toBe(11);
+  });
+
+  it("every offered icon exists in the themed registry", () => {
+    // A name absent from the registry renders as a hole, and the theme
+    // system has no way to warn about one.
+    for (const name of SPACE_ICON_CHOICES) {
+      expect(isKnownIcon(name), `${name} is not a real Lucide icon`).toBe(true);
+    }
+    expect(isKnownIcon(LEVEL_ICONS.space)).toBe(true);
+    expect(isKnownIcon(LEVEL_ICONS.folder)).toBe(true);
+  });
+});
+
+describe("moving a node (WS-27bk §9.12.4)", () => {
+  /**
+   *   space          (generation 1)
+   *     bin          folder
+   *       alpha      project      (generation 2)
+   *         beta     subproject   (generation 3)
+   *     gamma        project      (generation 2)
+   *   other          space
+   */
+  const tree = (): ProjectNode[] => [
+    {
+      id: "space",
+      name: "Space",
+      children: [
+        {
+          id: "bin",
+          name: "Bin",
+          kind: "folder",
+          children: [
+            {
+              id: "alpha",
+              name: "Alpha",
+              children: [{ id: "beta", name: "Beta", children: [] }],
+            },
+          ],
+        },
+        { id: "gamma", name: "Gamma", children: [] },
+      ],
+    },
+    { id: "other", name: "Other", children: [] },
+  ];
+
+  describe("subtreeProjectDepth", () => {
+    it("counts a lone project as 1", () => {
+      expect(subtreeProjectDepth({ id: "g", name: "G", children: [] })).toBe(1);
+    });
+
+    it("counts a project carrying a subproject as 2", () => {
+      const alpha = pathTo(tree(), "alpha").at(-1)!;
+      expect(subtreeProjectDepth(alpha)).toBe(2);
+    });
+
+    it("⚠️ a FOLDER is transparent — it counts 0 and passes its children through", () => {
+      // A folder holding one project reports 1, exactly as the project alone
+      // would. Counting the folder would make every foldered subtree read one
+      // level deeper than it is, and legal moves would be refused.
+      const bin = pathTo(tree(), "bin").at(-1)!;
+      expect(subtreeProjectDepth(bin)).toBe(2);
+      expect(
+        subtreeProjectDepth({ id: "empty", name: "E", kind: "folder", children: [] }),
+      ).toBe(0);
+    });
+  });
+
+  describe("generationOf", () => {
+    it("counts project ancestors, itself included", () => {
+      expect(generationOf(tree(), "space")).toBe(1);
+      expect(generationOf(tree(), "alpha")).toBe(2);
+      expect(generationOf(tree(), "beta")).toBe(3);
+    });
+
+    it("⚠️ a folder reports its nearest PROJECT ancestor's count", () => {
+      // `bin` sits under a space, so it reports 1 — not 2. That is what keeps
+      // a folder from consuming a generation.
+      expect(generationOf(tree(), "bin")).toBe(1);
+    });
+  });
+
+  describe("moveRefusal", () => {
+    it("allows a project to move to another space", () => {
+      expect(moveRefusal(tree(), "gamma", "other")).toBeNull();
+    });
+
+    it("allows a project into a folder", () => {
+      expect(moveRefusal(tree(), "gamma", "bin")).toBeNull();
+    });
+
+    it("allows a project to become a space", () => {
+      expect(moveRefusal(tree(), "gamma", null)).toBeNull();
+    });
+
+    it("refuses a move into the node's OWN subtree", () => {
+      expect(moveRefusal(tree(), "alpha", "beta")).toMatch(/inside itself/);
+      expect(moveRefusal(tree(), "alpha", "alpha")).toMatch(/inside itself/);
+    });
+
+    it("refuses a folder at the root", () => {
+      expect(moveRefusal(tree(), "bin", null)).toMatch(/cannot be a space/);
+    });
+
+    it("refuses a folder inside a folder", () => {
+      const roots = tree();
+      const bin = pathTo(roots, "bin").at(-1)!;
+      bin.children!.push({ id: "inner", name: "Inner", kind: "folder", children: [] });
+      expect(moveRefusal(roots, "inner", "bin")).toMatch(/cannot hold another folder/);
+    });
+
+    it("⚠️ refuses a move that would push a CARRIED subtree below the floor", () => {
+      // `alpha` holds `beta`, so its depth is 2. Landing it under `gamma`
+      // (generation 2) would put `beta` at generation 4. The naive check —
+      // "is the node itself allowed here" — says yes, and it is wrong.
+      expect(moveRefusal(tree(), "alpha", "gamma")).toMatch(/subprojects/);
+    });
+
+    it("allows the same node where its subtree still fits", () => {
+      // Under a space (generation 1), alpha's two levels land at 2 and 3.
+      expect(moveRefusal(tree(), "alpha", "other")).toBeNull();
+    });
+
+    it("refuses a lone project under a subproject", () => {
+      expect(moveRefusal(tree(), "gamma", "beta")).toMatch(/lowest level/);
+    });
+
+    it("refuses a folder under a subproject, although the folder is empty", () => {
+      // An empty folder still reserves the generation it exists to hold.
+      const roots = tree();
+      roots.push({ id: "loose", name: "Loose", kind: "folder", children: [] });
+      expect(moveRefusal(roots, "loose", "beta")).toMatch(/Too deep/);
+    });
+
+    it("says nothing about a target that is not in the tree", () => {
+      // A stale id from a tree that has since changed. The server decides.
+      expect(moveRefusal(tree(), "gamma", "ghost")).toBeNull();
+    });
+  });
+
+  describe("⚠️ the mirror is fenced against the server", () => {
+    it("keeps the same generation cap the grammar enforces", () => {
+      const source = readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../../../apps/services/gateway/gateway/routes/projects/core.py",
+            import.meta.url,
+          ),
+        ),
+        "utf-8",
+      );
+      expect(source).toContain(
+        `MAX_PROJECT_GENERATIONS = ${MAX_PROJECT_GENERATIONS}`,
+      );
+      // The two refusals this mirror reproduces, still worded as rules rather
+      // than as one generic message.
+      expect(source).toContain("A folder cannot hold another folder.");
+      expect(source).toContain("A folder cannot be a space.");
     });
   });
 });

@@ -8,8 +8,11 @@ import {
   formatPaise,
   memberTally,
   TOMBSTONE_RE,
+  liveKeys,
+  formatDate,
   type CatalogPlan,
   type MemberRow,
+  type KeyRow,
 } from "@/lib/format";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
@@ -21,13 +24,24 @@ import {
 type Result = { ok: boolean; text: string } | null;
 
 async function post(path: string, body: unknown): Promise<Result> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { ok: res.ok, text };
+  // ⚠️ This helper must not THROW. Every caller sets a busy flag before the
+  // await and clears it after — a rejected fetch used to skip the clear and
+  // leave the button on "…ing…" forever, with no message. A network drop is
+  // an answer like any other: ok false, and the operator reads why.
+  try {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { ok: res.ok, text };
+  } catch {
+    return {
+      ok: false,
+      text: "no answer — the network dropped before the Console replied. Nothing was changed for certain; reload and check before retrying.",
+    };
+  }
 }
 
 // A refusal is relayed VERBATIM (the Console is the authority); the framing
@@ -51,6 +65,8 @@ export default function Actions({
   plans,
   members,
   membersError,
+  keys,
+  keysError,
 }: {
   slug: string;
   status: string;
@@ -60,6 +76,10 @@ export default function Actions({
   members: MemberRow[];
   /** Why the roster is empty, or null when it arrived. */
   membersError: string | null;
+  /** The org's `cc_live_` keys, metadata only (CP-11 s1). */
+  keys: KeyRow[];
+  /** Why the key list is empty, or null when it arrived. */
+  keysError: string | null;
 }) {
   return (
     <>
@@ -81,6 +101,7 @@ export default function Actions({
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
       </div>
+      <KeysPanel slug={slug} keys={keys} keysError={keysError} />
       {status === "deleted" && !TOMBSTONE_RE.test(slug) && (
         <DangerPanel slug={slug} />
       )}
@@ -389,16 +410,40 @@ function CreditsPanel({ slug }: { slug: string }) {
       <label>Reason</label>
       <select value={reason} onChange={(e) => setReason(e.target.value)}>
         <option value="grant">grant — included with their plan</option>
-        <option value="manual">manual — they bought a top-up</option>
+        <option value="manual">manual — they paid (bank transfer / offline)</option>
         <option value="adjustment">adjustment — correcting a mistake</option>
       </select>
-      <label>Reference (optional)</label>
+      <label>
+        {reason === "manual"
+          ? "Payment reference (required)"
+          : "Reference (optional)"}
+      </label>
       <input
         value={ref}
-        placeholder="invoice / note"
+        placeholder={reason === "manual" ? "UTR / bank reference" : "invoice / note"}
         onChange={(e) => setRef(e.target.value)}
       />
-      <button type="submit" disabled={busy || !credits.trim()}>
+      {/* ⚠️ The reference is the dedupe key: the Console refuses the same
+          (reason, reference) twice, naming the first row. A manual payment
+          WITHOUT a reference cannot be verified later, so the form will not
+          send one. */}
+      {reason === "manual" && (
+        <p className="muted small">
+          The Console refuses a reference it has already credited, so the
+          same transfer cannot be entered twice. Check the credit ledger
+          above if unsure. A correction is an{" "}
+          <i>adjustment</i> citing the same reference.
+        </p>
+      )}
+      <p className="muted small">
+        Grants above 15,000 credits need an elevated admin session.
+      </p>
+      <button
+        type="submit"
+        disabled={
+          busy || !credits.trim() || (reason === "manual" && !ref.trim())
+        }
+      >
         {busy ? "Adding…" : "Add credits"}
       </button>
       <ResultLine result={result} />
@@ -417,8 +462,9 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
   // misread the export window exists to prevent.
   const CONFIRMS: Record<string, string> = {
     suspended:
-      `Suspend ${slug}?\n\nEvery sign-in for this customer will be refused ` +
-      `until you resume them. Their data is untouched.`,
+      `Suspend ${slug}?\n\nSign-in KEEPS working so they can pay. AI and ` +
+      `seat changes are locked until you resume them. Their data is ` +
+      `untouched.`,
     cancelled:
       `Cancel ${slug}?\n\nThis opens their export window: sign-in keeps ` +
       `working so they can export, features are locked, and NO data is ` +
@@ -449,8 +495,9 @@ function LifecyclePanel({ slug, status }: { slug: string; status: string }) {
       <h2 style={{ marginTop: 0 }}>Access</h2>
       <p className="muted">
         Whether this customer&apos;s account is live. Activating takes them off
-        trial; suspending blocks every sign-in (e.g. non-payment). Their data is
-        kept either way, and resuming restores access instantly.
+        trial. Suspending (e.g. non-payment) locks AI and seat changes while
+        sign-in keeps working, so they can still pay. Their data is kept
+        either way, and resuming restores access instantly.
       </p>
       <p className="muted">
         Separate from their subscription — activating a plan records the money
@@ -602,5 +649,200 @@ function DangerPanel({ slug }: { slug: string }) {
       </button>
       <ResultLine result={result} />
     </form>
+  );
+}
+
+/**
+ * The customer's API keys to OUR AI Router — CP-11 slice 1.
+ *
+ * ⚠️ **These are the customer's `cc_live_` keys, not our provider secrets.**
+ * `customer_console.md` §6B.2 tabulates the pair. A leak here costs one
+ * organization's AI spend; a leak of the other costs our whole vendor bill.
+ *
+ * ⚠️ **THE TOKEN IS SHOWN EXACTLY ONCE, AND THAT SHAPES THIS COMPONENT.**
+ * The Console stores only a hash, so the mint response is the only moment the
+ * secret exists anywhere. Two consequences, both deliberate:
+ *
+ *  1. **Minting does NOT call `reload()`.** Every other panel here reloads on
+ *     success. Doing that here would destroy the only copy of the key while the
+ *     operator was still reading it. The reload is deferred behind an explicit
+ *     "I have saved it" acknowledgement instead.
+ *  2. **The warning sits beside the secret**, not in a tooltip or a heading the
+ *     operator has already scrolled past. The spec is explicit that it must be
+ *     visible at the moment the token is.
+ */
+function KeysPanel({
+  slug,
+  keys,
+  keysError,
+}: {
+  slug: string;
+  keys: KeyRow[];
+  keysError: string | null;
+}) {
+  const [label, setLabel] = useState("");
+  const [minted, setMinted] = useState<{ prefix: string; token: string } | null>(
+    null,
+  );
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  async function mint(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setResult(null);
+    const body: Record<string, unknown> = { org_slug: slug };
+    if (label.trim()) body.label = label.trim();
+    const r = await post("/api/operator/keys", body);
+    setBusy(false);
+    if (!r?.ok) {
+      // Relayed verbatim — a missing elevation window arrives here as the
+      // Console's own 403, and the operator needs to read WHY, not a paraphrase.
+      setResult(r);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(r.text) as { prefix?: string; token?: string };
+      if (!parsed.token || !parsed.prefix) throw new Error("no token");
+      setMinted({ prefix: parsed.prefix, token: parsed.token });
+      setLabel("");
+    } catch {
+      // ⚠️ The key EXISTS on the Console even though we cannot show it. Say so:
+      // treating this as a plain failure would invite a second mint and leave a
+      // live credential nobody knows about.
+      setResult({
+        ok: false,
+        text:
+          "The key was created, but this console could not read the token out " +
+          "of the response. It is NOT recoverable. Revoke the newest key below " +
+          "and mint again.",
+      });
+    }
+  }
+
+  async function revoke(prefix: string) {
+    setBusy(true);
+    const r = await post("/api/operator/keys/revoke", {
+      org_slug: slug,
+      prefix,
+    });
+    setResult(r);
+    setBusy(false);
+    setConfirming(null);
+    if (r?.ok) reload();
+  }
+
+  const live = liveKeys(keys);
+
+  return (
+    <div className="panel">
+      <h2 style={{ marginTop: 0 }}>API keys</h2>
+      <p className="muted">
+        The keys this customer&apos;s deployment presents to our AI Router. Each
+        one identifies the organization and draws on its credit balance.
+      </p>
+
+      {minted && (
+        <div className="banner danger">
+          <strong>Copy this key now. It is shown once and never again.</strong>
+          <p>
+            We store only a hash, so nobody — including us — can look it up
+            later. If it is lost, revoke it and mint another.
+          </p>
+          <pre className="token">{minted.token}</pre>
+          <button
+            type="button"
+            onClick={() => {
+              setMinted(null);
+              reload();
+            }}
+          >
+            I have saved it
+          </button>
+        </div>
+      )}
+
+      {!minted && (
+        <form onSubmit={mint}>
+          <label>Label (optional)</label>
+          <input
+            value={label}
+            placeholder="e.g. production box"
+            onChange={(e) => setLabel(e.target.value)}
+          />
+          <button type="submit" disabled={busy}>
+            {busy ? "Minting…" : "Mint a new key"}
+          </button>
+        </form>
+      )}
+
+      {keysError ? (
+        <p className="muted">{keysError}</p>
+      ) : live.length === 0 ? (
+        <p className="muted">No live keys. This customer cannot call the Router.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Prefix</th>
+              <th>Label</th>
+              <th>Created</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {live.map((k) => (
+              <tr key={k.prefix}>
+                <td>
+                  <code>{k.prefix}…</code>
+                </td>
+                <td>{k.label ?? "—"}</td>
+                <td>{formatDate(k.created_at)}</td>
+                <td>
+                  {confirming === k.prefix ? (
+                    <>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => revoke(k.prefix)}
+                      >
+                        Revoke for good
+                      </button>{" "}
+                      <button
+                        type="button"
+                        className="linklike"
+                        onClick={() => setConfirming(null)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="linklike"
+                      onClick={() => setConfirming(k.prefix)}
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {keys.length > live.length && (
+        <p className="muted">
+          {keys.length - live.length} revoked key
+          {keys.length - live.length === 1 ? "" : "s"} not shown. A revoked key
+          stays in the record and can never be restored.
+        </p>
+      )}
+
+      <ResultLine result={result} />
+    </div>
   );
 }

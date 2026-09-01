@@ -27,13 +27,13 @@ export function TaskSettingsModal() {
 interface LLMTierInfo {
   tier_name: string;
 }
-interface EnabledModel {
-  id: string;
-  label?: string;
-}
 
-/** The per-function model pickers, in the email app's exact idiom:
- *  tiers (auto-routing) + the user's enabled models. */
+/** The per-function TIER pickers.
+ *
+ * ⚠️ Tiers only. The raw-model-id group that used to sit
+ * beside them is gone (H-72, D32.7): customers never see a model, and
+ * the Console refuses a bare model id with a 400.
+ */
 const MODEL_FIELDS: {
   key: keyof Pick<
     TaskSettings,
@@ -86,7 +86,6 @@ function SettingsPanel() {
 
   // Tier list + enabled models — the same sources the email settings use.
   const [tiers, setTiers] = useState<LLMTierInfo[]>([]);
-  const [enabledModels, setEnabledModels] = useState<EnabledModel[]>([]);
    
   useEffect(() => {
     let cancelled = false;
@@ -94,12 +93,6 @@ function SettingsPanel() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d?.tiers) setTiers(d.tiers);
-      })
-      .catch(() => {});
-    fetch("/api/settings/llm/enabled-models")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!cancelled && Array.isArray(d)) setEnabledModels(d);
       })
       .catch(() => {});
     return () => {
@@ -158,7 +151,7 @@ function SettingsPanel() {
                       }
                       className="tech-transition w-52 rounded-md border border-border bg-background/60 px-2 py-1 text-xs text-foreground focus:border-primary/50 focus:outline-none"
                     >
-                      {tiers.length > 0 || enabledModels.length > 0 ? (
+                      {tiers.length > 0 ? (
                         <>
                           {tiers.length > 0 && (
                             <optgroup label="Tiers (auto-routing)">
@@ -170,26 +163,26 @@ function SettingsPanel() {
                               ))}
                             </optgroup>
                           )}
-                          {enabledModels.length > 0 && (
-                            <optgroup label="Your enabled models">
-                              {enabledModels.map((m) => (
-                                <option key={m.id} value={m.id}>
-                                  {m.label || m.id}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                          {/* Keep a previously-saved value selectable even if
-                              it's no longer a tier or an enabled model. */}
+                          {/* ⚠️ AN OPTGROUP OF RAW MODEL IDS WAS HERE, and
+                              D32.7 is why it is not (H-72). **Customers never
+                              see a model.** Tiers are the only vocabulary, and
+                              a bare model id is REFUSED by the Console with a
+                              400 rather than coerced — so a customer who
+                              picked one here would lose their Tasks AI the day
+                              `ROUTER_SERVING_ENABLED` flips.
+
+                              ⚠️ This stops NEW ones. It does not heal a value
+                              already saved: that still shows below, because
+                              hiding it would leave somebody staring at a
+                              picker that disagrees with what their tasks
+                              actually run on. Which tier an existing model id
+                              should become is a product decision (H-72). */}
                           {settings[cfg.key] &&
                             !tiers.some(
                               (t) => t.tier_name === settings[cfg.key],
-                            ) &&
-                            !enabledModels.some(
-                              (m) => m.id === settings[cfg.key],
                             ) && (
                               <option value={settings[cfg.key]}>
-                                {settings[cfg.key]}
+                                {settings[cfg.key]} (not a tier — ask us)
                               </option>
                             )}
                         </>

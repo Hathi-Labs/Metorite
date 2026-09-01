@@ -32,6 +32,7 @@ __all__ = [
     "RateCard",
     "RunCeiling",
     "SpendDecision",
+    "TierRate",
     "TokenUsage",
     "UnpricedModel",
     "balance_of",
@@ -143,14 +144,82 @@ class RateCard:
     input_per_1k: Decimal
     output_per_1k: Decimal
     cached_input_per_1k: Decimal = Decimal(0)
+    #: Which task this card prices. A model can serve several, at different
+    #: rates and in different units (D60).
+    task: str = "chat"
+    #: What the price is per. `tokens` uses the three per-1k rates above.
+    #: Every other unit uses `credits_per_unit`.
+    unit: str = "tokens"
+    #: The rate for one `unit`, when `unit` is not `tokens`.
+    credits_per_unit: Decimal = Decimal(0)
+    #: `unpriced` | `absorbed` | `priced` (D61, G-4).
+    pricing_mode: str = "unpriced"
 
     @property
     def is_priced(self) -> bool:
-        """False when every rate is zero — i.e. the model is not really priced."""
-        return any(
-            r != 0
-            for r in (self.input_per_1k, self.output_per_1k, self.cached_input_per_1k)
-        )
+        """Whether this card may be billed against.
+
+        ⚠️ **A ZERO CANNOT CARRY THREE MEANINGS**, which is why this reads
+        ``pricing_mode`` and not the numbers (D61, G-4). Zero means all of:
+
+        * *nobody has priced this yet* — an operational mistake, and billing it
+          confidently as free looks like revenue working while margin leaks;
+        * *deliberately absorbed into the seat price* — D19.2 says embeddings
+          are, and that is not a mistake;
+        * *deliberately free*.
+
+        Reading the numbers cannot tell them apart. Reading the mode can.
+        """
+        return self.pricing_mode == "priced"
+
+    @property
+    def is_absorbed(self) -> bool:
+        """Deliberately free, and NOT an error. D19.2's embeddings."""
+        return self.pricing_mode == "absorbed"
+
+    @property
+    def subject(self) -> str:
+        """What this card prices, for refusal messages. See TierRate's."""
+        return self.model
+
+
+@dataclass(frozen=True)
+class TierRate:
+    """Credits per unit for one (TIER, task) — what a CUSTOMER pays. D67.
+
+    🔴 **The card the metering path bills against since 2026-08-30.** The
+    tier is the product and the model is supply, so the customer's price is
+    keyed on what they PICKED, not on what served them: a failover moves our
+    cost and never their price, and two tiers sharing one model can still
+    charge differently.
+
+    Field names deliberately mirror :class:`RateCard` so
+    :func:`rate_call` prices either card without knowing which it holds.
+    """
+
+    tier: str
+    input_per_1k: Decimal
+    output_per_1k: Decimal
+    cached_input_per_1k: Decimal = Decimal(0)
+    task: str = "chat"
+    unit: str = "tokens"
+    credits_per_unit: Decimal = Decimal(0)
+    pricing_mode: str = "unpriced"
+
+    @property
+    def is_priced(self) -> bool:
+        """`pricing_mode == 'priced'` — see RateCard.is_priced for why."""
+        return self.pricing_mode == "priced"
+
+    @property
+    def is_absorbed(self) -> bool:
+        """Deliberately free, and NOT an error. D19.2's embeddings."""
+        return self.pricing_mode == "absorbed"
+
+    @property
+    def subject(self) -> str:
+        """What this card prices, for refusal messages."""
+        return f"tier {self.tier}"
 
 
 @dataclass(frozen=True)
@@ -172,23 +241,59 @@ class TokenUsage:
         return max(0, self.prompt_tokens - self.cached_tokens)
 
 
-def rate_call(card: RateCard, usage: TokenUsage) -> Decimal:
-    """Credits drawn by one completion.
+def rate_call(
+    card: RateCard | TierRate,
+    usage: TokenUsage,
+    *,
+    quantity: Decimal | None = None,
+) -> Decimal:
+    """Credits drawn by one call, in whatever unit its task is priced in.
+
+    🔴 **This was tokens-only until CP-10 slice 2, and three of six tasks could
+    not be priced at all.** `transcribe` is sold per minute of audio (D19.2
+    says so in terms), `speak` per character, and `image` per image. None of
+    them divides a token count by 1000. `tier-stt` ships in the production
+    seed, so the hole was live before any multimodal work.
+
+    ``quantity`` is what was consumed, in ``card.unit``. It is ignored for a
+    token-priced card, whose quantity is the usage counters themselves.
 
     Raises:
-        UnpricedModel: the card prices nothing. See :class:`UnpricedModel`.
+        UnpricedModel: the card may not be billed against — either nobody has
+            priced it, or it is priced per unit and nothing measured the
+            quantity. See :class:`UnpricedModel`.
     """
+    if card.is_absorbed:
+        # Deliberately free (D19.2), and NOT the error below. An absorbed task
+        # that raised would be indistinguishable from a misconfigured one, and
+        # somebody would "fix" it by inventing a price.
+        return Decimal(0)
+
     if not card.is_priced:
         raise UnpricedModel(
-            f"{card.model} has no rate-card price; refusing to bill it as free"
+            f"{card.subject}/{card.task} has no rate-card price; "
+            "refusing to bill it as free"
         )
 
-    thousand = Decimal(1000)
-    return (
-        Decimal(usage.fresh_prompt_tokens) / thousand * card.input_per_1k
-        + Decimal(usage.cached_tokens) / thousand * card.cached_input_per_1k
-        + Decimal(usage.completion_tokens) / thousand * card.output_per_1k
-    )
+    if card.unit == "tokens":
+        thousand = Decimal(1000)
+        return (
+            Decimal(usage.fresh_prompt_tokens) / thousand * card.input_per_1k
+            + Decimal(usage.cached_tokens) / thousand * card.cached_input_per_1k
+            + Decimal(usage.completion_tokens) / thousand * card.output_per_1k
+        )
+
+    if quantity is None:
+        # ⚠️ REFUSE rather than fall back to the token rates. A minute of audio
+        # rated per 1k tokens is a number, and a plausible one, and wrong. The
+        # metering caller downgrades this to "bill zero, loudly" — visibly,
+        # where somebody can see it.
+        raise UnpricedModel(
+            f"{card.subject}/{card.task} is priced per {card.unit} "
+            "and no quantity was measured"
+        )
+
+    return Decimal(quantity) * card.credits_per_unit
 
 
 def balance_of(deltas: list[Decimal]) -> Decimal:

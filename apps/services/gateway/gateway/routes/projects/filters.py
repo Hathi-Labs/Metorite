@@ -147,6 +147,8 @@ def build_task_filters(
     tags: str | None = None,
     tags_all: str | None = None,
     include_archived: bool = False,
+    watching: bool = False,
+    viewer: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -197,6 +199,40 @@ def build_task_filters(
         clauses.append(
             "NOT EXISTS (SELECT 1 FROM pm_task_assignees a WHERE a.task_id = t.id)"
         )
+
+    if watching:
+        # WS-27bk §9.12.2 — "what am I watching", as a FILTER and not a fourth
+        # lens. One task store, three lenses (D52/D53/D54): a watched-tasks
+        # view would fork that, and it would not compose. As a filter it does —
+        # "things I watch, in Ops, that are overdue" is one query.
+        #
+        # ⚠️ TWO PARAMETERS, ON PURPOSE. `watching` is the saved INTENT and
+        # `viewer` is the identity that completes it. A view stores the first
+        # and the endpoint supplies the second, so one shared board shows each
+        # person their OWN subscriptions. Folding them into a single
+        # `watched_by` address would pin one member's list into a view other
+        # people open — and it would break `VIEW_FILTER_KEYS`, whose fence
+        # asserts every savable key is a parameter of this function.
+        #
+        # ⚠️ A WATCH IS AN INTENT TO HEAR, NEVER A RIGHT TO SEE (WS-27v). This
+        # clause is additive only: the endpoint's visibility clause still
+        # applies, so a watcher who lost the project's grant sees nothing.
+        # Filtering may narrow and must never widen.
+        if not (viewer and viewer.strip()):
+            # Asked to narrow to a person, and given none. Refusing is the only
+            # honest answer — dropping the clause would silently return the
+            # WHOLE board as though it were one person's subscriptions.
+            raise HTTPException(
+                status_code=422,
+                detail="watching needs a signed-in viewer.",
+            )
+        # `lower()` on both sides because `watchable()` folds an address before
+        # it is stored, so an unfolded parameter would match nothing.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM pm_task_watchers w "
+            "        WHERE w.task_id = t.id AND lower(w.watcher) = :viewer)"
+        )
+        params["viewer"] = viewer.strip().lower()
 
     if overdue:
         # Overdue means "past due AND still open". A finished task with a past
@@ -288,6 +324,13 @@ VIEW_FILTER_KEYS: frozenset[str] = frozenset({
     "status_id", "status_category", "assignee", "assignees", "unassigned",
     "overdue", "due_before", "importance_gte", "q", "tags", "tags_all",
     "include_archived",
+    # ⚠️ `watching`, NOT `watched_by`. The view stores the INTENT — "things I
+    # watch" — and the endpoint resolves it to whoever is asking. Storing an
+    # address instead would pin one person's subscriptions into a view other
+    # people open, so a shared board would show them a colleague's list and
+    # call it theirs. Same shape as `unassigned`: a boolean whose meaning is
+    # completed by the caller.
+    "watching",
 })
 
 #: What a board may group by. `status` is the board's own axis; the others are

@@ -1,17 +1,139 @@
-/* Plain, theming-exempt staff styles (D35.4). This app is deliberately NOT on
-   the customer design system: "one product, one look" is for surfaces customers
-   see. A clean, legible internal tool is the whole brief. */
+/* Staff styles for the Operator Console.
+   ─────────────────────────────────────────────────────────────────────────
+   ⚠️ **Theming-exempt by D35.4, and that is a BOUNDARY decision, not a
+   licence to be plain.** The exemption exists because this is a different
+   Next.js app and `customer_console.md` §2.4 measures the cross-import count
+   from `control_plane` as ZERO. It does not say a staff tool deserves less
+   care — the spec's own words are "port the primitives as plain-CSS
+   equivalents, or restyle".
+
+   So this file is that port. It carries the same IDEAS as the customer design
+   system, re-expressed in plain CSS with no import crossing the boundary:
+
+     · one token scale, never a colour written at a call site;
+     · one tone vocabulary (`src/lib/tone.ts`) that decides what a state
+       LOOKS like, so a status cannot draw two ways on two pages;
+     · a component layer, so nothing is hand-rolled per page.
+
+   ⚠️ Every class name that existed before 2026-08-29 still resolves. Eight
+   pages depend on them and a rename would be a silent visual regression on
+   the seven this change does not touch. */
 
 :root {
+  /* ── Surfaces ─────────────────────────────────────────────────────── */
   --bg: #0f1115;
+  --bg-subtle: #12151b;
   --panel: #171a21;
+  --panel-2: #1d212a;
+  --panel-3: #232833;
+
+  /* ── Line + text ──────────────────────────────────────────────────── */
   --border: #2a2f3a;
+  --border-strong: #3a4150;
   --text: #e6e8eb;
   --muted: #9aa4b2;
-  --accent: #4c8bf5;
-  --danger: #e5534b;
-  --ok: #3fb950;
-  --warn: #d29922;
+  --faint: #6b7482;
+
+  /* ── Semantic hues. A tone is a MEASUREMENT (how broken, how urgent),
+        and every one carries a soft partner for tinted fills, so a call
+        site never reaches for rgba() to get a background. ────────────── */
+  --accent: #5b93f7;
+  --accent-soft: rgba(91, 147, 247, 0.13);
+  --accent-line: rgba(91, 147, 247, 0.35);
+  --danger: #ef6461;
+  --danger-soft: rgba(239, 100, 97, 0.13);
+  --danger-line: rgba(239, 100, 97, 0.38);
+  --ok: #46c46a;
+  --ok-soft: rgba(70, 196, 106, 0.13);
+  --ok-line: rgba(70, 196, 106, 0.35);
+  --warn: #dda437;
+  --warn-soft: rgba(221, 164, 55, 0.13);
+  --warn-line: rgba(221, 164, 55, 0.38);
+
+  /* ── Scale. Named, so two surfaces cannot drift apart by a pixel. ─── */
+  --r-sm: 5px;
+  --r: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 6px 20px -6px rgba(0, 0, 0, 0.55);
+  --ring: 0 0 0 3px var(--accent-soft);
+  /* The identity pair (mockup adoption, 2026-08-30): a second accent hue
+     for the brand gradient only — never for text, never for a tone. The
+     glow and the gradient read the accent tokens, so both themes move
+     them automatically. */
+  --accent-2: #58d0e8;
+  --brand-grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --bg-glow: radial-gradient(1100px 480px at 18% -8%, var(--accent-soft), transparent 62%);
+  --lift: 0 10px 24px -10px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-strong);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+/* ── Light mode ───────────────────────────────────────────────────────────
+   Taste Skill's rule is "dual-mode by default, contrast and hierarchy parity
+   across themes", and parity is the hard half: a palette that merely inverts
+   produces grey-on-grey chips and an accent that fails contrast on white.
+   Every hue below is re-chosen for a light ground rather than reused.
+
+   ⚠️ **Dark stays the DEFAULT, and that is a deliberate limit, not an
+   oversight.** This theme has never been looked at by a human — the agent that
+   wrote it has no browser, and `DESIGN_SYSTEM.md` §8 is explicit that the real
+   gate is switching the theme and LOOKING at the surface. Honouring
+   `prefers-color-scheme` immediately would hand an unverified palette to every
+   operator whose OS is set to light, which is most of them.
+
+   So it is opt-in until somebody has seen it. Once it has been eyeballed, the
+   whole change is to add:
+
+       @media (prefers-color-scheme: light) {
+         :root:not([data-theme="dark"]) { ...the block below... }
+       }
+
+   ⚠️ The palette is written once, here. Do not duplicate it into a media
+   query as well — two copies of a token set drift, and the drift shows up as
+   one surface disagreeing with the next, which is exactly what a token system
+   exists to stop. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg-subtle: #eceef2;
+  --panel: #ffffff;
+  --panel-2: #f2f4f7;
+  --panel-3: #e6e9ee;
+
+  --border: #dde1e8;
+  --border-strong: #bcc3ce;
+  --text: #161a21;
+  --muted: #58616e;
+  --faint: #8a929f;
+
+  /* Darkened against white. The dark theme's #5b93f7 measures ~2.6:1 on
+     #ffffff and fails every contrast floor for text. */
+  --accent: #2158d0;
+  --accent-soft: rgba(33, 88, 208, 0.09);
+  --accent-line: rgba(33, 88, 208, 0.3);
+  --danger: #c0322e;
+  --danger-soft: rgba(192, 50, 46, 0.09);
+  --danger-line: rgba(192, 50, 46, 0.32);
+  --ok: #157f3a;
+  --ok-soft: rgba(21, 127, 58, 0.1);
+  --ok-line: rgba(21, 127, 58, 0.3);
+  --warn: #8a5a00;
+  --warn-soft: rgba(138, 90, 0, 0.1);
+  --warn-line: rgba(138, 90, 0, 0.32);
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 8px 24px -8px rgba(16, 24, 40, 0.18);
+  --accent-2: #0c7fa3;
+  --lift: 0 10px 24px -10px rgba(16, 24, 40, 0.18), 0 0 0 1px var(--border-strong);
+  color-scheme: light;
+}
+
+/* The search field's WebKit cancel button is drawn by the browser, so it needs
+   the inversion removed on a light ground or it becomes invisible. */
+:root[data-theme="light"] .toolbar .search::-webkit-search-cancel-button {
+  filter: none;
 }
 
 * {
@@ -20,11 +142,15 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  /* Atmosphere, not information: a fixed accent wash under everything so
+     the panels have a ground to sit on. */
+  background: var(--bg-glow), var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -35,19 +161,225 @@ a:hover {
   text-decoration: underline;
 }
 
+/* A visible focus ring everywhere, once. Before this, focus was drawn only on
+   inputs, so a keyboard operator tabbing to a destructive button saw nothing
+   at all. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ⚠️ `--side` is consumed by BOTH `.sidebar`'s width and `.wrap`'s padding.
+   They are one measurement written once — set them separately and the content
+   either hides under the rail or floats away from it, and the mistake only
+   shows at one viewport width. */
+:root {
+  --side: 216px;
+}
+
 .wrap {
-  max-width: 1100px;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 16px 24px 48px;
+  padding: 20px 28px 64px;
+  padding-left: calc(var(--side) + 28px);
+}
+
+/* ── Left sidebar ────────────────────────────────────────────────────────
+   🔴 Replaced the top bar (2026-08-29). Five destinations, an elevation
+   control and sign-out were competing for one horizontal row, and nothing said
+   where you were. A rail gives each entry a full-width hit target, room for an
+   icon, and an unambiguous active state.
+
+   `position: fixed`, because `<Header />` renders INSIDE `main.wrap` on all
+   eight pages — see the note in `Header.tsx`. */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--side);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 12px 14px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-right: 1px solid var(--border);
+  z-index: 20;
+}
+
+.sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 16px;
+  font-size: 14.5px;
+}
+.brand .mark {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 4px 14px -4px var(--accent-line);
+}
+.brand .brandname span {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.sidebar nav a:hover {
+  color: var(--text);
+  background: var(--panel-2);
+  text-decoration: none;
+}
+/* The active entry carries a left bar as well as a fill. Colour alone is not a
+   state for an operator who cannot distinguish it. */
+.sidebar nav a[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.sidebar nav a svg {
+  flex: none;
+  opacity: 0.9;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sidebar-foot .elevation {
+  margin-left: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sidebar-foot .elevation input {
+  width: 100%;
+}
+/* Who am I — the identity row above the elevation control. Renders only
+   on the session path: the break-glass token names nobody, and drawing a
+   made-up name would teach the team to trust it. */
+.operator {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+.operator .avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--brand-grad);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.operator .who {
+  min-width: 0;
+}
+.operator .who b {
+  display: block;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.operator .who span {
+  display: block;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 6px;
+}
+.sidebar-actions .linklike {
+  flex: 1;
+  text-align: center;
+}
+
+/* Narrow viewports: the rail becomes a strip across the top rather than eating
+   a third of the screen. */
+@media (max-width: 860px) {
+  .sidebar {
+    position: static;
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 14px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar .brand { padding: 0 8px 0 0; }
+  .sidebar nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar nav a[aria-current="page"] { box-shadow: none; }
+  .sidebar-foot {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+    flex-direction: row;
+    align-items: center;
+    margin-left: auto;
+  }
+  .wrap { padding-left: 20px; padding-right: 20px; }
 }
 
 h1 {
-  font-size: 22px;
+  font-size: 21px;
+  letter-spacing: -0.01em;
   margin: 0 0 4px;
 }
 h2 {
-  font-size: 16px;
-  margin: 24px 0 8px;
+  font-size: 15px;
+  letter-spacing: -0.005em;
+  margin: 22px 0 8px;
+}
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 20px 0 8px;
 }
 
 .muted {
@@ -59,20 +391,50 @@ h2 {
 .ok-t { color: var(--ok); }
 .warn-t { color: var(--warn); }
 .accent-t { color: var(--accent); }
+.danger-t { color: var(--danger); }
+.mono { font-family: var(--mono); font-size: 0.94em; }
 
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 0 14px;
+  gap: 12px;
+  padding: 10px 0 12px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
 }
+.topbar nav {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  margin-right: 12px;
+}
+/* Nav entries are pills rather than bare text: the bar also holds the
+   elevation control and sign-out, and three kinds of clickable text in one
+   row gave no clue which were destinations. */
+.topbar nav a {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: var(--r-sm);
+}
+.topbar nav a:hover {
+  color: var(--text);
+  background: var(--panel-2);
+  text-decoration: none;
+}
+.topbar nav a[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .brand {
   color: var(--text);
   font-weight: 700;
   font-size: 15px;
+  letter-spacing: -0.01em;
 }
 .brand span {
   color: var(--muted);
@@ -83,20 +445,44 @@ h2 {
 }
 .linklike {
   margin: 0;
-  padding: 4px 10px;
+  padding: 5px 11px;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.linklike:hover {
+.linklike:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--muted);
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.linklike:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-/* ── Page head (title + primary action side by side) ─────────────────── */
+/* A destructive link-weight action — Remove on a key row. Red TEXT, not a
+   red fill: `button.danger` would paint the background, and a filled red
+   button beside every key reads as the page's main action. Both selectors
+   are written out so this wins over `button.danger` at equal cascade. */
+.linklike.danger,
+button.linklike.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--border);
+}
+.linklike.danger:hover:not(:disabled),
+button.linklike.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+/* ── Page head ───────────────────────────────────────────────────────── */
 .pagehead {
   display: flex;
   justify-content: space-between;
@@ -110,6 +496,10 @@ h2 {
   flex-basis: 100%;
   max-width: 560px;
 }
+.pagehead p {
+  margin: 2px 0 0;
+  max-width: 68ch;
+}
 
 .primary-cta {
   margin-top: 4px;
@@ -120,30 +510,45 @@ h2 {
 /* ── Stat cards ──────────────────────────────────────────────────────── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 10px;
   margin: 16px 0;
 }
 .stat {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r);
   padding: 12px 14px;
 }
 .stat .num {
   font-size: 24px;
   font-weight: 700;
   line-height: 1.2;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 .stat .small-num {
   font-size: 18px;
 }
 .stat .lbl {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  font-weight: 600;
 }
+/* A stat that is a PROBLEM reads as one without being red-on-red. */
+.stat.alarm {
+  border-color: var(--danger-line);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel);
+}
+.stat.alarm .num { color: var(--danger); }
+.stat.caution {
+  border-color: var(--warn-line);
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel);
+}
+.stat.caution .num { color: var(--warn); }
+.stat.good .num { color: var(--ok); }
 
 /* ── Seat usage bar ──────────────────────────────────────────────────── */
 .bar {
@@ -157,7 +562,8 @@ h2 {
 .bar > i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  border-radius: 2px;
+  background: var(--brand-grad);
 }
 .seatcell {
   min-width: 110px;
@@ -165,8 +571,9 @@ h2 {
 .warnbadge {
   margin-left: 6px;
   padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid var(--warn);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
   color: var(--warn);
   font-size: 11px;
   cursor: help;
@@ -174,28 +581,43 @@ h2 {
 
 /* ── Banners ─────────────────────────────────────────────────────────── */
 .banner {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--warn);
-  border-radius: 6px;
-  padding: 10px 14px;
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel);
+  border: 1px solid var(--warn-line);
+  border-left-width: 3px;
+  border-radius: var(--r);
+  padding: 11px 14px;
   margin: 12px 0;
-  color: var(--muted);
+  color: var(--text);
 }
+.banner strong { color: var(--warn); }
 .banner.info {
-  border-left-color: var(--accent);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel);
+  border-color: var(--accent-line);
   color: var(--text);
 }
+.banner.info strong { color: var(--accent); }
 .banner.danger {
-  border-left-color: var(--danger);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel);
+  border-color: var(--danger-line);
   color: var(--text);
+}
+.banner.danger strong { color: var(--danger); }
+.banner ul { margin: 8px 0 0; padding-left: 20px; }
+.banner li { margin: 3px 0; }
+
+/* A quiet aside. Used but never defined before this file was rewritten, so it
+   rendered as unstyled body text. */
+.note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0 0;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────── */
 .empty {
   background: var(--panel);
-  border: 1px dashed var(--border);
-  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
   padding: 24px 28px;
   margin: 16px 0;
   max-width: 640px;
@@ -215,60 +637,131 @@ table {
   width: 100%;
   border-collapse: collapse;
   margin-top: 12px;
+  font-variant-numeric: tabular-nums;
 }
 th,
 td {
   text-align: left;
-  padding: 10px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 th {
   color: var(--muted);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  border-bottom-color: var(--border-strong);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
 }
 tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--panel-2);
+}
+tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .pill {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--border);
   font-size: 12px;
   cursor: default;
+  white-space: nowrap;
 }
 .pill[title]:not([title=""]) {
   cursor: help;
 }
-.pill.active { border-color: var(--ok); color: var(--ok); }
-.pill.trial { border-color: var(--accent); color: var(--accent); }
+/* ⚠️ These four lifecycle states are ALSO expressed in `src/lib/tone.ts`.
+   The classes stay because seven pages already emit them; new code asks
+   `tone.ts` and renders `.chip`, so there is one vocabulary and one place to
+   change it. */
+.pill.active { border-color: var(--ok-line); background: var(--ok-soft); color: var(--ok); }
+.pill.trial { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 .pill.suspended,
-.pill.past_due { border-color: var(--warn); color: var(--warn); }
+.pill.past_due { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
 .pill.cancelled,
-.pill.deleted { border-color: var(--danger); color: var(--danger); }
+.pill.deleted { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+
+/* ── Chip — the tone vocabulary's only rendering ──────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip.ok { border-color: var(--ok-line); background: var(--ok-soft); color: var(--ok); }
+.chip.warn { border-color: var(--warn-line); background: var(--warn-soft); color: var(--warn); }
+.chip.danger { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+.chip.accent { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+/* A TONE chip reads as a status light. Identity chips (cat-*) carry their
+   glyph box instead, and neutral chips are labels — neither gets a dot. */
+.chip.ok::before,
+.chip.warn::before,
+.chip.danger::before,
+.chip.accent::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.chip.mono { font-family: var(--mono); font-size: 11.5px; }
 
 /* ── Panels & forms ──────────────────────────────────────────────────── */
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
   margin: 12px 0;
 }
+.panel > h2:first-child,
+.panel > h3:first-child {
+  margin-top: 0;
+}
 .success-panel {
-  border-color: var(--ok);
+  border-color: var(--ok-line);
+  background: linear-gradient(var(--ok-soft), var(--ok-soft)), var(--panel);
+}
+
+/* A panel header that carries a title and a description together, so every
+   section explains itself the same way instead of each page inventing a
+   layout for the same two facts. */
+.panel-head {
+  margin-bottom: 12px;
+}
+.panel-head h2 {
+  margin: 0 0 3px;
+}
+.panel-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  max-width: 72ch;
 }
 
 label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
-  margin: 10px 0 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 10px 0 3px;
 }
 
 .field-hint {
@@ -278,20 +771,51 @@ label {
   opacity: 0.85;
 }
 
+/* A hint that is a WARNING, not an explanation. It says the thing you are
+   about to save will not work yet — and it must not read as the same grey
+   note as the sentence above it. */
+.field-hint.warn {
+  color: var(--warn);
+  opacity: 1;
+}
+
 input,
 select {
   width: 100%;
   padding: 7px 9px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   color: var(--text);
   font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+input::placeholder {
+  color: var(--faint);
 }
 input:focus,
 select:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+/* A checkbox label is not a field label — it sits beside its control and must
+   not inherit the uppercase treatment above. */
+label:has(> input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  margin: 0;
 }
 
 details.advanced {
@@ -314,24 +838,32 @@ button {
   padding: 8px 14px;
   background: var(--accent);
   color: #fff;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
   cursor: pointer;
+  transition: filter 0.12s, background 0.12s, border-color 0.12s;
 }
 button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  filter: brightness(1.12);
 }
 button.secondary {
   background: transparent;
-  border: 1px solid var(--border);
+  border-color: var(--border);
   color: var(--text);
+}
+button.secondary:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+  filter: none;
 }
 button.danger {
   background: var(--danger);
 }
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -345,6 +877,32 @@ button:disabled {
   min-width: 300px;
 }
 
+/* A form laid out as fields rather than a bare flex row. `.row` put a label
+   above each control and then let the controls fall out of alignment; this
+   keeps a label glued to its own input. */
+.formrow {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.formrow .field {
+  flex: 1 1 170px;
+  min-width: 140px;
+}
+.formrow .field label {
+  margin-top: 0;
+}
+.formrow .field.grow {
+  flex: 2 1 240px;
+}
+.formrow button {
+  margin-top: 0;
+  height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .result {
   margin-top: 10px;
   font-size: 13px;
@@ -353,6 +911,356 @@ button:disabled {
 }
 .result.err { color: var(--danger); }
 .result.ok { color: var(--ok); }
+
+/* ── Tabs ────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0 0;
+}
+.tabs button {
+  margin: 0;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tabs button:hover:not(:disabled) {
+  color: var(--text);
+  filter: none;
+}
+.tabs button[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tabs .count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* Page-level tabs are LINKS (SectionTabs.tsx) — the same look as the
+   button tabs, keyed on aria-current so the URL stays the state. */
+.tabs a {
+  padding: 8px 14px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tabs.pagetabs { margin: 2px 0 6px; }
+
+/* ── Categorical ramp ────────────────────────────────────────────────────
+   Eight mutually distinguishable slots for IDENTITY — which provider, which
+   tag. `src/lib/categorical.ts` picks the slot by hashing the name.
+
+   ⚠️ This is not the tone vocabulary and must never be used as one. A tone
+   says how broken something is. A slot says only which thing it is.
+
+   🔴 These replaced a hand-written table of raw Tailwind palette classes that
+   came with the deleted customer-side model picker. That table could not be
+   ported: this app has no Tailwind, so every class would resolve to nothing. */
+:root {
+  --cat-1: #6d9eeb; --cat-2: #57bd91; --cat-3: #d99a4e; --cat-4: #c77dbb;
+  --cat-5: #4fb3c4; --cat-6: #d1795f; --cat-7: #8f9bd6; --cat-8: #9db35c;
+}
+:root[data-theme="light"] {
+  --cat-1: #2f66c4; --cat-2: #1f8a5e; --cat-3: #9a6608; --cat-4: #9c4a91;
+  --cat-5: #14788a; --cat-6: #a8452a; --cat-7: #5a63b0; --cat-8: #5f7521;
+}
+/* ⚠️ Each slot names its hue TWICE: as `color` and as `--hue`. The glyph
+   below needs the parent's hue for its own background while it paints its
+   letter in `--panel` — and `background: currentColor` cannot do that,
+   because currentColor resolves against the element's OWN `color`. The
+   first build did exactly that and every glyph drew a panel-coloured box
+   with a panel-coloured letter: an empty tile on every vendor card.
+   `categorical.test.ts` fences the pairing. */
+.chip.cat-0 { --hue: var(--cat-1); color: var(--cat-1); border-color: var(--cat-1); }
+.chip.cat-1 { --hue: var(--cat-2); color: var(--cat-2); border-color: var(--cat-2); }
+.chip.cat-2 { --hue: var(--cat-3); color: var(--cat-3); border-color: var(--cat-3); }
+.chip.cat-3 { --hue: var(--cat-4); color: var(--cat-4); border-color: var(--cat-4); }
+.chip.cat-4 { --hue: var(--cat-5); color: var(--cat-5); border-color: var(--cat-5); }
+.chip.cat-5 { --hue: var(--cat-6); color: var(--cat-6); border-color: var(--cat-6); }
+.chip.cat-6 { --hue: var(--cat-7); color: var(--cat-7); border-color: var(--cat-7); }
+.chip.cat-7 { --hue: var(--cat-8); color: var(--cat-8); border-color: var(--cat-8); }
+.chip[class*="cat-"] { background: var(--panel-2); }
+.chip .glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  background: var(--hue, currentColor);
+  color: var(--panel);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* ── The organization monogram ────────────────────────────────────────────
+   The box reads `--hue` exactly as the chip glyph does — a slot that
+   defines no hue falls back to a neutral box instead of an invisible one. */
+.orgglyph {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  background: var(--hue, var(--panel-3));
+  color: var(--panel);
+}
+.orgglyph.lg {
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  font-size: 19px;
+}
+.orgglyph.cat-0 { --hue: var(--cat-1); }
+.orgglyph.cat-1 { --hue: var(--cat-2); }
+.orgglyph.cat-2 { --hue: var(--cat-3); }
+.orgglyph.cat-3 { --hue: var(--cat-4); }
+.orgglyph.cat-4 { --hue: var(--cat-5); }
+.orgglyph.cat-5 { --hue: var(--cat-6); }
+.orgglyph.cat-6 { --hue: var(--cat-7); }
+.orgglyph.cat-7 { --hue: var(--cat-8); }
+
+.orgcell {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.orgcell > div {
+  min-width: 0;
+}
+
+.orghero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.herochips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* ── Sparkline ───────────────────────────────────────────────────────────
+   ⚠️ `preserveAspectRatio="none"` lets the box stretch to the panel while the
+   path keeps its own coordinate space, so one viewBox serves every width. The
+   stroke does NOT scale with it — `vector-effect` keeps the line 1.5px at any
+   stretch, and without it a wide panel draws a hairline and a narrow one draws
+   a slab. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  overflow: visible;
+}
+.spark path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ── Tier cards ──────────────────────────────────────────────────────────
+   🔴 Replaced a form that made you TYPE the tier name and the model id. Both
+   had to be exact, neither was listed anywhere on the page, and a typo in
+   either produced a binding that looked fine and served nothing. The card
+   picks the model from the capabilities already declared, so an unservable
+   binding cannot be created by hand at all. */
+/* D68: the board is grouped by what each tier IS - chat bands, one tier
+   per capability, and whatever the registry cannot place. */
+.tiersection {
+  margin-top: 26px;
+}
+.tiersection > .panel-head {
+  margin-bottom: 12px;
+}
+
+.tier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.tier-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 15px;
+}
+.tier-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.tier-card h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--mono);
+}
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 16px 0 4px;
+}
+.toolbar .search {
+  flex: 1 1 220px;
+  max-width: 320px;
+  width: auto;
+}
+/* `type="search"` draws a WebKit cancel button that ignores the palette and
+   renders as a light blob in a dark tool. */
+.toolbar .search::-webkit-search-cancel-button {
+  filter: invert(0.6);
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  flex-wrap: wrap;
+}
+.segmented button {
+  margin: 0;
+  padding: 5px 11px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.segmented button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+  filter: none;
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.segmented .count {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* ── Tier card jobs ──────────────────────────────────────────────────────
+   🔴 Replaced the readiness matrix. That grid drew 20 cells to say 4 facts,
+   16 of them reading "not bound", and still needed a horizontal scrollbar. An
+   unset job is now hidden behind a button rather than rendered as an empty
+   box — 16 empty boxes is the ABSENCE of information drawn at the same weight
+   as its presence. */
+.job {
+  border-top: 1px solid var(--border);
+  padding: 9px 0 8px;
+}
+.job-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.job-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.job-model {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  word-break: break-all;
+  margin: 3px 0 6px;
+}
+.job-foot,
+.job-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.job-actions { margin-top: 8px; }
+.job select { margin-top: 4px; }
+.add-job {
+  margin-top: 10px;
+  width: 100%;
+  border-style: dashed;
+}
+
+/* ── Next step ───────────────────────────────────────────────────────────
+   ONE instruction, in words nobody has to look up. `nextStep()` decides which,
+   and the order is the design: nothing can be priced before it can be served. */
+.nextstep {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  padding: 16px 18px;
+  margin: 16px 0;
+}
+.nextstep h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.nextstep p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 68ch;
+}
+.nextstep .dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 6px;
+}
+.nextstep.ok { border-left-color: var(--ok-line); }
+.nextstep.ok .dot { background: var(--ok); }
+.nextstep.ok h2 { color: var(--ok); }
+.nextstep.warn { border-left-color: var(--warn-line); background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--panel); }
+.nextstep.warn .dot { background: var(--warn); }
+.nextstep.warn h2 { color: var(--warn); }
+.nextstep.danger { border-left-color: var(--danger-line); background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--panel); }
+.nextstep.danger .dot { background: var(--danger); }
+.nextstep.danger h2 { color: var(--danger); }
 
 /* ── Login ───────────────────────────────────────────────────────────── */
 .login-center {
@@ -365,4 +1273,1001 @@ button:disabled {
 .login-card {
   width: 100%;
   max-width: 400px;
+  box-shadow: var(--shadow-2);
+}
+
+/* ── The one-time key disclosure (CP-11 slice 1) ──────────────────────────
+   This block holds a secret the operator has exactly one chance to copy, so it
+   is styled to be SELECTABLE and fully visible rather than pretty: the token
+   wraps instead of truncating, because a `text-overflow: ellipsis` here would
+   silently hand somebody half a credential. */
+pre.token {
+  margin: 10px 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* The elevation window control (CP-12g). Sits in the top bar beside sign-out,
+   because a standing destructive privilege must be visible wherever you are —
+   not on a settings page you have to go looking for. */
+.elevation {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+
+.elevation input {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 0.85rem;
+  width: auto;
+}
+
+/* Amber, not red: an open window is a STATE the operator chose, not an error.
+   Red here would train people to ignore red.
+   ⚠️ Now drawn from the warn tokens rather than two hardcoded hex values, so
+   it moves with the rest of the palette instead of staying a light-mode chip
+   embedded in a dark tool. */
+.elevation.elevated {
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 600;
+}
+.elevation.elevated::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+
+.elevation-error {
+  color: var(--danger);
+  max-width: 28rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WS-31 — the AI surfaces: grouped nav, the model browser, chains, providers.
+
+   ⚠️ Every colour below is a token. A raw hex here would be a second palette,
+   and the second palette is the one that stops matching in light mode.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── The jump palette (Ctrl-K) ────────────────────────────────────────────
+   The trigger sits in the rail; the overlay floats over everything. The
+   list is a real listbox: arrow keys move `aria-selected`, Enter goes. */
+.cmdk {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  color: var(--faint);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cmdk:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--muted);
+  filter: none;
+}
+.cmdk kbd {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 0;
+}
+.palette {
+  width: 100%;
+  max-width: 480px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: rise 0.18s var(--ease);
+}
+.palette input {
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.palette input:focus {
+  outline: none;
+  box-shadow: none;
+}
+.palette ul {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.palette .hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.palette .hit.sel {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.palette .hit:hover {
+  filter: none;
+}
+.palette .hit-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.palette-empty {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ── Grouped sidebar ──────────────────────────────────────────────────────
+   A flat list of seven stopped teaching anything. The groups are three
+   different jobs, and an operator with a customer waiting is only ever in the
+   first one. */
+.navgroup {
+  margin-bottom: 14px;
+}
+
+.navgroup h2 {
+  margin: 0 0 4px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* ── The provenance banner ────────────────────────────────────────────────
+   The banner class already carries info and danger. Sample data is neither: it
+   is not a fault, and it is not neutral information — it is a warning that
+   nothing below is real. */
+.banner.warn {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+.banner.warn strong {
+  color: var(--warn);
+}
+
+/* ── Search, sort and facets ──────────────────────────────────────────── */
+.sortpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.sortpick select {
+  width: auto;
+  margin: 0;
+}
+
+.facets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.facetrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.facetlabel {
+  min-width: 44px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.facet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 10px;
+  width: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.facet:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.facet[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ⚠️ Disabled at zero, NOT hidden. A chip that disappears makes the row jump
+   under the pointer, and it hides that the capability exists at all. */
+.facet:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.facet .count {
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.facet[aria-pressed="true"] .count {
+  background: var(--accent-line);
+  color: var(--text);
+}
+
+.facet .glyph {
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.resultline {
+  margin: 12px 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── The model cards ──────────────────────────────────────────────────── */
+.modelgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 12px;
+}
+
+/* ── The vendor feed (migration 014) ─────────────────────────────────────
+   The strip is one line of status plus its button; the available section
+   reuses panel, toolbar and table styles wholesale — the feed is data on
+   the same surface, not a surface of its own. */
+.feedstrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.feedstrip .result.err {
+  width: 100%;
+  margin: 0;
+}
+.feedvendor {
+  margin-top: 16px;
+}
+.feedvendor h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+}
+.feedvendor td .chip {
+  margin-left: 8px;
+}
+/* The drift alert sits directly under the card header. A <p> so it can wrap,
+   margin zeroed so the card's own gap does the spacing. */
+.modelcard > p.chip {
+  margin: 0;
+  align-self: flex-start;
+}
+
+.modelcard {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+
+.modelcard > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modelcard h3 {
+  margin: 0 0 2px;
+  font-size: 14.5px;
+}
+
+.modeldesc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.kindrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.modelfacts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.modelfacts div {
+  min-width: 0;
+}
+
+.modelfacts dt {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.modelfacts dd {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── Fallback chains ──────────────────────────────────────────────────── */
+.chain {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chain li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+/* The number is the whole point: it is the ORDER the Router tries them in. */
+.chain .rank {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.chain li:first-child .rank {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chainbody {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.problems {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.problems li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  line-height: 1.45;
+}
+
+.job-edit {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+/* ── The outage question ──────────────────────────────────────────────── */
+.outage-line {
+  margin: 12px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.outage-line.ok { color: var(--ok); }
+.outage-line.warn { color: var(--warn); }
+.outage-line.danger { color: var(--danger); }
+.outage-line.neutral { color: var(--muted); font-weight: 500; }
+
+.outcomes {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.outcomes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+.outcomes li.down { border-left-color: var(--danger); }
+.outcomes li.failover { border-left-color: var(--warn); }
+.outcomes li.already-broken { border-left-color: var(--border-strong); }
+
+/* ── Provider cards ───────────────────────────────────────────────────────
+   🔴 One card per VENDOR, not per key. The flat table drew two keys for the
+   same vendor as unrelated rows, and a second key is exactly how a rate limit
+   stops being an outage. */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+}
+
+.provider-card > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keyrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel-2);
+}
+
+/* A revoked key stays on the card — it is the record of what was replaced —
+   but it must never compete with a live one for attention. */
+.keyrow.dead {
+  opacity: 0.55;
+  background: transparent;
+}
+
+/* A customer's own vendor account, demoted below the platform key. No box:
+   it is an annotation about one customer, not a second key of ours, and
+   drawing it at the platform key's weight is how BYOK gets read as
+   coverage. */
+.byokrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 10px;
+}
+
+.byokrow .linklike {
+  padding: 2px 6px;
+  font-size: 11px;
+  border-color: transparent;
+}
+
+.keymain {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.keylabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.guide {
+  margin: 4px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+.guide p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.guide ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.guide li {
+  margin: 3px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Reorder and remove, on one chain step. Small, and quiet until hovered — the
+   models are what a reader is scanning, not the controls. */
+.stepactions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.stepactions .linklike {
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
+/* ── Setting a vendor up, on the card ─────────────────────────────────────
+   🔴 The guide, the paste field and the vendor's name are ONE object on
+   screen. They used to be a pill at the top and a form at the bottom, and the
+   connection between them was something you had to hold in your head. */
+.provider-card.open {
+  border-color: var(--accent-line);
+  box-shadow: var(--ring);
+}
+
+/* The primary call to action on an unconfigured card. Full width, because on
+   a card with no keys there is nothing else to click. */
+.setupbtn {
+  align-self: stretch;
+  margin-top: auto;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+}
+
+.setup-links {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.getkey {
+  padding: 5px 11px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--panel);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.getkey:hover {
+  border-color: var(--accent);
+}
+
+.setup-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.setup-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* A numbered circle rather than an <ol> marker: the steps wrap onto two lines
+   often enough that a hanging indent reads better than a decimal point. */
+.stepno {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The paste field, with the reveal inside it. `show` is worth having: a key
+   typed by hand into a password field is unverifiable, and the retry is a
+   second visit to the vendor's console. */
+.secretbox {
+  position: relative;
+  display: block;
+}
+
+.secretbox input {
+  padding-right: 52px;
+  font-family: var(--mono);
+}
+
+.peek {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.advanced {
+  font-size: 12px;
+}
+
+/* ── The price list (what a customer pays today) ──────────────────────────
+   Plain rows, one per tier: the reading surface, not a control. */
+.pricegroup h3 {
+  margin: 14px 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.pricelist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pricelist li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.pricelist li:last-child {
+  border-bottom: none;
+}
+.pl-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pl-price {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The per-unit vendor-price prompt inside the suggestion table. */
+.unitsugg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.unitsugg label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.unitsugg input {
+  width: 76px;
+  padding: 3px 7px;
+}
+
+/* ── The pricing assumptions row ──────────────────────────────────────────
+   Two numbers the operator ASSERTS for this page's arithmetic. Drawn as one
+   quiet row, with the disclaimer beside them rather than in a tooltip —
+   an invented exchange rate that looks official becomes a fact. */
+.assumptions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r);
+}
+
+.assumptions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.assumptions input {
+  width: 72px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+
+.assumptions .small {
+  flex: 1 1 240px;
+}
+
+/* ── The go-live rail ─────────────────────────────────────────────────────
+   Six steps, one line each. The number chip reuses `.stepno`; the state chip
+   reuses the tone vocabulary — nothing here invents a colour. */
+.rail {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+}
+/* The connector runs UNDER the dots; each dot masks it with a panel ring. */
+.rail::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border);
+}
+
+.rail-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+  position: relative;
+}
+
+/* A completed step recedes; the next thing to do is what the eye should hit. */
+.rail-step.done {
+  opacity: 0.66;
+}
+.rail-step.done strong {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+.rail-step .stepno {
+  margin-top: 0;
+  width: 24px;
+  height: 24px;
+  font-size: 11px;
+  border: 2px solid var(--panel);
+  z-index: 1;
+}
+.rail-step.done .stepno {
+  background: var(--ok-soft);
+  color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok-line);
+}
+.rail-step.now .stepno {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.railmain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.railmain .small {
+  margin: 1px 0 0;
+}
+
+.railhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.rail-step .linklike {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* The rail once everything derivable is green: one quiet line. */
+.rail-done {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--ok-line);
+  border-radius: var(--r);
+  background: var(--ok-soft);
+}
+
+.rail-done p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px 0;
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────────
+   One entrance, one curve, and hover lift ONLY on cards that go somewhere
+   or hold controls. Panels holding forms stay still, and an open provider
+   card is excluded — nothing may move while somebody types a secret into
+   it. All of it is optional: reduced motion gets a still console. */
+main.wrap {
+  animation: rise 0.28s var(--ease);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.stat,
+.tier-card,
+.modelcard,
+.provider-card {
+  transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+@media (hover: hover) {
+  .stat:hover,
+  .tier-card:hover,
+  .modelcard:hover,
+  .provider-card:not(.open):hover {
+    transform: translateY(-2px);
+    box-shadow: var(--lift);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

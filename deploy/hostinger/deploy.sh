@@ -40,12 +40,20 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   say "Disabled GRAPHITI (Neo4j) — saves ~500MB RAM; re-enable after VPS upgrade"
 fi
 
-say "Ensuring OAuth env vars"
-for _var in MICROSOFT_TENANT_ID AUTH_MICROSOFT_ENTRA_ID_TENANT GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
+say "Ensuring public-URL env vars"
+# H-13(a). This block used to also seed MICROSOFT_TENANT_ID /
+# AUTH_MICROSOFT_ENTRA_ID_TENANT with one company's directory GUID — wrong on
+# every deployment except that one company's, and silently so, because a seeded
+# value looks exactly like a configured one. Directory pinning is a
+# per-deployment decision: set those keys by hand in .env for a single-tenant
+# silo, and leave them unset for the multi-directory default (`organizations`,
+# see workbench auth.ts and email transport oauth.py).
+#
+# `scripts/vps_apply.sh` — the CI path — was fixed on 2026-08-17. This is the
+# same fix on the hand-run path, which is the one that seeds a FRESH box.
+for _var in GATEWAY_PUBLIC_URL WORKBENCH_PUBLIC_URL; do
   if ! grep -qE "^${_var}=" "$ENV_FILE" 2>/dev/null; then
     case "$_var" in
-      MICROSOFT_TENANT_ID)             echo "MICROSOFT_TENANT_ID=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
-      AUTH_MICROSOFT_ENTRA_ID_TENANT)   echo "AUTH_MICROSOFT_ENTRA_ID_TENANT=3a83c19d-ef37-4934-b61a-0d33750ca82e" >> "$ENV_FILE" ;;
       GATEWAY_PUBLIC_URL)              echo "GATEWAY_PUBLIC_URL=https://api.metorite.com" >> "$ENV_FILE" ;;
       WORKBENCH_PUBLIC_URL)            echo "WORKBENCH_PUBLIC_URL=https://app.metorite.com" >> "$ENV_FILE" ;;
     esac

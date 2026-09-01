@@ -626,6 +626,123 @@ upsert per drop (the board's cross-column drag patches whatever field `column_by
 
 ---
 
+### 5.1 The tree grammar — space, folder, project, subproject
+
+**Owner directive, 2026-08-31.** Migrations 193 and 194. The tree had one
+node type and no depth limit. Real trees grew five levels of identical rows,
+and no row showed what it was.
+
+The grammar is now:
+
+```
+space (root) -> [folder] -> project -> [folder] -> subproject
+```
+
+**Projects count toward the depth. Folders do not.** A space is generation 1,
+a project is 2, and a subproject is 3. Three is the limit. A folder groups
+the nodes below it. A folder does not nest, it holds no tasks, and it is
+never a root.
+
+`pm_projects.kind` holds `project` or `folder`. NULL reads as `project`
+(R6). The grammar itself is one pure function,
+`core.assert_node_grammar`. It is not a CHECK constraint, because the rules
+must read the parent chain, and a CHECK cannot walk one. Create and move
+both call it. A PATCH cannot change a kind: a folder that became a project
+would move past every rule.
+
+**A LEVEL is derived, and never stored.** `core.node_level` reads the kind
+and the generation. A stored level and the tree can disagree, and the tree
+is the fact.
+
+**What each level does:**
+
+| Level | Shows | Run state | Icon | Holds tasks |
+|---|---|---|---|---|
+| space | a dashboard of the whole subtree | no | its own | no |
+| folder | a dashboard of the projects below | no | folder glyph | no |
+| project | its views, with the subtree folded in | yes | run-state dot | yes |
+| subproject | its own views | yes | run-state dot | yes |
+
+**A space is not a project.** It shows a roll-up, and it has none of a
+project's views. A folder does the same for the projects below it. A
+project that holds subprojects keeps its views and adds the subtree to
+them. To see one subproject alone, click that subproject.
+
+**Only a project or a subproject has a run state.** A space summarises and a
+folder groups. Neither does work, so neither starts, pauses or stops.
+`core.assert_run_state_allowed` refuses the write. The menu also hides the
+control, but the refusal is the fence.
+
+**One endpoint feeds every roll-up.** `GET /projects/nodes/{id}/summary`
+counts the subtree in two grouped queries. It gives the totals, the counts
+for each category, the overdue count, and one line for each direct child.
+Every count passes through the caller's own task-visibility clause. A
+roll-up that added rows the reader cannot open is a disclosure channel in a
+summary's clothes.
+
+**Space Settings** changes the name, the icon and the icon colour. Open it
+with a right-click on the space. `pm_projects.icon` holds a themed icon
+NAME, and `pm_projects.icon_slot` holds a slot from 1 to 8 on the
+categorical ramp. Neither column holds a colour. The theme decides which
+pack draws the glyph, and what the hue is in light mode and dark mode. A
+hex value in these columns is the one thing `DESIGN_SYSTEM.md` rule 1
+refuses, and a later re-theme cannot reach it.
+
+🔭 **FUTURE — a space belongs to a team.** When departments, teams and
+groups exist, a space gets an owning team. The space then appears in that
+team's Center. The seam is already here: a `pm_project_grants` row with a
+`group:<slug>` subject is how a Center gets its slice today (D12). So the
+future column names an owner. It is not a second grant mechanism, and it is
+not a second dialog — it is a third field in Space Settings.
+
+**Fences:** `tests/unit/test_projects_node_kind.py` and
+`tests/unit/test_projects_space_identity.py` read each CHECK out of its
+migration, then exercise every refusal.
+`workbench/control_plane/src/app/projects/lib/tree.test.ts` pins the UI
+half: `childCreationOptions`, `levelOf`, `hasRunState`, `showsDashboard` and
+`spaceMarker`. It also asserts that every icon the picker offers is present
+in the themed registry.
+
+#### 5.1a Amendments of 2026-08-31 — owner directives, patterned on Plane
+
+The owner asked for six changes on 2026-08-31. Each shape below follows a
+named surface in Plane (github.com/makeplane/plane at commit `effd0c5`).
+The colours and controls stay ours: every hue resolves through
+`statusAccent` or the categorical ramp, never a hex value.
+
+**The ramp holds twelve slots, and the hash uses eight.** Migration 195
+widens the `icon_slot` CHECK to 1..12. Slots 9 to 12 are for an explicit
+choice only. `hashSlot` keeps its modulus at 8, so no hash-assigned
+context, tag or label repaints. The fence is "never lands outside the HASH
+range" in `categorical.test.ts`. The icon picker offers 64 names, and
+`tree.test.ts` checks every name against the themed registry.
+
+**A project can show the dashboard beside its views.** `overview` joined
+the view modes. It draws the same `NodeDashboard` a space shows, from the
+same summary endpoint. It is never the default canvas. The filter bar, the
+composer, the bulk bar and the triage rail hide on it.
+
+**Analytics is a KPI strip over a per-space table.** One row for each
+space, one column for each lane, an overdue column, and a totals footer.
+The table reads the same `/summary` endpoint as the dashboards, so the two
+surfaces cannot disagree. Plane's created-vs-resolved chart needs a time
+series the endpoint does not carry, so `AnalyticsView.tsx` records it as
+future work instead of drawing invented data.
+
+**"My work" left the Projects sidebar.** `/tasks` is the personal lens
+over the one store (D52 to D54). A second door inside Projects taught the
+split that the D-PM-6 revision removed. The `my/*` gateway routes stay,
+and `/tasks` serves them.
+
+**The header holds view controls and one overflow menu.** Custom fields,
+Tags and Lifecycle open from the overflow menu, not from three buttons
+beside the view switcher. The composer bar shows only on the timeline
+canvas, which has no in-place capture, and when the assign-work pre-fill
+needs a visible place to land. Every other canvas captures in place
+through `QuickAdd`, which inherits the group it sits in.
+
+---
+
 ### 5.x The standalone app groups by Center (D22 amendment, 2026-08-10)
 
 `department_centers.md` §5's dual-access rule names this app its first consumer:
@@ -3922,6 +4039,388 @@ from the same audit and were **not** selected by the owner. Recorded here so the
 knows they were seen and skipped, not missed.
 
 ---
+
+### 9.12 WS-27bk — the nine-feature pass (minted 2026-08-31, owner directive)
+
+**Status: PLAN. Verified against code and against the live tenant database on
+2026-08-31.** Nothing here is built. Every "already there" claim below was
+re-derived from the tree or from `information_schema`, not from a write-up.
+
+**The directive.** The owner named ten features and asked for the plan first,
+then the build, one at a time. One of the ten is parked by the owner in the
+same session. See §9.12.10.
+
+#### 9.12.0 What the audit found, and why it changes the work
+
+Four of the ten are much smaller than their names suggest. The backend is
+already there and only the surface is absent.
+
+| Feature | Data | API | UI | Real work |
+|---|---|---|---|---|
+| Task watching | `pm_task_watchers` (mig 165) | `PUT`/`DELETE /tasks/{id}/watch`, `GET /watchers` | toggle in `TaskPanel.tsx:352` | **a lens, and project watching** |
+| Status groups | `pm_task_statuses.category`, populated | `filters.GROUP_BY` | absent from `GroupBy` | **one group-by option** |
+| Drag projects into folders | `parent_project_id`, `kind`, `position` (float) | `POST /nodes/{id}/move` | absent | **UI only** |
+| Move between spaces | same row, same endpoint | same endpoint | absent | **UI only** |
+| Delete a timeline arrow | `pm_task_links` | `DELETE /tasks/{id}/links/{linkId}` | absent | **UI only** |
+
+⚠️ **Drag-into-folder and move-between-spaces are ONE feature.** Both are a
+re-parent of a row in `pm_projects`. The endpoint re-parents, reorders, refuses
+a cycle, holds the §5.1 grammar, and re-stamps `root_project_id` across the
+subtree. Two tickets here would be two front ends over one act.
+
+The remaining four are new: teamspaces, analytics, reporting and follow-ups.
+
+#### 9.12.1 Scope and non-goals
+
+**In scope.** The nine features below, each as a UI a member reaches, with the
+server work each one needs and no more.
+
+**Not in scope.**
+- A second status vocabulary. `pm_task_statuses.category` is the one.
+- A second grant mechanism. D12 stands: tenancy and visibility, no third axis.
+- A second read cache or fetch idiom. `src/lib/dataCache.ts` is the seam.
+- Charting libraries beyond what the design system permits.
+- Assign-to-AI. Parked by the owner, §9.12.10.
+
+#### 9.12.2 Task watching — the lens, and the project
+
+Watching a task works today. Two gaps remain.
+
+**(a) You cannot see what you watch.** The answer is a FILTER, not a view. One
+task store, three lenses (D52/D53/D54) — a fourth lens for watched tasks would
+fork that. `watching=true` joins the filter set the server already applies, so
+it composes with project, assignee and status like every other filter.
+
+**Done when:** `GET /projects/tasks?watching=true` returns only tasks the
+caller watches. The FilterBar carries a `Watching` chip. The chip survives a
+saved view. `test_filters.py` covers the filter alone and combined with
+`project_id`.
+**Gate:** AGENT-SAFE.
+
+**(b) You cannot watch a project.** A member wants "tell me about this project"
+without opening every task in it.
+
+⚠️ **Watching a project is NOT watching its tasks.** A subscription that expanded
+into per-task rows goes stale the moment somebody adds a task. It also writes
+thousands of rows for one click. The project watch is its own
+row, and the notification audience becomes: task watchers ∪ assignees ∪
+watchers of the task's project chain.
+
+**Done when:** a new tenant-scoped `pm_project_watchers(project_id, watcher,
+organization_id)` exists, unique per pair, and satisfies
+`test_tenant_coverage.py`. `PUT`/`DELETE /nodes/{id}/watch` mirror the task
+verbs. The project header overflow menu carries the toggle. The audience
+function in `notifications.py` reads the chain.
+**Gate:** AGENT-SAFE. Migration number taken at build time (R1).
+
+#### 9.12.3 Status groups — one option, and the reason it matters
+
+`category` holds `backlog`, `todo`, `in_progress` and `done` on every status
+row. `GroupBy` does not offer it. Add `"category"` to `GroupBy`,
+`GROUP_OPTIONS` and the gateway's `GROUP_BY`.
+
+⚠️ **CORRECTION, 2026-09-01. The first version of this section justified the
+feature with a claim that is FALSE, and the claim was mine.**
+
+It said a subtree board "draws one column per status per project — three
+projects give twelve columns where four are meant". Statuses are
+**root-scoped**, not per-project. `pm_task_statuses.project_id` holds a ROOT id.
+A move re-stamps `root_project_id` across the subtree precisely so this stays
+true. Measured on the live database: three roots, four statuses each, every
+status row on a root. So a subtree board already draws one status set.
+
+**The real value is smaller, and it arrives later.** Today each root holds
+exactly four statuses, one per category. So grouping by category draws the SAME
+four columns as grouping by status. The feature is close to a no-op right now.
+
+It earns its place when a root holds more statuses than categories. The status
+manager already permits that, and it is the normal shape. Backlog, Todo, In
+Progress, In Review, Blocked, Done and Cancelled is seven statuses over four
+stages. Two things follow.
+
+1. **A long board collapses to its stages.** Seven columns become four.
+2. **Two roots become comparable.** Operations' "In Progress" and Sales' "In
+   Progress" are different rows with different ids. The category is the only
+   vocabulary they share, and every cross-project number in §9.12.7 rests on
+   it.
+
+📌 **So this slice is CHEAP and CORRECT, and its value is latent.** Build it
+when a root grows a fifth status, or build it beside §9.12.7, which needs the
+same vocabulary. Do not build it first on the strength of the deleted claim.
+
+**Design decisions:**
+- Order is the category vocabulary's own, never `position`. A category is a
+  stage, and stages have one true order.
+- Colour comes from `CATEGORY_HUES` in `src/lib/statusAccent.ts`. No new
+  palette. AGENTS.md rule 4.
+- A collapsed group persists per member in `pm_view_user_state`, which exists.
+- Dropping a card into a category column sets the task's status to that
+  project's DEFAULT status in that category — `is_default` is on the row.
+  Without that rule the drop has no single answer when a project has three
+  statuses in one category.
+
+**Done when:** `group_by=category` returns groups in vocabulary order. A drop
+sets the default status of the target category. A collapsed group survives a
+reload. `grouping.test.ts` covers the twelve-into-four collapse.
+**Gate:** AGENT-SAFE.
+
+#### 9.12.4 Moving a project — the dialog first, then the drag
+
+One feature, two slices, and the order is deliberate.
+
+**Slice 1 — "Move to…".** A dialog from the row menu: pick the new parent from
+a tree picker that shows only LEGAL targets. It calls the endpoint that exists.
+
+⚠️ **This slice ships first because drag-and-drop is not reachable by
+keyboard.** A tree whose only re-parent gesture is a mouse drag excludes
+anybody who does not use one. The dialog also makes the grammar
+teachable. The picker greys what the server refuses, so a member learns the
+rule without meeting an error.
+
+**Slice 2 — the drag.** Two drop semantics on one row: ONTO re-parents,
+BETWEEN reorders. `position` is `double precision`, so a drop between two
+neighbours takes their midpoint and writes no other row.
+
+- Reuse `src/lib/boardDrop.ts`'s planning shape. A second drop seam is a defect.
+- Renormalise a sibling set when a midpoint gap falls below a floor. Doubles run
+  out after roughly fifty insertions in one place.
+- An illegal target is NOT a drop target. The server refuses it, and the UI must
+  refuse it first — the rules come from `assert_node_grammar`, mirrored for the
+  cursor and tested against it.
+- A move is one patch with an inverse, so `src/lib/undo.ts` covers it.
+
+**Done when:** a project moves between spaces and into a folder, by dialog and
+by drag. An illegal target never accepts a drop. Order survives a reload. Undo
+restores both the earlier parent AND the earlier position. `tree.test.ts`
+covers the midpoint and the renormalise.
+**Gate:** AGENT-SAFE.
+
+#### 9.12.5 Deleting a dependency from the timeline
+
+The endpoint exists. This is the affordance.
+
+- Hover an edge: it thickens and shows a remove control at its midpoint.
+- ⚠️ **An SVG path is about two pixels wide and cannot be hit reliably.** Each
+  edge carries a transparent stroke of about twelve pixels as its hit target,
+  under the visible one. Without it the feature reads as broken.
+- The blocked task's own bar keeps its indicator until the last blocker goes.
+- Removing a link is undoable — it is a create with an inverse.
+- ⚠️ **Hover is mouse-only, so the keyboard path is the panel — and it ALREADY
+  EXISTS.** *(Corrected 2026-09-01, during the build. The line here said each
+  row "gains" a remove control.)* `RelationsBlock` renders every relation with an
+  `Unlink` button, per-row pending state and a per-row failure message.
+  `relations` returns links in BOTH directions, and `SECTIONS` already draws
+  "Blocked by" from them. So the accessible half was complete before this
+  ticket, and the slice is the timeline affordance alone.
+- 📌 **The delete route takes either end.** `delete_link` matches
+  `source_task_id = :tid OR target_task_id = :tid`. So the id in the path is a
+  visibility check, not a direction.
+
+**Done when:** an edge is removable from the timeline and from the panel. The
+hit area is the wide stroke. Undo restores the link. The blocked indicator
+recomputes with no reload.
+**Gate:** AGENT-SAFE.
+
+#### 9.12.6 Teamspaces — a space with members · ⏸️ PARKED
+
+⚠️ **PARKED BY THE OWNER, 2026-09-01, and the reason is the useful part.**
+*"We will park for later when we actually have divisions and teams access.
+Right now we don't have that."*
+
+So the blocker is not the design and not the gate question below. **There is no
+second team to scope anything to.** A members tab on a one-team workspace is a
+list with one name on it, and the grant it writes changes who sees what for
+nobody.
+
+**The trigger that un-parks it:** a second team, division, or any group that
+should see less than the whole workspace. When that exists, the design below
+stands as written and the gate question is the only thing owed first.
+
+📌 **This park costs nothing.** The section below records the design, it settles
+the collision with D49 and D12, and `pm_project_grants` already carries the
+rows. This is a surface that waits for a reason, not a feature that waits for a
+decision.
+
+---
+
+**The design, kept intact below.**
+
+**The owner chose: give the existing Space tier membership.** Not a revival of
+Centers, and not a new level. Recorded here because the two rejected shapes both
+touch decisions already taken.
+
+**The design, in one line: a teamspace member IS a grant on that space, shown as
+a person instead of as a rule.** `pm_project_grants` is the table. D12's
+vocabulary is unchanged. What is new is a face for it.
+
+Why that is the whole feature: a grant on a space already cascades to the
+subtree. That cascade IS "everyone on this team can see this team's work". The
+member list is a projection of rows that exist.
+
+- Space Settings gains a **Members** tab, beside the identity fields migration
+  194 added.
+- The space row in the rail shows member faces, capped, with a count.
+- Adding a member writes one grant row. Removing one deletes it.
+- The grant's role stays the grant's role. This adds no permission axis.
+
+⚠️ **One question for the owner before dispatch.** CLAUDE.md §3.2 gates
+member and role writes. Adding an EXISTING org member to a space is a
+visibility act, and `GET /nodes/{id}/grants` already reads these rows. The
+build needs the owner to confirm two things. Writing a space grant is
+AGENT-SAFE. Inviting a NEW person from this surface stays out of scope.
+
+**Done when:** a space lists its members. An org member is added and removed.
+`GET /nodes/{id}/grants` shows the change. A member added to a space reads the
+subtree and nothing outside it.
+
+That last clause is the real test. It belongs in the tenancy suite, and it runs
+against a real database (R8).
+**Gate:** OWNER-GATE until the question above is answered, AGENT-SAFE after.
+
+#### 9.12.7 Analytics — four questions, four slices
+
+**The owner asked for all four.** They are built in this order, because each
+later one needs a longer history than the one before.
+
+The scope selector reuses the node summary's own scoping — the selected
+subtree, or the portfolio. Every number is a SERVER aggregate.
+
+⚠️ **Never compute a metric in the browser over the task list.** That list is
+paginated. A count taken from it is a count of one page, and it will look
+plausible and be wrong.
+
+**(a) Where is work stuck?** Age in current status, banded. Blocked tasks with
+an open blocker, read from `pm_task_links`. Overdue by project.
+
+**(b) Who is overloaded?** Open tasks per assignee, split overdue / this week /
+later. Unassigned is a bar, not a gap — it is usually the real finding.
+
+**(c) Are we getting faster?** Throughput per week, and cycle time from first
+`in_progress` to `done`.
+
+⚠️ **This one needs history, and the history already exists.** `pm_activities`
+is the timeline spine and status changes are activities (§3.8). So cycle time is
+derivable with no new event table. The query walks activities and MUST be
+bounded by period and by scope, or it reads the whole spine.
+
+**(d) What did we finish?** Completed in a period, by project. This is also the
+body of the weekly report in §9.12.8, so its shape is decided here.
+
+**Done when:** each slice adds one endpoint under `/projects/analytics/`. Each
+answers for a subtree and for the portfolio. Each is covered against a real
+database (R8). No metric is computed client-side. Charts use the categorical
+ramp through `src/lib/categorical.ts`, never a raw palette class.
+**Gate:** AGENT-SAFE.
+
+#### 9.12.8 Reporting — analytics, rendered and sent (owner decision, 2026-08-31)
+
+**The owner drew the line: analytics is what you look at, a report is what gets
+delivered.** So this is built ON §9.12.7 and after it. A report with no
+analytics behind it would mint a second set of numbers, and two sets of numbers
+disagree.
+
+A report is a saved definition: scope, period, sections, recipients, schedule.
+`pm_views` is the precedent for a saved definition, and `pm_reports` follows its
+shape.
+
+- **Render first, deliver second.** Slice 1 renders a report in the app from a
+  saved definition. It is useful alone, and it is how the content gets reviewed
+  before anything sends.
+- **Delivery uses the ONE outbound email seam.** `src/lib/emailOtp.ts` gives
+  `resendSender` and `emailOtpFrom`. AGENTS.md rule 4 — import them. A second
+  transport puts a second bearer mint in the route tree, and
+  `gateway.test.ts`'s allow-list refuses it by name.
+- ⚠️ **A report email carries no colour.** Email renders outside the theme, so a
+  hex value there can never follow the org's look. `inviteEmail.test.ts` fences
+  this already.
+- **The schedule is owner-gated to arm.** A job that emails people on a timer is
+  an outward act. Build it dark, default off.
+
+**Done when:** a definition saves, renders in-app, and renders to an email body
+with no colour. The scheduled send exists behind a flag that is off.
+**Gate:** AGENT-SAFE to build. OWNER-GATE to arm the schedule.
+
+#### 9.12.9 Follow-ups — a nudge on what you are waiting for (owner decision)
+
+**The owner's shape: you are blocked on somebody, so you set a date, and it
+comes back to you.**
+
+⚠️ **It has two halves and they live in different places.** My reminder is mine,
+and a nudge to another person is shared. Putting both in one place gets one of
+them wrong.
+
+- **The reminder** is per-member, so it belongs on `pm_task_personal` — the
+  overlay that already holds `defer`. Two nullable columns: the date, and who
+  is being waited on.
+- **The nudge** is a notification to that person, through the notification path
+  that exists. It is optional and off by default. A follow-up that always pings
+  somebody is a tool people stop using.
+- **The surface** is the triage rail, which exists. A `Waiting on` section lists
+  what is due to come back, and what has.
+- When the date arrives the task surfaces in the member's own lens. It does not
+  change the task's status, because the status is the team's and the follow-up
+  is mine.
+
+**Done when:** a follow-up sets from the task menu. The task returns on its
+date, in the rail and in the personal lens. An optional nudge notifies the
+named person once. The task's shared status never changes.
+**Gate:** AGENT-SAFE.
+
+#### 9.12.10 Assign to AI — PARKED by the owner, 2026-08-31
+
+The owner listed "Assign to AI / Execute / Waiting For / Active when enough
+context for the task". The owner then set the shape questions aside twice in one
+session. It is recorded here unplanned, so it is not lost and not half-designed.
+
+**What it needs before anybody builds it, and why each blocks:**
+
+1. **Are `Waiting For` and `Active` statuses, or a second track?** They read as
+   statuses, and `pm_task_statuses` already owns that vocabulary. The answer
+   decides whether this is a data change or a new column.
+2. **How much may the AI do alone?** Draft for approval, or act. An outward act
+   cannot be taken back, and Approvals already exists as the surface for one.
+3. ⚠️ **It costs money, and the price is not set.** H-42 says the AI rate card
+   is unpriced and the spend gate is not flipped. Work dispatched to an AI
+   spends credits, so this feature cannot be armed before that.
+
+`agent_dispatch.py` exists, and §6.4 already records that assignment is
+dispatch. The seam is there. The product shape is not.
+
+#### 9.12.11 The order, and why
+
+| Wave | Items | Why here |
+|---|---|---|
+| 1 | Delete a dependency · watching filter | Small, independent, and each one changes what a member sees TODAY |
+| 2 | Move dialog, then drag | One feature. The accessible path ships first |
+| 3 | Project watching | ⏸️ Teamspace members PARKED 2026-09-01 — no second team to scope to yet (§9.12.6) |
+| 4 | Analytics (a) → (b) → (c) → (d), and status groups beside them | Each later metric needs more history. Status groups shares their vocabulary, and §9.12.3 explains why it waits |
+| 5 | Reporting | Renders what wave 4 computes |
+| 6 | Follow-ups | Independent, and it pairs with a parked feature |
+| — | Assign to AI | Parked. §9.12.10 |
+
+#### 9.12.12 Verification
+
+Run from the repo root, with a database up. R8 matters here: with no database,
+843 tests SKIP and the run still reads green.
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_projects_filters.py tests/unit/test_projects_tree.py
+uv run pytest tests/unit/test_tenant_coverage.py
+```
+
+In `workbench/control_plane`:
+
+```
+npx tsc --noEmit
+npx vitest run
+npx vitest run src/lib/theme/
+```
+
+Then do the check no test in this tree makes (`DESIGN_SYSTEM.md` §8). Look at
+each new surface in light mode, at compact density, and under a changed
+accent.
 
 ## 10. Verification
 

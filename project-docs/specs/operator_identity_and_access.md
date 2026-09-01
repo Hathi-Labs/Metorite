@@ -2,9 +2,161 @@
 
 **Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-08-26.**
 
+**◐ CP-12a BUILT 2026-08-26** (`ws31-cp12a-staff-identity`) — the substrate
+half. Migration 009, `customer_console/operators.py`, five `store.py` reads and
+writes, and **28 tests against a real Postgres 16, 0 skipped**.
+
+Six mutations killed, each one an auth fence. They remove check 1, check 3 or
+the status check. They make the refusals distinguishable. They remove the
+fail-closed guard. They count only `active` rows in the bootstrap gate.
+
+Ships **DARK** — nothing calls `admit` yet.
+
+**◐ CP-12b BUILT 2026-08-26** (`ws31-cp12b-operator-session`) — the fifth
+auth scheme and the real actor. `cc_sess_` through `keys.py`,
+`operator_sessions.py`, five more `store.py` writes, and nine operator
+routes that now name the PERSON in `control_audit.actor`.
+
+**19 tests, 0 skipped. 550 passed across every Console suite, so the changed
+`Operator` dependency broke nothing.** Eight mutations killed. ⚠️ One known
+gap was pinned rather than hidden: `/orgs/provision` is a dual-arm door, so
+its operator arm recorded the shared actor. **CP-12c closed it.**
+
+**◐ CP-12c BUILT 2026-08-26** (`ws31-cp12c-role-matrix`) — the §5 matrix,
+enforced at the door and **failing closed** on any operator route it does not
+name. 49 tests. **618 passed** across every Console suite. Seven mutations
+killed, one of which fails with `{403, 404} == {403}` — the oracle leak stated
+as an assertion. Two spec corrections are recorded in §5 and §8.1.
+
+**◐ CP-12d BUILT 2026-08-27** (`ws31-cp12d-operator-admin`) — an admin adds,
+re-roles and deactivates an operator. Four routes, four guards, 24 tests, and
+**676 passed** across every Console suite. Eight mutations killed.
+
+⚠️ **Three of these tests proved nothing until mutation testing said so.**
+Guard 2 (no self-write) answers 409 before guard 1 (last admin) can. So no
+OPERATOR caller can isolate guard 1. Only the break-glass token reaches it,
+because that token holds no operator id. It is now a written test rather than
+a lesson somebody learns twice.
+
+**◐ CP-12e BUILT 2026-08-27** (`ws31-cp12e-elevation`) — the window and the
+break-glass path. `operator_elevation.py`, three routes, and the `elevated`
+rows of §5 now need a live window and the role together. 19 tests. **668 passed**
+across every Console suite. Nine mutations killed, plus two PAIRS.
+
+⚠️ **The shared token's audit actor is renamed `operator` to `breakglass`.**
+Four existing assertions moved with it, and they now read the constant rather
+than a literal. Old rows keep the old word.
+
+⚠️ **A real bug was caught at build.** FastAPI matches routes in declaration
+order, so `/operators/{operator_id}` swallowed `/operators/elevate` and
+`DELETE` answered 404 instead of closing a window. Pinned by
+`test_the_elevate_routes_are_not_swallowed_by_the_path_parameter`.
+
+**◐ CP-12f BUILT 2026-08-27** (`ws31-cp12f-activity`) — the Activity
+surface. `operator_activity.py` holds the page cursor, `store.activity_page`
+holds the query, and `GET /activity` reads every company. 26 tests.
+**13 mutations killed, 0 survived.**
+
+⚠️ **H-7 was measured on this surface, not assumed.**
+`test_a_late_commit_can_be_missed_by_a_scroll` reproduces the miss on real
+Postgres 16. It also proves the row returns on the next fresh read. The
+cursor is EPHEMERAL, and that bound is what migration 168 does not have.
+
+⚠️ **F8 was found at build. See §2.** The identity stack has no front
+door. CP-12g must not start before somebody builds one.
+
+**◐ CP-12f2 BUILT 2026-08-27** (`ws31-cp12f2-front-door`) — **F8 is closed.**
+`operator_signin.py` plus `POST` and `DELETE` `/operators/session`.
+
+Supabase verifies the token. `operators.admit` then runs the three checks.
+53 tests. **19 mutations killed, plus two PAIRS.**
+
+⚠️ Done-whens 1 to 6 were written for CP-12a and **nothing could reach them**
+until this slice. They are exercised through the route here for the first
+time.
+
+⚠️ **A real bypass was found by mutation testing and closed.** The gate first
+asked whether a Microsoft identity was AMONG the account's linked identities.
+That is not the same question as whether the sign-in came from one. A
+colleague who links a personal account, and an attacker who takes it, would
+have reached this console without passing through Entra. The gate now reads
+`app_metadata.provider`, the sign-in provider.
+
+🔴 **The owner must also disable manual identity linking in the Supabase
+project.** `app_metadata.provider` is the strongest signal the payload
+carries, and it is not a per-session claim. Turning linking off removes the
+condition the bypass needs. Filed with **H-54**.
+
+⚠️ **Two more real bugs caught at build.** `request.client.host` is not always
+an address, and an unparseable value made the `INET` cast raise, which turned
+a valid sign-in into a 500. `safe_ip` records nothing instead. `DELETE
+/operators/session` was also declared behind `/operators/{operator_id}` and
+was swallowed, which is the CP-12e route-ordering bug a second time.
+
+⚠️ **The UI is still not wired.** `workbench/operator_console` posts the old
+shared passphrase. CP-12g rewires it and removes the passphrase.
+
+**◐ CP-12g slice 1 BUILT 2026-08-27** (`ws31-cp12g-console`) — the console
+itself. `identity.ts`, the Operators and Activity surfaces, the Microsoft
+sign-in flow, and six BFF routes. 131 frontend tests. **14 mutations killed.**
+
+⚠️ **Done-when 27 is NOT met, and that is the design.** `staff.ts` and
+`OPERATOR_CONSOLE_STAFF_SECRET` are still here. Both paths run at once, and
+`OPERATOR_IDENTITY_ENABLED` chooses.
+
+The console has been live on the passphrase since 2026-08-22. Delete it before the owner finishes H-54 and the
+team is locked out of a running console. Slice 2 deletes it, AFTER one
+real sign-in is confirmed. H-56 carries the order.
+
+⚠️ **Done-when 28 is met, and it was shown RED first.** Two fences, each
+proven to fail before it passed. One catches an `/api/operator/**` route that
+does not reach the gate. The other catches a route or PAGE that reaches the
+Console without the caller's session.
+
+⚠️ **The second fence found four real defects in already-merged code.** Four
+page reads called the Console with no caller token. Under the session path
+each would arrive as `breakglass` — past the §5 matrix, and logged as a
+break-glass event on every page view.
+
+**◐ CP-12g slice 1 AMENDED 2026-09-01** (`ws-31-login-both`) — the login page
+now names the way back.
+
+⚠️ **This is text, and it is not a second door.** `login/page.tsx` prints one
+recovery note on the identity path. The note names
+`OPERATOR_IDENTITY_ENABLED`, and it asks the reader to unset that variable and
+restart the console. The staff passphrase works again after that restart. The
+note shows in the two states that strand a reader: sign-in not configured, and
+a refused Microsoft sign-in.
+
+The page renders **no** passphrase form there. Done-when 29 holds. The gate
+refuses an interim cookie while the flag is on, and `POST
+/api/operator/session` then wants a Supabase `access_token`. A passphrase form
+on that page would answer 400 on submit.
+
+H-56 keeps the order. The owner removes the passphrase after one real sign-in
+succeeds. Fence: `workbench/operator_console/src/app/login/login.test.ts` —
+six cases, three mutations killed.
+
+🔴 **Owner acts still owed:** H-54 configures Supabase and turns identity
+linking off. H-58 names the first operators. Then the flag flip, then slice 2.
+*(The Console ladder is applied. See the note under §7.)*
+
+**⛔ THE DIRECTORY CHANGED 2026-09-01 — D70.** We have no Microsoft Entra
+directory. Supabase Auth with the **Google Workspace** provider authenticates
+staff instead, and the `hd` hosted-domain claim replaces the Entra `tid` as
+check 1. D35.3's intent stands, which is one directory, ours, admin-managed.
+Email OTP is refused for this console.
+
+⚠️ **Read the two halves apart.** Every ◐ BUILT note above is a true record of
+what CP-12a to CP-12g slice 1 shipped, and that code names Microsoft. §4.1 and
+§8.1 below now state what a later slice must build. The two disagree on
+purpose, and the gap is the work.
+
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
-**Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
-2026-08-26. It reconciles **D35.3** with **D34**.
+**Decisions of record:** **D64** (`work_plan.md` §3), taken by the owner on
+2026-08-26, which reconciles **D35.3** with **D34**. **D70**, taken by the
+owner on 2026-09-01, which amends **D64.1** and moves the directory to Google
+Workspace.
 
 **Owns:** who a platform operator is, what each one may do, how one is added and
 removed, and what the audit log says afterwards.
@@ -55,11 +207,15 @@ from the code on 2026-08-26.
 | **F5** | **Removing one person means changing the secret for everybody.** There is no per-person revocation | F1 |
 | **F6** | **Nothing slows a guess.** The sign-in route has no rate limit, no lockout and no delay | `session/route.ts` |
 | **F7** | **The gate holds by convention, not by structure.** The app has no `middleware.ts`. Each route calls the gate itself. A new route that forgets is open, and no test says otherwise | `find workbench/operator_console -name "middleware*"` returns nothing |
+| **F8** | ✅ **CLOSED by CP-12f2 on 2026-08-27.** ~~The identity stack has no front door.~~ Found at the CP-12f build: Nothing calls `operators.admit()`. Nothing calls `operators.bootstrap()`. Nothing calls `store.operator_session_insert` except the tests. CP-12a to CP-12e verify a session that no route can issue, so every operator route today answers to the shared `breakglass` token alone. **CP-12g must not remove the passphrase before somebody builds the exchange, or the console admits nobody at all** | `[r.path for r in app.routes]` names no sign-in route |
 
 **Read F1 to F7 together and the shape is clear.** The console is protected by a
 shared password with no identity behind it. That posture was correct while the
 app was dark and nobody had deployed it. The app was deployed on 2026-08-22, so
 the posture is now the weakest control in the product.
+
+⚠️ **F8 blocks the cutover.** CP-12g deletes the passphrase. Delete it
+before the exchange exists and nobody can sign in at all.
 
 ⚠️ **F3 is the one that compounds.** Roles are only worth as much as the record
 of who used them. If the log cannot name a person, then a role gate is a control
@@ -67,17 +223,25 @@ nobody can check after the fact.
 
 ---
 
-## 3. The decision this rests on — D64
+## 3. The decisions this rests on — D64 and D70
 
 **D35.3 said the console pins one Microsoft Entra directory, ours.** **D34 then
 bought Supabase Auth** for the customer plane, with Microsoft as one of its
 providers. Nobody reconciled the two, so the staff gate stayed an interim secret
 for four months. **D64 reconciles them.**
 
-| # | D64 says | Note |
+**⛔ D70 then corrected the directory itself, on 2026-09-01.** The owner stated
+that we have no Entra directory, and that `hathilabs.com` is a Google Workspace
+domain with an admin console. So D64.1 named a provider we cannot configure.
+D70 moves the provider to Google Workspace and the claim to `hd`.
+
+| # | The decision says | Note |
 |---|---|---|
-| **D64.1** | **Supabase Auth, with the Microsoft provider, authenticates staff** | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
-| **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea |
+| **D70.1** | **Supabase Auth, with the GOOGLE WORKSPACE provider, authenticates staff.** The `hd` hosted-domain claim replaces the Entra `tid` as check 1 | ⛔ **This amends D64.1.** D35.3's intent stands, which is one directory, ours, admin-managed. Only the mechanism moves |
+| **D70.2** | **Email OTP is refused for this console**, although the tenant app offers it | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
+| **D70.3** | **The `hd` claim is load-bearing.** A domain match alone is not enough | Google lets a person create an account on a non-Gmail address, and verifies it by mail. Google then returns `email_verified: true` and NO `hd`. So a domain match alone admits a former employee's alias, a forward, a catch-all address, or a compromised mailbox. `hd` appears only for an account the Workspace admin manages |
+| **D64.1** | ⛔ **AMENDED by D70.1.** Was: Supabase Auth, with the Microsoft provider, authenticates staff | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
+| **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea. ⛔ Check 1 reads `hd` since D70, not `tid` |
 | **D64.3** | **Three roles: `viewer`, `editor`, `admin`** | `admin` is the only role that administers operators |
 | **D64.4** | **No standing destructive privilege.** An `admin` holds the *right to elevate*, not the privilege | The elevation is time-boxed and needs a stated reason |
 | **D64.5** | **Operators reach the commercial record only** | NG-1 and NG-2. Widening this is an owner decision |
@@ -93,8 +257,10 @@ An operator is admitted when all three pass. Any one that fails refuses the
 sign-in, and the console says which class of refusal it was without naming which
 check failed.
 
-1. **The directory.** Supabase Auth returns a Microsoft identity. The console
-   asserts that the `tid` claim equals `OPERATOR_ENTRA_TENANT_ID`.
+1. **The directory.** Supabase Auth returns a Google identity. The console
+   asserts that the `hd` hosted-domain claim equals `OPERATOR_GOOGLE_HD`.
+   ⛔ **Changed 2026-09-01 by D70.** This read *"a Microsoft identity"* and
+   `OPERATOR_ENTRA_TENANT_ID` until then.
 2. **The domain.** The email domain is in `OPERATOR_STAFF_DOMAINS`.
 3. **The registry.** A row exists in `operator` for that email, and its status is
    `active`.
@@ -102,6 +268,22 @@ check failed.
 ⚠️ **Check 3 is not redundant.** Without it, every person our directory ever
 admits becomes a platform operator on their first sign-in. The directory tells
 us a person works here. It does not tell us they run the platform.
+
+⚠️ **Check 1 is not redundant either, and check 2 cannot stand in for it.**
+Google issues an account on any address it can verify by mail, and such an
+account carries **no `hd` claim at all**. It still carries `email_verified:
+true`. So a gate that reads the email domain alone admits anybody who receives
+mail at a staff domain. That set holds a former employee's alias, a forward, a
+catch-all address, and a compromised mailbox.
+
+**`hd` is what makes the account admin-managed.** Google sets it only for an
+account inside a Workspace domain, which is an account our admin created and
+our admin can delete. That is the same property the Entra `tid` gave us, and it
+is the reason D70 could move the mechanism without moving D35.3's intent.
+
+⚠️ **Email OTP is not a way in.** The tenant app offers a Resend 6-digit OTP,
+and this console refuses one. See **D70.2**. A console that reaches every
+customer organization must not admit a person on inbox control alone.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
@@ -153,7 +335,9 @@ when the log matters most.
 ## 5. The roles, bound to the routes that exist
 
 ⚠️ **This matrix is the contract.** An agent that adds a Console route must add a
-row here in the same change. `role_matrix.test.ts` fails when a route has no row.
+row here in the same change. The table of record is
+`customer_console/operator_roles.py::MATRIX`, and `test_operator_roles.py` fails
+both ways — a route with no row, and a row with no route.
 
 | Action | Console route | `viewer` | `editor` | `admin` |
 |---|---|---|---|---|
@@ -177,10 +361,23 @@ row here in the same change. `role_matrix.test.ts` fails when a route has no row
 **"elevated"** means the role is `admin` **and** a live elevation window is open.
 See §6.3.
 
-**The credit threshold** is `OPERATOR_CREDIT_ELEVATION_PAISE`. It defaults to
-**1500000 paise, which is ₹15,000**. That number is not new. **D33.4b** already
-caps the auto-top-up threshold below ₹15,000. One number for both keeps one
-vocabulary for "a credit movement large enough to need a second thought".
+**The credit threshold** is `OPERATOR_CREDIT_ELEVATION`. It defaults to
+**15,000 credits**.
+
+⚠️ **CORRECTED at build, 2026-08-26.** This read `OPERATOR_CREDIT_ELEVATION_PAISE`
+and named a rupee amount. `POST /credits/grant` grants a Decimal quantity of
+**credits**, and there is no credit-to-rupee rate in this system. The rate card
+ships UNPRICED by decision (D19.2), and pricing it is **H-42**, an owner call. A
+threshold in paise would imply a conversion that does not exist. The next
+implementer would have had to invent a price to apply it.
+
+The NUMBER still echoes **D33.4b**'s ₹15,000 auto-top-up cap, so both keep one
+idea of "large enough to need a second thought". ⚠️ Re-derive it against the
+rate card once H-42 prices one.
+
+⚠️ Only a POSITIVE grant is measured. A negative delta is a correction. Holding
+corrections to the admin bar would push people to fix a mistake by granting
+MORE rather than by reversing it.
 
 **Why `viewer` reads the activity log.** Transparency inside the team is the
 point of the log. A control that only the powerful can read is not a control.
@@ -301,6 +498,16 @@ CREATE TABLE IF NOT EXISTS operator_elevation (
 );
 ```
 
+✅ **The ladder is APPLIED on production. Measured 2026-09-01.** The `operator`
+table exists and holds two `active` `admin` rows. Migrations 019, 020 and 021
+are recorded as well, so the Console ladder is well past this migration. H-64
+carried the apply and the owner closed it.
+
+⛔ **The `directory_subject` comment says *"the Entra object id"*, and the
+migration has shipped.** D70 makes that value the **Google subject** instead.
+Do not rewrite an applied migration. A later slice corrects the comment in a
+new file, or leaves it and states the meaning here.
+
 ⚠️ **These three tables are deliberately NOT tenant-scoped.** They belong to the
 cross-tenant plane. **R5(a)** is satisfied the way CP-1 satisfied it. The
 Console's ladder is not the tenant ladder, so `gen_tenant_migration.py` does not
@@ -327,25 +534,32 @@ out of a live console.
 
 | Ticket | What it delivers | Depends on | Gate |
 |---|---|---|---|
-| **CP-12a** | **Staff identity.** Supabase Auth with the Microsoft provider. The three checks of §4.1. The `operator` table and its bootstrap path | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
-| **CP-12b** | **The session and the real actor.** `cc_sess_` through `keys.py`. `operator_session`. Absolute and idle expiry. Server-side revocation. `control_audit.actor` becomes the person | CP-12a | 🟢 **AGENT-SAFE** |
-| **CP-12c** | **Roles.** The fifth auth scheme in `auth.py`. §5's matrix bound to every route. `role_matrix.test.ts` | CP-12b | 🟢 **AGENT-SAFE** |
-| **CP-12d** | **Operator administration.** The three routes of §6.1, the four guards, and the console surface that drives them | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
-| **CP-12e** | **Elevation and break-glass.** `operator_elevation`. The window. The alert. The `actor='breakglass'` row | CP-12c | 🟢 **AGENT-SAFE** |
-| **CP-12f** | **The Activity surface.** A cross-org read of `control_audit` with a filter for actor, action and company. Every role reads it | CP-12b | 🟢 **AGENT-SAFE** |
-| **CP-12g** | **The cutover and the fences.** Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7** | all | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
+| **CP-12a** | ◐ **BUILT 2026-08-26 (substrate half).** The three checks of §4.1, the `operator` registry and the one-time bootstrap — migration 009, `operators.py`, five `store.py` functions, 28 R8 tests, 6 mutations killed. ⚠️ **Deferred to CP-12b:** the Supabase sign-in exchange itself. `admit()` takes a *verified* `(tid, email)` and nothing verifies one yet, so the module is reachable by no route | — | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration and the env values are **OWNER-GATE** |
+| **CP-12b** | ◐ **BUILT 2026-08-26.** The fifth auth scheme (`cc_sess_`), `operator_sessions.py`, absolute **and** idle expiry, server-side revocation, and nine operator routes whose audit rows now name the person — 19 R8 tests, 8 mutations killed. ⚠️ **Known gap, pinned by a test:** `/orgs/provision` is a dual-arm door and its operator arm still records the shared actor. CP-12c closes it | CP-12a | 🟢 **AGENT-SAFE** |
+| **CP-12c** | ◐ **BUILT 2026-08-26.** `operator_roles.py` holds the §5 matrix, enforced in `auth.require_operator` BEFORE the route body runs — so a refusal cannot reveal whether a company exists. Fails CLOSED on an unnamed route. 49 R8 tests, 7 mutations killed. Also closes CP-12b's provision-actor gap | CP-12b | 🟢 **AGENT-SAFE** |
+| **CP-12d** | ◐ **BUILT 2026-08-27.** FOUR routes (`GET`/`POST` `/operators`, `PATCH`/`DELETE` `/operators/{id}`) and the four guards of §6.1. `GET` is `viewer` — who holds power over our customers is what the team should see without asking. 24 R8 tests, 8 mutations killed. ⚠️ Deferred: the console SURFACE that drives them, which lands with CP-12f | CP-12c | 🟢 **AGENT-SAFE** to build. 🔴 Granting a real person the `admin` role on the live box is **OWNER-GATE** |
+| **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
+| **CP-12f** | ◐ **BUILT 2026-08-27.** `operator_activity.py` plus `GET /activity` and `GET /activity/actions`. Keyset-paginated, cross-org, `viewer`-readable. The `LEFT JOIN` keeps org-less and purged-company rows visible. 26 R8 tests, **13 mutations killed and 0 survived**. ⚠️ H-7 is reproduced by a test, not assumed. ⚠️ Found **F8** at build | CP-12b | 🟢 **AGENT-SAFE** |
+| **CP-12f2** | ◐ **BUILT 2026-08-27. F8 is closed.** `operator_signin.py`, `POST` and `DELETE` `/operators/session`, and the one-time bootstrap through the door. Supabase verifies the token, then `operators.admit` runs the three checks. Done-whens 1 to 6 are reachable for the first time. 53 R8 tests, **19 mutations killed and two PAIRS**. ⚠️ A real bypass was closed at build, and 🔴 the owner must disable identity linking in Supabase. Was: The Supabase sign-in exchange: a route that takes a verified Microsoft identity, calls `operators.admit()`, and mints the `cc_sess_` session CP-12b already verifies. §8.1 done-whens 1 to 6 are UNREACHABLE without it. See **F8** | CP-12a | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration stays **OWNER-GATE** |
+| **CP-12g** | ◐ **SLICE 1 BUILT 2026-08-27, AMENDED 2026-09-01.** The amendment prints a recovery note on the login page. It names `OPERATOR_IDENTITY_ENABLED` and it adds no passphrase form, so done-when 29 holds. The console itself: `identity.ts`, the Operators and Activity surfaces, the Microsoft sign-in flow, six BFF routes, and BOTH F7 fences shown red first. 131 frontend tests, **14 mutations killed**. The fence found four already-merged page reads that dropped the caller session. ⚠️ **Slice 2 is the deletion, and it waits for the owner.** Was: Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
 ### 8.1 Done-when, per ticket
 
+⛔ **Done-whens 1, 5 and 30 to 33 changed or arrived on 2026-09-01 with D70.**
+The built code names Microsoft. These state the Google Workspace gate a later
+slice must build. Every other done-when below is unchanged and still binds.
+
 **CP-12a**
-1. A Microsoft identity whose `tid` is not ours is refused **403**, and the
-   refusal is logged.
+1. A Google identity whose `hd` is not ours is refused **403**, and the console
+   logs the refusal. ⛔ **Rewritten 2026-09-01 (D70).** This read *"a Microsoft
+   identity whose `tid` is not ours"*.
 2. An email outside `OPERATOR_STAFF_DOMAINS` is refused **403**.
 3. An email with no `operator` row is refused **403**, even when checks 1 and 2
    pass.
 4. An `operator` row whose status is `suspended` or `deactivated` is refused.
-5. An unset `OPERATOR_ENTRA_TENANT_ID` fails **closed** with a **503**, the same
-   way `staff.ts` does today.
+5. An unset `OPERATOR_GOOGLE_HD` fails **closed** with a **503**, the same
+   way `staff.ts` does today. ⛔ **Rewritten 2026-09-01 (D70).** This named
+   `OPERATOR_ENTRA_TENANT_ID`.
 6. The bootstrap inserts one admin when the table is empty, and is refused once
    any row exists.
 
@@ -363,7 +577,12 @@ out of a live console.
 **CP-12c**
 13. Each cell of §5's matrix has a test. A `no` cell answers **403**, and the
     refusal is logged.
-14. `role_matrix.test.ts` fails when a Console operator route has no matrix row.
+14. The matrix **fails closed**: an operator route it does not name is refused.
+    `test_operator_roles.py::test_every_operator_gated_route_has_a_matrix_row`
+    fails at source level, so the refusal arrives in CI rather than in
+    production. ⚠️ **CORRECTED at build:** this said `role_matrix.test.ts`. The
+    matrix is enforced server-side in the Console, so a TypeScript test cannot
+    see the routes it must cover.
 15. Every **403** is byte-identical whether the role is too low or the company
     does not exist. A refusal must not answer a question.
 
@@ -393,6 +612,29 @@ out of a live console.
     gate makes the fence fail. **Show this red first.**
 29. With the flag ON, the old passphrase is refused.
 
+**The Google Workspace gate — added 2026-09-01 by D70**
+
+30. 🔴 **A Google identity carrying NO `hd` claim is refused 403.** This holds
+    even when the email domain is in `OPERATOR_STAFF_DOMAINS` and an active
+    `operator` row exists for that email. **This is the personal-Google-account
+    attack, and it is the most important case on this list.** A missing claim
+    is a refusal, and never a pass.
+31. **`_email_is_verified` reads `email_verified` only from the SIGN-IN
+    provider's identity.** A second linked identity does not satisfy it. ⚠️ The
+    built function scans EVERY identity in the payload today
+    (`operator_signin.py`), so this done-when names a real gap, not a
+    restatement.
+32. **The bootstrap gate fires on the `hd` match, and never on a missing
+    directory claim.** The gate sits at `main.py:1178` and reads
+    `identity.tid == operators.staff_tenant_id()` today. Two `None` values
+    compare equal in Python, so an identity with no directory claim would
+    consume the one-time bootstrap path. **Show this red first.**
+33. **The allowed sign-in provider set can never hold a passwordless
+    provider.** `email`, `magiclink`, `otp`, `phone` and `sms` stay out of it,
+    per **D70.2**. **R7 — the fence is
+    `tests/unit/test_operator_signin.py::test_no_passwordless_provider_is_ever_allowed`**,
+    which reads the allowlist constant and fails on any member of that set.
+
 ---
 
 ## 9. Named deferrals, and what pulls each one in
@@ -400,14 +642,31 @@ out of a live console.
 **These are not oversights.** Each one is written down with the trigger that
 turns it into a ticket.
 
+### 9.1 🔴 DEF-1's trigger HAS FIRED — 2026-09-01
+
+**A second admin exists.** A production read on 2026-09-01 found two `active`
+`admin` rows in the `operator` table. They are `nithin@hathilabs.com` and
+`vjvarada@hathilabs.com`, both created 2026-08-30. DEF-1's trigger reads *"a
+second admin exists"*, so the trigger has fired.
+
+**This section exists because DEF-1 says the trigger must not pass unnoticed.**
+The table below states triggers, and it had no place to record a firing. That
+is the gap this section closes. Nobody may delete this note by deferring DEF-1
+again.
+
+⚠️ **This records the firing. It does not build four-eyes approval.** Four-eyes
+needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
+**C4** carries the owner half, and **H-93** carries the queue entry.
+
 | # | Deferred | Trigger that pulls it in |
 |---|---|---|
-| **DEF-1** | **Four-eyes approval on purge, suspend and large credit grants** | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
+| **DEF-1** | 🔴 **FIRED 2026-09-01. See §9.1.** Four-eyes approval on purge, suspend and large credit grants | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
 | **DEF-2** | **Per-action step-up re-authentication** | An operator works from a shared or unmanaged device. §6.3's elevation raises the cost of a stolen cookie, but it does **not** re-prove possession of the second factor, and that difference is the whole of what step-up adds |
 | **DEF-3** | **SCIM or directory group sync** | The team passes about 10 operators, where hand-maintaining the registry starts to drift |
 | **DEF-4** | **Read-only tenant view for support, with consent and an access record** | A support request arrives that the team cannot answer without seeing tenant content. ⚠️ **D64.5 makes this an owner decision, not an engineering one** |
 | **DEF-5** | **Anomaly alerting** — a burst of reads, an odd hour, a first-time company | The activity log of CP-12f gives the data. Nobody reads a log until it alerts |
 | **DEF-6** | **Tamper-evident audit storage**, off-box and append-only | The first external audit. Today `control_audit` sits in the same database an admin can reach |
+| **DEF-7** | **Mailing the break-glass alert to `OPERATOR_ALERT_EMAIL`** | ⚠️ **CP-12e logs a WARNING instead, deliberately.** The Resend seam lives in the GATEWAY (`routes/email_otp.py`), and reaching across a service boundary for one message would put a second email seam inside the Console. The log line is the durable record and the thing an alert rule fires on. The trigger is **log alerting existing at all** — until something watches the Console's logs, mail from the Console would be the only alerting we have, which is worse than one place to look |
 
 ---
 
@@ -418,8 +677,8 @@ An agent must **refuse these by name** and say so. They belong in
 
 | # | Act | Class |
 |---|---|---|
-| **G1** | Configuring the Supabase Auth Microsoft provider, and holding its secret | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_ENTRA_TENANT_ID`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box | `env-write` |
+| **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
+| **G2** | Setting `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID` | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |
@@ -433,8 +692,12 @@ An agent must **refuse these by name** and say so. They belong in
 ```bash
 # The Console half — R8, against a real Postgres 16.
 uv run pytest tests/unit/test_operator_identity.py -q
+uv run pytest tests/unit/test_operator_session.py -q
 uv run pytest tests/unit/test_operator_roles.py -q
+uv run pytest tests/unit/test_operator_admin.py -q
 uv run pytest tests/unit/test_operator_elevation.py -q
+uv run pytest tests/unit/test_operator_activity.py -q
+uv run pytest tests/unit/test_operator_signin.py -q
 
 # The seam ratchets must stay green.
 uv run pytest tests/unit/test_db_engine_seam.py tests/unit/test_tenant_coverage.py -q

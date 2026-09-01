@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any
 
 from acb_auth import require_llm_api_auth
@@ -414,8 +415,223 @@ def _sanitize_upstream_error(exc: Exception) -> tuple[int, str]:
     return status, f"upstream completion failed ({status}): {reason}"
 
 
+# ── CP-11 slice 3: the serving hop ─────────────────────────────────────────
+#
+# ⚠️ **This file is the FIFTH importer of `acb_auth.console_resolve`**, where
+# the fence in `tests/unit/test_console_dependency_boundary.py` allowed four.
+# The argument is written beside the name there, and it is this: the property
+# that fence protects is *nothing here allocates a seat*, and this call site
+# allocates none. It spends AI CREDITS — a different resource, a different
+# door (`cc_live_`, not `cc_depl_`) and a different table.
+
+
+def _router_should_serve(body: dict[str, Any]) -> bool:
+    """Whether THIS request goes to the Console Router. Two conditions, both.
+
+    1. the flag is on;
+    2. the box is wired for the Router (URL **and** the `cc_live_` org key).
+
+    ⚠️ **A STREAM IS ROUTED TOO, as of CP-11 slice 5.** Slice 3 carried a third
+    condition that sent every stream down the local path, because the Router
+    answered 501 and CP-4b was unbuilt. That made streaming UNMETERED, and
+    since every agent runtime streams it left most traffic unmetered. CP-4b
+    landed on 2026-08-27 and the condition is gone with it.
+
+    ⚠️ Do not re-add it as a "safety" measure. A stream on the local path is a
+    stream nobody bills, which is the D57.7 failure reached by a different
+    road.
+    """
+    from acb_common.settings import get_settings
+
+    if not get_settings().router_serving_enabled:
+        return False
+
+    from acb_auth.console_resolve import router_is_wired
+
+    if not router_is_wired():
+        # Flag ON, box not wired. Say so: this state is indistinguishable from
+        # "the flag is off" at the surface, and silence is how it stays that way.
+        _log.warning("v1.router_enabled_but_unwired")
+        return False
+
+    return True
+
+
+async def _serve_via_router_stream(
+    request: Request, body: dict[str, Any]
+) -> Any:
+    """Stream one completion through the Console Router, on OUR account.
+
+    ⚠️ **The first chunk is pulled HERE, before the response is returned.** That
+    is the whole shape of this function. A streamed refusal has to become a
+    status code, and the status line is fixed the moment a body starts. So the
+    generator is advanced once while a `JSONResponse` is still possible, and
+    only then handed to Starlette.
+
+    ⚠️ **A failure FAILS (D57.7).** There is no `except -> local` arm here
+    either. Slice 3's argument applies unchanged: a silent fallback would serve
+    a stream on tenant-local keys, at tenant-local models, UNMETERED — which is
+    precisely the hole this slice closes.
+    """
+    from acb_auth.console_resolve import (
+        ConsoleRouterUnavailable,
+        ConsoleRouterVerdict,
+        stream_completion_on_console,
+    )
+
+    outbound = dict(body)
+    outbound["messages"] = _sanitize_messages_for_provider(
+        body.get("messages", []), ""
+    )
+
+    started = time.monotonic()
+    frames = stream_completion_on_console(
+        outbound,
+        member=request.headers.get("x-cc-member") or None,
+        agent=request.headers.get("x-cc-agent") or None,
+        module_slug=request.headers.get("x-cc-module") or None,
+        run_id=request.headers.get("x-cc-run") or None,
+    )
+
+    first: bytes | None = None
+    try:
+        first = await frames.__anext__()
+    except StopAsyncIteration:
+        # The Router answered 200 and sent nothing. Rare, and not an error we
+        # can improve on: relay the empty stream.
+        first = None
+    except ConsoleRouterVerdict as verdict:
+        # A VERDICT, relayed with its own status: 402 out of credits, 400 a
+        # bare model id, 403 the breaker. Flattening these into one 502 would
+        # tell a customer their Router is broken when they are out of credits.
+        _log.info(
+            "v1.router_stream_refused", status=verdict.status,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(status_code=verdict.status, content=verdict.body)
+    except ConsoleRouterUnavailable as exc:
+        _log.error(
+            "v1.router_unavailable", error=str(exc), stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": {
+                "message": "the AI Router is unavailable",
+                "type": "ConsoleRouterUnavailable",
+                "code": 502,
+            }},
+        )
+
+    async def _relay() -> Any:
+        if first is not None:
+            yield first
+        async for chunk in frames:
+            yield chunk
+        _log.info(
+            "v1.router_stream_served",
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            metered=True,
+        )
+
+    return StreamingResponse(
+        _relay(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _serve_via_router(
+    request: Request, body: dict[str, Any]
+) -> dict[str, Any] | JSONResponse:
+    """Serve one completion through the Console Router, on OUR account.
+
+    ⚠️ **The model string passes through UNTOUCHED.** `_resolve_model` maps a
+    tier alias to a concrete model for the LOCAL path. The Router does its own
+    resolution from `tier_binding` and 400s a bare model id rather than coercing
+    it (D32.7), so resolving here would hand the Console a model name and turn
+    every tier call into a refusal.
+
+    ⚠️ **A failure FAILS (D57.7).** There is deliberately NO `except → local`
+    arm. A silent fallback would serve traffic on tenant-local keys, at
+    tenant-local models, UNMETERED — the "four deploys reported success while
+    shipping nothing" shape applied to billing. BYOK is reached by
+    CONFIGURATION (a `provider_credential` carrying an `organization_id`), never
+    by a failure path, and the two must not share code.
+    """
+    from acb_auth.console_resolve import (ConsoleRouterUnavailable,
+                                          chat_completion_on_console)
+
+    # Spec-compliance normalisation still applies: it repairs OpenAI-spec
+    # violations the Copilot SDK emits (null content beside tool_calls), which
+    # most providers reject. It branches on no provider — the parameter is
+    # unused — so it is safe before the Console has chosen one.
+    outbound = dict(body)
+    outbound["messages"] = _sanitize_messages_for_provider(
+        body.get("messages", []), ""
+    )
+
+    started = time.monotonic()
+    try:
+        status, payload = await chat_completion_on_console(
+            outbound,
+            member=request.headers.get("x-cc-member") or None,
+            agent=request.headers.get("x-cc-agent") or None,
+            module_slug=request.headers.get("x-cc-module") or None,
+            run_id=request.headers.get("x-cc-run") or None,
+        )
+    except ConsoleRouterUnavailable as exc:
+        _log.error(
+            "v1.router_unavailable", error=str(exc),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": {
+                "message": "the AI Router is unavailable",
+                "type": "ConsoleRouterUnavailable",
+                "code": 502,
+            }},
+        )
+
+    # §6B.5 hazard 2: this adds one network hop to the interactive path. The
+    # number is LOGGED rather than assumed. On a box where the Console is a
+    # loopback (D47) it is negligible — but that is a measurement, and it stops
+    # being true the day the Console moves off the box (D47 clause 4).
+    _log.info(
+        "v1.router_served", status=status,
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+    )
+
+    if status != 200:
+        # A VERDICT, relayed with its own status: 402 out of credits, 400 an
+        # unknown tier, 403 the circuit breaker. Each must arrive as ITSELF.
+        # Flattened into one 502 they all read as "the AI is down", which sends
+        # a customer to support instead of to the top-up they need.
+        return JSONResponse(status_code=status, content=payload)
+    return payload
+
+
 async def _handle_chat_completions(request: Request) -> StreamingResponse | dict[str, Any]:
     """OpenAI-compatible chat completions. Supports streaming and tools."""
+    body = await request.json()
+
+    # ── The serving hop (CP-11 slice 3, D57) ──────────────────────────────
+    #
+    # ⚠️ This branch is deliberately the FIRST thing after reading the body, and
+    # in particular it is BEFORE `_ensure_keys_loaded()`. §6B.5 hazard 3: loading
+    # tenant-local provider keys for a call our own account is about to serve is
+    # the process-global credential injection (§6 (f)) doing work it does not
+    # need to do. A routed call must touch none of it.
+    if _router_should_serve(body):
+        # One branch, not two: `_handle_chat_completions` already sits over
+        # ruff's complexity ceiling (C901, 20 > 15) and this must not add to
+        # it. The two hops are NOT interchangeable — the buffered one returns
+        # a dict and would silently de-stream a chat UI.
+        hop = (_serve_via_router_stream if body.get("stream", False)
+               else _serve_via_router)
+        return await hop(request, body)
+
     # H4: the provider credential this call sends is process-global and this
     # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,
     # the deployment-wide LITELLM_MASTER_KEY, so `current_tenant()` is None on
@@ -431,8 +647,6 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # — absent headers just fall back to source="chat", no agent.
     _obs_agent = request.headers.get("x-cc-agent") or None
     _obs_source = request.headers.get("x-cc-source") or "chat"
-
-    body = await request.json()
     _requested_model = body.get("model", "tier-balanced")
     model = _resolve_model(_requested_model)
     # Preserve the tier alias (if the caller asked for one) so per-tier cost/

@@ -146,9 +146,17 @@ jobs:
 
       # Non-blocking initially: mypy is strict in pyproject but the full repo
       # hasn't been swept. Report now; flip to blocking per the ratchet plan.
+      #
+      # ⚠️ `--exclude '^apps/agents/'` is what makes this step REPORT ANYTHING.
+      # Seven agents each ship a top-level `agents.py` with no `__init__.py`,
+      # so mypy aborts on the duplicate-module error and stops: it checked
+      # almost nothing and printed "Found 1 error". Because the step is
+      # `continue-on-error`, that read as a clean report for as long as it has
+      # existed. With the exclusion it checks 418 files and finds 1508 errors
+      # (measured 2026-08-28) — which is the number the ratchet is against.
       - name: mypy strict (report-only)
         continue-on-error: true
-        run: uv run mypy apps packages || echo "type errors above (non-blocking — tracked)"
+        run: uv run mypy apps packages --exclude '^apps/agents/' || echo "type errors above (non-blocking — tracked)"
 
       # Non-blocking: per-PR codebase-health on just the changed files, so a PR
       # that adds a big/complex function is visible in review before it merges.
@@ -310,6 +318,14 @@ jobs:
       # beside it and takes NO database, like `test_seat_admin_proxy_route.py`:
       # it is named here so a DB gate leaking into it later disarms loudly.
       #
+      # ⚠️ WS-31 CP-10 slice 2 (2026-08-27) adds the ELEVENTH Console suite,
+      # `test_customer_console_tasks.py` — the task allowlist, two-step
+      # resolution and the per-unit rate card. Added IN THE PR THAT CREATED
+      # IT and carrying the same self-defending test (it reads this file).
+      # 🔴 It fences the pricing hole that was LIVE: `rate_call` was
+      # tokens-only, so `tier-stt` — in the production seed — could not be
+      # priced, and neither could `speak` or `image`.
+      #
       # ⚠️ AND SO IS THE GREP LIST BELOW. Until CP-2b there was ONE grep, hard
       # -coded to the Console suites' skip string — so a suite gated on a
       # DIFFERENT variable could be added to the file list above, skip every
@@ -326,6 +342,16 @@ jobs:
             tests/unit/test_customer_console_operator_list.py \
             tests/unit/test_customer_console_member_write.py \
             tests/unit/test_customer_console_seat_overview.py \
+            tests/unit/test_customer_console_tasks.py \
+            tests/unit/test_customer_console_catalog.py \
+            tests/unit/test_operator_identity.py \
+            tests/unit/test_operator_session.py \
+            tests/unit/test_operator_roles.py \
+            tests/unit/test_operator_admin.py \
+            tests/unit/test_operator_elevation.py \
+            tests/unit/test_operator_activity.py \
+            tests/unit/test_provider_keys.py \
+            tests/unit/test_operator_signin.py \
             tests/unit/test_deployment_resolve_cache.py \
             tests/unit/test_console_dependency_boundary.py \
             tests/unit/test_signin_resolve_route.py \
@@ -535,6 +561,39 @@ jobs:
           n="$(psql -tA -d ladder -c 'SELECT count(*) FROM schema_migrations')"
           echo "ledger rows: $n"
           [ "$n" -gt 100 ] || { echo "::error::ledger only recorded $n migrations" >&2; exit 1; }
+
+      # H-25 — the Console ladder's idempotency was a CLAIM in a file header and
+      # nothing checked it. It matters MORE here than for the tenant ladder
+      # above: this applier keeps no ledger, so it re-applies every file on every
+      # deploy. "Additive and re-runnable" is therefore not a nicety, it is the
+      # only thing that makes the SECOND deploy safe. The tenant ladder earned
+      # its replay job for exactly this reason.
+      #
+      # Reuses this job's Postgres service and psql client — a separate database
+      # on the same server, because the Console's data plane is a separate
+      # project (D34) and its ladder must not see tenant tables.
+      - name: Replay the Customer Console ladder three times (H-25)
+        run: |
+          set -euo pipefail
+          createdb console
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:5432/console"
+          for i in 1 2 3; do
+            echo "--- console ladder run $i ---"
+            bash scripts/apply_customer_console_migrations.sh | tail -1
+          done
+          # Every ladder file must have been applied, not merely most: the
+          # applier keeps no ledger, so a file it silently skipped leaves no
+          # trace anywhere for anyone to notice later.
+          want="$(ls infra/customer_console/[0-9][0-9][0-9]_*.sql | wc -l)"
+          bash scripts/apply_customer_console_migrations.sh | grep -q "(${want} files)" \
+            || { echo "::error::the applier did not apply all ${want} infra/customer_console files" >&2; exit 1; }
+          n="$(psql -tA -d console -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+          echo "console tables after three replays: $n"
+          [ "$n" -gt 10 ] || { echo "::error::the Console ladder produced only $n tables" >&2; exit 1; }
+          # 009 is CP-12's, and it is the file H-64 is about. Name it explicitly:
+          # a ladder that applies but silently stops short still passes a count.
+          psql -tA -d console -c "SELECT to_regclass('public.operator')" | grep -q '^operator$' \
+            || { echo "::error::migration 009 did not create the operator table" >&2; exit 1; }
 
   # The workbench had NO CI at all: a type error or a broken pure helper only
   # surfaced when the VPS rebuilt after merge. Typecheck + vitest are seconds,

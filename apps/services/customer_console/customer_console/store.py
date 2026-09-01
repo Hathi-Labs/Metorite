@@ -32,6 +32,8 @@ __all__ = [
     "count_redemptions",
     "create_order",
     "credit_deltas",
+    "credit_ledger_rows",
+    "credit_ref_row",
     "cross_org_summary",
     "current_placement",
     "deployment_by_label",
@@ -45,6 +47,23 @@ __all__ = [
     "issue_discount_code",
     "lock_discount_capacity",
     "lock_seat_capacity",
+    "operator_active_admin_count",
+    "operator_by_email",
+    "operator_by_id",
+    "operator_count",
+    "operator_elevation_close",
+    "operator_elevation_live",
+    "operator_elevation_open",
+    "operator_insert",
+    "operator_list",
+    "operator_session_by_prefix",
+    "operator_session_insert",
+    "operator_session_revoke",
+    "operator_session_touch",
+    "operator_sessions_revoke_all",
+    "operator_set_directory_subject",
+    "operator_set_role",
+    "operator_set_status",
     "order_by_provider_id",
     "order_for_update",
     "order_lines",
@@ -389,6 +408,47 @@ def add_credit(conn: Connection, *, org_id: str, delta: Decimal,
     )
 
 
+def credit_ref_row(conn: Connection, *, org_id: str, reason: str,
+                   ref: str) -> Any:
+    """The EARLIEST ledger row carrying this (reason, ref), or None.
+
+    🔴 The manual-payment fence: an operator crediting a bank transfer types
+    its reference, and typing the same reference twice is almost always the
+    same transfer entered twice. The grant route refuses the second write
+    and names this row, so the refusal carries its own evidence.
+
+    Keyed on (reason, ref) rather than ref alone, deliberately — an
+    `adjustment` correcting a `manual` row legitimately cites the SAME
+    reference, and must not be blocked by it.
+    """
+    return conn.execute(
+        text(
+            "SELECT delta, created_at FROM credit_ledger "
+            "WHERE organization_id = :org AND reason = :reason AND ref = :ref "
+            "ORDER BY created_at LIMIT 1"
+        ),
+        {"org": org_id, "reason": reason, "ref": ref},
+    ).first()
+
+
+def credit_ledger_rows(conn: Connection, *, org_id: str,
+                       limit: int = 50) -> list[Any]:
+    """The newest ledger rows, for the customer page's history panel.
+
+    ⚠️ Deltas leave here as they are stored — the caller stringifies. This
+    is the table a customer reads in a dispute, and the operator's view of
+    it must be the rows, not a reformatting of them.
+    """
+    return list(conn.execute(
+        text(
+            "SELECT delta, reason, ref, created_at FROM credit_ledger "
+            "WHERE organization_id = :org "
+            "ORDER BY created_at DESC, id LIMIT :lim"
+        ),
+        {"org": org_id, "lim": limit},
+    ))
+
+
 def record_usage(conn: Connection, *, org_id: str, request_id: str,
                  billed_credits: Decimal, **fields: Any) -> bool:
     """Write one usage event and its ledger draw. Idempotent on ``request_id``.
@@ -410,6 +470,12 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
 
     Both statements share the caller's transaction, so they commit or roll back
     together.
+
+    ⚠️ **A REFUSAL comes through this same door** (migration 020, §8.1). Pass
+    ``refusal_reason`` and the row records a wall the customer hit instead of a
+    call that served. It needs no second writer: a refusal bills 0, and the
+    ledger draw below is already conditional on a non-zero charge. A parallel
+    insert would be a second seam for one table.
     """
     row = conn.execute(
         text(
@@ -417,11 +483,14 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             INSERT INTO usage_event
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
-                 completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref)
+                 completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
+                 task, quantity, unit, served_rank, byok_served, refusal_reason)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
-                 :cached_tokens, :provider_cost_usd, :run_id, :client_ref)
+                 :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
+                 :task, :quantity, :unit, :served_rank, :byok_served,
+                 :refusal_reason)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -441,6 +510,22 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             "provider_cost_usd": fields.get("provider_cost_usd"),
             "run_id": fields.get("run_id"),
             "client_ref": fields.get("client_ref"),
+            # CP-10 slice 2 columns. NULL on a row written before this
+            # existed, and NULL from any caller that does not say — a
+            # guessed unit must not look like a measured one.
+            "task": fields.get("task"),
+            "quantity": fields.get("quantity"),
+            "unit": fields.get("unit"),
+            # Migration 013. `served_rank` NULL from a caller that does not
+            # say — the internal `/usage/record` route reports no chain, and
+            # its rows must not claim rank-1 service nobody observed.
+            "served_rank": fields.get("served_rank"),
+            "byok_served": bool(fields.get("byok_served", False)),
+            # Migration 020. NULL means the call SERVED, which is what every
+            # row written before this column existed did. The database CHECK
+            # holds the vocabulary closed, so a fourth slug fails here rather
+            # than becoming a second name for one wall.
+            "refusal_reason": fields.get("refusal_reason"),
         },
     ).first()
 
@@ -453,6 +538,466 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             reason=LEDGER_REASON_USAGE, ref=request_id,
         )
     return True
+
+
+# ── Spend reads (CP-7 slice 1 · D66) ────────────────────────────────────────
+#
+# ⚠️ **NEITHER QUERY SELECTS `model`, AND THAT IS THE POINT.** D32.7 and D66
+# say a customer never sees a model. These two functions are the surface that
+# answers "what did we spend it on", so they are exactly where a model column
+# would be added by somebody being helpful. `TestNoModelReachesTheCustomer`
+# reads this module's AST and fails if `model` appears in either SELECT.
+#
+# ⚠️ **`user_email` is CALLER-SUPPLIED attribution (`X-CC-Member`), not a
+# verified identity.** These are READS, so that is tolerable: an admin looking
+# at a cost breakdown is not an authorisation decision. It is NOT tolerable for
+# the per-member CAP, which is why the cap engine stays unwired — see H-73.
+
+#: The window every spend read is measured over, in days. NAMED because a
+#: figure whose window is unstated reads as authoritative and is not — the
+#: same argument `my_billing`'s `windowDays` already makes.
+SPEND_WINDOW_DAYS = 30
+
+#: What a usage row is called when it carries no agent and no module. The
+#: string is returned to the customer, so it is a word, not a NULL the browser
+#: has to decide how to render.
+UNATTRIBUTED_ACTIVITY = "unattributed"
+
+#: A NAMED page size. `usage_event` is a table the customer grows by using the
+#: product, so an unbounded `SELECT` here is the CP-9 §9.3(6) defect again.
+SPEND_PAGE_SIZE = 100
+
+
+def usage_by_activity(
+    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+    member: str | None = None,
+) -> list[dict[str, Any]]:
+    """What this organization ran, and what it cost. **Never what it ran ON.**
+
+    Grouped by activity — the agent, else the module, else
+    :data:`UNATTRIBUTED_ACTIVITY`. That ordering is D66 (a)'s "the app, the
+    agent or the run", narrowed to the two columns `usage_event` actually
+    carries for it.
+
+    Pass ``member`` to scope the answer to one person, which is D66 (a)'s own
+    view. Leave it ``None`` for the whole organization.
+
+    ⚠️ **`billed_credits` is 0 while the rate card is unpriced (H-42).** The
+    call counts are real from the first routed call; the money is not. This
+    function does not apologise for that, because `my_billing` reports the same
+    zeros from the same rows and a second explanation here would be a second
+    vocabulary for one fact.
+    """
+    total = conn.execute(
+        text(
+            """
+            SELECT COALESCE(agent, module_slug, :unattributed) AS activity,
+                   COUNT(*)                                    AS calls,
+                   COALESCE(SUM(billed_credits), 0)            AS credits
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+              -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Without
+              -- this the call count inflates while the credit sum stays
+              -- right, because a refusal bills 0 — so the two columns
+              -- disagree and nothing on the page says why.
+              AND refusal_reason IS NULL
+              -- ⚠️ The CAST is load-bearing, not decoration. A bare
+              -- `:member IS NULL` gives Postgres no type to infer and the
+              -- statement fails to PREPARE with AmbiguousParameter — every
+              -- call, not just the filtered one. CITEXT (not TEXT) because
+              -- that is `user_email`'s own type, and casting to TEXT would
+              -- silently reimpose case-sensitive matching on one side.
+              AND (CAST(:member AS CITEXT) IS NULL
+                   OR user_email = CAST(:member AS CITEXT))
+            GROUP BY 1
+            ORDER BY credits DESC, calls DESC, activity ASC
+            LIMIT :lim
+            """
+        ),
+        {"org": org_id, "days": days, "member": member,
+         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+    )
+    return [
+        {"activity": r.activity, "calls": int(r.calls),
+         "credits": Decimal(r.credits)}
+        for r in total
+    ]
+
+
+def usage_by_member(
+    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """Per-member cost for one organization — D66 (b), the admin's read.
+
+    ⚠️ **A read, and only a read.** It writes nothing and it decides nothing.
+    The same numbers must not be turned into an enforcement decision without
+    first fixing the identity they rest on (H-73).
+
+    A row whose `user_email` is NULL is reported under
+    :data:`UNATTRIBUTED_ACTIVITY` rather than dropped. Dropping it would make
+    the per-member figures silently fail to add up to the organization total,
+    and the admin would have no way to see that they did not.
+    """
+    rows = conn.execute(
+        text(
+            """
+            -- ⚠️ **GROUP BY the CITEXT column, never by its ::text cast.**
+            -- The cast strips the case-insensitive collation, so
+            -- `Alice@Corp.com` and `alice@corp.com` become two rows and one
+            -- person's spend is split across both. Measured against a real
+            -- server (R8) — this SELECT grouped by the cast in its first
+            -- draft and every hermetic assertion still passed.
+            --
+            -- MIN() rather than a bare projection so the label is
+            -- deterministic: within one CITEXT group Postgres is free to
+            -- return whichever spelling it stored first.
+            SELECT COALESCE(MIN(user_email::text), :unattributed) AS member,
+                   COUNT(*)                                       AS calls,
+                   COALESCE(SUM(billed_credits), 0)               AS credits
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+              -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). Same
+              -- argument as `usage_by_activity`: the count inflates and the
+              -- credits do not, so the admin reads two numbers that disagree.
+              AND refusal_reason IS NULL
+            GROUP BY user_email
+            ORDER BY credits DESC, calls DESC, member ASC
+            LIMIT :lim
+            """
+        ),
+        {"org": org_id, "days": days,
+         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+    )
+    return [
+        {"member": r.member, "calls": int(r.calls), "credits": Decimal(r.credits)}
+        for r in rows
+    ]
+
+
+# ── The tier words a customer may see (WS-31 slice 3) ───────────────────────
+#
+# Spec: `ai_metering_and_analytics.md` §8.4 clauses 3 and 5, and D-AI-1.
+#
+# 🔴 **The label is a display name the operator owns, and there is ONE source
+# for it.** `tier_catalog` holds the words. A picker that types its own labels
+# is a second source, and the two disagree the first time an operator edits
+# one. The customer app reads this function instead.
+#
+# ⚠️ **`tier_catalog` is a PLATFORM table, not a tenant one.** The slate is the
+# same product for every organization, so this read takes no `org_id` and holds
+# no `organization_id` predicate. That is not an exemption a caller may copy:
+# the route above it still authenticates the customer, and every read that
+# touches a customer's OWN rows still scopes by the key.
+
+
+def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
+    """The tiers a customer may pick, in the order the operator set.
+
+    ⚠️ **Three kinds of fact stay behind, and D66 binds the list.** No model,
+    no provider and no rate. A tier is the product and a model is supply, so a
+    model name here would tell a customer what we buy, and it would let a
+    picker save a raw model id (H-72). The price lives on the billing routes,
+    which keeps one surface for money instead of two.
+
+    A hidden tier is absent, and it is absent HERE rather than in the browser.
+    A filter in the caller is a filter somebody removes.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT slug, label, blurb
+            FROM tier_catalog
+            WHERE customer_visible
+            ORDER BY sort_order, slug
+            """
+        )
+    )
+    return [
+        {"slug": r.slug, "label": r.label, "blurb": r.blurb} for r in rows
+    ]
+
+
+# ── Operator spend reads (WS-31) ────────────────────────────────────────────
+#
+# 🔴 **THESE TWO READ ACROSS EVERY TENANT, AND THAT IS THE POINT.** Every other
+# read in this module is scoped by `organization_id` because R5 says so. These
+# are the operator's "how are our customers using AI" question, which cannot be
+# answered one tenant at a time, so the scoping happens at the CALLER — the
+# route must be behind the operator role gate, never a customer session.
+#
+# ⚠️ If you are about to reuse one of these for a customer-facing surface, you
+# want `usage_by_activity` / `usage_by_member` instead. They take an `org_id`
+# and cannot leak. Reaching for these because they return more is how a tenant
+# ends up reading another tenant's spend.
+
+#: Longest window an operator may ask for in one query. A year of daily rows is
+#: 365 points, which is already more than any chart reads usefully, and an
+#: unbounded window lets one request scan the whole table.
+USAGE_MAX_DAYS = 365
+
+
+def last_seen_by_org(conn: Connection) -> dict[str, Any]:
+    """Every organization's last AI call, UNCAPPED. slug -> timestamp.
+
+    🔴 **This read exists because the silent-customer flag was computed over
+    the capped page** (H-76's second half). The page sorts by spend and keeps
+    the top rows, so the quiet-but-funded customer A3 exists to find was the
+    exact row the cap removed — silently, above SPEND_PAGE_SIZE
+    organizations. One aggregate over the whole table costs one index scan
+    and cannot lose anybody.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug, MAX(u.created_at) AS last_seen
+            FROM organization o
+            LEFT JOIN usage_event u ON u.organization_id = o.id
+            GROUP BY o.slug
+            """
+        )
+    )
+    return {r.slug: r.last_seen for r in rows}
+
+
+def usage_by_org(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
+    limit: int = SPEND_PAGE_SIZE, slug: str | None = None,
+) -> dict[str, Any]:
+    """Per-organization AI usage over the window. **Operator-only.**
+
+    ⚠️ **A LEFT JOIN, deliberately.** An organization with no usage must appear
+    with zeros rather than vanish: "this customer has bought credits and used
+    none" is the single most actionable row on the page, and an INNER JOIN
+    silently hides exactly that customer.
+
+    ⚠️ **Purged organizations are RETURNED, not filtered.** Their `usage_event`
+    rows survive the purge as billing history, and dropping them here would
+    make a past invoice unexplainable. The caller decides whether to show them
+    — `partitionRoster` in the console already owns that rule, and a second
+    copy of it in SQL would be a second vocabulary for one decision.
+
+    🔴 **The page is CAPPED, and the cap fights the LEFT JOIN.** Rows sort by
+    credits descending, so a zero-usage organization sorts LAST — and it is
+    precisely the row the LEFT JOIN above exists to include. Past
+    `SPEND_PAGE_SIZE` organizations the two rules cancel out and the most
+    actionable customers fall off the end.
+
+    Found on 2026-08-30 by running this against a scratch database holding 563
+    organizations. It cannot be seen below the cap, so dev, CI and production
+    (2 organizations) all agree it is fine.
+
+    This returns `total` so the truncation is at least never SILENT, and the
+    console says "100 of 563". The ordering itself is a design question and it
+    is NOT settled here: an operator wants the biggest spenders *and* the quiet
+    ones, which is two queries or one union, not one `ORDER BY`. HANDOFF H-76.
+
+    ⚠️ **`limit` is a real parameter, not a test hook.** A paginated read owes
+    its caller a page size. It exists because the alternative was a test that
+    asserted a zero-usage organization appears in the DEFAULT page — which is
+    the very thing the cap makes untrue, so the test passed or failed on
+    whether the fixture's random slug sorted into the first hundred. A test
+    that encodes the defect it is meant to catch is worse than no test.
+
+    🔴 **`slug` narrows the read to ONE organization, and it is NOT a tenancy
+    boundary** (HANDOFF H-83). It answers "give me this customer's row of the
+    operator page" without asking for a page big enough to hold every other
+    customer. That question used to be asked with a large `limit`, and a large
+    `limit` is a bet on the size of the table: the bound was sized at 563
+    organizations, the scratch database reached 25,959 by 2026-08-31, and the
+    zero-usage block moved past the page. That count is a MEASUREMENT on that
+    date and not the size today — a scratch database gets reset. A filter
+    cannot expire that way.
+
+    ⚠️ **Do NOT read `slug` as permission to serve this to a customer.** The
+    section note above still binds — a customer-facing surface takes
+    `usage_by_activity` or `usage_by_member`, which carry an `org_id` and
+    cannot leak. This parameter narrows an operator read that is already behind
+    the operator role gate. It never establishes one.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                                AS slug,
+                   o.name                                AS name,
+                   -- 🔴 **A FILTER clause, never a WHERE clause** (migration
+                   -- 020, §8.1). A WHERE on the right-hand table turns the
+                   -- LEFT JOIN below into an inner join, and the zero-usage
+                   -- organization this read exists to show disappears. An ON
+                   -- clause keeps the join and still hides the refusal from
+                   -- `MAX(u.created_at)`, which makes a customer at a wall
+                   -- read as SILENT to A3.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NULL)  AS calls,
+                   COALESCE(SUM(u.billed_credits), 0)    AS credits,
+                   -- The COSTED slice: SUM skips NULL cost rows, so a ratio
+                   -- of all-calls credits over some-calls cost overstates
+                   -- the margin. These two keep the numerator honest.
+                   COUNT(u.id) FILTER
+                       (WHERE u.provider_cost_usd IS NOT NULL)
+                                                         AS costed_calls,
+                   COALESCE(SUM(u.billed_credits) FILTER
+                       (WHERE u.provider_cost_usd IS NOT NULL), 0)
+                                                         AS costed_credits,
+                   -- The same FILTER, for the same reason: a member who only
+                   -- hit a wall this month made no call, and counting them
+                   -- here would report activity nobody had.
+                   COUNT(DISTINCT u.user_email) FILTER
+                       (WHERE u.refusal_reason IS NULL) AS members,
+                   -- 🔴 **A5's whole point, on the operator's page.** Without
+                   -- this the refusal column is written and read by nobody:
+                   -- a walled customer loses `silent` (their `last_seen`
+                   -- moved) and gains NOTHING, so the wall makes them HARDER
+                   -- to find than silence did. The inverted FILTER, over the
+                   -- same window, so `calls` and `refusals` are comparable.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NOT NULL) AS refusals,
+                   COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
+                   -- ⚠️ `last_seen` takes NO filter, on purpose. A refusal
+                   -- MUST move it — a customer at a wall is a customer who is
+                   -- trying, and hiding that makes them read as silent.
+                   MAX(u.created_at)                     AS last_seen
+            FROM organization o
+            LEFT JOIN usage_event u
+                   ON u.organization_id = o.id
+                  AND u.created_at >= now() - make_interval(days => :days)
+            -- 🔴 **A WHERE on `o`, and it does NOT undo the LEFT JOIN.** The
+            -- rule this file repeats is about the RIGHT-hand table: a WHERE on
+            -- `u` drops the rows the join exists to keep. `o.slug` is the LEFT
+            -- side, so this narrows which organizations are considered and
+            -- still returns the chosen one with zeros when it has no usage.
+            -- ⚠️ The CAST is load-bearing, for the reason `usage_daily`
+            -- records: a bare `:slug IS NULL` gives Postgres no type to infer
+            -- and the statement fails to PREPARE with AmbiguousParameter, on
+            -- every call including the unfiltered one.
+            WHERE CAST(:slug AS TEXT) IS NULL OR o.slug = CAST(:slug AS TEXT)
+            GROUP BY o.id, o.slug, o.name
+            ORDER BY credits DESC, calls DESC, o.slug ASC
+            LIMIT :lim
+            """
+        ),
+        {"days": days, "lim": max(1, int(limit)), "slug": slug},
+    )
+    out = [
+        {
+            "slug": r.slug,
+            "name": r.name,
+            "calls": int(r.calls),
+            "credits": Decimal(r.credits),
+            "costed_calls": int(r.costed_calls),
+            "costed_credits": Decimal(r.costed_credits),
+            "members": int(r.members),
+            # A plain count, never money. It is how many times we said no.
+            "refusals": int(r.refusals),
+            "cost_usd": Decimal(r.cost_usd),
+            "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+        }
+        for r in rows
+    ]
+    # ⚠️ Counted separately, and cheaply — `count(*)` over `organization` reads
+    # one small table. Counting the joined result would repeat the aggregate
+    # for no extra truth.
+    #
+    # ⚠️ **The same filter, or the page lies about its own truncation.** A
+    # filtered read returns one row, and a total taken over the whole table
+    # would make `shown < total` — which the console renders as "1 of 25,959".
+    total = conn.execute(
+        text("SELECT count(*) FROM organization "
+             "WHERE CAST(:slug AS TEXT) IS NULL OR slug = CAST(:slug AS TEXT)"),
+        {"slug": slug},
+    ).scalar_one()
+    return {"rows": out, "total": int(total), "shown": len(out)}
+
+
+def usage_daily(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS, org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """AI usage per day. One series, two callers.
+
+    Pass ``org_id`` for one organization — that is the customer-facing trend,
+    and it is tenant-safe. Leave it ``None`` for the platform total, which is
+    operator-only.
+
+    🔴 **The gap fill is the whole function.** A series built by grouping
+    `usage_event` alone returns only days that HAVE rows, and a chart drawing a
+    straight line between two points a week apart reads as steady usage across
+    a week that had none. `generate_series` emits every day in the window and
+    the LEFT JOIN fills the rest with zeros.
+
+    ⚠️ The `CAST(:org AS UUID)` is load-bearing for the same reason the CAST in
+    `usage_by_activity` is: a bare ``:org IS NULL`` gives Postgres no type to
+    infer and the statement fails to PREPARE with AmbiguousParameter — on every
+    call, including the unfiltered one.
+    """
+    rows = conn.execute(
+        text(
+            """
+            WITH span AS (
+              SELECT generate_series(
+                       date_trunc('day', now() - make_interval(days => :days - 1)),
+                       date_trunc('day', now()),
+                       interval '1 day'
+                     ) AS day
+            )
+            SELECT s.day::date                        AS day,
+                   -- 🔴 **A FILTER clause, never a WHERE clause** (migration
+                   -- 020, §8.1). The LEFT JOIN onto `generate_series` is the
+                   -- whole gap fill: a WHERE on `u` drops every day that has
+                   -- only refusals, and the chart draws a straight line
+                   -- across it as if usage were steady.
+                   COUNT(u.id) FILTER
+                       (WHERE u.refusal_reason IS NULL) AS calls,
+                   COALESCE(SUM(u.billed_credits), 0) AS credits
+            FROM span s
+            LEFT JOIN usage_event u
+                   ON date_trunc('day', u.created_at) = s.day
+                  AND (CAST(:org AS UUID) IS NULL
+                       OR u.organization_id = CAST(:org AS UUID))
+            GROUP BY s.day
+            ORDER BY s.day
+            """
+        ),
+        {"days": days, "org": org_id},
+    )
+    return [
+        {"day": r.day.isoformat(), "calls": int(r.calls),
+         "credits": Decimal(r.credits)}
+        for r in rows
+    ]
+
+
+def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
+    """Credit balance for every organization, keyed by slug. **Operator-only.**
+
+    ⚠️ **Summed from the ledger, never read from a column.** `credit_ledger` is
+    the authority and `balance_of` already sums it for one organization. A
+    stored balance column would be a second authority, and the two disagree the
+    first time a write lands outside the path that maintains it.
+
+    ⚠️ An organization with no ledger row returns 0, not a missing key. The
+    caller renders every organization, and a `KeyError` inside a page that
+    lists all of them is a blank page rather than a missing cell.
+
+    🔴 **UNCAPPED, since 2026-08-30 — this carried `LIMIT 100` with no ORDER
+    BY.** Above a hundred organizations, an ARBITRARY hundred had balances and
+    every other org silently read 0: a funded, visible customer could render a
+    zero balance, a None runway and no silent flag, differently on each
+    request. Found by the H-76 test that crowds the page past its cap. A page
+    may be capped; the FACTS a page is judged from may not.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                       AS slug,
+                   COALESCE(SUM(l.delta), 0)    AS balance
+            FROM organization o
+            LEFT JOIN credit_ledger l ON l.organization_id = o.id
+            GROUP BY o.id, o.slug
+            """
+        )
+    )
+    return {r.slug: Decimal(r.balance) for r in rows}
 
 
 # ── Keys ────────────────────────────────────────────────────────────────────
@@ -1712,3 +2257,550 @@ def resolve_key(conn: Connection, *, prefix: str
         {"prefix": prefix},
     ).first()
     return (str(row[0]), row[1], row[2]) if row else None
+
+
+# ── Operator registry (CP-12a) ──────────────────────────────────────────────
+#
+# Spec: operator_identity_and_access.md §4 · §6.1 · D64.
+#
+# SQL only. Whether a row means "admitted" is decided in
+# `customer_console.operators`, which holds no queries for the same reason
+# this module holds no policy.
+
+
+def operator_by_email(conn: Connection, email: str) -> dict[str, Any] | None:
+    """The registry row for *email*, or ``None``.
+
+    ``lower(email) = :email`` with a lower-cased parameter, because the
+    directory's casing is a display choice and an operator must not be
+    locked out by it. ⚠️ R8 is why this is not a hermetic test: a fake once
+    matched ``lower(col) = :param`` against NULL and shipped green.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT id, email, role, status, directory_subject
+              FROM operator
+             WHERE lower(email) = :email
+            """
+        ),
+        {"email": (email or "").strip().lower()},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_count(conn: Connection) -> int:
+    """How many operators exist, in ANY status.
+
+    Any status, not just ``active`` — this is the predicate the one-time
+    bootstrap turns on, and counting only the active ones would let a
+    registry whose single admin was deactivated be bootstrapped a second
+    time. That is the back door the bootstrap must not become.
+    """
+    row = conn.execute(text("SELECT count(*) FROM operator")).first()
+    return int(row[0]) if row else 0
+
+
+def operator_active_admin_count(conn: Connection) -> int:
+    """How many ``active`` admins exist — the last-admin guard's input."""
+    row = conn.execute(
+        text(
+            "SELECT count(*) FROM operator "
+            "WHERE role = 'admin' AND status = 'active'"
+        )
+    ).first()
+    return int(row[0]) if row else 0
+
+
+def operator_insert(
+    conn: Connection,
+    *,
+    email: str,
+    role: str,
+    added_by: str | None = None,
+) -> str:
+    """Add one operator. Returns the new id.
+
+    ``ON CONFLICT DO NOTHING`` plus a re-read, so adding somebody who is
+    already there is not an error and not a duplicate. The caller that
+    cares about which one happened compares the returned id.
+    """
+    normalised = (email or "").strip().lower()
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator (email, role, added_by)
+            VALUES (:email, :role, CAST(:added_by AS UUID))
+            ON CONFLICT (email) DO NOTHING
+            RETURNING id
+            """
+        ),
+        {"email": normalised, "role": role, "added_by": added_by},
+    ).first()
+    if row is not None:
+        return str(row[0])
+    existing = conn.execute(
+        text("SELECT id FROM operator WHERE lower(email) = :email"),
+        {"email": normalised},
+    ).first()
+    assert existing is not None  # DO NOTHING fired, so the row is there
+    return str(existing[0])
+
+
+def operator_set_directory_subject(
+    conn: Connection, *, operator_id: str, subject: str
+) -> None:
+    """Record the Entra object id learned on a successful sign-in.
+
+    ``WHERE directory_subject IS NULL`` so the FIRST sign-in writes it and
+    later ones do not. A subject that silently changed would mean a
+    different directory principal now answers to this row, and that is a
+    thing to notice rather than to overwrite.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE operator
+               SET directory_subject = :subject, updated_at = now()
+             WHERE id = CAST(:id AS UUID)
+               AND directory_subject IS NULL
+            """
+        ),
+        {"id": operator_id, "subject": subject},
+    )
+
+
+# ── Operator sessions (CP-12b) ──────────────────────────────────────────────
+
+
+def operator_session_insert(
+    conn: Connection,
+    *,
+    operator_id: str,
+    prefix: str,
+    key_hash: str,
+    expires_at: datetime,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> str:
+    """Store a freshly minted session. Only the HASH is passed here."""
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator_session
+                (operator_id, prefix, key_hash, expires_at, ip, user_agent)
+            VALUES (CAST(:op AS UUID), :prefix, :hash, :expires,
+                    CAST(:ip AS INET), :ua)
+            RETURNING id
+            """
+        ),
+        {"op": operator_id, "prefix": prefix, "hash": key_hash,
+         "expires": expires_at, "ip": ip, "ua": user_agent},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def operator_session_by_prefix(
+    conn: Connection, prefix: str
+) -> dict[str, Any] | None:
+    """The session AND the operator behind it, in one read.
+
+    ⚠️ The JOIN is the point. A session is only as good as the person, so
+    ``status`` and ``role`` come back on every request rather than being
+    trusted from sign-in time. That is what lets a deactivation take effect
+    at once instead of whenever the session happened to expire.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT s.id, s.operator_id, s.key_hash, s.expires_at,
+                   s.last_seen_at, s.revoked_at,
+                   o.email, o.role, o.status
+              FROM operator_session s
+              JOIN operator o ON o.id = s.operator_id
+             WHERE s.prefix = :prefix
+            """
+        ),
+        {"prefix": prefix},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_session_touch(conn: Connection, session_id: str) -> None:
+    """Push the idle clock forward. Called once a request is admitted.
+
+    ⚠️ Deliberately NOT called on a rejected request. Touching on refusal
+    would let an attacker holding a revoked or expired token keep the row
+    warm, which is the opposite of what the idle clock is for.
+
+    ⚠️ **Two things protect this, and only one of them is obvious.** The
+    ordering in ``auth._staff_session`` is the first. The second is that
+    the refusal raises out of a ``get_engine().begin()`` block, so a touch
+    written into the ``except`` arm would be ROLLED BACK and never land.
+    Measured while mutation-testing CP-12b: a mutation that added the touch
+    inside the ``except`` survived for exactly that reason, and only a
+    version that opened its OWN transaction was caught. Do not read the
+    surviving mutation as a missing fence — read it as a second guard.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator_session SET last_seen_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": session_id},
+    )
+
+
+def operator_session_revoke(conn: Connection, session_id: str) -> None:
+    """Sign out one session.
+
+    ``WHERE revoked_at IS NULL`` so a second sign-out cannot move the
+    timestamp — when a session was revoked is an audit fact.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator_session SET revoked_at = now() "
+            "WHERE id = CAST(:id AS UUID) AND revoked_at IS NULL"
+        ),
+        {"id": session_id},
+    )
+
+
+def operator_sessions_revoke_all(conn: Connection, operator_id: str) -> int:
+    """Revoke EVERY live session for one operator. Returns how many.
+
+    This is the fix for spec §2's F5 — *"removing one person means changing
+    the secret for everybody"*. The caller runs it in the SAME transaction
+    that suspends or deactivates the operator, so there is no window in
+    which the row says `deactivated` and a session still works.
+    """
+    result = conn.execute(
+        text(
+            "UPDATE operator_session SET revoked_at = now() "
+            "WHERE operator_id = CAST(:op AS UUID) AND revoked_at IS NULL"
+        ),
+        {"op": operator_id},
+    )
+    return int(result.rowcount or 0)
+
+
+# ── Operator administration (CP-12d) ────────────────────────────────────────
+
+
+def operator_by_id(conn: Connection, operator_id: str) -> dict[str, Any] | None:
+    """One registry row by id, or ``None``."""
+    row = conn.execute(
+        text(
+            "SELECT id, email, role, status, directory_subject, created_at "
+            "FROM operator WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_list(conn: Connection) -> list[dict[str, Any]]:
+    """Every operator, active first, then by email.
+
+    No pagination. This table holds a handful of people by design — the
+    moment it does not, DEF-3's directory sync is the answer rather than a
+    page cursor over our own staff.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.id, o.email, o.role, o.status, o.created_at,
+                   o.directory_subject IS NOT NULL AS has_signed_in,
+                   (SELECT count(*) FROM operator_session s
+                     WHERE s.operator_id = o.id
+                       AND s.revoked_at IS NULL
+                       AND s.expires_at > now()) AS live_sessions
+              FROM operator o
+             ORDER BY (o.status = 'active') DESC, o.email
+            """
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def operator_set_role(conn: Connection, *, operator_id: str, role: str) -> None:
+    """Change one operator's role."""
+    conn.execute(
+        text(
+            "UPDATE operator SET role = :role, updated_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id, "role": role},
+    )
+
+
+def operator_set_status(
+    conn: Connection, *, operator_id: str, status: str
+) -> None:
+    """Change one operator's status.
+
+    ⚠️ The caller revokes the sessions. Doing it here would hide a security
+    step inside a setter, and a future caller that wanted only the status
+    change would silently get both — or, worse, would write its own status
+    update and get neither.
+    """
+    conn.execute(
+        text(
+            "UPDATE operator SET status = :status, updated_at = now() "
+            "WHERE id = CAST(:id AS UUID)"
+        ),
+        {"id": operator_id, "status": status},
+    )
+
+
+# ── Operator elevation (CP-12e) ─────────────────────────────────────────────
+
+
+def operator_elevation_open(
+    conn: Connection,
+    *,
+    operator_id: str,
+    reason: str,
+    reference: str | None,
+    expires_at: datetime,
+) -> str:
+    """Open one elevation window. Returns its id."""
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO operator_elevation
+                (operator_id, reason, reference, expires_at)
+            VALUES (CAST(:op AS UUID), :reason, :ref, :expires)
+            RETURNING id
+            """
+        ),
+        {"op": operator_id, "reason": reason, "ref": reference,
+         "expires": expires_at},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def operator_elevation_live(
+    conn: Connection, operator_id: str
+) -> dict[str, Any] | None:
+    """The newest window that is neither revoked nor expired, or ``None``.
+
+    ⚠️ The expiry is filtered in SQL with `now()` AND re-checked in
+    `operator_elevation.check_window`. That is not redundant: the SQL keeps
+    the read cheap, and the Python check is what a reviewer can see, so
+    neither one is the only thing standing between a stale row and a purge.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT id, reason, reference, granted_at, expires_at
+              FROM operator_elevation
+             WHERE operator_id = CAST(:op AS UUID)
+               AND revoked_at IS NULL
+               AND expires_at > now()
+             ORDER BY expires_at DESC
+             LIMIT 1
+            """
+        ),
+        {"op": operator_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def operator_elevation_close(conn: Connection, operator_id: str) -> int:
+    """Close every live window for one operator. Returns how many."""
+    result = conn.execute(
+        text(
+            "UPDATE operator_elevation SET revoked_at = now() "
+            "WHERE operator_id = CAST(:op AS UUID) AND revoked_at IS NULL"
+        ),
+        {"op": operator_id},
+    )
+    return int(result.rowcount or 0)
+
+
+# ── CP-12f: reading the audit trail across every company ───────────────────
+
+
+def activity_page(
+    conn: Connection,
+    *,
+    limit: int,
+    cursor_created_at: datetime | None = None,
+    cursor_id: str | None = None,
+    actor: str | None = None,
+    action: str | None = None,
+    org_slug: str | None = None,
+) -> list[dict[str, Any]]:
+    """One page of ``control_audit``, newest first, across ALL organizations.
+
+    Spec: ``operator_identity_and_access.md`` §8.1 done-whens 25-26.
+
+    ⚠️ **LEFT JOIN, and it is load-bearing.** ``control_audit.organization_id``
+    is NULLABLE and two classes of row rely on that:
+
+    * every ``operator.*`` action — adding a colleague names no company;
+    * every row of a PURGED organization, because the column is
+      ``ON DELETE SET NULL`` so the history survives the customer (D63, and
+      done-when 19).
+
+    An INNER JOIN would compile, pass a casual read, and silently hide exactly
+    the rows an investigation needs. ``test_operator_activity.py`` pins both.
+
+    ⚠️ **Ordering: ``(created_at DESC, id DESC)``, a strict TOTAL order.**
+    ``created_at`` alone is not unique — one request can write several rows and
+    ``now()`` gives them all the transaction-start stamp — so paging on it
+    alone would repeat or drop rows at a page boundary. The ``id`` tiebreak is
+    what makes the keyset exact. Read :data:`~customer_console.operator_
+    activity.CURSOR_IS_EPHEMERAL` before changing this: the ordering carries a
+    known and measured limitation (H-7).
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT a.id,
+                   a.actor,
+                   a.action,
+                   a.detail,
+                   a.created_at,
+                   o.slug AS org_slug,
+                   o.name AS org_name
+              FROM control_audit a
+              LEFT JOIN organization o ON o.id = a.organization_id
+             WHERE (CAST(:actor AS TEXT) IS NULL OR a.actor = CAST(:actor AS TEXT))
+               AND (CAST(:action AS TEXT) IS NULL
+                    OR a.action = CAST(:action AS TEXT))
+               AND (CAST(:org_slug AS TEXT) IS NULL
+                    OR o.slug = CAST(:org_slug AS TEXT))
+               AND (CAST(:cursor_ts AS TIMESTAMPTZ) IS NULL
+                    OR (a.created_at, a.id)
+                       < (CAST(:cursor_ts AS TIMESTAMPTZ),
+                          CAST(:cursor_id AS UUID)))
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT :limit
+            """
+        ),
+        {
+            "actor": actor,
+            "action": action,
+            "org_slug": org_slug,
+            "cursor_ts": cursor_created_at,
+            "cursor_id": cursor_id,
+            "limit": limit,
+        },
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def activity_actions(conn: Connection) -> list[str]:
+    """Every ``action`` value that actually occurs, for a filter control.
+
+    Read from the data rather than from a constant list, because the constant
+    would be a second vocabulary to keep in step with the call sites. An action
+    nobody has performed does not need a filter entry.
+    """
+    rows = conn.execute(
+        text("SELECT DISTINCT action FROM control_audit ORDER BY action")
+    ).all()
+    return [r[0] for r in rows]
+
+
+# ── CP-10 slice 1: the provider credential write path (H-40) ───────────────
+
+
+def provider_credential_insert(
+    conn: Connection,
+    *,
+    provider: str,
+    secret_enc: str,
+    api_base: str | None = None,
+    label: str | None = None,
+    organization_id: str | None = None,
+) -> str:
+    """Install one provider credential. **Only the ciphertext is passed here.**
+
+    Spec: ``customer_console.md`` CP-10 slice 1.
+
+    ⚠️ The plaintext never reaches this module. ``router.encrypt_secret`` is
+    the one Fernet seam and the route calls it, so a reader of `store.py`
+    cannot accidentally write a secret in the clear.
+
+    ⚠️ **INSERT only, and there is deliberately no UPDATE sibling.** The spec
+    forbids a mutable credential row, and `provider_keys.check_api_base`
+    records the second reason: without an UPDATE path nobody can re-point an
+    existing credential at a host they control and read a secret no route
+    returns.
+    """
+    row = conn.execute(
+        text(
+            """
+            INSERT INTO provider_credential
+                (provider, organization_id, secret_enc, api_base, label)
+            VALUES (:provider, CAST(:org AS uuid), :secret, :api_base, :label)
+            RETURNING id
+            """
+        ),
+        {"provider": provider, "org": organization_id, "secret": secret_enc,
+         "api_base": api_base, "label": label},
+    ).first()
+    assert row is not None
+    return str(row[0])
+
+
+def provider_credential_list(
+    conn: Connection, *, include_revoked: bool = False
+) -> list[dict[str, Any]]:
+    """Every credential, as METADATA. **`secret_enc` is not selected.**
+
+    ⚠️ That omission is the fence, and it is structural rather than a habit.
+    A caller cannot leak what a query never fetched, so the plaintext cannot
+    reach a response through this function however carelessly it is used.
+    ``test_provider_keys.py`` asserts the column list at source level.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT c.id, c.provider, c.api_base, c.label,
+                   c.created_at, c.revoked_at,
+                   o.slug AS org_slug
+              FROM provider_credential c
+              LEFT JOIN organization o ON o.id = c.organization_id
+             WHERE (:all_rows OR c.revoked_at IS NULL)
+             ORDER BY c.provider, c.organization_id NULLS FIRST,
+                      c.created_at DESC
+            """
+        ),
+        {"all_rows": include_revoked},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def provider_credential_revoke(
+    conn: Connection, *, provider: str, organization_id: str | None = None
+) -> int:
+    """Revoke the LIVE credential for one provider. Returns rows affected.
+
+    ⚠️ Sets ``revoked_at`` rather than deleting the row. The spec names this
+    as the one permitted mutation on this table, and the partial unique index
+    is built for it: a revoked row stops blocking the live slot, so the next
+    install succeeds without destroying the record that the old key existed.
+
+    ⚠️ ``organization_id IS NOT DISTINCT FROM`` rather than ``=``. The platform
+    account is the NULL row, and ``NULL = NULL`` is NULL, so an ``=`` here
+    would silently revoke nothing and answer as though it had.
+    """
+    result = conn.execute(
+        text(
+            """
+            UPDATE provider_credential
+               SET revoked_at = now()
+             WHERE provider = :provider
+               AND organization_id IS NOT DISTINCT FROM CAST(:org AS uuid)
+               AND revoked_at IS NULL
+            """
+        ),
+        {"provider": provider, "org": organization_id},
+    )
+    return int(result.rowcount or 0)

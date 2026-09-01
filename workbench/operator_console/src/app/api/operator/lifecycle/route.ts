@@ -9,5 +9,5 @@ export const dynamic = "force-dynamic";
 // target, reason?}.
 export async function POST(request: Request): Promise<Response> {
   const body = await readJsonBody(request);
-  return proxyToConsole(() => setLifecycle(body));
+  return proxyToConsole((d) => setLifecycle(body, d));
 }

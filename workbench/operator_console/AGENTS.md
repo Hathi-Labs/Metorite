@@ -43,6 +43,15 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   Console's status + body verbatim (a refusal stays a refusal).
 - `src/app/page.tsx` — customers list; `src/app/customers/[slug]/` — detail +
   `Actions.tsx` (the client action forms); `src/app/login/` — interim sign-in.
+- `src/app/login/page.tsx` — **ONE door at a time.** `usesSessions()` picks the
+  path, and the gate refuses the interim cookie while `OPERATOR_IDENTITY_ENABLED`
+  is on (`operator_identity_and_access.md` §8 done-when 29). So the identity
+  path carries a recovery NOTE and never a passphrase form. The note names
+  the variable to unset, and it shows only when sign-in is not configured or
+  Microsoft refused the caller. A form there would answer 400 on submit, because
+  `POST /api/operator/session` wants a Supabase `access_token`. Fence:
+  `src/app/login/login.test.ts`, which walks the returned element tree because
+  vitest here is node-env and renders nothing.
 
 ## Rules
 - Every Console call is server-side, through `src/lib/console.ts`. Never fetch

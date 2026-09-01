@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   formatPaise,
   seatsDigest,
@@ -17,6 +19,10 @@ import {
   isSeated,
   memberTally,
   readMembers,
+  readKeys,
+  readLedger,
+  ledgerAdds,
+  liveKeys,
   type SeatRow,
 } from "./format";
 
@@ -235,6 +241,20 @@ describe("statusHelp", () => {
     }
     expect(statusHelp("something-new")).toBe("");
   });
+
+  it("🔴 suspended tells lifecycle.py's truth: sign-in works, features lock", () => {
+    // suspended keeps LOGIN working (so they can pay) while locking
+    // features — the exact distinction the backend's module note calls the
+    // one people get wrong. Three surfaces said the opposite once.
+    expect(statusHelp("suspended")).toContain("Sign-in still works");
+    expect(statusHelp("suspended")).not.toContain("refused");
+    const page = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
+    expect(page).toContain("Sign-in still works so they can pay");
+    const actions = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
+    expect(actions).toContain("Sign-in KEEPS working so they can pay");
+  });
 });
 
 describe("suggestSlug", () => {
@@ -341,5 +361,128 @@ describe("the customer's member roster (LS-9 · launch_surface.md §7)", () => {
 
   it("tallies an empty roster without dividing by anything", () => {
     expect(memberTally([])).toEqual({ total: 0, seated: 0, unassigned: 0 });
+  });
+});
+
+describe("readKeys", () => {
+  it("reads prefix, label, created_at and revoked off a GET /keys body", () => {
+    const rows = readKeys({
+      keys: [
+        { prefix: "cc_live_a8f3", label: "prod", created_at: "2026-08-27T10:00:00Z", revoked: false },
+        { prefix: "cc_live_b1c2", label: null, created_at: "2026-08-01T10:00:00Z", revoked: true },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      prefix: "cc_live_a8f3",
+      label: "prod",
+      created_at: "2026-08-27T10:00:00Z",
+      revoked: false,
+    });
+    expect(rows[1].label).toBeNull();
+    expect(rows[1].revoked).toBe(true);
+  });
+
+  it("returns [] when the key is absent, so a caller can say WHICH failure", () => {
+    // A Console that answered without a `keys` key, or a 403 body. Both mean
+    // "no list arrived" — never "this customer has no keys".
+    expect(readKeys({})).toEqual([]);
+    expect(readKeys(null)).toEqual([]);
+    expect(readKeys({ keys: "not an array" })).toEqual([]);
+  });
+
+  it("drops a malformed row instead of white-screening the surface", () => {
+    // An operator may be on this page to revoke a key that has leaked. Losing
+    // the whole table to one bad row is the worse failure.
+    const rows = readKeys({
+      keys: [{ prefix: "cc_live_ok", created_at: "x", revoked: false }, { label: "no prefix" }, 7],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].prefix).toBe("cc_live_ok");
+  });
+
+  it("never surfaces a token or a hash, because neither is in the payload", () => {
+    // Structural: `store.list_keys` excludes key_hash at the SQL level and the
+    // token was never stored. This pins that the reader adds no field either.
+    const rows = readKeys({
+      keys: [{ prefix: "cc_live_x", created_at: "x", revoked: false, key_hash: "LEAK", token: "LEAK" }],
+    });
+    expect(Object.keys(rows[0]).sort()).toEqual([
+      "created_at",
+      "label",
+      "prefix",
+      "revoked",
+    ]);
+  });
+
+  it("treats a non-boolean `revoked` as NOT revoked only when explicitly true", () => {
+    // Fail toward showing the key. A live key hidden from the table is a
+    // credential nobody can revoke.
+    const rows = readKeys({
+      keys: [
+        { prefix: "a", created_at: "x", revoked: "true" },
+        { prefix: "b", created_at: "x" },
+      ],
+    });
+    expect(rows[0].revoked).toBe(false);
+    expect(rows[1].revoked).toBe(false);
+  });
+});
+
+describe("liveKeys", () => {
+  it("keeps only the keys that still work", () => {
+    const rows = readKeys({
+      keys: [
+        { prefix: "live", created_at: "x", revoked: false },
+        { prefix: "dead", created_at: "x", revoked: true },
+      ],
+    });
+    expect(liveKeys(rows).map((k) => k.prefix)).toEqual(["live"]);
+  });
+
+  it("returns an empty list rather than throwing on no keys", () => {
+    expect(liveKeys([])).toEqual([]);
+  });
+});
+
+describe("the credit ledger read (manual payments)", () => {
+  it("parses entries and keeps money as the STRINGS the Console sent", () => {
+    const rows = readLedger({
+      entries: [
+        { delta: "500.0000", reason: "manual", ref: "UTR-1",
+          created_at: "2026-08-30T10:00:00Z" },
+        { delta: "-1.2900", reason: "usage", ref: null,
+          created_at: "2026-08-30T11:00:00Z" },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].delta).toBe("500.0000");
+    expect(rows[1].ref).toBeNull();
+  });
+
+  it("a Console predating the read yields empty, not a crash", () => {
+    expect(readLedger({})).toEqual([]);
+    expect(readLedger(null)).toEqual([]);
+    expect(readLedger({ entries: "nope" })).toEqual([]);
+  });
+
+  it("ledgerAdds reads the sign, and only the sign", () => {
+    expect(ledgerAdds({ delta: "500.0000", reason: "manual", ref: null,
+      created_at: "" })).toBe(true);
+    expect(ledgerAdds({ delta: "-1.2900", reason: "usage", ref: null,
+      created_at: "" })).toBe(false);
+  });
+
+  it("the wiring: the page reads the ledger, the form demands a reference for manual", () => {
+    // No renderer runs here, so the wiring is fenced by source scan - the
+    // same idiom as catalog.test.ts. An unverifiable manual grant must not
+    // be one click away.
+    const page = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "page.tsx"), "utf8");
+    expect(page).toContain("creditLedger");
+    expect(page).toContain("Credit ledger");
+    const actions = readFileSync(
+      join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
+    expect(actions).toContain('reason === "manual" && !ref.trim()');
   });
 });

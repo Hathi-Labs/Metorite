@@ -170,6 +170,69 @@ class Settings(BaseSettings):
     # 401 nobody can explain.
     customer_console_url: str = ""
     customer_console_deployment_key: str = ""
+    # ── The THIRD credential, a third NAME on purpose (CP-11 s2) ──
+    #
+    # `cc_live_`, org-scoped. This box's key to the Console's AI ROUTER
+    # (`POST /v1/chat/completions`), read only by
+    # `acb_auth.console_resolve.chat_completion_on_console`.
+    #
+    # ⚠️ Read the paragraph above before adding a fourth. Three Console
+    # credentials now sit on this box, and they are NOT interchangeable:
+    #
+    #   CUSTOMER_CONSOLE_DEPLOYMENT_KEY  cc_depl_  {resolve}   ask about PEOPLE
+    #   CUSTOMER_CONSOLE_ORG_KEY         cc_live_  org-scoped  spend AI CREDITS
+    #   (the Console's operator token never sits on a tenant box at all)
+    #
+    # The name deliberately MATCHES the workbench BFF's
+    # `CUSTOMER_CONSOLE_ORG_KEY`: the same credential, one name, two
+    # readers. That is the `CUSTOMER_CONSOLE_URL` precedent above, and the
+    # opposite of the deployment key's argument. Same credential keeps the
+    # name. A different credential takes a new one.
+    #
+    # ⚠️ **On a SHARED box this cannot be right for every tenant**,
+    # which `seats.py` and `console_resolve.py:734` both already record. It is
+    # correct on a single-org silo, and CP-11 slice 3 must resolve the key
+    # per-organization before the flag can go on anywhere else.
+    customer_console_org_key: str = ""
+
+    # ── The serving hop (CP-11 slice 3, D57) ────────────────────────────────
+    #
+    # OFF sends `/v1/chat/completions` to the local litellm SDK, exactly as
+    # every release before this one did. ON sends it to the Console Router, so
+    # the tier binding, the rate card and OUR provider account decide the call.
+    #
+    # ⚠️ **Flag-off is a SUPPORTED state, not a degraded one** (§6B.7). With
+    # this unset the deployment behaves byte-identically to today, which is what
+    # makes the hop safe to merge long before anybody flips it.
+    #
+    # ⚠️ **A routed call that fails FAILS. It does NOT fall back to litellm**
+    # (D57.7). A silent fallback would serve traffic on tenant-local keys, at
+    # tenant-local models, UNMETERED, and nobody would learn it happened.
+    #
+    # 🔴 Flipping this on a live box is OWNER-GATE (work_plan.md §6 (d)/(e)).
+    router_serving_enabled: bool = False
+
+    # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
+    #
+    # `customer_console.md` §5.1 already names the destination: the provider,
+    # model and tier tabs leave the customer product, and `/settings/models`
+    # becomes credits, burn and per-member caps. This flag is the SERVER half
+    # of that move, taken early and on its own.
+    #
+    # OFF means nobody on a tenant box can install, replace or remove a
+    # provider API key through the product. The gateway refuses both write
+    # doors with 403. READING an installed key is untouched, because the
+    # product runs on exactly those keys today while `ROUTER_SERVING_ENABLED`
+    # is off. Turning this flag off must not stop a single AI call.
+    #
+    # ⚠️ This is NOT the D57.7 fallback arm, and it must never become one.
+    # BYOK stays reachable by CONFIGURATION only — an operator sets this on
+    # one deployment, deliberately. No failure path may set it, because a
+    # Router outage that silently re-opened the key doors would reclassify a
+    # paying customer as BYOK and stop metering them.
+    #
+    # The fence: `tests/unit/test_byok_disabled.py`.
+    byok_enabled: bool = False
     # The freshness/staleness PAIR (§6(c)) — one number cannot express it.
     # Console REACHABLE  → a cached answer is re-consulted past the TTL.
     # Console UNREACHABLE → a cached person proceeds up to the ceiling, and

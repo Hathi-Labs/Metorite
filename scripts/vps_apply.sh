@@ -44,6 +44,47 @@ APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
 
 echo "==> Pulling latest from origin/main"
+
+# 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
+# one below, one directory over — and this one is worse, because it blocks the
+# `git reset` that would have delivered its own fix.
+#
+# `git reset --hard` UNLINKS a tracked file to rewrite it, and unlinking needs
+# write permission on the CONTAINING DIRECTORY. A directory owned `root:root`
+# with `drwxr-xr-x` therefore stops the app user dead:
+#
+#   error: unable to unlink old
+#   'workbench/operator_console/src/app/models/ModelDetails.tsx':
+#   Permission denied
+#
+# Measured 2026-08-31: that killed the deploys of PR #190 and PR #198, three
+# rounds each, both with green CI. The box sat on 3ad494bd for a day while
+# `main` moved two merges ahead — and stayed UP the whole time, serving old
+# code, so nothing alarmed. 113 root-owned paths in the tracked tree, created
+# 2026-08-30 16:49 by something in that deploy running as root.
+#
+# `.venv` gets this treatment at line ~270 and the source tree never did, which
+# is why the earlier fix could not save this case: `uv sync` is far downstream
+# of the checkout that now fails.
+#
+# ⚠️ Scoped to what git must rewrite. `.next` is ~66k root-owned build files and
+# is gitignored, so `git reset` never touches it — chowning it here would turn
+# a fast repair into a minutes-long one for no benefit. `node_modules` likewise.
+#
+# `find -exec … +` rather than `chown $(find …)`: the command substitution
+# splits on whitespace, so it breaks on any path with a space in it, and a tree
+# this size can overflow the argument list. `find` under `sudo` also keeps the
+# traversal quiet on directories the app user cannot read.
+CHECKOUT_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+CHECKOUT_USER="${CHECKOUT_OWNER%%:*}"
+if sudo find "$APP_DIR" \( -name .next -o -name node_modules \) -prune -o \
+     ! -user "$CHECKOUT_USER" -exec chown "$CHECKOUT_OWNER" {} + 2>/dev/null; then
+  echo "    checkout ownership normalised to $CHECKOUT_OWNER before reset"
+else
+  echo "    WARNING: could not repair checkout ownership — git reset may fail"
+  echo "             with 'unable to unlink old' (see H-89)."
+fi
+
 # Preserve runtime-managed state that lives in tracked files but is
 # mutated on the VPS (agents.json = Control-Plane agent registry).
 # git reset --hard would otherwise wipe agents registered via the UI.
@@ -174,12 +215,114 @@ for _k in PG_MODE PGHOST PGPORT PGPASSWORD PGSSLMODE SKIP_PRE_MIGRATION_BACKUP; 
 done
 APP_DIR="$APP_DIR" bash scripts/apply_migrations.sh < /dev/null
 
+echo "==> Applying the Customer Console ladder (D47 · H-24)"
+# ⚠️ This ran NOWHERE until 2026-08-27, and that is the board's own
+# "platform_api is on the box but inert". `infra/customer_console/` is the
+# Console's ladder against the Console's OWN Supabase project (D34); the applier
+# above is bolted to the local docker Postgres and cannot reach it. So the
+# Console got a dedicated DSN-driven applier and nothing ever invoked it: the
+# deploy shipped Console CODE expecting a schema its database did not have, and
+# reported success. CP-12 made it visible — migration 009 creates the `operator`
+# tables and, unapplied, `GET /operators` answers 500 rather than 404 (H-64).
+#
+# R6 puts this BEFORE the Console restart further down, so old code never meets
+# new schema. `< /dev/null` is the same load-bearing redirect as the tenant call
+# above, for the identical reason: this whole file is delivered ON STDIN.
+#
+# ⚠️ FAIL-CLOSED, and the exact condition is deliberate. H-24 says "fail the
+# deploy when its DSN is unset rather than skipping". Read literally that would
+# brick every TENANT deploy on a box that runs no Console at all, so the test is
+# provisioned-and-misconfigured rather than merely unset:
+#   • a DSN is present         -> apply the ladder.
+#   • no DSN, unit ENABLED     -> the Console is live and misconfigured. FAIL.
+#   • no DSN, unit not enabled -> not provisioned here. Say so LOUDLY, continue.
+# The thing H-24 closes is the SILENT skip. A loud, reasoned skip is not one.
+CC_ENV="$APP_DIR/apps/services/customer_console/.env"
+CC_DSN="$(grep -E '^CUSTOMER_CONSOLE_DATABASE_URL=' "$CC_ENV" 2>/dev/null | tail -1 | cut -d= -f2-)"
+# systemd's EnvironmentFile accepts quoted values; psql would take the quotes
+# literally and try to resolve them as a hostname.
+CC_DSN="${CC_DSN%\"}"; CC_DSN="${CC_DSN#\"}"
+CC_DSN="${CC_DSN%\'}"; CC_DSN="${CC_DSN#\'}"
+if [ -n "$CC_DSN" ]; then
+  CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
+    bash scripts/apply_customer_console_migrations.sh < /dev/null
+elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+  echo "    !! acb-customer-console is ENABLED, but $CC_ENV carries no"
+  echo "       CUSTOMER_CONSOLE_DATABASE_URL. The service would serve new code"
+  echo "       against an unmigrated schema. Refusing to continue."
+  exit 1
+else
+  echo "    no Console DSN and acb-customer-console is not enabled here"
+  echo "    -> Console ladder SKIPPED (this box does not run the Console)"
+fi
+
 echo "==> Syncing Python deps"
 if ! command -v uv >/dev/null; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
+
+# 🔴 **TWO DELIVERY PATHS, TWO UIDs, ONE VENV.** This aborted every push-path
+# deploy from 2026-08-26 to 2026-08-29, and it aborted them RIGHT HERE — before
+# the workbench build and before the Operator Console block. So the box took
+# each new checkout and none of the new builds, which is why `git log` on the
+# box read current while every compiled surface stayed days behind.
+#
+# The header of this file says "one file, so the two paths cannot drift". The
+# FILE does not drift. The UID does:
+#
+#   pull path   acb-pull.service runs `User=root`  → writes root-owned files
+#   push path   deploy.yml SSHes as the app user   → cannot remove them
+#
+# Measured 2026-08-29: 36 files of 9883 under `.venv` were `root:root` in an
+# otherwise `acb:acb` tree, and `uv sync` stopped on the first one it met:
+#
+#   error: failed to remove file `…/sherpa_onnx-1.13.6.dist-info/INSTALLER`:
+#          Permission denied (os error 13)
+#
+# `set -e` (line 42) then took the remaining 480 lines with it. The job polled
+# 24 times x 3 rounds for a SHA no process was working toward any more, and
+# reported the box unreachable — so for three days this read as a network or
+# health fault, which is where the diagnosis kept going.
+#
+# ⚠️ **Normalise AFTER the sync, and only as root.** Root can always remove
+# root's files, so the root path never fails — it only leaves the mess that
+# makes the NEXT app-user deploy fail. Deriving the owner from $APP_DIR rather
+# than naming `acb` keeps this correct on a box that installs somewhere else.
+#
+# 🔴 **REPAIR BEFORE, NORMALISE AFTER — and the BEFORE half is the one that
+# matters.** The first version of this fix (PR #155) only chowned as root,
+# after the sync, and it never once ran. The reason is a race nobody had to
+# lose deliberately:
+#
+#   1. a merge moves `release`;
+#   2. the PUSH path (app user) reaches the box first and checks out the SHA;
+#   3. it dies here at `uv sync`, because the root files are still there;
+#   4. `acb-pull` wakes, compares SHAs, says "already current" — and never
+#      applies. So ROOT NEVER GETS A TURN, and the repair never executes.
+#
+# Measured 2026-08-29: the box sat at 16f5dccd with the chown present at line
+# 254 of its own checkout, 39 root-owned files under `.venv`, and `/providers`
+# still 404. The fix was on the box and could not reach itself.
+#
+# So repair up front, with `sudo`, whoever is running. The app user already
+# holds passwordless sudo — this script uses `sudo systemctl` throughout — and
+# without it the app-user path has no way out of a hole only root can dig it
+# out of.
+VENV_OWNER="$(stat -c '%U:%G' "$APP_DIR")"
+if [ -d "$APP_DIR/.venv" ]; then
+  if sudo chown -R "$VENV_OWNER" "$APP_DIR/.venv" 2>/dev/null; then
+    echo "    venv ownership repaired to $VENV_OWNER before sync"
+  else
+    echo "    WARNING: could not chown $APP_DIR/.venv — uv sync may fail on"
+    echo "             files this user cannot remove (see PR #155/#156)."
+  fi
+fi
 uv sync
+if [ "$(id -u)" = "0" ] && [ -d "$APP_DIR/.venv" ]; then
+  chown -R "$VENV_OWNER" "$APP_DIR/.venv"
+  echo "    venv normalised to $VENV_OWNER — root ran this apply"
+fi
 
 # ── [TRIAL] Free local diarization (sherpa-onnx) ──────────────────
 # Adds free CPU-only speaker separation for Whisper transcripts.
@@ -400,6 +543,30 @@ sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
 echo "Gateway is active"
 
+echo "==> Restarting the Customer Console (systemd)"
+# The unit FILE arrives via the BO-23 sync loop below, which deliberately does
+# not restart services. That is correct for the loop and wrong for the Console:
+# `git reset --hard` above moves files, it does not restart a running Python
+# process, so without this step the Console serves whatever code it started with
+# until somebody notices. Its ladder is already applied, so R6 holds.
+#
+# Conditional on the unit being enabled — the same "does this box run a Console"
+# test as the ladder step. Failure is LOUD: a dead service behind a green deploy
+# is the WS-25 failure mode this file carries the most scar tissue about.
+if systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+  sudo systemctl restart acb-customer-console
+  sleep 3
+  if systemctl is-active --quiet acb-customer-console; then
+    echo "    Customer Console is active (127.0.0.1:8090)"
+  else
+    echo "CUSTOMER CONSOLE FAILED TO START"
+    sudo journalctl -u acb-customer-console --no-pager -n 40 || true
+    exit 1
+  fi
+else
+  echo "    acb-customer-console is not enabled here — skipping restart"
+fi
+
 # ── App Workshop T2 (React) build vendor cache ────────────────────
 # Shared, pinned react/react-dom/esbuild/lucide-react the
 # app-builder agent's build script
@@ -449,6 +616,92 @@ sudo systemctl restart acb-workbench
 sleep 3
 systemctl is-active --quiet acb-workbench || { echo "WORKBENCH FAILED TO START"; exit 1; }
 echo "Workbench is active"
+
+# ── Operator Console (Next.js, staff-only) ────────────────────────
+#
+# 🔴 **THIS BLOCK EXISTS BECAUSE THE CONSOLE DRIFTED FOR TWO DAYS.** Measured
+# 2026-08-28: `operator.metorite.com` served, and both `/models` (merged
+# 2026-08-27) and `/providers` (merged 2026-08-28) answered **404**. The site
+# was up, Caddy routed it, and nothing in this script rebuilt it — so every
+# operator feature merged to `main` stayed on `main`.
+#
+# ⚠️ **The unit file is NOT in this repo.** Every other service here is copied
+# from `deploy/hostinger/*.service`; this one was stood up by hand on the box,
+# so there is nothing to `cp`. That is a real gap and it is recorded in the
+# handoff queue — until it closes, this block manages an artefact it cannot
+# reproduce.
+#
+# ⚠️ **Deliberately AFTER the workbench.** Customer surfaces come up first, so
+# a failure here fails the job loudly without having delayed a single customer
+# request. That ordering is the whole reason this is safe to fail hard on.
+#
+# Conditional on the unit being enabled — the same test the Console block uses,
+# so a box that does not run the operator console skips this silently rather
+# than failing. Override the name if it runs under a different one.
+OC_UNIT="${OPERATOR_CONSOLE_UNIT:-acb-operator-console}"
+OC_DIR="$APP_DIR/workbench/operator_console"
+
+if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
+  echo "==> Rebuilding + restarting Operator Console ($OC_UNIT)"
+  cd "$OC_DIR"
+  if [ -f package-lock.json ] || [ -f package.json ]; then
+    npm ci --prefer-offline 2>/dev/null || npm install
+    # Same clean build as the workbench: a kept `.next` produces stale
+    # client-reference-manifest errors under Turbopack.
+    rm -rf .next
+    # 1GB heap ceiling — this box has 4GB and two Next builds run per deploy.
+    NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  fi
+  sudo systemctl restart "$OC_UNIT"
+  sleep 3
+  if ! systemctl is-active --quiet "$OC_UNIT"; then
+    echo "OPERATOR CONSOLE FAILED TO START"
+    sudo journalctl -u "$OC_UNIT" --no-pager -n 40 || true
+    exit 1
+  fi
+  echo "    Operator Console is active"
+
+  # 🔴 **ACTIVE IS NOT SERVED, AND THE DIFFERENCE COST TWO DAYS.**
+  #
+  # Measured 2026-08-28 and again 2026-08-29: the unit was `active (running)`
+  # for the whole period `/providers` and `/models` answered 404. `is-active`
+  # reports that a process holds the port. It reports NOTHING about which build
+  # that process loaded, and a Next.js server started against a stale `.next`
+  # holds the port perfectly while serving last week's routes.
+  #
+  # That is this repo's most expensive recurring failure wearing its third hat:
+  # a green signal that describes the machinery instead of the delivery. So
+  # probe the routes, and fail the deploy when one is missing.
+  #
+  # ⚠️ The route list is DERIVED FROM THE SOURCE TREE, never written down here.
+  # The whole defect is a thing that was correct when written and silently
+  # stopped matching the tree. A hardcoded list would rot the same way.
+  #
+  # ⚠️ Only 404 is a failure. `/providers` with no session answers a redirect to
+  # `/login`, and that IS a pass — it proves the route compiled. Treating a
+  # redirect as failure would make this gate refuse a correct deploy.
+  OC_PORT="${OPERATOR_CONSOLE_PORT:-3002}"
+  oc_stale=""
+  for oc_page in "$OC_DIR"/src/app/*/page.tsx; do
+    [ -f "$oc_page" ] || continue
+    oc_route="$(basename "$(dirname "$oc_page")")"
+    oc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null || echo 000)"
+    [ "$oc_code" = "404" ] && oc_stale="$oc_stale /$oc_route"
+  done
+  if [ -n "$oc_stale" ]; then
+    echo "OPERATOR CONSOLE IS SERVING A STALE BUILD — 404 on:$oc_stale"
+    echo "    The unit is active and these routes exist in src/app/."
+    echo "    The build did not take. Do NOT record this deploy as successful."
+    exit 1
+  fi
+  echo "    Operator Console serves every route in src/app/"
+else
+  echo "    $OC_UNIT is not enabled here — skipping the Operator Console."
+  echo "    If it runs under another name, set OPERATOR_CONSOLE_UNIT in .env"
+  echo "    on the box. If it runs on this host at all, it is NOT being"
+  echo "    rebuilt by this script and it WILL drift (see HANDOFF H-75)."
+fi
 
 echo "==> Ensuring Caddy is serving"
 # Caddy fronts BOTH public hostnames — if it is down, the whole app

@@ -36,12 +36,12 @@
  * app weeks later.
  */
 
-import { THEMES } from "./themes";
+import { THEME } from "./themes";
 import type { Theme, ThemeMode } from "./types";
 
 /**
- * `controls.buttonRadius` is `var(--radius)` for most themes — a reference to a
- * variable that exists in *our* document and not in the iframe's. Resolving it
+ * `controls.buttonRadius` is `var(--radius)` — a reference to a variable that
+ * exists in *our* document and not in the iframe's. Resolving it
  * here is the difference between a themed button and a square one, and the
  * failure is silent: an unresolvable `var()` makes the whole declaration
  * invalid at computed-value time, so the control just loses its radius.
@@ -187,9 +187,8 @@ export function appTokenMap(theme: Theme, mode: ThemeMode): Record<string, strin
  * will use and silently lose.
  */
 export const CC_TOKEN_NAMES: readonly string[] = appTokens(
-  // Derived from a real manifest rather than a hand-kept list: every theme
-  // yields the same key set (only values vary), so reading one is the same
-  // answer with no second copy to fall out of date.
-  THEMES[0],
+  // Derived from the real manifest rather than a hand-kept list, so there is
+  // no second copy to fall out of date.
+  THEME,
   "dark",
 ).map(([name]) => name);

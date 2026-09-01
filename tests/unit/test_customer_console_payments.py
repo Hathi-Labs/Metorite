@@ -43,6 +43,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from customer_console import auth, credits, lifecycle, payments, store
+from customer_console.auth import SHARED_TOKEN_ACTOR
 from customer_console.keys import ENV_DISCOUNT, mint_key, split_key
 from customer_console.main import app
 from fastapi.routing import APIRoute
@@ -118,11 +119,34 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: **Recorded as a finding for the board** (CLAUDE.md §5: existing violations
 #: are findings, not refactors) — and stated in the PR rather than left for a
 #: reviewer to discover.
+#:
+#: ⚠️ **`audio_transcriptions` joined it on 2026-08-31 (H-46, §6A.10a).** The
+#: transcribe route is the Router's second serving door, and clauses 4 and 10
+#: require it to write the SAME meter through the SAME writer. So the
+#: argument above holds word for word: the customer's key opens the route,
+#: and our infrastructure decides the amount from a duration the provider
+#: reported and a tier card the customer cannot reach.
+#:
+#: ⚠️ **`images_generations` and `audio_speech` joined it on 2026-08-31
+#: (H-46, §6A.10c clause 11).** They are the Router's third serving door and
+#: its fourth, and clause 7 and clause 10 send both through the SAME writer.
+#: So the argument above holds word for word again: the customer's key opens
+#: the route, and our infrastructure decides the amount — from a count of the
+#: pictures the provider returned, or a count of the characters we sent, and
+#: a tier card the customer cannot reach.
+#:
+#: 🔴 **This is still not a second argument.** It is one argument on four
+#: doors, and §9's owner-ratification item 6 predicted exactly this growth.
+#: An entry that is NOT another Router serving route is the thing this list
+#: exists to stop.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
+    ("audio_transcriptions", "store.add_credit"),
+    ("images_generations", "store.add_credit"),
+    ("audio_speech", "store.add_credit"),
 })
 
-#: What the walk may cross. Two entries, two arguments, two fences.
+#: What the walk may cross. Five entries, two arguments, two fences.
 PERMITTED_EDGES = FULFIL_ALLOW_LIST | METERING_EXEMPTION
 
 _PACKAGE = Path(__file__).resolve().parents[2] / (
@@ -868,8 +892,8 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
             ("redeem_discount_code", "payments.fulfil"),
         }) == FULFIL_ALLOW_LIST
 
-    def test_the_metering_exemption_has_exactly_one_entry(self):
-        """The DECLARED deviation, pinned so it cannot grow either.
+    def test_the_metering_exemption_holds_the_four_router_serving_routes(self):
+        """The DECLARED deviation, pinned so it cannot grow past the Router.
 
         ``POST /v1/chat/completions`` is organization-key authenticated (CP-3)
         and CP-6 made it write the metering draw. That predates CP-9 by six
@@ -879,14 +903,31 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         fence, because an exemption smuggled into the list the ticket counts is
         worse than an exemption argued in the open.
 
-        If you are here to add a second entry: the answer is almost certainly
-        that the write belongs behind the internal token, which is what
-        ``/usage/record`` had to become after verification minted 100,000
-        credits through it.
+        ``POST /v1/audio/transcriptions`` joined it on 2026-08-31 (H-46). It
+        is the SAME argument on the SAME writer, one door along: §6A.10a
+        clause 4 gives it the quantity and clause 10 gives it the refusal row,
+        and both go through ``store.record_usage``. The amount comes from a
+        duration the provider reported, never from the caller.
+
+        ``POST /v1/images/generations`` and ``POST /v1/audio/speech`` joined
+        the same day (§6A.10c clause 11), and §9's owner-ratification item 6
+        predicted both. The amount is a count of the pictures the provider
+        RETURNED, or a count of the characters we SENT — measured on our own
+        infrastructure in each case, exactly as the tokens and the duration
+        are.
+
+        If you are here to add an entry that is NOT a Router serving route:
+        the answer is almost certainly that the write belongs behind the
+        internal token, which is what ``/usage/record`` had to become after
+        verification minted 100,000 credits through it.
         """
         assert frozenset({
             ("chat_completions", "store.add_credit"),
+            ("audio_transcriptions", "store.add_credit"),
+            ("images_generations", "store.add_credit"),
+            ("audio_speech", "store.add_credit"),
         }) == METERING_EXEMPTION
+        assert len(METERING_EXEMPTION) == 4
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):
         """A dead exemption is one nobody notices has stopped being true.
@@ -898,10 +939,31 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         rather than inherited.
         """
         edges, writers = _call_graph()
-        assert "store.record_usage" in edges["main.chat_completions"]
+        # CP-4b (2026-08-27) factored the draw into `main._record_completion`,
+        # so the buffered and the STREAMED path share one metering writer. The
+        # exemption is unchanged in substance — the draw still hangs off the
+        # Router's own org-key route and still ends at a `credit_ledger`
+        # writer. The hop is NAMED rather than skipped, so moving the draw
+        # anywhere else still turns this red, which is the point of the fence.
+        assert "main._record_completion" in edges["main.chat_completions"]
+        assert "store.record_usage" in edges["main._record_completion"]
         assert "store.add_credit" in edges["store.record_usage"]
         assert "store.add_credit" in writers
         assert "chat_completions" in _org_key_routes()
+        # The streamed path reaches the SAME writer, through the generator.
+        # Two draws would mean two places to forget a gate.
+        assert "main._streamed_completion" in edges["main.chat_completions"]
+        assert "main._record_completion" in edges["main._streamed_completion"]
+        # H-46's transcribe door, on the SAME writer. A dead exemption is one
+        # nobody notices has stopped being true, so the second entry carries
+        # the same proof as the first.
+        assert "main._record_completion" in edges["main.audio_transcriptions"]
+        assert "audio_transcriptions" in _org_key_routes()
+        # §6A.10c's image door and speak door, carrying the same proof again.
+        assert "main._record_completion" in edges["main.images_generations"]
+        assert "images_generations" in _org_key_routes()
+        assert "main._record_completion" in edges["main.audio_speech"]
+        assert "audio_speech" in _org_key_routes()
 
     def test_the_fence_actually_walks_into_the_store(self):
         """Guards the fence itself: a walk that stops at depth 1 proves nothing.
@@ -976,9 +1038,21 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         assert ("redeem_discount_code",
                 ("main.redeem_discount_code", "main._apply_redemption",
                  "payments.fulfil", "store.grant_seats")) in found, found
-        assert ("chat_completions",
-                ("main.chat_completions", "store.record_usage",
-                 "store.add_credit")) in found, found
+        # ⚠️ **The METERING helper is named by SHAPE, not by identity.**
+        # `chat_completions` now has two of them: `_record_completion` writes
+        # the call that served, and `_record_refusal` (§8.1, slice 5) writes
+        # the wall the customer hit. Both reach `store.add_credit` through
+        # `store.record_usage`, and the walk marks a node seen — so it reports
+        # whichever it popped first, which is an ordering detail and not the
+        # depth this fence is about.
+        metering = [
+            path for route, path in found
+            if route == "chat_completions"
+            and path[0] == "main.chat_completions"
+            and path[1] in ("main._record_completion", "main._record_refusal")
+            and path[2:] == ("store.record_usage", "store.add_credit")
+        ]
+        assert metering, found
         assert found, "the licensed edges must reappear once nothing is allowed"
         assert min(len(path) for _route, path in found) >= 3, (
             "every finding here is reached through an intermediate; a "
@@ -2795,7 +2869,7 @@ class TestTheManualActivation:
 
         audit = _audit_with_action(db, org_id, "subscription.activate_manual")
         assert len(audit) == 1
-        assert audit[0]["actor"] == "operator"
+        assert audit[0]["actor"] == SHARED_TOKEN_ACTOR
         assert audit[0]["detail"]["reason"] == "manual"
         assert audit[0]["detail"]["reference"] == "NEFT-ABC123"
         assert audit[0]["detail"]["seats"] == 5
@@ -3261,7 +3335,7 @@ class TestDiscountCodes:
         for _actor, detail in rows.values():
             assert code["prefix"] in detail
             assert code["code"] not in detail, "the SECRET must never land"
-        assert rows["discount.issue"][0] == "operator"
+        assert rows["discount.issue"][0] == SHARED_TOKEN_ACTOR
         assert rows["discount.redeem"][0] == "organization"
 
     def test_a_redeem_attempt_logs_the_prefix_and_only_the_prefix(
@@ -3801,3 +3875,35 @@ class TestTheMigrationFile:
         for table in ("payment_order", "payment_event", "discount_code",
                       "discount_redemption"):
             assert f"COMMENT ON TABLE {table}" in source, table
+
+
+def test_a_capture_writes_an_audit_row_like_its_manual_twin(
+    client, fake, db, org,
+):
+    """`GET /activity` showed a manual activation and hid a paid one — the
+    value-granting capture wrote no control_audit row at all."""
+    order = _order(client, org["key"])
+    r = _capture(client, fake, db, order)
+    assert r.status_code == 200 and r.json()["fulfilled"] is True
+    with db.begin() as c:
+        row = c.execute(text(
+            "SELECT actor FROM control_audit "
+            "WHERE action = 'payment.captured' "
+            "AND detail->>'order_id' = :o"), {"o": order["id"]}).first()
+    assert row is not None
+    assert row.actor == "razorpay"
+
+
+def test_scalar_entities_in_a_signed_body_do_not_crash_the_parse():
+    """A signed body carrying `"payment": "x"` raised at `.get` and escaped
+    the function that promises "None when it is unusable" — a 500 the
+    provider retried forever instead of a refusal."""
+    import json as _json
+
+    from customer_console import payments as pay
+
+    raw = _json.dumps({"event": "payment.captured",
+                       "payload": {"payment": "x", "order": 3}}).encode()
+    headers = {"x-razorpay-event-id": "evt_scalar_poison"}
+    evt = pay._parse_event(raw, headers)
+    assert evt is None or getattr(evt, "amount_paise", None) is None

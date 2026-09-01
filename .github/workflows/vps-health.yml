@@ -87,6 +87,70 @@ jobs:
             echo "REPORT_EOF"
           } >> "$GITHUB_OUTPUT"
 
+  # ⚠️ THE INVERSE OF THE PROBE ABOVE. There, any HTTP answer means alive.
+  # Here, an answer is the failure.
+  #
+  # Deliberately its own job, and it does NOT touch the outage issue. A public
+  # schema and an unreachable box are different failures with different fixes,
+  # and folding this into `probe` would let a config exposure read as an
+  # outage — or, worse, let one mask the other. `alert` still reports
+  # reachability on its own.
+  exposure:
+    name: "Dev-only surfaces must not exist on production"
+    runs-on: ubuntu-latest
+    steps:
+      - name: The API schema must not be public
+        env:
+          BASE: https://api.metorite.com
+        run: |
+          # /docs, /redoc and /openapi.json exist only when ACB_ENV=dev.
+          # FastAPI mounts them as plain Starlette routes with NO dependency
+          # chain, so the app-level auth dependency cannot guard them —
+          # `gateway/main.py` `docs_enabled` says exactly that in its own
+          # docstring. Switching the env off is the ONLY guard the design has.
+          #
+          # It was switched on. Measured 2026-08-31: production served all
+          # three, and 1121924 bytes of schema to a caller with no credential
+          # (H-90). `Settings.acb_env` defaults to "dev", so an ABSENT ACB_ENV
+          # is enough to do it — and nothing was watching. This job is that
+          # watcher.
+          FAILED=0
+          for path in /openapi.json /docs /redoc; do
+            code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "${BASE}${path}" 2>/dev/null || echo 000)"
+            # A failed probe yields an empty or repeated code — "000000" is
+            # observed, and health-watchdog.sh carries the same note. So match
+            # a real 3-digit status rather than testing `!= 000`, and never
+            # print OK for a request that got no answer at all.
+            case "$code" in
+              200)
+                echo "::error::${BASE}${path} answers 200 — production is running as ACB_ENV=dev"
+                FAILED=1 ;;
+              [1-5][0-9][0-9])
+                echo "OK      ${path} -> HTTP ${code}" ;;
+              *)
+                echo "        ${path} -> no answer, see the probe job" ;;
+            esac
+          done
+
+          # Read the env directly too. It NAMES the cause when a path above
+          # fires, and it still catches the misconfiguration if a later FastAPI
+          # moves or renames those three routes.
+          reported="$(curl -s -m 25 "${BASE}/version" 2>/dev/null | grep -o '"env":"[a-z]*"' || true)"
+          case "$reported" in
+            *'"prod"'*)
+              echo "OK      /version reports prod" ;;
+            "")
+              # Unreadable is NOT a pass and NOT a failure here. The `probe`
+              # job above owns reachability, and this job must not raise a
+              # second alarm for the same outage.
+              echo "::warning::/version did not answer — env unconfirmed, see the probe job" ;;
+            *)
+              echo "::error::/version reports ${reported} — production must report prod"
+              FAILED=1 ;;
+          esac
+
+          [ "$FAILED" -eq 0 ]
+
   # Only runs on manual dispatch with diagnose=true. SSH is the thing that
   # breaks during these outages, so this is best-effort and never fails the run.
   diagnose:

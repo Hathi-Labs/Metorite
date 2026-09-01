@@ -35,6 +35,7 @@ migration**, not an HTTP endpoint, precisely so this package keeps exactly one
 write path into ``pm_tasks``.
 """
 
+from gateway.routes.projects import analytics as _analytics  # noqa: F401
 from gateway.routes.projects import activities as _activities  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
 from gateway.routes.projects import admin as _admin  # noqa: F401

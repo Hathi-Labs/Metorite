@@ -1,7 +1,7 @@
 /**
  * Appearance store.
  *
- * Holds the two-level preference model the theming engine is built around:
+ * Holds the two-level preference model:
  *
  *   organisation default  — set by an admin, applies to everyone
  *   member override       — optional, wins for that person only
@@ -10,19 +10,20 @@
  * nullable rather than pre-resolved: clearing an override has to fall back to
  * whatever the org default currently is, including later changes to it.
  *
- * Deliberately a store rather than a context: `<Icon>` reads the active icon
- * pack and is rendered in well over a hundred places, several of them outside
- * any provider we control. A store keeps that read provider-free.
+ * ⚠️ **There is no theme here any more.** Owner directive 2026-08-31 retired
+ * the theming engine: one look, carried by `globals.css`, for every app. What
+ * a member may still change is DENSITY (how big) and ACCENT (which colour) —
+ * both of which adjust the one theme rather than replacing it. Colour mode
+ * (dark/light) is `next-themes`' own state and deliberately stays there;
+ * duplicating it here would give the app two sources for one fact.
  */
 
 import { create } from "zustand";
 import type { Density, ThemeMode } from "./types";
-import { DEFAULT_THEME_ID, findTheme, resolveTheme } from "./themes";
 import {
   ACCENT_INK_PROPERTIES,
   ACCENT_PROPERTIES,
   DENSITY_PROPERTY,
-  THEME_ATTRIBUTE,
   densityScale,
   themeStorage,
 } from "./storage";
@@ -30,15 +31,12 @@ import { isSafeColor } from "./css";
 import { accentInk } from "./contrast";
 
 type AppearanceState = {
-  /** Member's theme override; `null` inherits the org default. */
-  userThemeId: string | null;
   /** Member's density override; `null` inherits the org default. */
   userDensity: Density | null;
   /** Member's accent override; `null` keeps the theme's own primary. */
   accent: string | null;
 
   /** Organisation defaults, refreshed from the backend on mount. */
-  orgThemeId: string;
   orgDensity: Density;
   /** When false, members must use the org default. */
   allowUserOverride: boolean;
@@ -46,22 +44,11 @@ type AppearanceState = {
   /** True once local preferences have been read out of storage. */
   hydrated: boolean;
 
-  setUserTheme: (id: string | null) => void;
   setUserDensity: (density: Density | null) => void;
   setAccent: (color: string | null) => void;
-  setOrgDefaults: (org: {
-    themeId: string;
-    density: Density;
-    allowUserOverride: boolean;
-  }) => void;
+  setOrgDefaults: (org: { density: Density; allowUserOverride: boolean }) => void;
   hydrate: () => void;
 };
-
-/** The theme actually in force, honouring the org's override policy. */
-export function effectiveThemeId(s: AppearanceState): string {
-  if (!s.allowUserOverride) return s.orgThemeId;
-  return s.userThemeId ?? s.orgThemeId;
-}
 
 /** The density actually in force, honouring the org's override policy. */
 export function effectiveDensity(s: AppearanceState): Density {
@@ -81,7 +68,6 @@ function applyToDocument(state: AppearanceState): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
 
-  root.setAttribute(THEME_ATTRIBUTE, resolveTheme(effectiveThemeId(state)).id);
   root.style.setProperty(DENSITY_PROPERTY, String(densityScale(effectiveDensity(state))));
 
   const accent = state.accent && isSafeColor(state.accent) ? state.accent : null;
@@ -99,22 +85,11 @@ function applyToDocument(state: AppearanceState): void {
 }
 
 export const useAppearanceStore = create<AppearanceState>((set, get) => ({
-  userThemeId: null,
   userDensity: null,
   accent: null,
-  orgThemeId: DEFAULT_THEME_ID,
   orgDensity: "default",
   allowUserOverride: true,
   hydrated: false,
-
-  setUserTheme: (id) => {
-    // An unknown id would leave the document wearing an attribute no
-    // stylesheet matches, so treat it as "inherit" instead.
-    const next = id && findTheme(id) ? id : null;
-    themeStorage.setTheme(next);
-    set({ userThemeId: next });
-    applyToDocument(get());
-  },
 
   setUserDensity: (density) => {
     themeStorage.setDensity(density);
@@ -129,38 +104,23 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
     applyToDocument(get());
   },
 
-  setOrgDefaults: ({ themeId, density, allowUserOverride }) => {
-    const resolved = resolveTheme(themeId).id;
-    themeStorage.setOrgTheme(resolved);
+  setOrgDefaults: ({ density, allowUserOverride }) => {
     themeStorage.setOrgDensity(density);
-    set({ orgThemeId: resolved, orgDensity: density, allowUserOverride });
+    set({ orgDensity: density, allowUserOverride });
     applyToDocument(get());
   },
 
   hydrate: () => {
     if (get().hydrated) return;
-    const storedOrgTheme = themeStorage.getOrgTheme();
     const storedOrgDensity = themeStorage.getOrgDensity();
     set({
-      userThemeId: themeStorage.getTheme(),
       userDensity: themeStorage.getDensity(),
       accent: themeStorage.getAccent(),
-      orgThemeId: storedOrgTheme ? resolveTheme(storedOrgTheme).id : DEFAULT_THEME_ID,
       orgDensity: storedOrgDensity ?? "default",
       hydrated: true,
     });
     applyToDocument(get());
   },
 }));
-
-/** The resolved `Theme` object currently in force. */
-export function useActiveTheme() {
-  return useAppearanceStore((s) => resolveTheme(effectiveThemeId(s)));
-}
-
-/** The icon pack the active theme asks for. */
-export function useIconPack() {
-  return useAppearanceStore((s) => resolveTheme(effectiveThemeId(s)).iconPack);
-}
 
 export type { AppearanceState, ThemeMode };

@@ -357,23 +357,23 @@ export const NAV_SECTIONS: NavSection[] = [
         launch: "live",
       },
       {
-        // Ungated on purpose: choosing your own theme is a personal
+        // Ungated on purpose: how the product looks to you is a personal
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
         label: "Appearance",
         icon: "Palette",
-        note: "Themes · colour mode · density · accent",
+        // "Themes ·" led this line until 2026-08-31. The theming engine is
+        // retired — there is one look, and these three adjust it.
+        note: "Colour mode · density · accent",
         launch: "live",
       },
-      {
-        href: "/settings/models",
-        label: "Models",
-        icon: "Cpu",
-        note: "LLMs · tiers · providers",
-        feature: "models",
-        launch: "preview", // an operator concern, not a customer one
-      },
+      // ⚠️ NO MODELS ENTRY, and no route behind it either. CP-5 deleted
+      // `settings/models/page.tsx` on 2026-08-28 (D32.7, §5.1): model
+      // operations moved to the OPERATOR console, which is where the
+      // keys and the rate card already lived. A customer never sees a
+      // model, so there is nothing here to gate — `preview` was hiding
+      // a surface that should not exist in this product at all.
       {
         href: "/agents",
         label: "Agent Registry",

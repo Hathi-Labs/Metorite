@@ -1,37 +1,57 @@
-"use client";
+import { IDENTITY_FLAG, usesSessions } from "@/lib/identity";
+import InterimForm from "./InterimForm";
 
-import { useState } from "react";
+export const dynamic = "force-dynamic";
 
-// The INTERIM staff sign-in (D35.3). Posts the shared secret to the server,
-// which validates it and sets an httpOnly cookie; the secret is never held in
-// client state beyond this form. Replaced by the staff Entra directory when the
-// owner stands it up.
-export default function LoginPage() {
-  const [secret, setSecret] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+// Sign-in — WS-31 CP-12g. Two paths, chosen by `OPERATOR_IDENTITY_ENABLED`.
+//
+// ⚠️ **A SERVER component on purpose.** The Supabase project URL is read here
+// and only the finished authorize link reaches the browser. That avoids a
+// `NEXT_PUBLIC_` variable, which would be a second place the same value lives
+// and a second thing to keep in step.
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const res = await fetch("/api/operator/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret }),
-    });
-    setBusy(false);
-    if (res.ok) {
-      window.location.href = "/";
-    } else {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(body.error ?? `Sign-in failed (${res.status})`);
-    }
+//: Where Supabase sends the operator after Microsoft has answered. The token
+//: comes back in the URL FRAGMENT, which a server never sees — so the callback
+//: is a client page that reads it and posts it to the BFF.
+//:
+//: ⚠️ This exact URL must be on the project's redirect allowlist. Supabase
+//: refuses anything else, which is correct and is why it is owner work (H-54).
+const CALLBACK_PATH = "/login/callback";
+
+function authorizeUrl(origin: string): string | null {
+  const base = (process.env.OPERATOR_SUPABASE_URL ?? "").trim();
+  if (!base) return null;
+  const redirect = `${origin}${CALLBACK_PATH}`;
+  return (
+    `${base.replace(/\/$/, "")}/auth/v1/authorize` +
+    `?provider=azure&redirect_to=${encodeURIComponent(redirect)}`
+  );
+}
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ origin?: string; error?: string }>;
+}) {
+  const params = await searchParams;
+
+  if (!usesSessions()) {
+    return <InterimForm />;
   }
+
+  // `OPERATOR_CONSOLE_ORIGIN` rather than a guess from headers: a forwarded
+  // host header is caller-controlled, and building a redirect target out of
+  // one is how an open redirect happens.
+  const origin = (process.env.OPERATOR_CONSOLE_ORIGIN ?? "").trim();
+  const href = origin ? authorizeUrl(origin) : null;
+
+  // A real boolean, not the error string: JSX renders a truthy string, so
+  // `params.error && …` in the guard would print the message a second time.
+  const stranded = !href || Boolean(params.error);
 
   return (
     <main className="login-center">
-      <form className="panel login-card" onSubmit={submit}>
+      <div className="panel login-card">
         <h1 style={{ marginBottom: 4 }}>
           Metorite <span className="muted">Operator Console</span>
         </h1>
@@ -39,23 +59,50 @@ export default function LoginPage() {
           Customer management for platform staff. Not for customers — they sign
           in at app.metorite.com.
         </p>
-        <label htmlFor="secret">Staff passphrase</label>
-        <input
-          id="secret"
-          type="password"
-          value={secret}
-          autoFocus
-          onChange={(e) => setSecret(e.target.value)}
-          autoComplete="off"
-        />
+
+        {params.error && <div className="result err">{params.error}</div>}
+
+        {href ? (
+          <a className="primary-cta" href={href}>
+            Sign in with Microsoft
+          </a>
+        ) : (
+          <div className="banner">
+            {/* Fails closed and says which value is missing, because the
+                person reading this is the one who can set it. */}
+            Sign-in is not configured on this deployment. Set{" "}
+            <code>OPERATOR_SUPABASE_URL</code> and{" "}
+            <code>OPERATOR_CONSOLE_ORIGIN</code> server-side, and add the
+            callback URL to the Supabase redirect allowlist.
+          </div>
+        )}
+
+        {/* The way back, printed on the page instead of left in a runbook.
+
+            ⚠️ **This is TEXT, and it is deliberately NOT a second door.**
+            `usesSessions()` picks ONE path, and the gate refuses the
+            passphrase while the flag is on (§8 done-when 29). A console that
+            accepted both at once would have two live doors while only one was
+            being reasoned about. So this names the one env line that RETURNS
+            the console to the interim path, and renders no form — a
+            passphrase box here would 400 on submit.
+
+            It shows in the two states that strand a reader: sign-in not
+            configured, and a refused Microsoft sign-in. */}
+        {stranded && (
+          <div className="field-hint">
+            Cannot get in? Unset <code>{IDENTITY_FLAG}</code> server-side and
+            restart the console. The staff passphrase works again after that
+            restart. H-56 removes the passphrase for good, after one real
+            sign-in has succeeded.
+          </div>
+        )}
+
         <div className="field-hint">
-          Don&apos;t have it? Ask the platform owner.
+          You also need a row in the operator registry. Being in the directory
+          is not enough, on purpose — ask an admin to add you.
         </div>
-        <button type="submit" disabled={busy || secret.length === 0}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-        {error && <div className="result err">{error}</div>}
-      </form>
+      </div>
     </main>
   );
 }

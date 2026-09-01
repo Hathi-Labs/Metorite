@@ -478,3 +478,94 @@ class TestTheSecretNeverReachesALog:
         listed = client.get(f"/keys?org_slug={slug}", headers=OP).json()["keys"]
         assert set(listed[0]) == {"prefix", "label", "created_at", "revoked"}
         assert token not in str(listed)
+
+# ── CP-7 slice 1: the spend reads over the wire (D66) ───────────────────────
+
+class TestTheSpendReads:
+    """`/my/usage/*` — what a customer may see about their own AI spend.
+
+    The suite lives HERE, beside the other `cc_live_` tests, because the thing
+    that makes these routes safe is the same thing that makes the rest of the
+    key safe: the key IS the organization, so a cross-org read needs no
+    `WHERE` clause anybody has to remember.
+    """
+
+    def _meter(self, client, org_id, **row):
+        rid = f"req-{uuid.uuid4().hex}"
+        body = {"organization_id": org_id, "request_id": rid,
+                "billed_credits": row.pop("credits", "1"), "model": "m", **row}
+        assert client.post("/usage/record", headers=INT,
+                           json=body).status_code == 200
+
+    def test_the_spend_reads_refuse_without_a_key(self, client):
+        assert client.get("/my/usage/activity").status_code == 401
+        assert client.get("/my/usage/members").status_code == 401
+
+    def test_a_key_reads_its_OWN_spend_and_no_one_elses(self, client):
+        mine = _new_org(client, "mine")
+        theirs = _new_org(client, "theirs")
+        self._meter(client, _org_id(client, mine), agent="my-agent")
+        self._meter(client, _org_id(client, theirs), agent="their-agent")
+
+        r = client.get("/my/usage/activity",
+                       headers={"Authorization": f"Bearer {_key_for(client, mine)}"})
+
+        assert r.status_code == 200, r.text
+        assert [x["activity"] for x in r.json()["rows"]] == ["my-agent"]
+
+    def test_the_member_filter_scopes_to_one_person(self, client):
+        slug = _new_org(client)
+        org_id = _org_id(client, slug)
+        self._meter(client, org_id, agent="a", user_email="alice@corp.com")
+        self._meter(client, org_id, agent="b", user_email="bob@corp.com")
+        key = {"Authorization": f"Bearer {_key_for(client, slug)}"}
+
+        everyone = client.get("/my/usage/activity", headers=key).json()
+        alice = client.get(
+            "/my/usage/activity?member=alice@corp.com", headers=key).json()
+
+        assert len(everyone["rows"]) == 2
+        assert [x["activity"] for x in alice["rows"]] == ["a"]
+        # Echoed back, so the browser renders the scope it GOT rather than the
+        # one it asked for.
+        assert alice["member"] == "alice@corp.com"
+        assert everyone["member"] is None
+
+    def test_the_admin_read_groups_by_member(self, client):
+        slug = _new_org(client)
+        org_id = _org_id(client, slug)
+        self._meter(client, org_id, user_email="alice@corp.com", credits="4")
+        self._meter(client, org_id, user_email="alice@corp.com", credits="6")
+        self._meter(client, org_id, user_email="bob@corp.com", credits="1")
+
+        rows = client.get("/my/usage/members", headers={
+            "Authorization": f"Bearer {_key_for(client, slug)}"}).json()["rows"]
+
+        assert [x["member"] for x in rows] == ["alice@corp.com", "bob@corp.com"]
+        assert rows[0]["calls"] == 2
+        assert Decimal(rows[0]["credits"]) == Decimal("10")
+
+    def test_credits_cross_the_wire_as_strings(self, client):
+        """Money. JSON floats lose 0.1 + 0.2, and this is a bill."""
+        slug = _new_org(client)
+        self._meter(client, _org_id(client, slug), agent="a", credits="0.1")
+
+        body = client.get("/my/usage/activity", headers={
+            "Authorization": f"Bearer {_key_for(client, slug)}"}).json()
+
+        assert isinstance(body["rows"][0]["credits"], str)
+
+    def test_no_model_name_crosses_the_wire(self, client):
+        """🔴 D32.7 / D66 at the outermost layer.
+
+        The store-level fence in `test_customer_console_spend_reads.py` reads
+        the SQL. This reads the RESPONSE — the two fail independently, and the
+        response is what a customer actually receives. The metered row carries
+        `model="m"` above, so the column exists and is deliberately not shown.
+        """
+        slug = _new_org(client)
+        self._meter(client, _org_id(client, slug), agent="a")
+        key = {"Authorization": f"Bearer {_key_for(client, slug)}"}
+
+        for route in ("/my/usage/activity", "/my/usage/members"):
+            assert "\"model\"" not in client.get(route, headers=key).text, route

@@ -38,21 +38,19 @@ import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
 import {
-  ANYONE,
   type BoardLanes,
   DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   type Filters,
   GROUP_OPTIONS,
   type GroupBy,
-  UNASSIGNED,
-  assigneeChoice,
-  assigneeFilter,
-  assigneeOptions,
+  UNSET,
   describeDivergence,
   isFiltered,
+  personLabel,
   viewDivergence,
 } from "../lib/grouping";
+import { type ViewMode, honoursGroupBy, honoursLanes } from "../lib/commands";
 import {
   DEFAULT_SHOWN,
   FIELD_KEYS,
@@ -73,13 +71,14 @@ const CATEGORIES: Array<[string, string]> = [
   ["cancelled", "Cancelled"],
 ];
 
+
 /**
  * Each axis control says what it DOES, so it needs no label beside it.
  *
- * "Any status" already read this way and the other two did not: a bare
- * "Status" next to a bare "No lanes" is two controls whose meaning lived in
- * a `<label>` that the flex row then had to carry. Folding the verb into the
- * option text removes two elements from the busiest row in the app.
+ * "Any status" and "Anyone" already read this way and the two axis controls did
+ * not: a bare "Status" next to a bare "No lanes" is two controls whose meaning
+ * lived in a `<label>` that the flex row then had to carry. Folding the verb
+ * into the option text removes two elements from the busiest row in the app.
  */
 const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Group by status",
@@ -107,30 +106,37 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
  * buttons in this row use — tinted rather than filled, because a select still
  * has to read as a field you can open.
  *
- * The point is that the row answers "what have I changed?" at a glance. Before
- * this, a board grouped by assignee looked exactly like a board grouped by
- * status until you read the control.
+ * The row then answers "what have I changed?" at a glance. Before this, a board
+ * grouped by assignee looked exactly like a board grouped by status until you
+ * read the control.
  *
- * ⚠️ **On Graphite the BORDER carries this, not the text.** That is why the
- * border is in the string and not the tint alone. Graphite is deliberately
- * monochrome — its `--primary` is `hsl(0 0% 88%)` — so the text moves only from
- * `rgb(237,237,237)` to `rgb(224,224,224)`, which nobody can see. The border on
- * the same theme moves from `rgb(46,46,46)` to about `rgb(122,122,122)`, and
- * that reads. All four themes were measured in a browser, in both modes.
- *
- * Colour only, and never a cue that changes the control's BOX. This row's
- * search field is `flex-1` and absorbs whatever its siblings give up, so a
+ * ⚠️ Colour only, and never a cue that changes the control's BOX. The search
+ * field in this row is `flex-1` and absorbs whatever its siblings give up, so a
  * border-width or ring cue would move the search bar every time a filter
- * changed. Weight is unavailable for a different reason: `.cc-control` sets
- * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
- * class, and a control's weight is the theme's call rather than this bar's.
+ * changed. A weight cue is unavailable for a different reason: `.cc-control`
+ * sets `font-weight` from `--label-weight` in unlayered CSS, which beats a
+ * utility class.
  */
 const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
+
 interface Props {
   filters: Filters;
   onFilters: (next: Filters) => void;
+  /**
+   * The canvas on screen — it decides which grouping axes this bar OFFERS.
+   * `honoursGroupBy` / `honoursLanes` own that table; the bar does not carry
+   * its own opinion about what a canvas can draw.
+   */
+  mode: ViewMode;
+  /**
+   * The selected node's board spans more than one project — i.e. it has
+   * descendant projects (`tree.spansMultipleProjects`). False on a leaf, and
+   * on a project with no subprojects, where grouping by project would always
+   * yield exactly one group.
+   */
+  spansProjects: boolean;
   groupBy: GroupBy;
   onGroupBy: (next: GroupBy) => void;
   /**
@@ -141,19 +147,16 @@ interface Props {
    */
   lanes: BoardLanes;
   onSubGroupBy: (next: GroupBy) => void;
-  /** The signed-in member's address, offered as "Me". Empty while loading. */
+  /** The signed-in member's address, for the "Me" option. Empty while loading. */
   me: string;
   /**
-   * WS-27at — every address currently assigned work on this board, for the
-   * "Assigned to" control.
+   * WS-27af — who the assignee filter offers, from the tasks in this project.
    *
-   * ⚠️ Derived from the tasks ON SCREEN, which are the FILTERED ones. Filter to
-   * one person and the others leave this list. `assigneeOptions` unions the
-   * current choice back in so the control stays reversible, and somebody with
-   * access who holds no task here never appears at all. A complete membership
-   * list needs the directory, which is a different seam and a bigger change.
+   * ⚠️ Must be built from an UNFILTERED task set (`grouping.assigneesIn` says
+   * why): derived from the rows currently on screen it collapses to whoever is
+   * already selected, and the filter becomes one you cannot leave.
    */
-  boardAssignees: readonly string[];
+  people: readonly string[];
   /** WS-27m — the project's registered tags, for the tag row. */
   tags: TagRow[];
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
@@ -168,7 +171,7 @@ interface Props {
   onDeleteView: (view: ViewRow) => void;
   /** WS-27ab — write what is on screen into the view that is applied. */
   onUpdateView: (view: ViewRow) => void;
-  /** Saving needs a project to hang the view off; My work has none. */
+  /** Saving needs a project to hang the view off. */
   canSave: boolean;
   /**
    * WS-27ae — export the filter that is on screen, with the columns it shows.
@@ -182,12 +185,14 @@ interface Props {
 export function FilterBar({
   filters,
   onFilters,
+  mode,
+  spansProjects,
   groupBy,
   onGroupBy,
   lanes,
   onSubGroupBy,
   me,
-  boardAssignees,
+  people,
   tags,
   shownFields,
   onShownFields,
@@ -202,6 +207,19 @@ export function FilterBar({
   onExport,
 }: Props) {
   const subGroupBy = lanes.subGroupBy;
+
+  /**
+   * The axes worth offering here.
+   *
+   * "Project" drops out on a node with no descendant projects, where it can
+   * only ever produce one group. ⚠️ It stays if it is the CURRENT value —
+   * removing the selected option from a `<select>` renders it blank, and a
+   * saved view that grouped by project is honoured rather than silently
+   * rewritten when you open it on a leaf. So you can switch away from it and
+   * not back, which is exactly the availability the tree describes.
+   */
+  const axisOffered = (option: GroupBy, current: GroupBy): boolean =>
+    option !== "project" || spansProjects || current === "project";
   // The search box is held locally and pushed up on a delay. Refetching on
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
@@ -226,19 +244,21 @@ export function FilterBar({
 
   const set = (patch: Partial<Filters>) => onFilters({ ...filters, ...patch });
 
-  // The "Assigned to" control, derived rather than held: a second piece of
-  // state for something `filters` already says is a second thing that can be
-  // wrong. `assigneeChoice` and `assigneeFilter` are each other's inverse.
-  const choice = assigneeChoice(filters);
-  const people = assigneeOptions(boardAssignees, me, choice);
-  const isMe = (address: string) =>
-    Boolean(me) && address.toLowerCase() === me.toLowerCase();
-
-  // `subGroupBy` equal to the main axis is a board laned by its own columns.
-  // `fromConfig` normalises that away, but a hand-edited config can still
-  // arrive holding it, so the control shows "No lanes" rather than a value
-  // that is not in its own option list.
-  const lane = subGroupBy === groupBy ? "none" : subGroupBy;
+  /**
+   * A filtered-to address that is neither "me" nor anyone with work here.
+   *
+   * A saved view can name somebody whose tasks have all closed, or who has
+   * left. The `<select>` would then have no matching option, render BLANK, and
+   * read as "Anyone" while the filter is still applied — the worst outcome, a
+   * control lying about the state it is in. Given its own option instead.
+   */
+  const chosen = filters.assignee.trim();
+  const orphanAssignee =
+    chosen &&
+    chosen.toLowerCase() !== me.toLowerCase() &&
+    !people.some((who) => who.toLowerCase() === chosen.toLowerCase())
+      ? chosen
+      : null;
 
   // Resolved from the list rather than trusted: `activeViewId` outlives a
   // project switch and a delete, and a chip lit for a view that is no longer
@@ -278,31 +298,61 @@ export function FilterBar({
           </Select>
         </div>
 
-        {/* ONE control for who the work belongs to.
-            This was two buttons, "Mine" and "Unassigned", which could not
-            express "assigned to Priya" at all and could be pressed together
-            into a filter that matches nothing. The two server parameters
-            behind it are unchanged — `assigneeFilter` maps the choice onto
-            them, and never sets both.
+        {/* ── Assignee (WS-27af) ───────────────────────────────────────────
+            One axis, one control. This was two toggle buttons — "Mine" and
+            "Unassigned" — which offered the viewer exactly two of the people
+            who might hold work, and could not express "Priya's". The server
+            has always accepted any address here; only the UI was narrow.
 
-            "Mine" still writes the viewer's OWN address rather than a
-            server-side flag, so a saved view keeps carrying WHOSE work it
-            meant instead of resolving to whoever opens it later. */}
-        <div className="w-[11rem]">
+            A `Select`, matching the Status control beside it, because that is
+            what this is: pick one value on one axis. It is deliberately NOT
+            the directory-backed `AssigneePicker` — that control exists to
+            ASSIGN, and its warnings ("away until the 20th", "more committed
+            than contracted") are advice about giving someone work, which means
+            nothing when you are reading it.
+
+            "Mine" survives as an OPTION rather than a button. It still writes
+            the viewer's own address rather than a server-side flag, so a saved
+            view carries whose work it meant instead of resolving to whoever
+            opens it later. */}
+        <div className="w-40">
           <Select
-            aria-label="Assigned to"
             inputSize="sm"
-            className={choice === ANYONE ? AT_DEFAULT : OFF_DEFAULT}
-            value={choice}
-            onChange={(e) => set(assigneeFilter(e.target.value))}
+            aria-label="Assignee"
+            className={
+              filters.unassigned || filters.assignee ? OFF_DEFAULT : AT_DEFAULT
+            }
+            value={filters.unassigned ? UNSET : filters.assignee}
+            onChange={(e) => {
+              const picked = e.target.value;
+              // `unassigned` is its own server flag, so the two are set as a
+              // pair — every path here writes both and they cannot drift into
+              // "nobody's tasks, assigned to Priya".
+              set(
+                picked === UNSET
+                  ? { assignee: "", unassigned: true }
+                  : { assignee: picked, unassigned: false }
+              );
+            }}
           >
-            <option value={ANYONE}>Assignees</option>
-            <option value={UNASSIGNED}>Unassigned</option>
-            {people.map((address) => (
-              <option key={address} value={address}>
-                {isMe(address) ? "Me" : address}
-              </option>
-            ))}
+            <option value="">Anyone</option>
+            {me ? <option value={me}>Me</option> : null}
+            <option value={UNSET}>Unassigned</option>
+            {people.length > 0 ? (
+              <optgroup label="Assignees">
+                {people.map((who) => (
+                  <option key={who} value={who}>
+                    {personLabel(who)}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {/* A saved view can name somebody who holds nothing right now.
+                Without this the select would render blank and silently read
+                as "Anyone" while still filtering to them. */}
+            {orphanAssignee ? (
+              <option value={orphanAssignee}>{personLabel(orphanAssignee)}</option>
+            ) : null}
           </Select>
         </div>
         <Button
@@ -313,43 +363,82 @@ export function FilterBar({
         >
           Overdue
         </Button>
+        {/*
+          WS-27bk §9.12.2 — "what am I watching", beside the other toggles.
 
-        <div className="w-[11rem]">
-          <Select
-            aria-label="Group by"
-            inputSize="sm"
-            className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
-            value={groupBy}
-            onChange={(e) => onGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {GROUP_OPTION_LABELS[option]}
-              </option>
-            ))}
-          </Select>
-        </div>
+          ⚠️ A FILTER, not a fourth lens. One task store, three lenses
+          (D52/D53/D54): a watched-tasks view would fork that and would compose
+          with nothing. Here it stacks — "things I watch, in Ops, that are
+          overdue" is one query and one chip each.
+
+          The eye is the convention every tool that has this uses, and the
+          label says "Watching" rather than "Watched" because it describes a
+          standing subscription and not a past act.
+        */}
+        <Button
+          variant={filters.watching ? "primary" : "secondary"}
+          size="sm"
+          icon="Eye"
+          aria-pressed={filters.watching}
+          onClick={() => set({ watching: !filters.watching })}
+        >
+          Watching
+        </Button>
+
+        {/* Both axes are offered only where the canvas draws them. Calendar
+            and Timeline honour neither, and only the board has a second
+            axis — see `honoursGroupBy` / `honoursLanes`. Hiding the control
+            never clears the value: switching away and back keeps the
+            grouping, and a saved view carries both axes whichever canvas
+            saved it. */}
+        {honoursGroupBy(mode) ? (
+          <div className="w-[11rem]">
+            <Select
+              aria-label="Group by"
+              inputSize="sm"
+              className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
+              value={groupBy}
+              onChange={(e) => onGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.filter((option) =>
+                axisOffered(option, groupBy)
+              ).map((option) => (
+                <option key={option} value={option}>
+                  {GROUP_OPTION_LABELS[option]}
+                </option>
+              ))}
+            </Select>
+          </div>
+        ) : null}
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
-        <div className="w-[11rem]">
-          <Select
-            aria-label="Sub-group by (swimlanes)"
-            inputSize="sm"
-            className={lane === "none" ? AT_DEFAULT : OFF_DEFAULT}
-            value={lane}
-            onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
-          >
-            {GROUP_OPTIONS.filter(
-              (option) => option === "none" || option !== groupBy
-            ).map((option) => (
-              <option key={option} value={option}>
-                {LANE_OPTION_LABELS[option]}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {honoursLanes(mode) ? (
+          <div className="w-[11rem]">
+            <Select
+              aria-label="Sub-group by (swimlanes)"
+              inputSize="sm"
+              className={
+                (subGroupBy === groupBy ? "none" : subGroupBy) === "none"
+                  ? AT_DEFAULT
+                  : OFF_DEFAULT
+              }
+              value={subGroupBy === groupBy ? "none" : subGroupBy}
+              onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_OPTIONS.filter(
+                (option) =>
+                  (option === "none" || option !== groupBy) &&
+                  axisOffered(option, subGroupBy)
+              ).map((option) => (
+                <option key={option} value={option}>
+                  {LANE_OPTION_LABELS[option]}
+                </option>
+              ))}
+            </Select>
+          </div>
+        ) : null}
 
         {/* WS-27x — which fields this view shows. ONE set feeding two
             consumers: the table's columns and every card's chip row, so

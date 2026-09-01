@@ -46,67 +46,6 @@ export const GROUP_OPTIONS: GroupBy[] = [
  */
 export const DEFAULT_GROUP_BY: GroupBy = "status";
 
-/**
- * The "Assigned to" control's value, and the two filter fields behind it.
- *
- * `Filters` carries `assignee` (an address) and `unassigned` (a flag) because
- * the SERVER takes two parameters. One control drives both, and the pair has
- * exactly four legal states, so the mapping is written here as two pure
- * functions rather than inline in the bar.
- *
- * ⚠️ `assignee` and `unassigned` are mutually exclusive. "Work assigned to
- * nobody, that is assigned to Priya" matches nothing, and a control that can
- * express it is a control that can ask an unanswerable question. Every write
- * goes through `assigneeFilter`, which always clears the other field.
- */
-export const ANYONE = "";
-export const UNASSIGNED = "__unassigned__";
-
-/** What the control shows, given the filters. */
-export function assigneeChoice(filters: Filters): string {
-  if (filters.unassigned) return UNASSIGNED;
-  return filters.assignee || ANYONE;
-}
-
-/** What the filters become, given a choice. Never sets both fields. */
-export function assigneeFilter(choice: string): Pick<Filters, "assignee" | "unassigned"> {
-  if (choice === UNASSIGNED) return { assignee: "", unassigned: true };
-  return { assignee: choice === ANYONE ? "" : choice, unassigned: false };
-}
-
-/**
- * The addresses the "Assigned to" control offers, in the order it offers them.
- *
- * `me` first and always, so the commonest choice never moves. Then everyone
- * else on the board, sorted, case-folded to one entry each.
- *
- * `current` is unioned in on purpose. The list is derived from the tasks now on
- * screen, and those tasks are the FILTERED ones — so the moment you filter to
- * one person, everyone else leaves the list and the control cannot be changed
- * back to them. Keeping the current value present makes the control reversible.
- */
-export function assigneeOptions(
-  boardAssignees: readonly string[],
-  me: string,
-  current: string
-): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const add = (raw: string) => {
-    const value = raw.trim();
-    if (!value) return;
-    const key = value.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(value);
-  };
-  add(me);
-  const rest = [...boardAssignees].sort((a, b) => a.localeCompare(b));
-  for (const address of rest) add(address);
-  if (current !== ANYONE && current !== UNASSIGNED) add(current);
-  return out;
-}
-
 export interface TaskGroup {
   /** Stable identity — a status id, an address, a project id, or a sentinel. */
   key: string;
@@ -123,6 +62,13 @@ export interface Filters {
   assignee: string;
   unassigned: boolean;
   overdue: boolean;
+  /**
+   * WS-27bk §9.12.2 — only tasks the VIEWER watches.
+   *
+   * A boolean, never an address. The server resolves it to whoever is asking,
+   * so one shared saved view shows each person their own subscriptions.
+   */
+  watching: boolean;
   /** WS-27m — ANY of these tags. `tags_all` on the wire is not exposed here yet. */
   tags: string[];
 }
@@ -155,6 +101,7 @@ export const EMPTY_FILTERS: Filters = {
   assignee: "",
   unassigned: false,
   overdue: false,
+  watching: false,
   tags: [],
 };
 
@@ -173,6 +120,7 @@ export function toQuery(filters: Filters): Record<string, string> {
   if (filters.assignee.trim()) out.assignee = filters.assignee.trim();
   if (filters.unassigned) out.unassigned = "true";
   if (filters.overdue) out.overdue = "true";
+  if (filters.watching) out.watching = "true";
   // CSV, matching `split_csv` on the gateway. A tag containing a comma would
   // break this — which is why the picker treats a comma as a separator, so
   // one can never be stored.
@@ -210,6 +158,7 @@ export function fromConfig(config: unknown): {
       assignee: typeof stored.assignee === "string" ? stored.assignee : "",
       unassigned: stored.unassigned === true,
       overdue: stored.overdue === true,
+      watching: stored.watching === true,
       tags:
         typeof stored.tags === "string" && stored.tags
           ? stored.tags.split(",").map((s) => s.trim()).filter(Boolean)
@@ -255,6 +204,7 @@ export function toConfig(
   if (filters.assignee.trim()) stored.assignee = filters.assignee.trim();
   if (filters.unassigned) stored.unassigned = true;
   if (filters.overdue) stored.overdue = true;
+  if (filters.watching) stored.watching = true;
   // A CSV string here too, not an array: `build_task_filters` parses it with
   // `split_csv`, so a saved view and a typed query string must be the same
   // shape or the view would be the one that breaks.
@@ -403,6 +353,61 @@ const localPart = (address: string): string => address.split("@")[0] || address;
 export function personLabel(who: string): string {
   if (who.startsWith("agent:")) return who.slice("agent:".length) || who;
   return localPart(who);
+}
+
+/**
+ * Every distinct assignee across a task set, ordered for a picker (WS-27af).
+ *
+ * The assignee filter's options. Read from the TASKS rather than from the
+ * directory, and that is the decision worth recording: `GET /projects/assignees`
+ * is a *suggestion* endpoint capped at eight people and six agents — "a picker
+ * is a short list, not a directory browse", in its own words — so it can leave
+ * out somebody who holds work here, which is the one thing a filter must never
+ * do. Who has tasks in this project is exactly the set worth filtering by.
+ *
+ * ⚠️ **Feed this an UNFILTERED task set.** Derived from the filtered rows it
+ * collapses to whoever is already selected, and the filter becomes a trap you
+ * cannot leave. The page unions it across loads for that reason.
+ *
+ * Case-insensitively unique — `Priya@x.com` and `priya@x.com` are one person to
+ * the server's own comparison — and sorted by the label people actually read
+ * rather than by raw address, so `agent:builder` files under B.
+ */
+export function assigneesIn(tasks: readonly TaskRow[]): string[] {
+  return orderPeople(
+    tasks.flatMap((task) => task.assignees ?? [])
+  );
+}
+
+/**
+ * Fold newly seen assignees into the set already known.
+ *
+ * **Returns `known` itself when nothing is new** — identity, not a copy. The
+ * page holds this in state and merges on every load, so a fresh array each time
+ * would re-render the filter bar on every poll for no change at all.
+ */
+export function mergeAssignees(
+  known: readonly string[],
+  found: readonly string[]
+): string[] {
+  const seen = new Set(known.map((who) => who.trim().toLowerCase()));
+  const fresh = found.filter((who) => !seen.has(who.trim().toLowerCase()));
+  if (fresh.length === 0) return known as string[];
+  return orderPeople([...known, ...fresh]);
+}
+
+/** Unique (case-insensitively) and sorted by the label people actually read. */
+function orderPeople(people: readonly string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const who of people) {
+    const trimmed = who.trim();
+    if (trimmed && !seen.has(trimmed.toLowerCase())) {
+      seen.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  return [...seen.values()].sort((a, b) =>
+    personLabel(a).localeCompare(personLabel(b), undefined, { sensitivity: "base" })
+  );
 }
 
 const IMPORTANCE_LABELS: Record<string, string> = {

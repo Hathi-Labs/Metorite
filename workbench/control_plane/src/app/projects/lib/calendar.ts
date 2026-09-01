@@ -80,7 +80,7 @@ export interface CalendarGrid {
  * because a month grid and a week grid that rotate differently draw the same
  * seven days in two different orders.
  */
-function mondayOffset(date: Date): number {
+export function mondayOffset(date: Date): number {
   return (date.getDay() + 6) % 7;
 }
 
@@ -229,6 +229,20 @@ export function placeTasks(
  * nothing — an activity row saying a task moved from Tuesday to Tuesday is
  * noise in the one place people go to find out what changed.
  */
+/**
+ * The day a whole-bar move is measured FROM: the start when there is one, the
+ * due day otherwise.
+ *
+ * Exported because the timeline's drag is a delta — "shift this bar three days"
+ * — and has to land the anchor on `anchor + 3`. It must agree with
+ * `rescheduleTo` about which day that is, so it reads the same function rather
+ * than re-deriving the rule and disagreeing on start-less tasks.
+ */
+export function anchorDay(task: TaskRow): string | null {
+  if (task.start_date) return task.start_date.slice(0, 10);
+  return task.due_at ? dayKey(new Date(task.due_at)) : null;
+}
+
 export function rescheduleTo(
   task: TaskRow,
   day: string,
@@ -238,7 +252,7 @@ export function rescheduleTo(
   const dueKey = dueDate ? dayKey(dueDate) : null;
   if (!startKey && !dueKey) return null;
 
-  const anchor = startKey ?? (dueKey as string);
+  const anchor = anchorDay(task) as string;
   if (anchor === day) return null;
 
   const offset = Math.round(

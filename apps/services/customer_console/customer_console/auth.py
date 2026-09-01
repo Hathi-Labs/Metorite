@@ -1,4 +1,4 @@
-"""Four authentication schemes, deliberately separate.
+"""Five authentication schemes, deliberately separate.
 
 Spec: ``project-docs/specs/customer_console.md`` §4.3 (CP-3) · §6 CP-2b (the
 fourth) · ``user_management_contract.md`` R11 ("never trust a tenant from
@@ -23,6 +23,13 @@ request input").
     anything mints by accident — is refused at every one of the other three
     with a **403**, and the refusal is logged. Growing a REAL key's set is
     OWNER-GATE (§8 gate 7 / gate 8's capability-growth class).
+  * **Operator session** — ``cc_sess_<prefix>_<secret>``, one per signed-in
+    **person** (CP-12b, D64). The FIFTH scheme, and it earns its place on
+    the same argument the fourth did: *the operator token identifies no
+    one, and a staff session identifies somebody*. It reaches the same
+    doors the shared token does, and unlike the shared token it puts a
+    name in ``control_audit.actor``. See
+    ``specs/operator_identity_and_access.md`` §4.4.
 
 ⚠️ **Why the fourth scheme rather than reusing one of the three.** The operator
 token is cross-organization and staff-held, and this service already argues in
@@ -71,13 +78,19 @@ import os
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
 
 from customer_console import payments, store
 from customer_console.db import get_engine
-from customer_console.keys import is_deployment_key, split_key, verify_secret
+from customer_console.keys import (
+    is_deployment_key,
+    is_operator_session,
+    split_key,
+    verify_secret,
+)
 from customer_console.lifecycle import OrgCapabilities, capabilities_of
 
 __all__ = [
@@ -87,6 +100,7 @@ __all__ = [
     "PROVISION_CAPABILITY",
     "RESOLVE_CAPABILITY",
     "SEAT_ADMIN_CAPABILITY",
+    "SHARED_TOKEN_ACTOR",
     "Caller",
     "CatalogCaller",
     "DeploymentCaller",
@@ -99,6 +113,7 @@ __all__ = [
     "ResolveCaller",
     "SeatAdminCaller",
     "SignedWebhook",
+    "StaffIdentity",
     "customer_or_operator",
     "deployment_or_operator",
     "organization_for_payment",
@@ -199,21 +214,184 @@ class Caller:
     run_id: str | None = None
 
 
+#: What ``control_audit.actor`` records for the SHARED operator token.
+#:
+#: ⚠️ **CP-12e renamed this from ``operator`` to ``breakglass``**, and the new
+#: word is the whole point. The shared token bypasses every control in
+#: ``operator_identity_and_access.md`` — the role matrix cannot judge a
+#: credential that carries no role — so after CP-12e it IS the break-glass
+#: path and nothing else (§6.4). A row carrying this actor is a row somebody
+#: should look at, and calling it ``operator`` made it look routine.
+#:
+#: ⚠️ Old rows keep the old word. This changes what NEW rows say, not history.
+SHARED_TOKEN_ACTOR = "breakglass"
+
+
+@dataclass(frozen=True)
+class StaffIdentity:
+    """Who is doing a staff action, and how they proved it.
+
+    The FIFTH scheme (CP-12b), and it earns its place on the same argument the
+    fourth did. **The operator token identifies no one. A staff session
+    identifies a person.** An actor *header* beside the shared token would not
+    give that property: a leaked operator token could then forge any actor, and
+    it would forge it exactly when the log matters most.
+    """
+
+    #: What lands in ``control_audit.actor`` — an email, or
+    #: :data:`SHARED_TOKEN_ACTOR`.
+    actor: str
+    #: ``None`` under the shared token, which belongs to no person.
+    operator_id: str | None = None
+    #: ``None`` under the shared token. CP-12c binds this to the route matrix.
+    role: str | None = None
+    session_id: str | None = None
+
+    @property
+    def is_session(self) -> bool:
+        """True when a PERSON proved this, not a shared secret."""
+        return self.session_id is not None
+
+
+def _staff_session(token: str) -> StaffIdentity:
+    """Resolve a ``cc_sess_`` token to the person behind it, or refuse **401**.
+
+    The credential resolves the actor, and nothing else may — the property
+    ``keys.py`` already states for organization keys, applied to staff.
+    """
+    from customer_console import operator_sessions
+
+    split = split_key(token)
+    if split is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    prefix, secret = split
+
+    now = datetime.now(UTC)
+    with get_engine().begin() as conn:
+        row = store.operator_session_by_prefix(conn, prefix)
+        try:
+            operator_sessions.verify(row, secret=secret, now=now)
+        except operator_sessions.SessionRejected:
+            # One refusal for every cause. A 401 that said which would tell a
+            # stranger whether a prefix they guessed exists.
+            raise HTTPException(
+                status_code=401, detail="Unauthorized"
+            ) from None
+        # Only an ADMITTED request moves the idle clock. Touching on refusal
+        # would let a holder of a revoked token keep the row warm.
+        store.operator_session_touch(conn, str(row["id"]))
+
+    return StaffIdentity(
+        actor=str(row["email"]),
+        operator_id=str(row["operator_id"]),
+        role=str(row["role"]),
+        session_id=str(row["id"]),
+    )
+
+
+def _stash(request: Request, identity: StaffIdentity) -> StaffIdentity:
+    """Record the identity on the request, and return it.
+
+    ⚠️ **One setter, and this is it.** A dual-arm door (``/orgs/provision``,
+    ``/registry/seats``) resolves its caller through a dependency that returns
+    ``None`` for the operator arm, so the route body has no other way to learn
+    who acted. ``request.state`` is FastAPI's own place for per-request context
+    set by a dependency, so this is the idiom rather than a second channel —
+    but it is written in ONE function precisely so it cannot become one.
+    """
+    request.state.staff = identity
+    return identity
+
+
+def _enforce_role(request: Request, identity: StaffIdentity) -> None:
+    """Apply the §5 matrix to a SESSION. Refuses **403**, fails CLOSED.
+
+    The route TEMPLATE is read from the matched route rather than from the URL,
+    so a path parameter cannot smuggle a caller into a different rule.
+    """
+    from customer_console import operator_elevation, operator_roles
+
+    route = request.scope.get("route")
+    path = getattr(route, "path", None) or request.url.path
+    try:
+        rule = operator_roles.check_route(identity.role, request.method, path)
+    except operator_roles.RoleForbidden:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+    if not rule.elevated:
+        return
+
+    # D64.4 — the sharp edges need a WINDOW as well as the role. The window is
+    # read per request, so one that expired mid-session stops the next action
+    # rather than the next sign-in.
+    with get_engine().begin() as conn:
+        window = store.operator_elevation_live(conn, identity.operator_id)
+    try:
+        operator_elevation.check_window(window, now=datetime.now(UTC))
+    except operator_elevation.NotElevated:
+        # Same 403 body as a rank refusal. Telling the two apart would say
+        # "your role is fine, you just need to elevate", which is a hint an
+        # attacker holding a stolen admin session would act on.
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+
 def require_operator(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    """Refuse anything that is not the operator. Fails CLOSED when unconfigured."""
+) -> StaffIdentity:
+    """Refuse anything that is not staff. Fails CLOSED when unconfigured.
+
+    Two credentials reach this door, and which one is presented decides which
+    check runs. It is never both:
+
+      * ``cc_sess_<prefix>_<secret>`` — an **operator session** (CP-12b). A
+        person. The shared token is not consulted, so a box that has retired it
+        still admits real operators.
+      * anything else — the **shared operator token**, unchanged from CP-3.
+        Scripts hold it today. After CP-12e it is the break-glass path.
+
+    ⚠️ The return value changed in CP-12b from ``None`` to a
+    :class:`StaffIdentity`. Routes that only need the gate keep writing
+    ``_: Operator`` and are unaffected. Routes that AUDIT must pass
+    ``actor=staff.actor`` rather than the literal string, and
+    ``test_operator_session.py`` fails on any that do not.
+    """
+    presented = ""
+    if authorization and authorization.startswith("Bearer "):
+        presented = authorization.removeprefix("Bearer ").strip()
+
+    if presented and is_operator_session(presented):
+        identity = _staff_session(presented)
+        _enforce_role(request, identity)
+        return _stash(request, identity)
+
     expected = os.environ.get("CUSTOMER_CONSOLE_OPERATOR_TOKEN", "").strip()
     if not expected:
         raise HTTPException(
             status_code=503,
             detail="CUSTOMER_CONSOLE_OPERATOR_TOKEN is not configured",
         )
-    presented = ""
-    if authorization and authorization.startswith("Bearer "):
-        presented = authorization.removeprefix("Bearer ").strip()
     if not presented or not secrets.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    # ⚠️ The SHARED token carries no role, so the matrix cannot judge it and
+    # deliberately does not try. It keeps reaching everything, which is what
+    # makes it the BREAK-GLASS credential (§6.4) — and is exactly why using it
+    # is an owner act (work_plan.md §6.1, CP-12 block (f)).
+    #
+    # Every use is announced. This WARNING is the durable record and the thing
+    # an alert rule fires on; see `_break_glass_alert`'s note on why the
+    # Console does not send the mail itself.
+    _log.warning(
+        "operator.breakglass",
+        extra={
+            "bg_method": request.method,
+            "bg_path": getattr(
+                request.scope.get("route"), "path", None
+            ) or request.url.path,
+            "bg_alert_to": os.environ.get("OPERATOR_ALERT_EMAIL", "<unset>"),
+        },
+    )
+    return _stash(request, StaffIdentity(actor=SHARED_TOKEN_ACTOR))
 
 
 def require_internal(
@@ -362,6 +540,7 @@ def organization_for_payment(
 
 
 def customer_or_operator(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Caller | None:
     """The catalog's door: a CUSTOMER key on ``can_pay``, **or** the operator.
@@ -410,7 +589,7 @@ def customer_or_operator(
         token = authorization.removeprefix("Bearer ").strip()
 
     if split_key(token) is None:
-        require_operator(authorization)
+        require_operator(request, authorization)
         return None
 
     return _caller_from_key(authorization, permits=lambda caps: caps.can_pay)
@@ -464,6 +643,7 @@ def deployment_or_operator(capability: str):
     """
 
     def _dependency(
+        request: Request,
         authorization: Annotated[str | None, Header()] = None,
     ) -> DeploymentCaller | None:
         """Return the deployment caller, or ``None`` for the operator arm."""
@@ -473,7 +653,10 @@ def deployment_or_operator(capability: str):
 
         parsed = split_key(token) if token else None
         if parsed is None or not is_deployment_key(parsed[0]):
-            require_operator(authorization)
+            # The identity lands on `request.state.staff`, which is how the
+            # operator arm of a DUAL-ARM door names the person in its audit
+            # row. CP-12b could not, and said so.
+            require_operator(request, authorization)
             return None
 
         prefix, secret = parsed
@@ -571,7 +754,7 @@ async def razorpay_webhook_event(request: Request) -> payments.WebhookEvent:
     return event
 
 
-Operator = Annotated[None, Depends(require_operator)]
+Operator = Annotated[StaffIdentity, Depends(require_operator)]
 Internal = Annotated[None, Depends(require_internal)]
 KeyCaller = Annotated[Caller, Depends(organization_from_key)]
 #: CP-9's checkout door. Same credential as :data:`KeyCaller`, different

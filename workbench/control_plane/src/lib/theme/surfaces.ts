@@ -4,14 +4,18 @@
  * Theme resolution for third-party surfaces.
  *
  * Monaco and Shiki each ship a closed set of named themes and cannot be driven
- * by our CSS custom properties, so they are the one place a theme has to name
- * an external vocabulary rather than supply token values. Every call site that
- * used to branch on `resolvedTheme === "light"` reads this instead, so a code
- * view follows the active theme rather than only the colour mode.
+ * by our CSS custom properties, so they are the one place our look has to name
+ * an external vocabulary rather than supply token values.
+ *
+ * With one theme (owner directive 2026-08-31) these reduce to a lookup by
+ * MODE. They stay functions rather than becoming two string constants at the
+ * call sites, because "which Monaco theme does a code view use" is a decision
+ * that belongs in one place — and because every call site already reads them,
+ * so collapsing them would be churn with a chance of divergence.
  */
 
 import { useTheme } from "next-themes";
-import { useActiveTheme } from "./store";
+import { THEME } from "./themes";
 import type { ThemeMode } from "./types";
 
 /** Monaco's built-in theme ids — the only values it accepts unregistered. */
@@ -23,14 +27,12 @@ export function useMode(): ThemeMode {
   return resolvedTheme === "light" ? "light" : "dark";
 }
 
-/** Monaco editor theme id for the active theme and mode. */
+/** Monaco editor theme id for the active colour mode. */
 export function useMonacoTheme(): string {
-  const theme = useActiveTheme();
-  return theme.surfaces.monaco[useMode()];
+  return THEME.surfaces.monaco[useMode()];
 }
 
-/** Shiki highlighting theme for the active theme and mode. */
+/** Shiki highlighting theme for the active colour mode. */
 export function useShikiTheme(): string {
-  const theme = useActiveTheme();
-  return theme.surfaces.shiki[useMode()];
+  return THEME.surfaces.shiki[useMode()];
 }

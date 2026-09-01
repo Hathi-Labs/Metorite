@@ -476,3 +476,96 @@ def test_a_saved_view_and_the_same_filters_typed_by_hand_are_one_query():
         status_category="todo", overdue=True, assignee="priya@fracktal.in",
     )
     assert from_view == typed
+
+
+class TestWatchingFilter:
+    """WS-27bk 9.12.2 - "what am I watching", as a filter.
+
+    A FILTER and not a fourth lens. One task store, three lenses
+    (D52/D53/D54), and a watched-tasks view would fork that. As a filter it
+    composes: "things I watch, in Ops, that are overdue" is one query.
+    """
+
+    def test_absent_by_default(self):
+        clauses, params = build_task_filters()
+        assert not any("pm_task_watchers" in c for c in clauses)
+        assert "viewer" not in params
+
+    def test_is_a_where_clause_on_the_watchers_table(self):
+        clauses, params = build_task_filters(watching=True, viewer="Priya@Example.com")
+        watch = [c for c in clauses if "pm_task_watchers" in c]
+        assert len(watch) == 1
+        assert "w.task_id = t.id" in watch[0]
+        assert params["viewer"] == "priya@example.com"
+
+    def test_folds_the_address_because_the_stored_row_is_folded(self):
+        # `watchers.watchable` lowercases before it inserts, so an unfolded
+        # parameter matches nothing and the board silently reads empty.
+        _, params = build_task_filters(watching=True, viewer="  MIXED@Case.COM ")
+        assert params["viewer"] == "mixed@case.com"
+
+    def test_watching_without_a_viewer_is_REFUSED_not_ignored(self):
+        # Asked to narrow to a person and given none. Dropping the clause would
+        # silently return the WHOLE board as though it were one person's
+        # subscriptions, which is the dangerous direction.
+        for blank in ("", "   ", None):
+            with pytest.raises(HTTPException) as caught:
+                build_task_filters(watching=True, viewer=blank)
+            assert caught.value.status_code == 422
+
+    def test_a_viewer_without_watching_filters_nothing(self):
+        # The identity alone is not a request to narrow. Every endpoint has a
+        # caller, so treating one as an implicit filter would silently hide
+        # every task nobody watches.
+        clauses, params = build_task_filters(viewer="a@b.com")
+        assert not any("pm_task_watchers" in c for c in clauses)
+        assert "viewer" not in params
+
+    def test_is_ADDITIVE_and_never_widens(self):
+        # A watch is an intent to hear, never a right to see (WS-27v). The
+        # clause may only narrow: it is an EXISTS, never an OR, and it carries
+        # no visibility of its own. The endpoint's own visibility clause is
+        # what keeps a watcher who lost the grant from reading the row.
+        clauses, _ = build_task_filters(watching=True, viewer="a@b.com")
+        watch = next(c for c in clauses if "pm_task_watchers" in c)
+        assert watch.strip().startswith("EXISTS")
+        assert " OR " not in watch.upper()
+
+    def test_composes_with_the_other_filters(self):
+        clauses, params = build_task_filters(
+            watching=True, viewer="a@b.com", overdue=True, status_category="in_progress",
+        )
+        assert any("pm_task_watchers" in c for c in clauses)
+        assert any("pm_task_statuses" in c for c in clauses)
+        assert params["viewer"] == "a@b.com"
+
+    def test_a_view_may_pin_watching_but_never_an_address(self):
+        # The view stores the INTENT and the endpoint resolves the person.
+        # Storing an address would pin one member's subscriptions into a view
+        # other people open, and show them a colleague's list as their own.
+        assert "watching" in VIEW_FILTER_KEYS
+        assert "viewer" not in VIEW_FILTER_KEYS
+
+    def test_a_saved_view_keeps_watching_through_a_round_trip(self):
+        out = normalise_view_config({"filters": {"watching": True}})
+        assert out["filters"] == {"watching": True}
+
+    def test_the_endpoint_never_takes_an_address_from_the_caller(self):
+        # Reading `watching` as a string would turn this filter into a way of
+        # asking what a COLLEAGUE follows. The query parameter is a bool and
+        # the identity is resolved server-side from the session.
+        source = Path(
+            REPO / "apps/services/gateway/gateway/routes/projects/tasks.py"
+        ).read_text(encoding="utf-8")
+        assert "watching: bool = False" in source
+        assert "viewer=actor(user) if watching else None" in source
+
+    def test_export_carries_the_same_filter(self):
+        # The export promises `list_tasks`' parameters verbatim. A filter the
+        # board applies and the export ignores hands somebody a file of the
+        # wrong rows, and nothing on the way says so.
+        source = Path(
+            REPO / "apps/services/gateway/gateway/routes/projects/export.py"
+        ).read_text(encoding="utf-8")
+        assert "watching: bool = False" in source
+        assert "viewer=actor(user) if watching else None" in source
