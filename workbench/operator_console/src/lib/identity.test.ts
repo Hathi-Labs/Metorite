@@ -106,6 +106,26 @@ describe("signinProvider", () => {
     },
   );
 
+  it.each(["constructor", "__proto__"])(
+    "🔴 rejects a prototype-chain name: %s",
+    (v) => {
+      // ⚠️ R7 — the fence for `Object.hasOwn` in `signinProvider`.
+      //
+      // The helper read `raw in PROVIDER_LABELS`, and `in` walks the
+      // prototype chain. Measured 2026-09-01: `constructor` returned the
+      // label `function Object() { [native code] }` and `__proto__` returned
+      // `[object Object]`. The only input is `process.env`, so nobody could
+      // reach it — but the comment above the helper claimed an unknown value
+      // "never" falls back to what the env said, and that was false.
+      //
+      // These two are the whole reachable set. `toString` and `valueOf` are
+      // camelCase, and the helper lower-cases before it looks, so `in` never
+      // found them either. Listing them would pad the fence, not widen it.
+      expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("azure");
+      expect(providerLabel({ [SIGNIN_PROVIDER_FLAG]: v })).toBe("Microsoft");
+    },
+  );
+
   it("⚠️ offers NO passwordless provider — D70.2", () => {
     // A console that reaches every customer organization must not admit a
     // person on inbox control alone. The Console's own allowlist is the

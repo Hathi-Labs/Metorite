@@ -23,6 +23,10 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   half (`signinProvider`, `providerLabel`). **Email OTP is refused here**
   (D70.2): this console reaches every customer organization, so inbox control
   must never become staff access.
+  ⚠️ **Read an allowlist with `Object.hasOwn`, never with `in`.** `in` walks
+  the prototype chain, so `constructor` and `__proto__` passed
+  `PROVIDER_LABELS` until 2026-09-01 and read back an `Object.prototype`
+  member as the label. Fence: `src/lib/identity.test.ts`.
 - **Cross-org reads live ONLY here + on the Console.** No route of the customer
   workbench may reach one. The `GET /orgs` cross-org list is Operator-scheme on
   the Console; this app is its only consumer.

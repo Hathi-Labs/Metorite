@@ -6,7 +6,21 @@ Spec: ``project-docs/specs/operator_identity_and_access.md`` §4.1 · **F8** ·
 ⚠️ **TWO directories, one switch** (**D70**, 2026-09-01). ``azure`` reads the
 Entra ``tid``. ``google`` reads the Google Workspace ``hd`` hosted domain.
 :func:`customer_console.operators.signin_provider` picks one, and it defaults
-to ``azure``, so an unset variable behaves exactly as this module did before.
+to ``azure``.
+
+⚠️ **The SWITCH ships dark. This module does NOT.** An unset variable keeps
+check 1 on the Entra ``tid``, exactly as before. It does not keep
+:func:`_email_is_verified` as it was. That function dropped the top-level
+``email_confirmed_at`` and now reads the sign-in provider's identity alone
+(spec §8.1 done-when 31), which tightens the ``azure`` path too.
+
+**Measured 2026-09-01**, on one Entra payload with a top-level
+``email_confirmed_at`` and no ``email_verified`` on its identity: the parent
+commit returned a :class:`VerifiedIdentity`, and this one raises
+:class:`SigninRejected` (a **401**). The change is deliberate, and D70 asks
+for it. It is safe today because D70 records that we hold no Entra directory
+and H-54 is unfinished, so nobody signs in on that path. ⚠️ **If that stops
+being true, this tightening bites `azure` first.**
 
 ⚠️ **This module closes F8.** CP-12a wrote the three admission checks, and
 CP-12b wrote the session they protect, but nothing ever called them: the
@@ -202,6 +216,15 @@ def _signin_provider(payload: dict[str, Any]) -> str | None:
     the question. **The durable fix is to disable manual identity linking in
     the Supabase project**, which is owner configuration and rides with
     H-54. Recorded in the spec rather than left in a comment here.
+
+    ⚠️ **The remaining hole, measured 2026-09-01, and NOT closed here.** This
+    reads one provider NAME. It cannot tell two identities apart when both
+    carry that name. An operator who links a personal Google account to their
+    own Supabase user therefore holds two ``google`` identities, and
+    :func:`_google_hd` reads the ``hd`` off whichever one has it. Nobody
+    outside can reach this, because it needs the operator to link the second
+    account themselves. Turning identity linking OFF closes it, and H-54 asks
+    the owner for exactly that.
     """
     meta = payload.get("app_metadata") or {}
     if not isinstance(meta, dict):
@@ -210,6 +233,23 @@ def _signin_provider(payload: dict[str, Any]) -> str | None:
     if isinstance(one, str) and one.strip():
         return one.strip().lower()
     return None
+
+
+def _claim_name(provider: str) -> str:
+    """The payload key that proves the directory, from the ONE table.
+
+    ⚠️ **Read from :data:`operators.DIRECTORY_CLAIM`, never written here.**
+    The two readers below hard-coded ``tid`` and ``hd`` until 2026-09-01, so
+    the table held only KEYS that were live and VALUES that nothing consumed.
+    A reviewer measured it: changing ``GOOGLE_PROVIDER: "hd"`` in that table
+    to ``"email"`` left the whole suite green. A constant nothing reads is a
+    comment that a future reader will trust as code.
+
+    R7 — the fence is
+    ``test_operator_identity.py::test_the_claim_table_is_what_the_readers_read``.
+    """
+    return operators.DIRECTORY_CLAIM[provider]
+
 
 def _azure_tid(payload: dict[str, Any]) -> str | None:
     """The Entra tenant id, read ONLY from the Microsoft identity.
@@ -222,6 +262,7 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
     rather than "this sign-in came from our directory", which is a different
     and much weaker claim.
     """
+    name = _claim_name(AZURE_PROVIDER)
     for identity in payload.get("identities") or []:
         if not isinstance(identity, dict):
             continue
@@ -229,7 +270,7 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
             continue
         data = identity.get("identity_data")
         if isinstance(data, dict):
-            tid = data.get("tid")
+            tid = data.get(name)
             if isinstance(tid, str) and tid.strip():
                 return tid.strip()
 
@@ -240,19 +281,28 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
         for bag in ("app_metadata", "user_metadata"):
             meta = payload.get(bag)
             if isinstance(meta, dict):
-                tid = meta.get("tid")
+                tid = meta.get(name)
                 if isinstance(tid, str) and tid.strip():
                     return tid.strip()
     return None
 
 
 def _google_hd(payload: dict[str, Any]) -> str | None:
-    """The Google Workspace hosted domain, read ONLY from the Google identity.
+    """The Google Workspace hosted domain, read ONLY from a Google identity.
 
     ⚠️ **As strict as :func:`_azure_tid`, for the same reason.** A Supabase
     user can carry more than one linked identity. A scan across all of them
-    would answer "this account has ever been linked to our Workspace" rather
-    than "this sign-in came from it", and the first claim is much weaker.
+    would read an ``hd`` off a GitHub or a Microsoft identity, and that is a
+    claim about a different account.
+
+    ⚠️ **What this proves, stated exactly.** It proves *"this account holds an
+    identity from our Workspace"*. It does NOT prove *"this sign-in came from
+    our Workspace"*. Measured 2026-09-01: an account with two ``google``
+    identities, where only the SECOND carries the ``hd``, is admitted. The
+    provider filter cannot separate two identities that share one provider
+    name, and :func:`_signin_provider` records why. No outsider can reach it,
+    because the operator must link the second account themselves. H-54 asks
+    the owner to turn identity linking OFF, and that closes it.
 
     ⚠️ **``hd`` is the whole of check 1 on this path** (**D70.3**). Google
     issues an account on any address it can verify by mail, and such an
@@ -264,6 +314,7 @@ def _google_hd(payload: dict[str, Any]) -> str | None:
     confirmed that Supabase copies ``hd`` into ``identity_data`` (H-54 item
     3). A wrong guess refuses everybody. It admits nobody.
     """
+    name = _claim_name(GOOGLE_PROVIDER)
     for identity in payload.get("identities") or []:
         if not isinstance(identity, dict):
             continue
@@ -271,7 +322,7 @@ def _google_hd(payload: dict[str, Any]) -> str | None:
             continue
         data = identity.get("identity_data")
         if isinstance(data, dict):
-            hd = data.get("hd")
+            hd = data.get(name)
             if isinstance(hd, str) and hd.strip():
                 return hd.strip()
 
@@ -282,7 +333,7 @@ def _google_hd(payload: dict[str, Any]) -> str | None:
         for bag in ("app_metadata", "user_metadata"):
             meta = payload.get(bag)
             if isinstance(meta, dict):
-                hd = meta.get("hd")
+                hd = meta.get(name)
                 if isinstance(hd, str) and hd.strip():
                     return hd.strip()
     return None
@@ -311,6 +362,13 @@ def _email_is_verified(payload: dict[str, Any], provider: str) -> bool:
     which is the same shape as the bypass :func:`_signin_provider` closed. A
     proof that the OTHER account's address was checked says nothing about
     this sign-in.
+
+    🔴 **The PLACEMENT of ``email_verified`` is UNMEASURED, exactly as ``hd``
+    is.** Nobody has read a real Supabase payload to confirm that the key sits
+    in ``identities[].identity_data``. ⚠️ **If Supabase leaves it out when the
+    value is false, this returns ``False`` and nobody signs in on EITHER
+    path.** H-54 item 3 now asks the owner to read ``hd`` and
+    ``email_verified`` off the SAME payload. It is one read.
     """
     for identity in payload.get("identities") or []:
         if not isinstance(identity, dict):

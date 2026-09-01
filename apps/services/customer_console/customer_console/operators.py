@@ -14,8 +14,14 @@ Board: ``work_plan.md`` §2 WS-31, ticket **CP-12a**.
 where the claim is the Entra ``tid`` and the expected value is
 ``OPERATOR_ENTRA_TENANT_ID``. Set it to ``google`` and the claim becomes the
 Google Workspace ``hd`` hosted domain, against ``OPERATOR_GOOGLE_HD``. D70 says
-Google Workspace is the real directory. The default stays ``azure`` so this
-change ships dark, and the owner flips one variable.
+Google Workspace is the real directory. The default stays ``azure``, so the
+SWITCH ships dark and the owner flips one variable.
+
+⚠️ **"Ships dark" describes the switch, and nothing wider.** The same slice
+tightened ``operator_signin._email_is_verified`` on BOTH paths, which is a
+real change to the ``azure`` default (spec §8.1 done-when 31). That module's
+header carries the measurement, and this line must not be read as a claim
+about the whole slice.
 
 ⚠️ **Check 3 is not redundant, and a future reader will think it is.** Without
 it, every person our directory ever admits becomes a platform operator on their
@@ -100,13 +106,26 @@ AZURE_PROVIDER = "azure"
 GOOGLE_PROVIDER = "google"
 
 #: The env variable that names the directory. ⚠️ **It defaults to ``azure``**,
-#: so an unset value keeps today's behaviour exactly. That is what lets D70
-#: ship dark, and the flip is one owner-gate line (spec §10 G2).
+#: so an unset value keeps CHECK 1 on the Entra ``tid``. It does NOT keep the
+#: rest of the slice unchanged — read the ``operator_signin`` header, and spec
+#: done-when 31. The flip is one owner-gate line (spec §10 G2).
+#:
+#: ⚠️ **The owner's runbook must name this variable.** Setting the other five
+#: ``OPERATOR_*`` values without this one leaves the box on ``azure``, and
+#: every Google sign-in then answers 401 with nothing naming the unset
+#: variable. HANDOFF **H-54** and ``work_plan.md`` §6.1 both list it.
 SIGNIN_PROVIDER_ENV = "OPERATOR_SIGNIN_PROVIDER"
 
 DEFAULT_PROVIDER = AZURE_PROVIDER
 
 #: Which claim in the Supabase identity payload proves the directory.
+#:
+#: ⚠️ **The VALUES are live as of 2026-09-01, and they were not before.**
+#: ``operator_signin._azure_tid`` and ``._google_hd`` hard-coded ``tid`` and
+#: ``hd``, so a reviewer changed ``google`` to ``"email"`` here and the whole
+#: suite stayed green. Both readers now take the name from this table through
+#: ``operator_signin._claim_name``. R7 — the fence is
+#: ``test_operator_identity.py::test_the_claim_table_is_what_the_readers_read``.
 DIRECTORY_CLAIM: dict[str, str] = {
     AZURE_PROVIDER: "tid",
     GOOGLE_PROVIDER: "hd",

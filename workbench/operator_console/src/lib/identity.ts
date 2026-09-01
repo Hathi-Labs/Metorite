@@ -57,11 +57,22 @@ export const DEFAULT_SIGNIN_PROVIDER: SigninProvider = "azure";
 // env said".** The Console refuses an unknown name with a 503, so the page
 // would strand the reader either way. Falling back keeps the page able to
 // render the recovery note rather than throwing on a server component.
+//
+// ⚠️ **`Object.hasOwn`, never `in`.** `in` walks the prototype chain, so
+// `constructor` and `__proto__` both passed the allowlist and read back an
+// Object.prototype member as the provider label. Measured 2026-09-01:
+// `constructor` yielded `function Object() { [native code] }` on the button.
+// The input is `process.env` alone, so there was no attack path — but the
+// sentence above was false, and a copy of this helper on user input would be
+// a real hole. R7 — the fence is
+// `identity.test.ts` "rejects a prototype-chain name".
 export function signinProvider(
   env: Record<string, string | undefined> = process.env,
 ): SigninProvider {
   const raw = (env[SIGNIN_PROVIDER_FLAG] ?? "").trim().toLowerCase();
-  return raw in PROVIDER_LABELS ? (raw as SigninProvider) : DEFAULT_SIGNIN_PROVIDER;
+  return Object.hasOwn(PROVIDER_LABELS, raw)
+    ? (raw as SigninProvider)
+    : DEFAULT_SIGNIN_PROVIDER;
 }
 
 // The name a person reads on the sign-in button.

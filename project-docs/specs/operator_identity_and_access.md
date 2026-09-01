@@ -1,6 +1,9 @@
 # Operator identity and access — the staff side of the Operator Console
 
-**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-08-26.**
+**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-09-01,
+after CP-12h and its repair round.** Done-whens 1, 5 and 30 to 33 are MET, and
+2 to 29 stay true. 🔴 The owner still owes H-54, and no sign-in works until
+they finish it.
 
 **◐ CP-12a BUILT 2026-08-26** (`ws31-cp12a-staff-identity`) — the substrate
 half. Migration 009, `customer_console/operators.py`, five `store.py` reads and
@@ -87,6 +90,18 @@ project.** `app_metadata.provider` is the strongest signal the payload
 carries, and it is not a per-session claim. Turning linking off removes the
 condition the bypass needs. Filed with **H-54**.
 
+⚠️ **MEASURED 2026-09-01, and RECORDED rather than fixed.** `_signin_provider`
+reads a provider NAME. It cannot separate two identities that share one name.
+So an account with two `google` identities, where only the SECOND carries the
+`hd`, is admitted with a 200. `_google_hd` therefore proves *"this account
+holds an identity from our Workspace"*, and not *"this sign-in came from our
+Workspace"*.
+
+No outsider can reach it. The operator must link the second account to their
+own Supabase user first. Turning identity linking OFF closes it, which is the
+act above, so a code fix here would be a second mechanism for one problem.
+H-54's linking item now carries both facts together.
+
 ⚠️ **Two more real bugs caught at build.** `request.client.host` is not always
 an address, and an unparseable value made the `INET` cast raise, which turned
 a valid sign-in into a 500. `safe_ip` records nothing instead. `DELETE
@@ -149,7 +164,7 @@ Email OTP is refused for this console.
 
 **◐ CP-12h BUILT 2026-09-01** (`ws-31-google-signin`) — the Google Workspace
 gate. `OPERATOR_SIGNIN_PROVIDER` names the directory, and it defaults to
-`azure`. An unset variable keeps every byte of the built behaviour.
+`azure`.
 
 `operators.signin_provider`, `operators.staff_directory_id` and
 `operators.directory_matches` hold the choice. `operator_signin._google_hd`
@@ -157,19 +172,51 @@ reads the `hd` claim, and it is as strict as `_azure_tid`. The login page names
 the provider on the button and in the authorize link.
 
 Done-whens 1, 5, 30, 31, 32 and 33 are met. Done-whens 2 to 29 stay true, and
-their suites pass with no edit to an expectation. 117 Console tests and 624
-console tests, 0 skipped. Eleven mutations killed.
+their suites pass with no edit to an expectation.
+
+**◐ CP-12h REPAIRED 2026-09-01**, on the same branch, after an independent
+verification returned four blockers. 150 Console tests and 629 console tests,
+0 skipped. Four more mutations killed. The paragraphs below and done-whens 30
+to 33 record each repair.
+
+⚠️ **The SWITCH ships dark. The SLICE does not.** An earlier draft of this
+entry said an unset variable keeps every byte of the built behaviour. That
+sentence was false, and this entry withdraws it. An unset variable keeps
+check 1 on the Entra `tid`. It does not keep `_email_is_verified` unchanged.
 
 ⚠️ **Done-when 31 tightens the `azure` path too.** `_email_is_verified` read a
 top-level `email_confirmed_at` and then scanned every identity. It now reads
 one identity, the sign-in provider's. That is a real change to the built path,
 and D70 asks for it.
 
-🔴 **Nobody has proved this end to end.** Nobody has measured whether Supabase
-copies `hd` into `identities[].identity_data`. H-54 item 3 records it as
-unmeasured, and the fences here read a constructed payload. The code fails
-CLOSED on a missing `hd`. So a guess that is wrong refuses everybody, and it
-admits nobody. The owner must measure one real Google payload.
+The verifier measured the difference on 2026-09-01. On one Entra payload with
+a top-level `email_confirmed_at` and no `email_verified` on its identity, the
+parent commit returned a `VerifiedIdentity` and this commit answers 401.
+
+**One reason makes that safe today, and it is not the default.** D70 records
+that we hold no Entra directory. The owner has not finished H-54, so no staff
+identity exists on either path. No person signs in through `azure` today.
+⚠️ **If that stops being true, this tightening bites `azure` first.**
+
+⚠️ **`OPERATOR_SIGNIN_PROVIDER` is the SIXTH owner value, and H-54 named
+five.** A box that holds the other five and not this one stays on `azure`.
+Every Google sign-in then answers 401, and no message names the unset
+variable. H-54 and `work_plan.md` §6.1 clause (b) both list it now.
+
+🔴 **Nobody has proved this end to end, and TWO payload claims are
+unmeasured.** Nobody has measured whether Supabase copies `hd` into
+`identities[].identity_data`. **Nobody has measured `email_verified` in that
+same place either.** Done-when 31 makes `email_verified is True` on the
+SIGN-IN identity the only accepted proof of a verified address, and that
+placement is exactly as unmeasured as `hd`.
+
+⚠️ **If Supabase leaves the key out when the value is false, nobody signs in
+on EITHER path.** H-54 item 3 asks the owner to read both claims off one real
+payload. It is one read, and the second answer costs nothing.
+
+The fences here drive a constructed payload. The code fails CLOSED on a
+missing `hd`. So a guess that is wrong refuses everybody, and it admits
+nobody. The owner must measure one real Google payload.
 
 ⚠️ **Read the two halves apart.** Every ◐ BUILT note above CP-12h is a true
 record of what CP-12a to CP-12g slice 1 shipped, and that code named Microsoft.
@@ -290,6 +337,15 @@ check failed.
    before D70. An unknown name is a **503**, and never a fall back to `azure`.
    The `hd` comparison folds case, because a DNS domain is case-insensitive.
    The Entra `tid` is a GUID, so that path still compares exactly.
+   **R7 — the fence is
+   `test_operator_identity.py::test_the_entra_tenant_id_still_compares_exactly`**,
+   added 2026-09-01. Until then this sentence had no fence at all. A mutation
+   that folded case on the `azure` path left the whole suite green.
+   ⚠️ **The fence pins built behaviour, and the cost belongs beside it.** An
+   Entra directory that returned an upper-case GUID against a lower-case
+   `OPERATOR_ENTRA_TENANT_ID` would refuse every operator. D70 says we hold no
+   such directory. A reader who revives that path must take the fold as a
+   decision, and edit the test.
 2. **The domain.** The email domain is in `OPERATOR_STAFF_DOMAINS`.
 3. **The registry.** A row exists in `operator` for that email, and its status is
    `active`.
@@ -673,12 +729,29 @@ each fence went red under a mutation before it passed.
     `identity.tid == operators.staff_tenant_id()` today. Two `None` values
     compare equal in Python, so an identity with no directory claim would
     consume the one-time bootstrap path. **Show this red first.**
-    ✅ **MET, with two guards.** The gate now calls
-    `operators.directory_matches`, and `operators.staff_directory_id` raises
-    instead of answering `None`. The hole needs only one of the two to open.
-    Fences: `test_operator_identity.py::test_the_directory_getter_never_returns_none`,
-    `::test_a_missing_claim_never_matches_the_directory` and
-    `test_operator_signin.py::test_the_bootstrap_never_fires_on_a_missing_directory_claim`.
+    ✅ **MET.** The gate now calls `operators.directory_matches`, and
+    `operators.staff_directory_id` raises instead of answering `None`. Both
+    properties must hold, because the hole needs only one of them to fail.
+    Fences: `test_operator_identity.py::test_the_directory_getter_never_returns_none`
+    and `::test_a_missing_claim_never_matches_the_directory`. Both went red
+    under mutation.
+
+    ⚠️ **REPAIRED 2026-09-01. The route fence was INERT, and this entry said
+    otherwise.** The sentence here read *"MET, with two guards, and the hole
+    needs only one of the two to open"*. That is true of the two helper
+    properties. It was **false of the CALL SITE**, which is a single point
+    with no second guard behind it. A verifier deleted the `and
+    operators.directory_matches(...)` clause in `main.py` and the whole suite
+    stayed green, then instrumented `operators.bootstrap` and proved the
+    bootstrap really fired.
+
+    The row count was never the property. One `get_engine().begin()`
+    transaction wraps the whole route, and the 403 rolls it back, so
+    `count(*) FROM operator` reads zero either way.
+    `test_operator_signin.py::test_the_bootstrap_never_fires_on_a_missing_directory_claim`
+    now asserts on a spy over `operators.bootstrap`, and it fails on that
+    mutation. `::test_a_stranger_cannot_consume_the_bootstrap` carries the
+    same spy, because it made the same claim.
 33. **The allowed sign-in provider set can never hold a passwordless
     provider.** `email`, `magiclink`, `otp`, `phone` and `sms` stay out of it,
     per **D70.2**. **R7 — the fence is
@@ -687,6 +760,17 @@ each fence went red under a mutation before it passed.
     ✅ **MET.** `operators.ALLOWED_PROVIDERS` and
     `operators.PASSWORDLESS_PROVIDERS` are the two constants, and
     `operators.signin_provider` refuses any name outside the first one.
+
+    ⚠️ **REPAIRED 2026-09-01. `DIRECTORY_CLAIM`'s VALUES were dead.**
+    `ALLOWED_PROVIDERS = frozenset(DIRECTORY_CLAIM)` made the KEYS live. The
+    values were not: `_azure_tid` and `_google_hd` wrote `tid` and `hd`
+    themselves. A verifier changed `GOOGLE_PROVIDER: "hd"` to `"email"` and the
+    whole suite stayed green. **We made the readers consume the table**, rather
+    than relabel it as documentation, because CLAUDE.md §5 refuses a second
+    copy of a vocabulary that already has an owner. Both readers now call
+    `operator_signin._claim_name`. R7 — the fence is
+    `test_operator_identity.py::test_the_claim_table_is_what_the_readers_read`,
+    which renames both claims and asserts each reader follows.
 
 ---
 

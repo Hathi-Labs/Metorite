@@ -661,6 +661,85 @@ def test_a_passwordless_provider_can_never_be_configured():
             operators.signin_provider({"OPERATOR_SIGNIN_PROVIDER": bad})
 
 
+def test_the_claim_table_is_what_the_readers_read():
+    """🔴 **R7 — the fence for ``operators.DIRECTORY_CLAIM``'s VALUES.**
+
+    A reviewer measured this on 2026-09-01. Only the KEYS of that table were
+    live, through ``ALLOWED_PROVIDERS = frozenset(DIRECTORY_CLAIM)``. Changing
+    ``GOOGLE_PROVIDER: "hd"`` to ``"email"`` left the whole suite green,
+    because ``_azure_tid`` and ``_google_hd`` wrote the names themselves.
+
+    This test renames the claim in the table and asserts each reader follows.
+    It fails the moment a reader goes back to a literal.
+    """
+    from customer_console import operator_signin, operators
+
+    def google(key: str) -> dict:
+        return {
+            "identities": [
+                {"provider": "google",
+                 "identity_data": {"email_verified": True, key: HD}},
+            ],
+        }
+
+    def azure(key: str) -> dict:
+        return {
+            "identities": [
+                {"provider": "azure",
+                 "identity_data": {"email_verified": True, key: TENANT}},
+            ],
+        }
+
+    # The table as it stands. Both readers find the claim.
+    assert operator_signin._google_hd(google("hd")) == HD
+    assert operator_signin._azure_tid(azure("tid")) == TENANT
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(operators.DIRECTORY_CLAIM, "google", "hosted_domain")
+        patch.setitem(operators.DIRECTORY_CLAIM, "azure", "tenant_id")
+        assert operator_signin._google_hd(google("hd")) is None, (
+            "_google_hd still reads a literal 'hd' rather than the table"
+        )
+        assert operator_signin._azure_tid(azure("tid")) is None, (
+            "_azure_tid still reads a literal 'tid' rather than the table"
+        )
+        assert operator_signin._google_hd(google("hosted_domain")) == HD
+        assert operator_signin._azure_tid(azure("tenant_id")) == TENANT
+
+
+def test_the_entra_tenant_id_still_compares_exactly():
+    """🔴 **R7 — the fence for spec §4.1 check 1's "compares exactly" claim.**
+
+    ``directory_matches`` folds case on the ``google`` path, because a DNS
+    domain is case-insensitive. It must NOT fold on the ``azure`` path. A
+    reviewer measured that making the azure path fold left the whole suite
+    green on 2026-09-01, so the spec sentence had no fence at all.
+
+    ⚠️ **This pins built behaviour, and it carries a cost worth naming.** An
+    Entra directory that returned an upper-case GUID against a lower-case
+    ``OPERATOR_ENTRA_TENANT_ID`` would refuse every operator. D70 records that
+    we hold no Entra directory, so nobody is on this path. A reader who
+    revives it must decide the fold deliberately, and change this test.
+    """
+    from customer_console import operators
+
+    # ⚠️ A GUID with hex LETTERS in it. The module-level ``TENANT`` is all
+    # digits, so ``.upper()`` returns the same string and would prove nothing.
+    lower = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    shouty = lower.upper()
+    assert shouty != lower
+
+    quiet_env = dict(ENV, OPERATOR_ENTRA_TENANT_ID=lower)
+    assert operators.directory_matches(lower, quiet_env) is True
+    assert operators.directory_matches(shouty, quiet_env) is False, (
+        "the azure path folded case, and a GUID is not a DNS domain"
+    )
+
+    loud_env = dict(ENV, OPERATOR_ENTRA_TENANT_ID=shouty)
+    assert operators.directory_matches(lower, loud_env) is False
+    assert operators.directory_matches(shouty, loud_env) is True
+
+
 def test_the_bootstrap_binds_to_the_configured_directory(conn):
     """The one-time path fails closed on the Google box too.
 

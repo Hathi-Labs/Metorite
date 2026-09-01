@@ -598,6 +598,35 @@ def _empty_registry(eng):
         conn.execute(text("DELETE FROM control_audit"))
 
 
+@pytest.fixture
+def bootstrap_calls(monkeypatch):
+    """Record every call to ``operators.bootstrap``, and still run the real one.
+
+    ⚠️ **A bootstrap fence must watch the CALL, and never the surviving row.**
+    The whole sign-in route runs inside one ``get_engine().begin()``
+    transaction, and a 403 rolls that transaction back. So ``count(*) = 0``
+    holds even when the guard at the call site is gone. Measured 2026-09-01: a
+    mutation that replaced ``if row is None and
+    operators.directory_matches(...)`` with ``if row is None:`` left 148 tests
+    green, and an instrumented ``operators.bootstrap`` proved the bootstrap
+    really fired. This fixture is what makes that mutation red.
+
+    The spy delegates to the real function, so the behaviour under test is the
+    built behaviour and not a stub of it.
+    """
+    from customer_console import operators as ops
+
+    calls: list[str] = []
+    real = ops.bootstrap
+
+    def spy(conn, **kwargs):
+        calls.append(str(kwargs))
+        return real(conn, **kwargs)
+
+    monkeypatch.setattr(ops, "bootstrap", spy)
+    return calls
+
+
 def test_the_first_person_through_the_door_becomes_admin(
     client, eng, issuer, monkeypatch
 ):
@@ -626,12 +655,16 @@ def test_the_bootstrap_does_not_fire_twice(client, eng, issuer, monkeypatch):
 
 
 def test_a_stranger_cannot_consume_the_bootstrap(
-    client, eng, issuer, monkeypatch
+    client, eng, issuer, monkeypatch, bootstrap_calls
 ):
     """⚠️ Only somebody already inside our directory may trigger it.
 
     A stranger triggering it gains nothing — `admit` still refuses them — but
     it would burn the one-time path before the owner reached it.
+
+    ⚠️ The call assertion carries this test, for the reason
+    :func:`bootstrap_calls` states. The row count alone reads zero under the
+    rollback and proves nothing about the guard.
     """
     owner = _email()
     monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
@@ -639,6 +672,9 @@ def test_a_stranger_cannot_consume_the_bootstrap(
 
     issuer["serve"](_payload(_email(), tid=str(uuid.uuid4())))
     assert _signin(client).status_code == 403
+    assert bootstrap_calls == [], (
+        "a foreign directory reached operators.bootstrap"
+    )
     with eng.begin() as conn:
         assert conn.execute(
             text("SELECT count(*) FROM operator")).scalar() == 0, (
@@ -647,6 +683,7 @@ def test_a_stranger_cannot_consume_the_bootstrap(
 
     issuer["serve"](_payload(owner))
     assert _signin(client).status_code == 200
+    assert len(bootstrap_calls) == 1
 
 
 def test_the_bootstrap_is_inert_when_no_email_is_named(
@@ -1132,13 +1169,18 @@ def test_no_passwordless_provider_is_ever_allowed():
 
 
 def test_the_bootstrap_never_fires_on_a_missing_directory_claim(
-    google_client, eng, issuer, monkeypatch
+    google_client, eng, issuer, monkeypatch, bootstrap_calls
 ):
     """🔴 **Done-when 32, through the door.**
 
     The caller IS the named bootstrap email and the registry IS empty, so
     everything except the directory claim invites the one-time path. A
-    payload with no ``hd`` must be refused and must consume nothing.
+    payload with no ``hd`` must not reach ``operators.bootstrap`` at all.
+
+    ⚠️ **The assertion is on the CALL, not on the row count.** An earlier
+    version of this test counted ``operator`` rows and read zero. That number
+    is produced by the route's single transaction rolling back on the 403, so
+    it stays zero with the guard deleted. See :func:`bootstrap_calls`.
     """
     owner = _email()
     monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
@@ -1146,6 +1188,10 @@ def test_the_bootstrap_never_fires_on_a_missing_directory_claim(
 
     issuer["serve"](_google(owner, hd=None))
     assert _signin(google_client).status_code == 403
+    assert bootstrap_calls == [], (
+        "the route called operators.bootstrap for an identity carrying no "
+        "hosted domain. The guard at the call site is gone."
+    )
     with eng.begin() as conn:
         assert conn.execute(
             text("SELECT count(*) FROM operator")).scalar() == 0, (
@@ -1153,10 +1199,16 @@ def test_the_bootstrap_never_fires_on_a_missing_directory_claim(
         )
 
     # The same person WITH the claim gets in, which is what proves the gate
-    # was the claim rather than anything else about the request.
+    # was the claim rather than anything else about the request. It also
+    # proves the spy above is wired in, so the empty list means "not called"
+    # rather than "not watching".
     issuer["serve"](_google(owner))
     r = _signin(google_client)
     assert r.status_code == 200, r.text
+    assert len(bootstrap_calls) == 1, (
+        "the same request WITH the claim must reach operators.bootstrap, or "
+        "the assertion above proves nothing"
+    )
     assert r.json()["operator"]["role"] == "admin"
 
 
