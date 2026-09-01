@@ -106,6 +106,33 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.0 C4 · D64.6
 - **Added:** 2026-09-01 · WS-31 D70 documentation session
 
+### H-92 · A Projects test passes alone and fails in the suite · [AGENT]
+- **Check:** run `uv run pytest tests/unit -k "projects" -q`. A failure on
+  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
+  means this is open. Then run that test on its own. It passes. Measured
+  2026-09-01, on `main` and on a branch alike.
+- **What happens:** the test asserts two `field_change` activities and reads
+  one. On its own it reads two. So something survives between tests. The
+  `FakeProjectsDB` fixture and any module-level cache are the first two places
+  to look.
+- **⚠️ Why this is not a flake.** A flake fails at random. This one fails on
+  the suite and passes alone, every time, which is state that leaks across
+  tests. Two costs follow. The suite can go red for a change that did not
+  cause it, and — the worse one — it can go GREEN for a change that did.
+- **📌 It has already misled one investigation.** On 2026-09-01 it
+  first read as damage from a filter change. The control was to run the same
+  test alone, and then to run the whole suite against `main`. Both passed the
+  blame back. Do that control first.
+- **Not caused by the watching filter (WS-27bk).** The suite fails the same way
+  with `main`'s `tasks.py` in place.
+- **Same CLASS as [[H-91]], and a different defect.** H-91 leaks rows into a
+  shared database, and this leaks state inside one process. The lesson is the
+  same one H-91 states: a red that comes and goes hides a real red. Whoever
+  takes either should read both.
+- **Added:** 2026-09-01 · WS-27bk Wave 1 · minted as H-91 and renumbered to
+  H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
+  `test_handoff_ids_are_unique` caught the collision.
+
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
   -name node_modules -prune -o ! -user acb -print | head`. Any line means a

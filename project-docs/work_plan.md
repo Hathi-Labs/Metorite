@@ -403,7 +403,7 @@ promote an app by granting its feature.**
 | Personal Center | **Calendar** | WS-21 · **WS-39** | Its own pane since D54. Behaviour (F2/F3, Focus Shield, timeboxing) stays WS-21. ⚠️ `gtd_time_blocks` and `calendar_accounts` **do not exist** — two specs cite them as built |
 | Personal Center | My Profile | WS-28 | — |
 | Personal Center | My Access | — | — |
-| Apps | **Projects** | WS-27 | Rename / bulk-close / delete unbuilt (**H-8**); org-wide vocabulary admin surface missing (**H-4**); delta-feed cursor gap (**H-7**) |
+| Apps | **Projects** | WS-27 | Rename / bulk-close / delete unbuilt (**H-8**) · org-wide vocabulary admin surface missing (**H-4**) · delta-feed cursor gap (**H-7**) · 🆕 **WS-27bk** — the nine-feature plan, spec §9.12, minted 2026-08-31, **nothing built**. Four of them are UI-only, because the endpoints already exist. Assign-to-AI is PARKED by the owner |
 | AI Studio | **Chat** | WS-8 · WS-10 | S1 `subject:` compartments |
 | Admin | Approvals | WS-1 | `ACTION_BROKER_ENFORCE` **unsafe** until BO-1d |
 | Admin | **Organisation** | WS-34 · WS-32 | **OI-2 is a hard prerequisite for customer #2** (org logo is cross-tenant today) · theme-switch check owed (**H-19**) |

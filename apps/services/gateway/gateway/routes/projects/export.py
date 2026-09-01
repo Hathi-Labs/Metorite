@@ -89,6 +89,7 @@ from gateway.routes.projects.core import (
     TASK_SORTS,
     TaskModel,
     _tenant_session,
+    actor,
     load_visible_project,
     resolve_visibility,
     root_project_id,
@@ -262,6 +263,11 @@ async def export_tasks_csv(
     tags: str | None = None,
     tags_all: str | None = None,
     include_triage: bool = False,
+    # WS-27bk §9.12.2. Carried because the docstring below promises this
+    # endpoint takes `list_tasks`' parameters verbatim. A filter the board
+    # applies and the export ignores hands somebody a file of the wrong rows,
+    # and nothing on the way says so.
+    watching: bool = False,
     #: The view's field set, CSV, in the wire vocabulary `shown_fields` is
     #: stored under. Absent = the two unconditional columns only.
     shown_fields: str | None = None,
@@ -324,6 +330,7 @@ async def export_tasks_csv(
             assignees=assignees, unassigned=unassigned, overdue=overdue,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
+            watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)

@@ -82,11 +82,14 @@ import {
   dayPx,
   dayStep,
   dragRefusal,
-  edgePath,
+  EDGE_HIT_PX,
+  edgeMidpoint,
+  edgePoints,
   interval,
   monthCells,
   resizeEnd,
   resizeStart,
+  roundedPath,
   spanFor,
   timelineBands,
   timelineRange,
@@ -201,6 +204,17 @@ interface Props {
   /** S2 — a committed drag. The page's existing task-date write path. */
   onMove: (task: TaskRow, patch: Record<string, string | null>) => void;
   onLink: (blockerId: string, blockedId: string) => void;
+  /**
+   * Remove a dependency, from the arrow itself.
+   *
+   * ⚠️ **This affordance is MOUSE-ONLY, and deliberately so.** The arrow layer
+   * is `aria-hidden` decoration — it draws relationships that
+   * `TaskPanel` states in words, and a screen reader that met both would hear
+   * every dependency twice. So the keyboard and assistive path is the panel's
+   * own remove control, not this one. Optional, so a timeline rendered
+   * read-only simply passes nothing and no edge becomes hoverable.
+   */
+  onUnlink?: (blockerId: string, linkId: string) => void;
   onRefuse: (reason: string) => void;
 }
 
@@ -221,6 +235,7 @@ export function TimelineView({
   onSelect,
   onMove,
   onLink,
+  onUnlink,
   onRefuse,
 }: Props) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -229,6 +244,15 @@ export function TimelineView({
   const [drag, setDrag] = useState<DragState | null>(null);
   const [link, setLink] = useState<LinkState | null>(null);
   const [hoverRow, setHoverRow] = useState<string | null>(null);
+  /**
+   * The edge under the cursor, by link id.
+   *
+   * Separate from `hoverRow`, which lights every edge a ROW touches. This one
+   * is the single arrow being pointed at, and only it earns a remove control —
+   * lighting a row and offering to delete four dependencies at once is not the
+   * same gesture.
+   */
+  const [hoverEdge, setHoverEdge] = useState<string | null>(null);
   const todayKey = today ?? dayKey(new Date());
 
   // The live drag, for listeners that were created once and must not close over
@@ -912,11 +936,13 @@ export function TimelineView({
                   const from = indexById.get(edge.blocker_id);
                   const to = indexById.get(edge.blocked_id);
                   if (from === undefined || to === undefined) return null;
-                  const d = edgePath(
+                  const points = edgePoints(
                     { bar: barById.get(edge.blocker_id) ?? null, row: from },
                     { bar: barById.get(edge.blocked_id) ?? null, row: to },
                   );
-                  if (!d) return null;
+                  if (!points) return null;
+                  const d = roundedPath(points);
+                  const mid = edgeMidpoint(points);
                   const blocker = taskById.get(edge.blocker_id);
                   const blocked = taskById.get(edge.blocked_id);
                   const bad =
@@ -930,27 +956,94 @@ export function TimelineView({
                    * answers the question actually being asked — "what does
                    * THIS depend on" — without a mode, a click or a legend.
                    */
+                  const aimed = hoverEdge === edge.id;
                   const lit =
-                    hoverRow === edge.blocker_id || hoverRow === edge.blocked_id;
+                    aimed ||
+                    hoverRow === edge.blocker_id ||
+                    hoverRow === edge.blocked_id;
                   const dimmed = hoverRow !== null && !lit;
                   return (
-                    <path
-                      key={edge.id}
-                      d={d}
-                      fill="none"
-                      strokeWidth={bad || lit ? 2 : 1.5}
-                      // Rounded joins as well as rounded corners: the arrowhead
-                      // sits on a butt end otherwise and reads as a notch.
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      opacity={dimmed ? 0.25 : 1}
-                      className={`transition-opacity ${
-                        bad ? "stroke-destructive" : lit ? "stroke-primary" : "stroke-muted-foreground"
-                      }`}
-                      markerEnd={`url(#${
-                        bad ? "pm-arrow-bad" : lit ? "pm-arrow-lit" : "pm-arrow"
-                      })`}
-                    />
+                    <g key={edge.id}>
+                      {/*
+                        ⚠️ THE HIT TARGET, and the reason this feature works at
+                        all. The visible line below is 1.5px wide, which is not
+                        something a person can reliably point at. This invisible
+                        twin carries the same path at EDGE_HIT_PX and takes the
+                        pointer instead.
+
+                        The parent <svg> is `pointer-events-none` so a bar is
+                        never un-clickable through the arrow layer. This child
+                        opts back in, and only on its STROKE — `fill` is none,
+                        but "auto" would still hand it the whole bounding box,
+                        which for a dogleg is a rectangle covering both rows.
+                      */}
+                      {onUnlink ? (
+                        <path
+                          d={d}
+                          fill="none"
+                          stroke="transparent"
+                          strokeWidth={EDGE_HIT_PX}
+                          style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                          onMouseEnter={() => setHoverEdge(edge.id)}
+                          onMouseLeave={() =>
+                            setHoverEdge((current) =>
+                              current === edge.id ? null : current,
+                            )
+                          }
+                        />
+                      ) : null}
+                      <path
+                        d={d}
+                        fill="none"
+                        strokeWidth={bad || lit ? 2 : 1.5}
+                        // Rounded joins as well as rounded corners: the arrowhead
+                        // sits on a butt end otherwise and reads as a notch.
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={dimmed ? 0.25 : 1}
+                        pointerEvents="none"
+                        className={`transition-opacity ${
+                          bad ? "stroke-destructive" : lit ? "stroke-primary" : "stroke-muted-foreground"
+                        }`}
+                        markerEnd={`url(#${
+                          bad ? "pm-arrow-bad" : lit ? "pm-arrow-lit" : "pm-arrow"
+                        })`}
+                      />
+                      {onUnlink && aimed && mid ? (
+                        <g
+                          transform={`translate(${mid.x} ${mid.y})`}
+                          style={{ pointerEvents: "auto", cursor: "pointer" }}
+                          /*
+                            It keeps its OWN hover alive. Moving onto the control
+                            leaves the stroke, and without this the control
+                            unmounts from under the cursor on the way to it.
+                          */
+                          onMouseEnter={() => setHoverEdge(edge.id)}
+                          onMouseLeave={() =>
+                            setHoverEdge((current) =>
+                              current === edge.id ? null : current,
+                            )
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onUnlink(edge.blocker_id, edge.id);
+                          }}
+                        >
+                          <title>Remove this dependency</title>
+                          <circle
+                            r={8}
+                            className="fill-background stroke-destructive"
+                            strokeWidth={1.5}
+                          />
+                          <path
+                            d="M-3 -3 L3 3 M3 -3 L-3 3"
+                            className="stroke-destructive"
+                            strokeWidth={1.5}
+                            strokeLinecap="round"
+                          />
+                        </g>
+                      ) : null}
+                    </g>
                   );
                 })}
                 {/* The rubber band. Drawn to the cursor, so a link you are

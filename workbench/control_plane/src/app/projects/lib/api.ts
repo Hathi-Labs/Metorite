@@ -1,3 +1,5 @@
+import { cacheKey, invalidate } from "@/lib/dataCache";
+
 import type { Rule as RecurrenceRule } from "./recurrence";
 
 /**
@@ -240,6 +242,22 @@ export class ProjectsApiError extends Error {
  * Tasks reading the Projects client is not a layering breach — under D53 the
  * Tasks app IS a lens over Projects.
  */
+/**
+ * The cache namespace every Projects read is keyed under.
+ *
+ * One prefix, so a write can invalidate the whole family in one call — see
+ * the note on `call` below.
+ */
+export const PROJECTS_CACHE = "projects/";
+
+/** The key for a read. `useCachedResource` takes this, `call` does the fetch. */
+export function projectsKey(
+  path: string,
+  params?: Record<string, unknown>
+): string {
+  return cacheKey(`${PROJECTS_CACHE}${path}`, params);
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/projects/${path}`, {
     ...init,
@@ -259,6 +277,26 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       res.status
     );
   }
+
+  /**
+   * ⚠️ A WRITE DROPS EVERY CACHED PROJECTS READ.
+   *
+   * Bluntly, on purpose. One task edit legitimately changes the board, the
+   * table, the timeline, the calendar window, the triage counts and the
+   * subtree roll-up — they are lenses on ONE store (D52/D53/D54), so a write
+   * that refreshed only the lens you were looking at would leave the other
+   * five to disagree with it until something else happened to reload them.
+   * That disagreement is the exact bug a single task store exists to prevent,
+   * and a per-endpoint invalidation map is how it creeps back in: the map goes
+   * stale, and then it lies.
+   *
+   * The re-read is cheap BECAUSE the cache is stale-while-revalidate — every
+   * dropped view keeps painting its last known rows while the new ones land.
+   * Nothing blanks. Only a mount with nothing cached ever shows a skeleton.
+   */
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET") invalidate(PROJECTS_CACHE);
+
   return body as T;
 }
 

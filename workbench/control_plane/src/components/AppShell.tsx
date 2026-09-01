@@ -30,6 +30,7 @@ import { useSession, signOut } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
+import { bindIdentity } from "@/lib/dataCache";
 import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
 import WelcomeDialog from "@/components/WelcomeDialog";
@@ -77,6 +78,25 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
   const pathname = usePathname();
   const { loading: accessLoading } = useAccess();
+
+  /**
+   * ⚠️ Bind the read cache to whoever is signed in.
+   *
+   * `src/lib/dataCache.ts` keys cached rows by request path, and a path says
+   * nothing about who asked for it. Two members on one browser therefore share
+   * every key, so an unbound cache would serve the second one the first one's
+   * rows — from memory, below the gateway, somewhere row-level security cannot
+   * reach.
+   *
+   * Bound HERE because this shell wraps every app and already holds the
+   * session. Beside the sign-out buttons would be wrong: there are two of them
+   * today, and the guard has to hold for the ones nobody has written yet.
+   */
+  const { data: cacheSession } = useSession();
+  const signedInAs = cacheSession?.user?.email ?? null;
+  useEffect(() => {
+    bindIdentity(signedInAs);
+  }, [signedInAs]);
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);

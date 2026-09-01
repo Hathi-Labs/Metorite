@@ -52,6 +52,7 @@ from fastapi import Depends, HTTPException, Query
 from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
+    actor,
     load_visible_project,
     resolve_visibility,
     router,
@@ -201,6 +202,13 @@ async def get_calendar(
     # WS-27u. The intake queue must not leak onto the month either — the ONE
     # predicate is `core.triage_exclusion_clause`, applied below.
     include_triage: bool = False,
+    # WS-27bk §9.12.2. ⚠️ Declared HERE as well as on the list, or FastAPI
+    # drops it without a word — and the calendar AND the timeline both read
+    # this endpoint, so the chip would silently stop applying in two views at
+    # once. That reads as the FILTER being broken rather than the view.
+    # `test_every_list_filter_is_accepted_by_the_calendar_or_named_as_excluded`
+    # is the fence, and it caught exactly this.
+    watching: bool = False,
 ) -> dict:
     """Every visible task whose schedule overlaps ``[from, to)``.
 
@@ -239,6 +247,7 @@ async def get_calendar(
             assignee=assignee, assignees=assignees, unassigned=unassigned,
             overdue=overdue, importance_gte=importance_gte, q=q, tags=tags,
             tags_all=tags_all, include_archived=include_archived,
+            watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)
