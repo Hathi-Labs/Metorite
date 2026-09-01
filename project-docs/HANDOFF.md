@@ -75,6 +75,37 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
+- **Check:** run this on the Console database.
+
+  ```sql
+  SELECT email, role, status FROM operator
+  WHERE role = 'admin' AND status = 'active';
+  ```
+
+  **Two or more rows means
+  four-eyes approval is no longer deferrable**, and this entry is still real.
+  One row, or none, would mean somebody deactivated an admin and the trigger
+  un-fired.
+- **What fired it, measured 2026-09-01.** The production read returned two
+  rows: `nithin@hathilabs.com` and `vjvarada@hathilabs.com`. Both are `admin`.
+  Both are `active`. Both were created 2026-08-30.
+- **Why this is an entry and not a note.** `operator_identity_and_access.md` §9
+  DEF-1 says the trigger *"must not be allowed to pass unnoticed"*, and the §9
+  table had no place to record a firing. §9.1 now records it. This entry is the
+  queue half, so the fact reaches a session that never opens the spec.
+- **What is deferred no longer.** Four-eyes approval on purge, suspend and
+  large credit grants. DEF-1 deferred it because *"four-eyes needs two people
+  to mean anything, and today it would only lock the owner out."* There are two
+  people now.
+- 🔴 **This entry does NOT authorize an agent to build four-eyes.** The control
+  needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
+  **C4** already says the two decisions arrive together and must not be
+  separated. The owner takes the shape. An agent then builds it.
+- **Authority:** `specs/operator_identity_and_access.md` §9 DEF-1 · §9.1 ·
+  `work_plan.md` §6.0 C4 · D64.6
+- **Added:** 2026-09-01 · WS-31 D70 documentation session
+
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
   -name node_modules -prune -o ! -user acb -print | head`. Any line means a
@@ -1290,32 +1321,44 @@ line — never reclaim a number by deleting the other entry.
   done-when section and a repaired Check
 
 
-### H-54 · Configure the Supabase staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+- **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
+  Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
+  no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
+  admin console.
 - **Check:** `ssh` to the box and read the operator console env for
-  `OPERATOR_ENTRA_TENANT_ID` → an unset value means still pending. From the repo
-  alone: `rg -n "OPERATOR_ENTRA_TENANT_ID" workbench/operator_console/` → a hit in
-  `src/lib/` with no hit in a deployed env is the same answer.
+  `OPERATOR_GOOGLE_HD` → an unset value means still pending. From the repo
+  alone: `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
+  → **no hit at all** means the code half is not built either, which is the
+  state on 2026-09-01.
 - **Why:** CP-12a builds the three-check staff gate. It cannot admit anybody
-  until the owner configures the provider and sets the three values. Until then
+  until the owner configures the provider and sets the values. Until then
   the console stays on **one shared passphrase**. That box has been reachable
   since 2026-08-22.
-- **⚠️ Amended 2026-08-27 by CP-12f2, and it grew two parts.**
-  1. There are **five** values now, not three. `OPERATOR_SUPABASE_URL` and
-     `OPERATOR_SUPABASE_ANON_KEY` join the three above. All five are
-     documented in `deploy/hostinger/customer_console.env.example`.
-  2. **Turn manual identity linking OFF in the Supabase project.** A staff
-     account that links a second provider can be signed in through that
-     provider. The Console refuses such a sign-in, because it reads
-     `app_metadata.provider`. That claim is not per-session, so linking is
-     the condition the bypass needs, and removing it is the durable fix.
-  3. **Confirm the Azure claim shape.** No live project has produced one
-     yet, so `operator_signin.extract_identity` reads a shape nobody has
-     measured. It fails CLOSED, so a wrong guess refuses everybody rather
-     than admitting anybody. Read one real payload and correct that one
-     function.
-- **Authority:** `specs/operator_identity_and_access.md` §10 G1–G2 ·
-  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · D64.1
-- **Added:** 2026-08-26 · operator-identity spec session
+- **The five values.** `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS`,
+  `OPERATOR_BOOTSTRAP_EMAIL`, `OPERATOR_SUPABASE_URL` and
+  `OPERATOR_SUPABASE_ANON_KEY`. ⚠️ `deploy/hostinger/customer_console.env.example`
+  still documents the Entra name. `deploy/` is OWNER-GATE, so an agent may not
+  correct it there.
+- **Turn manual identity linking OFF in the Supabase project.** A staff
+  account that links a second provider can be signed in through that
+  provider. The Console refuses such a sign-in, because it reads
+  `app_metadata.provider`. That claim is not per-session, so linking is
+  the condition the bypass needs, and removal is the durable fix.
+- 🔴 **Measure one real Supabase GOOGLE payload, and confirm whether `hd`
+  appears in `identities[].identity_data`.** This is **still unmeasured and
+  still load-bearing.** `operator_signin.extract_identity` reads a shape nobody
+  has seen. It fails CLOSED, so a wrong guess refuses everybody instead of
+  admits anybody. ⚠️ The old part 3 of this entry asked for the **Azure** claim
+  shape. That question is dead. This one replaces it.
+- ⚠️ **A payload with NO `hd` must refuse.** Google issues an account on any
+  address it verifies by mail, and such an account carries `email_verified:
+  true` and no `hd`. Do not read a missing claim as a pass. Spec §8.1 done-when
+  30 is the acceptance.
+- **Authority:** `specs/operator_identity_and_access.md` §4.1 · §10 G1–G2 ·
+  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · **D70.1** · D64.1
+- **Added:** 2026-08-26 · operator-identity spec session · **rewritten
+  2026-09-01** for D70
 
 ### H-58 · Name the first operators and their roles · [OWNER]
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
@@ -1338,15 +1381,27 @@ line — never reclaim a number by deleting the other entry.
 - **⚠️ Amended 2026-08-27.** CP-12a to CP-12g slice 1 are built. The console
   now has both sign-in paths, and `OPERATOR_IDENTITY_ENABLED` chooses.
 - **The order, and it is the reverse of what it looks like:**
-  1. **[OWNER]** Finish **H-54**. Configure the Supabase Microsoft provider,
-     set the five `OPERATOR_*` values, turn identity linking OFF, and add
-     `<origin>/login/callback` to the redirect allowlist.
-  2. **[OWNER]** Apply migration 009 (**H-64**). `GET /operators` answers 500
-     until it is applied.
+  0. **[AGENT]** ⛔ **NEW, and it comes first. D70 changed the provider on
+     2026-09-01.** The built code names Microsoft and reads `tid`. The gate
+     must read the Google Workspace `hd` claim against `OPERATOR_GOOGLE_HD`.
+     Nobody can finish step 1 against a provider the code does not accept.
+     Acceptance: spec §8.1 done-whens 1, 5 and 30 to 33.
+  1. **[OWNER]** Finish **H-54**. Configure the Supabase **Google Workspace**
+     provider, set the five `OPERATOR_*` values, turn identity linking OFF, and
+     add `<origin>/login/callback` to the redirect allowlist.
+  2. ✅ **DONE.** The Console ladder is applied on production. Measured
+     2026-09-01: the `operator` table exists, and migrations 019 to 021 are
+     recorded. **H-64 carried this and the owner closed it**, so that entry is
+     deleted.
   3. **[OWNER]** Set `OPERATOR_BOOTSTRAP_EMAIL` to your own address, then
      flip `OPERATOR_IDENTITY_ENABLED` on the console app.
-  4. **[OWNER]** Sign in once. You become the first `admin` automatically.
-     Then add the rest of the team (**H-58**).
+     ⚠️ **The bootstrap is already spent.** The 2026-09-01 read found two
+     `active` `admin` rows. `operators.bootstrap` refuses once any row exists,
+     so this variable does nothing now. Set it anyway. It costs nothing, and it
+     matters again on a fresh box.
+  4. **[OWNER]** Sign in once. ⚠️ **You are already an `admin` row**, so the
+     sign-in proves the gate rather than creates you. Then add the rest of the
+     team (**H-58**).
   5. **[AGENT]** ONLY THEN: delete `staff.ts`, `InterimForm.tsx` and the
      interim branch of the session route. Remove the constant from
      `route.ts`, `session.ts` and `identity.ts`.
@@ -1384,27 +1439,6 @@ line — never reclaim a number by deleting the other entry.
   enforcement does not widen it.
 - **Authority:** `work_plan.md` §6 · D45 · `.claude/hooks/plan-guard.mjs`
 - **Added:** 2026-08-27 · WS-31 CP-12g session
-
-### H-64 · Put the Console DSN on the box, then deploy · [OWNER]
-- **Check:** on the box, `\dt operator*` against the Console database. No
-  `operator` table means still pending. **Measured 2026-08-27 over the Supabase
-  MCP: the table does not exist.** `provider_credential` holds 0 rows.
-- **⚠️ The shape of this changed on 2026-08-27.** H-24 closed, so the deploy now
-  applies the Console ladder by itself. You no longer run a migration by hand.
-- **What is left is one file.** `/opt/acb/app/apps/services/customer_console/.env`
-  must carry `CUSTOMER_CONSOLE_DATABASE_URL`. The template is
-  `deploy/hostinger/customer_console.env.example`. The next deploy then applies
-  every ladder file, 001 to 009, and restarts the Console.
-- **⚠️ The new step FAILS the deploy** when `acb-customer-console` is enabled and
-  that value is absent. That is deliberate, and
-  `tests/unit/test_console_ladder_deploy_wiring.py` pins it. A box that runs no
-  Console skips the step and says so.
-- **Why it matters:** CP-12a to CP-12g slice 1 are on `main`, so the CODE is on
-  the box. Until the ladder runs, `GET /operators` answers 500 instead of 404,
-  and the whole operator identity stack reads tables that do not exist.
-- **Authority:** `specs/operator_identity_and_access.md` §7 · `work_plan.md`
-  §6.1 (CP-12 block) · D47
-- **Added:** 2026-08-27 · CP-12e session · **rewritten 2026-08-27** after H-24
 
 ### H-69 · Flip `ROUTER_SERVING_ENABLED` — after three prerequisites · [OWNER]
 - **Check:** on the box, `grep ROUTER_SERVING_ENABLED /opt/acb/app/.env`. No

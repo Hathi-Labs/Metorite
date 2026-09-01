@@ -138,12 +138,25 @@ succeeds. Fence: `workbench/operator_console/src/app/login/login.test.ts` —
 six cases, three mutations killed.
 
 🔴 **Owner acts still owed:** H-54 configures Supabase and turns identity
-linking off. H-58 names the first operators. H-64 applies migration 009.
-Then the flag flip, then slice 2.
+linking off. H-58 names the first operators. Then the flag flip, then slice 2.
+*(The Console ladder is applied. See the note under §7.)*
+
+**⛔ THE DIRECTORY CHANGED 2026-09-01 — D70.** We have no Microsoft Entra
+directory. Supabase Auth with the **Google Workspace** provider authenticates
+staff instead, and the `hd` hosted-domain claim replaces the Entra `tid` as
+check 1. D35.3's intent stands, which is one directory, ours, admin-managed.
+Email OTP is refused for this console.
+
+⚠️ **Read the two halves apart.** Every ◐ BUILT note above is a true record of
+what CP-12a to CP-12g slice 1 shipped, and that code names Microsoft. §4.1 and
+§8.1 below now state what a later slice must build. The two disagree on
+purpose, and the gap is the work.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
-**Decision of record:** **D64** (`work_plan.md` §3), taken by the owner on
-2026-08-26. It reconciles **D35.3** with **D34**.
+**Decisions of record:** **D64** (`work_plan.md` §3), taken by the owner on
+2026-08-26, which reconciles **D35.3** with **D34**. **D70**, taken by the
+owner on 2026-09-01, which amends **D64.1** and moves the directory to Google
+Workspace.
 
 **Owns:** who a platform operator is, what each one may do, how one is added and
 removed, and what the audit log says afterwards.
@@ -210,17 +223,25 @@ nobody can check after the fact.
 
 ---
 
-## 3. The decision this rests on — D64
+## 3. The decisions this rests on — D64 and D70
 
 **D35.3 said the console pins one Microsoft Entra directory, ours.** **D34 then
 bought Supabase Auth** for the customer plane, with Microsoft as one of its
 providers. Nobody reconciled the two, so the staff gate stayed an interim secret
 for four months. **D64 reconciles them.**
 
-| # | D64 says | Note |
+**⛔ D70 then corrected the directory itself, on 2026-09-01.** The owner stated
+that we have no Entra directory, and that `hathilabs.com` is a Google Workspace
+domain with an admin console. So D64.1 named a provider we cannot configure.
+D70 moves the provider to Google Workspace and the claim to `hd`.
+
+| # | The decision says | Note |
 |---|---|---|
-| **D64.1** | **Supabase Auth, with the Microsoft provider, authenticates staff** | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
-| **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea |
+| **D70.1** | **Supabase Auth, with the GOOGLE WORKSPACE provider, authenticates staff.** The `hd` hosted-domain claim replaces the Entra `tid` as check 1 | ⛔ **This amends D64.1.** D35.3's intent stands, which is one directory, ours, admin-managed. Only the mechanism moves |
+| **D70.2** | **Email OTP is refused for this console**, although the tenant app offers it | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
+| **D70.3** | **The `hd` claim is load-bearing.** A domain match alone is not enough | Google lets a person create an account on a non-Gmail address, and verifies it by mail. Google then returns `email_verified: true` and NO `hd`. So a domain match alone admits a former employee's alias, a forward, a catch-all address, or a compromised mailbox. `hd` appears only for an account the Workspace admin manages |
+| **D64.1** | ⛔ **AMENDED by D70.1.** Was: Supabase Auth, with the Microsoft provider, authenticates staff | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
+| **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea. ⛔ Check 1 reads `hd` since D70, not `tid` |
 | **D64.3** | **Three roles: `viewer`, `editor`, `admin`** | `admin` is the only role that administers operators |
 | **D64.4** | **No standing destructive privilege.** An `admin` holds the *right to elevate*, not the privilege | The elevation is time-boxed and needs a stated reason |
 | **D64.5** | **Operators reach the commercial record only** | NG-1 and NG-2. Widening this is an owner decision |
@@ -236,8 +257,10 @@ An operator is admitted when all three pass. Any one that fails refuses the
 sign-in, and the console says which class of refusal it was without naming which
 check failed.
 
-1. **The directory.** Supabase Auth returns a Microsoft identity. The console
-   asserts that the `tid` claim equals `OPERATOR_ENTRA_TENANT_ID`.
+1. **The directory.** Supabase Auth returns a Google identity. The console
+   asserts that the `hd` hosted-domain claim equals `OPERATOR_GOOGLE_HD`.
+   ⛔ **Changed 2026-09-01 by D70.** This read *"a Microsoft identity"* and
+   `OPERATOR_ENTRA_TENANT_ID` until then.
 2. **The domain.** The email domain is in `OPERATOR_STAFF_DOMAINS`.
 3. **The registry.** A row exists in `operator` for that email, and its status is
    `active`.
@@ -245,6 +268,22 @@ check failed.
 ⚠️ **Check 3 is not redundant.** Without it, every person our directory ever
 admits becomes a platform operator on their first sign-in. The directory tells
 us a person works here. It does not tell us they run the platform.
+
+⚠️ **Check 1 is not redundant either, and check 2 cannot stand in for it.**
+Google issues an account on any address it can verify by mail, and such an
+account carries **no `hd` claim at all**. It still carries `email_verified:
+true`. So a gate that reads the email domain alone admits anybody who receives
+mail at a staff domain. That set holds a former employee's alias, a forward, a
+catch-all address, and a compromised mailbox.
+
+**`hd` is what makes the account admin-managed.** Google sets it only for an
+account inside a Workspace domain, which is an account our admin created and
+our admin can delete. That is the same property the Entra `tid` gave us, and it
+is the reason D70 could move the mechanism without moving D35.3's intent.
+
+⚠️ **Email OTP is not a way in.** The tenant app offers a Resend 6-digit OTP,
+and this console refuses one. See **D70.2**. A console that reaches every
+customer organization must not admit a person on inbox control alone.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
@@ -459,6 +498,16 @@ CREATE TABLE IF NOT EXISTS operator_elevation (
 );
 ```
 
+✅ **The ladder is APPLIED on production. Measured 2026-09-01.** The `operator`
+table exists and holds two `active` `admin` rows. Migrations 019, 020 and 021
+are recorded as well, so the Console ladder is well past this migration. H-64
+carried the apply and the owner closed it.
+
+⛔ **The `directory_subject` comment says *"the Entra object id"*, and the
+migration has shipped.** D70 makes that value the **Google subject** instead.
+Do not rewrite an applied migration. A later slice corrects the comment in a
+new file, or leaves it and states the meaning here.
+
 ⚠️ **These three tables are deliberately NOT tenant-scoped.** They belong to the
 cross-tenant plane. **R5(a)** is satisfied the way CP-1 satisfied it. The
 Console's ladder is not the tenant ladder, so `gen_tenant_migration.py` does not
@@ -496,15 +545,21 @@ out of a live console.
 
 ### 8.1 Done-when, per ticket
 
+⛔ **Done-whens 1, 5 and 30 to 33 changed or arrived on 2026-09-01 with D70.**
+The built code names Microsoft. These state the Google Workspace gate a later
+slice must build. Every other done-when below is unchanged and still binds.
+
 **CP-12a**
-1. A Microsoft identity whose `tid` is not ours is refused **403**, and the
-   refusal is logged.
+1. A Google identity whose `hd` is not ours is refused **403**, and the console
+   logs the refusal. ⛔ **Rewritten 2026-09-01 (D70).** This read *"a Microsoft
+   identity whose `tid` is not ours"*.
 2. An email outside `OPERATOR_STAFF_DOMAINS` is refused **403**.
 3. An email with no `operator` row is refused **403**, even when checks 1 and 2
    pass.
 4. An `operator` row whose status is `suspended` or `deactivated` is refused.
-5. An unset `OPERATOR_ENTRA_TENANT_ID` fails **closed** with a **503**, the same
-   way `staff.ts` does today.
+5. An unset `OPERATOR_GOOGLE_HD` fails **closed** with a **503**, the same
+   way `staff.ts` does today. ⛔ **Rewritten 2026-09-01 (D70).** This named
+   `OPERATOR_ENTRA_TENANT_ID`.
 6. The bootstrap inserts one admin when the table is empty, and is refused once
    any row exists.
 
@@ -557,6 +612,29 @@ out of a live console.
     gate makes the fence fail. **Show this red first.**
 29. With the flag ON, the old passphrase is refused.
 
+**The Google Workspace gate — added 2026-09-01 by D70**
+
+30. 🔴 **A Google identity carrying NO `hd` claim is refused 403.** This holds
+    even when the email domain is in `OPERATOR_STAFF_DOMAINS` and an active
+    `operator` row exists for that email. **This is the personal-Google-account
+    attack, and it is the most important case on this list.** A missing claim
+    is a refusal, and never a pass.
+31. **`_email_is_verified` reads `email_verified` only from the SIGN-IN
+    provider's identity.** A second linked identity does not satisfy it. ⚠️ The
+    built function scans EVERY identity in the payload today
+    (`operator_signin.py`), so this done-when names a real gap, not a
+    restatement.
+32. **The bootstrap gate fires on the `hd` match, and never on a missing
+    directory claim.** The gate sits at `main.py:1178` and reads
+    `identity.tid == operators.staff_tenant_id()` today. Two `None` values
+    compare equal in Python, so an identity with no directory claim would
+    consume the one-time bootstrap path. **Show this red first.**
+33. **The allowed sign-in provider set can never hold a passwordless
+    provider.** `email`, `magiclink`, `otp`, `phone` and `sms` stay out of it,
+    per **D70.2**. **R7 — the fence is
+    `tests/unit/test_operator_signin.py::test_no_passwordless_provider_is_ever_allowed`**,
+    which reads the allowlist constant and fails on any member of that set.
+
 ---
 
 ## 9. Named deferrals, and what pulls each one in
@@ -564,9 +642,25 @@ out of a live console.
 **These are not oversights.** Each one is written down with the trigger that
 turns it into a ticket.
 
+### 9.1 🔴 DEF-1's trigger HAS FIRED — 2026-09-01
+
+**A second admin exists.** A production read on 2026-09-01 found two `active`
+`admin` rows in the `operator` table. They are `nithin@hathilabs.com` and
+`vjvarada@hathilabs.com`, both created 2026-08-30. DEF-1's trigger reads *"a
+second admin exists"*, so the trigger has fired.
+
+**This section exists because DEF-1 says the trigger must not pass unnoticed.**
+The table below states triggers, and it had no place to record a firing. That
+is the gap this section closes. Nobody may delete this note by deferring DEF-1
+again.
+
+⚠️ **This records the firing. It does not build four-eyes approval.** Four-eyes
+needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
+**C4** carries the owner half, and **H-93** carries the queue entry.
+
 | # | Deferred | Trigger that pulls it in |
 |---|---|---|
-| **DEF-1** | **Four-eyes approval on purge, suspend and large credit grants** | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
+| **DEF-1** | 🔴 **FIRED 2026-09-01. See §9.1.** Four-eyes approval on purge, suspend and large credit grants | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
 | **DEF-2** | **Per-action step-up re-authentication** | An operator works from a shared or unmanaged device. §6.3's elevation raises the cost of a stolen cookie, but it does **not** re-prove possession of the second factor, and that difference is the whole of what step-up adds |
 | **DEF-3** | **SCIM or directory group sync** | The team passes about 10 operators, where hand-maintaining the registry starts to drift |
 | **DEF-4** | **Read-only tenant view for support, with consent and an access record** | A support request arrives that the team cannot answer without seeing tenant content. ⚠️ **D64.5 makes this an owner decision, not an engineering one** |
@@ -583,8 +677,8 @@ An agent must **refuse these by name** and say so. They belong in
 
 | # | Act | Class |
 |---|---|---|
-| **G1** | Configuring the Supabase Auth Microsoft provider, and holding its secret | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_ENTRA_TENANT_ID`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box | `env-write` |
+| **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
+| **G2** | Setting `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID` | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |
