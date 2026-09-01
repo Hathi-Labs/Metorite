@@ -75,28 +75,49 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-94 · A fresh box repeats H-90's exposure, because `.env.example` says `dev` · [AGENT]
-- **Check:** `grep -n ACB_ENV .env.example` and
-  `grep -rn "ACB_ENV" scripts/vps_apply.sh deploy/hostinger/bootstrap.sh`. This
-  entry is live while the template says `dev` and no deploy step writes `prod`.
-- **Why:** H-90 no longer applies to the CURRENT box. Somebody set `ACB_ENV=prod` by
-  hand, and `/openapi.json` and `/docs` now answer 404. **Nothing carries that
-  fix forward.** `Settings.acb_env` defaults to `"dev"`, `.env.example` ships
-  `ACB_ENV=dev`, and no bootstrap or apply step sets `prod`. The next fresh box
-  publishes its whole API schema again, exactly as before.
-  📌 **This is the half of H-90 that its Check could not see.** The Check probed
-  the live host, so it went green the moment somebody fixed one box. Deleting the
-  entry took the durable half with it, which is why this replacement exists.
-  📌 The fence already exists — `vps-health.yml` job `exposure` probes hourly
-  and fails while any path reports `dev`. It watches production only. It cannot
-  see a box that has not been built yet.
-- **Decide where production's value comes from.** A default flip in `Settings`
-  is the smallest fix and it changes every environment at once. A deploy-time
-  write is narrower and adds a step that somebody can skip. Take one, and name the
-  test that fails if somebody undoes it (R7).
-- **Authority:** H-90 (closed 2026-09-01) · `gateway/main.py` `docs_enabled` ·
-  `test_docs_are_dev_only` · `vps-health.yml` job `exposure`
-- **Added:** 2026-09-01 · guardrail-relaxation session, on closing H-90
+### H-97 · 🔴 A tenant DB password reached an agent transcript · [OWNER]
+- **Check:** has somebody rotated the `acb_app` password on the Supabase
+  project since 2026-09-01? Treat this as live until they confirm a rotation.
+- **Why:** on 2026-09-01 an agent ran `psql "$DATABASE_URL"` on the box and
+  piped **stderr** into the transcript. `psql` rejects the DSN, because
+  `DATABASE_URL` carries the SQLAlchemy form `postgresql+psycopg://`. Its error
+  message quotes the connection string **in full, with the password**.
+  🔴 The credential is the `acb_app` role on the tenant Supabase pooler. That
+  role reads and writes all 157 public tables.
+  📌 **Nobody used it, and that does not matter.** This is the same class as
+  **H-3**: a secret in a transcript is a disclosed secret.
+  📌 **The trap is general, and it is worth naming.** A tool that fails on a
+  credential usually echoes the credential. Never pipe stderr from `psql`,
+  `pg_dump`, `redis-cli` or `curl -u` into a transcript. Send it to
+  `/dev/null` and report the exit code.
+- **Rotate the DSN form too:** it is a papercut of its own. `psql` cannot
+  read `postgresql+psycopg://`, so every ad-hoc query needs a `sed` first.
+  Consider a `PSQL_URL` beside `DATABASE_URL`, or a small wrapper.
+- **Authority:** H-3 (same class) · `work_plan.md` §6 credentials
+- **Added:** 2026-09-01 · guardrail-relaxation session, self-reported
+
+### H-95 · The box's `.env` has a DUPLICATE `ACB_ENV`, and only line order saves it · [OWNER]
+- **Check:** `ssh metorite 'grep -n "^ACB_ENV" /opt/acb/app/.env'`. Two lines
+  means this is live. Measured 2026-09-01: `dev` at line 212, `prod` at 329.
+- **Why:** systemd's `EnvironmentFile` and pydantic-settings both take the
+  **last** value, so production is correct — by line order alone. Anything that
+  inserts near line 212, or any reader that takes the FIRST match, re-opens
+  H-90 and republishes the whole API schema.
+  📌 Confirmed on the running process: `/proc/<pid>/environ` holds
+  `ACB_ENV=prod`, and `/version` agrees. **Nothing fails today.**
+  📌 **An agent cannot do this one.** The harness classifier refuses an
+  agent-initiated in-place edit of a production `.env` over `ssh`, whatever the
+  repo grants say. It needs a human at a keyboard.
+- **The fix, and it is one line:**
+
+      ssh metorite
+      cd /opt/acb/app && cp .env .env.bak-$(date +%F) && sed -i '212d' .env
+      grep -n '^ACB_ENV' .env    # expect ONE line, prod
+
+  No restart. The running value does not change — this only removes the
+  contradiction.
+- **Authority:** H-90 (closed) · H-94 (the durable half) · `check_env_duplicates`
+- **Added:** 2026-09-01 · found during the SSH access check
 
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
 - **Check:** run this on the Console database.
