@@ -156,6 +156,22 @@ do not ask again in chat**.
 | Query and migrate the database | — | No gate ever blocked this |
 | **Merge your own PR** | — | See §4, the loop now ends at merge |
 
+### ⚠️ D45 changed shape, and you should know how
+
+**A grant now TRAVELS.** The owner committed `.claude/OWNER_GRANTS.md` to `main`
+on 2026-09-01, so every checkout, worktree and cloud session reads the same
+window. D45 wrote grants as local, one-day and one-keyboard. Two of those three
+are gone for the duration.
+
+**H-61 recommended the opposite** — gitignore the file, because a travelling
+grant is "the opposite of what D45 is for". The owner overruled that, on
+purpose. A cloud session that cannot read the grant refuses the work, which is
+the exact stall this window exists to remove.
+
+**What this costs.** The blast radius of one line is now every session, not one.
+So the date does more work than it used to. On 2026-10-01, delete the five
+`ALLOW-UNTIL` lines, and decide again whether the file stays committed.
+
 ### What you must still refuse
 
 Four acts. `plan-guard.mjs` blocks all four, and **no grant unlocks them**.
