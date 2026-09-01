@@ -1329,11 +1329,30 @@ line — never reclaim a number by deleting the other entry.
 - **⛔ AMENDED 2026-09-01, same day, after CP-12h shipped.** This entry said
   **five** values and named five. There are **six**. It also carried a Check
   that the code half of CP-12h has now made false.
-- **Check:** `ssh` to the box and read the operator console env for
-  **`OPERATOR_SIGNIN_PROVIDER`**. Anything other than `google` means still
-  pending. An unset value is the same as `azure`. Read `OPERATOR_GOOGLE_HD` in
-  the same file → an unset value means still pending too.
-  **Set both, or this entry stays open.**
+- **⛔ AMENDED AGAIN 2026-09-01** by the second repair round. This entry named
+  six values and said WHERE none of them goes. Two of the six go in **both**
+  containers, and a copy in one only fails with a bare 401. The table below is
+  now the placement of record, and it holds eight rows.
+- **Check:** `ssh` to the box and read **TWO** env files, not one.
+  1. The API file, `/opt/acb/app/apps/services/customer_console/.env`
+     (`acb-customer-console.service`, `EnvironmentFile`). It must hold
+     `OPERATOR_SIGNIN_PROVIDER=google` and `OPERATOR_GOOGLE_HD`.
+  2. The operator console env, which the separate Next process reads. It must
+     hold `OPERATOR_SIGNIN_PROVIDER=google` too.
+
+  Anything other than `google` in either file means still pending. An unset
+  value is the same as `azure`. An unset `OPERATOR_GOOGLE_HD` means still
+  pending too. **Set all three lines, or this entry stays open.**
+  ⚠️ **This Check read ONE file, and the wrong one, until 2026-09-01.** It
+  asked for `OPERATOR_GOOGLE_HD` in the console env. The API reads that value,
+  and the console never does. The table below is the placement of record.
+  ⚠️ **`deploy/` names no unit file for the operator console**, so this entry
+  cannot give you a path for file 2. `deploy/hostinger/` holds a service for
+  the gateway, the Customer Console, the workbench and the WhatsApp bridge, and
+  none for this app. Find where the running console reads its env before you
+  start. `workbench/operator_console/AGENTS.md` still says "not deployed",
+  and this entry says the box has been reachable since 2026-08-22. One of the
+  two is stale, and only the box can settle it.
   ⚠️ From the repo alone you can no longer tell.
   `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
   returned nothing before CP-12h and returns hits now, so it says only that the
@@ -1346,7 +1365,39 @@ line — never reclaim a number by deleting the other entry.
   **`OPERATOR_SIGNIN_PROVIDER=google`**, `OPERATOR_GOOGLE_HD`,
   `OPERATOR_STAFF_DOMAINS`, `OPERATOR_BOOTSTRAP_EMAIL`,
   `OPERATOR_SUPABASE_URL` and `OPERATOR_SUPABASE_ANON_KEY`.
-  ⚠️ **Set the other five and skip the switch, and the box stays on `azure`.**
+- **WHERE each value goes, and TWO of the six go in BOTH containers.**
+  Added 2026-09-01, because this entry gave no location at all. The API is
+  `acb-customer-console.service`, and it reads
+  `/opt/acb/app/apps/services/customer_console/.env`. The operator console is a
+  second process, Next, with an env of its own.
+
+  | Value | API `.env` | Operator console env | Owner |
+  |---|---|---|---|
+  | **`OPERATOR_SIGNIN_PROVIDER=google`** | ✅ | ✅ **BOTH** | H-54 |
+  | `OPERATOR_SUPABASE_URL` | ✅ | ✅ **BOTH** | H-54 |
+  | `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | H-54 |
+  | `OPERATOR_GOOGLE_HD` | ✅ | — | H-54 |
+  | `OPERATOR_STAFF_DOMAINS` | ✅ | — | H-54 |
+  | `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | H-54 |
+  | `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | H-56 |
+  | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | H-56, and it is the last act |
+
+  🔴 **`OPERATOR_CONSOLE_ORIGIN` is NOT one of the six, and sign-in cannot work
+  without it.** `login/page.tsx` builds the authorize link out of it, and an
+  unset value prints "Sign-in is not configured on this deployment" instead of
+  the button. So the console needs THREE values before the flag flip, and H-56
+  step 1 now says so. An owner walk of these two entries found it on
+  2026-09-01.
+  ⚠️ **A one-container copy of the switch fails QUIETLY.** Put it in the API
+  only, and the page still offers "Sign in with Microsoft". Put it in the Next
+  process only, and Supabase returns a `google` identity while the API computes
+  `azure`. The two disagree, and the gate answers **401** with no message that
+  names the cause.
+  Measured on `ws-31-google-signin`, 2026-09-01. The API reads the value in
+  `customer_console/operators.py::signin_provider`. The Next process reads it
+  in `workbench/operator_console/src/lib/identity.ts::signinProvider`, at
+  request time, because `login/page.tsx` is `force-dynamic`.
+- ⚠️ **Set the other five and skip the switch, and the box stays on `azure`.**
   Every Google sign-in then answers **401**, and no message names the unset
   variable. This entry named five values until 2026-09-01, and that gap is
   what an owner would have spent a day on.
@@ -1385,7 +1436,10 @@ line — never reclaim a number by deleting the other entry.
   **D70.1** · D64.1
 - **Added:** 2026-08-26 · operator-identity spec session · **rewritten
   2026-09-01** for D70 · **amended 2026-09-01** by the CP-12h repair round,
-  which found the sixth value and the false Check
+  which found the sixth value and the false Check.
+  **Amended again the same day** by the second repair round. That round added
+  the placement table, the two-container switch and
+  `OPERATOR_CONSOLE_ORIGIN`.
 
 ### H-58 · Name the first operators and their roles · [OWNER]
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
@@ -1421,6 +1475,16 @@ line — never reclaim a number by deleting the other entry.
      ⚠️ **`OPERATOR_SIGNIN_PROVIDER=google` is one of the six.** Without it the
      box stays on `azure`, and every Google sign-in answers 401. This step read
      "five" until 2026-09-01.
+     ⚠️ **TWO of the six go in BOTH env files** — the switch itself and
+     `OPERATOR_SUPABASE_URL`. Set the switch in one container only, and sign-in
+     fails with no message that names the cause. H-54 holds the placement
+     table, one row per value.
+     🔴 **Set `OPERATOR_CONSOLE_ORIGIN` on the console in this step too.** It
+     is not one of the six, and the sign-in button does not appear without it.
+     The console therefore needs three values here: the switch,
+     `OPERATOR_SUPABASE_URL` and `OPERATOR_CONSOLE_ORIGIN`. Step 3 flips the
+     fourth. This step named none of them until 2026-09-01, and an owner who
+     followed it exactly reached a page that said "Sign-in is not configured".
   2. ✅ **DONE.** The Console ladder is applied on production. Measured
      2026-09-01: the `operator` table exists, and migrations 019 to 021 are
      recorded. **H-64 carried this and the owner closed it**, so that entry is
@@ -1444,7 +1508,13 @@ line — never reclaim a number by deleting the other entry.
   `deploy/` is OWNER-GATE and I may not write there. Add to the operator
   console's env: `OPERATOR_IDENTITY_ENABLED` (the flag, default off) and
   `OPERATOR_CONSOLE_ORIGIN` (the console's own public URL, used to build the
-  Supabase callback). `OPERATOR_SUPABASE_URL` is needed by BOTH services.
+  Supabase callback). Both are console-only.
+- ⚠️ **BOTH services read TWO of the values**, and this line named one of
+  them until 2026-09-01. They are `OPERATOR_SUPABASE_URL` and
+  **`OPERATOR_SIGNIN_PROVIDER`**. The switch is the one that fails quietly.
+  The API computes the provider from it. The console builds the authorize link
+  from it. A mismatch answers **401** and names nothing.
+  H-54 carries the full table, container by container.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session

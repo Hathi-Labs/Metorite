@@ -4091,6 +4091,9 @@ and one thing that cannot be written until a second person exists.
 > `google`, and it defaults to `azure`. A box that carries every other value
 > and not this one stays on the Entra path. Every Google sign-in then answers
 > 401, and no message names the unset variable. H-54 lists all six values.
+> ⚠️ **The switch goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.**
+> The API and the Next console are separate processes. H-54 holds the table,
+> and the spec's §4.2a holds the same split beside the code.
 > **(c)** flipping `OPERATOR_IDENTITY_ENABLED` on a live box — `enforcement-flip`, and it
 > is the cutover from the shared passphrase to real identity.
 > **(d)** removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box — `env-write`. ⚠️ Doing

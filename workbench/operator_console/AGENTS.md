@@ -23,6 +23,11 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   half (`signinProvider`, `providerLabel`). **Email OTP is refused here**
   (D70.2): this console reaches every customer organization, so inbox control
   must never become staff access.
+  ⚠️ **`OPERATOR_SIGNIN_PROVIDER` lives in TWO env files.** This app reads it,
+  and the Customer Console API reads it too. Set it in one only and sign-in
+  answers 401 with no message that names the cause. `OPERATOR_SUPABASE_URL` is
+  the other two-container value. The table of record is
+  `operator_identity_and_access.md` §4.2a, and the owner's copy is H-54.
   ⚠️ **Read an allowlist with `Object.hasOwn`, never with `in`.** `in` walks
   the prototype chain, so `constructor` and `__proto__` passed
   `PROVIDER_LABELS` until 2026-09-01 and read back an `Object.prototype`

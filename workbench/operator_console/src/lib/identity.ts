@@ -31,11 +31,21 @@ export const IDENTITY_FLAG = "OPERATOR_IDENTITY_ENABLED";
 // ours, admin-managed.
 //
 // ⚠️ **The default is `azure`, so this ships dark.** An unset variable keeps the
-// page byte-identical to what it printed before. The Console reads the SAME
-// variable name server-side (`customer_console.operators.signin_provider`), and
-// the two must agree: this page builds the Supabase authorize link, and the
-// Console reads the claim off whatever comes back. A page that offered Google
-// while the Console still expected `tid` would refuse every operator.
+// LOGIN page byte-identical to what it printed before. This module serves two
+// pages, and `login/callback/page.tsx` did change its copy under D70 — it now
+// names no provider at all. So the byte-identical claim is the login page's
+// alone.
+//
+// The Console reads the SAME variable name server-side
+// (`customer_console.operators.signin_provider`), and the two must agree: this
+// page builds the Supabase authorize link, and the Console reads the claim off
+// whatever comes back. A page that offered Google while the Console still
+// expected `tid` would refuse every operator.
+//
+// ⚠️ **The variable therefore lives in TWO containers.** The Console reads it
+// in the API process, and this module reads it in the Next process at request
+// time. Set it in one only and sign-in fails with no message that names the
+// cause. `project-docs/HANDOFF.md` H-54 carries the owner's placement table.
 
 export const SIGNIN_PROVIDER_FLAG = "OPERATOR_SIGNIN_PROVIDER";
 

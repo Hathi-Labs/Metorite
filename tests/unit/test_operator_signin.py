@@ -748,6 +748,12 @@ def test_a_refused_sign_in_writes_absolutely_nothing(client, eng, issuer,
 
     **This is the test that would fail if somebody split the route into two
     transactions**, which is exactly when that guard stops being spare.
+
+    ⚠️ The `control_audit` count is UNFILTERED on purpose. It read
+    ``WHERE action = 'operator.signin'`` until 2026-09-01, and a row written
+    under any other action name slipped past a test whose name says
+    "absolutely nothing". `_empty_registry` empties the table, and this module
+    owns a scratch database of its own, so no other suite can put a row there.
     """
     owner = _email()
     monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
@@ -763,9 +769,8 @@ def test_a_refused_sign_in_writes_absolutely_nothing(client, eng, issuer,
             text("SELECT count(*) FROM operator")).scalar() == 0
         assert conn.execute(
             text("SELECT count(*) FROM operator_session")).scalar() == 0
-        assert conn.execute(text(
-            "SELECT count(*) FROM control_audit WHERE action = "
-            "'operator.signin'")).scalar() == 0
+        assert conn.execute(
+            text("SELECT count(*) FROM control_audit")).scalar() == 0
 
 # ── Sign-out, which closes F5 ──────────────────────────────────────────────
 

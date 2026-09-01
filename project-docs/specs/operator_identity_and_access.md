@@ -175,9 +175,39 @@ Done-whens 1, 5, 30, 31, 32 and 33 are met. Done-whens 2 to 29 stay true, and
 their suites pass with no edit to an expectation.
 
 **◐ CP-12h REPAIRED 2026-09-01**, on the same branch, after an independent
-verification returned four blockers. 150 Console tests and 629 console tests,
-0 skipped. Four more mutations killed. The paragraphs below and done-whens 30
-to 33 record each repair.
+verification returned four blockers. Four more mutations killed. The
+paragraphs below and done-whens 30 to 33 record each repair.
+
+**◐ CP-12h REPAIRED A SECOND TIME 2026-09-01**, after a re-verification found
+a fifth defect of the first round's class and three one-line items. The fifth
+is `OPERATOR_SIGNIN_PROVIDER` in two containers. §4.2a is now the placement of
+record, and §10 G2 names the gate. The three are the login-page wording in
+`identity.ts`, an unfiltered `control_audit` count in
+`test_a_refused_sign_in_writes_absolutely_nothing`, and the counts below.
+
+⚠️ **The owner walk of H-54 and H-56 found a SIXTH, of the same class.**
+`OPERATOR_CONSOLE_ORIGIN` is not one of the six values, and the sign-in button
+does not render without it. H-56 step 1 said "set the six" and named no
+container. An owner who followed it exactly reached a page that said "Sign-in
+is not configured". Both entries now name all three console values.
+§4.2a holds the reason.
+
+**The counts, measured on `ws-31-google-signin` 2026-09-01, twice back to
+back.** **150** Console tests, **0 skipped**, over the THREE suites CP-12h
+touches — `tests/unit/test_operator_signin.py` (**76**) plus
+`tests/unit/test_operator_identity.py` (**43**) plus
+`tests/unit/test_customer_console_catalog.py` (**31**). **626** operator
+console tests, **0 skipped**, over 29 files, from `npx tsc --noEmit && npx
+vitest run` in `workbench/operator_console`.
+
+⚠️ **This paragraph said 629 for the frontend until the second repair round.**
+A re-measurement returned 626, and 629 reproduces on nothing. The 150 was
+correct and named no suites. A verifier who took the two suites this ticket
+edits measured 119, and had no way to reach 150.
+
+⚠️ **This is not §11.** §11 runs the seven operator suites and the seam
+ratchets, which is a wider net and a different number. These three are the
+ticket's own command.
 
 ⚠️ **The SWITCH ships dark. The SLICE does not.** An earlier draft of this
 entry said an unset variable keeps every byte of the built behaviour. That
@@ -380,6 +410,41 @@ The reason is the seam rule. The Console is already the cross-tenant plane. It
 already holds `control_audit`, the four authentication schemes and the operator
 door. A database in the Next app would be a second data plane for one subject.
 The repo forbids a second way to do an existing thing.
+
+#### 4.2a Two containers, and which env value goes in each
+
+*Added 2026-09-01, by the second CP-12h repair round. The identity lives in one
+plane, but the CONFIGURATION does not.* The API and the Next app are separate
+processes with separate env files. The API is `acb-customer-console.service`,
+and it reads `apps/services/customer_console/.env`. The Next app reads its own.
+
+| Value | API | Next app | Read at |
+|---|---|---|---|
+| **`OPERATOR_SIGNIN_PROVIDER`** | ✅ | ✅ | `operators.signin_provider` · `identity.ts::signinProvider` |
+| `OPERATOR_SUPABASE_URL` | ✅ | ✅ | `operator_signin` · `login/page.tsx` |
+| `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | `operator_signin` |
+| `OPERATOR_GOOGLE_HD` | ✅ | — | `operators.staff_directory_id` |
+| `OPERATOR_STAFF_DOMAINS` | ✅ | — | `operators` |
+| `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | `operators` |
+| `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | `login/page.tsx` |
+| `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
+
+⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
+is bold.** The Next app builds the Supabase authorize link from it. The API
+computes the expected provider from it. The two must agree, and `identity.ts`
+has said so since CP-12g. Set it in the API alone, and the page still offers
+Microsoft. Set it in the Next app alone, and the gate answers **401** with no
+message that names the cause.
+
+🔴 **`OPERATOR_CONSOLE_ORIGIN` is a Next-app value, and sign-in cannot work
+without it.** `login/page.tsx` builds the authorize link out of it, and an
+unset value prints "Sign-in is not configured on this deployment" in place of
+the button. So the Next app needs THREE values before the flag flip. H-56 step
+1 named none of them until 2026-09-01.
+
+Fence: none. This is a deployment fact, and no test can see the box.
+`HANDOFF.md` H-54 carries the owner's copy of the table, and §10 G2 names the
+gate.
 
 ### 4.3 The session — an opaque token, not the secret
 
@@ -815,7 +880,7 @@ An agent must **refuse these by name** and say so. They belong in
 | # | Act | Class |
 |---|---|---|
 | **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories | `env-write` |
+| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories. ⚠️ **`OPERATOR_SIGNIN_PROVIDER` goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.** §4.2 holds the split, and `HANDOFF.md` H-54 holds the owner's table | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |
