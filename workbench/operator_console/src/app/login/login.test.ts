@@ -23,7 +23,9 @@ import {
   SIGNIN_PROVIDER_FLAG,
   signinProvider,
 } from "@/lib/identity";
+import { ANON_KEY_FLAG, EMAIL_OTP_FLAG } from "@/lib/otp";
 import LoginPage from "./page";
+import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
 
 const SUPABASE = "https://project.supabase.co";
@@ -96,6 +98,10 @@ beforeEach(() => {
   // rather than assumed, so a variable on the developer's box cannot change
   // what these cases are testing.
   vi.stubEnv(SIGNIN_PROVIDER_FLAG, "");
+  // D71.3 ships dark too. Every case above this line describes a box with no
+  // email fallback, and a variable on somebody's machine must not change that.
+  vi.stubEnv(EMAIL_OTP_FLAG, "");
+  vi.stubEnv(ANON_KEY_FLAG, "");
 });
 
 describe("flag ON, Supabase not configured", () => {
@@ -233,5 +239,87 @@ describe("the sign-in provider", () => {
     expect(kinds).not.toContain("form");
     expect(kinds).not.toContain("input");
     expect(kinds).not.toContain("button");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The EMAIL CODE fallback — WS-31 CP-12j, D71.3, spec §8 done-when 41.
+// ══════════════════════════════════════════════════════════════════════════
+
+//: A legacy Supabase key, whose payload names a role.
+function key(role: string): string {
+  const head = Buffer.from(JSON.stringify({ alg: "HS256" })).toString(
+    "base64url",
+  );
+  const body = Buffer.from(JSON.stringify({ role })).toString("base64url");
+  return `${head}.${body}.sig`;
+}
+
+describe("the email-code fallback", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+  });
+
+  it("ships dark — no form until the flag is on", async () => {
+    // ⚠️ The whole D71 slice defaults to off, and this is that property on
+    // the page. Deleting the flag check would show a code box on every box.
+    expect(types(await render())).not.toContain(EmailCodeForm);
+  });
+
+  it("shows the form BESIDE the directory button, never instead of it", async () => {
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    const tree = await render();
+
+    // Both doors. D71.4 keeps the directory the strong one, and a page that
+    // dropped the button would move every operator onto the weaker method —
+    // including the admin, who is the person that adds operators.
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(hrefs(tree).some((h) => h.includes("/auth/v1/authorize"))).toBe(true);
+    expect(text(tree)).toContain("or");
+  });
+
+  it("🔴 renders NO form for a service_role key", async () => {
+    // Rendering the form PUBLISHES the key to every visitor. `otp.ts` refuses
+    // a key that is not publishable, and this is that refusal at the page.
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("service_role"));
+    const tree = await render();
+
+    expect(types(tree)).not.toContain(EmailCodeForm);
+    // The secret must not reach the tree by any other route either.
+    expect(JSON.stringify(tree)).not.toContain(key("service_role"));
+  });
+
+  it("still shows the code form when the DIRECTORY is unconfigured", async () => {
+    // A box with the fallback on and no Supabase origin is exactly the box
+    // this slice exists for. The old page printed a configuration banner and
+    // nothing else, which would strand a person who has a working code path.
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    const tree = await render();
+
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(text(tree)).not.toContain("Sign-in is not configured");
+    // And the recovery note stays OFF, because this reader is not stranded.
+    expect(text(tree)).not.toContain(RECOVERY);
+  });
+
+  it("keeps the recovery note when NEITHER door works", async () => {
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    const body = text(await render());
+    expect(body).toContain("Sign-in is not configured");
+    expect(body).toContain(RECOVERY);
+  });
+
+  it("never renders the passphrase form beside the code form", async () => {
+    // §8 done-when 29 — one door at a time for the PASSPHRASE. D71.3 adds a
+    // second identity method, and it does not reopen the interim path.
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    expect(types(await render())).not.toContain(InterimForm);
   });
 });
