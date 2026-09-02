@@ -92,7 +92,20 @@ const SHELL_WRITE = new RegExp(
     // /dev/null exclusion lets `2>/dev/null` through — the bit bucket is
     // not a path. Without these two the arm refused THREE PURE READS in one
     // session on 2026-08-26, which is how a guard teaches people to remove it.
-    String.raw`>\s*(?!&)(?!\/dev\/null(\s|$))\S`,
+    //
+    // ⚠️ `(?!=)` EXCLUDES THE COMPARISON OPERATOR, added 2026-09-02. This is
+    // the THIRD false positive of one class in two days: a `>` inside a string
+    // read as a redirect. First the `>` closing an email address in a
+    // `Co-Authored-By` trailer. Then `>=` inside a `node -e` script, which
+    // refused a PURE READ of the grant file — the very read an agent must make
+    // to find out what it may do.
+    //
+    // `stripNoise()` cannot reach this one. It removes quoted `-m` bodies and
+    // heredocs, and `>=` here sat in an inline script argument.
+    //
+    // `>>` still matches, and must: the first `>` is refused by `(?!>)`, then
+    // the second `>` matches the filename after it. Append is a write.
+    String.raw`>\s*(?!&)(?!=)(?!>)(?!\/dev\/null(\s|$))\S`,
     // in-place edits
     String.raw`\bsed\b[^|;&]*\s-i`,
     String.raw`\bperl\b[^|;&]*\s-i`,
