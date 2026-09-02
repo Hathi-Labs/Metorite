@@ -895,23 +895,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-33 · H-59 · D65 · `task_manager_app.md` §13.5a
 - **Added:** 2026-08-26 · guardrails + handoff session
 
-### H-63 · Eight stale worktrees hold branches nobody is reading · [OWNER]
-- **Check:** `git worktree list` → more than the main checkout means this is live.
-- **Why:** measured 2026-08-26 — eight worktrees under `C:\wt-*`, each holding a
-  branch checked out. One of them blocked an ordinary `git branch -d` today,
-  which is how they announce themselves.
-  ⚠️ **Only the owner knows which hold unmerged work.** Some names look finished
-  (`cp-8-provision-customer`, `fix-migrate-tmpfile`) and some do not
-  (`ws-29-provision-rls-bind`, `ws-30-invites`). An agent cannot tell the
-  difference from a name, and removing the wrong one loses work.
-  📌 **The recorded hazard, so nobody repeats it:** `rmdir` the `node_modules`
-  junction BEFORE `git worktree remove`, or the remove follows the junction and
-  deletes the REAL `node_modules`.
-  🟢 For each: `git log --oneline origin/main..<branch>` shows what is unmerged.
-  Empty means it is safe to remove.
-- **Authority:** local dev environment · `git worktree list`
-- **Added:** 2026-08-26 · guardrails + handoff session
-
 ### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → **15** means slice **5a** landed (the promote path) and 5b is next.
