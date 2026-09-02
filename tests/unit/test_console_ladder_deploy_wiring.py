@@ -22,6 +22,7 @@ Idiom note, inherited from `test_backup_deploy_wiring`: every assertion reads
 NON-COMMENT lines. A guard satisfied by prose certifies the documentation
 rather than the wiring — which is precisely the failure BO-23 shipped.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -49,9 +50,9 @@ def test_the_live_delivery_path_applies_the_console_ladder() -> None:
     `deploy/hostinger/deploy.sh` is the manual runbook; BO-23 shipped a fix into
     that file alone and the live path never ran it."""
     lines = _executable_lines(_APPLY)
-    assert any(
-        _APPLIER_NAME in ln for ln in lines
-    ), "vps_apply.sh must invoke the Customer Console ladder applier"
+    assert any(_APPLIER_NAME in ln for ln in lines), (
+        "vps_apply.sh must invoke the Customer Console ladder applier"
+    )
 
 
 def test_the_console_ladder_is_applied_before_the_console_restarts() -> None:
@@ -61,11 +62,7 @@ def test_the_console_ladder_is_applied_before_the_console_restarts() -> None:
     the length of one deploy."""
     lines = _executable_lines(_APPLY)
     apply_at = next(i for i, ln in enumerate(lines) if _APPLIER_NAME in ln)
-    restart_at = next(
-        i
-        for i, ln in enumerate(lines)
-        if "systemctl restart" in ln and _UNIT in ln
-    )
+    restart_at = next(i for i, ln in enumerate(lines) if "systemctl restart" in ln and _UNIT in ln)
     assert apply_at < restart_at, (
         "the Console ladder must be applied BEFORE acb-customer-console is "
         "restarted (R6) — old code must never meet new schema"
@@ -96,17 +93,13 @@ def test_a_console_box_with_no_dsn_fails_the_deploy() -> None:
     assert _APPLIER_NAME in text
     window = text[text.index(_APPLIER_NAME) :]
     window = window[: window.index("==> ", 10)]  # this step only
-    lines = [
-        ln
-        for ln in window.splitlines()
-        if ln.strip() and not ln.strip().startswith("#")
-    ]
-    assert any(
-        "is-enabled" in ln and _UNIT in ln for ln in lines
-    ), "the no-DSN branch must ask whether the Console actually runs here"
-    assert any(
-        ln.strip() == "exit 1" for ln in lines
-    ), "an enabled Console with no DSN must FAIL the deploy, never skip it"
+    lines = [ln for ln in window.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    assert any("is-enabled" in ln and _UNIT in ln for ln in lines), (
+        "the no-DSN branch must ask whether the Console actually runs here"
+    )
+    assert any(ln.strip() == "exit 1" for ln in lines), (
+        "an enabled Console with no DSN must FAIL the deploy, never skip it"
+    )
 
 
 def test_the_console_service_is_restarted_and_failure_is_loud() -> None:
@@ -115,9 +108,9 @@ def test_the_console_service_is_restarted_and_failure_is_loud() -> None:
     restarting services, so without a dedicated step the Console keeps serving
     whatever code it started with — indefinitely."""
     lines = _executable_lines(_APPLY)
-    assert any(
-        "systemctl restart" in ln and _UNIT in ln for ln in lines
-    ), "vps_apply.sh must restart acb-customer-console after the ladder"
+    assert any("systemctl restart" in ln and _UNIT in ln for ln in lines), (
+        "vps_apply.sh must restart acb-customer-console after the ladder"
+    )
     text = _APPLY.read_text(encoding="utf-8")
     window = text[text.index("Restarting the Customer Console") :]
     window = window[: window.index("==> ", 10)]
@@ -132,7 +125,7 @@ def test_the_applier_itself_still_fails_closed_on_an_unset_dsn() -> None:
     unset DSN a hard error rather than an empty string psql would take as a
     local-socket connection to some *other* database."""
     text = _APPLIER.read_text(encoding="utf-8")
-    assert 'CUSTOMER_CONSOLE_DATABASE_URL:?' in text
+    assert "CUSTOMER_CONSOLE_DATABASE_URL:?" in text
     assert "ON_ERROR_STOP=1" in text, (
         "without ON_ERROR_STOP psql reports success after a failed statement"
     )
@@ -174,7 +167,7 @@ def _dsn_block() -> str:
 
 
 def _run_dsn_block(
-    tmp_path, env_line: str | None, unit_enabled: bool
+    tmp_path, env_line: str | None, unit_enabled: bool, reachable: bool = True
 ) -> tuple[int, str]:
     """EXECUTE the branch, do not read it — the idiom test_backup_deploy_wiring
     learned the hard way. A source scan cannot tell a guard that works from one
@@ -197,9 +190,18 @@ def _run_dsn_block(
     if env_line is not None:
         (cc_dir / ".env").write_text(env_line + "\n", encoding="utf-8")
 
+    # ⚠️ `psql` MUST be stubbed, exactly like `systemctl`. H-100 added a
+    # reachability probe before the ladder, and without a stub these cases
+    # would run REAL psql against the fake host in the fixture DSN — every one
+    # of them would take the unreachable branch and pass or fail on whether
+    # the CI runner has network, not on the wiring under test.
+    #
+    # `command -v psql` finds a shell function, so the stub satisfies the
+    # probe's own guard too.
     prog = (
         "set -u\n"
         f"systemctl() {{ return {0 if unit_enabled else 1}; }}\n"
+        f"psql() {{ return {0 if reachable else 2}; }}\n"
         f'APP_DIR="{tmp_path.as_posix()}"\n'
         f"{_dsn_block()}\n"
     )
@@ -223,6 +225,60 @@ def test_a_dsn_on_the_box_actually_reaches_the_applier(tmp_path) -> None:
     )
     assert code == 0, out
     assert "APPLIED postgresql+psycopg://u:p@h.supabase.co:5432/postgres" in out, out
+
+
+def test_an_unreachable_dsn_does_not_abort_a_box_without_the_console(
+    tmp_path,
+) -> None:
+    """🔴 H-100, and the whole point of the fourth case.
+
+    The owner deleted the Console Supabase project on 2026-09-02 and the
+    console `.env` still named it. The DSN was PRESENT, so the old code ran
+    the ladder, `psql` failed under ``set -e``, and that killed the rest of
+    `vps_apply.sh` — including the workbench rebuild ~360 lines below.
+
+    A box that does not serve the Console must not lose its TENANT deploy
+    because a Console database is gone. Exit 0, and say why.
+    """
+    code, out = _run_dsn_block(
+        tmp_path,
+        "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://u:p@dead.example:5432/postgres",
+        unit_enabled=False,
+        reachable=False,
+    )
+    assert code == 0, out
+    assert "UNREACHABLE" in out, out
+    assert "APPLIED" not in out, out
+
+
+def test_an_unreachable_dsn_fails_when_the_console_is_enabled(tmp_path) -> None:
+    """The other half. A Console that IS served must not come up against an
+    unmigrated schema, so this stays fail-closed — same as the no-DSN case."""
+    code, out = _run_dsn_block(
+        tmp_path,
+        "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://u:p@dead.example:5432/postgres",
+        unit_enabled=True,
+        reachable=False,
+    )
+    assert code == 1, out
+    assert "UNREACHABLE" in out, out
+    assert "APPLIED" not in out, out
+
+
+def test_the_probe_does_not_print_the_dsn(tmp_path) -> None:
+    """🔴 `psql` quotes the whole connection string, password included, when it
+    cannot connect. That is how a tenant credential reached a transcript on
+    2026-09-02 (H-97). The diagnostic names the FILE, never the value."""
+    dsn = "postgresql+psycopg://u:hunter2@dead.example:5432/postgres"
+    code, out = _run_dsn_block(
+        tmp_path,
+        f"CUSTOMER_CONSOLE_DATABASE_URL={dsn}",
+        unit_enabled=False,
+        reachable=False,
+    )
+    assert code == 0, out
+    assert "hunter2" not in out, out
+    assert dsn not in out, out
 
 
 def test_a_quoted_dsn_is_unwrapped_before_psql_sees_it(tmp_path) -> None:
@@ -263,9 +319,7 @@ def test_ci_replays_the_console_ladder_more_than_once() -> None:
     every deploy. 'Idempotent' is not a nicety, it is the only thing that makes
     the second deploy safe."""
     text = _PR_CHECK.read_text(encoding="utf-8")
-    assert _APPLIER_NAME in text, (
-        "pr-check.yml must replay the Console ladder — H-25"
-    )
+    assert _APPLIER_NAME in text, "pr-check.yml must replay the Console ladder — H-25"
     window = text[text.index(_APPLIER_NAME) - 2000 : text.index(_APPLIER_NAME) + 2000]
     assert "for i in" in window or "second run" in window, (
         "a single application proves nothing about idempotency — replay it"
