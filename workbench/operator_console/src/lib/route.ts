@@ -20,7 +20,12 @@ import {
   StaffForbidden,
   StaffUnconfigured,
 } from "./staff";
-import { SESSION_COOKIE, looksLikeSession, usesSessions } from "./identity";
+import {
+  SESSION_COOKIE,
+  looksLikeSession,
+  passphraseFallbackEnabled,
+  usesSessions,
+} from "./identity";
 import { ConsoleUnconfigured, type ConsoleResult, type Deps } from "./console";
 
 export function json(status: number, body: unknown): Response {
@@ -44,6 +49,26 @@ export async function gate(): Promise<Gate> {
   if (usesSessions()) {
     const token = jar.get(SESSION_COOKIE)?.value ?? null;
     if (!looksLikeSession(token)) {
+      // ⛔ **The back door — CP-12k**, OFF by default. A passphrase cookie is
+      // accepted only when the owner turned the fallback on, and it returns
+      // no `authToken`, so the call uses the shared operator token and the
+      // audit line reads `operator` rather than a person's name. That is F1
+      // returning, and it is the price of a recovery path the owner controls.
+      if (passphraseFallbackEnabled()) {
+        try {
+          requireStaff(jar.get(STAFF_COOKIE)?.value);
+          return { ok: true };
+        } catch (e) {
+          if (!(e instanceof StaffUnconfigured)) {
+            return {
+              ok: false,
+              refusal: json(401, { error: "operator session required" }),
+            };
+          }
+          // Fall through to the 401 below: the backup is not configured, so
+          // the identity door is still the only one.
+        }
+      }
       // Covers "no cookie", "expired and cleared", and "a stale passphrase
       // cookie left over from the interim path". All three mean sign in again.
       return {

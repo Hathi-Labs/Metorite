@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IDENTITY_FLAG,
   PROVIDER_LABELS,
+  PASSPHRASE_FALLBACK_FLAG,
   SIGNIN_PROVIDER_FLAG,
   signinProvider,
 } from "@/lib/identity";
@@ -122,6 +123,8 @@ beforeEach(() => {
   // email fallback, and a variable on somebody's machine must not change that.
   vi.stubEnv(EMAIL_OTP_FLAG, "");
   vi.stubEnv(ANON_KEY_FLAG, "");
+  // CP-12k ships dark too. Every case above describes one door at a time.
+  vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "");
 });
 
 describe("flag ON, Supabase not configured", () => {
@@ -385,5 +388,56 @@ describe("email-only sign-in — the owner's 2026-09-02 shape", () => {
     const body = text(await render());
     expect(body).toContain("Sign-in is not configured");
     expect(body).toContain(RECOVERY);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The passphrase BACK DOOR — CP-12k, 2026-09-02. Owner directive after an
+// agent flipped the identity flag onto a box where nothing could sign in.
+// ══════════════════════════════════════════════════════════════════════════
+
+describe("the passphrase fallback", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "0");
+  });
+
+  it("🔴 done-when 29 STILL HOLDS by default — no passphrase form", async () => {
+    // The whole rule this slice weakens. Flipping the default would put a
+    // shared secret back on every deployment, and this case is what stops it.
+    expect(types(await render())).not.toContain(InterimForm);
+  });
+
+  it("renders a real FORM when the owner turns it on, not a note", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    const tree = await render();
+    // Everywhere else in this file a passphrase box would 400 on submit, so
+    // CP-12g printed text. Here the route accepts a secret again.
+    expect(types(tree)).toContain(InterimForm);
+    // And the code form stays — this is a SECOND door, not a replacement.
+    expect(types(tree)).toContain(EmailCodeForm);
+  });
+
+  it("replaces the recovery note, rather than printing both", async () => {
+    // The note says "unset the flag and restart to get the passphrase back".
+    // Printing that beside a working passphrase form would send the reader to
+    // an ssh session they do not need.
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    vi.stubEnv(EMAIL_OTP_FLAG, "0");
+    const body = text(await render());
+    expect(body).not.toContain(RECOVERY);
+    expect(body).toContain("BACKUP");
+  });
+
+  it("says what the backup costs, on the page", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    const body = text(await render());
+    expect(body).toContain("admits everybody");
+    expect(body).toContain("OPERATOR_PASSPHRASE_FALLBACK");
   });
 });

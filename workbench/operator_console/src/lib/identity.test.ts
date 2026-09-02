@@ -34,6 +34,7 @@ import {
   SESSION_COOKIE,
   SIGNIN_PROVIDER_FLAG,
   identityMode,
+  PASSPHRASE_FALLBACK_FLAG,
   looksLikeSession,
   providerLabel,
   signinProvider,
@@ -275,5 +276,74 @@ describe("callConsole", () => {
     expect(() => operatorHeaders({ operatorToken: "x" })).toThrow(
       ConsoleUnconfigured,
     );
+  });
+});
+
+// ── The passphrase BACK DOOR at the GATE — CP-12k ──────────────────────────
+//
+// 🔴 **The page half is worthless without this half.** CP-12k renders a
+// passphrase form while identity sign-in is on. If `gate()` still refused the
+// cookie, the person would sign in, watch the page reload, and land back on
+// /login with no message. So these cases test the DOOR, not the handle.
+
+describe("the passphrase fallback at the gate", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_CONSOLE_STAFF_SECRET", SECRET);
+  });
+
+  it("🔴 done-when 29 STILL HOLDS by default — the cookie is refused", async () => {
+    // Flipping `passphraseFallbackEnabled`'s default would put a shared
+    // secret back on every deployment. This case is what stops that.
+    jar.set(STAFF_COOKIE, SECRET);
+    const result = await gate();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.refusal.status).toBe(401);
+  });
+
+  it("admits the passphrase when the owner turns the fallback on", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    jar.set(STAFF_COOKIE, SECRET);
+    const result = await gate();
+    expect(result.ok).toBe(true);
+  });
+
+  it("⚠️ carries NO caller token, so the audit line says `operator`", async () => {
+    // A passphrase names nobody. Handing back an `authToken` here would
+    // attribute a shared-secret action to whichever person last signed in.
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    jar.set(STAFF_COOKIE, SECRET);
+    const result = await gate();
+    expect(result.ok && result.authToken).toBeUndefined();
+  });
+
+  it("still refuses a WRONG passphrase with the fallback on", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    jar.set(STAFF_COOKIE, "wrong");
+    const result = await gate();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.refusal.status).toBe(401);
+  });
+
+  it("refuses when the fallback is on and NO passphrase is configured", async () => {
+    // The backup is not set up, so the identity door is still the only one.
+    // 401 rather than 503: the identity gate IS configured, and a 503 would
+    // send the reader to look for a broken box.
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    vi.stubEnv("OPERATOR_CONSOLE_STAFF_SECRET", "");
+    jar.set(STAFF_COOKIE, SECRET);
+    const result = await gate();
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.refusal.status).toBe(401);
+  });
+
+  it("a SESSION cookie still wins when both are present", async () => {
+    // Order matters: the identity path is the real one, so a person holding
+    // both must be attributed by name rather than dropped to the shared token.
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    jar.set(SESSION_COOKIE, SESSION);
+    jar.set(STAFF_COOKIE, SECRET);
+    const result = await gate();
+    expect(result.ok && result.authToken).toBe(SESSION);
   });
 });

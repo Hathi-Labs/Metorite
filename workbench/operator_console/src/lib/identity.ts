@@ -98,6 +98,28 @@ export function providerLabel(
 //: a stale cookie do exactly that.
 export const SESSION_COOKIE = "operator_session";
 
+// ── The passphrase BACK DOOR, and why it exists — CP-12k, 2026-09-02 ───────
+//
+// ⛔ **This weakens §8 done-when 29 ON PURPOSE, and the owner asked for it.**
+// That rule says one door at a time: while `OPERATOR_IDENTITY_ENABLED` is on,
+// a passphrase cookie is refused. The reasoning was sound — two live doors
+// while only one is being reasoned about.
+//
+// 🔴 **What changed is evidence, not opinion.** On 2026-09-02 an agent flipped
+// the identity flag on a box where no sign-in could succeed, and the console
+// admitted NOBODY. Recovery needed an ssh session and an env edit. A console
+// whose recovery path is "find somebody with shell access" is a console the
+// owner does not control.
+//
+// ⚠️ **It defaults OFF, so done-when 29 still holds everywhere else.** A box
+// that does not set this behaves exactly as it did before.
+//
+// ⚠️ **What it costs, stated plainly.** While this is on, ONE shared secret
+// admits anybody who holds it, with no per-person identity and nothing to
+// revoke for one leaver — F1, F2 and F5 all return. It is a backup key, and
+// it should be turned off once email sign-in is proven.
+export const PASSPHRASE_FALLBACK_FLAG = "OPERATOR_PASSPHRASE_FALLBACK";
+
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
 export type IdentityMode = "session" | "interim";
@@ -107,6 +129,20 @@ export function identityMode(
 ): IdentityMode {
   const raw = (env[IDENTITY_FLAG] ?? "").trim().toLowerCase();
   return TRUTHY.has(raw) ? "session" : "interim";
+}
+
+/**
+ * May a passphrase still open the console while identity sign-in is on?
+ *
+ * ⚠️ **Meaningless unless {@link usesSessions} is true.** On the interim path
+ * the passphrase is the ONLY door, and this value changes nothing there. It
+ * exists to answer "is there a second door BESIDE the identity one".
+ */
+export function passphraseFallbackEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = (env[PASSPHRASE_FALLBACK_FLAG] ?? "").trim().toLowerCase();
+  return TRUTHY.has(raw);
 }
 
 // True when a `cc_sess_` token is what the console should be carrying.
