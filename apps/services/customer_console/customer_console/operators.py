@@ -52,14 +52,21 @@ _log = logging.getLogger("platform.operators")
 
 __all__ = [
     "ADMIN",
+    "ADMISSION_MODES",
+    "ADMISSION_MODE_ENV",
     "ALLOWED_PROVIDERS",
     "AZURE_PROVIDER",
+    "DEFAULT_ADMISSION_MODE",
     "DEFAULT_PROVIDER",
     "DIRECTORY_CLAIM",
     "DIRECTORY_ENV",
+    "DIRECTORY_MODE",
     "EDITOR",
+    "EMAIL_METHOD",
+    "EMAIL_OTP_ENV",
     "GOOGLE_PROVIDER",
     "PASSWORDLESS_PROVIDERS",
+    "REGISTRY_MODE",
     "ROLES",
     "SIGNIN_PROVIDER_ENV",
     "STATUSES",
@@ -68,14 +75,19 @@ __all__ = [
     "Operator",
     "OperatorForbidden",
     "OperatorUnconfigured",
+    "accepted_methods",
+    "admission_mode",
     "admit",
+    "bootstrap_allowed",
     "bootstrap_email",
     "directory_matches",
+    "email_otp_allowed",
     "guard_known_role",
     "guard_known_status",
     "guard_last_admin",
     "guard_not_self",
     "normalise_email",
+    "row_methods",
     "signin_provider",
     "staff_directory_id",
     "staff_domains",
@@ -148,11 +160,60 @@ ALLOWED_PROVIDERS: frozenset[str] = frozenset(DIRECTORY_CLAIM)
 #: organization. Inbox control would become staff access, with no directory, no
 #: offboarding, and nobody who can revoke.
 #:
+#: ⚠️ **D71.3 NARROWED this, 2026-09-02, and the narrowing is easy to
+#: misread.** No member of this set may ever name a DIRECTORY, which is what
+#: :data:`ALLOWED_PROVIDERS` holds and what :func:`signin_provider` validates.
+#: That property is unchanged. What D71.3 added is a separate axis: ``email``
+#: may be an admitted **method** on a sign-in, when three things hold at once —
+#: :func:`admission_mode` is ``registry``, ``OPERATOR_ALLOW_EMAIL_OTP`` is on,
+#: and the operator's own row permits it (**D71.4**). Read
+#: :func:`accepted_methods` for the axis this set does not govern.
+#:
 #: R7 — the fence is
 #: ``tests/unit/test_operator_signin.py::test_no_passwordless_provider_is_ever_allowed``.
 PASSWORDLESS_PROVIDERS: frozenset[str] = frozenset(
     {"email", "magiclink", "otp", "phone", "sms"}
 )
+
+# ── How the box admits, and by which method (D71) ───────────────────────────
+
+#: The sign-in METHOD Supabase reports for an email code. It is ``email`` —
+#: the same string the tenant app's Resend provider uses, and a member of
+#: :data:`PASSWORDLESS_PROVIDERS` on purpose.
+EMAIL_METHOD = "email"
+
+#: Admission mode ``directory`` — the D64/D70 shape, and the default. All three
+#: checks run: the directory claim, the staff domain, then the registry row.
+DIRECTORY_MODE = "directory"
+
+#: Admission mode ``registry`` — **D71.2**. Checks 1 and 2 are SKIPPED and the
+#: registry row is the whole gate.
+#:
+#: ⚠️ **Owner directive, 2026-09-02, and it is not a relaxation by accident.**
+#: The owner assigns operators Gmail and outside addresses, so a Workspace
+#: directory cannot describe the staff. Check 3 already carried the sentence
+#: that makes this safe — *"the directory tells us somebody works here, it does
+#: not tell us they run the platform"* — so the mode removes the checks that
+#: stopped describing reality and keeps the one that always decided.
+#:
+#: 🔴 **What this mode costs, named so nobody rediscovers it.** In
+#: ``directory`` mode a mistaken registry row still admits nobody outside our
+#: Workspace. Here the row is the only wall. So WHO MAY WRITE AN OPERATOR ROW
+#: becomes the whole security boundary of this console, and spec §5 already
+#: reserves that to ``admin``.
+REGISTRY_MODE = "registry"
+
+ADMISSION_MODES: tuple[str, ...] = (DIRECTORY_MODE, REGISTRY_MODE)
+
+#: ⚠️ **The default is ``directory``, so D71 ships dark.** An unset variable
+#: leaves every existing box on the D64/D70 three-check path, byte for byte.
+DEFAULT_ADMISSION_MODE = DIRECTORY_MODE
+
+ADMISSION_MODE_ENV = "OPERATOR_ADMISSION_MODE"
+
+EMAIL_OTP_ENV = "OPERATOR_ALLOW_EMAIL_OTP"
+
+_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 #: The ONE refusal an admitted-check failure produces, whatever the cause.
 #:
@@ -312,6 +373,142 @@ def bootstrap_email(env: dict[str, str] | None = None) -> str | None:
     return normalise_email(source.get("OPERATOR_BOOTSTRAP_EMAIL")) or None
 
 
+def admission_mode(env: dict[str, str] | None = None) -> str:
+    """Which admission shape this box uses. ``directory`` unless told else.
+
+    ⚠️ **An unknown value RAISES rather than falls back**, the same posture
+    :func:`signin_provider` takes and for the same reason. A typo would
+    otherwise leave the box on the three-check path while the reader believed
+    they had opened it, or the reverse, and neither reader would see a message
+    naming the variable.
+    """
+    source = os.environ if env is None else env
+    value = (source.get(ADMISSION_MODE_ENV) or "").strip().lower()
+    if not value:
+        return DEFAULT_ADMISSION_MODE
+    if value not in ADMISSION_MODES:
+        raise OperatorUnconfigured(
+            f"{ADMISSION_MODE_ENV}={value!r} is not an admission mode — name "
+            f"one of {sorted(ADMISSION_MODES)} (D71.1)"
+        )
+    return value
+
+
+def email_otp_allowed(env: dict[str, str] | None = None) -> bool:
+    """May an email code admit anybody on this box at all? (**D71.3**)
+
+    ⚠️ **The flag alone is not enough, and a contradictory pair RAISES.**
+    Setting ``OPERATOR_ALLOW_EMAIL_OTP`` while the mode is ``directory`` is a
+    configuration that cannot mean anything: the directory path demands a claim
+    an email code never carries, so the flag would sit on the box doing
+    nothing. Reading it as ``False`` would be worse than refusing — whoever set
+    it believes the fallback works, and would find out when a locked-out
+    contractor called them. It is a **503**, and the message names both
+    variables.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(EMAIL_OTP_ENV) or "").strip().lower()
+    wanted = raw in _TRUTHY
+    if not wanted:
+        return False
+    if admission_mode(env) != REGISTRY_MODE:
+        raise OperatorUnconfigured(
+            f"{EMAIL_OTP_ENV} is on while {ADMISSION_MODE_ENV} is "
+            f"{DIRECTORY_MODE!r} — an email code carries no directory claim, "
+            f"so it can admit nobody on that path. Set "
+            f"{ADMISSION_MODE_ENV}={REGISTRY_MODE!r} or unset {EMAIL_OTP_ENV} "
+            "(D71.3)"
+        )
+    return True
+
+
+def accepted_methods(env: dict[str, str] | None = None) -> frozenset[str]:
+    """The sign-in methods this BOX admits. The row narrows it further.
+
+    Always holds the configured directory. Holds :data:`EMAIL_METHOD` as well
+    when :func:`email_otp_allowed` says so.
+
+    ⚠️ **This is a different axis from :data:`ALLOWED_PROVIDERS`**, and
+    conflating the two is the mistake this docstring exists to stop. That set
+    answers *"which directory may this box pin?"* and never holds a
+    passwordless member. This one answers *"which method may admit a person
+    today?"* and may.
+    """
+    methods = {signin_provider(env)}
+    if email_otp_allowed(env):
+        methods.add(EMAIL_METHOD)
+    return frozenset(methods)
+
+
+def row_methods(row: Any) -> frozenset[str] | None:
+    """The methods THIS operator's row permits, or ``None`` for no restriction.
+
+    ⚠️ **``None`` and the empty set are not the same answer** (**D71.4**).
+    ``None`` means the row names no restriction, which is what every row meant
+    before migration 022 added the column, so old rows keep working untouched.
+    An empty set would mean *no method admits this person*. Migration 022's
+    CHECK refuses an empty array in the database, and this function refuses one
+    here too, because a row that admits nobody is a lock-out rather than a
+    policy.
+    """
+    if row is None:
+        return None
+    try:
+        raw = row["allowed_methods"]
+    except (KeyError, TypeError, IndexError):
+        # A caller reading through an older SELECT that does not name the
+        # column. R6 — old code meets new schema, and NULL is what it assumed.
+        return None
+    if raw is None:
+        return None
+    named = frozenset(str(m).strip().lower() for m in raw if str(m).strip())
+    return named or None
+
+
+def bootstrap_allowed(
+    email: str | None, tid: str | None, env: dict[str, str] | None = None
+) -> bool:
+    """May THIS identity consume the one-time bootstrap? (**D71.5**)
+
+    🔴 **This is the most dangerous decision in the module, and D71 moved it.**
+    In ``directory`` mode the gate is unchanged: the claim must match our
+    directory. In ``registry`` mode there is no claim to match, so a gate
+    written as "the registry is empty" would hand ``admin`` to the FIRST
+    STRANGER who signs in. It pins to ``OPERATOR_BOOTSTRAP_EMAIL`` exactly.
+
+    ⚠️ **An unset bootstrap email is ``False``, never "anybody"**, which is the
+    same shape as :func:`directory_matches` reading a missing claim as
+    ``False``. :func:`bootstrap_email` returns ``None`` when unset, and a
+    ``None`` compared with a normalised string is never equal — but this
+    function refuses on the ``None`` explicitly rather than leaning on that,
+    because leaning on it is exactly the bug done-when 32 recorded.
+    """
+    if admission_mode(env) == DIRECTORY_MODE:
+        return directory_matches(tid, env)
+    expected = bootstrap_email(env)
+    if not expected:
+        return False
+    return normalise_email(email) == expected
+
+
+def _check_method(row: Any, method: str | None) -> None:
+    """Check 4 — the METHOD this sign-in used admits THIS person (**D71.4**).
+
+    Runs in both modes, because a row that names ``{google}`` means it in
+    ``directory`` mode too.
+    """
+    permitted = row_methods(row)
+    if permitted is None:
+        return
+    used = (method or "").strip().lower()
+    if used not in permitted:
+        _log.warning(
+            "operator.refused",
+            extra={"operator_check": "method", "operator_method": used or "<none>"},
+        )
+        raise OperatorForbidden(_REFUSAL)
+
+
 def _check_directory(tid: str | None, env: dict[str, str] | None) -> None:
     """Check 1 — the identity came from OUR directory.
 
@@ -374,8 +571,9 @@ def admit(
     tid: str | None,
     email: str | None,
     env: dict[str, str] | None = None,
+    method: str | None = None,
 ) -> Operator:
-    """Run all three checks. Return the operator, or raise.
+    """Run the checks this box's mode calls for. Return the operator, or raise.
 
     ``row`` is what ``store.operator_by_email`` returned for *email*, or
     ``None``. The caller does the read. This function does the deciding.
@@ -384,11 +582,45 @@ def admit(
     configuration checks run before the registry row is consulted, so a box with
     no directory pinned answers 503 rather than quietly reaching the database
     and answering 403. Those are different incidents.
+
+    ⚠️ **D71.2 makes checks 1 and 2 CONDITIONAL, and check 3 unconditional.**
+    ``registry`` mode skips the directory and the domain. It does not skip the
+    registry, and no mode ever will — that row is the whole boundary in the new
+    mode and a check in the old one.
+
+    ⚠️ **The 503 posture survives the skip.** :func:`admission_mode` raises on
+    an unknown value and :func:`email_otp_allowed` raises on a contradictory
+    pair, both before any row is read, so *the box is wrong* still answers 503
+    ahead of *the person is wrong*.
+
+    *method* is how this sign-in proved itself — the provider name, or
+    ``email`` for a code. ``None`` keeps every existing caller working and
+    means "do not check the method", which is the pre-D71 behaviour.
     """
     normalised = normalise_email(email)
-    _check_directory(tid, env)
-    _check_domain(normalised, env)
+    mode = admission_mode(env)
+
+    # ⚠️ Read UNCONDITIONALLY, and discard the answer in the directory branch.
+    # This is the 503 for a contradictory `OPERATOR_ALLOW_EMAIL_OTP`, and a
+    # box in `directory` mode is exactly where somebody sets that flag and
+    # believes the fallback works. Calling it only on the registry path would
+    # keep the contradiction silent on the one box that most needs to hear it.
+    box_methods = accepted_methods(env)
+
+    if mode == DIRECTORY_MODE:
+        _check_directory(tid, env)
+        _check_domain(normalised, env)
+    elif method is not None and method.strip().lower() not in box_methods:
+        # Registry mode drops both configuration checks, so this is the only
+        # thing left that refuses a method the box never admitted.
+        _log.warning(
+            "operator.refused",
+            extra={"operator_check": "method", "operator_method": method},
+        )
+        raise OperatorForbidden(_REFUSAL)
+
     operator = _check_registry(row)
+    _check_method(row, method)
 
     if operator.email != normalised:
         # The read is `lower(email) = :email`, so this cannot happen unless the

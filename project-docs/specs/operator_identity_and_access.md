@@ -1,9 +1,14 @@
 # Operator identity and access — the staff side of the Operator Console
 
-**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-09-01,
-after CP-12h and its repair round.** Done-whens 1, 5 and 30 to 33 are MET, and
-2 to 29 stay true. 🔴 The owner still owes H-54, and no sign-in works until
-they finish it.
+**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-09-02,
+after CP-12j.** Done-whens 1, 5 and 30 to 41 are MET, and 2 to 29 stay true.
+🔴 The owner still owes H-54, and no sign-in works until they finish it.
+
+⛔ **CP-12i added a SECOND admission mode on 2026-09-02 (D71).** The owner
+assigns operators Gmail and outside addresses, so the Workspace directory
+cannot describe the staff. §4.1b holds the mode, the email fallback and the
+per-operator method pin. It ships dark — `OPERATOR_ADMISSION_MODE` defaults
+to `directory`, and a box nobody changes keeps all three checks.
 
 **◐ CP-12a BUILT 2026-08-26** (`ws31-cp12a-staff-identity`) — the substrate
 half. Migration 009, `customer_console/operators.py`, five `store.py` reads and
@@ -339,8 +344,14 @@ D70 moves the provider to Google Workspace and the claim to `hd`.
 | # | The decision says | Note |
 |---|---|---|
 | **D70.1** | **Supabase Auth, with the GOOGLE WORKSPACE provider, authenticates staff.** The `hd` hosted-domain claim replaces the Entra `tid` as check 1 | ⛔ **This amends D64.1.** D35.3's intent stands, which is one directory, ours, admin-managed. Only the mechanism moves |
-| **D70.2** | **Email OTP is refused for this console**, although the tenant app offers it | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
+| **D70.2** | ⛔ **AMENDED by D71.3, 2026-09-02.** **Email OTP was refused for this console outright.** It is now admitted under three conditions together, and §4.1b holds them | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
 | **D70.3** | **The `hd` claim is load-bearing.** A domain match alone is not enough | Google lets a person create an account on a non-Gmail address, and verifies it by mail. Google then returns `email_verified: true` and NO `hd`. So a domain match alone admits a former employee's alias, a forward, a catch-all address, or a compromised mailbox. `hd` appears only for an account the Workspace admin manages |
+| **D71.1** | **Admission has TWO modes, and `OPERATOR_ADMISSION_MODE` picks one.** `directory` is the default and keeps all three checks. `registry` skips checks 1 and 2 | An unset variable must change no box. An unknown value raises a 503, the posture `signin_provider` already takes |
+| **D71.2** | **In `registry` mode the operator row is the whole gate** | Owner directive, 2026-09-02. The owner assigns operators Gmail and outside addresses. A Workspace directory cannot describe such a person, so a check that reads one refuses a real operator. Check 3 always carried the sentence that makes this safe — the directory says somebody works here, and the row says they run the platform |
+| **D71.3** | ⛔ **This AMENDS D70.2. An email code may admit an operator, and only when three things hold together.** The mode is `registry`, `OPERATOR_ALLOW_EMAIL_OTP` is on, and the operator's own row permits the method | The owner needs a fallback for a person who holds no Google account. D70.2's reasoning is not withdrawn, and D71.4 is what answers it: the weakness now belongs to one named row instead of to the console |
+| **D71.4** | **`operator.allowed_methods` pins a person to the methods THAT PERSON may use.** NULL means no restriction | A global code flag weakens the admin most, and the admin adds operators. So a person who reads the admin mailbox adds themselves. The owner keeps `{google}` on their own row, and the contractor carries `{email}` |
+| **D71.5** | **The one-time bootstrap pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode** | The old gate compares the directory claim. That comparison is always false in the new mode, and deleting it hands `admin` to the first stranger who signs in. This is the most dangerous line in D71 |
+| **D71.6** | **`registry` mode moves the security boundary to WHO MAY WRITE AN OPERATOR ROW** | Named so nobody rediscovers it. In `directory` mode a mistaken row still admits nobody outside our Workspace. Here the row is the only wall, and spec §5 reserves that write to `admin` |
 | **D64.1** | ⛔ **AMENDED by D70.1.** Was: Supabase Auth, with the Microsoft provider, authenticates staff | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
 | **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea. ⛔ Check 1 reads `hd` since D70, not `tid` |
 | **D64.3** | **Three roles: `viewer`, `editor`, `admin`** | `admin` is the only role that administers operators |
@@ -396,9 +407,130 @@ account inside a Workspace domain, which is an account our admin created and
 our admin can delete. That is the same property the Entra `tid` gave us, and it
 is the reason D70 could move the mechanism without moving D35.3's intent.
 
-⚠️ **Email OTP is not a way in.** The tenant app offers a Resend 6-digit OTP,
-and this console refuses one. See **D70.2**. A console that reaches every
-customer organization must not admit a person on inbox control alone.
+⚠️ **Email OTP was not a way in, and D71.3 narrowed that on 2026-09-02.**
+The tenant app offers a Resend 6-digit code. This console refused one
+outright. It now admits one under three conditions together. §4.1b holds
+them, and the third is the operator's own row.
+
+A console that reaches every customer organization must still never admit a
+person on inbox control alone. D71.4 keeps that true for everybody the owner
+does not name.
+
+### 4.1b `registry` admission — the second mode (D71)
+
+⛔ **The owner took this on 2026-09-02, and it reverses part of D70.2.**
+Read §4.1 first. This section states only what changes.
+
+**Why the directory check had to become optional.** The owner assigns
+operators Gmail and outside addresses. `hathilabs.com` describes some staff
+and never all of them. So check 1 refuses a real operator, and check 2 refuses
+the same person again.
+
+**What `registry` mode does.** `OPERATOR_ADMISSION_MODE=registry` tells
+`operators.admit` to skip check 1 and check 2. Check 3 stays, and no mode ever
+skips it. `directory` is the default, so a variable nobody sets changes nothing.
+
+🔴 **What the mode costs, stated once so nobody rediscovers it.** In
+`directory` mode a mistaken operator row still admits nobody outside our
+Workspace. In `registry` mode that row is the only wall. So the question
+*"who may write an operator row?"* becomes the whole security boundary of this
+console. Spec §5 reserves that write to `admin`, and D71.6 records the shift.
+
+**The email code, and the three conditions it needs.** D70.2 refused an email
+code outright. D71.3 admits one, and only when all three of these hold:
+
+1. `OPERATOR_ADMISSION_MODE` is `registry`.
+2. `OPERATOR_ALLOW_EMAIL_OTP` is on.
+3. The operator's own row permits the `email` method.
+
+⚠️ **Condition 3 is what answers D70.2's reasoning.** A global flag weakens
+every operator, and it weakens the `admin` most, because the `admin` adds
+operators. A person who reads the admin mailbox therefore adds themselves.
+`operator.allowed_methods` moves that weakness onto one named row. The owner
+keeps `{google}`, and the contractor who needs the fallback carries `{email}`.
+
+⚠️ **A contradictory pair raises a 503.** `OPERATOR_ALLOW_EMAIL_OTP` on a
+`directory` box can admit nobody, because that path demands a claim an email
+code never carries. Reading the flag as false would leave the person who set
+it believing a fallback works. `admit` reads `accepted_methods`
+unconditionally for that reason.
+
+⚠️ **D71.3 opened `email` and nothing else.** `magiclink`, `otp`, `phone` and
+`sms` stay outside `accepted_methods` in every mode. `ALLOWED_PROVIDERS` still
+holds no passwordless member, because that set names a DIRECTORY and a
+directory is a different axis from a method.
+
+🔴 **The bootstrap gate moved, and it is the most dangerous line in D71.**
+The old gate reads the directory claim. That comparison is always false in
+`registry` mode, so the bootstrap could never fire. The obvious repair is to
+delete the clause, and that repair hands `admin` to the first stranger who
+signs in. `operators.bootstrap_allowed` keeps the claim comparison in
+`directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
+A bootstrap email nobody sets admits nobody.
+
+⛔ **The passphrase is a BACK DOOR again, by owner directive 2026-09-02.**
+`OPERATOR_PASSPHRASE_FALLBACK` weakens §8 done-when 29, which says one door at
+a time. It defaults OFF, so every other box keeps that rule.
+
+🔴 **Evidence forced this, and not opinion.** An agent flipped the identity
+flag onto a box where no sign-in could succeed, and the console admitted
+nobody. Recovery needed an ssh session and an env edit. A console whose only
+recovery path is shell access is a console the owner does not control.
+
+⚠️ **What it costs, and the page says it too.** One shared secret admits
+everybody, names nobody in the audit trail, and cannot be revoked for one
+leaver. F1, F2 and F5 all return while it is on. `gate()` returns no
+`authToken` on that path, so a shared-secret action reads as `operator` rather
+than borrowing the name of whoever signed in last. R7 — the fences are
+`identity.test.ts` "the passphrase fallback at the gate" (6 cases) and
+`login.test.ts` "the passphrase fallback" (4 cases). Three mutations kill them.
+
+⛔ **The owner chose EMAIL-ONLY on 2026-09-02.** Google sign-in waits. Any
+person with any address may sign in once an admin creates their operator row,
+which is exactly what **D71.2** and **D71.3** describe together.
+`OPERATOR_DIRECTORY_SIGNIN=0` takes the directory button off the page, and it
+defaults ON so no other deployment changes. ⚠️ **It removes a BUTTON and never
+a check.** The API still admits a directory sign-in that arrives.
+
+✅ **CP-12j built the page half on 2026-09-02.** `login/page.tsx` shows the
+code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
+when, and the browser talks to Supabase directly — the same way the OAuth
+button already does, so this app gains no new upstream.
+
+🔴 **The LINK is the flow, not a six-digit code — measured 2026-09-02.**
+Supabase's default email body carries a link and no digits. The dashboard
+refuses to edit a template until the project configures custom SMTP, so this
+project cannot render `{{ .Token }}` at all. `otpStartUrl` therefore sends
+`redirect_to`, and `login/callback` already reads the token out of the URL
+fragment. The owner must add that callback to Authentication → URL
+Configuration, which needs no SMTP.
+
+🔴 **The wire field is `create_user`, and TWO releases shipped the wrong
+name.** CP-12j sent `should_create_user`, which is the supabase-js OPTION
+name. GoTrue ignores an unknown field. Measured against the live project:
+`create_user:false` for an unknown address answers **422 otp_disabled**, and
+`should_create_user:false` answers **200** and sends mail. So the CP-12j fix
+below changed no behaviour in either direction, and the note it left was
+wrong about why. R7 — the fence is
+`otp.test.ts::"uses the WIRE field create_user, not the supabase-js option name"`.
+
+🔴 **`should_create_user` must be TRUE, and a production flip proved it.**
+Supabase mails a code only to a user that already exists in `auth.users`. That
+table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the
+first version of `otpStartBody` refused every operator forever, including the
+first one.
+
+A Supabase user is not an operator, and that is what makes `true` safe. The
+registry answers 403 to a stranger (**D71.2**, **D71.6**), so they gain a login
+to nothing. R7 — the fence is
+`otp.test.ts::"asks Supabase to CREATE the user, or nobody ever signs in"`.
+
+🔴 **The page hands the anon key to every visitor, and one fence makes that
+safe.** `isPublishableKey` refuses a `service_role` JWT and an `sb_secret_`
+key, and it refuses any shape it cannot parse. The `service_role` key sits one
+line away in the same Supabase dashboard and bypasses row-level security on
+every table. A person who pastes the wrong one publishes it to a login page,
+and nothing else would look wrong.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
@@ -422,12 +554,16 @@ and it reads `apps/services/customer_console/.env`. The Next app reads its own.
 |---|---|---|---|
 | **`OPERATOR_SIGNIN_PROVIDER`** | ✅ | ✅ | `operators.signin_provider` · `identity.ts::signinProvider` |
 | `OPERATOR_SUPABASE_URL` | ✅ | ✅ | `operator_signin` · `login/page.tsx` |
-| `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | `operator_signin` |
+| **`OPERATOR_SUPABASE_ANON_KEY`** | ✅ | ✅ **BOTH since CP-12j** | `operator_signin` · `lib/otp.ts::emailCodeConfig` |
 | `OPERATOR_GOOGLE_HD` | ✅ | — | `operators.staff_directory_id` |
 | `OPERATOR_STAFF_DOMAINS` | ✅ | — | `operators` |
 | `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | `operators` |
 | `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | `login/page.tsx` |
 | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
+| `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
+| **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
+| `OPERATOR_DIRECTORY_SIGNIN` | — | ✅ | `lib/otp.ts::directorySigninEnabled` — ⚠️ **absent means ON** |
+| `OPERATOR_PASSPHRASE_FALLBACK` | — | ✅ | `identity.ts::passphraseFallbackEnabled` (**CP-12k**) |
 
 ⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
 is bold.** The Next app builds the Supabase authorize link from it. The API
@@ -836,6 +972,92 @@ each fence went red under a mutation before it passed.
     `operator_signin._claim_name`. R7 — the fence is
     `test_operator_identity.py::test_the_claim_table_is_what_the_readers_read`,
     which renames both claims and asserts each reader follows.
+
+34. **`OPERATOR_ADMISSION_MODE` defaults to `directory`, so D71 ships dark.**
+    An unset variable leaves every box on the D64/D70 three-check path. An
+    unknown value raises a 503 and names the variable. **R7 — the fences are**
+    `test_operator_signin.py::test_the_default_admission_mode_is_directory`
+    and `::test_an_unknown_admission_mode_refuses_rather_than_falls_back`.
+    ✅ **MET.** A mutation that flips the default turns **15 tests red**.
+
+35. **In `registry` mode an identity with no operator row is refused.**
+    The payload may carry a verified address outside every staff domain, and
+    no directory claim at all. Check 3 refuses it alone. **R7 — the fence is**
+    `::test_registry_mode_still_refuses_a_stranger_with_no_row`.
+    ✅ **MET.**
+
+36. **In `registry` mode a Gmail operator with a row is admitted, and the
+    same person is refused in `directory` mode.** The pair is what makes D71 a
+    mode rather than a widening. **R7 — the fences are**
+    `::test_registry_mode_admits_a_gmail_operator_that_an_admin_added` and
+    `::test_directory_mode_still_refuses_that_same_gmail_operator`.
+    ✅ **MET.**
+
+37. 🔴 **The bootstrap never fires for a stranger in `registry` mode.**
+    `bootstrap_allowed` pins to `OPERATOR_BOOTSTRAP_EMAIL`, and a value nobody sets
+    admits nobody. **R7 — the fences are**
+    `::test_registry_mode_never_bootstraps_a_stranger`,
+    `::test_registry_mode_never_bootstraps_when_no_email_is_named` and
+    `::test_directory_mode_bootstrap_is_byte_for_byte_unchanged`.
+    ⚠️ **Each one asserts on the CALL through the `bootstrap_calls` spy, and
+    carries a positive control.** Done-when 32 recorded why: the route runs in
+    one transaction that rolls back on the 403, so a row count reads zero with
+    the guard deleted.
+    ✅ **MET.** Two mutations, `return True` and an unset email that reads as
+    anybody, both go red.
+
+38. **An email code admits nobody until THREE conditions hold together.**
+    The mode is `registry`, the flag is on, and a row exists. Registry mode
+    alone does not open the inbox path. **R7 — the fences are**
+    `::test_an_email_code_is_refused_while_the_flag_is_off`,
+    `::test_an_email_code_admits_a_named_operator_when_the_flag_is_on`,
+    `::test_an_email_code_still_needs_a_registry_row` and
+    `::test_an_unverified_email_code_is_refused`.
+    ⚠️ **The refusal is a 401 and not a 403**, because `extract_identity`
+    rejects the token before `admit` reads any row. A 403 there would mean the
+    console consulted the registry for a method it never admitted.
+    ✅ **MET.**
+
+39. **`OPERATOR_ALLOW_EMAIL_OTP` set against a `directory` box raises a 503,
+    and never reads as false.** The flag can admit nobody on that path, so
+    whoever set it believes a fallback works that does not. **R7 — the fence
+    is** `::test_the_otp_flag_contradicting_the_mode_is_a_503`.
+    ⚠️ **`admit` reads `accepted_methods` UNCONDITIONALLY** and discards the
+    answer on the directory path, because a directory box is exactly where
+    somebody sets this flag by mistake.
+    ✅ **MET.**
+
+40. **`operator.allowed_methods` restricts the person in BOTH modes and in
+    BOTH directions.** A row naming `{google}` refuses an email code. A row
+    naming `{email}` refuses Google. NULL, a missing column and an empty array
+    all mean no restriction. **R7 — the fences are**
+    `::test_a_row_pinned_to_google_refuses_an_email_code`,
+    `::test_a_row_pinned_to_email_refuses_google`,
+    `::test_the_pin_applies_in_directory_mode_too`,
+    `::test_a_null_pin_admits_whatever_the_box_allows`,
+    `::test_row_methods_reads_null_and_empty_as_no_restriction` and
+    `::test_the_database_refuses_a_pin_that_admits_nobody`.
+    ⚠️ **NULL and the empty set are not one answer.** NULL is what every row
+    written before migration 022 means, so R6 keeps those rows working. An
+    empty array admits nobody, and migration 022 refuses one in the database.
+    ✅ **MET.** A mutation that wires the pin into the registry branch alone
+    goes red, and so does one that stops folding case.
+
+
+41. **The login page offers the code form only when it can WORK, and never
+    instead of the directory button.** Four states render nothing: the flag is
+    off, the project URL is unset, the key is unset, and the key is not
+    publishable. **R7 — the fences are** `src/lib/otp.test.ts` (10 cases) and
+    `src/app/login/login.test.ts`
+    `::"renders NO form for a service_role key"`,
+    `::"shows the form BESIDE the directory button, never instead of it"` and
+    `::"ships dark — no form until the flag is on"`.
+    🔴 **The service_role case is the one that matters.** Rendering the form
+    PUBLISHES the key, so the page must refuse before it renders. The fence
+    also asserts the secret appears nowhere else in the element tree.
+    ⚠️ **A reader with a working code form is NOT stranded**, so the recovery
+    note stays off for them and returns when neither door works.
+    ✅ **MET.** 642 Operator Console tests pass.
 
 ---
 

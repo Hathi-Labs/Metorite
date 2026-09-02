@@ -75,7 +75,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-98 · A REACHABLE-but-wrong Console DSN kills every deploy, silently · [AGENT]
+### H-100 · A REACHABLE-but-wrong Console DSN kills every deploy, silently · [AGENT]
 - **Check:** `ssh metorite 'systemctl show acb-pull.service -p Result'`.
   `Result=exit-code` means every deploy fails. Compare
   `curl -s https://api.metorite.com/version` against `git rev-parse origin/main`.
@@ -103,6 +103,73 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/vps_apply.sh` (Console ladder block) ·
   `.github/workflows/vps-health.yml` · CLAUDE.md §3.8 · [[H-89]]
 - **Added:** 2026-09-02 · Mumbai migration session
+
+### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
+- **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
+  machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
+  rest of the dev-phase window.
+- **Why:** the owner set it on 2026-09-02 to unblock in-place edits of the
+  production `.env` over `ssh`, which the harness classifier refused. It works,
+  and it is broader than the thing it fixed. It removes every permission prompt
+  and the classifier, for every tool, in every session on that machine.
+  🔴 **Everything ELSE in this window expires by itself.** The grants carry
+  `ALLOW-UNTIL 2026-09-30`. `CLAUDE.md` §3a says delete the section.
+  `.claude/settings.json` says delete the block. **This one setting carries no
+  date, and `.gitignore` hides it, so no review will ever surface it.** It is
+  the single change most likely to outlive the phase that justified it.
+  📌 **It also weakens a fence nothing else covers.** The `deny` list — VM
+  destroy, snapshot restore, DNS reset, domain transfer — may not be consulted
+  in this mode, and `plan-guard.mjs` does not cover those acts. Today they rest
+  on an agent's judgement alone.
+- **The fix, on or before 2026-09-30:** set `defaultMode` back to
+  `acceptEdits` in `.claude/settings.local.json`, then restart. The broad
+  `allow` list in the tracked `.claude/settings.json` keeps ordinary work
+  prompt-free, which is what it was widened for.
+- **Reconsider it, do not reflex-revert.** One task in two days needed it. If
+  that rate holds, `acceptEdits` plus the allow list is enough, and the rare
+  production `.env` edit belongs in an interactive session where a human
+  approves it.
+- **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
+- **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
+
+### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
+- **Check:** run three commands on the box. Every one must change before this
+  entry closes.
+  1. `grep -c CUSTOMER_CONSOLE_DATABASE_URL /opt/acb/app/scripts/backup_db.sh`
+     → `0` means the Console database stays out of scope.
+  2. `systemctl list-timers --all | grep acb-backup` → no line means nothing
+     schedules the job.
+  3. `systemctl show acb-backup.service -p Result` → `exit-code` means the last
+     run failed.
+- **Why:** the owner lost the Console data on 2026-09-01 and held no backup.
+  The owner did not need that data. The next loss can cost more.
+- 🔴 **Four failures compound, and each one hides the next.** An agent measured
+  all four on `srv1914284`, 2026-09-02:
+  1. `scripts/backup_db.sh` reads `DATABASE_URL` and nothing else. It holds
+     ZERO references to `CUSTOMER_CONSOLE_DATABASE_URL`. So the job skips every
+     organization, operator and provider credential.
+  2. The newest dump names `pg_container: acb-postgres`, a LOCAL docker
+     container, and not Supabase. Its manifest counts `app_user: 0`,
+     `email_messages: 0`, `gtd_items: 0`, `meeting: 0` and `agent_run: 0`.
+  3. `systemctl list-timers` shows no timer for the unit. Only Debian's own
+     `dpkg-db-backup.timer` runs. So nothing schedules the job.
+  4. `acb-backup.service` last started on 2026-08-25 and exited non-zero.
+     Nothing retried it. Nothing reported it.
+- 📌 **The empty dump is the worst of the four.** A job that fails loudly stops
+  nobody for long. A job that writes a manifest full of zeros reads as success.
+- 📌 **This is NOT the cause of H-89.** The dumps live in `/opt/acb/backups`,
+  outside the checkout, so the backup unit does not write the root-owned files
+  in `workbench/operator_console/`. H-89 stays open and unexplained.
+- **The AGENT half:** point `backup_db.sh` at both DSNs, and make a zero row
+  count fail the job. ⚠️ The timer belongs in `deploy/`, which is §6
+  owner-gate, so an agent writes the script and the owner installs the timer.
+- **The OWNER half, and take it first:** decide whether the control plane needs
+  a backup of ours at all. Supabase takes a daily backup on a paid plan. That
+  answer turns the agent half from "build it" into "delete the unit".
+- **Authority:** `work_plan.md` §6 (deploy reach) · `scripts/backup_db.sh` ·
+  `deploy/hostinger/`
+- **Added:** 2026-09-02 · operator-identity env session, found while an agent
+  read the box after the Supabase move
 
 ### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
 - **Check:** has somebody rotated all four credentials below since 2026-09-02?
@@ -144,29 +211,6 @@ line — never reclaim a number by deleting the other entry.
   Consider a `PSQL_URL` beside `DATABASE_URL`, or a small wrapper.
 - **Authority:** H-3 (same class) · `work_plan.md` §6 credentials
 - **Added:** 2026-09-01 · guardrail-relaxation session, self-reported
-
-### H-95 · The box's `.env` has a DUPLICATE `ACB_ENV`, and only line order saves it · [OWNER]
-- **Check:** `ssh metorite 'grep -n "^ACB_ENV" /opt/acb/app/.env'`. Two lines
-  means this is live. Measured 2026-09-01: `dev` at line 212, `prod` at 329.
-- **Why:** systemd's `EnvironmentFile` and pydantic-settings both take the
-  **last** value, so production is correct — by line order alone. Anything that
-  inserts near line 212, or any reader that takes the FIRST match, re-opens
-  H-90 and republishes the whole API schema.
-  📌 Confirmed on the running process: `/proc/<pid>/environ` holds
-  `ACB_ENV=prod`, and `/version` agrees. **Nothing fails today.**
-  📌 **An agent cannot do this one.** The harness classifier refuses an
-  agent-initiated in-place edit of a production `.env` over `ssh`, whatever the
-  repo grants say. It needs a human at a keyboard.
-- **The fix, and it is one line:**
-
-      ssh metorite
-      cd /opt/acb/app && cp .env .env.bak-$(date +%F) && sed -i '212d' .env
-      grep -n '^ACB_ENV' .env    # expect ONE line, prod
-
-  No restart. The running value does not change — this only removes the
-  contradiction.
-- **Authority:** H-90 (closed) · H-94 (the durable half) · `check_env_duplicates`
-- **Added:** 2026-09-01 · found during the SSH access check
 
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
 - **Check:** run this on the Console database.
@@ -1412,54 +1456,21 @@ line — never reclaim a number by deleting the other entry.
   done-when section and a repaired Check
 
 
-### H-96 · Moving a Supabase project changes NINE things, and eight of them are outside the database · [OWNER]
-- **Check:** compare the project ref the box uses against the ref in the
-  Supabase dashboard. `grep -h "supabase.co" /opt/acb/app/apps/services/customer_console/.env
-  /opt/acb/app/workbench/operator_console/.env.local` → every line must name the
-  SAME ref, and that ref must be the live project. A mismatch, or an unmoved
-  project, means this entry is still real.
-- **Why:** the owner moves the Supabase projects to the box's own region,
-  because the round trip across regions makes some interactions slow. Measured
-  2026-09-01: the Customer Console sits in `ap-southeast-1` and the Tenant
-  Plane sits in `ap-northeast-1`. So the two planes are in different regions
-  from each other, and both are away from the box.
-- 🔴 **A project ref appears in NINE places, and the database holds only one of
-  them.** A move that misses one leaves a service pointing at a project that no
-  longer answers. The list, measured on 2026-09-01:
-  1. `CUSTOMER_CONSOLE_DATABASE_URL`, in
-     `/opt/acb/app/apps/services/customer_console/.env` (H-64's file).
-  2. `OPERATOR_SUPABASE_URL`, in that SAME file.
-  3. `OPERATOR_SUPABASE_URL` **again**, in
-     `/opt/acb/app/workbench/operator_console/.env.local`. ⚠️ **Two files, one
-     value.** A reader who fixes one and not the other gets a silent 401, and
-     the console names no cause. Spec §4.2a holds the split.
-  4. `OPERATOR_SUPABASE_ANON_KEY`, in the API file. The key is minted per
-     project, so a move retires it.
-  5. The Google OAuth **redirect URI** in Google Cloud Console. It reads
-     `https://<ref>.supabase.co/auth/v1/callback` and it carries the ref.
-  6. The Supabase **redirect allowlist** entry for
-     `https://operator.metorite.com/login/callback`. It lives inside the
-     project, so a new project starts empty.
-  7. The Google provider itself, with its client id and secret. Same reason.
-  8. **Manual identity linking OFF.** A new project defaults it ON, and H-54
-     records why that is a bypass.
-  9. The owner's local MCP configuration.
-- 📌 **Do the move BEFORE the Google sign-in work of H-54.** Items 5 to 8 are
-  the whole of H-54's browser half. A move after that work repeats it.
-- ✅ **The timing is lucky, and it will not stay lucky.** Measured 2026-09-01:
-  `usage_event` holds ZERO rows and the Router has served no call, so no
-  billing record can be lost. `vendor_price_feed` holds 3378 rows, and a feed
-  sync rebuilds those. What must survive is small — 2 organizations, 2
-  operators, 2 provider credentials, 7 tier bindings.
-- ⚠️ **The ladder is the schema of record, and never a dump.** Apply
-  `infra/customer_console/0*.sql` in order against the new project, then move
-  the rows. `scripts/dev_db.sh` shows the idiom.
-- **Authority:** `work_plan.md` §6 (deploy reach, env-write) · H-64 · H-54 ·
-  `specs/operator_identity_and_access.md` §4.2a
-- **Added:** 2026-09-01 · WS-31 operator-identity session, from the owner's
-  region-latency plan
-
 ### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the SIX `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+- ✅ **The ENV half is DONE, 2026-09-02, and only the BROWSER half is left.**
+  An agent set all six values, and `OPERATOR_CONSOLE_ORIGIN` beside them, in
+  the two files this table names. Both files stay `acb:acb 600`. The agent then
+  restarted `acb-customer-console`, and local health answered 200.
+  ⚠️ **`OPERATOR_IDENTITY_ENABLED` stays UNSET on purpose.** Turn it on before
+  the Supabase project holds a Google provider, and the page replaces the
+  passphrase form with a button that cannot work. H-56 step 1 owns that flip.
+  📌 **The owner must still do four acts, and all four are in a browser.**
+  Make the Google Cloud OAuth client. Turn on the Supabase Google provider.
+  Add the redirect allowlist entry. Turn manual identity linking OFF.
+  H-96 listed the same four as its items 5 to 8.
+- 📌 **A tenth thing, learned from the move H-96 describes.** The rows do not
+  travel with the schema. The owner applied the ladder to the new project and
+  started the data again from nothing.
 - **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
   Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
   no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
@@ -1885,6 +1896,9 @@ line — never reclaim a number by deleting the other entry.
   because `main` already holds the stack.
 - 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
   but does not OWN does this again on the next file it must replace.
+- ✅ **Item 3 is ANSWERED, 2026-09-02.** An agent read the box. The unit
+  is `acb-operator-console.service` and it is active. So nobody needs to set
+  `OPERATOR_CONSOLE_UNIT`. Items 1 and 2 stay open, and both are owner-gate.
 - **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session · **escalated

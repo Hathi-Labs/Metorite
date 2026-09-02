@@ -125,6 +125,20 @@ class VerifiedIdentity:
     #: Supabase's stable user id. Stored as ``operator.directory_subject`` so a
     #: later email change does not silently create a second person.
     subject: str
+    #: HOW this sign-in proved itself — the provider name, or
+    #: :data:`operators.EMAIL_METHOD` for a code to the inbox (**D71.3**).
+    #: ``operators.admit`` matches it against the box's method set and against
+    #: the operator's own ``allowed_methods`` (**D71.4**).
+    #:
+    #: ⚠️ **The default is ``None``, meaning "not stated", and NOT a method
+    #: name.** Every construction in this module sets it. A test or an older
+    #: call site that omits it gets the pre-D71 behaviour, where ``admit``
+    #: runs no method check at all. Defaulting to a real name would instead
+    #: make such a caller ASSERT something it never measured, and the two ways
+    #: that could be wrong are opposite — a default of ``email`` would claim
+    #: the weakest method, and a default of ``google`` would let a row pinned
+    #: to Google admit a code.
+    method: str | None = None
 
 
 def safe_ip(value: str | None) -> str | None:
@@ -399,7 +413,11 @@ def extract_identity(
     ``operators.OperatorUnconfigured`` (a **503**). A box nobody configured and
     a person we refuse are different incidents.
     """
-    provider = operators.signin_provider(env)
+    # ⚠️ **Read FIRST, before the payload is even shaped.** This is the one
+    # line that keeps "the box is wrong" (503) ahead of "the person is wrong"
+    # (403). It raises on an unknown directory name, on an unknown admission
+    # mode, and on an `OPERATOR_ALLOW_EMAIL_OTP` that contradicts the mode.
+    accepted = operators.accepted_methods(env)
 
     if not isinstance(payload, dict):
         raise _reject("payload")
@@ -414,18 +432,33 @@ def extract_identity(
 
     # ⚠️ The SIGN-IN provider, not the set of linked ones. See
     # :func:`_signin_provider` for why that difference is a bypass.
-    if _signin_provider(payload) != provider:
-        # A password or magic-link sign-in reaches here. It is a real Supabase
-        # user, and it did not come from our directory, so it is not staff.
+    #
+    # ⚠️ **D71.3 widened this from ONE name to a SET, and the set is still
+    # closed.** It holds the configured directory always, and ``email`` only
+    # when the box is in ``registry`` mode with the flag on. A password or
+    # magic-link sign-in still reaches here and is still refused, because
+    # ``accepted_methods`` never names ``magiclink``, ``phone`` or ``sms``.
+    used = _signin_provider(payload)
+    if used is None or used not in accepted:
         raise _reject("provider")
 
-    if not _email_is_verified(payload, provider):
+    # ⚠️ **Verify against the method ACTUALLY used, never the configured
+    # directory.** Passing `provider` here would read the Google identity's
+    # `email_verified` for a sign-in that came through the email code, which
+    # is the same class of bypass done-when 31 closed.
+    if not _email_is_verified(payload, used):
         raise _reject("unverified")
 
+    # An email code carries no directory claim, and there is no reader for one.
+    # ``None`` is the honest answer, and `operators.admit` refuses it outright
+    # in `directory` mode.
+    reader = _CLAIM_READERS.get(used)
+
     return VerifiedIdentity(
-        tid=_CLAIM_READERS[provider](payload),
+        tid=reader(payload) if reader else None,
         email=email.strip().lower(),
         subject=subject.strip(),
+        method=used,
     )
 
 

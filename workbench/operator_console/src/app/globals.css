@@ -2271,3 +2271,34 @@ main.wrap {
     transition: none !important;
   }
 }
+
+/* ── The email-code fallback on the login card — WS-31 CP-12j, D71.3 ────── */
+
+/* The divider between the directory button and the code form. It says the two
+   are alternatives, which the page's own wording cannot do alone. */
+.or-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.or-rule::before,
+.or-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* The code form's own labels. `.field-hint` is explanatory text under a
+   control, so a label needed a name of its own rather than a reuse. */
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}

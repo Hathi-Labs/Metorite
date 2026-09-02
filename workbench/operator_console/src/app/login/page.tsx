@@ -1,9 +1,12 @@
 import {
   IDENTITY_FLAG,
+  passphraseFallbackEnabled,
   providerLabel,
   signinProvider,
   usesSessions,
 } from "@/lib/identity";
+import { directorySigninEnabled, emailCodeConfig } from "@/lib/otp";
+import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
 
 export const dynamic = "force-dynamic";
@@ -56,11 +59,30 @@ export default async function LoginPage({
   const origin = (process.env.OPERATOR_CONSOLE_ORIGIN ?? "").trim();
   const provider = signinProvider();
   const label = providerLabel();
-  const href = origin ? authorizeUrl(origin, provider) : null;
+  // ⚠️ **A button that cannot open is worse than no button.** Until the owner
+  // configures the provider in Supabase, offering it sends the reader to an
+  // error they will read as their own mistake. `OPERATOR_DIRECTORY_SIGNIN=0`
+  // takes it off the page, and it defaults ON so no other box changes.
+  const href =
+    origin && directorySigninEnabled() ? authorizeUrl(origin, provider) : null;
+
+  // The D71.3 fallback. `null` whenever the form could not work, so the page
+  // shows nothing rather than a box that mails nobody. `otp.ts` says why, and
+  // it REFUSES a key that is not publishable — that check is what keeps a
+  // mispasted `service_role` key off a public login page.
+  const emailCode = emailCodeConfig();
+
+  // ⛔ **The back door — CP-12k, OFF by default.** §8 done-when 29 says one
+  // door at a time, and it still holds on every box that does not set this.
+  // The owner turned it on after an agent flipped the identity flag onto a
+  // box where nothing could sign in, and recovery needed shell access.
+  const fallback = passphraseFallbackEnabled();
 
   // A real boolean, not the error string: JSX renders a truthy string, so
   // `params.error && …` in the guard would print the message a second time.
-  const stranded = !href || Boolean(params.error);
+  // ⚠️ A reader who can still use the code form is NOT stranded, so the
+  // recovery note stays off. It returns the moment neither door works.
+  const stranded = (!href && !emailCode) || Boolean(params.error);
 
   return (
     <main className="login-center">
@@ -75,11 +97,29 @@ export default async function LoginPage({
 
         {params.error && <div className="result err">{params.error}</div>}
 
-        {href ? (
+        {href && (
           <a className="primary-cta" href={href}>
             Sign in with {label}
           </a>
-        ) : (
+        )}
+
+        {/* ⚠️ **The code form sits BESIDE the directory button, never instead
+            of it** (D71.4). The directory is the strong door, and the code is
+            the fallback for a person who holds no account there. A page that
+            offered only the code would quietly move every operator onto the
+            weaker method, including the admin who adds operators. */}
+        {emailCode && (
+          <>
+            {href && <div className="or-rule">or</div>}
+            <EmailCodeForm
+              url={emailCode.url}
+              anonKey={emailCode.anonKey}
+              callback={emailCode.callback}
+            />
+          </>
+        )}
+
+        {!href && !emailCode && (
           <div className="banner">
             {/* Fails closed and says which value is missing, because the
                 person reading this is the one who can set it. */}
@@ -102,7 +142,25 @@ export default async function LoginPage({
 
             It shows in the two states that strand a reader: sign-in not
             configured, and a refused sign-in. */}
-        {stranded && (
+        {/* ⛔ The BACK DOOR, and it renders a real form rather than a note.
+            Everywhere else in this file a passphrase box would 400 on submit,
+            which is why CP-12g printed text instead. With the fallback on,
+            `POST /api/operator/session` accepts a `secret` again, so the form
+            works — and it is the same component the interim path uses. */}
+        {fallback && (
+          <>
+            <div className="or-rule">or</div>
+            <InterimForm />
+            <div className="field-hint">
+              The shared staff passphrase is a BACKUP. One secret admits
+              everybody and names nobody in the audit log. Turn
+              <code> OPERATOR_PASSPHRASE_FALLBACK</code> off once email sign-in
+              is proven.
+            </div>
+          </>
+        )}
+
+        {stranded && !fallback && (
           <div className="field-hint">
             Cannot get in? Unset <code>{IDENTITY_FLAG}</code> server-side and
             restart the console. The staff passphrase works again after that
