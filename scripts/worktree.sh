@@ -85,6 +85,33 @@ remove)
   path="$(wt_path "$slug")"
   [ -d "$path" ] || { echo "!! no worktree at $path"; exit 1; }
 
+  # ⚠️ A RUNNING PROCESS FIRST. Measured 2026-09-03: this script removed a
+  # worktree that still had `uvicorn` and `python` serving out of its `.venv`.
+  # Nothing was lost — the branch was merged and the tree was clean — but the
+  # server was then running from a directory git no longer tracked, and the
+  # files would not delete.
+  #
+  # A file mtime does NOT catch this. The directory had not been written to for
+  # a day while the process ran happily inside it, so "untouched recently" read
+  # as idle when it was not.
+  #
+  # A warning and not a refusal: the owner may well want the worktree gone and
+  # the server stopped. What must not happen is finding out afterwards.
+  if command -v powershell >/dev/null 2>&1; then
+    win_prefix="$(printf '%s' "$path" | sed 's|^/\([a-zA-Z]\)/|\1:\\\\|; s|/|\\\\|g')"
+    procs="$(powershell -NoProfile -Command \
+      "(Get-Process | Where-Object { \$_.Path -like '${win_prefix}*' } | \
+        ForEach-Object { \$_.ProcessName + '(' + \$_.Id + ')' }) -join ' '" 2>/dev/null | tr -d '\r')"
+    if [ -n "$procs" ]; then
+      echo "   ⚠️ PROCESSES ARE STILL RUNNING FROM THIS WORKTREE:"
+      echo "      $procs"
+      echo "      Stop them first, or the files will not delete and the server"
+      echo "      keeps serving from a directory git no longer tracks."
+      echo "      Continuing in 5s — Ctrl-C to stop."
+      sleep 5
+    fi
+  fi
+
   # ⚠️ THE JUNCTION FIRST, ALWAYS. See the header. `cmd rmdir` unlinks a
   # junction and refuses a real non-empty directory, so this line is safe to
   # run blind — which is exactly why it runs blind rather than behind a test.
