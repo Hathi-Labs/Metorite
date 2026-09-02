@@ -497,6 +497,23 @@ code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
 when, and the browser talks to Supabase directly — the same way the OAuth
 button already does, so this app gains no new upstream.
 
+🔴 **The LINK is the flow, not a six-digit code — measured 2026-09-02.**
+Supabase's default email body carries a link and no digits. The dashboard
+refuses to edit a template until the project configures custom SMTP, so this
+project cannot render `{{ .Token }}` at all. `otpStartUrl` therefore sends
+`redirect_to`, and `login/callback` already reads the token out of the URL
+fragment. The owner must add that callback to Authentication → URL
+Configuration, which needs no SMTP.
+
+🔴 **The wire field is `create_user`, and TWO releases shipped the wrong
+name.** CP-12j sent `should_create_user`, which is the supabase-js OPTION
+name. GoTrue ignores an unknown field. Measured against the live project:
+`create_user:false` for an unknown address answers **422 otp_disabled**, and
+`should_create_user:false` answers **200** and sends mail. So the CP-12j fix
+below changed no behaviour in either direction, and the note it left was
+wrong about why. R7 — the fence is
+`otp.test.ts::"uses the WIRE field create_user, not the supabase-js option name"`.
+
 🔴 **`should_create_user` must be TRUE, and a production flip proved it.**
 Supabase mails a code only to a user that already exists in `auth.users`. That
 table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the

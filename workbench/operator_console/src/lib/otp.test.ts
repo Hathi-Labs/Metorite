@@ -95,7 +95,21 @@ describe("emailCodeConfig", () => {
   };
 
   it("returns what the browser needs when all three are right", () => {
-    expect(emailCodeConfig(good)).toEqual({ url: URL_, anonKey: ANON });
+    expect(emailCodeConfig(good)).toEqual({
+      url: URL_,
+      anonKey: ANON,
+      callback: "",
+    });
+  });
+
+  it("builds the callback from OPERATOR_CONSOLE_ORIGIN", () => {
+    const withOrigin = {
+      ...good,
+      OPERATOR_CONSOLE_ORIGIN: "https://op.metorite.com/",
+    };
+    expect(emailCodeConfig(withOrigin)?.callback).toBe(
+      "https://op.metorite.com/login/callback",
+    );
   });
 
   it("🔴 returns null for a service_role key, so the page shows no form", () => {
@@ -111,6 +125,30 @@ describe("emailCodeConfig", () => {
 });
 
 describe("the Supabase endpoints", () => {
+  it("🔴 carries redirect_to, or the emailed LINK cannot come back", () => {
+    // Supabase's default template sends a link and no digits, and this
+    // project cannot edit that template — the dashboard locks template
+    // editing behind custom SMTP. So the link IS the flow, and this
+    // parameter is the whole of what makes it land on our callback.
+    expect(
+      otpStartUrl("https://p.supabase.co", "https://op.metorite.com/login/callback"),
+    ).toBe(
+      "https://p.supabase.co/auth/v1/otp?redirect_to=" +
+        encodeURIComponent("https://op.metorite.com/login/callback"),
+    );
+  });
+
+  it("omits redirect_to when there is none, rather than sending an empty one", () => {
+    // An empty `redirect_to` is not the same as none: Supabase validates it
+    // against the allow list and would refuse the send outright.
+    expect(otpStartUrl("https://p.supabase.co", "")).toBe(
+      "https://p.supabase.co/auth/v1/otp",
+    );
+    expect(otpStartUrl("https://p.supabase.co", "   ")).toBe(
+      "https://p.supabase.co/auth/v1/otp",
+    );
+  });
+
   it("tolerates a trailing slash on the project URL", () => {
     expect(otpStartUrl("https://p.supabase.co/")).toBe(
       "https://p.supabase.co/auth/v1/otp",
@@ -122,6 +160,20 @@ describe("the Supabase endpoints", () => {
 });
 
 describe("the request bodies", () => {
+  it("🔴 uses the WIRE field `create_user`, not the supabase-js option name", () => {
+    // ⚠️ **Two releases shipped `should_create_user` and it did nothing.**
+    // That is the supabase-js OPTION name. GoTrue ignores an unknown field, so
+    // it answered 200 and created the user regardless — which is why the
+    // CP-12j "fix" changed no behaviour in either direction.
+    //
+    // Measured against the live project on 2026-09-02:
+    //   {"create_user":false}        → 422 otp_disabled   (refused, no mail)
+    //   {"should_create_user":false} → 200                (user made, mail sent)
+    const body = otpStartBody("owner@example.com") as Record<string, unknown>;
+    expect(Object.hasOwn(body, "create_user")).toBe(true);
+    expect(Object.hasOwn(body, "should_create_user")).toBe(false);
+  });
+
   it("🔴 asks Supabase to CREATE the user, or nobody ever signs in", () => {
     // ⚠️ **This is a regression fence for a defect that reached production.**
     // Supabase mails a code only to a user already in `auth.users`. That table
@@ -133,7 +185,7 @@ describe("the request bodies", () => {
     // 403 for a stranger (D71.2, D71.6), so they gain a login to nothing.
     expect(otpStartBody("Owner@Example.com ")).toEqual({
       email: "Owner@Example.com",
-      should_create_user: true,
+      create_user: true,
     });
   });
 
