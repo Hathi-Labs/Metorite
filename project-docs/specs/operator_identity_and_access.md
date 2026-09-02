@@ -1082,6 +1082,68 @@ again.
 needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
 **C4** carries the owner half, and **H-93** carries the queue entry.
 
+#### 9.1a The shape the owner must take *(written 2026-09-03)*
+
+**Read this before you build anything.** It is the menu, not the answer. The
+owner picks, and an agent then builds what they picked.
+
+##### The one decision that matters
+
+**What happens when the second admin is asleep and something must happen now?**
+Every other question below follows from this one.
+
+| Option | What it costs |
+|---|---|
+| **Hard block** — no second approver, no action | Nothing destructive is possible alone, ever. A two-person team then meets a wall on a night when the act was plainly right |
+| **Break-glass** — one admin proceeds alone, loudly logged | Nothing is ever blocked. ⚠️ A stolen `admin` session simply uses break-glass, so the control becomes advisory |
+| **Time delay** — one admin acts alone, it executes after N hours unless the other cancels | A thief cannot act instantly, and nothing is blocked. ⚠️ Useless for anything urgent, and destructive acts then sit pending |
+
+📌 **The recommendation on the table, 2026-09-03: break-glass.** A hard block on
+a two-person team gets deleted the first time it is inconvenient, and a weaker
+control that survives beats a stronger one that does not. The alarm is what
+makes it real. ⚠️ This is a recommendation and NOT a decision. The owner has
+not taken it.
+
+##### The four that follow, with defaults
+
+| # | Question | Default on the table |
+|---|---|---|
+| 1 | Which acts need it? | `POST /orgs/purge` only, to start. Suspend is reversible. A credit threshold needs traffic data we do not have |
+| 2 | Who may approve? | Any OTHER active `admin`. Never the requester, even when one person holds two accounts |
+| 3 | Do requests expire? | Yes, 24 hours. A stale approval is its own hazard |
+| 4 | How does the second person hear? | The in-console queue. ⚠️ NOT mail — DEF-7 records why, and the Resend seam lives in the gateway |
+
+##### ⚠️ What is already built, and why this is not urgent
+
+Measured 2026-09-03, by reading the handler. `POST /orgs/purge` already carries
+**five** guards:
+
+1. `admin` role.
+2. A **time-boxed elevation window** (`elevated=True`, CP-12e).
+3. `confirm` must equal `org_slug`, verbatim.
+4. Reachable only from `deleted`, which is reachable only after the export
+   window. So cancel → delete → purge.
+5. A tombstone cannot be re-purged.
+
+📌 **So the mis-click case is CLOSED.** What four-eyes adds over this list is
+protection against a *compromised or malicious* admin, not a tired one. That is
+a real threat and a different one, and it is why the trigger is a second admin
+rather than a first customer.
+
+📌 The remaining thin spot was **notice**, and 2026-09-03 closed the reachable
+half: purge now emits a `CRITICAL` log line (`org.purge`) naming slug,
+tombstone, actor and row counts. ⚠️ Nothing watches those logs yet, so it
+alerts nobody today. It is covered on the day log alerting exists, which is
+DEF-7's own trigger.
+
+##### When to stop deferring
+
+Any one of these, and the recommendation above is no longer enough:
+
+- **A third admin**, especially one who is not a founder.
+- **SOC 2 starts** — already DEF-1's own second trigger.
+- **A customer whose data loss would end the relationship.**
+
 | # | Deferred | Trigger that pulls it in |
 |---|---|---|
 | **DEF-1** | 🔴 **FIRED 2026-09-01. See §9.1.** Four-eyes approval on purge, suspend and large credit grants | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
