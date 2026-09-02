@@ -477,9 +477,9 @@ button already does, so this app gains no new upstream.
 Supabase mails a code only to a user that already exists in `auth.users`. That
 table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the
 first version of `otpStartBody` refused every operator forever, including the
-first one. A Supabase user is not an operator, which is what makes `true` safe
-— the registry answers 403 to a stranger (**D71.2**, **D71.6**), so they gain a
-login to nothing. R7 — the fence is
+first one. A Supabase user is not an operator, and that is what makes `true`
+safe. The registry answers 403 to a stranger (**D71.2**, **D71.6**), so they
+gain a login to nothing. R7 — the fence is
 `otp.test.ts::"asks Supabase to CREATE the user, or nobody ever signs in"`.
 
 🔴 **The page hands the anon key to every visitor, and one fence makes that
