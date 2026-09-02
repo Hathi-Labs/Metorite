@@ -237,13 +237,60 @@ echo "==> Applying the Customer Console ladder (D47 · H-24)"
 #   • no DSN, unit ENABLED     -> the Console is live and misconfigured. FAIL.
 #   • no DSN, unit not enabled -> not provisioned here. Say so LOUDLY, continue.
 # The thing H-24 closes is the SILENT skip. A loud, reasoned skip is not one.
+#
+# ⚠️ A FOURTH CASE, added 2026-09-03 (H-100). The three above ask only whether
+# the DSN is PRESENT. A DSN that is present and DEAD fell into the first one,
+# ran the ladder, and `psql` failed under `set -e` — which took the rest of this
+# file with it. The workbench rebuild is ~360 lines BELOW here, so the box kept
+# serving old code from a stack where all four units read `active`.
+#
+# Measured 2026-09-02: the owner deleted the Console Supabase project during the
+# Mumbai migration and the console `.env` still named it. Deploys failed for
+# hours. `vps-health.yml` probed the public URLs and the app answered on OLD
+# code, so every signal stayed green. Only `acb-pull.service` knew, and nothing
+# read it.
+#
+#   • DSN present but UNREACHABLE, unit ENABLED     -> FAIL, and NAME the cause.
+#   • DSN present but UNREACHABLE, unit not enabled -> skip LOUDLY, continue.
+#
+# The second half is the part that matters most. A dead Console DSN on a box
+# that does not run the Console must not take the tenant deploy down with it.
+# That is the whole failure this case exists to stop.
 CC_ENV="$APP_DIR/apps/services/customer_console/.env"
 CC_DSN="$(grep -E '^CUSTOMER_CONSOLE_DATABASE_URL=' "$CC_ENV" 2>/dev/null | tail -1 | cut -d= -f2-)"
 # systemd's EnvironmentFile accepts quoted values; psql would take the quotes
 # literally and try to resolve them as a hostname.
 CC_DSN="${CC_DSN%\"}"; CC_DSN="${CC_DSN#\"}"
 CC_DSN="${CC_DSN%\'}"; CC_DSN="${CC_DSN#\'}"
-if [ -n "$CC_DSN" ]; then
+# Reachability probe. `psql` wants a libpq URL and the service DSN carries a
+# SQLAlchemy driver suffix, so strip it the same way
+# `apply_customer_console_migrations.sh` does.
+#
+# ⚠️ NEVER let this command's stderr reach a log. `psql` quotes the WHOLE
+# connection string, password included, when it cannot connect — that is how a
+# tenant credential reached a transcript on 2026-09-02 (H-97). Exit code only.
+cc_reachable() {
+  local dsn="${CC_DSN/+psycopg2/}"
+  dsn="${dsn/+psycopg/}"
+  command -v psql >/dev/null 2>&1 || return 0   # cannot probe -> do not block
+  PGCONNECT_TIMEOUT=10 psql "$dsn" -tAc 'select 1' >/dev/null 2>&1
+}
+
+if [ -n "$CC_DSN" ] && ! cc_reachable; then
+  if systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+    echo "    !! The Console DSN in $CC_ENV is PRESENT but UNREACHABLE, and"
+    echo "       acb-customer-console is ENABLED. The database it names is gone,"
+    echo "       renamed, or refusing this credential."
+    echo "       Refusing to continue: the ladder cannot run, so the service"
+    echo "       would serve new code against an unmigrated schema."
+    echo "       Fix CUSTOMER_CONSOLE_DATABASE_URL on the box, then redeploy."
+    exit 1
+  fi
+  echo "    !! The Console DSN in $CC_ENV is PRESENT but UNREACHABLE."
+  echo "       acb-customer-console is NOT enabled here, so this box does not"
+  echo "       serve the Console -> ladder SKIPPED, deploy CONTINUES."
+  echo "       ⚠️ Still a defect: the .env names a database that does not answer."
+elif [ -n "$CC_DSN" ]; then
   CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
     bash scripts/apply_customer_console_migrations.sh < /dev/null
 elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
