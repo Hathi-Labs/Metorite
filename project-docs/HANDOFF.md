@@ -210,7 +210,14 @@ line — never reclaim a number by deleting the other entry.
   needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
   **C4** already says the two decisions arrive together and must not be
   separated. The owner takes the shape. An agent then builds it.
+- 📌 **§9.1a holds the menu — read it before you ask the owner
+  anything.** It holds the one decision that matters (what happens when the
+  second admin is asleep), the four that follow with defaults, and the five
+  guards `POST /orgs/purge` ALREADY carries. ⚠️ That list matters: those five
+  guards close the mis-click case. So four-eyes buys protection against a
+  compromised admin and not a tired one. Do not re-derive this in chat.
 - **Authority:** `specs/operator_identity_and_access.md` §9 DEF-1 · §9.1 ·
+  **§9.1a (the shape)** ·
   `work_plan.md` §6.0 C4 · D64.6
 - **Added:** 2026-09-01 · WS-31 D70 documentation session
 

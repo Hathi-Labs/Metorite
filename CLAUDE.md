@@ -286,6 +286,25 @@ Rules that make it work:
   to be the real gate and no longer exists, so the gate is now: **look at your
   surface in light mode, at compact density, and under a changed accent — and
   at its neighbour.**
+- **⚠️ START A DEVELOPMENT SESSION IN ITS OWN WORKTREE.** Owner directive,
+  2026-09-03. Two sessions in one checkout fight over one working tree: one
+  switches the branch under the other, `git status` mixes their edits, and a
+  `reset --hard` by either destroys the other's uncommitted work. None of it
+  announces itself — it reads as the other session being wrong.
+
+      bash scripts/worktree.sh new <slug>      # then cd into the path it prints
+      bash scripts/worktree.sh list
+      bash scripts/worktree.sh remove <slug>
+
+  `worktree-notice.mjs` reports at session start which checkout you are in. It
+  informs and never blocks. **Reading, answering a question, or a one-file fix
+  the owner is watching needs no worktree** — this is a rule about parallel
+  work, not a toll on every session.
+  ⚠️ **Use `remove`, never `git worktree remove` by hand.** Some worktrees carry
+  a `node_modules` junction into the main checkout, and the bare command
+  follows it and deletes the real one. The script unlinks the junction first.
+  ⚠️ Frontend work needs its own `npm install` per worktree. Turbopack resolves
+  through a junction to the wrong root, so do not link it.
 - **Keep branches short and integrate often.** Long branches are the root cause
   behind the migration-renumber collisions, the green-alone/red-together PRs and
   a duplicated tenancy design. Three or four in flight is the ceiling.
