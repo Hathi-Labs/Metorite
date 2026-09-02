@@ -4,7 +4,7 @@ import {
   signinProvider,
   usesSessions,
 } from "@/lib/identity";
-import { emailCodeConfig } from "@/lib/otp";
+import { directorySigninEnabled, emailCodeConfig } from "@/lib/otp";
 import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
 
@@ -58,7 +58,12 @@ export default async function LoginPage({
   const origin = (process.env.OPERATOR_CONSOLE_ORIGIN ?? "").trim();
   const provider = signinProvider();
   const label = providerLabel();
-  const href = origin ? authorizeUrl(origin, provider) : null;
+  // ⚠️ **A button that cannot open is worse than no button.** Until the owner
+  // configures the provider in Supabase, offering it sends the reader to an
+  // error they will read as their own mistake. `OPERATOR_DIRECTORY_SIGNIN=0`
+  // takes it off the page, and it defaults ON so no other box changes.
+  const href =
+    origin && directorySigninEnabled() ? authorizeUrl(origin, provider) : null;
 
   // The D71.3 fallback. `null` whenever the form could not work, so the page
   // shows nothing rather than a box that mails nobody. `otp.ts` says why, and

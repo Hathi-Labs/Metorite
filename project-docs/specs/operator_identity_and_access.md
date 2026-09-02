@@ -468,10 +468,28 @@ signs in. `operators.bootstrap_allowed` keeps the claim comparison in
 `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
 A bootstrap email nobody sets admits nobody.
 
+⛔ **The owner chose EMAIL-ONLY on 2026-09-02.** Google sign-in waits. Any
+person with any address may sign in once an admin creates their operator row,
+which is exactly what **D71.2** and **D71.3** describe together.
+`OPERATOR_DIRECTORY_SIGNIN=0` takes the directory button off the page, and it
+defaults ON so no other deployment changes. ⚠️ **It removes a BUTTON and never
+a check.** The API still admits a directory sign-in that arrives.
+
 ✅ **CP-12j built the page half on 2026-09-02.** `login/page.tsx` shows the
 code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
 when, and the browser talks to Supabase directly — the same way the OAuth
 button already does, so this app gains no new upstream.
+
+🔴 **`should_create_user` must be TRUE, and a production flip proved it.**
+Supabase mails a code only to a user that already exists in `auth.users`. That
+table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the
+first version of `otpStartBody` refused every operator forever, including the
+first one.
+
+A Supabase user is not an operator, and that is what makes `true` safe. The
+registry answers 403 to a stranger (**D71.2**, **D71.6**), so they gain a login
+to nothing. R7 — the fence is
+`otp.test.ts::"asks Supabase to CREATE the user, or nobody ever signs in"`.
 
 🔴 **The page hands the anon key to every visitor, and one fence makes that
 safe.** `isPublishableKey` refuses a `service_role` JWT and an `sb_secret_`
@@ -510,6 +528,7 @@ and it reads `apps/services/customer_console/.env`. The Next app reads its own.
 | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
 | `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
 | **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
+| `OPERATOR_DIRECTORY_SIGNIN` | — | ✅ | `lib/otp.ts::directorySigninEnabled` — ⚠️ **absent means ON** |
 
 ⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
 is bold.** The Next app builds the Supabase authorize link from it. The API

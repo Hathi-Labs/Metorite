@@ -23,7 +23,11 @@ import {
   SIGNIN_PROVIDER_FLAG,
   signinProvider,
 } from "@/lib/identity";
-import { ANON_KEY_FLAG, EMAIL_OTP_FLAG } from "@/lib/otp";
+import {
+  ANON_KEY_FLAG,
+  DIRECTORY_SIGNIN_FLAG,
+  EMAIL_OTP_FLAG,
+} from "@/lib/otp";
 import LoginPage from "./page";
 import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
@@ -65,6 +69,22 @@ function types(node: Node, out: unknown[] = []): unknown[] {
   const el = node as { props?: { children?: Node }; type?: unknown };
   if (el.type !== undefined) out.push(el.type);
   if (el.props && "children" in el.props) types(el.props.children, out);
+  return out;
+}
+
+//: Every `className` in the tree. A divider carries no text worth asserting
+//: on, so its class is what identifies it.
+function classes(node: Node, out: string[] = []): string[] {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((child) => classes(child, out));
+    return out;
+  }
+  const el = node as { props?: { children?: Node; className?: unknown } };
+  if (typeof el.props?.className === "string") out.push(el.props.className);
+  if (el.props && "children" in el.props) classes(el.props.children, out);
   return out;
 }
 
@@ -321,5 +341,49 @@ describe("the email-code fallback", () => {
     vi.stubEnv(EMAIL_OTP_FLAG, "1");
     vi.stubEnv(ANON_KEY_FLAG, key("anon"));
     expect(types(await render())).not.toContain(InterimForm);
+  });
+});
+
+describe("email-only sign-in — the owner's 2026-09-02 shape", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "0");
+  });
+
+  it("offers the code form and NO directory button", async () => {
+    const tree = await render();
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(hrefs(tree).some((h) => h.includes("/auth/v1/authorize"))).toBe(false);
+  });
+
+  it("prints no configuration banner and no recovery note", async () => {
+    // A person on an email-only box is not stranded and not misconfigured.
+    // Either message here would send them looking for a problem they do not
+    // have.
+    const body = text(await render());
+    expect(body).not.toContain("Sign-in is not configured");
+    expect(body).not.toContain(RECOVERY);
+  });
+
+  it("drops the 'or' divider, because there is nothing to choose between", async () => {
+    // ⚠️ Asserted on the className in the TREE, not on visible text. An
+    // earlier version of this case read `text()` for "or-rule" — a class name
+    // is never text, so it could not have failed and proved nothing.
+    expect(classes(await render())).not.toContain("or-rule");
+    // And the divider IS there when both doors are offered, which is what
+    // proves the walker above can see it at all.
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "1");
+    expect(classes(await render())).toContain("or-rule");
+  });
+
+  it("still shows the banner when the code form is off TOO", async () => {
+    vi.stubEnv(EMAIL_OTP_FLAG, "0");
+    const body = text(await render());
+    expect(body).toContain("Sign-in is not configured");
+    expect(body).toContain(RECOVERY);
   });
 });
