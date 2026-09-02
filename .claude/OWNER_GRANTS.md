@@ -81,3 +81,4 @@ ALLOW-UNTIL 2026-09-30 secrets — dev phase: read .env on the box
 ALLOW-UNTIL 2026-09-30 env-write — dev phase: write .env on the box
 ALLOW-UNTIL 2026-09-30 deploy-write — dev phase: write under deploy/
 ALLOW-UNTIL 2026-09-30 enforcement-flip — dev phase: flip feature flags
+ALLOW-UNTIL 2026-09-30 guard-write — dev phase: repair guard false positives
