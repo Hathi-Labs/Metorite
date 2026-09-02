@@ -96,29 +96,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** H-3 (same class) · `work_plan.md` §6 credentials
 - **Added:** 2026-09-01 · guardrail-relaxation session, self-reported
 
-### H-95 · The box's `.env` has a DUPLICATE `ACB_ENV`, and only line order saves it · [OWNER]
-- **Check:** `ssh metorite 'grep -n "^ACB_ENV" /opt/acb/app/.env'`. Two lines
-  means this is live. Measured 2026-09-01: `dev` at line 212, `prod` at 329.
-- **Why:** systemd's `EnvironmentFile` and pydantic-settings both take the
-  **last** value, so production is correct — by line order alone. Anything that
-  inserts near line 212, or any reader that takes the FIRST match, re-opens
-  H-90 and republishes the whole API schema.
-  📌 Confirmed on the running process: `/proc/<pid>/environ` holds
-  `ACB_ENV=prod`, and `/version` agrees. **Nothing fails today.**
-  📌 **An agent cannot do this one.** The harness classifier refuses an
-  agent-initiated in-place edit of a production `.env` over `ssh`, whatever the
-  repo grants say. It needs a human at a keyboard.
-- **The fix, and it is one line:**
-
-      ssh metorite
-      cd /opt/acb/app && cp .env .env.bak-$(date +%F) && sed -i '212d' .env
-      grep -n '^ACB_ENV' .env    # expect ONE line, prod
-
-  No restart. The running value does not change — this only removes the
-  contradiction.
-- **Authority:** H-90 (closed) · H-94 (the durable half) · `check_env_duplicates`
-- **Added:** 2026-09-01 · found during the SSH access check
-
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
 - **Check:** run this on the Console database.
 
