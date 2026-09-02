@@ -20,9 +20,18 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   replaces the Entra `tid`. `OPERATOR_SIGNIN_PROVIDER` is the switch and it
   defaults to `azure`. The vocabulary lives in
   `customer_console/operators.py`, and `src/lib/identity.ts` holds the console
-  half (`signinProvider`, `providerLabel`). **Email OTP is refused here**
-  (D70.2): this console reaches every customer organization, so inbox control
-  must never become staff access.
+  half (`signinProvider`, `providerLabel`).
+  ⛔ **D71 NARROWED D70.2 on 2026-09-02, and the narrowing is easy to
+  over-read.** Email OTP was refused here outright. It is now admitted when
+  THREE things hold together: `OPERATOR_ADMISSION_MODE=registry`,
+  `OPERATOR_ALLOW_EMAIL_OTP` on, and the operator's own
+  `operator.allowed_methods` row permitting it. The owner assigns operators
+  Gmail and outside addresses, so a Workspace-only directory cannot describe
+  the staff. **The reasoning behind D70.2 still stands** — this console reaches
+  every customer organization, so inbox control must never become staff access
+  for anybody the owner has not named. The per-row pin is what keeps that true.
+  ⚠️ **The page has NO code form yet** (H-99). The backend admits a code and no
+  browser sends one, so Google is still the only door a person can use.
   ⚠️ **`OPERATOR_SIGNIN_PROVIDER` lives in TWO env files.** This app reads it,
   and the Customer Console API reads it too. Set it in one only and sign-in
   answers 401 with no message that names the cause. `OPERATOR_SUPABASE_URL` is

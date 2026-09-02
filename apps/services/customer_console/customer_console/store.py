@@ -2279,7 +2279,7 @@ def operator_by_email(conn: Connection, email: str) -> dict[str, Any] | None:
     row = conn.execute(
         text(
             """
-            SELECT id, email, role, status, directory_subject
+            SELECT id, email, role, status, directory_subject, allowed_methods
               FROM operator
              WHERE lower(email) = :email
             """

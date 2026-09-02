@@ -75,6 +75,32 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-99 · CP-12j — the Operator Console page has NO email-code form · [AGENT]
+- **Check:** `rg -n "signInWithOtp|verifyOtp" workbench/operator_console/src/`
+  → no hit means this entry is still real. A hit means somebody built the form,
+  so delete this entry.
+- **Why:** CP-12i built the backend half of **D71.3** on 2026-09-02. The
+  Console admits an email code, and no browser ever sends one. So the fallback
+  the owner asked for reaches nobody until this lands.
+- **What to build.** `login/page.tsx` shows one door today, and
+  `usesSessions()` picks it. Add a second: an email box, then a code box.
+  Supabase does the work in the browser — `signInWithOtp({email})`, then
+  `verifyOtp`. Post the `access_token` it returns to
+  `POST /api/operator/session`, which already takes exactly that.
+- ⚠️ **Show the code form only when the box allows it.** The page must read a
+  server value, the way it reads `OPERATOR_SIGNIN_PROVIDER` now. A form that
+  is always visible answers 401 on a box that refuses codes, and names no
+  cause. `OPERATOR_ALLOW_EMAIL_OTP` is the value, and spec §4.2a holds the
+  two-container table it must join.
+- ⚠️ **Google stays the first door, and the code is the fallback.** D71.4 pins
+  a person to their own methods, so a code form beside the Google button is
+  correct. A code form INSTEAD of it is not.
+- **Authority:** `specs/operator_identity_and_access.md` §4.1b · **D71.3** ·
+  `work_plan.md` §2 WS-31 CP-12j
+- **Added:** 2026-09-02 · WS-31 CP-12i session, at the moment the backend
+  half merged
+
+
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
 - **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
   machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the

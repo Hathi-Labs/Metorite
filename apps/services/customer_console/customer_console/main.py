@@ -1199,7 +1199,18 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             # The fence watches the CALL, and it is
             # `test_operator_signin.py`
             # `::test_the_bootstrap_never_fires_on_a_missing_directory_claim`.
-            if row is None and operators.directory_matches(identity.tid):
+            # ⚠️ **D71.5 moved this gate, and the move is the single most
+            # dangerous line in that decision.** It read
+            # `operators.directory_matches(identity.tid)`. In `registry` mode
+            # there is no directory claim to match, so that call is always
+            # False and the bootstrap could never fire — and the obvious
+            # "fix", deleting the clause, hands `admin` to the FIRST STRANGER
+            # who signs in. `bootstrap_allowed` keeps the directory comparison
+            # in `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL`
+            # exactly in `registry` mode. Every doubt reads False.
+            if row is None and operators.bootstrap_allowed(
+                identity.email, identity.tid
+            ):
                 try:
                     operators.bootstrap(conn)
                 except operators.BootstrapRefused:
@@ -1209,7 +1220,10 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
                 row = store.operator_by_email(conn, identity.email)
 
             operator = operators.admit(
-                row, tid=identity.tid, email=identity.email
+                row,
+                tid=identity.tid,
+                email=identity.email,
+                method=identity.method,
             )
 
             store.operator_session_insert(
