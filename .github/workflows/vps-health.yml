@@ -175,6 +175,76 @@ jobs:
 
           [ "$FAILED" -eq 0 ]
 
+  delivery:
+    name: "The deployed commit must match main"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compare the serving SHA against origin/main
+        env:
+          BASE: https://api.metorite.com
+        run: |
+          # ⚠️ EVERY OTHER JOB HERE ASKS "DOES THE MACHINERY ANSWER?".
+          # None of them asks "DID DELIVERY LAND?". Those are different
+          # questions, and an app running yesterday's code answers the first
+          # one perfectly.
+          #
+          # This is the FOURTH time that gap cost real hours: H-89 (the app
+          # stayed up on old code), the Operator Console drift of 2026-08-28,
+          # the `.venv` ownership failure of 2026-08-26, and H-100 on
+          # 2026-09-02 — a dead Console DSN killed `vps_apply.sh` ~360 lines
+          # before the workbench rebuild. Each time every probe stayed green
+          # and somebody found it by accident.
+          #
+          # `GET /version` has reported the serving SHA since 2026-08-25. The
+          # deploy job gates on it. NOTHING watched it between deploys, so a
+          # box that silently stopped converging looked identical to one that
+          # had nothing to do.
+          want="$(git rev-parse HEAD)"
+          got="$(curl -s -m 25 "${BASE}/version" 2>/dev/null \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' \
+                 2>/dev/null || true)"
+
+          if [ -z "$got" ]; then
+            # Unreadable is NOT a delivery failure. The `probe` job owns
+            # reachability, and two alarms for one outage teach people to
+            # mute both.
+            echo "::warning::/version did not answer — delivery unconfirmed, see the probe job"
+            exit 0
+          fi
+
+          if [ "$got" = "$want" ]; then
+            echo "OK      serving ${got:0:8}, which is origin/main"
+            exit 0
+          fi
+
+          # A deploy in flight is normal, and this job runs hourly. So only
+          # call it a failure once the gap has outlived any plausible deploy.
+          # The deploy job's own worst case is ~105 minutes.
+          if git merge-base --is-ancestor "$got" HEAD 2>/dev/null; then
+            behind="$(git rev-list --count "$got..HEAD")"
+            age="$(git log -1 --format=%ct HEAD)"
+            now="$(date +%s)"
+            hours=$(( (now - age) / 3600 ))
+            echo "serving ${got:0:8}, main is ${want:0:8} (${behind} commit(s) ahead, head is ${hours}h old)"
+            if [ "$hours" -ge 3 ]; then
+              echo "::error::main has been ${behind} commit(s) ahead for ${hours}h — delivery is NOT landing"
+              echo "         Check: ssh metorite 'systemctl show acb-pull.service -p Result'"
+              echo "         A green stack proves nothing here (H-100)."
+              exit 1
+            fi
+            echo "::notice::gap is ${hours}h — inside the deploy window, not failing yet"
+            exit 0
+          fi
+
+          # The box serves a commit that is not an ancestor of main. A force
+          # push, a rollback, or a box pinned to another branch. Never normal.
+          echo "::error::serving ${got:0:8}, which is NOT an ancestor of main"
+          exit 1
+
   # Only runs on manual dispatch with diagnose=true. SSH is the thing that
   # breaks during these outages, so this is best-effort and never fails the run.
   diagnose:
