@@ -14,9 +14,11 @@ agree with unconditionally.
 Run:
     uv run pytest tests/unit/test_org_purge_console.py
 """
+
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -81,17 +83,23 @@ def _box(db):
 def _new_org(client) -> dict:
     slug = f"cp2g-{uuid.uuid4().hex[:8]}"
     owner = f"owner@{slug}.example"
-    r = client.post("/orgs/provision", headers=OP, json={
-        "slug": slug, "name": "N", "owner_email": owner,
-        "core_seats": 2, "deployment_label": BOX_LABEL,
-    })
+    r = client.post(
+        "/orgs/provision",
+        headers=OP,
+        json={
+            "slug": slug,
+            "name": "N",
+            "owner_email": owner,
+            "core_seats": 2,
+            "deployment_label": BOX_LABEL,
+        },
+    )
     assert r.status_code == 200, r.text
     return {"slug": slug, "owner": owner, "id": r.json()["organization_id"]}
 
 
 def _move(client, slug: str, target: str) -> None:
-    r = client.post("/orgs/lifecycle", headers=OP,
-                    json={"org_slug": slug, "target": target})
+    r = client.post("/orgs/lifecycle", headers=OP, json={"org_slug": slug, "target": target})
     assert r.status_code == 200, r.text
 
 
@@ -102,16 +110,19 @@ def _walk_to_deleted(client, slug: str) -> None:
 
 
 def _purge(client, slug: str, *, confirm: str | None = None):
-    return client.post("/orgs/purge", headers=OP, json={
-        "org_slug": slug, "confirm": slug if confirm is None else confirm,
-    })
+    return client.post(
+        "/orgs/purge",
+        headers=OP,
+        json={
+            "org_slug": slug,
+            "confirm": slug if confirm is None else confirm,
+        },
+    )
 
 
 class TestTheGuards:
     @pytest.mark.parametrize("state", ["trial", "cancelled"])
-    def test_purge_is_refused_outside_deleted_and_names_the_path(
-        self, client, state
-    ):
+    def test_purge_is_refused_outside_deleted_and_names_the_path(self, client, state):
         org = _new_org(client)
         if state == "cancelled":
             _move(client, org["slug"], "cancelled")
@@ -136,9 +147,7 @@ class TestTheGuards:
 
 
 class TestThePurge:
-    def test_personal_data_goes_the_books_stay_and_the_slug_is_freed(
-        self, client, db
-    ):
+    def test_personal_data_goes_the_books_stay_and_the_slug_is_freed(self, client, db):
         org = _new_org(client)
         _walk_to_deleted(client, org["slug"])
 
@@ -155,8 +164,7 @@ class TestThePurge:
         with db.begin() as c:
             for table in _ORG_PURGE_DELETES:
                 left = c.execute(
-                    text(f"SELECT count(*) FROM {table} "
-                         "WHERE organization_id = :i"),
+                    text(f"SELECT count(*) FROM {table} WHERE organization_id = :i"),
                     {"i": org["id"]},
                 ).scalar_one()
                 assert left == 0, f"{table} still holds rows"
@@ -170,32 +178,37 @@ class TestThePurge:
             assert row.slug == receipt["tombstone"]
             assert row.slug.startswith(org["slug"] + "-purged-")
             subs = c.execute(
-                text("SELECT count(*) FROM org_subscription "
-                     "WHERE organization_id = :i"),
+                text("SELECT count(*) FROM org_subscription WHERE organization_id = :i"),
                 {"i": org["id"]},
             ).scalar_one()
             assert subs >= 1
             # The audit trail records the act with both names.
             audit = c.execute(
-                text("SELECT count(*) FROM control_audit "
-                     "WHERE organization_id = :i AND action = 'org.purge'"),
+                text(
+                    "SELECT count(*) FROM control_audit "
+                    "WHERE organization_id = :i AND action = 'org.purge'"
+                ),
                 {"i": org["id"]},
             ).scalar_one()
             assert audit == 1
 
         # THE point of the tombstone: the slug is free — provisioning the
         # same name again succeeds and mints a NEW organization.
-        r2 = client.post("/orgs/provision", headers=OP, json={
-            "slug": org["slug"], "name": "N2",
-            "owner_email": f"second-{org['owner']}",
-            "core_seats": 1, "deployment_label": BOX_LABEL,
-        })
+        r2 = client.post(
+            "/orgs/provision",
+            headers=OP,
+            json={
+                "slug": org["slug"],
+                "name": "N2",
+                "owner_email": f"second-{org['owner']}",
+                "core_seats": 1,
+                "deployment_label": BOX_LABEL,
+            },
+        )
         assert r2.status_code == 200, r2.text
         assert r2.json()["organization_id"] != org["id"]
 
-    def test_a_second_purge_of_the_same_slug_is_a_404_not_a_second_kill(
-        self, client
-    ):
+    def test_a_second_purge_of_the_same_slug_is_a_404_not_a_second_kill(self, client):
         """After the tombstone rename the original slug no longer resolves —
         a stale retry cannot hit a NEW org that later took the name... unless
         that new org is itself walked to `deleted` first, which is the
@@ -226,22 +239,28 @@ class TestThePurge:
         org = _new_org(client)
         with db.begin() as c:
             c.execute(
-                text("INSERT INTO usage_event "
-                     "(organization_id, request_id, user_email) "
-                     "VALUES (:i, :r, :e)"),
-                {"i": org["id"], "r": f"req-{uuid.uuid4().hex[:8]}",
-                 "e": org["owner"]},
+                text(
+                    "INSERT INTO usage_event "
+                    "(organization_id, request_id, user_email) "
+                    "VALUES (:i, :r, :e)"
+                ),
+                {"i": org["id"], "r": f"req-{uuid.uuid4().hex[:8]}", "e": org["owner"]},
             )
             # Actor deliberately an ADDRESS: under the deployment-key scheme
             # the acting admin's email lands in `control_audit.actor` itself
             # (repair round 2's blocking find — the first scrub covered
             # `detail` and left this column leaking).
             c.execute(
-                text("INSERT INTO control_audit "
-                     "(organization_id, actor, action, detail) "
-                     "VALUES (:i, :a, 'member.add', CAST(:d AS jsonb))"),
-                {"i": org["id"], "a": f"admin@{org['slug']}.example",
-                 "d": json.dumps({"email": org["owner"], "role": "member"})},
+                text(
+                    "INSERT INTO control_audit "
+                    "(organization_id, actor, action, detail) "
+                    "VALUES (:i, :a, 'member.add', CAST(:d AS jsonb))"
+                ),
+                {
+                    "i": org["id"],
+                    "a": f"admin@{org['slug']}.example",
+                    "d": json.dumps({"email": org["owner"], "role": "member"}),
+                },
             )
         _walk_to_deleted(client, org["slug"])
         r = _purge(client, org["slug"])
@@ -251,45 +270,97 @@ class TestThePurge:
         assert r.json()["scrubbed"]["control_audit.actor"] >= 1
         with db.begin() as c:
             emails = c.execute(
-                text("SELECT count(*) FROM usage_event "
-                     "WHERE organization_id = :i AND user_email IS NOT NULL"),
+                text(
+                    "SELECT count(*) FROM usage_event "
+                    "WHERE organization_id = :i AND user_email IS NOT NULL"
+                ),
                 {"i": org["id"]},
             ).scalar_one()
             assert emails == 0
             # The usage row itself survives — scrubbed, not deleted.
             rows = c.execute(
-                text("SELECT count(*) FROM usage_event "
-                     "WHERE organization_id = :i"),
+                text("SELECT count(*) FROM usage_event WHERE organization_id = :i"),
                 {"i": org["id"]},
             ).scalar_one()
             assert rows == 1
             leaking = c.execute(
-                text("SELECT count(*) FROM control_audit "
-                     "WHERE organization_id = :i AND detail ?| :keys"),
+                text(
+                    "SELECT count(*) FROM control_audit "
+                    "WHERE organization_id = :i AND detail ?| :keys"
+                ),
                 {"i": org["id"], "keys": list(_AUDIT_EMAIL_KEYS)},
             ).scalar_one()
             assert leaking == 0
             # The column beside it too: no email-shaped actor survives (the
             # role-word 'operator' does — it names no one).
             actor_leak = c.execute(
-                text("SELECT count(*) FROM control_audit "
-                     "WHERE organization_id = :i AND actor LIKE '%@%'"),
+                text(
+                    "SELECT count(*) FROM control_audit "
+                    "WHERE organization_id = :i AND actor LIKE '%@%'"
+                ),
                 {"i": org["id"]},
             ).scalar_one()
             assert actor_leak == 0
             # The audit rows themselves survive — the trail is the point.
             trail = c.execute(
-                text("SELECT count(*) FROM control_audit "
-                     "WHERE organization_id = :i"),
+                text("SELECT count(*) FROM control_audit WHERE organization_id = :i"),
                 {"i": org["id"]},
             ).scalar_one()
             assert trail >= 2  # the seeded row + org.purge at least
 
 
+class TestThePurgeAnnouncesItself:
+    """The audit row is a RECORD. It is not a notification.
+
+    `_audit` writes to `control_audit` and nothing else, so a purge reaches
+    the other admins only when somebody thinks to look. DEF-5 states the
+    problem in its own trigger: "Nobody reads a log until it alerts."
+
+    ⚠️ This is NOT four-eyes and does not close H-93. It is the loudest thing
+    this door can do today, and DEF-7 chose the shape: the Resend seam lives
+    in the gateway, so a log line is the durable record and the thing an alert
+    rule fires on.
+    """
+
+    def test_a_purge_emits_a_critical_log_line(self, client, caplog):
+        org = _new_org(client)
+        _walk_to_deleted(client, org["slug"])
+
+        with caplog.at_level(logging.CRITICAL, logger="platform.router"):
+            r = _purge(client, org["slug"])
+        assert r.status_code == 200, r.text
+
+        crit = [
+            rec
+            for rec in caplog.records
+            if rec.levelno >= logging.CRITICAL and rec.message == "org.purge"
+        ]
+        assert len(crit) == 1, (
+            "destroying an organization must emit exactly one CRITICAL line — "
+            f"got {[(x.levelname, x.message) for x in caplog.records]}"
+        )
+        rec = crit[0]
+        assert rec.purge_slug == org["slug"]
+        assert rec.purge_tombstone == r.json()["tombstone"]
+        assert rec.purge_actor, "the line must name who did it"
+
+    def test_a_refused_purge_stays_quiet(self, client, caplog):
+        """⚠️ The counterpart, and the half that keeps the line worth reading.
+
+        An alert that fires on attempts nobody completed is an alert people
+        mute. Only a purge that actually happened may speak.
+        """
+        org = _new_org(client)  # still 'active' — the lifecycle guard refuses
+        with caplog.at_level(logging.CRITICAL, logger="platform.router"):
+            r = _purge(client, org["slug"])
+        assert r.status_code == 409, r.text
+        assert not [rec for rec in caplog.records if rec.message == "org.purge"], (
+            "a refused purge must not announce one"
+        )
+
+
 class TestTheClassificationCannotGoStale:
-    def test_every_org_scoped_console_table_is_deleted_or_kept_by_name(
-        self, db
-    ):
+    def test_every_org_scoped_console_table_is_deleted_or_kept_by_name(self, db):
         """The tenant half's `TestTheExclusionCannotGoStale`, applied here
         (review round 1, P2: `discount_code`/`discount_redemption`/
         `provisioning_run` were in NEITHER list, and the receipt-vs-DELETES
@@ -298,11 +369,13 @@ class TestTheClassificationCannotGoStale:
         with db.begin() as c:
             org_scoped = {
                 r[0]
-                for r in c.execute(text(
-                    "SELECT table_name FROM information_schema.columns "
-                    "WHERE column_name = 'organization_id' "
-                    "  AND table_schema = 'public'"
-                ))
+                for r in c.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.columns "
+                        "WHERE column_name = 'organization_id' "
+                        "  AND table_schema = 'public'"
+                    )
+                )
             }
         # The subject row itself: `organization` is keyed by `id`, not by an
         # `organization_id` column, but it is emphatically part of the

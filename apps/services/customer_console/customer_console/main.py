@@ -3208,6 +3208,35 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
                {"slug": req.org_slug, "tombstone": tombstone,
                 "deleted": deleted, "scrubbed": scrubbed},
                actor=staff.actor)
+    # ⚠️ THE AUDIT ROW IS A RECORD, NOT A NOTIFICATION. `_audit` writes to
+    # `control_audit` and nothing else, so a purge reaches the other admins
+    # only when somebody thinks to look. DEF-5 states the problem in its own
+    # trigger: "Nobody reads a log until it alerts."
+    #
+    # This is the loudest thing this door can do TODAY. DEF-7 decided the
+    # shape deliberately: the Resend seam lives in the GATEWAY, and reaching
+    # across a service boundary for one message would put a second email seam
+    # inside the Console. So the log line is the durable record and the thing
+    # an alert rule fires on.
+    #
+    # ⚠️ HONEST LIMIT: nothing watches these logs yet, so this alerts NOBODY
+    # today. It earns its place twice anyway — `journalctl -u
+    # acb-customer-console` names the act during an incident, and purge is
+    # already covered on the day log alerting arrives (DEF-7's own trigger).
+    # It is not four-eyes and does not close H-93.
+    #
+    # Outside the transaction on purpose: the books are committed by here, so
+    # a logging fault can never roll back a completed purge.
+    _log.critical(
+        "org.purge",
+        extra={
+            "purge_slug": req.org_slug,
+            "purge_tombstone": tombstone,
+            "purge_actor": staff.actor,
+            "purge_deleted_rows": sum(deleted.values()),
+            "purge_scrubbed_rows": sum(scrubbed.values()),
+        },
+    )
     return {
         "slug": req.org_slug,
         "tombstone": tombstone,
