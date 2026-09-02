@@ -57,6 +57,23 @@ const CASES = [
   ['force push', bash('git push --' + 'force origin main'), true],
   ['push -f', bash('git push -f origin ws-5'), true],
   ['filter-branch', bash('git filter-' + 'branch --tree-filter rm -rf secrets'), true],
+  ['filter-repo', bash('git filter-' + 'repo --path secrets --invert-paths'), true],
+
+  // ── reset --hard: the gate was BACKWARDS until 2026-09-02 ────────────────
+  // It matched only `reset --hard origin`, so it blocked the ONE safe shape
+  // and permitted every destructive one. These cases pin the corrected
+  // direction, because the inversion read as deliberate for weeks.
+  //
+  // SAFE — a local pointer move to a ref that is already published.
+  ['reset --hard to origin ref', bash('git reset --' + 'hard origin/main'), false],
+  ['reset --hard to a topic branch on origin', bash('git reset --' + 'hard origin/ws-5-foo'), false],
+  ['reset --hard to upstream ref', bash('git reset --' + 'hard upstream/main'), false],
+  // DESTRUCTIVE — these orphan COMMITTED work, and the old form allowed them.
+  ['reset --hard to HEAD~n orphans commits', bash('git reset --' + 'hard HEAD~3'), true],
+  ['reset --hard to a raw sha orphans commits', bash('git reset --' + 'hard abc1234'), true],
+  ['bare reset --hard discards the tree', bash('git reset --' + 'hard'), true],
+  // ⚠️ `origin` alone is NOT a ref sync — it is ambiguous and not a branch.
+  ['reset --hard to bare origin still blocks', bash('git reset --' + 'hard origin'), true],
   ['skills flag flip', bash('export SKILLS_INDEX_ONLY' + '=1'), true],
   ['mem0 flip', bash('MEM0_ENABLED' + '=true uv run pytest'), true],
   ['permission enforce', bash('AGENT_PERMISSION_MODE' + '=enforce make test'), true],
@@ -219,7 +236,10 @@ const CASES = [
   ],
   [
     'ALLOW-UNTIL deploy does NOT grant history-rewrite',
-    bash('git reset --hard origin/main'),
+    // ⚠️ Was `git reset --hard origin/main` until 2026-09-02. That shape is a
+    // local sync now and correctly ALLOWED, so it stopped testing anything.
+    // Use a rewrite that touches history other people have pulled.
+    bash('git reset --' + 'hard HEAD~3'),
     true,
     projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
   ],
@@ -284,6 +304,37 @@ const CASES = [
   [
     'a real write under deploy/ still blocks after a -m',
     bash('git commit -m "note" && cp x.service deploy/hostinger/x.service'),
+    true,
+  ],
+
+  // ── OWNER_GATES must judge the STRIPPED command (2026-09-02) ───────────
+  // The gate loop read the RAW command while the protected-path arm read the
+  // stripped one. So a commit message DESCRIBING a gated act was read as
+  // performing it. git never executes a `-m` body.
+  [
+    'a -m body describing a reset is prose',
+    bash('git commit -m "the gate allowed reset --' + 'hard HEAD~3 until today"'),
+    false,
+  ],
+  [
+    'a -m body describing ssh is prose',
+    bash('git commit -m "ssh ' + 'root@box to read the logs"'),
+    false,
+  ],
+  [
+    'a -m body describing a deploy script is prose',
+    bash('git commit -m "document deploy/' + 'release.sh for the runbook"'),
+    false,
+  ],
+  // ⚠️ THE STRIP MUST NOT HIDE A REAL ACT. Outside the quoted body, it blocks.
+  [
+    'a real ssh after a -m still blocks',
+    bash('git commit -m "notes" && ssh ' + 'root@srv1.hostinger.com uptime'),
+    true,
+  ],
+  [
+    'a real reset after a -m still blocks',
+    bash('git commit -m "notes" && git reset --' + 'hard HEAD~3'),
     true,
   ],
 

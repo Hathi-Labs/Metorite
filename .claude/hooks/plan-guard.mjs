@@ -34,10 +34,36 @@ const OWNER_GATES = [
     test: /\bgit\b[^\n]*\b(push)\b[^\n]*(--force|--mirror|\s-f\b)/,
     why: 'Force-push / history rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2).',
   },
+  // ⚠️ NARROWED 2026-09-02, AND THE OLD FORM WAS BACKWARDS.
+  //
+  // It read `\bgit\s+reset\s+--hard\s+origin\b`, which matches ONLY a reset to
+  // a remote-tracking ref. So it blocked the one shape that is SAFE and waved
+  // through every shape that is not:
+  //
+  //   git reset --hard origin/main   BLOCKED   <- a local pointer move
+  //   git reset --hard HEAD~3        allowed   <- orphans three commits
+  //   git reset --hard abc1234       allowed   <- orphans whatever was ahead
+  //   git reset --hard               allowed   <- discards the working tree
+  //
+  // `git reset --hard origin/<ref>` cannot rewrite published history, cannot
+  // affect another person, and cannot lose an already-pushed commit. It is how
+  // you sync a local branch after a squash merge, which is routine here because
+  // every PR squashes. It cost a stalled hand-off on 2026-09-02 and bought
+  // nothing.
+  //
+  // What this gate is really for is rewriting history OTHERS HAVE PULLED:
+  // `filter-branch`, `filter-repo`, and force-push (its own id, above).
+  //
+  // ⚠️ RESIDUAL RISK, named rather than hidden: a reset to a remote ref still
+  // discards UNCOMMITTED work in the tree. A regex cannot see the tree, so the
+  // check is `git status` before you run it, and that is a habit and not a
+  // fence. The trade is deliberate — it swaps a silent orphaning of COMMITTED
+  // history, which was allowed, for a visible loss of uncommitted edits.
   {
     id: 'history-rewrite',
-    test: /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b|\bgit\s+reset\s+--hard\s+origin\b/,
-    why: 'History rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2).',
+    test: /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b|\bgit\s+reset\s+--hard\b(?!\s+(origin|upstream)\/)/,
+    why: 'History rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2). '
+      + 'A reset to origin/<ref> is a local sync and is NOT gated.',
   },
 
   // --- enforcement flips (work_plan §6) -----------------------------------
@@ -341,7 +367,25 @@ if (tool === 'Bash' || tool === 'PowerShell') {
   const grants = ownerGrants(PROJECT_DIR)
 
   for (const gate of OWNER_GATES) {
-    if (gate.test.test(cmd) && !grants.has(gate.id)) {
+    // ⚠️ `scanned`, NOT `cmd`. This arm read the RAW command until 2026-09-02,
+    // while the protected-path arm below already read the stripped one. The
+    // split was mine and it was not deliberate — I added stripNoise() for the
+    // path arm and never carried it here.
+    //
+    // It surfaced the same way every time: a commit message that DESCRIBES a
+    // gated act was read as performing it. `git commit -m "...reset --hard
+    // HEAD~3..."` tripped history-rewrite. `-m "ssh to the box"` trips deploy.
+    // A `-m` body is an argument to `git commit`, and git never executes it.
+    //
+    // This is the FIFTH false positive of one family in three days — a string
+    // inside a command read as the command. The other four were `>` in an
+    // email trailer, `>` in a heredoc, `>=` in an inline script, and this.
+    // Stripping the quoted payload once, and judging every arm on the same
+    // text, is the fix that stops the family instead of the instance.
+    //
+    // It does not widen anything: a real `ssh` or `reset` OUTSIDE the quoted
+    // body still sits in `scanned` and still blocks.
+    if (gate.test.test(scanned) && !grants.has(gate.id)) {
       block(
         `${gate.why}\nGrantable by the OWNER only: hand-write `
           + `"ALLOW <today> ${gate.id} — reason" into .claude/OWNER_GRANTS.md (D45).`,

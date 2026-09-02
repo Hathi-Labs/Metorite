@@ -177,7 +177,13 @@ So the date does more work than it used to. On 2026-10-01, delete the five
 
 Four acts. `plan-guard.mjs` blocks all four, and **no grant unlocks them**.
 
-1. **Force-push**, and any history rewrite.
+1. **Force-push**, and any history rewrite — `filter-branch`, `filter-repo`, and
+   a `git reset --hard` onto a local ref, which orphans committed work.
+   ⚠️ **`git reset --hard origin/<ref>` is NOT gated** (narrowed 2026-09-02). It
+   moves a local pointer to a ref that is already published, so it cannot
+   rewrite shared history. It is how you sync a branch after a squash merge,
+   which is every merge here. Check `git status` first — it still discards
+   uncommitted work, and no regex can see your working tree.
 2. **Commit or push on `main`.** Cut a branch.
 3. **Write `.claude/OWNER_GRANTS.md`.** Only the owner writes a grant.
    ⚠️ `git add` and `git commit` of that file are fine — they carry what the
