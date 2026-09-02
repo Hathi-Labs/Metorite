@@ -75,6 +75,33 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
+- **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
+  `failure` on the most recent scheduled run means this is still open. The log
+  line to look for is `GitHub Actions is not permitted to create or approve
+  pull requests`.
+- **Why:** `.github/workflows/skills-upstream-sync.yml` mirrors
+  anthropics/skills into `skills/upstream/` every Monday, then opens a PR. The
+  repository setting that lets a workflow open a PR is off, so the job dies
+  after 15 seconds. It last succeeded on 2026-08-10.
+- **What it costs:** the mirror froze at SHA `f17010c9` for 24 days. Two new
+  upstream skills, `academy-guide` and `discernment-nudge`, never arrived. This
+  PR refreshed the mirror by hand to `53048666`. **A hand refresh is not a
+  fix.** The next Monday fails the same way.
+- **The fix, and it is yours:** GitHub → repository **Settings → Actions →
+  General → Workflow permissions** → turn on *Allow GitHub Actions to create
+  and approve pull requests*. Then run the workflow once with
+  `gh workflow run skills-upstream-sync.yml` and watch it to green.
+- **⚠️ A workflow that fails reports nothing.** The schedule is weekly and no
+  alert fires, so this stayed silent for three weeks. Whoever flips the setting
+  must also decide whether a sync that fails tells anybody.
+- **If you prefer not to grant that permission:** change the job to push a
+  branch and stop there. A person then opens the PR. That edit is an agent job,
+  and it needs your word first, because it changes CI.
+- **Authority:** `.github/workflows/skills-upstream-sync.yml` ·
+  `skills/upstream/README.md`
+- **Added:** 2026-09-03 · skills-adopt PR (the adoption found the dead sync)
+
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
 - **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
   machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
