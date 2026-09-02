@@ -105,32 +105,25 @@ export function isPublishableKey(key: string | undefined | null): boolean {
 }
 
 /**
- * 🔴 The body of the "send me a code" request, and ONE field decides whether
- * anybody can ever sign in.
+ * 🔴 The body of the "sign me in" request.
  *
- * ⚠️ **`should_create_user` MUST be true, and the first version of this file
- * had it false.** Supabase mails a code only to a user that already exists in
- * `auth.users`. Nobody had ever signed in, so that table held ZERO rows — and
- * `false` therefore refused every operator forever, including the first one.
- * Measured on production 2026-09-02, after the flag was flipped and before
- * anybody typed an address.
+ * ⚠️ **The field is `create_user`, and TWO releases shipped the wrong name.**
+ * CP-12j sent `should_create_user`, which is the supabase-js OPTION name and
+ * not the wire field. GoTrue ignores an unknown field, so it answered 200 and
+ * created the user anyway. Measured against the live project on 2026-09-02:
+ * `create_user:false` for an unknown address answers **422 otp_disabled**,
+ * while `should_create_user:false` answers **200** and sends mail. The whole
+ * CP-12j "fix" was therefore a no-op in both directions.
  *
- * ⚠️ **A Supabase user is NOT an operator, which is what makes `true` safe.**
- * A stranger who asks for a code gets an `auth.users` row and a valid Supabase
- * session, and then `POST /api/operator/session` answers **403**, because the
- * `operator` row is the gate (**D71.2**, **D71.6**). They gain a login to
- * nothing.
- *
- * ⚠️ **What it costs, named rather than hidden.** Anybody can now cause a row
- * in `auth.users` and an email to an address they choose. Supabase rate-limits
- * both. That is the standard trade for OTP sign-in, and the registry is the
- * wall that makes it acceptable here.
+ * ⚠️ **`true` is correct, and the reasoning from CP-12j still holds.** A
+ * Supabase user is not an operator: a stranger gets a session and then a 403,
+ * because the `operator` row is the gate (**D71.2**, **D71.6**).
  */
 export function otpStartBody(email: string): {
   email: string;
-  should_create_user: boolean;
+  create_user: boolean;
 } {
-  return { email: email.trim(), should_create_user: true };
+  return { email: email.trim(), create_user: true };
 }
 
 /** The body of the "here is my code" request. */
@@ -141,9 +134,24 @@ export function otpVerifyBody(
   return { email: email.trim(), token: token.trim(), type: "email" };
 }
 
-/** Where the browser asks Supabase to send a code. */
-export function otpStartUrl(base: string): string {
-  return `${base.trim().replace(/\/$/, "")}/auth/v1/otp`;
+/**
+ * Where the browser asks Supabase to send the sign-in email.
+ *
+ * 🔴 **`redirect_to` is what makes the LINK work, and without it the link is
+ * useless to us.** Supabase's default email body carries a link and no code,
+ * and on this project the template is READ-ONLY — the dashboard refuses to
+ * edit a template until custom SMTP is configured. So the link is the flow we
+ * actually have. This parameter is what brings the person back to
+ * `/login/callback`, which already reads the token out of the URL fragment.
+ *
+ * ⚠️ **Supabase refuses a `redirect_to` that is not on the project's allow
+ * list**, and a new project's list is empty. That is owner work in
+ * Authentication → URL Configuration, and it needs no SMTP.
+ */
+export function otpStartUrl(base: string, redirectTo?: string): string {
+  const url = `${base.trim().replace(/\/$/, "")}/auth/v1/otp`;
+  const to = (redirectTo ?? "").trim();
+  return to ? `${url}?redirect_to=${encodeURIComponent(to)}` : url;
 }
 
 /** Where the browser exchanges the code for a session. */
@@ -162,11 +170,15 @@ export function otpVerifyUrl(base: string): string {
  */
 export function emailCodeConfig(
   env: Record<string, string | undefined> = process.env,
-): { url: string; anonKey: string } | null {
+): { url: string; anonKey: string; callback: string } | null {
   if (!emailOtpEnabled(env)) return null;
   const url = (env.OPERATOR_SUPABASE_URL ?? "").trim();
   const anonKey = (env[ANON_KEY_FLAG] ?? "").trim();
   if (!url || !anonKey) return null;
   if (!isPublishableKey(anonKey)) return null;
-  return { url, anonKey };
+  // ⚠️ Built from `OPERATOR_CONSOLE_ORIGIN` and never from a request header.
+  // A forwarded host is caller-controlled, and this value goes to Supabase as
+  // a redirect target — `login/page.tsx` records the same reasoning.
+  const origin = (env.OPERATOR_CONSOLE_ORIGIN ?? "").trim().replace(/\/$/, "");
+  return { url, anonKey, callback: origin ? `${origin}/login/callback` : "" };
 }

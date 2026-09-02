@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { otpStartBody, otpVerifyBody } from "@/lib/otp";
+import { otpStartBody, otpStartUrl, otpVerifyBody } from "@/lib/otp";
 
 // The EMAIL CODE sign-in — WS-31 CP-12j, **D71.3**.
 //
@@ -21,11 +21,14 @@ import { otpStartBody, otpVerifyBody } from "@/lib/otp";
 type Props = {
   url: string;
   anonKey: string;
+  //: Where Supabase must send the person back. Empty means the LINK cannot
+  //: return here, so the form says so rather than pretending.
+  callback: string;
 };
 
 type Stage = "email" | "code";
 
-export default function EmailCodeForm({ url, anonKey }: Props) {
+export default function EmailCodeForm({ url, anonKey, callback }: Props) {
   const [stage, setStage] = useState<Stage>("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -41,18 +44,26 @@ export default function EmailCodeForm({ url, anonKey }: Props) {
     setError(null);
     setNote(null);
     try {
-      const res = await fetch(`${base}/auth/v1/otp`, {
+      const res = await fetch(otpStartUrl(base, callback), {
         method: "POST",
         headers: { "content-type": "application/json", apikey: anonKey },
-        // ⚠️ `otpStartBody` sets `should_create_user: true`, and that module
-        // holds the whole argument. Short version: Supabase mails a code only
-        // to a user that already exists, `auth.users` starts EMPTY, and
-        // `false` refuses the first operator forever.
+        // ⚠️ `otp.ts` holds both arguments — the wire field is `create_user`,
+        // and `redirect_to` is what brings the emailed LINK back to us.
         body: JSON.stringify(otpStartBody(email)),
       });
       if (res.ok) {
         setStage("code");
-        setNote("If that address can sign in, a code is on its way.");
+        // ⚠️ **The LINK is the flow, not the code.** Supabase's default email
+        // body carries a link and no digits, and this project cannot edit the
+        // template — the dashboard locks template editing behind custom SMTP.
+        // So the honest instruction is "click the link". The code box below
+        // still works, and only for a project whose template renders
+        // `{{ .Token }}`.
+        setNote(
+          callback
+            ? "Check your email and click the sign-in link. It brings you straight back here."
+            : "Email sent. ⚠️ This deployment has no callback address set, so the link cannot return you here — ask an admin to set OPERATOR_CONSOLE_ORIGIN.",
+        );
         return;
       }
       setError(await refusal(res, "We could not send a code."));
@@ -130,7 +141,8 @@ export default function EmailCodeForm({ url, anonKey }: Props) {
       ) : (
         <>
           <label className="field-label" htmlFor="op-code">
-            Six-digit code sent to {email}
+            Sent to {email}. Click the link in that email — or, if it shows a
+            six-digit code, type it here.
           </label>
           <input
             id="op-code"

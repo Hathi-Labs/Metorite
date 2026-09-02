@@ -111,7 +111,11 @@ export default async function LoginPage({
         {emailCode && (
           <>
             {href && <div className="or-rule">or</div>}
-            <EmailCodeForm url={emailCode.url} anonKey={emailCode.anonKey} />
+            <EmailCodeForm
+              url={emailCode.url}
+              anonKey={emailCode.anonKey}
+              callback={emailCode.callback}
+            />
           </>
         )}
 
