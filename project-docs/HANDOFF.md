@@ -75,6 +75,34 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
+- **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
+  machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
+  rest of the dev-phase window.
+- **Why:** the owner set it on 2026-09-02 to unblock in-place edits of the
+  production `.env` over `ssh`, which the harness classifier refused. It works,
+  and it is broader than the thing it fixed. It removes every permission prompt
+  and the classifier, for every tool, in every session on that machine.
+  🔴 **Everything ELSE in this window expires by itself.** The grants carry
+  `ALLOW-UNTIL 2026-09-30`. `CLAUDE.md` §3a says delete the section.
+  `.claude/settings.json` says delete the block. **This one setting carries no
+  date, and `.gitignore` hides it, so no review will ever surface it.** It is
+  the single change most likely to outlive the phase that justified it.
+  📌 **It also weakens a fence nothing else covers.** The `deny` list — VM
+  destroy, snapshot restore, DNS reset, domain transfer — may not be consulted
+  in this mode, and `plan-guard.mjs` does not cover those acts. Today they rest
+  on an agent's judgement alone.
+- **The fix, on or before 2026-09-30:** set `defaultMode` back to
+  `acceptEdits` in `.claude/settings.local.json`, then restart. The broad
+  `allow` list in the tracked `.claude/settings.json` keeps ordinary work
+  prompt-free, which is what it was widened for.
+- **Reconsider it, do not reflex-revert.** One task in two days needed it. If
+  that rate holds, `acceptEdits` plus the allow list is enough, and the rare
+  production `.env` edit belongs in an interactive session where a human
+  approves it.
+- **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
+- **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
+
 ### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
 - **Check:** run three commands on the box. Every one must change before this
   entry closes.

@@ -287,6 +287,41 @@ const CASES = [
     true,
   ],
 
+  // ── `>=` is a COMPARISON, not a redirect (2026-09-02) ──────────────────
+  // Third false positive of one class in two days. This one refused a PURE
+  // READ of the grant file, which is the read an agent must make to learn
+  // what it may do. stripNoise() cannot reach it — the `>=` sat in an inline
+  // script argument, not a quoted -m body or a heredoc.
+  [
+    'a >= comparison is not a redirect',
+    bash('node -e "if (d >= today) console.log(1)" && cat .claude/OWNER_GRANTS.md'),
+    false,
+  ],
+  [
+    'a <= comparison near a protected path is not a write',
+    // Reads `deploy/`, a PROTECTED_PATH, so it exercises the redirect arm.
+    // ⚠️ NOT a `deploy/*.sh` path: that trips the `deploy` OWNER_GATE on its
+    // own, and the case would then pass for the wrong reason.
+    bash('python -c "print(1 <= 2)" && ls deploy/hostinger/'),
+    false,
+  ],
+  // ⚠️ THE EXCLUSION MUST NOT BLIND THE ARM. Append and truncate are writes.
+  [
+    'append to a protected path still blocks',
+    bash('echo X=1 >> .env'),
+    true,
+  ],
+  [
+    'truncating redirect to a protected path still blocks',
+    bash('echo X=1 > .env'),
+    true,
+  ],
+  [
+    'append to the grant file still blocks',
+    bash('echo ALLOW >> .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+
   // ── restoring the grant file out of history is a WRITE ─────────────────
   // `git add`/`git commit` only record what the owner wrote. `git checkout --`
   // and `git restore` REPLACE the working copy, which on this file could
