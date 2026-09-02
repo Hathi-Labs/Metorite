@@ -598,6 +598,35 @@ def _empty_registry(eng):
         conn.execute(text("DELETE FROM control_audit"))
 
 
+@pytest.fixture
+def bootstrap_calls(monkeypatch):
+    """Record every call to ``operators.bootstrap``, and still run the real one.
+
+    ⚠️ **A bootstrap fence must watch the CALL, and never the surviving row.**
+    The whole sign-in route runs inside one ``get_engine().begin()``
+    transaction, and a 403 rolls that transaction back. So ``count(*) = 0``
+    holds even when the guard at the call site is gone. Measured 2026-09-01: a
+    mutation that replaced ``if row is None and
+    operators.directory_matches(...)`` with ``if row is None:`` left 148 tests
+    green, and an instrumented ``operators.bootstrap`` proved the bootstrap
+    really fired. This fixture is what makes that mutation red.
+
+    The spy delegates to the real function, so the behaviour under test is the
+    built behaviour and not a stub of it.
+    """
+    from customer_console import operators as ops
+
+    calls: list[str] = []
+    real = ops.bootstrap
+
+    def spy(conn, **kwargs):
+        calls.append(str(kwargs))
+        return real(conn, **kwargs)
+
+    monkeypatch.setattr(ops, "bootstrap", spy)
+    return calls
+
+
 def test_the_first_person_through_the_door_becomes_admin(
     client, eng, issuer, monkeypatch
 ):
@@ -626,12 +655,16 @@ def test_the_bootstrap_does_not_fire_twice(client, eng, issuer, monkeypatch):
 
 
 def test_a_stranger_cannot_consume_the_bootstrap(
-    client, eng, issuer, monkeypatch
+    client, eng, issuer, monkeypatch, bootstrap_calls
 ):
     """⚠️ Only somebody already inside our directory may trigger it.
 
     A stranger triggering it gains nothing — `admit` still refuses them — but
     it would burn the one-time path before the owner reached it.
+
+    ⚠️ The call assertion carries this test, for the reason
+    :func:`bootstrap_calls` states. The row count alone reads zero under the
+    rollback and proves nothing about the guard.
     """
     owner = _email()
     monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
@@ -639,6 +672,9 @@ def test_a_stranger_cannot_consume_the_bootstrap(
 
     issuer["serve"](_payload(_email(), tid=str(uuid.uuid4())))
     assert _signin(client).status_code == 403
+    assert bootstrap_calls == [], (
+        "a foreign directory reached operators.bootstrap"
+    )
     with eng.begin() as conn:
         assert conn.execute(
             text("SELECT count(*) FROM operator")).scalar() == 0, (
@@ -647,6 +683,7 @@ def test_a_stranger_cannot_consume_the_bootstrap(
 
     issuer["serve"](_payload(owner))
     assert _signin(client).status_code == 200
+    assert len(bootstrap_calls) == 1
 
 
 def test_the_bootstrap_is_inert_when_no_email_is_named(
@@ -711,6 +748,12 @@ def test_a_refused_sign_in_writes_absolutely_nothing(client, eng, issuer,
 
     **This is the test that would fail if somebody split the route into two
     transactions**, which is exactly when that guard stops being spare.
+
+    ⚠️ The `control_audit` count is UNFILTERED on purpose. It read
+    ``WHERE action = 'operator.signin'`` until 2026-09-01, and a row written
+    under any other action name slipped past a test whose name says
+    "absolutely nothing". `_empty_registry` empties the table, and this module
+    owns a scratch database of its own, so no other suite can put a row there.
     """
     owner = _email()
     monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
@@ -726,9 +769,8 @@ def test_a_refused_sign_in_writes_absolutely_nothing(client, eng, issuer,
             text("SELECT count(*) FROM operator")).scalar() == 0
         assert conn.execute(
             text("SELECT count(*) FROM operator_session")).scalar() == 0
-        assert conn.execute(text(
-            "SELECT count(*) FROM control_audit WHERE action = "
-            "'operator.signin'")).scalar() == 0
+        assert conn.execute(
+            text("SELECT count(*) FROM control_audit")).scalar() == 0
 
 # ── Sign-out, which closes F5 ──────────────────────────────────────────────
 
@@ -798,6 +840,381 @@ def test_the_stored_row_cannot_reproduce_the_token(client, eng, issuer):
     assert stored is not None
     assert parsed[1] not in stored["key_hash"]
     assert parsed[1] not in stored["prefix"]
+
+
+# ── D70: the front door on Google Workspace ────────────────────────────────
+#
+# Spec §4.1 check 1 · §8.1 done-whens 1, 5, 30, 31, 32 and 33.
+#
+# ⚠️ **The hosted domain and the mail domain are DIFFERENT values here, on
+# purpose.** A real Workspace can carry both. Keeping them apart means check 1
+# and check 2 cannot cover for each other, so a reader that took the email
+# domain for the `hd` claim would still fail these cases.
+
+HD = "hathilabs.com"
+
+
+@pytest.fixture
+def google_client(monkeypatch, _scratch_db):
+    """The same console, told that its directory is Google Workspace.
+
+    ``OPERATOR_ENTRA_TENANT_ID`` stays set. A box that moved to Google must
+    stop reading it, and leaving it in place is what proves the switch moved
+    rather than the value.
+    """
+    monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", SHARED)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_INTERNAL_TOKEN", INTERNAL)
+    monkeypatch.setenv("OPERATOR_SUPABASE_URL", "https://p.supabase.co")
+    monkeypatch.setenv("OPERATOR_SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("OPERATOR_SIGNIN_PROVIDER", "google")
+    monkeypatch.setenv("OPERATOR_ENTRA_TENANT_ID", TENANT)
+    monkeypatch.setenv("OPERATOR_GOOGLE_HD", HD)
+    monkeypatch.setenv("OPERATOR_STAFF_DOMAINS", DOMAIN)
+    monkeypatch.delenv("OPERATOR_BOOTSTRAP_EMAIL", raising=False)
+    from customer_console.main import app
+    return TestClient(app)
+
+
+def _google(email: str, *, hd: str | None = HD, provider: str = "google",
+            verified: bool = True, subject: str | None = None,
+            extra_identity: dict | None = None) -> dict:
+    """A Supabase ``/auth/v1/user`` body for a Google sign-in.
+
+    ⚠️ **No top-level ``email_confirmed_at``.** The built reader accepted one
+    and this one must not, so writing the key here would hide done-when 31.
+    """
+    identity_data: dict = {"email": email, "email_verified": verified}
+    if hd is not None:
+        identity_data["hd"] = hd
+    identities = [{"provider": provider, "identity_data": identity_data}]
+    if extra_identity:
+        identities.append(extra_identity)
+    return {
+        "id": subject or str(uuid.uuid4()),
+        "email": email,
+        "app_metadata": {"provider": provider,
+                         "providers": [i["provider"] for i in identities]},
+        "user_metadata": {},
+        "identities": identities,
+    }
+
+
+def test_the_default_box_is_still_entra(client, eng, issuer):
+    """⚠️ **The ship-dark property, at the door.**
+
+    With ``OPERATOR_SIGNIN_PROVIDER`` unset, a Google sign-in is refused just
+    as any other non-Microsoft one is. D70 moves a box that was told to move.
+    """
+    email = _email()
+    _register(eng, email)
+    issuer["serve"](_google(email))
+    assert _signin(client).status_code == 401
+
+
+def test_a_google_operator_signs_in_and_the_session_works(
+    google_client, eng, issuer
+):
+    """Done-when 1's positive half on the Google path.
+
+    Without it, every refusal below could pass because the path is broken.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+    issuer["serve"](_google(email))
+
+    r = _signin(google_client)
+    assert r.status_code == 200, r.text
+    assert r.json()["operator"]["email"] == email
+    listed = google_client.get("/operators",
+                               headers=_auth(r.json()["token"]))
+    assert listed.status_code == 200, listed.text
+
+
+def test_a_google_identity_with_no_hosted_domain_is_refused_403(
+    google_client, eng, issuer
+):
+    """🔴 **Done-when 30 — the most important case on the list.**
+
+    Google issues an account on any address it can verify by mail, and that
+    account carries ``email_verified: true`` and **no ``hd``**. Anybody who
+    receives mail at a staff domain can mint one. So the refusal must hold
+    while check 2 and check 3 BOTH pass.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+
+    payload = _google(email, hd=None)
+    # ⚠️ The payload must be otherwise VALID, or this passes for the wrong
+    # reason. Everything except `hd` is present and correct.
+    assert payload["app_metadata"]["provider"] == "google"
+    assert payload["identities"][0]["identity_data"]["email_verified"] is True
+    assert "hd" not in payload["identities"][0]["identity_data"]
+    assert email.endswith(f"@{DOMAIN}"), "check 2 must pass in this case"
+
+    issuer["serve"](payload)
+    assert _signin(google_client).status_code == 403
+
+    # The same person, with the claim, is admitted. That is what proves the
+    # `hd` check fired rather than something else.
+    issuer["serve"](_google(email))
+    assert _signin(google_client).status_code == 200
+
+
+def test_another_workspace_is_refused(google_client, eng, issuer):
+    """Done-when 1. A real hosted domain, and not ours."""
+    email = _email()
+    _register(eng, email, role="admin")
+    issuer["serve"](_google(email, hd="another-company.com"))
+    assert _signin(google_client).status_code == 403
+
+
+def test_a_linked_google_identity_does_not_admit_another_provider(
+    google_client, eng, issuer
+):
+    """``_google_hd`` is as strict as ``_azure_tid``, and for one reason.
+
+    A colleague links a personal account. Somebody takes it. The sign-in
+    comes through that other provider while Supabase still lists the linked
+    Google identity carrying our ``hd``. Reading the claim off the linked
+    identity would admit them without passing through Workspace.
+    """
+    from customer_console import operator_signin
+
+    email = _email()
+    linked = _google(email, hd=None, provider="github", extra_identity={
+        "provider": "google",
+        "identity_data": {"email": email, "hd": HD, "email_verified": True},
+    })
+    assert linked["app_metadata"]["provider"] == "github"
+    assert "google" in linked["app_metadata"]["providers"], (
+        "the payload must really carry the linked Google identity, or this "
+        "test proves nothing"
+    )
+
+    with pytest.raises(operator_signin.SigninRejected):
+        operator_signin.extract_identity(
+            linked, env={"OPERATOR_SIGNIN_PROVIDER": "google"}
+        )
+
+    _register(eng, email)
+    issuer["serve"](linked)
+    assert _signin(google_client).status_code == 401
+
+
+def test_the_hosted_domain_is_not_read_off_a_second_identity(
+    google_client, eng, issuer
+):
+    """The narrower half of the same rule.
+
+    The sign-in IS Google, and the Google identity carries no ``hd``. A
+    second linked identity carries one. The reader must not take it.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+    payload = _google(email, hd=None, extra_identity={
+        "provider": "github",
+        "identity_data": {"email": email, "hd": HD, "email_verified": True},
+    })
+    issuer["serve"](payload)
+    assert _signin(google_client).status_code == 403
+
+
+def test_promoted_google_claims_are_read_only_when_google_stands_alone():
+    """Some projects copy provider claims up to ``app_metadata``.
+
+    Reading them is safe only while Google is the ONLY provider on the
+    account, because then there is no other sign-in they could belong to.
+    """
+    from customer_console import operator_signin
+
+    env = {"OPERATOR_SIGNIN_PROVIDER": "google"}
+    email = _email()
+    payload = _google(email, hd=None)
+    payload["app_metadata"] = {"provider": "google", "providers": ["google"],
+                               "hd": HD}
+    assert operator_signin.extract_identity(payload, env=env).tid == HD
+
+    payload["app_metadata"]["providers"] = ["google", "github"]
+    assert operator_signin.extract_identity(payload, env=env).tid is None
+
+
+# ── Done-when 31: the verified flag belongs to the sign-in provider ─────────
+
+
+def test_a_second_identity_cannot_prove_this_sign_in_s_address(
+    google_client, eng, issuer
+):
+    """**Done-when 31.** The built reader scanned EVERY identity.
+
+    A proof that the OTHER account's address was checked says nothing about
+    this sign-in. The Google identity here says ``email_verified: false`` and
+    a linked identity says true, so the two answers disagree and only one of
+    them is about this sign-in.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+
+    payload = _google(email, verified=False, extra_identity={
+        "provider": "github",
+        "identity_data": {"email": email, "email_verified": True},
+    })
+    assert payload["identities"][0]["identity_data"]["hd"] == HD, (
+        "check 1 must pass in this case, or the 401 proves nothing"
+    )
+    assert payload["identities"][1]["identity_data"]["email_verified"] is True
+
+    issuer["serve"](payload)
+    assert _signin(google_client).status_code == 401
+
+    # Flip the flag on the SIGN-IN identity alone and the same payload is
+    # admitted. That is what proves the verified check reads this identity.
+    payload["identities"][0]["identity_data"]["email_verified"] = True
+    issuer["serve"](payload)
+    assert _signin(google_client).status_code == 200
+
+
+def test_a_top_level_confirmation_no_longer_stands_in(
+    google_client, eng, issuer
+):
+    """**Done-when 31**, the other half of the built behaviour.
+
+    ``email_confirmed_at`` is a USER-level field. It survives a linked
+    identity being added, so it says nothing about which provider proved the
+    address on this sign-in.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+
+    payload = _google(email, verified=False)
+    payload["email_confirmed_at"] = "2026-09-01T00:00:00Z"
+    payload["confirmed_at"] = "2026-09-01T00:00:00Z"
+    issuer["serve"](payload)
+    assert _signin(google_client).status_code == 401
+
+
+def test_the_verified_flag_is_pinned_on_the_entra_path_too(
+    client, eng, issuer
+):
+    """Done-when 31 binds both directories. It is one function.
+
+    ⚠️ This is a REAL tightening of the default path, and it is deliberate.
+    """
+    email = _email()
+    _register(eng, email, role="admin")
+
+    payload = _payload(email, verified=False, extra_identity={
+        "provider": "github",
+        "identity_data": {"email": email, "email_verified": True},
+    })
+    payload["email_confirmed_at"] = "2026-09-01T00:00:00Z"
+    issuer["serve"](payload)
+    assert _signin(client).status_code == 401
+
+
+# ── Done-when 5: the Google box fails CLOSED when unconfigured ─────────────
+
+
+def test_an_unset_hosted_domain_is_503_not_403(
+    google_client, eng, issuer, monkeypatch
+):
+    """Done-when 5, rewritten by D70. ``OPERATOR_GOOGLE_HD`` is load-bearing."""
+    monkeypatch.delenv("OPERATOR_GOOGLE_HD", raising=False)
+    email = _email()
+    _register(eng, email)
+    issuer["serve"](_google(email))
+    assert _signin(google_client).status_code == 503
+
+
+def test_an_unknown_provider_name_is_503_and_admits_nobody(
+    client, eng, issuer, monkeypatch
+):
+    """A typo must not fall back to the directory the reader just left."""
+    monkeypatch.setenv("OPERATOR_SIGNIN_PROVIDER", "entra")
+    email = _email()
+    _register(eng, email)
+    issuer["serve"](_payload(email))
+    assert _signin(client).status_code == 503
+
+
+# ── Done-when 33: no passwordless provider, ever ───────────────────────────
+
+
+def test_no_passwordless_provider_is_ever_allowed():
+    """🔴 **Done-when 33's named fence** (**D70.2**), R7.
+
+    It reads the allowlist CONSTANT rather than driving the route, because
+    the property is about the vocabulary and not about one request. A linked
+    email identity would otherwise become the bypass H-54 asks the owner to
+    close: this console reaches EVERY customer organization, and inbox
+    control must never become staff access.
+    """
+    from customer_console import operators
+
+    passwordless = {"email", "magiclink", "otp", "phone", "sms"}
+    assert passwordless <= operators.PASSWORDLESS_PROVIDERS, (
+        "D70.2 names these five and the constant must hold all of them"
+    )
+
+    leaked = operators.ALLOWED_PROVIDERS & operators.PASSWORDLESS_PROVIDERS
+    assert leaked == frozenset(), (
+        f"a passwordless provider is in the allowlist: {sorted(leaked)}"
+    )
+    assert sorted(operators.ALLOWED_PROVIDERS) == sorted(
+        [operators.AZURE_PROVIDER, operators.GOOGLE_PROVIDER]
+    )
+
+    # Every allowed provider must carry a directory claim an administrator
+    # controls. That is the property the list above is a consequence of.
+    for provider in operators.ALLOWED_PROVIDERS:
+        assert operators.DIRECTORY_CLAIM.get(provider)
+        assert operators.DIRECTORY_ENV.get(provider)
+
+
+# ── Done-when 32: the bootstrap never fires on a missing claim ─────────────
+
+
+def test_the_bootstrap_never_fires_on_a_missing_directory_claim(
+    google_client, eng, issuer, monkeypatch, bootstrap_calls
+):
+    """🔴 **Done-when 32, through the door.**
+
+    The caller IS the named bootstrap email and the registry IS empty, so
+    everything except the directory claim invites the one-time path. A
+    payload with no ``hd`` must not reach ``operators.bootstrap`` at all.
+
+    ⚠️ **The assertion is on the CALL, not on the row count.** An earlier
+    version of this test counted ``operator`` rows and read zero. That number
+    is produced by the route's single transaction rolling back on the 403, so
+    it stays zero with the guard deleted. See :func:`bootstrap_calls`.
+    """
+    owner = _email()
+    monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
+    _empty_registry(eng)
+
+    issuer["serve"](_google(owner, hd=None))
+    assert _signin(google_client).status_code == 403
+    assert bootstrap_calls == [], (
+        "the route called operators.bootstrap for an identity carrying no "
+        "hosted domain. The guard at the call site is gone."
+    )
+    with eng.begin() as conn:
+        assert conn.execute(
+            text("SELECT count(*) FROM operator")).scalar() == 0, (
+            "an identity with no hosted domain consumed the bootstrap"
+        )
+
+    # The same person WITH the claim gets in, which is what proves the gate
+    # was the claim rather than anything else about the request. It also
+    # proves the spy above is wired in, so the empty list means "not called"
+    # rather than "not watching".
+    issuer["serve"](_google(owner))
+    r = _signin(google_client)
+    assert r.status_code == 200, r.text
+    assert len(bootstrap_calls) == 1, (
+        "the same request WITH the claim must reach operators.bootstrap, or "
+        "the assertion above proves nothing"
+    )
+    assert r.json()["operator"]["role"] == "admin"
 
 
 # ── The R8 gate cannot silently disarm ─────────────────────────────────────
@@ -987,3 +1404,466 @@ def test_the_operator_scheme_names_the_signed_in_person(eng):
             staff=SimpleNamespace(actor=None)))
         _, actor2 = m._admin_scheme_for_operator(conn, req, breakglass)
         assert actor2 == "operator"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# D71 — registry admission, the email fallback, and the per-row method pin
+#
+# Owner directive 2026-09-02: operators hold Gmail and outside addresses, so a
+# Workspace directory cannot describe the staff. Spec §4.1b, §8.1 done-whens
+# 34 to 40.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _register_pinned(eng, email: str, methods, role: str = "editor") -> str:
+    """An operator row whose ``allowed_methods`` names *methods* (D71.4).
+
+    *methods* of ``None`` writes SQL NULL, which is what every row written
+    before migration 022 carries.
+    """
+    with eng.begin() as conn:
+        return str(conn.execute(
+            text("INSERT INTO operator (email, role, status, allowed_methods) "
+                 "VALUES (:e, :r, 'active', :m) RETURNING id"),
+            {"e": email, "r": role, "m": methods},
+        ).scalar())
+
+
+def _otp(email: str, *, verified: bool = True,
+         subject: str | None = None) -> dict:
+    """A Supabase ``/auth/v1/user`` body for an EMAIL CODE sign-in.
+
+    Supabase reports ``provider: "email"`` for a one-time code, which is the
+    same string the tenant app's Resend provider uses and a member of
+    ``operators.PASSWORDLESS_PROVIDERS``. No ``hd``, because a code carries no
+    directory claim — that absence is the whole reason D70.2 refused it and
+    the whole reason D71.4 pins it per row.
+    """
+    return {
+        "id": subject or str(uuid.uuid4()),
+        "email": email,
+        "app_metadata": {"provider": "email", "providers": ["email"]},
+        "user_metadata": {},
+        "identities": [{
+            "provider": "email",
+            "identity_data": {"email": email, "email_verified": verified},
+        }],
+    }
+
+
+@pytest.fixture
+def registry_client(google_client, monkeypatch):
+    """The Google box, moved to ``registry`` admission. OTP still OFF."""
+    monkeypatch.setenv("OPERATOR_ADMISSION_MODE", "registry")
+    return google_client
+
+
+@pytest.fixture
+def otp_client(registry_client, monkeypatch):
+    """``registry`` admission with the email fallback turned ON (D71.3)."""
+    monkeypatch.setenv("OPERATOR_ALLOW_EMAIL_OTP", "1")
+    return registry_client
+
+
+# ── Done-when 34: D71 ships dark ───────────────────────────────────────────
+
+
+def test_the_default_admission_mode_is_directory() -> None:
+    """⚠️ **The ship-dark property, and the mutation that kills it.**
+
+    Flip ``DEFAULT_ADMISSION_MODE`` to ``registry`` and this test goes red
+    together with every directory-mode test in this file, because an unset
+    variable would then skip checks 1 and 2 on every existing box.
+    """
+    from customer_console import operators as ops
+
+    assert ops.DEFAULT_ADMISSION_MODE == ops.DIRECTORY_MODE
+    assert ops.admission_mode({}) == ops.DIRECTORY_MODE
+
+
+def test_an_unknown_admission_mode_refuses_rather_than_falls_back() -> None:
+    """A typo must name itself, not silently pick a path."""
+    from customer_console import operators as ops
+
+    with pytest.raises(ops.OperatorUnconfigured) as caught:
+        ops.admission_mode({"OPERATOR_ADMISSION_MODE": "regsitry"})
+    assert "OPERATOR_ADMISSION_MODE" in str(caught.value)
+
+
+def test_registry_mode_still_refuses_a_stranger_with_no_row(
+    registry_client, eng, issuer
+):
+    """🔴 **Done-when 35. Check 3 is the WHOLE gate, so it must hold alone.**
+
+    The payload is perfect on every axis the old checks measured except the
+    directory: a verified Gmail address, no ``hd``, outside our staff domain.
+    In ``directory`` mode two checks would refuse it. Here only the registry
+    can, and it must.
+    """
+    stranger = f"nobody-{uuid.uuid4().hex[:8]}@gmail.com"
+    _empty_registry(eng)
+    issuer["serve"](_google(stranger, hd=None))
+
+    assert _signin(registry_client).status_code == 403
+
+
+def test_registry_mode_admits_a_gmail_operator_that_an_admin_added(
+    registry_client, eng, issuer
+):
+    """Done-when 36 — the owner's requirement, through the real door.
+
+    The same address the test above refused is admitted the moment a row
+    exists for it. That difference is what proves the registry is the gate
+    rather than something incidental about the payload.
+    """
+    outsider = f"contractor-{uuid.uuid4().hex[:8]}@gmail.com"
+    _empty_registry(eng)
+    _register(eng, outsider)
+    issuer["serve"](_google(outsider, hd=None))
+
+    r = _signin(registry_client)
+    assert r.status_code == 200, r.text
+    assert r.json()["operator"]["email"] == outsider
+
+
+def test_directory_mode_still_refuses_that_same_gmail_operator(
+    google_client, eng, issuer
+):
+    """The other half of the pair above, and it is what makes D71 a MODE.
+
+    Identical row, identical payload, mode unset. The directory check refuses.
+    Without this, "registry mode admits a Gmail" would be indistinguishable
+    from "the box admits a Gmail regardless".
+    """
+    outsider = f"contractor-{uuid.uuid4().hex[:8]}@gmail.com"
+    _empty_registry(eng)
+    _register(eng, outsider)
+    issuer["serve"](_google(outsider, hd=None))
+
+    assert _signin(google_client).status_code == 403
+
+
+# ── Done-when 37: the bootstrap pivot, the most dangerous line in D71 ──────
+
+
+def test_registry_mode_never_bootstraps_a_stranger(
+    registry_client, eng, issuer, monkeypatch, bootstrap_calls
+):
+    """🔴 **Done-when 37. The registry is EMPTY and a stranger knocks.**
+
+    ``directory_matches`` is always False in this mode, so the naive repair is
+    to delete the clause — and that hands ``admin`` to whoever signs in first.
+    ``bootstrap_allowed`` must pin to ``OPERATOR_BOOTSTRAP_EMAIL`` instead.
+
+    ⚠️ **The assertion is on the CALL.** The route runs in one transaction
+    that rolls back on the 403, so ``count(*) = 0`` reads true with the guard
+    gone. See :func:`bootstrap_calls`.
+    """
+    owner = _email()
+    stranger = f"first-{uuid.uuid4().hex[:8]}@gmail.com"
+    monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
+    _empty_registry(eng)
+
+    issuer["serve"](_google(stranger, hd=None))
+    assert _signin(registry_client).status_code == 403
+    assert bootstrap_calls == [], (
+        "a stranger reached operators.bootstrap in registry mode. The gate at "
+        "the call site no longer pins to OPERATOR_BOOTSTRAP_EMAIL."
+    )
+
+    # The POSITIVE CONTROL. The named owner, same empty registry, same route.
+    # Without this the empty list above could mean "the spy is not wired in".
+    issuer["serve"](_google(owner, hd=None))
+    r = _signin(registry_client)
+    assert r.status_code == 200, r.text
+    assert len(bootstrap_calls) == 1
+    assert r.json()["operator"]["role"] == "admin"
+
+
+def test_registry_mode_never_bootstraps_when_no_email_is_named(
+    registry_client, eng, issuer, monkeypatch, bootstrap_calls
+):
+    """An UNSET bootstrap email admits nobody, and never everybody.
+
+    This is the ``None`` half of done-when 32 carried into the new mode. A gate
+    written as ``normalise_email(email) == bootstrap_email(env)`` would compare
+    a string with ``None`` and be safe by luck. ``bootstrap_allowed`` refuses
+    on the ``None`` explicitly, and this test is what keeps it explicit.
+    """
+    monkeypatch.delenv("OPERATOR_BOOTSTRAP_EMAIL", raising=False)
+    _empty_registry(eng)
+    issuer["serve"](_google(_email(), hd=None))
+
+    assert _signin(registry_client).status_code == 403
+    assert bootstrap_calls == []
+
+
+def test_directory_mode_bootstrap_is_byte_for_byte_unchanged(
+    google_client, eng, issuer, monkeypatch, bootstrap_calls
+):
+    """D71.5 rewrote this gate, so the OLD behaviour needs its own fence.
+
+    Mutating ``bootstrap_allowed`` to ignore the mode and always pin to the
+    email would leave every registry-mode test above green while quietly
+    admitting a claimless identity on a directory box.
+    """
+    owner = _email()
+    monkeypatch.setenv("OPERATOR_BOOTSTRAP_EMAIL", owner)
+    _empty_registry(eng)
+
+    # The named owner, but carrying NO hosted domain. Directory mode refuses.
+    issuer["serve"](_google(owner, hd=None))
+    assert _signin(google_client).status_code == 403
+    assert bootstrap_calls == []
+
+    issuer["serve"](_google(owner))
+    assert _signin(google_client).status_code == 200
+    assert len(bootstrap_calls) == 1
+
+
+# ── Done-when 38: the email code, and the three things it needs ────────────
+
+
+def test_an_email_code_is_refused_while_the_flag_is_off(
+    registry_client, eng, issuer
+):
+    """🔴 **Done-when 38. Registry mode ALONE does not open the inbox path.**
+
+    D71.2 and D71.3 are separate decisions, and this is what keeps them
+    separate. A box that dropped the directory check has not thereby agreed
+    that a mailbox is staff access.
+
+    ⚠️ **401, not 403, and the difference is a real property.** The refusal
+    happens in ``extract_identity``, which says *this token is not one we
+    accept* — the same answer a magic-link sign-in already got. A 403 would
+    mean ``admit`` had run, and it must not: the person's row is nobody's
+    business until the method is admitted.
+    """
+    person = _email()
+    _empty_registry(eng)
+    _register(eng, person)
+    issuer["serve"](_otp(person))
+
+    assert _signin(registry_client).status_code == 401
+
+
+def test_an_email_code_admits_a_named_operator_when_the_flag_is_on(
+    otp_client, eng, issuer
+):
+    """Done-when 38's positive half. The owner asked for this fallback."""
+    person = f"outside-{uuid.uuid4().hex[:8]}@gmail.com"
+    _empty_registry(eng)
+    _register(eng, person)
+    issuer["serve"](_otp(person))
+
+    r = _signin(otp_client)
+    assert r.status_code == 200, r.text
+    assert r.json()["operator"]["email"] == person
+
+
+def test_an_email_code_still_needs_a_registry_row(otp_client, eng, issuer):
+    """Inbox control is not enough, even with the fallback fully enabled.
+
+    This is the sentence D70.2 was written to protect, and D71 keeps it: an
+    email code proves somebody reads a mailbox. The row is what says they run
+    the platform.
+    """
+    stranger = f"nobody-{uuid.uuid4().hex[:8]}@gmail.com"
+    _empty_registry(eng)
+    issuer["serve"](_otp(stranger))
+
+    assert _signin(otp_client).status_code == 403
+
+
+def test_an_unverified_email_code_is_refused(otp_client, eng, issuer):
+    """Done-when 31's property, carried onto the new path.
+
+    ``_email_is_verified`` must read the identity that ACTUALLY signed in. A
+    reader still pinned to the configured directory would find no google
+    identity here and could read the wrong one.
+
+    401, because ``extract_identity`` rejects the token before ``admit`` runs.
+    """
+    person = _email()
+    _empty_registry(eng)
+    _register(eng, person)
+    issuer["serve"](_otp(person, verified=False))
+
+    assert _signin(otp_client).status_code == 401
+
+
+def test_the_otp_flag_contradicting_the_mode_is_a_503(google_client, issuer):
+    """🔴 **Done-when 39. A flag that cannot work must SAY so.**
+
+    ``OPERATOR_ALLOW_EMAIL_OTP`` on a ``directory`` box can admit nobody,
+    because the directory path demands a claim a code never carries. Reading
+    it as ``False`` would leave whoever set it believing the fallback works.
+    The box is wrong, so it is a 503 and not a 403.
+    """
+    from customer_console import operators as ops
+
+    env = {"OPERATOR_ALLOW_EMAIL_OTP": "1"}
+    with pytest.raises(ops.OperatorUnconfigured) as caught:
+        ops.email_otp_allowed(env)
+    message = str(caught.value)
+    assert "OPERATOR_ALLOW_EMAIL_OTP" in message
+    assert "OPERATOR_ADMISSION_MODE" in message
+
+
+def test_no_other_passwordless_method_is_ever_accepted() -> None:
+    """D71.3 opened ``email`` and NOTHING else.
+
+    ``magiclink``, ``otp``, ``phone`` and ``sms`` stay out of the accepted set
+    even with the fallback fully on. A widening that reached for
+    ``PASSWORDLESS_PROVIDERS`` wholesale would pass every test above and fail
+    this one.
+    """
+    from customer_console import operators as ops
+
+    env = {
+        "OPERATOR_SIGNIN_PROVIDER": "google",
+        "OPERATOR_ADMISSION_MODE": "registry",
+        "OPERATOR_ALLOW_EMAIL_OTP": "1",
+    }
+    accepted = ops.accepted_methods(env)
+    assert accepted == {"google", "email"}
+    for never in ops.PASSWORDLESS_PROVIDERS - {"email"}:
+        assert never not in accepted
+
+
+# ── Done-when 40: the per-operator pin ─────────────────────────────────────
+
+
+def test_a_row_pinned_to_google_refuses_an_email_code(
+    otp_client, eng, issuer
+):
+    """🔴 **Done-when 40, and it is why the fallback is safe to enable.**
+
+    A GLOBAL code flag weakens the admin most, because the admin adds
+    operators. The owner keeps ``{google}`` on their own row, so the fallback
+    belongs to the contractor who needs it and to nobody else.
+    """
+    owner = _email()
+    _empty_registry(eng)
+    _register_pinned(eng, owner, ["google"], role="admin")
+
+    issuer["serve"](_otp(owner))
+    assert _signin(otp_client).status_code == 403, (
+        "a row pinned to google was admitted through an email code"
+    )
+
+    # The POSITIVE CONTROL — the same person, the same row, through Google.
+    # Without it, the 403 above could mean the row is simply broken.
+    issuer["serve"](_google(owner, hd=None))
+    r = _signin(otp_client)
+    assert r.status_code == 200, r.text
+    assert r.json()["operator"]["role"] == "admin"
+
+
+def test_a_null_pin_admits_whatever_the_box_allows(otp_client, eng, issuer):
+    """R6 — every row written before migration 022 keeps working.
+
+    ``NULL`` means "no restriction", which is what those rows already meant.
+    An implementation that read NULL as the empty set would lock out every
+    operator on the box at the next deploy.
+    """
+    person = _email()
+    _empty_registry(eng)
+    _register_pinned(eng, person, None)
+
+    issuer["serve"](_otp(person))
+    assert _signin(otp_client).status_code == 200
+
+    issuer["serve"](_google(person, hd=None))
+    assert _signin(otp_client).status_code == 200
+
+
+def test_a_row_pinned_to_email_refuses_google(otp_client, eng, issuer):
+    """The pin restricts in BOTH directions, or it is not a pin."""
+    person = _email()
+    _empty_registry(eng)
+    _register_pinned(eng, person, ["email"])
+
+    issuer["serve"](_google(person, hd=None))
+    assert _signin(otp_client).status_code == 403
+
+    issuer["serve"](_otp(person))
+    assert _signin(otp_client).status_code == 200
+
+
+def test_the_pin_applies_in_directory_mode_too(google_client, eng, issuer):
+    """A row that names ``{email}`` means it on a directory box as well.
+
+    The pin is a property of the PERSON, not of the mode. Wiring
+    ``_check_method`` inside the registry branch would pass every test above
+    and silently ignore the column on the box that runs today.
+    """
+    person = _email()
+    _empty_registry(eng)
+    _register_pinned(eng, person, ["email"])
+    issuer["serve"](_google(person))
+
+    assert _signin(google_client).status_code == 403
+
+
+def test_the_database_refuses_a_pin_that_admits_nobody(eng):
+    """Migration 022's CHECK, against the real database (R8).
+
+    An empty array is a lock-out rather than a policy, and the difference
+    between it and NULL is the whole design of the column.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError), eng.begin() as conn:
+        conn.execute(
+            text("INSERT INTO operator (email, role, status, "
+                 "allowed_methods) VALUES (:e, 'viewer', 'active', :m)"),
+            {"e": _email(), "m": []},
+        )
+
+
+def test_row_methods_reads_null_and_empty_as_no_restriction() -> None:
+    """``row_methods`` semantics, pinned directly (D71.4).
+
+    ⚠️ **Three inputs must all mean "no restriction", and for two different
+    reasons.** ``None`` and a missing column mean it because that is what every
+    row written before migration 022 means, and R6 says old rows keep working.
+    An empty array means it because migration 022's CHECK already refuses one
+    in the database, so a row carrying it is a corruption rather than a policy
+    — and reading a corruption as "admit nobody" locks the console.
+    """
+    from customer_console import operators as ops
+
+    assert ops.row_methods(None) is None
+    assert ops.row_methods({"allowed_methods": None}) is None
+    assert ops.row_methods({"allowed_methods": []}) is None
+    assert ops.row_methods({"email": "x@y.z"}) is None
+
+
+def test_row_methods_folds_case_and_whitespace() -> None:
+    """A pin written by hand must not fail on its own punctuation.
+
+    An operator row is written by a person through SQL or an admin form.
+    ``Google`` and ``google`` name one method, and a pin that refused the
+    person over the capital would read as a broken account rather than as a
+    policy nobody meant to write.
+    """
+    from customer_console import operators as ops
+
+    assert ops.row_methods({"allowed_methods": [" Google ", "EMAIL"]}) == {
+        "google", "email"
+    }
+    assert ops.row_methods({"allowed_methods": ["google", "  "]}) == {"google"}
+
+
+def test_a_pin_written_in_mixed_case_still_admits(otp_client, eng, issuer):
+    """The fold above, through the real door and the real database."""
+    person = _email()
+    _empty_registry(eng)
+    _register_pinned(eng, person, ["Google"])
+
+    issuer["serve"](_google(person, hd=None))
+    assert _signin(otp_client).status_code == 200
+
+    issuer["serve"](_otp(person))
+    assert _signin(otp_client).status_code == 403

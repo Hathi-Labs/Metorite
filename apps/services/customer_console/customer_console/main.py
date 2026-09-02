@@ -1162,6 +1162,11 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
         identity = operator_signin.introspect(req.access_token)
     except operator_signin.SigninUnconfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except operators.OperatorUnconfigured as exc:
+        # `extract_identity` reads OPERATOR_SIGNIN_PROVIDER, which is staff-gate
+        # configuration and raises this class. A misconfigured box is a 503
+        # wherever the console notices it.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except operator_signin.SigninRejected as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
@@ -1175,7 +1180,37 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             # directory. Letting a stranger trigger it would consume the
             # one-time path before the owner reached it, which is a denial of
             # the bootstrap even though it grants the stranger nothing.
-            if row is None and identity.tid == operators.staff_tenant_id():
+            #
+            # ⚠️ **`directory_matches` decides, never a bare `==`** (spec §8.1
+            # done-when 32). This line read `identity.tid ==
+            # operators.staff_tenant_id()`. Two `None` values compare equal in
+            # Python, so the day that getter returned `None` for an
+            # unconfigured box, an identity carrying no directory claim would
+            # consume the one-time path. The getter raises instead, and the
+            # helper reads a missing claim as `False`. Both properties must
+            # hold, because the hole needs only one of them to fail.
+            #
+            # ⚠️ **This CALL is a SINGLE point, and no row count watches it.**
+            # The two properties above are guards inside the helper. The `and`
+            # clause here is not. Delete it and the bootstrap fires for every
+            # caller. The whole route runs in one transaction that rolls back
+            # on the 403, so `count(*) FROM operator` still reads zero.
+            # Measured 2026-09-01: that mutation left 148 tests green.
+            # The fence watches the CALL, and it is
+            # `test_operator_signin.py`
+            # `::test_the_bootstrap_never_fires_on_a_missing_directory_claim`.
+            # ⚠️ **D71.5 moved this gate, and the move is the single most
+            # dangerous line in that decision.** It read
+            # `operators.directory_matches(identity.tid)`. In `registry` mode
+            # there is no directory claim to match, so that call is always
+            # False and the bootstrap could never fire — and the obvious
+            # "fix", deleting the clause, hands `admin` to the FIRST STRANGER
+            # who signs in. `bootstrap_allowed` keeps the directory comparison
+            # in `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL`
+            # exactly in `registry` mode. Every doubt reads False.
+            if row is None and operators.bootstrap_allowed(
+                identity.email, identity.tid
+            ):
                 try:
                     operators.bootstrap(conn)
                 except operators.BootstrapRefused:
@@ -1185,7 +1220,10 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
                 row = store.operator_by_email(conn, identity.email)
 
             operator = operators.admit(
-                row, tid=identity.tid, email=identity.email
+                row,
+                tid=identity.tid,
+                email=identity.email,
+                method=identity.method,
             )
 
             store.operator_session_insert(
@@ -3170,6 +3208,35 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
                {"slug": req.org_slug, "tombstone": tombstone,
                 "deleted": deleted, "scrubbed": scrubbed},
                actor=staff.actor)
+    # ⚠️ THE AUDIT ROW IS A RECORD, NOT A NOTIFICATION. `_audit` writes to
+    # `control_audit` and nothing else, so a purge reaches the other admins
+    # only when somebody thinks to look. DEF-5 states the problem in its own
+    # trigger: "Nobody reads a log until it alerts."
+    #
+    # This is the loudest thing this door can do TODAY. DEF-7 decided the
+    # shape deliberately: the Resend seam lives in the GATEWAY, and reaching
+    # across a service boundary for one message would put a second email seam
+    # inside the Console. So the log line is the durable record and the thing
+    # an alert rule fires on.
+    #
+    # ⚠️ HONEST LIMIT: nothing watches these logs yet, so this alerts NOBODY
+    # today. It earns its place twice anyway — `journalctl -u
+    # acb-customer-console` names the act during an incident, and purge is
+    # already covered on the day log alerting arrives (DEF-7's own trigger).
+    # It is not four-eyes and does not close H-93.
+    #
+    # Outside the transaction on purpose: the books are committed by here, so
+    # a logging fault can never roll back a completed purge.
+    _log.critical(
+        "org.purge",
+        extra={
+            "purge_slug": req.org_slug,
+            "purge_tombstone": tombstone,
+            "purge_actor": staff.actor,
+            "purge_deleted_rows": sum(deleted.values()),
+            "purge_scrubbed_rows": sum(scrubbed.values()),
+        },
+    )
     return {
         "slug": req.org_slug,
         "tombstone": tombstone,

@@ -64,20 +64,44 @@ jobs:
             code=000
             for attempt in 1 2 3; do
               code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
-              # Any HTTP response means the stack is serving; 2xx/3xx/401 are
-              # all "alive". Only a total absence of response is an outage.
-              if [ "$code" != "000" ]; then break; fi
-              echo "  $name attempt $attempt failed — retrying in 20s"
+              # 2xx/3xx/4xx are all "alive" — a redirect to sign-in and a 401
+              # both prove the stack compiled and is serving.
+              #
+              # 🔴 **A 5xx is NOT alive, and this line used to say it was.**
+              # Measured 2026-09-01: the workbench answered HTTP 500 on EVERY
+              # route, including `/`, for the whole of a deploy's build window,
+              # and this probe recorded it as "OK (HTTP 500)". A completely
+              # broken app passed the outage check. The rule was "any HTTP
+              # response means the stack is serving", and a Next.js server with
+              # no `.next` directory serves 500s perfectly.
+              case "$code" in
+                000|5[0-9][0-9]) ;;
+                *) break ;;
+              esac
+              echo "  $name attempt $attempt got HTTP ${code} — retrying in 20s"
               sleep 20
             done
-            if [ "$code" = "000" ]; then
-              HEALTHY=0
-              REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
-              echo "::error::${name} unreachable at ${url}"
-            else
-              REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
-              echo "${name} OK (HTTP ${code})"
-            fi
+            # ⚠️ Alarming on 5xx is only correct BECAUSE `vps_apply.sh` no
+            # longer deletes the live build before rebuilding it. While the
+            # deploy routinely served 500s for minutes, this would have paged
+            # on every release. The two changes ship together and the fence
+            # `test_deploy_next_build_swap.py` holds both ends.
+            case "$code" in
+              000)
+                HEALTHY=0
+                REPORT="${REPORT}- **${name}**: UNREACHABLE (no response after 3 attempts) — \`${url}\`"$'\n'
+                echo "::error::${name} unreachable at ${url}"
+                ;;
+              5[0-9][0-9])
+                HEALTHY=0
+                REPORT="${REPORT}- **${name}**: SERVING ERRORS (HTTP ${code}) — \`${url}\`"$'\n'
+                echo "::error::${name} answers HTTP ${code} at ${url} — up, but broken for every user"
+                ;;
+              *)
+                REPORT="${REPORT}- **${name}**: OK (HTTP ${code}) — \`${url}\`"$'\n'
+                echo "${name} OK (HTTP ${code})"
+                ;;
+            esac
           done
 
           echo "healthy=${HEALTHY}" >> "$GITHUB_OUTPUT"
@@ -150,6 +174,76 @@ jobs:
           esac
 
           [ "$FAILED" -eq 0 ]
+
+  delivery:
+    name: "The deployed commit must match main"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compare the serving SHA against origin/main
+        env:
+          BASE: https://api.metorite.com
+        run: |
+          # ⚠️ EVERY OTHER JOB HERE ASKS "DOES THE MACHINERY ANSWER?".
+          # None of them asks "DID DELIVERY LAND?". Those are different
+          # questions, and an app running yesterday's code answers the first
+          # one perfectly.
+          #
+          # This is the FOURTH time that gap cost real hours: H-89 (the app
+          # stayed up on old code), the Operator Console drift of 2026-08-28,
+          # the `.venv` ownership failure of 2026-08-26, and H-100 on
+          # 2026-09-02 — a dead Console DSN killed `vps_apply.sh` ~360 lines
+          # before the workbench rebuild. Each time every probe stayed green
+          # and somebody found it by accident.
+          #
+          # `GET /version` has reported the serving SHA since 2026-08-25. The
+          # deploy job gates on it. NOTHING watched it between deploys, so a
+          # box that silently stopped converging looked identical to one that
+          # had nothing to do.
+          want="$(git rev-parse HEAD)"
+          got="$(curl -s -m 25 "${BASE}/version" 2>/dev/null \
+                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' \
+                 2>/dev/null || true)"
+
+          if [ -z "$got" ]; then
+            # Unreadable is NOT a delivery failure. The `probe` job owns
+            # reachability, and two alarms for one outage teach people to
+            # mute both.
+            echo "::warning::/version did not answer — delivery unconfirmed, see the probe job"
+            exit 0
+          fi
+
+          if [ "$got" = "$want" ]; then
+            echo "OK      serving ${got:0:8}, which is origin/main"
+            exit 0
+          fi
+
+          # A deploy in flight is normal, and this job runs hourly. So only
+          # call it a failure once the gap has outlived any plausible deploy.
+          # The deploy job's own worst case is ~105 minutes.
+          if git merge-base --is-ancestor "$got" HEAD 2>/dev/null; then
+            behind="$(git rev-list --count "$got..HEAD")"
+            age="$(git log -1 --format=%ct HEAD)"
+            now="$(date +%s)"
+            hours=$(( (now - age) / 3600 ))
+            echo "serving ${got:0:8}, main is ${want:0:8} (${behind} commit(s) ahead, head is ${hours}h old)"
+            if [ "$hours" -ge 3 ]; then
+              echo "::error::main has been ${behind} commit(s) ahead for ${hours}h — delivery is NOT landing"
+              echo "         Check: ssh metorite 'systemctl show acb-pull.service -p Result'"
+              echo "         A green stack proves nothing here (H-100)."
+              exit 1
+            fi
+            echo "::notice::gap is ${hours}h — inside the deploy window, not failing yet"
+            exit 0
+          fi
+
+          # The box serves a commit that is not an ancestor of main. A force
+          # push, a rollback, or a box pinned to another branch. Never normal.
+          echo "::error::serving ${got:0:8}, which is NOT an ancestor of main"
+          exit 1
 
   # Only runs on manual dispatch with diagnose=true. SSH is the thing that
   # breaks during these outages, so this is best-effort and never fails the run.

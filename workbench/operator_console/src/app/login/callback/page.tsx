@@ -2,7 +2,15 @@
 
 import { useEffect, useState } from "react";
 
-// Where Supabase lands the operator after Microsoft has answered.
+// Where Supabase lands the operator after the directory has answered.
+//
+// ⚠️ **The copy here NAMES NO PROVIDER, and that is deliberate** (D70). This is
+// a client component, so it cannot read `OPERATOR_SIGNIN_PROVIDER` — Next.js
+// inlines a server variable only behind `NEXT_PUBLIC_`, and a second copy of
+// the provider name is a second thing to keep in step. `login/page.tsx` already
+// names the directory on the button the reader just pressed, so a message that
+// says "the sign-in did not return a token" cannot contradict it. Hard-coding
+// "Microsoft" here WOULD contradict it the day the owner flips the variable.
 //
 // ⚠️ **This has to be a CLIENT page, and the reason is structural.** Supabase
 // returns the access token in the URL **fragment** (`#access_token=…`). A
@@ -40,7 +48,7 @@ export default function CallbackPage() {
     if (!token) {
       window.location.href =
         "/login?error=" +
-        encodeURIComponent("Microsoft did not return a sign-in token.");
+        encodeURIComponent("The sign-in did not return a token.");
       return;
     }
 

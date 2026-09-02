@@ -39,6 +39,17 @@ function projectWithGrants(lines) {
 const t = new Date()
 const TODAY = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
 
+// Offsets from today, for the ranged `ALLOW-UNTIL` form. Computed rather than
+// hard-coded: a fixture with a literal future date becomes a stale fixture the
+// day it passes, and it passes silently — the suite goes green while the arm it
+// covers has stopped being exercised.
+const dayOffset = (n) => {
+  const d = new Date(t.getFullYear(), t.getMonth(), t.getDate() + n)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const FUTURE = dayOffset(30)
+const YESTERDAY = dayOffset(-1)
+
 const NO_GRANTS = projectWithGrants([])
 
 const CASES = [
@@ -46,6 +57,23 @@ const CASES = [
   ['force push', bash('git push --' + 'force origin main'), true],
   ['push -f', bash('git push -f origin ws-5'), true],
   ['filter-branch', bash('git filter-' + 'branch --tree-filter rm -rf secrets'), true],
+  ['filter-repo', bash('git filter-' + 'repo --path secrets --invert-paths'), true],
+
+  // ── reset --hard: the gate was BACKWARDS until 2026-09-02 ────────────────
+  // It matched only `reset --hard origin`, so it blocked the ONE safe shape
+  // and permitted every destructive one. These cases pin the corrected
+  // direction, because the inversion read as deliberate for weeks.
+  //
+  // SAFE — a local pointer move to a ref that is already published.
+  ['reset --hard to origin ref', bash('git reset --' + 'hard origin/main'), false],
+  ['reset --hard to a topic branch on origin', bash('git reset --' + 'hard origin/ws-5-foo'), false],
+  ['reset --hard to upstream ref', bash('git reset --' + 'hard upstream/main'), false],
+  // DESTRUCTIVE — these orphan COMMITTED work, and the old form allowed them.
+  ['reset --hard to HEAD~n orphans commits', bash('git reset --' + 'hard HEAD~3'), true],
+  ['reset --hard to a raw sha orphans commits', bash('git reset --' + 'hard abc1234'), true],
+  ['bare reset --hard discards the tree', bash('git reset --' + 'hard'), true],
+  // ⚠️ `origin` alone is NOT a ref sync — it is ambiguous and not a branch.
+  ['reset --hard to bare origin still blocks', bash('git reset --' + 'hard origin'), true],
   ['skills flag flip', bash('export SKILLS_INDEX_ONLY' + '=1'), true],
   ['mem0 flip', bash('MEM0_ENABLED' + '=true uv run pytest'), true],
   ['permission enforce', bash('AGENT_PERMISSION_MODE' + '=enforce make test'), true],
@@ -156,6 +184,72 @@ const CASES = [
     projectWithGrants(null),
   ],
 
+  // ── the ranged form, ALLOW-UNTIL (2026-09-01) ──────────────────────────
+  // The window must CLOSE BY ITSELF. Every case below exists to hold one half
+  // of that: it opens while the date is ahead, and it is inert the moment the
+  // date is behind or missing.
+  [
+    'ALLOW-UNTIL a future date grants the gate',
+    write('deploy/compose.yml', 'services: {}'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy-write — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL today is INCLUSIVE of today',
+    write('deploy/compose.yml', 'services: {}'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${TODAY} deploy-write — last day`]),
+  ],
+  [
+    'ALLOW-UNTIL yesterday has EXPIRED',
+    write('deploy/compose.yml', 'services: {}'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${YESTERDAY} deploy-write — window closed`]),
+  ],
+  [
+    'ALLOW-UNTIL with NO date grants nothing',
+    write('deploy/compose.yml', 'services: {}'),
+    true,
+    projectWithGrants(['ALLOW-UNTIL deploy-write — open-ended, must not parse']),
+  ],
+  [
+    'ALLOW-UNTIL deploy covers ssh to the box',
+    bash('ssh acb@203.0.113.4 systemctl status acb-gateway'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL secrets covers reading .env on the box',
+    bash('cat /opt/acb/app/.env'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} secrets — dev phase`]),
+  ],
+  // ⚠️ THE RANGED FORM IS STILL PER-ID. A dev-phase window must not become a
+  // skeleton key: force-push and history-rewrite are the two gates the owner
+  // deliberately left OUT of the 2026-09-01 window, and nothing else's grant
+  // may reach them.
+  [
+    'ALLOW-UNTIL deploy does NOT grant force-push',
+    bash('git push --' + 'force origin main'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL deploy does NOT grant history-rewrite',
+    // ⚠️ Was `git reset --hard origin/main` until 2026-09-02. That shape is a
+    // local sync now and correctly ALLOWED, so it stopped testing anything.
+    // Use a rewrite that touches history other people have pulled.
+    bash('git reset --' + 'hard HEAD~3'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'ALLOW-UNTIL never unlocks writing the grant file',
+    write('.claude/OWNER_GRANTS.md', `ALLOW-UNTIL ${FUTURE} deploy — self-granted`),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+
   // ⚠️ THE GRANT FILE IS NEVER AGENT-WRITABLE, AND THAT IS NOT GRANTABLE.
   // A grant an agent can write is not a grant. Both cases below carry a
   // deploy-write grant to prove it does not help.
@@ -173,6 +267,164 @@ const CASES = [
   ],
   // Reading it is fine — an agent must be able to see what it may do.
   ['agent may READ the grant file', bash('cat .claude/OWNER_GRANTS.md'), false],
+
+  // ── the `-m` false positive (2026-09-01) ───────────────────────────────
+  // A `git add` of the grant file was refused because the commit message
+  // carried `Co-Authored-By: … <noreply@anthropic.com>`, and SHELL_WRITE read
+  // the `>` closing that address as a redirect. Nothing was written anywhere.
+  // Every commit that names a protected path and carries a standard trailer
+  // hit this — the shape that teaches people to drop a guard.
+  [
+    'a trailer with an email does not read as a redirect',
+    bash('git add .claude/OWNER_GRANTS.md && git commit -m "grant" -m "Co-Authored-By: A B <x@y.com>"'),
+    false,
+  ],
+  [
+    'a -m body mentioning .env is prose, not a write',
+    bash('git commit -m "document the .env layout for the box"'),
+    false,
+  ],
+  [
+    "a -m body mentioning deploy/ is prose too",
+    bash("git commit -m 'move the deploy/ notes into the README'"),
+    false,
+  ],
+  // ⚠️ THE STRIP MUST NOT BLIND THE GUARD. Each of these puts the write in the
+  // COMMAND half, where neither strip reaches.
+  [
+    'a real redirect to .env still blocks, trailer or not',
+    bash('echo SECRET=1 > .env && git commit -m "x <a@b.com>"'),
+    true,
+  ],
+  [
+    'a heredoc TARGETING .env still blocks',
+    bash("cat > .env <<'EOF'\nA=1\nEOF"),
+    true,
+  ],
+  [
+    'a real write under deploy/ still blocks after a -m',
+    bash('git commit -m "note" && cp x.service deploy/hostinger/x.service'),
+    true,
+  ],
+
+  // ── OWNER_GATES must judge the STRIPPED command (2026-09-02) ───────────
+  // The gate loop read the RAW command while the protected-path arm read the
+  // stripped one. So a commit message DESCRIBING a gated act was read as
+  // performing it. git never executes a `-m` body.
+  [
+    'a -m body describing a reset is prose',
+    bash('git commit -m "the gate allowed reset --' + 'hard HEAD~3 until today"'),
+    false,
+  ],
+  [
+    'a -m body describing ssh is prose',
+    bash('git commit -m "ssh ' + 'root@box to read the logs"'),
+    false,
+  ],
+  [
+    'a -m body describing a deploy script is prose',
+    bash('git commit -m "document deploy/' + 'release.sh for the runbook"'),
+    false,
+  ],
+  // ⚠️ THE STRIP MUST NOT HIDE A REAL ACT. Outside the quoted body, it blocks.
+  [
+    'a real ssh after a -m still blocks',
+    bash('git commit -m "notes" && ssh ' + 'root@srv1.hostinger.com uptime'),
+    true,
+  ],
+  [
+    'a real reset after a -m still blocks',
+    bash('git commit -m "notes" && git reset --' + 'hard HEAD~3'),
+    true,
+  ],
+
+  // ── `>=` is a COMPARISON, not a redirect (2026-09-02) ──────────────────
+  // Third false positive of one class in two days. This one refused a PURE
+  // READ of the grant file, which is the read an agent must make to learn
+  // what it may do. stripNoise() cannot reach it — the `>=` sat in an inline
+  // script argument, not a quoted -m body or a heredoc.
+  [
+    'a >= comparison is not a redirect',
+    bash('node -e "if (d >= today) console.log(1)" && cat .claude/OWNER_GRANTS.md'),
+    false,
+  ],
+  [
+    'a <= comparison near a protected path is not a write',
+    // Reads `deploy/`, a PROTECTED_PATH, so it exercises the redirect arm.
+    // ⚠️ NOT a `deploy/*.sh` path: that trips the `deploy` OWNER_GATE on its
+    // own, and the case would then pass for the wrong reason.
+    bash('python -c "print(1 <= 2)" && ls deploy/hostinger/'),
+    false,
+  ],
+  // ⚠️ THE EXCLUSION MUST NOT BLIND THE ARM. Append and truncate are writes.
+  [
+    'append to a protected path still blocks',
+    bash('echo X=1 >> .env'),
+    true,
+  ],
+  [
+    'truncating redirect to a protected path still blocks',
+    bash('echo X=1 > .env'),
+    true,
+  ],
+  [
+    'append to the grant file still blocks',
+    bash('echo ALLOW >> .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+
+  // ── restoring the grant file out of history is a WRITE ─────────────────
+  // `git add`/`git commit` only record what the owner wrote. `git checkout --`
+  // and `git restore` REPLACE the working copy, which on this file could
+  // revive a grant the calendar already retired.
+  [
+    'git checkout of the grant file is a write',
+    bash('git checkout -- .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git restore of the grant file is a write',
+    bash('git restore .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git stash pop touching the grant file is a write',
+    bash('git stash pop && cat .claude/OWNER_GRANTS.md'),
+    true,
+  ],
+  [
+    'git add of the grant file is NOT a write',
+    bash('git add .claude/OWNER_GRANTS.md'),
+    false,
+  ],
+
+  // ── the guard protects itself (2026-09-01) ─────────────────────────────
+  // The cheapest bypass in the design was to edit the guard, or to delete its
+  // entry from settings.json. GRANTABLE, not sealed — a guard no agent can
+  // repair is a guard that rots.
+  ['agent may not Write plan-guard', write('.claude/hooks/plan-guard.mjs', 'x'), true],
+  ['agent may not Write the guard test', write('.claude/hooks/plan-guard.test.mjs', 'x'), true],
+  ['agent may not Write settings.json', write('.claude/settings.json', '{}'), true],
+  [
+    'guard-write unlocks the guard',
+    write('.claude/hooks/plan-guard.mjs', 'x'),
+    false,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} guard-write — repair`]),
+  ],
+  [
+    'a deploy grant does NOT unlock the guard',
+    write('.claude/hooks/plan-guard.mjs', 'x'),
+    true,
+    projectWithGrants([`ALLOW-UNTIL ${FUTURE} deploy — dev phase`]),
+  ],
+  [
+    'a shell write to settings.json is blocked too',
+    bash('cp /tmp/settings.json .claude/settings.json'),
+    true,
+  ],
+  // Reading the guard is always fine.
+  ['agent may READ plan-guard', bash('cat .claude/hooks/plan-guard.mjs'), false],
+  ['agent may RUN the guard test', bash('node .claude/hooks/plan-guard.test.mjs'), false],
 
   ['plain pytest', bash('uv run pytest tests/unit/'), false],
   ['ruff', bash('uv run ruff check .'), false],

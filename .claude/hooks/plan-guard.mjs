@@ -34,10 +34,36 @@ const OWNER_GATES = [
     test: /\bgit\b[^\n]*\b(push)\b[^\n]*(--force|--mirror|\s-f\b)/,
     why: 'Force-push / history rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2).',
   },
+  // ⚠️ NARROWED 2026-09-02, AND THE OLD FORM WAS BACKWARDS.
+  //
+  // It read `\bgit\s+reset\s+--hard\s+origin\b`, which matches ONLY a reset to
+  // a remote-tracking ref. So it blocked the one shape that is SAFE and waved
+  // through every shape that is not:
+  //
+  //   git reset --hard origin/main   BLOCKED   <- a local pointer move
+  //   git reset --hard HEAD~3        allowed   <- orphans three commits
+  //   git reset --hard abc1234       allowed   <- orphans whatever was ahead
+  //   git reset --hard               allowed   <- discards the working tree
+  //
+  // `git reset --hard origin/<ref>` cannot rewrite published history, cannot
+  // affect another person, and cannot lose an already-pushed commit. It is how
+  // you sync a local branch after a squash merge, which is routine here because
+  // every PR squashes. It cost a stalled hand-off on 2026-09-02 and bought
+  // nothing.
+  //
+  // What this gate is really for is rewriting history OTHERS HAVE PULLED:
+  // `filter-branch`, `filter-repo`, and force-push (its own id, above).
+  //
+  // ⚠️ RESIDUAL RISK, named rather than hidden: a reset to a remote ref still
+  // discards UNCOMMITTED work in the tree. A regex cannot see the tree, so the
+  // check is `git status` before you run it, and that is a habit and not a
+  // fence. The trade is deliberate — it swaps a silent orphaning of COMMITTED
+  // history, which was allowed, for a visible loss of uncommitted edits.
   {
     id: 'history-rewrite',
-    test: /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b|\bgit\s+reset\s+--hard\s+origin\b/,
-    why: 'History rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2).',
+    test: /\bgit\b[^\n]*\b(filter-branch|filter-repo)\b|\bgit\s+reset\s+--hard\b(?!\s+(origin|upstream)\/)/,
+    why: 'History rewrite is OWNER-GATE (work_plan §6, BO-8/WS-2). '
+      + 'A reset to origin/<ref> is a local sync and is NOT gated.',
   },
 
   // --- enforcement flips (work_plan §6) -----------------------------------
@@ -92,7 +118,20 @@ const SHELL_WRITE = new RegExp(
     // /dev/null exclusion lets `2>/dev/null` through — the bit bucket is
     // not a path. Without these two the arm refused THREE PURE READS in one
     // session on 2026-08-26, which is how a guard teaches people to remove it.
-    String.raw`>\s*(?!&)(?!\/dev\/null(\s|$))\S`,
+    //
+    // ⚠️ `(?!=)` EXCLUDES THE COMPARISON OPERATOR, added 2026-09-02. This is
+    // the THIRD false positive of one class in two days: a `>` inside a string
+    // read as a redirect. First the `>` closing an email address in a
+    // `Co-Authored-By` trailer. Then `>=` inside a `node -e` script, which
+    // refused a PURE READ of the grant file — the very read an agent must make
+    // to find out what it may do.
+    //
+    // `stripNoise()` cannot reach this one. It removes quoted `-m` bodies and
+    // heredocs, and `>=` here sat in an inline script argument.
+    //
+    // `>>` still matches, and must: the first `>` is refused by `(?!>)`, then
+    // the second `>` matches the filename after it. Append is a write.
+    String.raw`>\s*(?!&)(?!=)(?!>)(?!\/dev\/null(\s|$))\S`,
     // in-place edits
     String.raw`\bsed\b[^|;&]*\s-i`,
     String.raw`\bperl\b[^|;&]*\s-i`,
@@ -118,7 +157,67 @@ const PROTECTED_PATHS = [
     test: /(^|[\\/])deploy[\\/]/,
     why: 'deploy/ changes are OWNER-GATE — they run against prod.',
   },
+  // ⚠️ THE GUARD PROTECTS ITSELF (added 2026-09-01).
+  //
+  // Until now the cheapest bypass in the whole design was to edit this file.
+  // Nothing stopped it. An agent that found a gate inconvenient could delete
+  // the gate, or delete the `plan-guard` entry from `.claude/settings.json`,
+  // and the next tool call would sail through with no trace at the boundary.
+  //
+  // That hole mattered little while permissions were narrow and a human
+  // approved most calls. It matters now: the 2026-09-30 dev window (CLAUDE.md
+  // §3a) made this hook the ONLY enforcement layer for ssh, deploy, `.env` and
+  // flag flips. A sole guard that can rewrite itself is not a guard.
+  //
+  // ⚠️ `settings.json` is in this list for a reason that is easy to miss: the
+  // gates are only reachable because that file registers this hook. Removing
+  // six lines of JSON disables every rule above without touching this file.
+  //
+  // GRANTABLE on purpose, not sealed. Guard work is legitimate and happens
+  // often — the ranged-grant arm and this very entry were written by an agent.
+  // Sealing it would mean no agent could ever repair a false positive, which
+  // is how a guard rots. The owner writes `guard-write` for that session.
+  {
+    id: 'guard-write',
+    test: /(^|[\\/])(plan-guard\.(test\.)?mjs|settings\.json)$/i,
+    why: 'plan-guard and the settings that register it are the enforcement layer itself.',
+  },
 ]
+
+/**
+ * Strip the parts of a command that are DATA, not instruction, before deciding
+ * whether the command writes.
+ *
+ * Two shapes, and both were found by a false positive on ordinary work:
+ *
+ * 1. **Heredoc bodies.** Found immediately when this rule blocked its own
+ *    commit, because the message mentioned `.env` in prose.
+ *
+ * 2. **`-m` / `--message` bodies.** Found 2026-09-01. A `git add` of the grant
+ *    file was refused because the commit message carried the trailer
+ *    `Co-Authored-By: … <noreply@anthropic.com>` — and `SHELL_WRITE` read the
+ *    `>` closing that email address as a file redirect. Nothing was written
+ *    anywhere. Every commit that names a protected path and carries a standard
+ *    trailer hit this, which is the shape that teaches people to drop a guard.
+ *
+ * A command that genuinely targets a protected path still blocks: in
+ * `cat > .env <<'EOF'` the `> .env` lives in the COMMAND half, and neither
+ * strip touches it. What goes is only the quoted payload.
+ */
+function stripNoise(cmd) {
+  return cmd
+    .replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ')
+    .replace(/(^|\s)(-m|--message)(=|\s+)(['"])[\s\S]*?\4/g, ' ')
+}
+
+// Git verbs that REPLACE a file's content from somewhere else. `git add` and
+// `git commit` only record what a human already wrote, so they are not here —
+// but `git checkout -- <path>` and `git restore <path>` overwrite the working
+// copy, which on the grant file would let an agent revive a lapsed grant out
+// of history. Scoped to the grant-file check, deliberately: adding `checkout`
+// to SHELL_WRITE would refuse `git checkout -b` on any command that happens to
+// mention `deploy/`.
+const GIT_CONTENT_RESTORE = /\bgit\s+(checkout|restore)\b|\bgit\s+stash\s+(pop|apply)\b/
 
 
 // --- Owner grants (D45) ------------------------------------------------------
@@ -130,14 +229,29 @@ const PROTECTED_PATHS = [
 // lock with no key cut. Nothing reported the failure, because nothing read the
 // file at all.
 //
-// The owner — and only the owner — unlocks ONE named gate for ONE local day by
-// hand-writing into .claude/OWNER_GRANTS.md:
+// The owner — and only the owner — unlocks ONE named gate by hand-writing into
+// .claude/OWNER_GRANTS.md, in one of two forms:
 //
-//   ALLOW 2026-08-19 deploy — reason
+//   ALLOW       2026-08-19 deploy — reason      (that ONE local day)
+//   ALLOW-UNTIL 2026-09-30 deploy — reason      (every day THROUGH that date)
 //
 // The guard refuses every agent write to that file, and THAT refusal is not
 // grantable — so a grant can only originate in the owner's own editor.
 // In-chat permission is not a grant. Stale lines are inert.
+//
+// ⚠️ WHY THE RANGE FORM EXISTS (added 2026-09-01, owner directive). The
+// day-scoped form is right for a one-off act and WRONG for a phase. During a
+// build phase the owner grants the same four ids every morning, which is not
+// a decision — it is a toll. Twenty-two of those lines already sit above the
+// live ones in OWNER_GRANTS.md. A toll that is always paid stops carrying
+// information, and the pressure it creates is to delete the guard rather than
+// to date it.
+//
+// The range form keeps the property that matters — the window still CLOSES BY
+// ITSELF, on a date a human wrote, with no one needing to remember. What it
+// drops is the daily re-typing. An open-ended grant would drop the expiry too,
+// and that is the one thing this must not do: `ALLOW-UNTIL` with no date does
+// not parse, so it grants nothing.
 const GRANT_FILE_RE = /(^|[\\/])\.claude[\\/]OWNER_GRANTS\.md$/i
 
 function ownerGrants(projectDir) {
@@ -154,8 +268,14 @@ function ownerGrants(projectDir) {
   const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
   const ids = new Set()
   for (const line of text.split('\n')) {
-    const m = line.match(/^\s*ALLOW\s+(\d{4}-\d{2}-\d{2})\s+([\w-]+)/)
-    if (m && m[1] === today) ids.add(m[2])
+    // `\s+` after ALLOW is what keeps the two forms apart: `ALLOW-UNTIL` can
+    // never be read as a bare `ALLOW`, because a hyphen is not whitespace.
+    const m = line.match(/^\s*ALLOW(-UNTIL)?\s+(\d{4}-\d{2}-\d{2})\s+([\w-]+)/)
+    if (!m) continue
+    const [, ranged, date, id] = m
+    // ISO-8601 dates compare correctly as strings — no Date parsing, so no
+    // timezone can move the boundary. `ALLOW-UNTIL` is INCLUSIVE of its date.
+    if (ranged ? date >= today : date === today) ids.add(id)
   }
   return ids
 }
@@ -225,11 +345,18 @@ const input = payload.tool_input || {}
 
 if (tool === 'Bash' || tool === 'PowerShell') {
   const cmd = String(input.command || '')
+  // Judge the command, never its quoted payload. See stripNoise().
+  const scanned = stripNoise(cmd)
 
   // The grant file itself is never shell-writable, and that refusal is the
   // one thing no grant can unlock — otherwise an agent could grant itself.
-  if (GRANT_FILE_RE.test(cmd.replace(/\s+/g, ' ')) || /OWNER_GRANTS/i.test(cmd)) {
-    if (SHELL_WRITE.test(cmd)) {
+  //
+  // `git add` and `git commit` are NOT writes here. They record a file the
+  // owner already wrote, and the owner committed this file on 2026-09-01 so
+  // that cloud sessions inherit the window. Restoring content out of history
+  // IS a write, because it can revive a grant the calendar already retired.
+  if (GRANT_FILE_RE.test(scanned.replace(/\s+/g, ' ')) || /OWNER_GRANTS/i.test(scanned)) {
+    if (SHELL_WRITE.test(scanned) || GIT_CONTENT_RESTORE.test(scanned)) {
       block(
         'shell write to .claude/OWNER_GRANTS.md — grants must be owner-authored (D45). '
           + 'This refusal is NOT grantable.',
@@ -240,7 +367,25 @@ if (tool === 'Bash' || tool === 'PowerShell') {
   const grants = ownerGrants(PROJECT_DIR)
 
   for (const gate of OWNER_GATES) {
-    if (gate.test.test(cmd) && !grants.has(gate.id)) {
+    // ⚠️ `scanned`, NOT `cmd`. This arm read the RAW command until 2026-09-02,
+    // while the protected-path arm below already read the stripped one. The
+    // split was mine and it was not deliberate — I added stripNoise() for the
+    // path arm and never carried it here.
+    //
+    // It surfaced the same way every time: a commit message that DESCRIBES a
+    // gated act was read as performing it. `git commit -m "...reset --hard
+    // HEAD~3..."` tripped history-rewrite. `-m "ssh to the box"` trips deploy.
+    // A `-m` body is an argument to `git commit`, and git never executes it.
+    //
+    // This is the FIFTH false positive of one family in three days — a string
+    // inside a command read as the command. The other four were `>` in an
+    // email trailer, `>` in a heredoc, `>=` in an inline script, and this.
+    // Stripping the quoted payload once, and judging every arm on the same
+    // text, is the fix that stops the family instead of the instance.
+    //
+    // It does not widen anything: a real `ssh` or `reset` OUTSIDE the quoted
+    // body still sits in `scanned` and still blocks.
+    if (gate.test.test(scanned) && !grants.has(gate.id)) {
       block(
         `${gate.why}\nGrantable by the OWNER only: hand-write `
           + `"ALLOW <today> ${gate.id} — reason" into .claude/OWNER_GRANTS.md (D45).`,
@@ -267,22 +412,13 @@ if (tool === 'Bash' || tool === 'PowerShell') {
   // SPACE, so the anchor never matches and the guard waves it through.
   // Splitting the command into tokens hands each pattern the thing it was
   // written to judge.
-  // ⚠️ HEREDOC BODIES ARE DATA, NOT COMMAND — strip them before scanning.
-  // Found immediately: this rule blocked its own commit, because the commit
-  // message (passed through `git commit -m "$(cat <<'EOF' … EOF)"`) mentioned
-  // `.env` in prose while the surrounding command contained a redirect. Nothing
-  // was being written to `.env` at all.
+  // ⚠️ QUOTED PAYLOAD IS DATA, NOT COMMAND — `scanned` above already stripped
+  // it. stripNoise() carries the full rationale and both incidents.
   //
   // That matters beyond the annoyance. A guard with false positives on ordinary
   // work gets routed around on purpose — the next person writes the commit
   // message differently, or drops the guard from their loop, and the real block
   // goes with it. Precision IS the safety property here.
-  //
-  // A heredoc that genuinely targets a protected path still blocks: in
-  // `cat > .env <<'EOF'` the `> .env` lives in the COMMAND half, which survives
-  // this strip untouched.
-  const scanned = cmd.replace(/<<-?\s*['"]?(\w+)['"]?[\s\S]*?\n\s*\1\b/g, ' ')
-
   if (SHELL_WRITE.test(scanned)) {
     const tokens = scanned.split(/[\s;|&()<>'"`]+/).filter(Boolean)
     for (const token of tokens) {

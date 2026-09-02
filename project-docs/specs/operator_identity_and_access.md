@@ -1,6 +1,14 @@
 # Operator identity and access — the staff side of the Operator Console
 
-**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-08-26.**
+**Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-09-02,
+after CP-12j.** Done-whens 1, 5 and 30 to 41 are MET, and 2 to 29 stay true.
+🔴 The owner still owes H-54, and no sign-in works until they finish it.
+
+⛔ **CP-12i added a SECOND admission mode on 2026-09-02 (D71).** The owner
+assigns operators Gmail and outside addresses, so the Workspace directory
+cannot describe the staff. §4.1b holds the mode, the email fallback and the
+per-operator method pin. It ships dark — `OPERATOR_ADMISSION_MODE` defaults
+to `directory`, and a box nobody changes keeps all three checks.
 
 **◐ CP-12a BUILT 2026-08-26** (`ws31-cp12a-staff-identity`) — the substrate
 half. Migration 009, `customer_console/operators.py`, five `store.py` reads and
@@ -87,6 +95,18 @@ project.** `app_metadata.provider` is the strongest signal the payload
 carries, and it is not a per-session claim. Turning linking off removes the
 condition the bypass needs. Filed with **H-54**.
 
+⚠️ **MEASURED 2026-09-01, and RECORDED rather than fixed.** `_signin_provider`
+reads a provider NAME. It cannot separate two identities that share one name.
+So an account with two `google` identities, where only the SECOND carries the
+`hd`, is admitted with a 200. `_google_hd` therefore proves *"this account
+holds an identity from our Workspace"*, and not *"this sign-in came from our
+Workspace"*.
+
+No outsider can reach it. The operator must link the second account to their
+own Supabase user first. Turning identity linking OFF closes it, which is the
+act above, so a code fix here would be a second mechanism for one problem.
+H-54's linking item now carries both facts together.
+
 ⚠️ **Two more real bugs caught at build.** `request.client.host` is not always
 an address, and an unparseable value made the `INET` cast raise, which turned
 a valid sign-in into a 500. `safe_ip` records nothing instead. `DELETE
@@ -147,10 +167,96 @@ staff instead, and the `hd` hosted-domain claim replaces the Entra `tid` as
 check 1. D35.3's intent stands, which is one directory, ours, admin-managed.
 Email OTP is refused for this console.
 
-⚠️ **Read the two halves apart.** Every ◐ BUILT note above is a true record of
-what CP-12a to CP-12g slice 1 shipped, and that code names Microsoft. §4.1 and
-§8.1 below now state what a later slice must build. The two disagree on
-purpose, and the gap is the work.
+**◐ CP-12h BUILT 2026-09-01** (`ws-31-google-signin`) — the Google Workspace
+gate. `OPERATOR_SIGNIN_PROVIDER` names the directory, and it defaults to
+`azure`.
+
+`operators.signin_provider`, `operators.staff_directory_id` and
+`operators.directory_matches` hold the choice. `operator_signin._google_hd`
+reads the `hd` claim, and it is as strict as `_azure_tid`. The login page names
+the provider on the button and in the authorize link.
+
+Done-whens 1, 5, 30, 31, 32 and 33 are met. Done-whens 2 to 29 stay true, and
+their suites pass with no edit to an expectation.
+
+**◐ CP-12h REPAIRED 2026-09-01**, on the same branch, after an independent
+verification returned four blockers. Four more mutations killed. The
+paragraphs below and done-whens 30 to 33 record each repair.
+
+**◐ CP-12h REPAIRED A SECOND TIME 2026-09-01**, after a re-verification found
+a fifth defect of the first round's class and three one-line items. The fifth
+is `OPERATOR_SIGNIN_PROVIDER` in two containers. §4.2a is now the placement of
+record, and §10 G2 names the gate. The three are the login-page wording in
+`identity.ts`, an unfiltered `control_audit` count in
+`test_a_refused_sign_in_writes_absolutely_nothing`, and the counts below.
+
+⚠️ **The owner walk of H-54 and H-56 found a SIXTH, of the same class.**
+`OPERATOR_CONSOLE_ORIGIN` is not one of the six values, and the sign-in button
+does not render without it. H-56 step 1 said "set the six" and named no
+container. An owner who followed it exactly reached a page that said "Sign-in
+is not configured". Both entries now name all three console values.
+§4.2a holds the reason.
+
+**The counts, measured on `ws-31-google-signin` 2026-09-01, twice back to
+back.** **150** Console tests, **0 skipped**, over the THREE suites CP-12h
+touches — `tests/unit/test_operator_signin.py` (**76**) plus
+`tests/unit/test_operator_identity.py` (**43**) plus
+`tests/unit/test_customer_console_catalog.py` (**31**). **626** operator
+console tests, **0 skipped**, over 29 files, from `npx tsc --noEmit && npx
+vitest run` in `workbench/operator_console`.
+
+⚠️ **This paragraph said 629 for the frontend until the second repair round.**
+A re-measurement returned 626, and 629 reproduces on nothing. The 150 was
+correct and named no suites. A verifier who took the two suites this ticket
+edits measured 119, and had no way to reach 150.
+
+⚠️ **This is not §11.** §11 runs the seven operator suites and the seam
+ratchets, which is a wider net and a different number. These three are the
+ticket's own command.
+
+⚠️ **The SWITCH ships dark. The SLICE does not.** An earlier draft of this
+entry said an unset variable keeps every byte of the built behaviour. That
+sentence was false, and this entry withdraws it. An unset variable keeps
+check 1 on the Entra `tid`. It does not keep `_email_is_verified` unchanged.
+
+⚠️ **Done-when 31 tightens the `azure` path too.** `_email_is_verified` read a
+top-level `email_confirmed_at` and then scanned every identity. It now reads
+one identity, the sign-in provider's. That is a real change to the built path,
+and D70 asks for it.
+
+The verifier measured the difference on 2026-09-01. On one Entra payload with
+a top-level `email_confirmed_at` and no `email_verified` on its identity, the
+parent commit returned a `VerifiedIdentity` and this commit answers 401.
+
+**One reason makes that safe today, and it is not the default.** D70 records
+that we hold no Entra directory. The owner has not finished H-54, so no staff
+identity exists on either path. No person signs in through `azure` today.
+⚠️ **If that stops being true, this tightening bites `azure` first.**
+
+⚠️ **`OPERATOR_SIGNIN_PROVIDER` is the SIXTH owner value, and H-54 named
+five.** A box that holds the other five and not this one stays on `azure`.
+Every Google sign-in then answers 401, and no message names the unset
+variable. H-54 and `work_plan.md` §6.1 clause (b) both list it now.
+
+🔴 **Nobody has proved this end to end, and TWO payload claims are
+unmeasured.** Nobody has measured whether Supabase copies `hd` into
+`identities[].identity_data`. **Nobody has measured `email_verified` in that
+same place either.** Done-when 31 makes `email_verified is True` on the
+SIGN-IN identity the only accepted proof of a verified address, and that
+placement is exactly as unmeasured as `hd`.
+
+⚠️ **If Supabase leaves the key out when the value is false, nobody signs in
+on EITHER path.** H-54 item 3 asks the owner to read both claims off one real
+payload. It is one read, and the second answer costs nothing.
+
+The fences here drive a constructed payload. The code fails CLOSED on a
+missing `hd`. So a guess that is wrong refuses everybody, and it admits
+nobody. The owner must measure one real Google payload.
+
+⚠️ **Read the two halves apart.** Every ◐ BUILT note above CP-12h is a true
+record of what CP-12a to CP-12g slice 1 shipped, and that code named Microsoft.
+CP-12h closes the gap in the code. The English of those older notes still names
+Microsoft, and it stays as a record.
 
 **Board row:** `work_plan.md` §2 — **WS-31**, ticket series **CP-12**.
 **Decisions of record:** **D64** (`work_plan.md` §3), taken by the owner on
@@ -238,8 +344,14 @@ D70 moves the provider to Google Workspace and the claim to `hd`.
 | # | The decision says | Note |
 |---|---|---|
 | **D70.1** | **Supabase Auth, with the GOOGLE WORKSPACE provider, authenticates staff.** The `hd` hosted-domain claim replaces the Entra `tid` as check 1 | ⛔ **This amends D64.1.** D35.3's intent stands, which is one directory, ours, admin-managed. Only the mechanism moves |
-| **D70.2** | **Email OTP is refused for this console**, although the tenant app offers it | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
+| **D70.2** | ⛔ **AMENDED by D71.3, 2026-09-02.** **Email OTP was refused for this console outright.** It is now admitted under three conditions together, and §4.1b holds them | The tenant app's Resend OTP has a blast radius of one organization. This console reaches EVERY customer organization. Inbox control would become staff access, with no directory, no offboarding, and nobody who can revoke |
 | **D70.3** | **The `hd` claim is load-bearing.** A domain match alone is not enough | Google lets a person create an account on a non-Gmail address, and verifies it by mail. Google then returns `email_verified: true` and NO `hd`. So a domain match alone admits a former employee's alias, a forward, a catch-all address, or a compromised mailbox. `hd` appears only for an account the Workspace admin manages |
+| **D71.1** | **Admission has TWO modes, and `OPERATOR_ADMISSION_MODE` picks one.** `directory` is the default and keeps all three checks. `registry` skips checks 1 and 2 | An unset variable must change no box. An unknown value raises a 503, the posture `signin_provider` already takes |
+| **D71.2** | **In `registry` mode the operator row is the whole gate** | Owner directive, 2026-09-02. The owner assigns operators Gmail and outside addresses. A Workspace directory cannot describe such a person, so a check that reads one refuses a real operator. Check 3 always carried the sentence that makes this safe — the directory says somebody works here, and the row says they run the platform |
+| **D71.3** | ⛔ **This AMENDS D70.2. An email code may admit an operator, and only when three things hold together.** The mode is `registry`, `OPERATOR_ALLOW_EMAIL_OTP` is on, and the operator's own row permits the method | The owner needs a fallback for a person who holds no Google account. D70.2's reasoning is not withdrawn, and D71.4 is what answers it: the weakness now belongs to one named row instead of to the console |
+| **D71.4** | **`operator.allowed_methods` pins a person to the methods THAT PERSON may use.** NULL means no restriction | A global code flag weakens the admin most, and the admin adds operators. So a person who reads the admin mailbox adds themselves. The owner keeps `{google}` on their own row, and the contractor carries `{email}` |
+| **D71.5** | **The one-time bootstrap pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode** | The old gate compares the directory claim. That comparison is always false in the new mode, and deleting it hands `admin` to the first stranger who signs in. This is the most dangerous line in D71 |
+| **D71.6** | **`registry` mode moves the security boundary to WHO MAY WRITE AN OPERATOR ROW** | Named so nobody rediscovers it. In `directory` mode a mistaken row still admits nobody outside our Workspace. Here the row is the only wall, and spec §5 reserves that write to `admin` |
 | **D64.1** | ⛔ **AMENDED by D70.1.** Was: Supabase Auth, with the Microsoft provider, authenticates staff | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
 | **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea. ⛔ Check 1 reads `hd` since D70, not `tid` |
 | **D64.3** | **Three roles: `viewer`, `editor`, `admin`** | `admin` is the only role that administers operators |
@@ -261,6 +373,20 @@ check failed.
    asserts that the `hd` hosted-domain claim equals `OPERATOR_GOOGLE_HD`.
    ⛔ **Changed 2026-09-01 by D70.** This read *"a Microsoft identity"* and
    `OPERATOR_ENTRA_TENANT_ID` until then.
+   **`OPERATOR_SIGNIN_PROVIDER` is the switch** (CP-12h). It holds `azure` or
+   `google`, and it defaults to `azure`, so an unset box behaves as it did
+   before D70. An unknown name is a **503**, and never a fall back to `azure`.
+   The `hd` comparison folds case, because a DNS domain is case-insensitive.
+   The Entra `tid` is a GUID, so that path still compares exactly.
+   **R7 — the fence is
+   `test_operator_identity.py::test_the_entra_tenant_id_still_compares_exactly`**,
+   added 2026-09-01. Until then this sentence had no fence at all. A mutation
+   that folded case on the `azure` path left the whole suite green.
+   ⚠️ **The fence pins built behaviour, and the cost belongs beside it.** An
+   Entra directory that returned an upper-case GUID against a lower-case
+   `OPERATOR_ENTRA_TENANT_ID` would refuse every operator. D70 says we hold no
+   such directory. A reader who revives that path must take the fold as a
+   decision, and edit the test.
 2. **The domain.** The email domain is in `OPERATOR_STAFF_DOMAINS`.
 3. **The registry.** A row exists in `operator` for that email, and its status is
    `active`.
@@ -281,9 +407,130 @@ account inside a Workspace domain, which is an account our admin created and
 our admin can delete. That is the same property the Entra `tid` gave us, and it
 is the reason D70 could move the mechanism without moving D35.3's intent.
 
-⚠️ **Email OTP is not a way in.** The tenant app offers a Resend 6-digit OTP,
-and this console refuses one. See **D70.2**. A console that reaches every
-customer organization must not admit a person on inbox control alone.
+⚠️ **Email OTP was not a way in, and D71.3 narrowed that on 2026-09-02.**
+The tenant app offers a Resend 6-digit code. This console refused one
+outright. It now admits one under three conditions together. §4.1b holds
+them, and the third is the operator's own row.
+
+A console that reaches every customer organization must still never admit a
+person on inbox control alone. D71.4 keeps that true for everybody the owner
+does not name.
+
+### 4.1b `registry` admission — the second mode (D71)
+
+⛔ **The owner took this on 2026-09-02, and it reverses part of D70.2.**
+Read §4.1 first. This section states only what changes.
+
+**Why the directory check had to become optional.** The owner assigns
+operators Gmail and outside addresses. `hathilabs.com` describes some staff
+and never all of them. So check 1 refuses a real operator, and check 2 refuses
+the same person again.
+
+**What `registry` mode does.** `OPERATOR_ADMISSION_MODE=registry` tells
+`operators.admit` to skip check 1 and check 2. Check 3 stays, and no mode ever
+skips it. `directory` is the default, so a variable nobody sets changes nothing.
+
+🔴 **What the mode costs, stated once so nobody rediscovers it.** In
+`directory` mode a mistaken operator row still admits nobody outside our
+Workspace. In `registry` mode that row is the only wall. So the question
+*"who may write an operator row?"* becomes the whole security boundary of this
+console. Spec §5 reserves that write to `admin`, and D71.6 records the shift.
+
+**The email code, and the three conditions it needs.** D70.2 refused an email
+code outright. D71.3 admits one, and only when all three of these hold:
+
+1. `OPERATOR_ADMISSION_MODE` is `registry`.
+2. `OPERATOR_ALLOW_EMAIL_OTP` is on.
+3. The operator's own row permits the `email` method.
+
+⚠️ **Condition 3 is what answers D70.2's reasoning.** A global flag weakens
+every operator, and it weakens the `admin` most, because the `admin` adds
+operators. A person who reads the admin mailbox therefore adds themselves.
+`operator.allowed_methods` moves that weakness onto one named row. The owner
+keeps `{google}`, and the contractor who needs the fallback carries `{email}`.
+
+⚠️ **A contradictory pair raises a 503.** `OPERATOR_ALLOW_EMAIL_OTP` on a
+`directory` box can admit nobody, because that path demands a claim an email
+code never carries. Reading the flag as false would leave the person who set
+it believing a fallback works. `admit` reads `accepted_methods`
+unconditionally for that reason.
+
+⚠️ **D71.3 opened `email` and nothing else.** `magiclink`, `otp`, `phone` and
+`sms` stay outside `accepted_methods` in every mode. `ALLOWED_PROVIDERS` still
+holds no passwordless member, because that set names a DIRECTORY and a
+directory is a different axis from a method.
+
+🔴 **The bootstrap gate moved, and it is the most dangerous line in D71.**
+The old gate reads the directory claim. That comparison is always false in
+`registry` mode, so the bootstrap could never fire. The obvious repair is to
+delete the clause, and that repair hands `admin` to the first stranger who
+signs in. `operators.bootstrap_allowed` keeps the claim comparison in
+`directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
+A bootstrap email nobody sets admits nobody.
+
+⛔ **The passphrase is a BACK DOOR again, by owner directive 2026-09-02.**
+`OPERATOR_PASSPHRASE_FALLBACK` weakens §8 done-when 29, which says one door at
+a time. It defaults OFF, so every other box keeps that rule.
+
+🔴 **Evidence forced this, and not opinion.** An agent flipped the identity
+flag onto a box where no sign-in could succeed, and the console admitted
+nobody. Recovery needed an ssh session and an env edit. A console whose only
+recovery path is shell access is a console the owner does not control.
+
+⚠️ **What it costs, and the page says it too.** One shared secret admits
+everybody, names nobody in the audit trail, and cannot be revoked for one
+leaver. F1, F2 and F5 all return while it is on. `gate()` returns no
+`authToken` on that path, so a shared-secret action reads as `operator` rather
+than borrowing the name of whoever signed in last. R7 — the fences are
+`identity.test.ts` "the passphrase fallback at the gate" (6 cases) and
+`login.test.ts` "the passphrase fallback" (4 cases). Three mutations kill them.
+
+⛔ **The owner chose EMAIL-ONLY on 2026-09-02.** Google sign-in waits. Any
+person with any address may sign in once an admin creates their operator row,
+which is exactly what **D71.2** and **D71.3** describe together.
+`OPERATOR_DIRECTORY_SIGNIN=0` takes the directory button off the page, and it
+defaults ON so no other deployment changes. ⚠️ **It removes a BUTTON and never
+a check.** The API still admits a directory sign-in that arrives.
+
+✅ **CP-12j built the page half on 2026-09-02.** `login/page.tsx` shows the
+code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
+when, and the browser talks to Supabase directly — the same way the OAuth
+button already does, so this app gains no new upstream.
+
+🔴 **The LINK is the flow, not a six-digit code — measured 2026-09-02.**
+Supabase's default email body carries a link and no digits. The dashboard
+refuses to edit a template until the project configures custom SMTP, so this
+project cannot render `{{ .Token }}` at all. `otpStartUrl` therefore sends
+`redirect_to`, and `login/callback` already reads the token out of the URL
+fragment. The owner must add that callback to Authentication → URL
+Configuration, which needs no SMTP.
+
+🔴 **The wire field is `create_user`, and TWO releases shipped the wrong
+name.** CP-12j sent `should_create_user`, which is the supabase-js OPTION
+name. GoTrue ignores an unknown field. Measured against the live project:
+`create_user:false` for an unknown address answers **422 otp_disabled**, and
+`should_create_user:false` answers **200** and sends mail. So the CP-12j fix
+below changed no behaviour in either direction, and the note it left was
+wrong about why. R7 — the fence is
+`otp.test.ts::"uses the WIRE field create_user, not the supabase-js option name"`.
+
+🔴 **`should_create_user` must be TRUE, and a production flip proved it.**
+Supabase mails a code only to a user that already exists in `auth.users`. That
+table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the
+first version of `otpStartBody` refused every operator forever, including the
+first one.
+
+A Supabase user is not an operator, and that is what makes `true` safe. The
+registry answers 403 to a stranger (**D71.2**, **D71.6**), so they gain a login
+to nothing. R7 — the fence is
+`otp.test.ts::"asks Supabase to CREATE the user, or nobody ever signs in"`.
+
+🔴 **The page hands the anon key to every visitor, and one fence makes that
+safe.** `isPublishableKey` refuses a `service_role` JWT and an `sb_secret_`
+key, and it refuses any shape it cannot parse. The `service_role` key sits one
+line away in the same Supabase dashboard and bypasses row-level security on
+every table. A person who pastes the wrong one publishes it to a login page,
+and nothing else would look wrong.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
@@ -295,6 +542,45 @@ The reason is the seam rule. The Console is already the cross-tenant plane. It
 already holds `control_audit`, the four authentication schemes and the operator
 door. A database in the Next app would be a second data plane for one subject.
 The repo forbids a second way to do an existing thing.
+
+#### 4.2a Two containers, and which env value goes in each
+
+*Added 2026-09-01, by the second CP-12h repair round. The identity lives in one
+plane, but the CONFIGURATION does not.* The API and the Next app are separate
+processes with separate env files. The API is `acb-customer-console.service`,
+and it reads `apps/services/customer_console/.env`. The Next app reads its own.
+
+| Value | API | Next app | Read at |
+|---|---|---|---|
+| **`OPERATOR_SIGNIN_PROVIDER`** | ✅ | ✅ | `operators.signin_provider` · `identity.ts::signinProvider` |
+| `OPERATOR_SUPABASE_URL` | ✅ | ✅ | `operator_signin` · `login/page.tsx` |
+| **`OPERATOR_SUPABASE_ANON_KEY`** | ✅ | ✅ **BOTH since CP-12j** | `operator_signin` · `lib/otp.ts::emailCodeConfig` |
+| `OPERATOR_GOOGLE_HD` | ✅ | — | `operators.staff_directory_id` |
+| `OPERATOR_STAFF_DOMAINS` | ✅ | — | `operators` |
+| `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | `operators` |
+| `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | `login/page.tsx` |
+| `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
+| `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
+| **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
+| `OPERATOR_DIRECTORY_SIGNIN` | — | ✅ | `lib/otp.ts::directorySigninEnabled` — ⚠️ **absent means ON** |
+| `OPERATOR_PASSPHRASE_FALLBACK` | — | ✅ | `identity.ts::passphraseFallbackEnabled` (**CP-12k**) |
+
+⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
+is bold.** The Next app builds the Supabase authorize link from it. The API
+computes the expected provider from it. The two must agree, and `identity.ts`
+has said so since CP-12g. Set it in the API alone, and the page still offers
+Microsoft. Set it in the Next app alone, and the gate answers **401** with no
+message that names the cause.
+
+🔴 **`OPERATOR_CONSOLE_ORIGIN` is a Next-app value, and sign-in cannot work
+without it.** `login/page.tsx` builds the authorize link out of it, and an
+unset value prints "Sign-in is not configured on this deployment" in place of
+the button. So the Next app needs THREE values before the flag flip. H-56 step
+1 named none of them until 2026-09-01.
+
+Fence: none. This is a deployment fact, and no test can see the box.
+`HANDOFF.md` H-54 carries the owner's copy of the table, and §10 G2 names the
+gate.
 
 ### 4.3 The session — an opaque token, not the secret
 
@@ -541,6 +827,7 @@ out of a live console.
 | **CP-12e** | ◐ **BUILT 2026-08-27.** `operator_elevation.py` plus `POST`/`GET`/`DELETE` `/operators/elevate`. An `elevated` row needs a live window AND the role. The shared token's actor becomes `breakglass` and every use logs a WARNING. 19 R8 tests, 9 mutations killed plus two pairs. ⚠️ The alert is a log line, not mail — see DEF-7 | CP-12c | 🟢 **AGENT-SAFE** |
 | **CP-12f** | ◐ **BUILT 2026-08-27.** `operator_activity.py` plus `GET /activity` and `GET /activity/actions`. Keyset-paginated, cross-org, `viewer`-readable. The `LEFT JOIN` keeps org-less and purged-company rows visible. 26 R8 tests, **13 mutations killed and 0 survived**. ⚠️ H-7 is reproduced by a test, not assumed. ⚠️ Found **F8** at build | CP-12b | 🟢 **AGENT-SAFE** |
 | **CP-12f2** | ◐ **BUILT 2026-08-27. F8 is closed.** `operator_signin.py`, `POST` and `DELETE` `/operators/session`, and the one-time bootstrap through the door. Supabase verifies the token, then `operators.admit` runs the three checks. Done-whens 1 to 6 are reachable for the first time. 53 R8 tests, **19 mutations killed and two PAIRS**. ⚠️ A real bypass was closed at build, and 🔴 the owner must disable identity linking in Supabase. Was: The Supabase sign-in exchange: a route that takes a verified Microsoft identity, calls `operators.admit()`, and mints the `cc_sess_` session CP-12b already verifies. §8.1 done-whens 1 to 6 are UNREACHABLE without it. See **F8** | CP-12a | 🟢 **AGENT-SAFE** to build. 🔴 The provider configuration stays **OWNER-GATE** |
+| **CP-12h** | ◐ **BUILT 2026-09-01.** The Google Workspace gate of **D70**. `OPERATOR_SIGNIN_PROVIDER` picks the directory and **defaults to `azure`**, so the built behaviour is unchanged until the owner flips it. `operators.signin_provider` refuses an unknown name with a 503, and `ALLOWED_PROVIDERS` can hold no passwordless provider. `staff_directory_id` reads `OPERATOR_GOOGLE_HD` on the Google path, and it still raises instead of answering `None`. `directory_matches` is the ONE answer to *"did this sign-in come from our directory"*, and a missing claim is always `False`. `_google_hd` reads `hd` from the sign-in identity alone. `_email_is_verified` now reads one identity, which tightens the `azure` path too. The login page drives the button and the authorize link from the same variable. Done-whens 1, 5 and 30 to 33. 117 R8 tests and 624 console tests, 0 skipped, **11 mutations killed**. ⚠️ **The `hd` payload shape is still unmeasured** (H-54 item 3), and the gate fails CLOSED on it | CP-12f2, CP-12g slice 1 | 🟢 **AGENT-SAFE** to build. 🔴 Setting `OPERATOR_SIGNIN_PROVIDER` and `OPERATOR_GOOGLE_HD`, and configuring the Google provider, stay **OWNER-GATE** |
 | **CP-12g** | ◐ **SLICE 1 BUILT 2026-08-27, AMENDED 2026-09-01.** The amendment prints a recovery note on the login page. It names `OPERATOR_IDENTITY_ENABLED` and it adds no passphrase form, so done-when 29 holds. The console itself: `identity.ts`, the Operators and Activity surfaces, the Microsoft sign-in flow, six BFF routes, and BOTH F7 fences shown red first. 131 frontend tests, **14 mutations killed**. The fence found four already-merged page reads that dropped the caller session. ⚠️ **Slice 2 is the deletion, and it waits for the owner.** Was: Delete `staff.ts`. Remove `OPERATOR_CONSOLE_STAFF_SECRET`. Add the route-coverage fence that closes **F7**. ⚠️ **Blocked by CP-12f2.** Remove the passphrase before the exchange exists and the console admits nobody | all, and **CP-12f2 first** | 🟢 **AGENT-SAFE** to build. 🔴 The flag flip and the secret removal are **OWNER-GATE** |
 
 ### 8.1 Done-when, per ticket
@@ -614,26 +901,163 @@ slice must build. Every other done-when below is unchanged and still binds.
 
 **The Google Workspace gate — added 2026-09-01 by D70**
 
+✅ **CP-12h met all four on 2026-09-01.** Each one carries a fence below, and
+each fence went red under a mutation before it passed.
+
 30. 🔴 **A Google identity carrying NO `hd` claim is refused 403.** This holds
     even when the email domain is in `OPERATOR_STAFF_DOMAINS` and an active
     `operator` row exists for that email. **This is the personal-Google-account
     attack, and it is the most important case on this list.** A missing claim
     is a refusal, and never a pass.
+    ✅ **MET.** `operators.directory_matches` reads an absent claim as `False`.
+    Fences: `test_operator_signin.py::test_a_google_identity_with_no_hosted_domain_is_refused_403`
+    and `test_operator_identity.py::test_a_google_identity_with_no_hosted_domain_is_refused`.
+    Each case also admits the same person WITH the claim, so a broken path
+    cannot pass for the wrong reason.
 31. **`_email_is_verified` reads `email_verified` only from the SIGN-IN
     provider's identity.** A second linked identity does not satisfy it. ⚠️ The
     built function scans EVERY identity in the payload today
     (`operator_signin.py`), so this done-when names a real gap, not a
     restatement.
+    ✅ **MET.** The function takes the provider and reads one identity. It no
+    longer accepts a top-level `email_confirmed_at`, which tightens the `azure`
+    path too. Fences:
+    `test_operator_signin.py::test_a_second_identity_cannot_prove_this_sign_in_s_address`,
+    `::test_a_top_level_confirmation_no_longer_stands_in` and
+    `::test_the_verified_flag_is_pinned_on_the_entra_path_too`.
 32. **The bootstrap gate fires on the `hd` match, and never on a missing
     directory claim.** The gate sits at `main.py:1178` and reads
     `identity.tid == operators.staff_tenant_id()` today. Two `None` values
     compare equal in Python, so an identity with no directory claim would
     consume the one-time bootstrap path. **Show this red first.**
+    ✅ **MET.** The gate now calls `operators.directory_matches`, and
+    `operators.staff_directory_id` raises instead of answering `None`. Both
+    properties must hold, because the hole needs only one of them to fail.
+    Fences: `test_operator_identity.py::test_the_directory_getter_never_returns_none`
+    and `::test_a_missing_claim_never_matches_the_directory`. Both went red
+    under mutation.
+
+    ⚠️ **REPAIRED 2026-09-01. The route fence was INERT, and this entry said
+    otherwise.** The sentence here read *"MET, with two guards, and the hole
+    needs only one of the two to open"*. That is true of the two helper
+    properties. It was **false of the CALL SITE**, which is a single point
+    with no second guard behind it. A verifier deleted the `and
+    operators.directory_matches(...)` clause in `main.py` and the whole suite
+    stayed green, then instrumented `operators.bootstrap` and proved the
+    bootstrap really fired.
+
+    The row count was never the property. One `get_engine().begin()`
+    transaction wraps the whole route, and the 403 rolls it back, so
+    `count(*) FROM operator` reads zero either way.
+    `test_operator_signin.py::test_the_bootstrap_never_fires_on_a_missing_directory_claim`
+    now asserts on a spy over `operators.bootstrap`, and it fails on that
+    mutation. `::test_a_stranger_cannot_consume_the_bootstrap` carries the
+    same spy, because it made the same claim.
 33. **The allowed sign-in provider set can never hold a passwordless
     provider.** `email`, `magiclink`, `otp`, `phone` and `sms` stay out of it,
     per **D70.2**. **R7 — the fence is
     `tests/unit/test_operator_signin.py::test_no_passwordless_provider_is_ever_allowed`**,
     which reads the allowlist constant and fails on any member of that set.
+    ✅ **MET.** `operators.ALLOWED_PROVIDERS` and
+    `operators.PASSWORDLESS_PROVIDERS` are the two constants, and
+    `operators.signin_provider` refuses any name outside the first one.
+
+    ⚠️ **REPAIRED 2026-09-01. `DIRECTORY_CLAIM`'s VALUES were dead.**
+    `ALLOWED_PROVIDERS = frozenset(DIRECTORY_CLAIM)` made the KEYS live. The
+    values were not: `_azure_tid` and `_google_hd` wrote `tid` and `hd`
+    themselves. A verifier changed `GOOGLE_PROVIDER: "hd"` to `"email"` and the
+    whole suite stayed green. **We made the readers consume the table**, rather
+    than relabel it as documentation, because CLAUDE.md §5 refuses a second
+    copy of a vocabulary that already has an owner. Both readers now call
+    `operator_signin._claim_name`. R7 — the fence is
+    `test_operator_identity.py::test_the_claim_table_is_what_the_readers_read`,
+    which renames both claims and asserts each reader follows.
+
+34. **`OPERATOR_ADMISSION_MODE` defaults to `directory`, so D71 ships dark.**
+    An unset variable leaves every box on the D64/D70 three-check path. An
+    unknown value raises a 503 and names the variable. **R7 — the fences are**
+    `test_operator_signin.py::test_the_default_admission_mode_is_directory`
+    and `::test_an_unknown_admission_mode_refuses_rather_than_falls_back`.
+    ✅ **MET.** A mutation that flips the default turns **15 tests red**.
+
+35. **In `registry` mode an identity with no operator row is refused.**
+    The payload may carry a verified address outside every staff domain, and
+    no directory claim at all. Check 3 refuses it alone. **R7 — the fence is**
+    `::test_registry_mode_still_refuses_a_stranger_with_no_row`.
+    ✅ **MET.**
+
+36. **In `registry` mode a Gmail operator with a row is admitted, and the
+    same person is refused in `directory` mode.** The pair is what makes D71 a
+    mode rather than a widening. **R7 — the fences are**
+    `::test_registry_mode_admits_a_gmail_operator_that_an_admin_added` and
+    `::test_directory_mode_still_refuses_that_same_gmail_operator`.
+    ✅ **MET.**
+
+37. 🔴 **The bootstrap never fires for a stranger in `registry` mode.**
+    `bootstrap_allowed` pins to `OPERATOR_BOOTSTRAP_EMAIL`, and a value nobody sets
+    admits nobody. **R7 — the fences are**
+    `::test_registry_mode_never_bootstraps_a_stranger`,
+    `::test_registry_mode_never_bootstraps_when_no_email_is_named` and
+    `::test_directory_mode_bootstrap_is_byte_for_byte_unchanged`.
+    ⚠️ **Each one asserts on the CALL through the `bootstrap_calls` spy, and
+    carries a positive control.** Done-when 32 recorded why: the route runs in
+    one transaction that rolls back on the 403, so a row count reads zero with
+    the guard deleted.
+    ✅ **MET.** Two mutations, `return True` and an unset email that reads as
+    anybody, both go red.
+
+38. **An email code admits nobody until THREE conditions hold together.**
+    The mode is `registry`, the flag is on, and a row exists. Registry mode
+    alone does not open the inbox path. **R7 — the fences are**
+    `::test_an_email_code_is_refused_while_the_flag_is_off`,
+    `::test_an_email_code_admits_a_named_operator_when_the_flag_is_on`,
+    `::test_an_email_code_still_needs_a_registry_row` and
+    `::test_an_unverified_email_code_is_refused`.
+    ⚠️ **The refusal is a 401 and not a 403**, because `extract_identity`
+    rejects the token before `admit` reads any row. A 403 there would mean the
+    console consulted the registry for a method it never admitted.
+    ✅ **MET.**
+
+39. **`OPERATOR_ALLOW_EMAIL_OTP` set against a `directory` box raises a 503,
+    and never reads as false.** The flag can admit nobody on that path, so
+    whoever set it believes a fallback works that does not. **R7 — the fence
+    is** `::test_the_otp_flag_contradicting_the_mode_is_a_503`.
+    ⚠️ **`admit` reads `accepted_methods` UNCONDITIONALLY** and discards the
+    answer on the directory path, because a directory box is exactly where
+    somebody sets this flag by mistake.
+    ✅ **MET.**
+
+40. **`operator.allowed_methods` restricts the person in BOTH modes and in
+    BOTH directions.** A row naming `{google}` refuses an email code. A row
+    naming `{email}` refuses Google. NULL, a missing column and an empty array
+    all mean no restriction. **R7 — the fences are**
+    `::test_a_row_pinned_to_google_refuses_an_email_code`,
+    `::test_a_row_pinned_to_email_refuses_google`,
+    `::test_the_pin_applies_in_directory_mode_too`,
+    `::test_a_null_pin_admits_whatever_the_box_allows`,
+    `::test_row_methods_reads_null_and_empty_as_no_restriction` and
+    `::test_the_database_refuses_a_pin_that_admits_nobody`.
+    ⚠️ **NULL and the empty set are not one answer.** NULL is what every row
+    written before migration 022 means, so R6 keeps those rows working. An
+    empty array admits nobody, and migration 022 refuses one in the database.
+    ✅ **MET.** A mutation that wires the pin into the registry branch alone
+    goes red, and so does one that stops folding case.
+
+
+41. **The login page offers the code form only when it can WORK, and never
+    instead of the directory button.** Four states render nothing: the flag is
+    off, the project URL is unset, the key is unset, and the key is not
+    publishable. **R7 — the fences are** `src/lib/otp.test.ts` (10 cases) and
+    `src/app/login/login.test.ts`
+    `::"renders NO form for a service_role key"`,
+    `::"shows the form BESIDE the directory button, never instead of it"` and
+    `::"ships dark — no form until the flag is on"`.
+    🔴 **The service_role case is the one that matters.** Rendering the form
+    PUBLISHES the key, so the page must refuse before it renders. The fence
+    also asserts the secret appears nowhere else in the element tree.
+    ⚠️ **A reader with a working code form is NOT stranded**, so the recovery
+    note stays off for them and returns when neither door works.
+    ✅ **MET.** 642 Operator Console tests pass.
 
 ---
 
@@ -658,6 +1082,68 @@ again.
 needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
 **C4** carries the owner half, and **H-93** carries the queue entry.
 
+#### 9.1a The shape the owner must take *(written 2026-09-03)*
+
+**Read this before you build anything.** It is the menu, not the answer. The
+owner picks, and an agent then builds what they picked.
+
+##### The one decision that matters
+
+**What happens when the second admin is asleep and something must happen now?**
+Every other question below follows from this one.
+
+| Option | What it costs |
+|---|---|
+| **Hard block** — no second approver, no action | Nothing destructive is possible alone, ever. A two-person team then meets a wall on a night when the act was plainly right |
+| **Break-glass** — one admin proceeds alone, loudly logged | Nothing is ever blocked. ⚠️ A stolen `admin` session simply uses break-glass, so the control becomes advisory |
+| **Time delay** — one admin acts alone, it executes after N hours unless the other cancels | A thief cannot act instantly, and nothing is blocked. ⚠️ Useless for anything urgent, and destructive acts then sit pending |
+
+📌 **The recommendation on the table, 2026-09-03: break-glass.** A hard block on
+a two-person team gets deleted the first time it is inconvenient, and a weaker
+control that survives beats a stronger one that does not. The alarm is what
+makes it real. ⚠️ This is a recommendation and NOT a decision. The owner has
+not taken it.
+
+##### The four that follow, with defaults
+
+| # | Question | Default on the table |
+|---|---|---|
+| 1 | Which acts need it? | `POST /orgs/purge` only, to start. Suspend is reversible. A credit threshold needs traffic data we do not have |
+| 2 | Who may approve? | Any OTHER active `admin`. Never the requester, even when one person holds two accounts |
+| 3 | Do requests expire? | Yes, 24 hours. A stale approval is its own hazard |
+| 4 | How does the second person hear? | The in-console queue. ⚠️ NOT mail — DEF-7 records why, and the Resend seam lives in the gateway |
+
+##### ⚠️ What is already built, and why this is not urgent
+
+Measured 2026-09-03, by reading the handler. `POST /orgs/purge` already carries
+**five** guards:
+
+1. `admin` role.
+2. A **time-boxed elevation window** (`elevated=True`, CP-12e).
+3. `confirm` must equal `org_slug`, verbatim.
+4. Reachable only from `deleted`, which is reachable only after the export
+   window. So cancel → delete → purge.
+5. A tombstone cannot be re-purged.
+
+📌 **So the mis-click case is CLOSED.** What four-eyes adds over this list is
+protection against a *compromised or malicious* admin, not a tired one. That is
+a real threat and a different one, and it is why the trigger is a second admin
+rather than a first customer.
+
+📌 The remaining thin spot was **notice**, and 2026-09-03 closed the reachable
+half: purge now emits a `CRITICAL` log line (`org.purge`) naming slug,
+tombstone, actor and row counts. ⚠️ Nothing watches those logs yet, so it
+alerts nobody today. It is covered on the day log alerting exists, which is
+DEF-7's own trigger.
+
+##### When to stop deferring
+
+Any one of these, and the recommendation above is no longer enough:
+
+- **A third admin**, especially one who is not a founder.
+- **SOC 2 starts** — already DEF-1's own second trigger.
+- **A customer whose data loss would end the relationship.**
+
 | # | Deferred | Trigger that pulls it in |
 |---|---|---|
 | **DEF-1** | 🔴 **FIRED 2026-09-01. See §9.1.** Four-eyes approval on purge, suspend and large credit grants | A **second admin exists**, or the first SOC 2 engagement starts. Four-eyes needs two people to mean anything, and today it would only lock the owner out. ⚠️ This is the control that holds when everything else has failed, so the trigger must not be allowed to pass unnoticed |
@@ -678,7 +1164,7 @@ An agent must **refuse these by name** and say so. They belong in
 | # | Act | Class |
 |---|---|---|
 | **G1** | Configuring the Supabase Auth **Google Workspace** provider, and holding its client secret. ⛔ **Renamed 2026-09-01 by D70.** This said *"Microsoft provider"* | §6.0 B — external accounts and credentials |
-| **G2** | Setting `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID` | `env-write` |
+| **G2** | Setting `OPERATOR_SIGNIN_PROVIDER`, `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS` or `OPERATOR_BOOTSTRAP_EMAIL` on the box. ⛔ **Renamed 2026-09-01 by D70.** This said `OPERATOR_ENTRA_TENANT_ID`. CP-12h added the first name, which is the switch between the two directories. ⚠️ **`OPERATOR_SIGNIN_PROVIDER` goes in TWO env files, and so does `OPERATOR_SUPABASE_URL`.** §4.2a holds the split, and `HANDOFF.md` H-54 holds the owner's table | `env-write` |
 | **G3** | Flipping `OPERATOR_IDENTITY_ENABLED` on a live box | `enforcement-flip` |
 | **G4** | Removing `OPERATOR_CONSOLE_STAFF_SECRET` from the box | `env-write`, and it is the cutover |
 | **G5** | Granting a real person the `admin` role on the live console | A role write. CLAUDE.md §3.2 already refuses member and role writes |

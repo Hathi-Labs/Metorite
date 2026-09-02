@@ -42,7 +42,7 @@ Follow in order; each step is more granular than the last. Prefer the API path
    → pick the `run_id` → `GET /debug/runs/{run_id}` for the full trace + traceback.
    (EXECUTIVE/AGENT-gated — traces hold message content.) `POST /debug/runs/{id}/flag`
    to preserve a successful run's trace before it's pruned.
-3. **Correlated log stream (deepest, needs SSH):** `ssh acb@187.127.179.143` then
+3. **Correlated log stream (deepest, needs SSH):** `ssh acb@187.127.172.200` then
    `journalctl -u acb-gateway -o cat | grep '"agent": "Y"'` — every line for the
    run carries `run_id`/`thread_id`/`agent`/`user` and the `run_error` line carries
    the full `exc_info` traceback. Requires `LOG_FORMAT=json` in `/opt/acb/app/.env`

@@ -107,7 +107,7 @@ This is the exact situation with `agent-sales-assistant`, `agent-startup-guru`,
 ## 7. Live VPS quick-checks (read-only)
 
 ```bash
-ssh acb@187.127.179.143
+ssh acb@187.127.172.200
 ls ~/.acb/agents/repos/            # which agents actually have a clone
 ls /tmp/acb_agents/repos/          # legacy stranded clones
 docker exec acb-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT name,status,repo_name,local_path FROM dynamic_agents"'
