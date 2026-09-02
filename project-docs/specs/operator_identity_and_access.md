@@ -468,6 +468,13 @@ signs in. `operators.bootstrap_allowed` keeps the claim comparison in
 `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
 A bootstrap email nobody sets admits nobody.
 
+⛔ **The owner chose EMAIL-ONLY on 2026-09-02.** Google sign-in waits. Any
+person with any address may sign in once an admin creates their operator row,
+which is exactly what **D71.2** and **D71.3** describe together.
+`OPERATOR_DIRECTORY_SIGNIN=0` takes the directory button off the page, and it
+defaults ON so no other deployment changes. ⚠️ **It removes a BUTTON and never
+a check.** The API still admits a directory sign-in that arrives.
+
 ✅ **CP-12j built the page half on 2026-09-02.** `login/page.tsx` shows the
 code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
 when, and the browser talks to Supabase directly — the same way the OAuth
@@ -521,6 +528,7 @@ and it reads `apps/services/customer_console/.env`. The Next app reads its own.
 | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
 | `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
 | **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
+| `OPERATOR_DIRECTORY_SIGNIN` | — | ✅ | `lib/otp.ts::directorySigninEnabled` — ⚠️ **absent means ON** |
 
 ⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
 is bold.** The Next app builds the Supabase authorize link from it. The API

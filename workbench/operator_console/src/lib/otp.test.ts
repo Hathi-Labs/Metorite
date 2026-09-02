@@ -14,7 +14,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   ANON_KEY_FLAG,
+  DIRECTORY_SIGNIN_FLAG,
   EMAIL_OTP_FLAG,
+  directorySigninEnabled,
   emailCodeConfig,
   emailOtpEnabled,
   isPublishableKey,
@@ -141,5 +143,29 @@ describe("the request bodies", () => {
       token: "123456",
       type: "email",
     });
+  });
+});
+
+describe("directorySigninEnabled", () => {
+  it("⚠️ ABSENT means YES — the opposite of every other flag here", () => {
+    // The other flags ADD a capability, so unset must not add one. This one
+    // REMOVES a button that has been on the page since CP-12g, so unset must
+    // not remove it. Flipping the default would silently take the directory
+    // button off every deployment.
+    expect(directorySigninEnabled({})).toBe(true);
+    expect(directorySigninEnabled({ [DIRECTORY_SIGNIN_FLAG]: "" })).toBe(true);
+    expect(directorySigninEnabled({ [DIRECTORY_SIGNIN_FLAG]: "  " })).toBe(true);
+  });
+
+  it("takes the button off when the box says so", () => {
+    for (const off of ["0", "false", "NO", " Off "]) {
+      expect(directorySigninEnabled({ [DIRECTORY_SIGNIN_FLAG]: off })).toBe(false);
+    }
+  });
+
+  it("anything it does not recognise leaves the button ON", () => {
+    // A typo must not remove the only working door on a box that has no
+    // email fallback configured.
+    expect(directorySigninEnabled({ [DIRECTORY_SIGNIN_FLAG]: "maybe" })).toBe(true);
   });
 });

@@ -19,9 +19,40 @@
 // and the `cc_sess_` token never leaves an httpOnly cookie.
 
 export const EMAIL_OTP_FLAG = "OPERATOR_ALLOW_EMAIL_OTP";
+
+//: Whether this deployment offers the DIRECTORY button at all.
+//:
+//: ⚠️ **It defaults ON, so no existing box changes.** Owner directive
+//: 2026-09-02: run email-only for now and add Google later. Before this
+//: switch the page offered a "Sign in with Google" button on a project where
+//: Supabase reported `email` as its ONLY enabled provider — a button that took
+//: the person to an error and told them nothing. A door that does not open is
+//: worse than no door, because the reader cannot tell it apart from their own
+//: mistake.
+//:
+//: ⚠️ **This does NOT disable the directory in the Console.** The API still
+//: admits a Google sign-in if one arrives. This value decides what the login
+//: PAGE offers, and nothing else.
+export const DIRECTORY_SIGNIN_FLAG = "OPERATOR_DIRECTORY_SIGNIN";
 export const ANON_KEY_FLAG = "OPERATOR_SUPABASE_ANON_KEY";
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
+
+/**
+ * Does the login page offer the directory button?
+ *
+ * ⚠️ **Absent means YES**, unlike every other flag in this module. The others
+ * add a capability, and an unset value must not add one. This one REMOVES a
+ * button that has been on the page since CP-12g, and an unset value must not
+ * remove it.
+ */
+export function directorySigninEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = (env[DIRECTORY_SIGNIN_FLAG] ?? "").trim().toLowerCase();
+  if (!raw) return true;
+  return !new Set(["0", "false", "no", "off"]).has(raw);
+}
 
 /** Is the email code offered on this deployment? */
 export function emailOtpEnabled(
