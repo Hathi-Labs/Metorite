@@ -30,7 +30,7 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   the staff. **The reasoning behind D70.2 still stands.** This console reaches
   every customer organization. So inbox control must never become staff access
   for anybody the owner has not named, and the per-row pin keeps that true.
-  ⚠️ **The page has NO code form yet** (H-99). The backend admits a code and no
+  ⚠️ **The page has NO code form yet** (H-100). The backend admits a code and no
   browser sends one, so Google is still the only door a person can use.
   ⚠️ **`OPERATOR_SIGNIN_PROVIDER` lives in TWO env files.** This app reads it,
   and the Customer Console API reads it too. Set it in one only and sign-in

@@ -75,7 +75,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-99 · CP-12j — the Operator Console page has NO email-code form · [AGENT]
+### H-100 · CP-12j — the Operator Console page has NO email-code form · [AGENT]
 - **Check:** `rg -n "signInWithOtp|verifyOtp" workbench/operator_console/src/`
   → no hit means this entry is still real. A hit means somebody built the form,
   so delete this entry.
@@ -98,7 +98,10 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/operator_identity_and_access.md` §4.1b · **D71.3** ·
   `work_plan.md` §2 WS-31 CP-12j
 - **Added:** 2026-09-02 · WS-31 CP-12i session, at the moment the backend
-  half merged
+  half merged. ⚠️ **Minted as H-99 and renumbered to H-100 the same day.**
+  PR #222 took H-99 from another session, and the agent that minted this
+  one read `grep -c` as a free-id check rather than looking for the
+  heading. `test_handoff_queue.py::test_handoff_ids_are_unique` caught it.
 
 
 ### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]

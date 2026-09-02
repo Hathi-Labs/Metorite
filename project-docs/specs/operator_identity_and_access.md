@@ -470,7 +470,7 @@ A bootstrap email nobody sets admits nobody.
 
 **What this slice does NOT build.** The Operator Console page offers no code
 form yet. A person signs in through Google today, and the backend admits an
-email code the moment a browser sends one. HANDOFF **H-99** holds that half.
+email code the moment a browser sends one. HANDOFF **H-100** holds that half.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
