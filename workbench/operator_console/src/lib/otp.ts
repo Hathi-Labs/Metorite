@@ -73,6 +73,43 @@ export function isPublishableKey(key: string | undefined | null): boolean {
   }
 }
 
+/**
+ * 🔴 The body of the "send me a code" request, and ONE field decides whether
+ * anybody can ever sign in.
+ *
+ * ⚠️ **`should_create_user` MUST be true, and the first version of this file
+ * had it false.** Supabase mails a code only to a user that already exists in
+ * `auth.users`. Nobody had ever signed in, so that table held ZERO rows — and
+ * `false` therefore refused every operator forever, including the first one.
+ * Measured on production 2026-09-02, after the flag was flipped and before
+ * anybody typed an address.
+ *
+ * ⚠️ **A Supabase user is NOT an operator, which is what makes `true` safe.**
+ * A stranger who asks for a code gets an `auth.users` row and a valid Supabase
+ * session, and then `POST /api/operator/session` answers **403**, because the
+ * `operator` row is the gate (**D71.2**, **D71.6**). They gain a login to
+ * nothing.
+ *
+ * ⚠️ **What it costs, named rather than hidden.** Anybody can now cause a row
+ * in `auth.users` and an email to an address they choose. Supabase rate-limits
+ * both. That is the standard trade for OTP sign-in, and the registry is the
+ * wall that makes it acceptable here.
+ */
+export function otpStartBody(email: string): {
+  email: string;
+  should_create_user: boolean;
+} {
+  return { email: email.trim(), should_create_user: true };
+}
+
+/** The body of the "here is my code" request. */
+export function otpVerifyBody(
+  email: string,
+  token: string,
+): { email: string; token: string; type: "email" } {
+  return { email: email.trim(), token: token.trim(), type: "email" };
+}
+
 /** Where the browser asks Supabase to send a code. */
 export function otpStartUrl(base: string): string {
   return `${base.trim().replace(/\/$/, "")}/auth/v1/otp`;

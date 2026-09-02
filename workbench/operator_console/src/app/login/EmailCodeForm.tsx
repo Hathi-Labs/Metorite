@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { otpStartBody, otpVerifyBody } from "@/lib/otp";
+
 // The EMAIL CODE sign-in — WS-31 CP-12j, **D71.3**.
 //
 // Two steps in one component. Ask Supabase to mail a six-digit code, then
@@ -42,11 +44,11 @@ export default function EmailCodeForm({ url, anonKey }: Props) {
       const res = await fetch(`${base}/auth/v1/otp`, {
         method: "POST",
         headers: { "content-type": "application/json", apikey: anonKey },
-        // ⚠️ `should_create_user: false`. Supabase creates a user for an
-        // unknown address by default, and this console must never grow its own
-        // account list — the `operator` row is the registry (D64.4). It also
-        // stops the form telling a stranger whether an address is known.
-        body: JSON.stringify({ email, should_create_user: false }),
+        // ⚠️ `otpStartBody` sets `should_create_user: true`, and that module
+        // holds the whole argument. Short version: Supabase mails a code only
+        // to a user that already exists, `auth.users` starts EMPTY, and
+        // `false` refuses the first operator forever.
+        body: JSON.stringify(otpStartBody(email)),
       });
       if (res.ok) {
         setStage("code");
@@ -69,7 +71,7 @@ export default function EmailCodeForm({ url, anonKey }: Props) {
       const res = await fetch(`${base}/auth/v1/verify`, {
         method: "POST",
         headers: { "content-type": "application/json", apikey: anonKey },
-        body: JSON.stringify({ email, token: code.trim(), type: "email" }),
+        body: JSON.stringify(otpVerifyBody(email, code)),
       });
       if (!res.ok) {
         setError(await refusal(res, "That code was not accepted."));

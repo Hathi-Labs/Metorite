@@ -18,7 +18,9 @@ import {
   emailCodeConfig,
   emailOtpEnabled,
   isPublishableKey,
+  otpStartBody,
   otpStartUrl,
+  otpVerifyBody,
   otpVerifyUrl,
 } from "./otp";
 
@@ -114,5 +116,30 @@ describe("the Supabase endpoints", () => {
     expect(otpVerifyUrl(" https://p.supabase.co ")).toBe(
       "https://p.supabase.co/auth/v1/verify",
     );
+  });
+});
+
+describe("the request bodies", () => {
+  it("🔴 asks Supabase to CREATE the user, or nobody ever signs in", () => {
+    // ⚠️ **This is a regression fence for a defect that reached production.**
+    // Supabase mails a code only to a user already in `auth.users`. That table
+    // held ZERO rows on 2026-09-02, so `should_create_user: false` refused
+    // every operator forever — including the first one. Flipping this back to
+    // `false` must turn this case red.
+    //
+    // Safe because a Supabase user is NOT an operator: the registry answers
+    // 403 for a stranger (D71.2, D71.6), so they gain a login to nothing.
+    expect(otpStartBody("Owner@Example.com ")).toEqual({
+      email: "Owner@Example.com",
+      should_create_user: true,
+    });
+  });
+
+  it("sends the code as an email-type verification", () => {
+    expect(otpVerifyBody(" me@example.com ", " 123456 ")).toEqual({
+      email: "me@example.com",
+      token: "123456",
+      type: "email",
+    });
   });
 });

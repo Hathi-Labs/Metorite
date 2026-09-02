@@ -473,6 +473,15 @@ code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
 when, and the browser talks to Supabase directly — the same way the OAuth
 button already does, so this app gains no new upstream.
 
+🔴 **`should_create_user` must be TRUE, and a production flip proved it.**
+Supabase mails a code only to a user that already exists in `auth.users`. That
+table held ZERO rows on 2026-09-02, because nobody had ever signed in. So the
+first version of `otpStartBody` refused every operator forever, including the
+first one. A Supabase user is not an operator, which is what makes `true` safe
+— the registry answers 403 to a stranger (**D71.2**, **D71.6**), so they gain a
+login to nothing. R7 — the fence is
+`otp.test.ts::"asks Supabase to CREATE the user, or nobody ever signs in"`.
+
 🔴 **The page hands the anon key to every visitor, and one fence makes that
 safe.** `isPublishableKey` refuses a `service_role` JWT and an `sb_secret_`
 key, and it refuses any shape it cannot parse. The `service_role` key sits one
