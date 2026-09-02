@@ -468,6 +468,23 @@ signs in. `operators.bootstrap_allowed` keeps the claim comparison in
 `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
 A bootstrap email nobody sets admits nobody.
 
+⛔ **The passphrase is a BACK DOOR again, by owner directive 2026-09-02.**
+`OPERATOR_PASSPHRASE_FALLBACK` weakens §8 done-when 29, which says one door at
+a time. It defaults OFF, so every other box keeps that rule.
+
+🔴 **Evidence forced this, and not opinion.** An agent flipped the identity
+flag onto a box where no sign-in could succeed, and the console admitted
+nobody. Recovery needed an ssh session and an env edit. A console whose only
+recovery path is shell access is a console the owner does not control.
+
+⚠️ **What it costs, and the page says it too.** One shared secret admits
+everybody, names nobody in the audit trail, and cannot be revoked for one
+leaver. F1, F2 and F5 all return while it is on. `gate()` returns no
+`authToken` on that path, so a shared-secret action reads as `operator` rather
+than borrowing the name of whoever signed in last. R7 — the fences are
+`identity.test.ts` "the passphrase fallback at the gate" (6 cases) and
+`login.test.ts` "the passphrase fallback" (4 cases). Three mutations kill them.
+
 ⛔ **The owner chose EMAIL-ONLY on 2026-09-02.** Google sign-in waits. Any
 person with any address may sign in once an admin creates their operator row,
 which is exactly what **D71.2** and **D71.3** describe together.
@@ -529,6 +546,7 @@ and it reads `apps/services/customer_console/.env`. The Next app reads its own.
 | `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
 | **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
 | `OPERATOR_DIRECTORY_SIGNIN` | — | ✅ | `lib/otp.ts::directorySigninEnabled` — ⚠️ **absent means ON** |
+| `OPERATOR_PASSPHRASE_FALLBACK` | — | ✅ | `identity.ts::passphraseFallbackEnabled` (**CP-12k**) |
 
 ⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
 is bold.** The Next app builds the Supabase authorize link from it. The API
