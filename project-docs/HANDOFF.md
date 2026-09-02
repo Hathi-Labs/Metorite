@@ -75,6 +75,46 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
+- **Check:** run three commands on the box. Every one must change before this
+  entry closes.
+  1. `grep -c CUSTOMER_CONSOLE_DATABASE_URL /opt/acb/app/scripts/backup_db.sh`
+     → `0` means the Console database stays out of scope.
+  2. `systemctl list-timers --all | grep acb-backup` → no line means nothing
+     schedules the job.
+  3. `systemctl show acb-backup.service -p Result` → `exit-code` means the last
+     run failed.
+- **Why:** the owner lost the Console data on 2026-09-01 and held no backup.
+  The owner did not need that data. The next loss can cost more.
+- 🔴 **Four failures compound, and each one hides the next.** An agent measured
+  all four on `srv1914284`, 2026-09-02:
+  1. `scripts/backup_db.sh` reads `DATABASE_URL` and nothing else. It holds
+     ZERO references to `CUSTOMER_CONSOLE_DATABASE_URL`. So the job skips every
+     organization, operator and provider credential.
+  2. The newest dump names `pg_container: acb-postgres`, a LOCAL docker
+     container, and not Supabase. Its manifest counts `app_user: 0`,
+     `email_messages: 0`, `gtd_items: 0`, `meeting: 0` and `agent_run: 0`.
+  3. `systemctl list-timers` shows no timer for the unit. Only Debian's own
+     `dpkg-db-backup.timer` runs. So nothing schedules the job.
+  4. `acb-backup.service` last started on 2026-08-25 and exited non-zero.
+     Nothing retried it. Nothing reported it.
+- 📌 **The empty dump is the worst of the four.** A job that fails loudly stops
+  nobody for long. A job that writes a manifest full of zeros reads as success.
+- 📌 **This is NOT the cause of H-89.** The dumps live in `/opt/acb/backups`,
+  outside the checkout, so the backup unit does not write the root-owned files
+  in `workbench/operator_console/`. H-89 stays open and unexplained.
+- **The AGENT half:** point `backup_db.sh` at both DSNs, and make a zero row
+  count fail the job. ⚠️ The timer belongs in `deploy/`, which is §6
+  owner-gate, so an agent writes the script and the owner installs the timer.
+- **The OWNER half, and take it first:** decide whether the control plane needs
+  a backup of ours at all. Supabase takes a daily backup on a paid plan. That
+  answer turns the agent half from "build it" into "delete the unit".
+- **Authority:** `work_plan.md` §6 (deploy reach) · `scripts/backup_db.sh` ·
+  `deploy/hostinger/`
+- **Added:** 2026-09-02 · operator-identity env session, found while an agent
+  read the box after the Supabase move
+
+
 ### H-97 · 🔴 A tenant DB password reached an agent transcript · [OWNER]
 - **Check:** has somebody rotated the `acb_app` password on the Supabase
   project since 2026-09-01? Treat this as live until they confirm a rotation.
@@ -1340,54 +1380,21 @@ line — never reclaim a number by deleting the other entry.
   done-when section and a repaired Check
 
 
-### H-96 · Moving a Supabase project changes NINE things, and eight of them are outside the database · [OWNER]
-- **Check:** compare the project ref the box uses against the ref in the
-  Supabase dashboard. `grep -h "supabase.co" /opt/acb/app/apps/services/customer_console/.env
-  /opt/acb/app/workbench/operator_console/.env.local` → every line must name the
-  SAME ref, and that ref must be the live project. A mismatch, or an unmoved
-  project, means this entry is still real.
-- **Why:** the owner moves the Supabase projects to the box's own region,
-  because the round trip across regions makes some interactions slow. Measured
-  2026-09-01: the Customer Console sits in `ap-southeast-1` and the Tenant
-  Plane sits in `ap-northeast-1`. So the two planes are in different regions
-  from each other, and both are away from the box.
-- 🔴 **A project ref appears in NINE places, and the database holds only one of
-  them.** A move that misses one leaves a service pointing at a project that no
-  longer answers. The list, measured on 2026-09-01:
-  1. `CUSTOMER_CONSOLE_DATABASE_URL`, in
-     `/opt/acb/app/apps/services/customer_console/.env` (H-64's file).
-  2. `OPERATOR_SUPABASE_URL`, in that SAME file.
-  3. `OPERATOR_SUPABASE_URL` **again**, in
-     `/opt/acb/app/workbench/operator_console/.env.local`. ⚠️ **Two files, one
-     value.** A reader who fixes one and not the other gets a silent 401, and
-     the console names no cause. Spec §4.2a holds the split.
-  4. `OPERATOR_SUPABASE_ANON_KEY`, in the API file. The key is minted per
-     project, so a move retires it.
-  5. The Google OAuth **redirect URI** in Google Cloud Console. It reads
-     `https://<ref>.supabase.co/auth/v1/callback` and it carries the ref.
-  6. The Supabase **redirect allowlist** entry for
-     `https://operator.metorite.com/login/callback`. It lives inside the
-     project, so a new project starts empty.
-  7. The Google provider itself, with its client id and secret. Same reason.
-  8. **Manual identity linking OFF.** A new project defaults it ON, and H-54
-     records why that is a bypass.
-  9. The owner's local MCP configuration.
-- 📌 **Do the move BEFORE the Google sign-in work of H-54.** Items 5 to 8 are
-  the whole of H-54's browser half. A move after that work repeats it.
-- ✅ **The timing is lucky, and it will not stay lucky.** Measured 2026-09-01:
-  `usage_event` holds ZERO rows and the Router has served no call, so no
-  billing record can be lost. `vendor_price_feed` holds 3378 rows, and a feed
-  sync rebuilds those. What must survive is small — 2 organizations, 2
-  operators, 2 provider credentials, 7 tier bindings.
-- ⚠️ **The ladder is the schema of record, and never a dump.** Apply
-  `infra/customer_console/0*.sql` in order against the new project, then move
-  the rows. `scripts/dev_db.sh` shows the idiom.
-- **Authority:** `work_plan.md` §6 (deploy reach, env-write) · H-64 · H-54 ·
-  `specs/operator_identity_and_access.md` §4.2a
-- **Added:** 2026-09-01 · WS-31 operator-identity session, from the owner's
-  region-latency plan
-
 ### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the SIX `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+- ✅ **The ENV half is DONE, 2026-09-02, and only the BROWSER half is left.**
+  An agent set all six values, and `OPERATOR_CONSOLE_ORIGIN` beside them, in
+  the two files this table names. Both files stay `acb:acb 600`. The agent then
+  restarted `acb-customer-console`, and local health answered 200.
+  ⚠️ **`OPERATOR_IDENTITY_ENABLED` stays UNSET on purpose.** Turn it on before
+  the Supabase project holds a Google provider, and the page replaces the
+  passphrase form with a button that cannot work. H-56 step 1 owns that flip.
+  📌 **The owner must still do four acts, and all four are in a browser.**
+  Make the Google Cloud OAuth client. Turn on the Supabase Google provider.
+  Add the redirect allowlist entry. Turn manual identity linking OFF.
+  H-96 listed the same four as its items 5 to 8.
+- 📌 **A tenth thing, learned from the move H-96 describes.** The rows do not
+  travel with the schema. The owner applied the ladder to the new project and
+  started the data again from nothing.
 - **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
   Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
   no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
@@ -1813,6 +1820,9 @@ line — never reclaim a number by deleting the other entry.
   because `main` already holds the stack.
 - 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
   but does not OWN does this again on the next file it must replace.
+- ✅ **Item 3 is ANSWERED, 2026-09-02.** An agent read the box. The unit
+  is `acb-operator-console.service` and it is active. So nobody needs to set
+  `OPERATOR_CONSOLE_UNIT`. Items 1 and 2 stay open, and both are owner-gate.
 - **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session · **escalated
