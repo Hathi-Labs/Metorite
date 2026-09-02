@@ -27,9 +27,9 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   `OPERATOR_ALLOW_EMAIL_OTP` on, and the operator's own
   `operator.allowed_methods` row permitting it. The owner assigns operators
   Gmail and outside addresses, so a Workspace-only directory cannot describe
-  the staff. **The reasoning behind D70.2 still stands** — this console reaches
-  every customer organization, so inbox control must never become staff access
-  for anybody the owner has not named. The per-row pin is what keeps that true.
+  the staff. **The reasoning behind D70.2 still stands.** This console reaches
+  every customer organization. So inbox control must never become staff access
+  for anybody the owner has not named, and the per-row pin keeps that true.
   ⚠️ **The page has NO code form yet** (H-99). The backend admits a code and no
   browser sends one, so Google is still the only door a person can use.
   ⚠️ **`OPERATOR_SIGNIN_PROVIDER` lives in TWO env files.** This app reads it,

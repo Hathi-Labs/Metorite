@@ -1814,13 +1814,12 @@ def test_the_database_refuses_a_pin_that_admits_nobody(eng):
     """
     from sqlalchemy.exc import IntegrityError
 
-    with pytest.raises(IntegrityError):
-        with eng.begin() as conn:
-            conn.execute(
-                text("INSERT INTO operator (email, role, status, "
-                     "allowed_methods) VALUES (:e, 'viewer', 'active', :m)"),
-                {"e": _email(), "m": []},
-            )
+    with pytest.raises(IntegrityError), eng.begin() as conn:
+        conn.execute(
+            text("INSERT INTO operator (email, role, status, "
+                 "allowed_methods) VALUES (:e, 'viewer', 'active', :m)"),
+            {"e": _email(), "m": []},
+        )
 
 
 def test_row_methods_reads_null_and_empty_as_no_restriction() -> None:
