@@ -1,7 +1,7 @@
 # Operator identity and access — the staff side of the Operator Console
 
 **Status: ACTIVE — minted 2026-08-26. Verified against code on 2026-09-02,
-after CP-12i.** Done-whens 1, 5 and 30 to 40 are MET, and 2 to 29 stay true.
+after CP-12j.** Done-whens 1, 5 and 30 to 41 are MET, and 2 to 29 stay true.
 🔴 The owner still owes H-54, and no sign-in works until they finish it.
 
 ⛔ **CP-12i added a SECOND admission mode on 2026-09-02 (D71).** The owner
@@ -468,9 +468,17 @@ signs in. `operators.bootstrap_allowed` keeps the claim comparison in
 `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL` in `registry` mode.
 A bootstrap email nobody sets admits nobody.
 
-**What this slice does NOT build.** The Operator Console page offers no code
-form yet. A person signs in through Google today, and the backend admits an
-email code the moment a browser sends one. HANDOFF **H-100** holds that half.
+✅ **CP-12j built the page half on 2026-09-02.** `login/page.tsx` shows the
+code form BESIDE the directory button, never instead of it. `lib/otp.ts` says
+when, and the browser talks to Supabase directly — the same way the OAuth
+button already does, so this app gains no new upstream.
+
+🔴 **The page hands the anon key to every visitor, and one fence makes that
+safe.** `isPublishableKey` refuses a `service_role` JWT and an `sb_secret_`
+key, and it refuses any shape it cannot parse. The `service_role` key sits one
+line away in the same Supabase dashboard and bypasses row-level security on
+every table. A person who pastes the wrong one publishes it to a login page,
+and nothing else would look wrong.
 
 ### 4.2 Where the identity lives — the Console, not the Next app
 
@@ -494,12 +502,14 @@ and it reads `apps/services/customer_console/.env`. The Next app reads its own.
 |---|---|---|---|
 | **`OPERATOR_SIGNIN_PROVIDER`** | ✅ | ✅ | `operators.signin_provider` · `identity.ts::signinProvider` |
 | `OPERATOR_SUPABASE_URL` | ✅ | ✅ | `operator_signin` · `login/page.tsx` |
-| `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | `operator_signin` |
+| **`OPERATOR_SUPABASE_ANON_KEY`** | ✅ | ✅ **BOTH since CP-12j** | `operator_signin` · `lib/otp.ts::emailCodeConfig` |
 | `OPERATOR_GOOGLE_HD` | ✅ | — | `operators.staff_directory_id` |
 | `OPERATOR_STAFF_DOMAINS` | ✅ | — | `operators` |
 | `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | `operators` |
 | `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | `login/page.tsx` |
 | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | `identity.ts::identityMode` |
+| `OPERATOR_ADMISSION_MODE` | ✅ | — | `operators.admission_mode` (**D71.1**) |
+| **`OPERATOR_ALLOW_EMAIL_OTP`** | ✅ | ✅ **BOTH** | `operators.email_otp_allowed` · `lib/otp.ts` (**D71.3**) |
 
 ⚠️ **A one-container copy of the switch fails QUIETLY, and this is why the row
 is bold.** The Next app builds the Supabase authorize link from it. The API
@@ -979,6 +989,21 @@ each fence went red under a mutation before it passed.
     ✅ **MET.** A mutation that wires the pin into the registry branch alone
     goes red, and so does one that stops folding case.
 
+
+41. **The login page offers the code form only when it can WORK, and never
+    instead of the directory button.** Four states render nothing: the flag is
+    off, the project URL is unset, the key is unset, and the key is not
+    publishable. **R7 — the fences are** `src/lib/otp.test.ts` (10 cases) and
+    `src/app/login/login.test.ts`
+    `::"renders NO form for a service_role key"`,
+    `::"shows the form BESIDE the directory button, never instead of it"` and
+    `::"ships dark — no form until the flag is on"`.
+    🔴 **The service_role case is the one that matters.** Rendering the form
+    PUBLISHES the key, so the page must refuse before it renders. The fence
+    also asserts the secret appears nowhere else in the element tree.
+    ⚠️ **A reader with a working code form is NOT stranded**, so the recovery
+    note stays off for them and returns when neither door works.
+    ✅ **MET.** 642 Operator Console tests pass.
 
 ---
 

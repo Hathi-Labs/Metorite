@@ -4,6 +4,8 @@ import {
   signinProvider,
   usesSessions,
 } from "@/lib/identity";
+import { emailCodeConfig } from "@/lib/otp";
+import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
 
 export const dynamic = "force-dynamic";
@@ -58,9 +60,17 @@ export default async function LoginPage({
   const label = providerLabel();
   const href = origin ? authorizeUrl(origin, provider) : null;
 
+  // The D71.3 fallback. `null` whenever the form could not work, so the page
+  // shows nothing rather than a box that mails nobody. `otp.ts` says why, and
+  // it REFUSES a key that is not publishable — that check is what keeps a
+  // mispasted `service_role` key off a public login page.
+  const emailCode = emailCodeConfig();
+
   // A real boolean, not the error string: JSX renders a truthy string, so
   // `params.error && …` in the guard would print the message a second time.
-  const stranded = !href || Boolean(params.error);
+  // ⚠️ A reader who can still use the code form is NOT stranded, so the
+  // recovery note stays off. It returns the moment neither door works.
+  const stranded = (!href && !emailCode) || Boolean(params.error);
 
   return (
     <main className="login-center">
@@ -75,11 +85,25 @@ export default async function LoginPage({
 
         {params.error && <div className="result err">{params.error}</div>}
 
-        {href ? (
+        {href && (
           <a className="primary-cta" href={href}>
             Sign in with {label}
           </a>
-        ) : (
+        )}
+
+        {/* ⚠️ **The code form sits BESIDE the directory button, never instead
+            of it** (D71.4). The directory is the strong door, and the code is
+            the fallback for a person who holds no account there. A page that
+            offered only the code would quietly move every operator onto the
+            weaker method, including the admin who adds operators. */}
+        {emailCode && (
+          <>
+            {href && <div className="or-rule">or</div>}
+            <EmailCodeForm url={emailCode.url} anonKey={emailCode.anonKey} />
+          </>
+        )}
+
+        {!href && !emailCode && (
           <div className="banner">
             {/* Fails closed and says which value is missing, because the
                 person reading this is the one who can set it. */}
