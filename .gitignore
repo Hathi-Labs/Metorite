@@ -119,6 +119,17 @@ workbench/control_plane/test-results/
 # Vendored from github.com/dickwu/apple-design-skill @ d0bac1e (owner ask,
 # 2026-08-31): the HIG design-review skill every checkout must load.
 !.claude/skills/apple-design/
+# Adopted from skills/upstream/anthropics/ @ 53048666 (owner ask, 2026-09-03).
+# The mirror under skills/upstream/ is a REVIEW copy that nothing loads — Claude
+# Code reads .claude/skills/ only. Adoption is this line, and nothing else.
+# ⚠️ Three of the five carry a METORITE ADOPTION NOTE below their frontmatter,
+# because their advice fights DESIGN_SYSTEM.md §0. A refresh drops that note.
+# The adoption procedure lives in skills/upstream/README.md.
+!.claude/skills/webapp-testing/
+!.claude/skills/frontend-design/
+!.claude/skills/skill-creator/
+!.claude/skills/theme-factory/
+!.claude/skills/brand-guidelines/
 skill-observations/
 
 # Runtime caches / secrets / junk that must never be committed (foundation audit F2).

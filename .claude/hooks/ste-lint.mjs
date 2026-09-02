@@ -129,6 +129,14 @@ const NOT_OURS = [
   // Vendored verbatim from github.com/dickwu/apple-design-skill @ d0bac1e.
   // A refresh re-copies the upstream files, so a rewrite here is undone too.
   /^\.claude\/skills\/apple-design\//,
+  // Adopted verbatim from skills/upstream/anthropics/ at SHA 53048666.
+  //
+  // ⚠️ THE PATH CANNOT CARRY THE PROVENANCE, so this list carries it. Claude
+  // Code reads `.claude/skills/<name>/SKILL.md` and finds nothing one level
+  // deeper, so an adopted skill must sit beside the skills we wrote. A reader
+  // cannot tell the two apart from the path. Add a name here when you adopt
+  // one. Delete the name when you drop it.
+  /^\.claude\/skills\/(webapp-testing|frontend-design|skill-creator|theme-factory|brand-guidelines)\//,
   /(^|\/)node_modules\//,
   /(^|\/)(CHANGELOG|LICENSE|NOTICE)(\.md)?$/i,
 ]

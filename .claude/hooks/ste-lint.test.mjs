@@ -180,6 +180,13 @@ const HOOK_CASES = [
   // The whole .claude tree is STRICT, not only agents/ and commands/.
   ['.claude/AGENTS.md is strict', { tool_name: 'Write', tool_input: { file_path: '.claude/AGENTS.md', content: 'However, it is open.' } }, 2],
   ['a vendored upstream skill is not ours', { tool_name: 'Write', tool_input: { file_path: 'skills/upstream/anthropics/x/SKILL.md', content: 'Utilize it.' } }, 0],
+  // An ADOPTED upstream skill sits beside the skills we wrote, because Claude
+  // Code reads `.claude/skills/<name>/SKILL.md` and no level deeper. So the
+  // path says "ours" and only NOT_OURS says otherwise. Without these two
+  // cases, an edit to that list silently makes 41 vendored files STRICT, and
+  // the next commit that touches one fails on somebody else's prose.
+  ['an adopted upstream skill is not ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/frontend-design/SKILL.md', content: 'Utilize it.' } }, 0],
+  ['a skill we wrote is still ours', { tool_name: 'Write', tool_input: { file_path: '.claude/skills/ste/SKILL.md', content: 'Utilize it.' } }, 2],
 ]
 
 for (const [name, payload, expected] of HOOK_CASES) {
