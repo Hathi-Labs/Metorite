@@ -344,6 +344,45 @@ export const projectsApi = {
   statuses: (projectId: string) =>
     call<{ rows: StatusRow[]; total: number }>(`nodes/${projectId}/statuses`),
 
+  /**
+   * ── The status vocabulary is WRITEABLE, and until now only from SQL ────────
+   *
+   * `admin.py` has shipped the full CRUD since migration 146, and this client
+   * carried only the read above. So a member could not add, rename, recolour,
+   * reorder or retire a lane without a database write, and
+   * `project_management_app.md` §9.12.3 was describing a "status manager" that
+   * had a server and no surface.
+   *
+   * Statuses are ROOT-scoped: pass any node and the server resolves the root
+   * (`admin._root_for`), so every project under a space shares one set. That is
+   * deliberate — the category is the only vocabulary two spaces share, and a
+   * per-project override would break every cross-project roll-up.
+   */
+  createStatus: (projectId: string, payload: Record<string, unknown>) =>
+    call<StatusRow>(`nodes/${projectId}/statuses`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Rename, recolour, re-categorise, reposition, or make default. */
+  patchStatus: (statusId: string, payload: Record<string, unknown>) =>
+    call<StatusRow>(`statuses/${statusId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  /**
+   * Retire a lane. **409 while any task still sits in it**, and the message
+   * names the count — `pm_tasks.status_id` is `ON DELETE RESTRICT`, so the
+   * alternative was an opaque 500. The editor shows that sentence verbatim
+   * rather than "could not delete": the number is what tells the owner whether
+   * to move three tasks or reconsider.
+   */
+  deleteStatus: (statusId: string) =>
+    call<{ deleted: string; tasks_affected: number }>(`statuses/${statusId}`, {
+      method: "DELETE",
+    }),
+
   tasks: (params: Record<string, string | number | boolean | undefined>) => {
     const qs = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
