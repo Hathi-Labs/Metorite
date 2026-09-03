@@ -66,22 +66,36 @@ function orderedCategories(counts: Record<string, number>) {
   return [...known, ...extra];
 }
 
+/**
+ * One figure, and never a blank. Same contract as `AnalyticsView`'s Stat.
+ *
+ * ⚠️ `value` is typed as a number and is not guaranteed to be one. The roll-up
+ * is cast rather than validated, so an absent `projects` renders `{undefined}`
+ * — which is NOTHING. A heading over empty space reads as a number that
+ * failed, not as a number that is zero, and the reader cannot tell which.
+ */
 function Stat({
   label,
   value,
   tone,
+  className = "",
 }: {
   label: string;
-  value: number;
+  value?: number;
   tone?: string;
+  className?: string;
 }) {
+  const known = typeof value === "number" && Number.isFinite(value);
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2">
+    <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <p className={`text-lg font-semibold ${tone ?? "text-foreground"}`}>
-        {value}
+      <p
+        className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
+        title={known ? undefined : `${label} did not come back from the server`}
+      >
+        {known ? value : "—"}
       </p>
     </div>
   );
@@ -219,9 +233,10 @@ const EMPTY_COPY: Record<NodeSummary["level"], string> = {
  * footnote beats a number that quietly disagrees with the lane sums.
  */
 function ProgressCard({ summary }: { summary: NodeSummary }) {
-  const done = summary.by_category.done ?? 0;
-  const cancelled = summary.by_category.cancelled ?? 0;
-  const closable = summary.tasks - cancelled;
+  const counts = summary.by_category ?? {};
+  const done = counts.done ?? 0;
+  const cancelled = counts.cancelled ?? 0;
+  const closable = (summary.tasks ?? 0) - cancelled;
   const pct = closable > 0 ? (done / closable) * 100 : 0;
 
   return (
@@ -246,7 +261,7 @@ function ProgressCard({ summary }: { summary: NodeSummary }) {
         />
       </div>
       <div className="space-y-1.5">
-        {orderedCategories(summary.by_category).map((category) => (
+        {orderedCategories(counts).map((category) => (
           <div
             key={category}
             className="flex items-center justify-between text-xs"
@@ -258,7 +273,7 @@ function ProgressCard({ summary }: { summary: NodeSummary }) {
               {CATEGORY_LABELS[category] ?? category}
             </span>
             <span className="text-foreground">
-              {summary.by_category[category]}
+              {counts[category] ?? 0}
             </span>
           </div>
         ))}
@@ -286,6 +301,15 @@ export default function NodeDashboard({
   // Every read below already handles a missing COUNT, so an empty object is the
   // shape the rest of this function was written for.
   const by = summary.by_category ?? {};
+  /**
+   * ⚠️ Every field below is TYPED as present and none is guaranteed to be.
+   * `api.call` casts the roll-up rather than validating it, so one absent key
+   * threw and took the whole pane with it. `hasChildren` keeps the difference
+   * the empty state needs: absent means the server did not say, `[]` means it
+   * said none.
+   */
+  const hasChildren = Array.isArray(summary.children);
+  const children = hasChildren ? summary.children : [];
   const done = by.done ?? 0;
   const inProgress = by.in_progress ?? 0;
   // "To do" in the wide sense a reader means it: everything not yet started.
@@ -297,6 +321,10 @@ export default function NodeDashboard({
         {LEVEL_TITLES[level]}
       </p>
 
+      {/* ⚠️ FIVE tiles, and 5 divides by neither 2 nor 3. So the last one sat
+          alone on its own row at phone and tablet width — an orphan, which
+          reads as a tile that failed to load rather than as the fifth of five.
+          It spans the leftover columns instead, until all five fit in one row. */}
       <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label={
@@ -307,7 +335,11 @@ export default function NodeDashboard({
                 : "Projects"
           }
           value={
-            level === "portfolio" ? summary.children.length : summary.projects
+            level === "portfolio"
+              ? // `children` is typed as present and is not guaranteed to be.
+                // Absent means the server did not say, which is a dash, not 0.
+                (hasChildren ? children.length : undefined)
+              : summary.projects
           }
         />
         <Stat label="To do" value={todo} />
@@ -316,6 +348,9 @@ export default function NodeDashboard({
         <Stat
           label="Overdue"
           value={summary.overdue}
+          // The fifth of five: fills the leftover column at 2-up rather than
+          // sitting alone on a row of its own.
+          className="col-span-2 sm:col-span-1"
           tone={
             summary.overdue > 0
               ? statusAccent({ category: "cancelled" }).text
@@ -326,9 +361,9 @@ export default function NodeDashboard({
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-5">
         <div className="md:col-span-3">
-          {summary.children.length > 0 ? (
+          {children.length > 0 ? (
             <div className="space-y-1.5">
-              {summary.children.map((child) => (
+              {children.map((child) => (
                 <ChildRow
                   key={child.id}
                   child={child}
@@ -339,12 +374,16 @@ export default function NodeDashboard({
             </div>
           ) : (
             <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-              {EMPTY_COPY[level]}
+              {/* ⚠️ A level this map does not know rendered an EMPTY dashed
+                  box — a container with nothing in it, which reads as a
+                  half-built feature. The fallback is deliberately vague
+                  because the honest answer is that we do not know. */}
+              {EMPTY_COPY[level] ?? "Nothing to show here."}
             </p>
           )}
         </div>
         <div className="md:col-span-2">
-          {summary.tasks > 0 ? <ProgressCard summary={summary} /> : null}
+          {(summary.tasks ?? 0) > 0 ? <ProgressCard summary={summary} /> : null}
         </div>
       </div>
     </div>
