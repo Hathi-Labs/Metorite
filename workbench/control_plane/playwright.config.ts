@@ -49,6 +49,31 @@ export default defineConfig({
           : {}),
       },
     },
+    {
+      // ── The visual-review rig, deliberately OUT of the default run ────────
+      //
+      // A capture rig asserts nothing. Left in the `chromium` project it would
+      // add minutes to every suite run and report "passed" without testing
+      // anything, and a suite full of tests that cannot fail is how people
+      // learn to ignore the suite.
+      //
+      // Playwright's default testMatch only takes `*.spec.ts` and `*.test.ts`,
+      // so a `.visual.ts` file is already invisible to `chromium`. This project
+      // is the door that reaches it:
+      //
+      //     npx playwright test --project=visual
+      //     npx playwright test e2e/visual/mine.visual.ts --project=visual
+      //
+      // The `visual-review` skill owns the workflow.
+      name: "visual",
+      testMatch: /\.visual\.ts$/,
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } }
+          : {}),
+      },
+    },
   ],
   webServer: {
     // ── `next dev`, not `next start`, and the reason is CP-0 ────────────────
