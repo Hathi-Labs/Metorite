@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import type { StatusRow, TaskRow } from "./api";
 import {
   type BoardLanes,
+  DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   GROUP_OPTIONS,
   NO_LANES,
@@ -567,6 +568,16 @@ describe("divergence — when the board stopped being the view (WS-27ab)", () =>
   it("says nothing at all when nothing changed", () => {
     expect(describeDivergence([])).toBe("");
     expect(describeDivergence(["filters"])).toBe("filters");
+  });
+});
+
+describe("the grouping default is named once", () => {
+  it("is what an empty config resolves to", () => {
+    // Two places defaulted this as a bare string and had to agree. If they
+    // ever stop agreeing, a board re-groups itself on the second visit.
+    expect(fromConfig(null).groupBy).toBe(DEFAULT_GROUP_BY);
+    expect(fromConfig({}).groupBy).toBe(DEFAULT_GROUP_BY);
+    expect(GROUP_OPTIONS).toContain(DEFAULT_GROUP_BY);
   });
 });
 

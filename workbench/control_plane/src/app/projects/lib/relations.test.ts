@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  completeRelations,
   CLOSED,
   type Direction,
   type LinkType,
@@ -158,5 +159,37 @@ describe("cardSummary", () => {
     // that stayed marked blocked after its dependency shipped is a card people
     // learn to ignore.
     expect(cardSummary(relations({ blocked_by: [] }))).toBeNull();
+  });
+});
+
+describe("completeRelations", () => {
+  /**
+   * ⚠️ These are the fence for a blank page, not for a tidy type.
+   *
+   * `RelationsBlock` guarded `!data` and then read `data.links`. A body one
+   * field short is truthy, so it threw — and because `TaskPanel` renders
+   * outside `LayoutBoundary`, the throw reached the React root and blanked the
+   * whole document. Measured 2026-09-03 with the visual-review rig.
+   */
+  it("fills every array a reader walks", () => {
+    const got = completeRelations({} as never);
+    expect(got).toEqual({
+      subtasks: [],
+      links: [],
+      blocked_by: [],
+      progress: { done: 0, total: 0 },
+    });
+  });
+
+  it("fills only what is missing", () => {
+    const rows = [link("blocks", "incoming")];
+    const got = completeRelations({ blocked_by: rows } as never);
+    expect(got?.blocked_by).toBe(rows);
+    expect(got?.links).toEqual([]);
+  });
+
+  it("keeps null meaning null, because the caller renders nothing for it", () => {
+    expect(completeRelations(null)).toBeNull();
+    expect(completeRelations(undefined)).toBeNull();
   });
 });

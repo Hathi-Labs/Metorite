@@ -36,6 +36,16 @@ export const GROUP_OPTIONS: GroupBy[] = [
   "none",
 ];
 
+/**
+ * The board's grouping axis when nobody has chosen one.
+ *
+ * Named ONCE because two places default it — this module's `fromConfig`, for a
+ * saved view whose config never stored an axis, and `page.tsx`'s initial state.
+ * They were two string literals that had to agree. A default that disagrees
+ * with itself re-groups a board on the second visit.
+ */
+export const DEFAULT_GROUP_BY: GroupBy = "status";
+
 export interface TaskGroup {
   /** Stable identity — a status id, an address, a project id, or a sentinel. */
   key: string;
@@ -130,7 +140,7 @@ export function fromConfig(config: unknown): {
   const stored = (raw.filters ?? {}) as Record<string, unknown>;
   const groupBy = GROUP_OPTIONS.includes(raw.group_by as GroupBy)
     ? (raw.group_by as GroupBy)
-    : "status";
+    : DEFAULT_GROUP_BY;
   // A sub-axis equal to the main axis is a board that lanes by its own
   // columns — nonsense a hand-edited config could still say. Normalised to
   // "none" HERE so every consumer sees one truth rather than each re-deciding.

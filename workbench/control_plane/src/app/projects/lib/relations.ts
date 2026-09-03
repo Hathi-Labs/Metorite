@@ -52,6 +52,35 @@ export interface Relations {
   blocked_by: RelatedTask[];
 }
 
+/**
+ * A whole `Relations`, whatever the server sent.
+ *
+ * ⚠️ **THE TYPE IS A CLAIM, NOT A GUARANTEE.** `api.call` parses JSON and casts
+ * it, so nothing at runtime checks that the four fields arrived. `RelationsBlock`
+ * guarded `!data` and then read `data.links`, which is the mistake the type
+ * invites: an object one field short is still truthy.
+ *
+ * Measured 2026-09-03 with the visual-review rig. A body without `links` threw
+ * `Cannot read properties of undefined`, and the throw reached the React root
+ * and blanked the document. `TaskPanel` renders OUTSIDE `LayoutBoundary`,
+ * because that boundary wraps the canvases only. A blank page beside a working
+ * tree reads as "this task has nothing", and not as "something failed".
+ *
+ * One normalisation here beats a guard at each read site. The next field this
+ * component reads is then covered, without anybody remembering to add one.
+ */
+export function completeRelations(
+  raw: Partial<Relations> | null | undefined
+): Relations | null {
+  if (!raw) return null;
+  return {
+    subtasks: raw.subtasks ?? [],
+    links: raw.links ?? [],
+    blocked_by: raw.blocked_by ?? [],
+    progress: raw.progress ?? { done: 0, total: 0 },
+  };
+}
+
 /** Mirrors the gateway's `CLOSING_CATEGORIES`. */
 export const CLOSED = ["done", "cancelled"];
 

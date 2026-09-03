@@ -2020,6 +2020,100 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
+### H-64 · Board drag-and-drop writes an order that nothing reads · [AGENT]
+- **Check:** `rg -n "view_position" apps/services/gateway/gateway/routes/projects/`
+  → no hit means the read half is still missing, and the entry is still real.
+- **Why:** A drag inside one column is a silent no-op. The card returns to its
+  old place, and the user sees the gesture fail.
+  - `handleDrop` writes the order to `pm_view_task_positions` through
+    `PUT /projects/views/{id}/positions`. That half works.
+  - `GET /projects/tasks` does `SELECT t.* FROM pm_tasks t` and never joins that
+    table. `rg` finds `view_position` in **no** `.py` or `.sql` file in the tree.
+  - `GET /projects/views/{id}/positions` exists at `views.py:313`. No frontend
+    code calls it.
+  - So `view_position` is `undefined` on every real row. `sortForView` then puts
+    every task in its `created_at` branch, and each column shows creation order.
+  - `planDrop` sees no neighbour with a position, so **every** drop materialises
+    the whole group. Each drag writes up to `MAX_POSITIONS` = 1000 rows that
+    nothing reads.
+  - A same-column drop also makes `buildCellDropPatch` answer `null`, because
+    the axis value did not change. There is no optimistic move either.
+- **What it needs:** `GET /projects/tasks` takes an optional `view_id`, LEFT
+  JOINs `pm_view_task_positions`, and returns `position AS view_position`.
+  `loadProject` then sends the order-bearing view. R8 applies — verify the SQL
+  against the live database, not a fake.
+- **⚠️ Ask the owner first.** "Priority" on this surface is the `importance`
+  field (`FilterBar.tsx:74`), and `pm_tasks` has no `priority` column. The owner
+  must say whether a drop keeps rank per view (D-PM-5, the design above) or
+  writes `importance` from the neighbours (**against** D-PM-5). Do not build
+  before that answer.
+- **Also owed:** the board reads 100 tasks by `created_at` and sorts them in the
+  browser. A project above 100 tasks cannot show a correct hand order. Name this
+  in the same board row.
+- **Authority:** `specs/project_management_app.md` D-PM-5 (line 929) ·
+  `work_plan.md` §2 WS-27 row · CLAUDE.md §5 (a finding for the board)
+- **Added:** 2026-08-26 · Projects UI session (owner asked to flag, not build)
+
+### H-94 · The Projects filter row is half-converted · [AGENT]
+- **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
+  → hits on `<Select` mean the controls are still selects, and the button
+  conversion below is still owed.
+- **Why:** The owner gave four more directions in the session that consolidated
+  the row. Work stopped part-way, so the row is in a state nobody designed.
+  1. **"Assignees" becomes a button, not a select.** A click shows the items.
+  2. **Every dropdown in the row becomes a button.** At the default value, draw a
+     two-headed arrow in place of the single down arrow.
+  3. **The search field collapses to an icon** at the left of the row. Remove the
+     placeholder text. A click opens the real field.
+  ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
+  a transition, and that half is withdrawn. A `MOTION.md` landed here the same
+  day and the owner removed it. Build the collapse as a state change with no
+  animation. Do not add a duration or an easing curve to this row, and do not
+  re-open the question. Ask the owner if you believe motion is needed.
+- **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
+  `src/components/ui/Modal.tsx` is the only file that may import it. A button
+  that opens a list is a popover. Do not hand-roll one, and do not import a
+  second library. `src/lib/outsideClick.ts` is the answer for a popover we do
+  not build on the substrate.
+- **⚠️ Also still owed on this row:** the Clear button takes 76px from the search
+  box at 1920px. It is a sibling in the same `flex flex-wrap` container. The
+  search box is the only `flex-1` in that container, so it pays for everything
+  that appears or disappears. Measured: 0px at 1280, 1440 and 1600, and −76px at
+  1920. Direction 4 above may remove this by construction. Measure, do not assume.
+- **Authority:** `AGENTS.md` rule 8 (the substrate) ·
+  `specs/project_management_app.md` §11.2 item 3 · board row WS-27
+- **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
+  *(minted H-65. Renumbered to H-94 on 2026-09-01, because `main` had taken
+  65 for the plan-guard heredoc entry. This branch merged second. That is the
+  case the numbering rule above names.)*
+
+### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
+- **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
+  case-insensitive string test against the whole command means the defect is
+  still there. A test that matches only a redirect, an editor or a `tee` means
+  it is fixed.
+- **⚠️ This entry deliberately never spells that filename.** An entry that spelt
+  it could not be written by a shell command, which is the defect itself.
+- **Why:** Line 231 refuses the command when the grants filename appears
+  **anywhere in the text**, and not only in a write. So a commit message that
+  names the file is refused as a write to it. Measured 2026-09-01: a
+  `git commit -F -` whose heredoc body named the file was blocked twice. The
+  same commit passed as soon as the message said "the owner grants file"
+  instead. Filing this entry hit the same wall a third time.
+- **⚠️ The refusal itself is correct and must stay.** D45 says the owner writes
+  that file. This entry asks for the test to be narrower, never for the gate to
+  be weaker. The failure mode is the expensive one. An agent that meets a
+  refusal it cannot explain will look for a way around it. The way around a
+  false positive also goes around the true one.
+- **What it needs:** match a WRITE, not a mention. Match the redirect, the
+  editor and the `tee` forms, the way the path regexp above it already does. A
+  mention inside a quoted string or a heredoc body is not a write.
+- **Related:** **H-65** is the same family. plan-guard cannot see a write an
+  interpreter makes from a heredoc. That entry is about a write it MISSES. This
+  one is about a write it INVENTS. Both read shell text as if it were an action.
+- **Authority:** `.claude/hooks/plan-guard.mjs` line 231 · D45 · `work_plan.md` §6
+- **Added:** 2026-09-01 · Projects UI session, met while merging `main`
+
 ---
 
 # DONE — deleted, not archived
