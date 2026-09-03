@@ -199,11 +199,19 @@ export async function gotoAndSettle(page: Page, route: string, settleMs = 4000):
  * answers both.
  */
 export async function firstVisible(page: Page, label: string): Promise<Locator | null> {
+  // Tenth trap. `exact: true` is WHITESPACE-STRICT, and JSX puts whitespace
+  // everywhere. A tab whose markup wraps an icon and a label across lines has
+  // the accessible name "Board" for a screen reader and still fails an exact
+  // match here. Both forms are tried, exact first, so a short label cannot
+  // match a longer neighbour by accident.
   for (const all of [
     page.getByRole("button", { name: label, exact: true }),
     page.getByRole("tab", { name: label, exact: true }),
     page.getByRole("link", { name: label, exact: true }),
     page.getByText(label, { exact: true }),
+    page.getByRole("button", { name: label }),
+    page.getByRole("tab", { name: label }),
+    page.getByRole("link", { name: label }),
   ]) {
     const n = await all.count();
     for (let i = 0; i < n; i++) {
