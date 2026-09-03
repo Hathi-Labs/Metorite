@@ -36,6 +36,7 @@ import { conflictLabel, conflicts } from "../lib/timeline";
 import {
   type LinkType,
   type Relations,
+  completeRelations,
   isResolved,
   populated,
   progressLabel,
@@ -88,7 +89,8 @@ export function RelationsBlock({
 
   const load = useCallback(async () => {
     try {
-      setData(await projectsApi.relations(taskId));
+      // Normalise at the seam, so no reader below has to guard a field.
+      setData(completeRelations(await projectsApi.relations(taskId)));
     } catch {
       // A panel that works without its relations block beats one that refuses
       // to open because the block did not load.

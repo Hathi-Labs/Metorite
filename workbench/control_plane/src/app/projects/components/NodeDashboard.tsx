@@ -281,7 +281,11 @@ export default function NodeDashboard({
   onOpen: (id: string) => void;
 }) {
   const level = summary.level;
-  const by = summary.by_category;
+  // ⚠️ `by_category` is typed as present and is not guaranteed to be. A summary
+  // without it threw here and took the pane with it (measured 2026-09-03).
+  // Every read below already handles a missing COUNT, so an empty object is the
+  // shape the rest of this function was written for.
+  const by = summary.by_category ?? {};
   const done = by.done ?? 0;
   const inProgress = by.in_progress ?? 0;
   // "To do" in the wide sense a reader means it: everything not yet started.
