@@ -15,6 +15,7 @@
 
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TaskRow } from "../lib/api";
@@ -108,8 +109,7 @@ export function CustomFieldValues({ task, fields, onChanged }: Props) {
             <dd className="mt-0.5">
               {def.field_type === "boolean" ? (
                 <label className="flex items-center gap-2 text-xs text-foreground">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={draft[def.field_key] === true}
                     onChange={(e) => set(def.field_key, e.target.checked)}
                     aria-label={def.name}

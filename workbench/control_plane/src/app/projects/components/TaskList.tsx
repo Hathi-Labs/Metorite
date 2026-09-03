@@ -26,6 +26,7 @@
  * both keys are in `DEFAULT_SHOWN`.
  */
 import { ControlLink } from "@/components/ControlLink";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
@@ -239,8 +240,7 @@ export function TaskList({
           <tr>
             {onToggle ? (
               <th className="px-3 py-2 font-medium">
-                <input
-                  type="checkbox"
+                <Checkbox
                   aria-label="Select every task on this page"
                   checked={allChecked}
                   onChange={() => onToggleAll?.()}
@@ -326,8 +326,7 @@ export function TaskList({
                 >
                   {onToggle ? (
                     <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         aria-label={`Select ${task.title}`}
                         checked={selected?.has(task.id) ?? false}
                         onClick={(e) => e.stopPropagation()}

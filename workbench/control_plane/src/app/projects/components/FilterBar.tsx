@@ -34,6 +34,7 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
@@ -485,8 +486,7 @@ export function FilterBar({
                     key={key}
                     className="flex items-center gap-2 rounded px-1 py-0.5 text-xs text-foreground hover:bg-muted"
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={shownFields.includes(key)}
                       onChange={() => onShownFields(toggleField(shownFields, key))}
                       aria-label={`Show ${label}`}

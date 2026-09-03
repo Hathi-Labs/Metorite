@@ -360,6 +360,47 @@ body {
    expressed as utilities at all: a state-layer overlay needs a pseudo-element,
    and text-transform/letter-spacing have to come from a custom property so a
    theme can change them without touching a call site. */
+/* The house checkbox's GLYPH. `components/ui/Checkbox.tsx` owns the box; this
+   owns the tick and the dash inside it.
+
+   It lives here rather than in a class string because the mark has to take its
+   colour from `--primary-foreground`, the ink that pairs with the fill — a
+   `currentColor` mask is the only way to do that without hardcoding a second
+   value that then drifts in light mode. Before this, every checkbox in the app
+   was a raw input wearing the PLATFORM's paint: a faint outline in dark, a
+   solid black square in light. */
+.cc-checkbox:checked,
+.cc-checkbox:indeterminate {
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+.cc-checkbox:checked::after,
+.cc-checkbox:indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--primary-foreground);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 80% 80%;
+  mask-size: 80% 80%;
+}
+.cc-checkbox {
+  position: relative;
+}
+.cc-checkbox:checked::after {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+.cc-checkbox:indeterminate::after {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round'%3E%3Cline x1='5' y1='12' x2='19' y2='12'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round'%3E%3Cline x1='5' y1='12' x2='19' y2='12'/%3E%3C/svg%3E");
+}
+
 .cc-control {
   position: relative;
   isolation: isolate;
