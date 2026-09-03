@@ -78,6 +78,10 @@ ide/
 # Playwright transient artifacts
 /test-results/
 workbench/control_plane/test-results/
+# visual-review captures. Evidence for one review, never a committed baseline —
+# a checked-in screenshot becomes a second source of truth about how the app
+# looks, and it goes stale the first time anybody changes a token.
+workbench/control_plane/ux-shots/
 
 # Agent harness. ⚠️ NOT a blanket ignore any more (D29, 2026-08-10).
 #
@@ -130,6 +134,10 @@ workbench/control_plane/test-results/
 !.claude/skills/skill-creator/
 !.claude/skills/theme-factory/
 !.claude/skills/brand-guidelines/
+# Ours, not vendored: the visual-review rig. It is the gate DESIGN_SYSTEM.md §0
+# asks for and the conformance suite cannot supply, so every checkout needs it.
+# The STE linter DOES bind it — it is our prose.
+!.claude/skills/visual-review/
 skill-observations/
 
 # Runtime caches / secrets / junk that must never be committed (foundation audit F2).
