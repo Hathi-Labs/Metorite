@@ -198,6 +198,46 @@ describe("the accent shape", () => {
     }
   });
 
+  /**
+   * ⚠️ THE FENCE FOR THE ACCENT DEFECT (R7).
+   *
+   * `--primary` is the accent a member sets at Settings → Appearance. While
+   * `blue` and `violet` read it, a board's "In progress" lane was not blue —
+   * it was whatever colour the viewer chose, and an accent set to green made
+   * an active lane the same colour as Done.
+   *
+   * Nothing caught it, because every other test here asserts a hue NAME.
+   * `project-state.spec.ts` says so in its own header: a colour column existed
+   * for months while every lane drew the same grey.
+   *
+   * This asserts the CLASS, which is the closest a node-environment test can
+   * get to the paint. The browser-side half — that the lane's computed colour
+   * does not move when `--primary` moves — belongs to the visual-review rig's
+   * `underAccents` helper.
+   */
+  it("never paints a status with the member's accent", () => {
+    for (const hue of ACCENT_HUES) {
+      const accent = accentForHue(hue as AccentHue);
+      for (const slot of ["dot", "soft", "text", "bar"] as const) {
+        expect(
+          accent[slot],
+          `${hue}.${slot} reads --primary, so this status changes colour when a member changes their accent`,
+        ).not.toMatch(/primary/);
+      }
+    }
+  });
+
+  it("gives blue and violet different hues, not one hue twice", () => {
+    // `violet` was `bg-primary/60` — blue, one step fainter. So two of the
+    // five lanes on a positionally-coloured board never differed at all.
+    const blue = accentForHue("blue");
+    const violet = accentForHue("violet");
+    for (const slot of ["dot", "soft", "text", "bar"] as const) {
+      expect(violet[slot], `violet.${slot}`).not.toBe(blue[slot]);
+    }
+    expect(violet.dot.replace(/\/\d+$/, "")).not.toBe(blue.dot.replace(/\/\d+$/, ""));
+  });
+
   it("keeps /tasks' stage classes byte-identical", () => {
     // The five strings `stageColors.ts` returned for a green stage. /tasks
     // renders from these on its board, its list headers and its status pill,
@@ -214,11 +254,15 @@ describe("the accent shape", () => {
       text: "text-muted-foreground",
       bar: "border-l-muted-foreground/40",
     });
+    // ⚠️ CHANGED ON PURPOSE, 2026-09-03 — the third positional lane.
+    // It was `--primary` at 60%, 5% and 80%: the member's accent, three
+    // opacities deep. So lane 3 was lane 2 one step fainter, and both moved
+    // when the member changed their accent. `violet` is a real token now.
     expect(statusAccent({ name: "Lane", index: 2, total: 8 })).toMatchObject({
-      dot: "bg-primary/60",
-      soft: "bg-primary/5",
-      text: "text-primary/80",
-      bar: "border-l-primary/50",
+      dot: "bg-violet",
+      soft: "bg-violet/10",
+      text: "text-violet",
+      bar: "border-l-violet",
     });
   });
 
@@ -228,7 +272,11 @@ describe("the accent shape", () => {
     expect(statusAccent({ color: "red" }).chip).toBe("bg-destructive/10 text-destructive");
     expect(statusAccent({ color: "amber" }).chip).toBe("bg-warning/10 text-warning");
     expect(statusAccent({ color: "green" }).chip).toBe("bg-success/10 text-success");
-    expect(statusAccent({ color: "blue" }).chip).toBe("bg-primary/10 text-primary");
+    // ⚠️ CHANGED ON PURPOSE, 2026-09-03. This read `bg-primary/10
+    // text-primary`, and `--primary` is the member's accent — so a blue tag
+    // was not blue, it was whatever colour the viewer had chosen. The port
+    // this test guards was faithful; the thing it was faithful to was wrong.
+    expect(statusAccent({ color: "blue" }).chip).toBe("bg-info/10 text-info");
     expect(statusAccent({ color: "violet" }).chip).toBe("bg-accent text-accent-foreground");
   });
 });
