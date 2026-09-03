@@ -114,6 +114,13 @@ export type ColorTokens = Record<CategoricalToken, string> & {
   warning: string;
   warningForeground: string;
 
+  /** The blue a STATUS means, which is not the accent a member picks. */
+  info: string;
+  infoForeground: string;
+  /** The fifth lane hue. It was `--primary` at 60%, so it was not a hue. */
+  violet: string;
+  violetForeground: string;
+
   /**
    * Sidebar surface overrides. Optional — when a theme omits one it falls back
    * to the matching core token, so a theme only spells out what it wants to

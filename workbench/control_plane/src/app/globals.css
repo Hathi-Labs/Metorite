@@ -86,6 +86,29 @@
   --warning: hsl(47 96% 53%);
   --warning-foreground: hsl(220 13% 8%);
 
+  /* ── Two more SEMANTIC hues, and the reason they exist ─────────────────
+     `statusAccent.ts` names six hues for a lane, a chip or a dot. Four of
+     them already had a fixed token: gray, red, amber, green. The other two
+     read `--primary`, which is the ACCENT A MEMBER PICKS at Settings →
+     Appearance.
+
+     So a board's "In progress" lane was not blue. It was whatever colour the
+     viewer chose. Set the accent to green and it became the same colour as
+     Done. Measured 2026-09-03 with the visual-review rig.
+
+     `--info` is the blue a status means. `--violet` is the fifth lane, which
+     was `--primary` at 60% opacity — the same colour as blue, one step
+     fainter, so two of five lanes never differed by hue at all.
+
+     ⚠️ These are NOT the accent. `--primary` stays what it has always been:
+     selection and affordance. A member changing it must not repaint what a
+     status MEANS. `statusAccent.test.ts` fences that. */
+  --info: hsl(198 89% 55%);
+  --info-foreground: hsl(220 13% 8%);
+
+  --violet: hsl(268 80% 68%);
+  --violet-foreground: hsl(220 13% 8%);
+
   /* Categorical ramp — eight mutually distinguishable hues for sets whose
      members have no ranking and no meaning (@contexts, tags, custom-field
      options). NOT semantic: use --success/--warning/--destructive for state.
@@ -153,6 +176,15 @@
   --warning: hsl(47 96% 53%);
   --warning-foreground: hsl(210 40% 98%);
 
+  /* Light mode. Deeper than the dark values, because these have to clear AA
+     against a white card and not a near-black one — the same reason the
+     categorical ramp below is darker here. */
+  --info: hsl(198 89% 38%);
+  --info-foreground: hsl(210 40% 98%);
+
+  --violet: hsl(268 70% 50%);
+  --violet-foreground: hsl(210 40% 98%);
+
   /* Categorical ramp — light mode. Deeper than the dark-mode values because
      these have to clear AA against a white card, not a near-black one. */
   --cat-1: hsl(215 85% 47%);
@@ -203,6 +235,10 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-violet: var(--violet);
+  --color-violet-foreground: var(--violet-foreground);
   /* Categorical ramp → `bg-cat-3`, `text-cat-3`, `border-cat-3/30`. Written
      out one per slot because Tailwind v4 resolves `--color-*` entries
      literally; there is no loop form, and a missing entry silently drops that
