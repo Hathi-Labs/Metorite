@@ -223,6 +223,44 @@ does.
 ⚠️ **We cannot roll back** (CLAUDE.md §3.4). A single-release rename would
 meet old code with a new schema and bill nothing.
 
+#### The WIRE is an expand surface too (added 2026-09-05)
+
+🔴 **The Console and the operator console deploy apart.** So the JSON between
+them needs the same treatment as the schema, and release one did not name it.
+
+1. The wire carries **both** scales. A console that has not shipped release one
+   still reads `_per_1k` and still draws a correct price.
+2. The reader prefers `_per_1m` and falls back to `_per_1k` times 1000. New
+   code can legitimately meet an old wire, and a blank price is the failure.
+3. `POST /catalog/tier-rates` accepts **either** scale. The field the caller
+   sent is the authority. The writer derives the other one from it, so the
+   two columns cannot drift apart.
+4. ⚠️ The **validator reads the derived numbers**. A caller on the new scale
+   leaves the old fields at zero. `all_rates_zero` would then refuse a real
+   price as "you priced nothing".
+
+#### The surface (added 2026-09-05)
+
+1. The price list and the tier board read `describeTierRate`, which says
+   **per 1M**. The retired model card keeps its own describer, because the two
+   cards sit on different scales during release one.
+2. The rupee line under each price says per 1M as well. A rupee figure at a
+   different scale from the credit figure beside it reads as a contradiction.
+3. 🔴 **`inrLabel` now groups digits.** At the old scale it drew `₹4`. At this
+   one it draws `₹2,04,000`, and an operator should not count digits to
+   compare two prices. The grouping is `en-IN`, because the product is priced
+   in rupees for an Indian market.
+
+#### 🔴 Restating a money string must never touch a float
+
+`Number(v) * 1000` is a money bug. Measured 2026-09-05 over the 20000 rates
+between 0.0001 and 2.0000: **4773 of them** come back with a float artefact.
+`0.0041` becomes `4.1000000000000005`, and that string then reaches a price
+column or a comparison and stops matching itself.
+
+`lib/scale.ts` moves the decimal point instead, which is exact at every scale.
+`scale.test.ts` asserts the property over the whole range, never five examples.
+
 ### 4.3 Per-tier margin — the numbers are OWNER-GATE
 
 The console holds one margin knob today, and `PriceFromCost.tsx` defaults it

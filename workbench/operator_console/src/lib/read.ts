@@ -35,6 +35,7 @@ import {
   type Deps,
 } from "./console";
 import { OWED, SAMPLE_CATALOG } from "./sample";
+import { timesThousand } from "./scale";
 import { type Sourced, resolve } from "./source";
 
 // ── The live wire shapes, named so the mapping below reads as a mapping ─────
@@ -103,6 +104,12 @@ type WireCatalog = {
     input_per_1k: string;
     output_per_1k: string;
     cached_input_per_1k: string;
+    // 024 release one — the per-MILLION scale. Optional, because this app and
+    // the Console deploy apart and a Console that predates the release sends
+    // only the per-thousand fields.
+    input_per_1m?: string;
+    output_per_1m?: string;
+    cached_input_per_1m?: string;
     credits_per_unit: string;
   }[];
   // 017 — the credit's own price. Absent from a Console still mid-rollout.
@@ -320,6 +327,14 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     inputPer1k: r.input_per_1k,
     outputPer1k: r.output_per_1k,
     cachedInputPer1k: r.cached_input_per_1k,
+    // 🔴 The scale of record (migration 024). ⚠️ The fallback is for a Console
+    // that has not shipped release one yet — this app and that service deploy
+    // apart, so new code can legitimately meet an old wire. Without it the
+    // board would draw a blank price where a real one exists.
+    inputPer1m: r.input_per_1m ?? timesThousand(r.input_per_1k),
+    outputPer1m: r.output_per_1m ?? timesThousand(r.output_per_1k),
+    cachedInputPer1m:
+      r.cached_input_per_1m ?? timesThousand(r.cached_input_per_1k),
     creditsPerUnit: r.credits_per_unit,
   }));
 

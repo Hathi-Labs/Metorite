@@ -1924,9 +1924,21 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "task": r[1],
                 "unit": r[2],
                 "pricing_mode": r[3],
+                # ⚠️ BOTH scales on the wire (migration 024, release one).
+                # The console and the Console deploy separately, so the wire
+                # is an expand/contract surface too: a frontend that has not
+                # shipped yet still reads `_per_1k` and still draws the right
+                # number. A later release removes them here as well.
                 "input_per_1k": str(r[4]),
                 "output_per_1k": str(r[5]),
                 "cached_input_per_1k": str(r[6]),
+                # 🔴 The scale of record. NULL only for a row written before
+                # 024 backfilled, so the fallback keeps the number honest.
+                "input_per_1m": str(r[9] if r[9] is not None else r[4] * 1000),
+                "output_per_1m": str(r[10] if r[10] is not None else r[5] * 1000),
+                "cached_input_per_1m": str(
+                    r[11] if r[11] is not None else r[6] * 1000
+                ),
                 "credits_per_unit": str(r[7]),
                 "effective_from": _iso(r[8]),
             }
@@ -1935,7 +1947,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     "SELECT DISTINCT ON (tier, task) tier, task, unit, "
                     "       pricing_mode, input_credits_per_1k, "
                     "       output_credits_per_1k, cached_input_credits_per_1k, "
-                    "       credits_per_unit, effective_from "
+                    "       credits_per_unit, effective_from, "
+                    # ⚠️ APPENDED. This projection reads by POSITION.
+                    "       input_credits_per_1m, output_credits_per_1m, "
+                    "       cached_input_credits_per_1m "
                     "FROM tier_rate_card WHERE effective_from <= now() "
                     "ORDER BY tier, task, effective_from DESC"
                 )
@@ -2274,13 +2289,59 @@ class TierRateRequest(BaseModel):
     task: str
     unit: str
     pricing_mode: str
+    #: ⚠️ **The per-thousand fields are the OLD scale and they still work**
+    #: (migration 024, release one of two). A caller that has not moved yet —
+    #: an unrestarted console, a script — keeps sending these and keeps
+    #: pricing correctly. A later release removes them.
     input_per_1k: Decimal = Decimal(0)
     output_per_1k: Decimal = Decimal(0)
     cached_input_per_1k: Decimal = Decimal(0)
+    #: 🔴 **The scale of record from 2026-09-04** (owner directive). Every
+    #: vendor quotes per million, so the card now speaks the same unit as the
+    #: cost it is derived from.
+    #:
+    #: ⚠️ `None` means "not sent", which is different from `0` meaning "free".
+    #: A default of `Decimal(0)` here would make every old caller's price
+    #: silently zero, because the writer prefers this field when it is set.
+    input_per_1m: Decimal | None = None
+    output_per_1m: Decimal | None = None
+    cached_input_per_1m: Decimal | None = None
     credits_per_unit: Decimal = Decimal(0)
     #: When the price takes effect. NULL means now. Future-dating a price
     #: change is the mechanism for "new rates from the 1st".
     effective_from: datetime | None = None
+
+
+#: 1000, named once. A bare literal appearing at several sites is how two
+#: copies of one conversion eventually disagree.
+_PER_1K = Decimal(1000)
+
+
+def _tier_rate_scales(req: TierRateRequest) -> dict[str, Decimal]:
+    """The three rates in per-MILLION terms, whichever scale the caller sent.
+
+    🔴 **The per-million field wins when the caller sent one.** A caller on the
+    new scale is stating the price it means, and multiplying its per-thousand
+    default of zero would price the tier at nothing.
+
+    ⚠️ **`is None`, never a falsy test.** Zero is a legitimate price — an
+    absorbed task is free on purpose (D19.2) — and `or` would read it as
+    "not sent" and silently reach for the other field.
+    """
+    return {
+        "input": (
+            req.input_per_1m if req.input_per_1m is not None
+            else req.input_per_1k * _PER_1K
+        ),
+        "output": (
+            req.output_per_1m if req.output_per_1m is not None
+            else req.output_per_1k * _PER_1K
+        ),
+        "cached": (
+            req.cached_input_per_1m if req.cached_input_per_1m is not None
+            else req.cached_input_per_1k * _PER_1K
+        ),
+    }
 
 
 @app.post("/catalog/tier-rates")
@@ -2315,6 +2376,11 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         if natural is None:
             raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
 
+        # ⚠️ Computed BEFORE validation, and the validator reads the derived
+        # numbers. A caller on the per-million scale leaves the per-thousand
+        # fields at their zero default, and `all_rates_zero` would then refuse
+        # a legitimately priced card as "you priced nothing".
+        per_1m = _tier_rate_scales(req)
         try:
             catalog.check_rate(
                 catalog.TierRateProposal(
@@ -2322,9 +2388,9 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
                     task=req.task,
                     unit=req.unit,
                     pricing_mode=req.pricing_mode,
-                    input_per_1k=req.input_per_1k,
-                    output_per_1k=req.output_per_1k,
-                    cached_input_per_1k=req.cached_input_per_1k,
+                    input_per_1k=per_1m["input"] / _PER_1K,
+                    output_per_1k=per_1m["output"] / _PER_1K,
+                    cached_input_per_1k=per_1m["cached"] / _PER_1K,
                     credits_per_unit=req.credits_per_unit,
                 ),
                 natural_unit=natural,
@@ -2332,26 +2398,41 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         except catalog.CatalogRefused as exc:
             raise _catalog_refusal(exc) from exc
 
+        # 🔴 **BOTH scales are written, and that is what makes the rollout
+        # safe** (migration 024, release one of two). Old code reading
+        # `_per_1k` finds its number. New code reading `_per_1m` finds its
+        # own. A later release drops the per-thousand columns and this
+        # doubling with them.
+        #
+        # ⚠️ Whichever scale the CALLER sent is the authority, and the other
+        # is derived from it. Deriving both from one field keeps them exactly
+        # 1000 apart by construction, so the two columns cannot drift into
+        # disagreeing about one price.
         try:
             conn.execute(
                 text(
                     "INSERT INTO tier_rate_card (tier, task, unit, "
                     "    input_credits_per_1k, output_credits_per_1k, "
                     "    cached_input_credits_per_1k, credits_per_unit, "
-                    "    pricing_mode, effective_from) "
+                    "    pricing_mode, effective_from, "
+                    "    input_credits_per_1m, output_credits_per_1m, "
+                    "    cached_input_credits_per_1m) "
                     "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
-                    "        COALESCE(:eff, now()))"
+                    "        COALESCE(:eff, now()), :i1m, :o1m, :c1m)"
                 ),
                 {
                     "tr": req.tier,
                     "t": req.task,
                     "u": req.unit,
-                    "i": req.input_per_1k,
-                    "o": req.output_per_1k,
-                    "c": req.cached_input_per_1k,
+                    "i": per_1m["input"] / _PER_1K,
+                    "o": per_1m["output"] / _PER_1K,
+                    "c": per_1m["cached"] / _PER_1K,
                     "cpu": req.credits_per_unit,
                     "pm": req.pricing_mode,
                     "eff": req.effective_from,
+                    "i1m": per_1m["input"],
+                    "o1m": per_1m["output"],
+                    "c1m": per_1m["cached"],
                 },
             )
         except IntegrityError:

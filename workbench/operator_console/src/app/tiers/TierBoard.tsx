@@ -34,7 +34,7 @@ import {
   tierNextStep,
   unusedModels,
 } from "@/lib/fallback";
-import { describeRate } from "@/lib/catalog";
+import { describeTierRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
 import { chipClass, pricingTone } from "@/lib/tone";
 
@@ -138,7 +138,7 @@ function Job({
           return (
             <span className={chipClass(pricingTone(r.mode))}
               title="What a customer pays. Set on the Pricing page.">
-              {r.mode === "priced" ? describeRate(r) : r.mode}
+              {r.mode === "priced" ? describeTierRate(r) : r.mode}
             </span>
           );
         })()}

@@ -555,3 +555,105 @@ def test_my_tiers_reads_the_same_slate_for_two_organizations(client, db, org):
     text_a = client.get("/my/tiers", headers=key_a).text
     assert org_id_a not in text_a
     assert slug_b not in text_a
+
+
+# ── Per MILLION tokens (credit_pricing.md §4.2, slice 3) ────────────────────
+#
+# 🔴 **Migration 024 is RELEASE ONE of two.** R6 forbids a rename in place on a
+# ladder that cannot roll back, so this release adds the per-million columns,
+# writes BOTH, and reads the per-million set. A later release drops the
+# per-thousand ones.
+#
+# The property that matters most is that NO PRICE MOVED. A customer's bill must
+# not change by a rupee because we restated a unit.
+#
+# ⚠️ **Every test here prices a THROWAWAY tier, never a slate one.** The first
+# draft priced `tier-fast` and `tier-balanced` directly and broke
+# `test_the_slate_ships_unpriced`, which is a fence worth keeping: the card
+# ships unpriced on purpose (H-42) and a test that quietly prices it would hide
+# the day somebody ships a real price by accident.
+
+
+def _scratch_tier(db) -> str:
+    """A tier slug that exists but is not on the shipped slate."""
+    tier = f"tier-pm-{uuid.uuid4().hex[:6]}"
+    with db.begin() as c:
+        c.execute(text("INSERT INTO tier_catalog (slug, label) "
+                       "VALUES (:t, :t) ON CONFLICT DO NOTHING"), {"t": tier})
+    return tier
+
+
+def _tier_row(client, tier: str, task: str) -> dict:
+    """The tier card in force, off the same wire the console reads."""
+    rows = client.get("/catalog/models", headers=OP).json()["tier_rates"]
+    match = [r for r in rows if r["tier"] == tier and r["task"] == task]
+    assert match, f"no tier_rates row for {tier}/{task}"
+    return match[0]
+
+
+class TestThePerMillionScale:
+    def test_the_two_scales_stay_EXACTLY_a_thousand_apart(self, client, db):
+        """⚠️ Same price, second unit — never a repricing.
+
+        If this drifts, somebody has re-derived a rate instead of restating
+        it, and every past invoice stops reconciling against its own card.
+        """
+        tier = _scratch_tier(db)
+        res = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": tier, "task": "chat", "unit": "tokens",
+            "pricing_mode": "priced", "input_per_1k": "5.5",
+            "output_per_1k": "16.5", "cached_input_per_1k": "0.175"})
+        assert res.status_code == 200, res.text
+        row = _tier_row(client, tier, "chat")
+        for k in ("input", "output", "cached_input"):
+            assert Decimal(row[f"{k}_per_1m"]) == Decimal(row[f"{k}_per_1k"]) * 1000
+
+    def test_a_caller_on_EITHER_scale_prices_the_tier_the_same(self, client, db):
+        """The wire is an expand surface too — both services deploy apart."""
+        old_t, new_t = _scratch_tier(db), _scratch_tier(db)
+        assert client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": old_t, "task": "chat", "unit": "tokens",
+            "pricing_mode": "priced", "input_per_1k": "5.5",
+            "output_per_1k": "16.5", "cached_input_per_1k": "0.175",
+        }).status_code == 200
+        assert client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": new_t, "task": "chat", "unit": "tokens",
+            "pricing_mode": "priced", "input_per_1m": "5500",
+            "output_per_1m": "16500", "cached_input_per_1m": "175",
+        }).status_code == 200
+
+        old_row, new_row = _tier_row(client, old_t, "chat"), _tier_row(client, new_t, "chat")
+        for k in ("input_per_1m", "output_per_1m", "cached_input_per_1m",
+                  "input_per_1k", "output_per_1k", "cached_input_per_1k"):
+            assert Decimal(old_row[k]) == Decimal(new_row[k]), (
+                f"{k} differs depending on which scale the caller used"
+            )
+
+    def test_a_per_million_caller_is_not_read_as_pricing_NOTHING(self, client, db):
+        """🔴 The `all_rates_zero` trap.
+
+        A caller on the new scale leaves the per-thousand fields at their zero
+        default. If the validator reads those raw it refuses a real price as
+        "you priced nothing", and the tier silently stays unpriced.
+        """
+        tier = _scratch_tier(db)
+        res = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": tier, "task": "chat", "unit": "tokens",
+            "pricing_mode": "priced", "input_per_1m": "34000",
+            "output_per_1m": "204000", "cached_input_per_1m": "3400"})
+        assert res.status_code == 200, res.text
+        row = _tier_row(client, tier, "chat")
+        assert Decimal(row["input_per_1m"]) == Decimal("34000")
+        assert Decimal(row["input_per_1k"]) == Decimal("34")
+
+    def test_a_zero_rate_survives_as_a_zero_and_is_not_read_as_absent(self, client, db):
+        """⚠️ Zero is a PRICE. `or` would read it as "not sent"."""
+        tier = _scratch_tier(db)
+        res = client.post("/catalog/tier-rates", headers=OP, json={
+            "tier": tier, "task": "chat", "unit": "tokens",
+            "pricing_mode": "absorbed", "input_per_1m": "0",
+            "output_per_1m": "0", "cached_input_per_1m": "0"})
+        assert res.status_code == 200, res.text
+        row = _tier_row(client, tier, "chat")
+        assert Decimal(row["input_per_1m"]) == 0
+        assert Decimal(row["input_per_1k"]) == 0

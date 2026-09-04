@@ -388,14 +388,49 @@ def resolve_rate_card(conn: Connection, model: str, task: str = "chat") -> RateC
         )
     return RateCard(
         model=model,
-        input_per_1k=row[0],
-        output_per_1k=row[1],
-        cached_input_per_1k=row[2],
+        # ⚠️ `model_rate_card` gains NO per-million columns and never will.
+        # D67.2 retired it as a billing input and the table stays only so a
+        # past invoice reads back (R6). So this converts on the way out, and
+        # the domain object carries ONE scale whichever card it came from —
+        # which is the property that lets `rate_call` price either without
+        # knowing which it holds.
+        input_per_1m=_per_1m(None, row[0]),
+        output_per_1m=_per_1m(None, row[1]),
+        cached_input_per_1m=_per_1m(None, row[2]),
         task=task,
         unit=row[3],
         credits_per_unit=row[4],
         pricing_mode=row[5],
     )
+
+
+#: The scale the per-thousand columns are multiplied by to reach per million.
+#: Named once, because a bare 1000 appearing twice is how the two copies
+#: eventually disagree.
+_PER_1K_TO_PER_1M = Decimal(1000)
+
+
+def _per_1m(per_1m: Decimal | None, per_1k: Decimal | None) -> Decimal:
+    """The per-million rate, from either column. Migration 024, release one.
+
+    🔴 **The per-million column wins whenever it holds a number**, and the
+    per-thousand column is the fallback for a row written before 024 applied,
+    or by a service that has not restarted yet.
+
+    ⚠️ **Zero is a NUMBER and must not fall through.** ``or`` would treat a
+    legitimate zero rate — an absorbed task, a free tier — as missing and
+    silently reach for the other column. The explicit ``is None`` is the whole
+    difference, and `test_customer_console_tier_pricing.py` pins it.
+
+    Both absent answers zero rather than raising: `pricing_mode` already
+    decides whether a card may be billed at all, and a second refusal here
+    would fire on the `absorbed` rows D19.2 puts there on purpose.
+    """
+    if per_1m is not None:
+        return per_1m
+    if per_1k is not None:
+        return per_1k * _PER_1K_TO_PER_1M
+    return Decimal(0)
 
 
 def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
@@ -416,7 +451,9 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
             """
             SELECT input_credits_per_1k, output_credits_per_1k,
                    cached_input_credits_per_1k,
-                   unit, credits_per_unit, pricing_mode
+                   unit, credits_per_unit, pricing_mode,
+                   input_credits_per_1m, output_credits_per_1m,
+                   cached_input_credits_per_1m
             FROM tier_rate_card
             WHERE tier = :tier AND task = :task AND effective_from <= now()
             ORDER BY effective_from DESC
@@ -432,9 +469,17 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
         )
     return TierRate(
         tier=tier,
-        input_per_1k=row[0],
-        output_per_1k=row[1],
-        cached_input_per_1k=row[2],
+        # 🔴 Prefer the per-MILLION column, fall back to the per-thousand one
+        # times 1000 (migration 024, release one of two).
+        #
+        # ⚠️ The fallback is not defensive padding. During a rollout, new code
+        # can meet the OLD schema — a row written before 024 applied, or by a
+        # service that has not restarted. Without the fallback that row rates
+        # as NULL and the call bills zero, silently, which is the exact shape
+        # of the bug slice 1 exists to stop.
+        input_per_1m=_per_1m(row[6], row[0]),
+        output_per_1m=_per_1m(row[7], row[1]),
+        cached_input_per_1m=_per_1m(row[8], row[2]),
         task=task,
         unit=row[3],
         credits_per_unit=row[4],

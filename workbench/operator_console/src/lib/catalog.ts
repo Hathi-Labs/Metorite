@@ -11,7 +11,7 @@
 // mapping happens once in `read.ts` now, so everything downstream speaks one
 // language.
 
-import type { ModelRate } from "./contract";
+import type { ModelRate, TierRate } from "./contract";
 
 export type { ModelRate };
 
@@ -32,7 +32,13 @@ export function singular(unit: string): string {
 export function describeRate(
   // Structural on purpose: the model-keyed card and the tier card (D67)
   // share every field this reads, and one describer keeps one phrasing.
-  row: Pick<ModelRate, "mode" | "unit" | "inputPer1k" | "outputPer1k" | "creditsPerUnit">,
+  // ⚠️ The TIER card reads per MILLION (024) and the retired MODEL card still
+  // reads per 1k, so the describer takes the numbers rather than the row and
+  // one phrasing survives both. `describeTierRate` below is the tier caller.
+  row: Pick<ModelRate, "mode" | "unit" | "creditsPerUnit"> & {
+    inputPer1k: string;
+    outputPer1k: string;
+  },
 ): string {
   if (row.mode === "absorbed") {
     // D19.2: deliberately free, and NOT the same as unpriced. Saying "free"
@@ -42,6 +48,28 @@ export function describeRate(
   if (row.mode !== "priced") return "not priced";
   if (row.unit === "tokens") {
     return `${row.inputPer1k} in / ${row.outputPer1k} out per 1k`;
+  }
+  return `${row.creditsPerUnit} per ${singular(row.unit)}`;
+}
+
+
+/** The TIER card's line, per MILLION tokens (migration 024, slice 3).
+ *
+ * 🔴 **Per million is the scale of record from 2026-09-04** (owner directive).
+ * Every vendor quotes per million, so the card a customer is billed against
+ * now speaks the same unit as the cost it was derived from — and an operator
+ * comparing the two carries no factor of 1000 in their head.
+ *
+ * ⚠️ Kept beside `describeRate` rather than folded into it, because the two
+ * cards are on different scales during release one and a single function
+ * taking a scale flag is how the wrong flag reaches the wrong card. */
+export function describeTierRate(
+  row: Pick<TierRate, "mode" | "unit" | "inputPer1m" | "outputPer1m" | "creditsPerUnit">,
+): string {
+  if (row.mode === "absorbed") return "absorbed into the seat price";
+  if (row.mode !== "priced") return "not priced";
+  if (row.unit === "tokens") {
+    return `${row.inputPer1m} in / ${row.outputPer1m} out per 1M`;
   }
   return `${row.creditsPerUnit} per ${singular(row.unit)}`;
 }

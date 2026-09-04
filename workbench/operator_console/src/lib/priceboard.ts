@@ -177,14 +177,28 @@ export function inrLabel(
   const n = Number(credits);
   if (a === null || !Number.isFinite(n)) return null;
   const inr = n * (a.inrPerCredit as number);
-  const rounded = inr >= 100 ? Math.round(inr).toString()
-    : Number(inr.toPrecision(3)).toString();
-  return `₹${rounded}`;
+  const rounded = inr >= 100 ? Math.round(inr)
+    : Number(inr.toPrecision(3));
+  // ⚠️ **Grouped, and that became necessary with migration 024.** At the
+  // per-1k scale these read "₹4" and "₹12" and grouping bought nothing. At
+  // per MILLION every figure gains three digits, and "₹204000" is a number an
+  // operator has to count digits on before they can compare it to "₹34000".
+  //
+  // 🔴 `en-IN` on purpose: the product is priced in rupees for an Indian
+  // market, so the local grouping (₹2,04,000) is the one the reader already
+  // uses. This is DISPLAY only — nothing parses this string back.
+  return `₹${rounded.toLocaleString("en-IN")}`;
 }
 
-/** A priced card's rupee line — "≈ ₹2 in / ₹6 out per 1k", or "≈ ₹36 per
- *  image" — or null when no credit price is saved, the card is not priced,
- *  or a number fails to parse. The list then shows credits alone. */
+/** A priced card's rupee line — "≈ ₹2000 in / ₹6000 out per 1M", or "≈ ₹36
+ *  per image" — or null when no credit price is saved, the card is not
+ *  priced, or a number fails to parse. The list then shows credits alone.
+ *
+ * ⚠️ **Per MILLION, matching the credits line directly above it** (migration
+ *  024). These two strings sit on one row of the price list, and a rupee
+ *  figure at a different scale from the credit figure beside it is worse than
+ *  no rupee figure at all — it reads as a contradiction the operator has to
+ *  resolve, and the resolution is a factor of 1000. */
 export function inrRateLine(
   rate: TierRate,
   price: CreditPrice | null,
@@ -192,10 +206,10 @@ export function inrRateLine(
 ): string | null {
   if (rate.mode !== "priced") return null;
   if (rate.unit.includes("token")) {
-    const inr = inrLabel(rate.inputPer1k, price);
-    const out = inrLabel(rate.outputPer1k, price);
+    const inr = inrLabel(rate.inputPer1m, price);
+    const out = inrLabel(rate.outputPer1m, price);
     if (inr === null || out === null) return null;
-    return `≈ ${inr} in / ${out} out per 1k tokens`;
+    return `≈ ${inr} in / ${out} out per 1M tokens`;
   }
   const per = inrLabel(rate.creditsPerUnit, price);
   if (per === null) return null;

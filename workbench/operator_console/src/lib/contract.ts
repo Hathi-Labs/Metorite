@@ -211,10 +211,21 @@ export type TierRate = {
   unit: string;
   /** `priced`, `absorbed` or `unpriced` — same G-4 vocabulary. */
   mode: string;
-  /** Money as the STRINGS the Console sent. */
+  /** Money as the STRINGS the Console sent.
+   *
+   * ⚠️ **The per-1k fields are the OLD scale** (migration 024, release one of
+   *  two). Both scales cross the wire while the Console and this app deploy
+   *  apart, and a later release removes them. Read `…Per1m` in new code. */
   inputPer1k: string;
   outputPer1k: string;
   cachedInputPer1k: string;
+  /** 🔴 The scale of record from 2026-09-04 (owner directive). Every vendor
+   *  quotes per million, so the card now speaks the same unit as the cost it
+   *  is derived from — and a reader comparing the two carries no factor of
+   *  1000 in their head. */
+  inputPer1m: string;
+  outputPer1m: string;
+  cachedInputPer1m: string;
   creditsPerUnit: string;
 };
 

@@ -41,11 +41,15 @@ from customer_console.credits import (
 #: Numbers alone no longer make a card billable, because a zero cannot carry
 #: three meanings — not-yet-priced, absorbed into the seat price (D19.2), and
 #: deliberately free are three different states with one number.
+#: ⚠️ Restated at the per-MILLION scale (migration 024). These are the SAME
+#: prices as before — 2.0 per 1k IS 2000 per 1M — so every expected credit
+#: figure in this file is unchanged. If one of them moves, the conversion is
+#: wrong, not the test.
 CARD = RateCard(
     model="deepseek/deepseek-v4-pro",
-    input_per_1k=Decimal("2.0"),
-    output_per_1k=Decimal("6.0"),
-    cached_input_per_1k=Decimal("0.5"),
+    input_per_1m=Decimal("2000"),
+    output_per_1m=Decimal("6000"),
+    cached_input_per_1m=Decimal("500"),
     pricing_mode="priced",
 )
 
@@ -53,8 +57,8 @@ CARD = RateCard(
 #: all before this slice, and `tier-stt` ships in the production seed.
 STT_CARD = RateCard(
     model="groq/whisper-large-v3-turbo",
-    input_per_1k=Decimal(0),
-    output_per_1k=Decimal(0),
+    input_per_1m=Decimal(0),
+    output_per_1m=Decimal(0),
     task="transcribe",
     unit="minutes",
     credits_per_unit=Decimal("0.4"),
@@ -571,9 +575,9 @@ class TestUsagePartition:
         assert usage.fresh_prompt_tokens == 2000
         card = RateCard(
             model="deepseek/deepseek-v4-pro",
-            input_per_1k=Decimal("34"),
-            cached_input_per_1k=Decimal("3.4"),
-            output_per_1k=Decimal("204"),
+            input_per_1m=Decimal("34000"),
+            cached_input_per_1m=Decimal("3400"),
+            output_per_1m=Decimal("204000"),
             pricing_mode="priced",
         )
         assert quantize_credits(rate_call(card, usage)) == Decimal("251.6000")

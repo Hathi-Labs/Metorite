@@ -160,7 +160,7 @@ class UnpricedModel(Exception):
 
 @dataclass(frozen=True)
 class RateCard:
-    """Credits per 1,000 tokens for one model, as of one ``effective_from``.
+    """Credits per MILLION tokens for one model, as of one ``effective_from``.
 
     Versioned by ``effective_from`` in the table so a re-price never rewrites
     history: rating happens once, at write time, and a past invoice is never
@@ -168,9 +168,9 @@ class RateCard:
     """
 
     model: str
-    input_per_1k: Decimal
-    output_per_1k: Decimal
-    cached_input_per_1k: Decimal = Decimal(0)
+    input_per_1m: Decimal
+    output_per_1m: Decimal
+    cached_input_per_1m: Decimal = Decimal(0)
     #: Which task this card prices. A model can serve several, at different
     #: rates and in different units (D60).
     task: str = "chat"
@@ -212,7 +212,7 @@ class RateCard:
 
 @dataclass(frozen=True)
 class TierRate:
-    """Credits per unit for one (TIER, task) — what a CUSTOMER pays. D67.
+    """Credits per MILLION tokens for one (TIER, task) — what a CUSTOMER pays.
 
     🔴 **The card the metering path bills against since 2026-08-30.** The
     tier is the product and the model is supply, so the customer's price is
@@ -225,9 +225,9 @@ class TierRate:
     """
 
     tier: str
-    input_per_1k: Decimal
-    output_per_1k: Decimal
-    cached_input_per_1k: Decimal = Decimal(0)
+    input_per_1m: Decimal
+    output_per_1m: Decimal
+    cached_input_per_1m: Decimal = Decimal(0)
     task: str = "chat"
     unit: str = "tokens"
     credits_per_unit: Decimal = Decimal(0)
@@ -322,11 +322,21 @@ def rate_call(
         )
 
     if card.unit == "tokens":
-        thousand = Decimal(1000)
+        # 🔴 A MILLION, not a thousand (migration 024, owner directive
+        # 2026-09-04). Every vendor quotes per million, so the card now speaks
+        # the same unit as the cost it is derived from — and a reader comparing
+        # the two no longer has to carry a factor of 1000 in their head.
+        #
+        # ⚠️ The divisor and the field name must move TOGETHER. A card holding
+        # per-million numbers divided by a thousand overcharges by 1000, which
+        # is a bill nobody could mistake for a rounding error and nobody could
+        # defend. `test_customer_console_credits.py` pins one exact figure for
+        # exactly this reason.
+        million = Decimal(1_000_000)
         return (
-            Decimal(usage.fresh_prompt_tokens) / thousand * card.input_per_1k
-            + Decimal(usage.cached_tokens) / thousand * card.cached_input_per_1k
-            + Decimal(usage.completion_tokens) / thousand * card.output_per_1k
+            Decimal(usage.fresh_prompt_tokens) / million * card.input_per_1m
+            + Decimal(usage.cached_tokens) / million * card.cached_input_per_1m
+            + Decimal(usage.completion_tokens) / million * card.output_per_1m
         )
 
     if quantity is None:
