@@ -490,13 +490,14 @@ def record_usage(
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
-                 task, quantity, unit, served_rank, byok_served, refusal_reason)
+                 task, quantity, unit, served_rank, byok_served, refusal_reason,
+                 metering_fault, cache_convention)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
                  :task, :quantity, :unit, :served_rank, :byok_served,
-                 :refusal_reason)
+                 :refusal_reason, :metering_fault, :cache_convention)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -532,6 +533,11 @@ def record_usage(
             # holds the vocabulary closed, so a fourth slug fails here rather
             # than becoming a second name for one wall.
             "refusal_reason": fields.get("refusal_reason"),
+            # ⚠️ NOT a refusal. The call SERVED and only our meter failed, so
+            # the five counting reads that exclude `refusal_reason` must keep
+            # counting this row (`credit_pricing.md` §3.2 clause 3).
+            "metering_fault": fields.get("metering_fault"),
+            "cache_convention": fields.get("cache_convention"),
         },
     ).first()
 

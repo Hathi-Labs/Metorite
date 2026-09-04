@@ -28,6 +28,7 @@ from customer_console.credits import (
     RunCeiling,
     TokenUsage,
     UnpricedModel,
+    UsagePartitionError,
     balance_of,
     decide_member_cap,
     decide_run_ceiling,
@@ -81,11 +82,21 @@ class TestRating:
         uncached = rate_call(CARD, TokenUsage(prompt_tokens=1000))
         assert cost < uncached
 
-    def test_cached_exceeding_prompt_never_goes_negative(self):
-        # Providers have shipped inconsistent counters before; a negative
-        # fresh-token count would CREDIT the customer for using more cache.
-        cost = rate_call(CARD, TokenUsage(prompt_tokens=100, cached_tokens=500))
-        assert cost >= 0
+    def test_cached_exceeding_prompt_REFUSES(self):
+        """⚠️ This REPLACES `test_cached_exceeding_prompt_never_goes_negative`.
+
+        That test asserted the CLAMP — `max(0, prompt - cached)` — and it was
+        right that a negative fresh count would credit the customer for using
+        more cache. It was wrong about the remedy. Clamping answers a plausible
+        number where the honest answer is "these counts cannot both be true",
+        and `credit_pricing.md` §3 measured what that cost: a sibling-convention
+        report undercharged by 27 % with no error and no log line.
+
+        Refusing keeps the old guarantee — nothing goes negative — and adds the
+        one the clamp threw away, which is that somebody finds out.
+        """
+        with pytest.raises(UsagePartitionError):
+            rate_call(CARD, TokenUsage(prompt_tokens=100, cached_tokens=500))
 
     def test_an_unpriced_model_raises_rather_than_billing_zero(self):
         # 002_seed_catalog.sql seeds every model at zero on purpose, so this
@@ -518,3 +529,60 @@ class TestNoCodePathUpdatesABalanceColumn:
             )
             == []
         )
+
+
+# ── The usage partition (credit_pricing.md §3, slice 1) ─────────────────────
+#
+# 🔴 **The fourth expensive failure mode, added 2026-09-04.** `cached_tokens`
+# is a SUBSET of `prompt_tokens` under the OpenAI-compatible convention and a
+# SIBLING of them under the Anthropic one. `fresh_prompt_tokens` subtracts,
+# which is right for the first and wrong for the second — and it used to clamp
+# the result at zero, so the wrong answer never reached anybody.
+
+class TestUsagePartition:
+    """A cached count larger than the prompt total must refuse, never clamp."""
+
+    def test_a_sibling_convention_report_refuses_instead_of_undercharging(self):
+        """The measured 27 % undercharge, now an exception.
+
+        These are the numbers from the specification: one real call of 8000
+        prompt tokens with a 6000-token cached prefix. Reported as a sibling
+        the prompt total reads 2000, and the old clamp billed 183.60 credits
+        where 251.60 was owed.
+        """
+        with pytest.raises(UsagePartitionError) as exc:
+            TokenUsage(prompt_tokens=2000, cached_tokens=6000,
+                       completion_tokens=800)
+        # The message must name BOTH counts. An alarm that says only "bad
+        # usage" cannot be triaged against the row it came from.
+        assert "6000" in str(exc.value)
+        assert "2000" in str(exc.value)
+
+    def test_the_subset_convention_still_prices_exactly_as_before(self):
+        """⚠️ The guard must not move a single legitimate number.
+
+        This is the same 8000/6000/800 call read correctly. It is the
+        regression fence on the whole change: if this figure moves, the assert
+        has started charging people differently rather than refusing the
+        impossible.
+        """
+        usage = TokenUsage(prompt_tokens=8000, cached_tokens=6000,
+                           completion_tokens=800)
+        assert usage.fresh_prompt_tokens == 2000
+        card = RateCard(
+            model="deepseek/deepseek-v4-pro",
+            input_per_1k=Decimal("34"),
+            cached_input_per_1k=Decimal("3.4"),
+            output_per_1k=Decimal("204"),
+            pricing_mode="priced",
+        )
+        assert quantize_credits(rate_call(card, usage)) == Decimal("251.6000")
+
+    def test_equal_counts_are_legal(self):
+        """A fully cached prompt is ordinary, not an error. Fresh is zero."""
+        usage = TokenUsage(prompt_tokens=6000, cached_tokens=6000)
+        assert usage.fresh_prompt_tokens == 0
+
+    def test_no_cached_count_is_legal(self):
+        """The common case: a provider that reports no cache at all."""
+        assert TokenUsage(prompt_tokens=8000).fresh_prompt_tokens == 8000

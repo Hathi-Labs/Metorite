@@ -90,15 +90,23 @@ convention and wrong for the other, and no code sees the difference.
 ### 3.2 Done when
 
 1. `TokenUsage` raises `UsagePartitionError` when `cached_tokens` is greater
-   than `prompt_tokens`. The message names both counts and the model.
+   than `prompt_tokens`. The message names both counts.
 2. The Router catches that error, meters the call at zero, and writes
-   `refusal_reason = 'usage_partition'`. It never fails the completion.
-3. Migration adds `'usage_partition'` to the `usage_event_refusal_reason_known`
-   check constraint. Take the next free number at build time (R1).
-4. `usage_from_response` records which convention it read, in a new
-   `usage_event.cache_convention` column. Values are `subset` and `sibling`.
+   `metering_fault = 'usage_partition'`. It never fails the completion.
+3. ⚠️ **The fault column is NOT `refusal_reason`, and the difference is
+   load-bearing.** Migration 020 gives a slug to a **customer wall**, where the
+   call did not serve. Five reads in `store.py` then exclude such a row from
+   every call count. A partition failure serves the customer a completion and
+   fails only our meter. Reusing `refusal_reason` would hide a served call from
+   five counts and report a wall that never happened.
+4. Migration adds `usage_event.metering_fault`, nullable, with a closed
+   vocabulary. It also adds `usage_event.cache_convention`, which records
+   whether we read the count as `subset` or as `sibling`. Take the next free
+   number at build time (R1).
 5. A structlog line `router.usage_partition_failed` carries the organization
    and the request id. The alarm then joins to the row it belongs to (H-85).
+6. Every count read keeps ignoring `metering_fault`. A faulted call served, so
+   it counts as a call. Only its credits are zero.
 
 ### 3.3 The fence (R7)
 

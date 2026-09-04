@@ -120,6 +120,30 @@ def quantize_credits(credits: Decimal) -> Decimal:
     return credits.quantize(CREDIT_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+class UsagePartitionError(Exception):
+    """Raised when cached tokens cannot be a subset of the prompt total.
+
+    🔴 **The billing code treats ``cached_tokens`` as a SUBSET of
+    ``prompt_tokens``, and one of the two vendor conventions disagrees.**
+    OpenAI-compatible providers report the cached count *inside*
+    ``prompt_tokens``. Anthropic-style providers report it *beside* them. The
+    subtraction in :attr:`TokenUsage.fresh_prompt_tokens` is right for the
+    first convention and wrong for the second.
+
+    ⚠️ **This used to clamp at zero, and that was a silent undercharge.**
+    Measured 2026-09-04 against `tier-balanced`: the same real call billed
+    251.60 credits read as a subset and 183.60 credits read as a sibling — 27 %
+    less, with no error and no log line. `prompt=100 cached=99999` was accepted
+    and billed 340 credits.
+
+    We refuse rather than guess. Re-normalising on a hunch bills the customer
+    wrong in the other direction, and a wrong bill nobody can explain is worse
+    than a call we admit we could not meter. ``usage_event.cache_convention``
+    records which field the count came from, so the fleet can be MEASURED
+    before anybody decides to re-normalise.
+    """
+
+
 class UnpricedModel(Exception):
     """Raised when a model has no usable rate-card entry.
 
@@ -238,10 +262,30 @@ class TokenUsage:
     #: precisely the thing prompt caching was sold to them as saving.
     cached_tokens: int = 0
 
+    def __post_init__(self) -> None:
+        """Assert the partition. See :class:`UsagePartitionError` for why.
+
+        ⚠️ **On the dataclass, not in ``rate_call``.** Every path that meters —
+        the completion route, the stream relay, the per-unit tasks — builds one
+        of these, so the check placed here cannot be forgotten by a caller that
+        arrives later. A check in the pricing function would miss the BYOK path,
+        which zero-rates the bill and still records the counters.
+        """
+        if self.cached_tokens > self.prompt_tokens:
+            raise UsagePartitionError(
+                f"cached_tokens ({self.cached_tokens}) exceeds prompt_tokens "
+                f"({self.prompt_tokens}); cached must be a subset of the "
+                "prompt total, so this call cannot be metered"
+            )
+
     @property
     def fresh_prompt_tokens(self) -> int:
-        """Prompt tokens that were NOT served from cache. Clamped at zero."""
-        return max(0, self.prompt_tokens - self.cached_tokens)
+        """Prompt tokens that were NOT served from cache.
+
+        ⚠️ **No clamp.** ``__post_init__`` has already refused the case a clamp
+        would have hidden, so a negative here is impossible by construction.
+        """
+        return self.prompt_tokens - self.cached_tokens
 
 
 def rate_call(

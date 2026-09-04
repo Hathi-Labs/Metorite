@@ -113,6 +113,7 @@ from customer_console.credits import (
     RunCeiling,
     TokenUsage,
     UnpricedModel,
+    UsagePartitionError,
     balance_of,
     decide_run_ceiling,
     decide_spend,
@@ -4880,21 +4881,69 @@ def _record_completion(
     charge them for a second call nobody made. Every other caller passes
     ``None``, the two names agree, and nothing changes.
     """
+    # 🔴 The partition, checked BEFORE anything prices it (`credit_pricing.md`
+    # §3). `cached_tokens` must be a subset of `prompt_tokens`, and one of the
+    # two vendor conventions reports it as a sibling instead. This used to
+    # clamp at zero, which undercharged by 27 % in silence.
+    #
+    # ⚠️ Checked here rather than inside `_rate_completion`, whose contract is
+    # "never raises" and whose one caller is this function. Validating first
+    # keeps that contract true instead of merely documented.
+    metering_fault: str | None = None
+    try:
+        TokenUsage(
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cached_tokens=usage.cached_tokens,
+        )
+    except UsagePartitionError as exc:
+        metering_fault = "usage_partition"
+        # ⚠️ Carries the organization AND the request id, so this alarm joins
+        # to the row it belongs to. H-85 exists because a sibling alarm named
+        # neither and could not be reconciled to anything.
+        _log.error(
+            "router.usage_partition_failed",
+            extra={
+                "router_org": org_id,
+                "router_client_ref": client_ref,
+                "router_model": resolved.model,
+                "router_tier": resolved.tier,
+                "router_prompt_tokens": usage.prompt_tokens,
+                "router_cached_tokens": usage.cached_tokens,
+                "router_cache_convention": usage.cache_convention,
+                "router_error": str(exc),
+            },
+        )
+
     try:
         with get_engine().begin() as conn:
             # CP-6: the draw. `record_usage` negates this into `credit_ledger`
             # in the SAME transaction as the usage row, so a retried write that
             # inserts nothing also charges nothing. Zero while the card is
             # unpriced, which is the shipped state until the owner prices it.
-            billed, unit = _rate_completion(
-                conn,
-                tier=resolved.tier,
-                model=resolved.model,
-                usage=usage,
-                task=resolved.task,
-                quantity=quantity,
-            )
-            if byok:
+            #
+            # A faulted call bills ZERO and still writes its row. The customer
+            # already has their completion, so the row is the evidence — and it
+            # still COUNTS as a served call, which is why the fault is not a
+            # `refusal_reason` (migration 022).
+            if metering_fault:
+                billed, unit = Decimal(0), None
+            else:
+                billed, unit = _rate_completion(
+                    conn,
+                    tier=resolved.tier,
+                    model=resolved.model,
+                    usage=usage,
+                    task=resolved.task,
+                    quantity=quantity,
+                )
+            if metering_fault:
+                # ⚠️ NULL, not zero. A broken partition breaks OUR cost sum by
+                # the same arithmetic it breaks the charge with, and zero would
+                # read as "this call cost us nothing" in every margin query.
+                # NULL reads as "unknown", which is what it is.
+                cost = None
+            elif byok:
                 if billed:
                     # Loud, because this is the difference between §3.4 and a
                     # mischarge: the card HAS a price and this call is not
@@ -4956,6 +5005,11 @@ def _record_completion(
                 provider_cost_usd=cost,
                 served_rank=getattr(resolved, "rank", 1),
                 byok_served=byok,
+                # ⚠️ NOT `refusal_reason`. The call SERVED — the customer holds
+                # their completion — and only the meter failed. Migration 022's
+                # comment carries the full reason.
+                metering_fault=metering_fault,
+                cache_convention=usage.cache_convention,
             )
     except Exception:
         _log.exception("router.metering_failed")

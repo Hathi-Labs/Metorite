@@ -627,6 +627,18 @@ class ExtractedUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    #: WHICH vendor convention reported ``cached_tokens``, or None when no
+    #: cached count arrived. ``subset`` means the count sits INSIDE
+    #: ``prompt_tokens`` (the OpenAI-compatible shape, read from
+    #: ``prompt_tokens_details.cached_tokens``). ``sibling`` means it sits
+    #: BESIDE them (the Anthropic shape, read from ``cache_read_input_tokens``).
+    #:
+    #: 🔴 **Recorded rather than acted on, on purpose.** The billing code
+    #: subtracts, which is right for ``subset`` and wrong for ``sibling``.
+    #: Re-normalising on a guess would bill wrong in the other direction, so
+    #: `credit_pricing.md` §3 refuses the impossible case and stores this
+    #: instead — the fleet gets MEASURED before anybody changes the arithmetic.
+    cache_convention: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -906,17 +918,26 @@ def usage_from_response(response: Any) -> ExtractedUsage:
         prompt = _get(usage, "prompt_tokens") or 0
         completion = _get(usage, "completion_tokens") or 0
 
+        # ⚠️ WHICH field answered is the convention signal, so record it here
+        # and nowhere else — this is the only place that knows.
+        convention: str | None = None
         cached = _get(usage, "cache_read_input_tokens")
-        if not isinstance(cached, int):
+        if isinstance(cached, int):
+            convention = "sibling"
+        else:
             details = _get(usage, "prompt_tokens_details")
             cached = _get(details, "cached_tokens")
+            if isinstance(cached, int):
+                convention = "subset"
         if not isinstance(cached, int):
             cached = 0
+            convention = None
 
         return ExtractedUsage(
             prompt_tokens=int(prompt) if isinstance(prompt, int) else 0,
             completion_tokens=int(completion) if isinstance(completion, int) else 0,
             cached_tokens=cached,
+            cache_convention=convention,
         )
     except Exception:
         return ExtractedUsage()
