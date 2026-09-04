@@ -22,6 +22,7 @@ tested without a provider account. That is not a testing convenience bolted on:
 without it the only way to test the Router is to spend money at DeepSeek, which
 means in practice nobody tests it.
 """
+
 from __future__ import annotations
 
 import base64
@@ -113,9 +114,7 @@ class ResolvedTier:
     rank: int = 1
 
 
-def resolve_tier(
-    conn: Connection, tier: str, task: str = "chat"
-) -> ResolvedTier:
+def resolve_tier(conn: Connection, tier: str, task: str = "chat") -> ResolvedTier:
     """Resolve a tier alias to the model currently bound to it.
 
     Picks the newest binding whose ``effective_from`` has passed, so a future
@@ -152,9 +151,7 @@ def resolve_tier(
     return ResolvedTier(tier=tier, model=row[0], task=task)
 
 
-def resolve_chain(
-    conn: Connection, tier: str, task: str = "chat"
-) -> list[ResolvedTier]:
+def resolve_chain(conn: Connection, tier: str, task: str = "chat") -> list[ResolvedTier]:
     """Every model bound to this ``(task, tier)``, in the order to try them.
 
     🔴 **This is what a fallback IS.** The Router walks this list and stops at
@@ -190,10 +187,7 @@ def resolve_chain(
     ).all()
     if not rows:
         raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
-    return [
-        ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1]))
-        for r in rows
-    ]
+    return [ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1])) for r in rows]
 
 
 # ── D-AI-2: an image follows the chat model when it can (§3.2) ──────────────
@@ -233,9 +227,7 @@ def reads_images(conn: Connection, model: str) -> bool:
     return bool(row and row[0])
 
 
-def _models_that_read_images(
-    conn: Connection, models: Sequence[str]
-) -> set[str]:
+def _models_that_read_images(conn: Connection, models: Sequence[str]) -> set[str]:
     """The subset of *models* that reads an image, in ONE query.
 
     🔴 **The chain resolves on the serving path, and inside the serving
@@ -263,18 +255,13 @@ def _models_that_read_images(
     if not wanted:
         return set()
     rows = conn.execute(
-        text(
-            "SELECT model FROM model_profile "
-            "WHERE model = ANY(:models) AND reads_images"
-        ),
+        text("SELECT model FROM model_profile WHERE model = ANY(:models) AND reads_images"),
         {"models": wanted},
     ).all()
     return {r[0] for r in rows}
 
 
-def resolve_vision_chain(
-    conn: Connection, tier: str
-) -> list[ResolvedTier]:
+def resolve_vision_chain(conn: Connection, tier: str) -> list[ResolvedTier]:
     """Which chain serves a ``task: vision`` call on *tier* (D-AI-2, §3.2).
 
     🔴 **Nothing here reads the payload.** The CALLER declares the task (G-3,
@@ -355,16 +342,14 @@ def resolve_vision_chain(
         return resolve_chain(conn, VISION_TIER, VISION_TASK)
     except TierUnknown as unbound:
         raise VisionUnbound(
-            f"no vision model is bound; the chat model for tier {tier} "
-            "does not read images"
+            f"no vision model is bound; the chat model for tier {tier} does not read images"
         ) from unbound
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────
 
-def resolve_rate_card(
-    conn: Connection, model: str, task: str = "chat"
-) -> RateCard:
+
+def resolve_rate_card(conn: Connection, model: str, task: str = "chat") -> RateCard:
     """The rate card in force for one model, as of now.
 
     Deliberately the same shape as :func:`resolve_tier`: newest row whose
@@ -457,7 +442,6 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
     )
 
 
-
 def resolve_invocation(conn: Connection, model: str, task: str) -> str:
     """Which provider verb serves this ``(model, task)``. D60 step two.
 
@@ -483,13 +467,12 @@ def resolve_invocation(conn: Connection, model: str, task: str) -> str:
         {"model": model, "task": task},
     ).first()
     if row is None:
-        raise TierUnknown(
-            f"{model!r} declares no capability for task {task!r}"
-        )
+        raise TierUnknown(f"{model!r} declares no capability for task {task!r}")
     return row[0]
 
 
 # ── Provider credentials ────────────────────────────────────────────────────
+
 
 def _fernet():
     from cryptography.fernet import Fernet
@@ -532,8 +515,9 @@ class Credential(NamedTuple):
     byok: bool
 
 
-def provider_credential(conn: Connection, *, provider: str,
-                        org_id: str | None = None) -> Credential | None:
+def provider_credential(
+    conn: Connection, *, provider: str, org_id: str | None = None
+) -> Credential | None:
     """The live credential for a provider, with whose account it is.
 
     Prefers the organization's OWN credential when it has one — that is BYOK
@@ -575,12 +559,14 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: clause 9). Each one has a door now, so the Router may call it. The set
 #: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
 #: serving route, and an operator may still declare it.
-SERVING_INVOCATIONS = frozenset({
-    "acompletion",
-    "atranscription",
-    "aimage_generation",
-    "aspeech",
-})
+SERVING_INVOCATIONS = frozenset(
+    {
+        "acompletion",
+        "atranscription",
+        "aimage_generation",
+        "aspeech",
+    }
+)
 
 #: The verb a caller that names none gets. Every chat call made this exact
 #: request before ``invocation`` existed, so the default keeps that path byte
@@ -634,6 +620,7 @@ async def call_provider(**kwargs: Any) -> Any:
 
 
 # ── Usage extraction ────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class ExtractedUsage:
@@ -724,9 +711,7 @@ def vendor_cost_per_unit_usd(
         return None
     if quantity <= 0:
         return None
-    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(
-        Decimal("0.00000001")
-    )
+    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(Decimal("0.00000001"))
 
 
 #: What the meter asks the provider to answer with on a transcription.
@@ -755,6 +740,7 @@ def duration_seconds(response: Any) -> Decimal | None:
     object FIRST matters, because it is the reported one rather than the
     inferred one.
     """
+
     def _get(obj: Any, key: str) -> Any:
         if obj is None:
             return None
@@ -858,6 +844,7 @@ def speech_audio(response: Any) -> tuple[bytes, str]:
     cannot read reaches the customer as an empty one, which their own player
     reports far better than a 500 does.
     """
+
     def _media_type(source: Any) -> str | None:
         headers = getattr(getattr(source, "response", None), "headers", None)
         if headers is None:
@@ -900,6 +887,7 @@ def usage_from_response(response: Any) -> ExtractedUsage:
     as a subset of ``prompt_tokens`` and must not have to know which provider it
     came from.
     """
+
     def _get(obj: Any, key: str) -> Any:
         if obj is None:
             return None
@@ -960,8 +948,7 @@ def frame_of(chunk: Any) -> bytes:
     if isinstance(chunk, (bytes, bytearray)):
         return bytes(chunk)
     dump = getattr(chunk, "model_dump_json", None)
-    body = (dump(exclude_none=True) if callable(dump)
-            else json.dumps(chunk, default=str))
+    body = dump(exclude_none=True) if callable(dump) else json.dumps(chunk, default=str)
     return b"data: " + body.encode("utf-8") + b"\n\n"
 
 
@@ -975,7 +962,7 @@ def usage_from_frame(frame: bytes) -> ExtractedUsage:
         line = frame.strip()
         if not line.startswith(_DATA_PREFIX):
             return ExtractedUsage()
-        body = line[len(_DATA_PREFIX):].strip()
+        body = line[len(_DATA_PREFIX) :].strip()
         if body == b"[DONE]" or not body:
             return ExtractedUsage()
         return usage_from_response(json.loads(body))
@@ -1094,8 +1081,7 @@ class UpstreamFailed(Exception):
 async def walk_chain(
     attempts: Sequence[ResolvedTier],
     attempt: Callable[[ResolvedTier], Awaitable[Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Try each step in order and return the first answer, and who gave it.
 
@@ -1129,8 +1115,7 @@ async def walk_chain(
             if status in CREDENTIAL_STATUSES:
                 dead_vendors.add(vendor)
             remaining = [
-                s for s in attempts[position + 1:]
-                if s.model.split("/", 1)[0] not in dead_vendors
+                s for s in attempts[position + 1 :] if s.model.split("/", 1)[0] not in dead_vendors
             ]
             if not is_retryable(status) or not remaining:
                 raise UpstreamFailed(status) from exc
@@ -1144,8 +1129,7 @@ async def walk_chain(
 async def call_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Walk the chain for a BUFFERED completion.
 
@@ -1157,6 +1141,7 @@ async def call_chain(
     building a provider call needs the request, the credential and the clamp,
     and none of that is this function's business.
     """
+
     async def _attempt(step: ResolvedTier) -> Any:
         return await call_provider(**kwargs_for(step))
 
@@ -1191,8 +1176,7 @@ async def aclose_quietly(source: Any) -> None:
 async def open_stream_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Open a provider STREAM, pull its first chunk, and walk while doing it.
 
@@ -1214,6 +1198,7 @@ async def open_stream_chain(
     provider that completed with no content has served the request, and paying
     a second vendor to repeat it would bill twice for one empty answer.
     """
+
     async def _attempt(step: ResolvedTier) -> tuple[list[Any], Any]:
         source = await call_provider(**kwargs_for(step))
         iterator = aiter(source)

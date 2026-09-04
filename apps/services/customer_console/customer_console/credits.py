@@ -14,6 +14,7 @@ deterministic bookkeeping — count tokens, multiply by a rate, decrement a
 balance, write a row. The only judgement call is the rate card, which is a
 business decision made once by a human (§3.5).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -85,14 +86,16 @@ LEDGER_REASON_MANUAL = "manual"
 #: pairwise distinguishable is scoped to when packs land: the subscription path
 #: writes zero ledger rows today, and a test over an empty table passes for the
 #: wrong reason — the disarmed-gate shape CP-3 already cost us once.)
-LEDGER_REASONS: frozenset[str] = frozenset({
-    LEDGER_REASON_USAGE,
-    LEDGER_REASON_PURCHASE,
-    LEDGER_REASON_DISCOUNT_REDEMPTION,
-    LEDGER_REASON_ADJUSTMENT,
-    LEDGER_REASON_GRANT,
-    LEDGER_REASON_MANUAL,
-})
+LEDGER_REASONS: frozenset[str] = frozenset(
+    {
+        LEDGER_REASON_USAGE,
+        LEDGER_REASON_PURCHASE,
+        LEDGER_REASON_DISCOUNT_REDEMPTION,
+        LEDGER_REASON_ADJUSTMENT,
+        LEDGER_REASON_GRANT,
+        LEDGER_REASON_MANUAL,
+    }
+)
 
 #: The smallest amount the ledger can represent: ``credit_ledger.delta`` and
 #: ``usage_event.billed_credits`` are both ``NUMERIC(14, 4)``.
@@ -271,8 +274,7 @@ def rate_call(
 
     if not card.is_priced:
         raise UnpricedModel(
-            f"{card.subject}/{card.task} has no rate-card price; "
-            "refusing to bill it as free"
+            f"{card.subject}/{card.task} has no rate-card price; refusing to bill it as free"
         )
 
     if card.unit == "tokens":
@@ -289,8 +291,7 @@ def rate_call(
         # metering caller downgrades this to "bill zero, loudly" — visibly,
         # where somebody can see it.
         raise UnpricedModel(
-            f"{card.subject}/{card.task} is priced per {card.unit} "
-            "and no quantity was measured"
+            f"{card.subject}/{card.task} is priced per {card.unit} and no quantity was measured"
         )
 
     return Decimal(quantity) * card.credits_per_unit
@@ -387,11 +388,7 @@ def decide_spend(
     of AI credits will not top up, they will churn.
     """
     policy = policy or OverdraftPolicy()
-    grace = (
-        policy.grace_credits
-        if (not is_trial or policy.grace_for_trial)
-        else Decimal(0)
-    )
+    grace = policy.grace_credits if (not is_trial or policy.grace_for_trial) else Decimal(0)
     projected = balance - cost
 
     if projected < -grace:

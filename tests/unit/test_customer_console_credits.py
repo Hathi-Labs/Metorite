@@ -13,6 +13,7 @@ Three failure modes drive these tests, all of them expensive in different ways:
   3. **A hard stop at exactly zero** — lands mid-workflow and costs more in
      support than the overdraft ever will.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,6 @@ import re
 from decimal import Decimal
 
 import pytest
-
 from customer_console.credits import (
     CREDIT_QUANTUM,
     OverdraftPolicy,
@@ -73,9 +73,7 @@ class TestRating:
         #
         # 1000 prompt of which 800 cached →
         #   200 fresh @2/1k = 0.4  +  800 cached @0.5/1k = 0.4  +  0 output
-        cost = rate_call(
-            CARD, TokenUsage(prompt_tokens=1000, cached_tokens=800)
-        )
+        cost = rate_call(CARD, TokenUsage(prompt_tokens=1000, cached_tokens=800))
         assert cost == Decimal("0.8")
 
         # And it must be strictly cheaper than the same call with no cache hit,
@@ -112,9 +110,7 @@ class TestRating:
         with pytest.raises(UnpricedModel):
             rate_call(drafted, TokenUsage(prompt_tokens=1000))
 
-        assert RateCard(
-            "m", Decimal(0), Decimal("0.1"), pricing_mode="priced"
-        ).is_priced is True
+        assert RateCard("m", Decimal(0), Decimal("0.1"), pricing_mode="priced").is_priced is True
 
     def test_absorbed_is_free_and_is_NOT_an_error(self):
         """D19.2 absorbs embeddings into the seat price. That is not a mistake.
@@ -123,9 +119,7 @@ class TestRating:
         from a misconfigured one, and somebody would "fix" it by inventing a
         price the customer never agreed to.
         """
-        absorbed = RateCard(
-            "m", Decimal(0), Decimal(0), task="embed", pricing_mode="absorbed"
-        )
+        absorbed = RateCard("m", Decimal(0), Decimal(0), task="embed", pricing_mode="absorbed")
         assert absorbed.is_priced is False
         assert absorbed.is_absorbed is True
         assert rate_call(absorbed, TokenUsage(prompt_tokens=1_000_000)) == 0
@@ -158,15 +152,14 @@ class TestUnitsOtherThanTokens:
         # Its quantity IS the usage counters. A stray quantity must not
         # double-count or override them.
         with_q = rate_call(
-            CARD, TokenUsage(prompt_tokens=1000, completion_tokens=500),
+            CARD,
+            TokenUsage(prompt_tokens=1000, completion_tokens=500),
             quantity=Decimal("999"),
         )
         assert with_q == Decimal("5.0")
 
     def test_the_unit_price_is_decimal_not_float(self):
-        assert isinstance(
-            rate_call(STT_CARD, TokenUsage(), quantity=Decimal(1)), Decimal
-        )
+        assert isinstance(rate_call(STT_CARD, TokenUsage(), quantity=Decimal(1)), Decimal)
 
     def test_money_is_decimal_not_float(self):
         # Small rates x large token counts, summed thousands of times a month,
@@ -222,9 +215,9 @@ class TestTheSpendGate:
 
     def test_trial_grace_is_available_when_deliberately_enabled(self):
         policy = OverdraftPolicy(grace_credits=Decimal("50"), grace_for_trial=True)
-        assert decide_spend(
-            Decimal("0"), Decimal("10"), policy=policy, is_trial=True
-        ).allowed is True
+        assert (
+            decide_spend(Decimal("0"), Decimal("10"), policy=policy, is_trial=True).allowed is True
+        )
 
 
 class TestMemberCaps:
@@ -238,9 +231,7 @@ class TestMemberCaps:
         assert decide_member_cap(Decimal("100"), Decimal("100")) == ("degrade", True)
 
     def test_block_when_explicitly_configured(self):
-        action, warn = decide_member_cap(
-            Decimal("100"), Decimal("100"), on_exhaustion="block"
-        )
+        action, warn = decide_member_cap(Decimal("100"), Decimal("100"), on_exhaustion="block")
         assert (action, warn) == ("block", True)
 
     def test_warns_at_80_percent_without_restricting(self):
@@ -254,6 +245,7 @@ class TestMemberCaps:
 
 
 # ── CP-6: the overdraft at both edges of the SHIPPED value ──────────────────
+
 
 class TestTheOverdraftIsANamedConfigValue:
     """Acceptance: *"the ~10 percent overdraft is a named config value with a
@@ -273,9 +265,7 @@ class TestTheOverdraftIsANamedConfigValue:
     def test_the_last_call_INSIDE_the_grace_floor_is_allowed(self):
         # Balance -99.9999 spending one quantum lands exactly ON -100, which is
         # inside the floor: the comparison is `projected < -grace`.
-        assert decide_spend(
-            Decimal("-99.9999"), CREDIT_QUANTUM
-        ).allowed is True
+        assert decide_spend(Decimal("-99.9999"), CREDIT_QUANTUM).allowed is True
 
     def test_the_first_call_PAST_the_grace_floor_is_refused_402(self):
         d = decide_spend(Decimal("-100"), CREDIT_QUANTUM)
@@ -304,10 +294,8 @@ class TestTheOverdraftIsANamedConfigValue:
 
     def test_a_trial_has_no_grace_at_either_edge(self):
         # Both edges again, for the state every new organization starts in.
-        assert decide_spend(
-            Decimal("0"), CREDIT_QUANTUM, is_trial=True).allowed is False
-        assert decide_spend(
-            CREDIT_QUANTUM, CREDIT_QUANTUM, is_trial=True).allowed is True
+        assert decide_spend(Decimal("0"), CREDIT_QUANTUM, is_trial=True).allowed is False
+        assert decide_spend(CREDIT_QUANTUM, CREDIT_QUANTUM, is_trial=True).allowed is True
 
 
 class TestTheCreditQuantum:
@@ -325,6 +313,7 @@ class TestTheCreditQuantum:
 
 
 # ── CP-6: the per-run circuit breaker ───────────────────────────────────────
+
 
 class TestThePerRunCircuitBreaker:
     """§4.4: *"A per-run spend ceiling is not optional."*"""
@@ -367,15 +356,28 @@ class TestThePerRunCircuitBreaker:
 # ── R7: the structural fence (CP-6 acceptance clause 1) ─────────────────────
 
 #: ``<repo>/tests/unit/test_customer_console_credits.py`` -> ``<repo>``.
-_REPO_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_SKIP_DIRS = frozenset({
-    ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".codegraph", "dist",
-    "build", "site-packages", "htmlcov", ".turbo", ".uv",
-})
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".codegraph",
+        "dist",
+        "build",
+        "site-packages",
+        "htmlcov",
+        ".turbo",
+        ".uv",
+    }
+)
 
 _SCANNED = (".py", ".sql", ".ts", ".tsx")
 
@@ -387,9 +389,7 @@ _UPDATE_BODY = re.compile(r"\bUPDATE\b([^;]{0,800})", re.IGNORECASE | re.DOTALL)
 #: ``infra/postgres/42_email_model_roles.sql`` and is not a balance write, but a
 #: naive search for "balance" near "UPDATE" flags it. That near-miss is why
 #: this matches the identifier on the left of the ``=``.
-_SET_TARGET = re.compile(
-    r"(?:\bSET\b|,)\s*\"?([A-Za-z_][A-Za-z0-9_.]*)\"?\s*=", re.IGNORECASE
-)
+_SET_TARGET = re.compile(r"(?:\bSET\b|,)\s*\"?([A-Za-z_][A-Za-z0-9_.]*)\"?\s*=", re.IGNORECASE)
 
 #: A column DECLARATION whose name contains "balance" — the other half of the
 #: same doctrine. §3.4's SQL sketch lists ``balance_after`` on
@@ -483,13 +483,13 @@ class TestNoCodePathUpdatesABalanceColumn:
         Without this, "no offenders" is indistinguishable from "the regex
         stopped matching", which is how a guard goes quietly dead.
         """
-        assert balance_updates_in(
-            "UPDATE credit_ledger SET balance_after = 5 WHERE id = 1"
-        ) == ["balance_after"]
+        assert balance_updates_in("UPDATE credit_ledger SET balance_after = 5 WHERE id = 1") == [
+            "balance_after"
+        ]
         # Not the first assignment in the SET list.
-        assert balance_updates_in(
-            "UPDATE organization SET name = 'x', credit_balance = 0"
-        ) == ["credit_balance"]
+        assert balance_updates_in("UPDATE organization SET name = 'x', credit_balance = 0") == [
+            "credit_balance"
+        ]
         # Multi-line, as real SQL in this repo is written.
         assert balance_updates_in(
             'conn.execute(text("""\n'
@@ -501,18 +501,20 @@ class TestNoCodePathUpdatesABalanceColumn:
     def test_the_fence_does_not_fire_on_the_live_near_miss(self):
         # infra/postgres/42_email_model_roles.sql really does contain this. A
         # fence that flags it gets deleted by the first person it annoys.
-        assert balance_updates_in(
-            "UPDATE email_assistant_settings SET chat_model = 'tier-balanced'"
-        ) == []
+        assert (
+            balance_updates_in("UPDATE email_assistant_settings SET chat_model = 'tier-balanced'")
+            == []
+        )
 
     def test_the_column_fence_is_not_blind(self):
-        assert _BALANCE_COLUMN.findall(
-            "    balance_after   NUMERIC(14, 4),"
-        ) == ["balance_after"]
+        assert _BALANCE_COLUMN.findall("    balance_after   NUMERIC(14, 4),") == ["balance_after"]
         assert _BALANCE_COLUMN.findall(
             "ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS balance NUMERIC"
         ) == ["balance"]
         # The word in prose, or in a comment, is not a column.
-        assert _BALANCE_COLUMN.findall(
-            "-- Balance is SUM(delta); there is no balance column to update."
-        ) == []
+        assert (
+            _BALANCE_COLUMN.findall(
+                "-- Balance is SUM(delta); there is no balance column to update."
+            )
+            == []
+        )

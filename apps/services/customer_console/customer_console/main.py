@@ -42,6 +42,7 @@ highest-QPS endpoint on the plane *and* contradicted this paragraph. It is
 ``def`` again; the provider coroutine is driven with ``asyncio.run`` inside the
 threadpool worker.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -163,8 +164,7 @@ def _feed_sync_hours() -> float:
     try:
         hours = float(os.environ.get(_FEED_SYNC_HOURS_VAR, "0"))
     except ValueError:
-        _log.warning("feed.autosync_off reason=unparseable %s",
-                     _FEED_SYNC_HOURS_VAR)
+        _log.warning("feed.autosync_off reason=unparseable %s", _FEED_SYNC_HOURS_VAR)
         return 0.0
     return hours if hours > 0 else 0.0
 
@@ -182,8 +182,7 @@ async def _feed_autosync(hours: float) -> None:
     while True:
         try:
             result = await asyncio.to_thread(_feed_sync_once)
-            _log.info("feed.autosync source=%s models=%d",
-                      result["source"], result["models_seen"])
+            _log.info("feed.autosync source=%s models=%d", result["source"], result["models_seen"])
         except Exception as exc:  # the loop outlives any night
             _log.warning("feed.autosync_failed error=%s", exc)
         await asyncio.sleep(hours * 3600)
@@ -212,6 +211,7 @@ app = FastAPI(
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
+
 
 class ProvisionRequest(BaseModel):
     """One body, two schemes — and ``deployment_label`` is what tells them apart.
@@ -410,8 +410,7 @@ class CreditGrantRequest(BaseModel):
     org_slug: str
     #: Bounded to what `credit_ledger.delta` (NUMERIC(14,4)) can hold —
     #: beyond it the insert 500s. Negative stays legal: corrections.
-    credits: Decimal = Field(
-        ge=Decimal("-9999999999"), le=Decimal("9999999999"))
+    credits: Decimal = Field(ge=Decimal("-9999999999"), le=Decimal("9999999999"))
     reason: str = LEDGER_REASON_PURCHASE
     ref: str | None = None
 
@@ -460,8 +459,7 @@ class ManualActivationRequest(BaseModel):
     #: ge=0: an "activation" that REMOVES credits is a correction wearing the
     #: wrong name — corrections are `/credits/grant`'s negative deltas, where
     #: the amount rules apply. le: `credit_ledger.delta` is NUMERIC(14,4).
-    credits: Decimal | None = Field(
-        default=None, ge=0, le=Decimal("9999999999"))
+    credits: Decimal | None = Field(default=None, ge=0, le=Decimal("9999999999"))
     #: The subscription term. Defaults to ``payments.SUBSCRIPTION_TERM_MONTHS``
     #: (the one purchased term the checkout path also uses) — the catalog defines
     #: no per-plan term, so there is nothing narrower to read.
@@ -817,12 +815,27 @@ class UsageRequest(BaseModel):
 #:
 #: A blocklist is only ever as complete as the author's imagination of the
 #: provider's parameter surface — and litellm's surface grows without asking us.
-_FORWARDABLE = frozenset({
-    "messages", "temperature", "top_p", "n", "stop", "max_tokens",
-    "presence_penalty", "frequency_penalty", "logit_bias", "user",
-    "response_format", "seed", "tools", "tool_choice", "parallel_tool_calls",
-    "reasoning_effort", "thinking",
-})
+_FORWARDABLE = frozenset(
+    {
+        "messages",
+        "temperature",
+        "top_p",
+        "n",
+        "stop",
+        "max_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "user",
+        "response_format",
+        "seed",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "reasoning_effort",
+        "thinking",
+    }
+)
 
 #: Ceilings on the parameters that multiply what one request costs US.
 #: Verification forwarded `num_retries=50`, `timeout=9999` and
@@ -884,6 +897,7 @@ class CompletionRequest(BaseModel):
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+
 def _org_id(conn, slug: str) -> str:
     row = conn.execute(
         text("SELECT id FROM organization WHERE slug = :slug"), {"slug": slug}
@@ -920,7 +934,8 @@ def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
     it as a bare ``SeatsView``.
     """
     plans = [
-        r[0] for r in conn.execute(
+        r[0]
+        for r in conn.execute(
             text("SELECT slug FROM plan_catalog WHERE active ORDER BY sort_order")
         )
     ]
@@ -930,18 +945,21 @@ def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
         if not grants and not assigned:
             continue  # never bought, never assigned — not worth a row
         c = seat_counts(plan, grants, assigned)
-        grid.append(SeatPlanView(
-            plan_slug=plan,
-            purchased=c.purchased,
-            assigned=c.assigned,
-            available=c.available,
-            oversubscribed=c.oversubscribed,
-        ))
+        grid.append(
+            SeatPlanView(
+                plan_slug=plan,
+                purchased=c.purchased,
+                assigned=c.assigned,
+                available=c.available,
+                oversubscribed=c.oversubscribed,
+            )
+        )
     return grid
 
 
-def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any],
-           *, actor: str = "operator") -> None:
+def _audit(
+    conn, org_id: str | None, action: str, detail: dict[str, Any], *, actor: str = "operator"
+) -> None:
     """Write one audit row.
 
     ``actor`` defaults to ``operator`` because that was every writer until CP-9;
@@ -954,8 +972,7 @@ def _audit(conn, org_id: str | None, action: str, detail: dict[str, Any],
             "INSERT INTO control_audit (organization_id, actor, action, detail) "
             "VALUES (:org, :actor, :action, CAST(:detail AS jsonb))"
         ),
-        {"org": org_id, "actor": actor, "action": action,
-         "detail": json.dumps(detail)},
+        {"org": org_id, "actor": actor, "action": action, "detail": json.dumps(detail)},
     )
 
 
@@ -1015,9 +1032,7 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
     # organization is unaffected, because the ceiling is a tripwire on one
     # loop, not a budget on the customer.
     if caller.run_id:
-        spent = store.run_spend(
-            conn, org_id=caller.organization_id, run_id=caller.run_id
-        )
+        spent = store.run_spend(conn, org_id=caller.organization_id, run_id=caller.run_id)
         ceiling = RunCeiling()
         if not decide_run_ceiling(spent, ceiling=ceiling).allowed:
             _log.warning(
@@ -1037,7 +1052,12 @@ def _spend_refusal(conn, caller: Caller) -> HTTPException | None:
 
 
 def _rate_completion(
-    conn, *, tier: str, model: str, usage: ExtractedUsage, task: str = "chat",
+    conn,
+    *,
+    tier: str,
+    model: str,
+    usage: ExtractedUsage,
+    task: str = "chat",
     quantity: Decimal | None = None,
 ) -> tuple[Decimal, str | None]:
     """Credits drawn by one completion — priced by the TIER (D67). **Never
@@ -1080,8 +1100,7 @@ def _rate_completion(
     except UnpricedModel:
         _log.warning(
             "router.unpriced_tier",
-            extra={"router_tier": tier, "router_task": task,
-                   "router_model": model},
+            extra={"router_tier": tier, "router_task": task, "router_model": model},
         )
         return Decimal(0), None
 
@@ -1105,8 +1124,7 @@ def _rate_completion(
         # short names and a collision raises inside the logging call itself.
         _log.warning(
             "router.unpriced_tier",
-            extra={"router_tier": tier, "router_task": task,
-                   "router_model": model},
+            extra={"router_tier": tier, "router_task": task, "router_model": model},
         )
         return Decimal(0), card.unit
 
@@ -1184,9 +1202,7 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
                     pass
                 row = store.operator_by_email(conn, identity.email)
 
-            operator = operators.admit(
-                row, tid=identity.tid, email=identity.email
-            )
+            operator = operators.admit(row, tid=identity.tid, email=identity.email)
 
             store.operator_session_insert(
                 conn,
@@ -1194,9 +1210,7 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
                 prefix=issued.prefix,
                 key_hash=issued.key_hash,
                 expires_at=issued.expires_at,
-                ip=operator_signin.safe_ip(
-                    request.client.host if request.client else None
-                ),
+                ip=operator_signin.safe_ip(request.client.host if request.client else None),
                 user_agent=request.headers.get("user-agent"),
             )
             # Recorded on every sign-in, not only the first. A person whose
@@ -1205,8 +1219,7 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             store.operator_set_directory_subject(
                 conn, operator_id=operator.id, subject=identity.subject
             )
-            _audit(conn, None, "operator.signin",
-                   {"role": operator.role}, actor=operator.email)
+            _audit(conn, None, "operator.signin", {"role": operator.role}, actor=operator.email)
     except operators.OperatorUnconfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except operators.OperatorForbidden as exc:
@@ -1292,13 +1305,19 @@ def open_elevation(req: ElevateRequest, staff: Operator) -> dict[str, Any]:
     expires_at = datetime.now(UTC) + operator_elevation.ttl()
     with get_engine().begin() as conn:
         window_id = store.operator_elevation_open(
-            conn, operator_id=staff.operator_id, reason=reason,
-            reference=req.reference, expires_at=expires_at,
+            conn,
+            operator_id=staff.operator_id,
+            reason=reason,
+            reference=req.reference,
+            expires_at=expires_at,
         )
-        _audit(conn, None, "operator.elevate",
-               {"reason": reason, "reference": req.reference,
-                "expires_at": expires_at.isoformat()},
-               actor=staff.actor)
+        _audit(
+            conn,
+            None,
+            "operator.elevate",
+            {"reason": reason, "reference": req.reference, "expires_at": expires_at.isoformat()},
+            actor=staff.actor,
+        )
     return {"id": window_id, "expires_at": expires_at.isoformat()}
 
 
@@ -1331,8 +1350,7 @@ def close_elevation(staff: Operator) -> dict[str, Any]:
     with get_engine().begin() as conn:
         closed = store.operator_elevation_close(conn, staff.operator_id)
         if closed:
-            _audit(conn, None, "operator.elevate_close", {"closed": closed},
-                   actor=staff.actor)
+            _audit(conn, None, "operator.elevate_close", {"closed": closed}, actor=staff.actor)
     return {"closed": closed}
 
 
@@ -1402,7 +1420,9 @@ def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
 
     with get_engine().begin() as conn:
         operator_id = store.operator_insert(
-            conn, email=email, role=req.role,
+            conn,
+            email=email,
+            role=req.role,
             added_by=staff.operator_id,
         )
         row = store.operator_by_email(conn, email)
@@ -1419,8 +1439,7 @@ def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
                     "second add"
                 ),
             )
-        _audit(conn, None, "operator.add",
-               {"email": email, "role": row["role"]}, actor=staff.actor)
+        _audit(conn, None, "operator.add", {"email": email, "role": row["role"]}, actor=staff.actor)
     return {"id": operator_id, "email": email, "role": row["role"]}
 
 
@@ -1431,9 +1450,7 @@ def add_operator(req: OperatorAddRequest, staff: Operator) -> dict[str, Any]:
 # window. Measured, not guessed. Fence:
 # `test_operator_elevation.py::test_the_elevate_routes_are_not_swallowed`.
 @app.patch("/operators/{operator_id}")
-def patch_operator(
-    operator_id: str, req: OperatorPatchRequest, staff: Operator
-) -> dict[str, Any]:
+def patch_operator(operator_id: str, req: OperatorPatchRequest, staff: Operator) -> dict[str, Any]:
     """Change an operator's role, their status, or both.
 
     ⚠️ **One transaction.** The status change and the session revocation that
@@ -1466,22 +1483,26 @@ def patch_operator(
             raise _admin_refusal(exc) from None
 
         if req.role is not None:
-            store.operator_set_role(conn, operator_id=operator_id,
-                                    role=req.role)
+            store.operator_set_role(conn, operator_id=operator_id, role=req.role)
         revoked = 0
         if req.status is not None:
-            store.operator_set_status(conn, operator_id=operator_id,
-                                      status=req.status)
+            store.operator_set_status(conn, operator_id=operator_id, status=req.status)
             if req.status != "active":
                 # The same transaction. This is the fix for spec §2's F5.
-                revoked = store.operator_sessions_revoke_all(
-                    conn, operator_id
-                )
+                revoked = store.operator_sessions_revoke_all(conn, operator_id)
 
-        _audit(conn, None, "operator.update",
-               {"email": target["email"], "role": req.role,
-                "status": req.status, "sessions_revoked": revoked},
-               actor=staff.actor)
+        _audit(
+            conn,
+            None,
+            "operator.update",
+            {
+                "email": target["email"],
+                "role": req.role,
+                "status": req.status,
+                "sessions_revoked": revoked,
+            },
+            actor=staff.actor,
+        )
 
     return {"id": operator_id, "sessions_revoked": revoked}
 
@@ -1497,9 +1518,7 @@ def deactivate_operator(operator_id: str, staff: Operator) -> dict[str, Any]:
     The HTTP verb is `DELETE` because that is what an operator means by it.
     What it does is written here so nobody has to guess.
     """
-    return patch_operator(
-        operator_id, OperatorPatchRequest(status="deactivated"), staff
-    )
+    return patch_operator(operator_id, OperatorPatchRequest(status="deactivated"), staff)
 
 
 # ── CP-12f: the Activity surface (D64.5, done-whens 25-26) ─────────────────
@@ -1559,8 +1578,7 @@ def read_activity(
     # trail, and handing back a cursor there sends every client one more
     # round-trip to discover nothing.
     next_cursor = (
-        operator_activity.encode_cursor(rows[-1]["created_at"],
-                                        str(rows[-1]["id"]))
+        operator_activity.encode_cursor(rows[-1]["created_at"], str(rows[-1]["id"]))
         if len(rows) == size and rows
         else None
     )
@@ -1746,15 +1764,18 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
     with get_engine().begin() as conn:
         tasks = [
             {"slug": r[0], "label": r[1], "natural_unit": r[2]}
-            for r in conn.execute(text(
-                "SELECT slug, label, natural_unit FROM task_catalog "
-                "ORDER BY sort_order"))
+            for r in conn.execute(
+                text("SELECT slug, label, natural_unit FROM task_catalog ORDER BY sort_order")
+            )
         ]
         caps = [
             {"model": r[0], "task": r[1], "invocation": r[2], "streams": r[3]}
-            for r in conn.execute(text(
-                "SELECT model, task, invocation, streams FROM model_capability "
-                "ORDER BY model, task"))
+            for r in conn.execute(
+                text(
+                    "SELECT model, task, invocation, streams FROM model_capability "
+                    "ORDER BY model, task"
+                )
+            )
         ]
         # IN FORCE ONLY — the newest row per key whose date has passed. The
         # superseded rows stay in the table for the audit trail, and showing
@@ -1767,58 +1788,78 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # today's — a configuration nobody chose and nobody could reproduce
         # from the audit trail.
         bindings = [
-            {"tier": r[0], "task": r[1], "model": r[2], "rank": r[3],
-             "effective_from": _iso(r[4])}
-            for r in conn.execute(text(
-                "SELECT b.tier, b.task, b.model, b.rank, b.effective_from "
-                "FROM tier_binding b "
-                "WHERE b.effective_from = ("
-                "    SELECT max(x.effective_from) FROM tier_binding x "
-                "    WHERE x.task = b.task AND x.tier = b.tier "
-                "      AND x.effective_from <= now()) "
-                "ORDER BY b.task, b.tier, b.rank"))
+            {"tier": r[0], "task": r[1], "model": r[2], "rank": r[3], "effective_from": _iso(r[4])}
+            for r in conn.execute(
+                text(
+                    "SELECT b.tier, b.task, b.model, b.rank, b.effective_from "
+                    "FROM tier_binding b "
+                    "WHERE b.effective_from = ("
+                    "    SELECT max(x.effective_from) FROM tier_binding x "
+                    "    WHERE x.task = b.task AND x.tier = b.tier "
+                    "      AND x.effective_from <= now()) "
+                    "ORDER BY b.task, b.tier, b.rank"
+                )
+            )
         ]
         # What each model IS (012). LEFT of everything: a model with no profile
         # row is normal, and it renders as em dashes rather than vanishing.
         profiles = [
-            {"model": r[0], "label": r[1], "context_window": r[2],
-             "max_output": r[3],
-             # ⚠️ Money as STRINGS. These are NUMERIC in the database, and a
-             # parsed float re-formatted is how a number stops matching itself.
-             "vendor_input_per_1m_usd": None if r[4] is None else str(r[4]),
-             "vendor_output_per_1m_usd": None if r[5] is None else str(r[5]),
-             "vendor_cached_input_per_1m_usd":
-                 None if r[9] is None else str(r[9]),
-             # The three per-unit costs (019, H-78). Each one already speaks
-             # the TASK's unit, so this projection converts nothing — the
-             # feed read did the x60 before anything copied a price here.
-             # ⚠️ Fixed-point, because NUMERIC(18, 10) reaches values that
-             # `str(Decimal)` would render as `6.0E-9`.
-             "vendor_per_minute_usd": _fixed(r[10]),
-             "vendor_per_character_usd": _fixed(r[11]),
-             "vendor_per_image_usd": _fixed(r[12]),
-             "description": r[6], "reads_images": r[7], "thinks_first": r[8]}
-            for r in conn.execute(text(
-                "SELECT model, label, context_window, max_output, "
-                "       vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
-                "       description, reads_images, thinks_first, "
-                "       vendor_cached_input_per_1m_usd, "
-                "       vendor_per_minute_usd, vendor_per_character_usd, "
-                "       vendor_per_image_usd "
-                "FROM model_profile ORDER BY model"))
+            {
+                "model": r[0],
+                "label": r[1],
+                "context_window": r[2],
+                "max_output": r[3],
+                # ⚠️ Money as STRINGS. These are NUMERIC in the database, and a
+                # parsed float re-formatted is how a number stops matching itself.
+                "vendor_input_per_1m_usd": None if r[4] is None else str(r[4]),
+                "vendor_output_per_1m_usd": None if r[5] is None else str(r[5]),
+                "vendor_cached_input_per_1m_usd": None if r[9] is None else str(r[9]),
+                # The three per-unit costs (019, H-78). Each one already speaks
+                # the TASK's unit, so this projection converts nothing — the
+                # feed read did the x60 before anything copied a price here.
+                # ⚠️ Fixed-point, because NUMERIC(18, 10) reaches values that
+                # `str(Decimal)` would render as `6.0E-9`.
+                "vendor_per_minute_usd": _fixed(r[10]),
+                "vendor_per_character_usd": _fixed(r[11]),
+                "vendor_per_image_usd": _fixed(r[12]),
+                "description": r[6],
+                "reads_images": r[7],
+                "thinks_first": r[8],
+            }
+            for r in conn.execute(
+                text(
+                    "SELECT model, label, context_window, max_output, "
+                    "       vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
+                    "       description, reads_images, thinks_first, "
+                    "       vendor_cached_input_per_1m_usd, "
+                    "       vendor_per_minute_usd, vendor_per_character_usd, "
+                    "       vendor_per_image_usd "
+                    "FROM model_profile ORDER BY model"
+                )
+            )
         ]
         rates = [
-            {"model": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
-             "input_per_1k": str(r[4]), "output_per_1k": str(r[5]),
-             "cached_input_per_1k": str(r[6]), "credits_per_unit": str(r[7]),
-             "effective_from": _iso(r[8])}
-            for r in conn.execute(text(
-                "SELECT DISTINCT ON (model, task) model, task, unit, "
-                "       pricing_mode, input_credits_per_1k, "
-                "       output_credits_per_1k, cached_input_credits_per_1k, "
-                "       credits_per_unit, effective_from "
-                "FROM model_rate_card WHERE effective_from <= now() "
-                "ORDER BY model, task, effective_from DESC"))
+            {
+                "model": r[0],
+                "task": r[1],
+                "unit": r[2],
+                "pricing_mode": r[3],
+                "input_per_1k": str(r[4]),
+                "output_per_1k": str(r[5]),
+                "cached_input_per_1k": str(r[6]),
+                "credits_per_unit": str(r[7]),
+                "effective_from": _iso(r[8]),
+            }
+            for r in conn.execute(
+                text(
+                    "SELECT DISTINCT ON (model, task) model, task, unit, "
+                    "       pricing_mode, input_credits_per_1k, "
+                    "       output_credits_per_1k, cached_input_credits_per_1k, "
+                    "       credits_per_unit, effective_from "
+                    "FROM model_rate_card WHERE effective_from <= now() "
+                    "ORDER BY model, task, effective_from DESC"
+                )
+            )
         ]
         # The tier registry (015) — the product slate. A row here is what
         # lets an EMPTY tier exist: bound to nothing yet, shown anyway,
@@ -1828,51 +1869,81 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # filters on, read once — an operator who cannot see the flag would
         # have to guess why a tier is missing from the customer's picker.
         tier_registry = [
-            {"slug": r[0], "label": r[1], "blurb": r[2],
-             "sort_order": int(r[3]), "task": r[4],
-             "customer_visible": bool(r[5])}
-            for r in conn.execute(text(
-                "SELECT slug, label, blurb, sort_order, task, "
-                "       customer_visible "
-                "FROM tier_catalog ORDER BY sort_order, slug"))
+            {
+                "slug": r[0],
+                "label": r[1],
+                "blurb": r[2],
+                "sort_order": int(r[3]),
+                "task": r[4],
+                "customer_visible": bool(r[5]),
+            }
+            for r in conn.execute(
+                text(
+                    "SELECT slug, label, blurb, sort_order, task, "
+                    "       customer_visible "
+                    "FROM tier_catalog ORDER BY sort_order, slug"
+                )
+            )
         ]
         # What a CUSTOMER pays (D67): the tier card in force per (tier, task).
         tier_rates = [
-            {"tier": r[0], "task": r[1], "unit": r[2], "pricing_mode": r[3],
-             "input_per_1k": str(r[4]), "output_per_1k": str(r[5]),
-             "cached_input_per_1k": str(r[6]), "credits_per_unit": str(r[7]),
-             "effective_from": _iso(r[8])}
-            for r in conn.execute(text(
-                "SELECT DISTINCT ON (tier, task) tier, task, unit, "
-                "       pricing_mode, input_credits_per_1k, "
-                "       output_credits_per_1k, cached_input_credits_per_1k, "
-                "       credits_per_unit, effective_from "
-                "FROM tier_rate_card WHERE effective_from <= now() "
-                "ORDER BY tier, task, effective_from DESC"))
+            {
+                "tier": r[0],
+                "task": r[1],
+                "unit": r[2],
+                "pricing_mode": r[3],
+                "input_per_1k": str(r[4]),
+                "output_per_1k": str(r[5]),
+                "cached_input_per_1k": str(r[6]),
+                "credits_per_unit": str(r[7]),
+                "effective_from": _iso(r[8]),
+            }
+            for r in conn.execute(
+                text(
+                    "SELECT DISTINCT ON (tier, task) tier, task, unit, "
+                    "       pricing_mode, input_credits_per_1k, "
+                    "       output_credits_per_1k, cached_input_credits_per_1k, "
+                    "       credits_per_unit, effective_from "
+                    "FROM tier_rate_card WHERE effective_from <= now() "
+                    "ORDER BY tier, task, effective_from DESC"
+                )
+            )
         ]
         # The credit's own price (017) — what one credit SELLS for, in
         # rupees, plus the planning rate margins convert dollars with.
         # ⚠️ Billing never reads this: a call bills CREDITS and the tier
         # card owns how many. This row prices the credits themselves.
-        price_row = conn.execute(text(
-            "SELECT inr_per_credit, usd_to_inr, effective_from "
-            "FROM credit_price WHERE effective_from <= now() "
-            "ORDER BY effective_from DESC LIMIT 1")).fetchone()
+        price_row = conn.execute(
+            text(
+                "SELECT inr_per_credit, usd_to_inr, effective_from "
+                "FROM credit_price WHERE effective_from <= now() "
+                "ORDER BY effective_from DESC LIMIT 1"
+            )
+        ).fetchone()
         # Failovers that actually happened (013, slice 12's read half). A
         # served_rank above 1 is a customer request the primary did not
         # answer — the one durable proof a chain earns its keep. Aggregated
         # by day so a bad afternoon reads as one row, not four hundred.
         failovers = [
-            {"day": _iso(r[0]), "tier": r[1], "task": r[2], "model": r[3],
-             "rank": int(r[4]), "requests": int(r[5])}
-            for r in conn.execute(text(
-                "SELECT date_trunc('day', created_at) AS day, tier, task, "
-                "       model, served_rank, COUNT(*) "
-                "FROM usage_event "
-                "WHERE served_rank > 1 "
-                "  AND created_at >= now() - INTERVAL '14 days' "
-                "GROUP BY 1, tier, task, model, served_rank "
-                "ORDER BY 1 DESC, tier, task LIMIT 50"))
+            {
+                "day": _iso(r[0]),
+                "tier": r[1],
+                "task": r[2],
+                "model": r[3],
+                "rank": int(r[4]),
+                "requests": int(r[5]),
+            }
+            for r in conn.execute(
+                text(
+                    "SELECT date_trunc('day', created_at) AS day, tier, task, "
+                    "       model, served_rank, COUNT(*) "
+                    "FROM usage_event "
+                    "WHERE served_rank > 1 "
+                    "  AND created_at >= now() - INTERVAL '14 days' "
+                    "GROUP BY 1, tier, task, model, served_rank "
+                    "ORDER BY 1 DESC, tier, task LIMIT 50"
+                )
+            )
         ]
 
         # The vendor feed (014): upstream facts, fetched instead of typed.
@@ -1888,11 +1959,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         #             newsletter. Vendors without a live platform key are
         #             excluded: a model we hold no key for is not available,
         #             it is a brochure.
-        meta_row = conn.execute(text(
-            "SELECT source, finished_at FROM feed_sync_log "
-            "ORDER BY id DESC LIMIT 1")).fetchone()
-        feed_total = conn.execute(
-            text("SELECT COUNT(*) FROM vendor_price_feed")).scalar() or 0
+        meta_row = conn.execute(
+            text("SELECT source, finished_at FROM feed_sync_log ORDER BY id DESC LIMIT 1")
+        ).fetchone()
+        feed_total = conn.execute(text("SELECT COUNT(*) FROM vendor_price_feed")).scalar() or 0
 
         def _feed_wire(r: Any) -> dict[str, Any]:
             # ⚠️ Money as STRINGS, same rule as profiles above.
@@ -1902,14 +1972,18 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             # The wire carries `vendor_per_minute_usd` and never
             # `vendor_per_second_usd`, so the browser has nothing to convert.
             return {
-                "model": r[0], "provider": r[1], "mode": r[2], "task": r[3],
-                "invocation": r[4], "context_window": r[5], "max_output": r[6],
+                "model": r[0],
+                "provider": r[1],
+                "mode": r[2],
+                "task": r[3],
+                "invocation": r[4],
+                "context_window": r[5],
+                "max_output": r[6],
                 "vendor_input_per_1m_usd": None if r[7] is None else str(r[7]),
-                "vendor_output_per_1m_usd":
-                    None if r[8] is None else str(r[8]),
-                "vendor_cached_input_per_1m_usd":
-                    None if r[9] is None else str(r[9]),
-                "reads_images": r[10], "thinks_first": r[11],
+                "vendor_output_per_1m_usd": None if r[8] is None else str(r[8]),
+                "vendor_cached_input_per_1m_usd": None if r[9] is None else str(r[9]),
+                "reads_images": r[10],
+                "thinks_first": r[11],
                 "deprecated_on": None if r[12] is None else r[12].isoformat(),
                 "vendor_per_minute_usd": _per_minute_wire(r[13]),
                 # The other two already speak the task's unit, so they cross
@@ -1928,21 +2002,29 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             "vendor_per_image_usd"
         )
         feed_rows = [
-            _feed_wire(r) for r in conn.execute(text(
-                f"SELECT {_FEED_COLS} FROM vendor_price_feed "
-                "WHERE model IN (SELECT model FROM model_capability "
-                "                UNION SELECT model FROM model_profile) "
-                "ORDER BY model"))
+            _feed_wire(r)
+            for r in conn.execute(
+                text(
+                    f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                    "WHERE model IN (SELECT model FROM model_capability "
+                    "                UNION SELECT model FROM model_profile) "
+                    "ORDER BY model"
+                )
+            )
         ]
         feed_available = [
-            _feed_wire(r) for r in conn.execute(text(
-                f"SELECT {_FEED_COLS} FROM vendor_price_feed "
-                "WHERE provider IN (SELECT provider FROM provider_credential "
-                "                   WHERE organization_id IS NULL "
-                "                     AND revoked_at IS NULL) "
-                "  AND model NOT IN (SELECT model FROM model_capability "
-                "                    UNION SELECT model FROM model_profile) "
-                "ORDER BY provider, mode, model LIMIT 1000"))
+            _feed_wire(r)
+            for r in conn.execute(
+                text(
+                    f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                    "WHERE provider IN (SELECT provider FROM provider_credential "
+                    "                   WHERE organization_id IS NULL "
+                    "                     AND revoked_at IS NULL) "
+                    "  AND model NOT IN (SELECT model FROM model_capability "
+                    "                    UNION SELECT model FROM model_profile) "
+                    "ORDER BY provider, mode, model LIMIT 1000"
+                )
+            )
         ]
 
     cap_pairs = [(c["model"], c["task"]) for c in caps]
@@ -1955,7 +2037,9 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "rates": rates,
         "tier_registry": tier_registry,
         "tier_rates": tier_rates,
-        "credit_price": None if price_row is None else {
+        "credit_price": None
+        if price_row is None
+        else {
             # ⚠️ Money as STRINGS, same rule as every price on this wire.
             "inr_per_credit": str(price_row[0]),
             "usd_to_inr": str(price_row[1]),
@@ -1990,8 +2074,7 @@ def sync_vendor_feed(staff: Operator) -> dict[str, Any]:
     rows = feed.parse_feed(raw)
     with get_engine().begin() as conn:
         counts = feed.sync(conn, rows, source, started)
-        _audit(conn, None, "catalog.feed_sync",
-               {"source": source, **counts}, actor=staff.actor)
+        _audit(conn, None, "catalog.feed_sync", {"source": source, **counts}, actor=staff.actor)
     return {"source": source, **counts}
 
 
@@ -2012,8 +2095,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
 
     with get_engine().begin() as conn:
         if not _task_exists(conn, req.task):
-            raise HTTPException(
-                status_code=400, detail=f"unknown task {req.task!r}")
+            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
         conn.execute(
             text(
                 "INSERT INTO model_capability (model, task, invocation, streams) "
@@ -2024,11 +2106,14 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
             ),
             {"m": req.model, "t": req.task, "i": invocation, "s": streams},
         )
-        _audit(conn, None, "catalog.capability",
-               {"model": req.model, "task": req.task, "invocation": invocation},
-               actor=staff.actor)
-    return {"model": req.model, "task": req.task, "invocation": invocation,
-            "streams": streams}
+        _audit(
+            conn,
+            None,
+            "catalog.capability",
+            {"model": req.model, "task": req.task, "invocation": invocation},
+            actor=staff.actor,
+        )
+    return {"model": req.model, "task": req.task, "invocation": invocation, "streams": streams}
 
 
 @app.post("/catalog/bindings")
@@ -2052,8 +2137,7 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
 
     with get_engine().begin() as conn:
         if not _task_exists(conn, req.task):
-            raise HTTPException(
-                status_code=400, detail=f"unknown task {req.task!r}")
+            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
 
         # D68: a tier serves ONE kind of job, and the registry says which.
         # tier-stt IS speech-to-text; binding chat onto it is a mis-click,
@@ -2067,16 +2151,14 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
         # has attention to spare for it.
         for model in chain:
             capable = conn.execute(
-                text("SELECT 1 FROM model_capability "
-                     "WHERE model = :m AND task = :t"),
+                text("SELECT 1 FROM model_capability WHERE model = :m AND task = :t"),
                 {"m": model, "t": req.task},
             ).first()
             if capable is None:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"{model!r} declares no capability for task "
-                        f"{req.task!r}; declare it first"
+                        f"{model!r} declares no capability for task {req.task!r}; declare it first"
                     ),
                 )
 
@@ -2098,8 +2180,13 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
                         "    (tier, task, model, rank, effective_from) "
                         "VALUES (:tier, :task, :model, :rank, :eff)"
                     ),
-                    {"tier": req.tier, "task": req.task, "model": model,
-                     "rank": position, "eff": eff},
+                    {
+                        "tier": req.tier,
+                        "task": req.task,
+                        "model": model,
+                        "rank": position,
+                        "eff": eff,
+                    },
                 )
         except IntegrityError:
             # An explicit effective_from equal to a saved row's violates the
@@ -2114,11 +2201,14 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
                 ),
             ) from None
 
-        _audit(conn, None, "catalog.binding",
-               {"tier": req.tier, "task": req.task, "chain": chain},
-               actor=staff.actor)
-    return {"tier": req.tier, "task": req.task, "model": chain[0],
-            "chain": chain}
+        _audit(
+            conn,
+            None,
+            "catalog.binding",
+            {"tier": req.tier, "task": req.task, "chain": chain},
+            actor=staff.actor,
+        )
+    return {"tier": req.tier, "task": req.task, "model": chain[0], "chain": chain}
 
 
 @app.post("/catalog/rates")
@@ -2183,21 +2273,22 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         ).first()
         if known_tier is None:
             raise HTTPException(
-                status_code=400,
-                detail=f"unknown tier {req.tier!r}; it is not in tier_catalog")
+                status_code=400, detail=f"unknown tier {req.tier!r}; it is not in tier_catalog"
+            )
         # D68: a price for the wrong KIND of job on this tier is refused for
         # the same reason the binding is - it could never bill anything the
         # tier serves.
         _check_tier_task(conn, tier=req.tier, task=req.task)
         natural = _task_unit(conn, req.task)
         if natural is None:
-            raise HTTPException(
-                status_code=400, detail=f"unknown task {req.task!r}")
+            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
 
         try:
             catalog.check_rate(
                 catalog.TierRateProposal(
-                    tier=req.tier, task=req.task, unit=req.unit,
+                    tier=req.tier,
+                    task=req.task,
+                    unit=req.unit,
                     pricing_mode=req.pricing_mode,
                     input_per_1k=req.input_per_1k,
                     output_per_1k=req.output_per_1k,
@@ -2219,10 +2310,17 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
                     "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
                     "        COALESCE(:eff, now()))"
                 ),
-                {"tr": req.tier, "t": req.task, "u": req.unit,
-                 "i": req.input_per_1k, "o": req.output_per_1k,
-                 "c": req.cached_input_per_1k, "cpu": req.credits_per_unit,
-                 "pm": req.pricing_mode, "eff": req.effective_from},
+                {
+                    "tr": req.tier,
+                    "t": req.task,
+                    "u": req.unit,
+                    "i": req.input_per_1k,
+                    "o": req.output_per_1k,
+                    "c": req.cached_input_per_1k,
+                    "cpu": req.credits_per_unit,
+                    "pm": req.pricing_mode,
+                    "eff": req.effective_from,
+                },
             )
         except IntegrityError:
             # Explicit effective_from duplicating the PK — a retried POST
@@ -2235,12 +2333,19 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
                     "now, or pass a later timestamp"
                 ),
             ) from None
-        _audit(conn, None, "catalog.tier_rate",
-               {"tier": req.tier, "task": req.task,
-                "pricing_mode": req.pricing_mode, "unit": req.unit},
-               actor=staff.actor)
-    return {"tier": req.tier, "task": req.task,
-            "pricing_mode": req.pricing_mode}
+        _audit(
+            conn,
+            None,
+            "catalog.tier_rate",
+            {
+                "tier": req.tier,
+                "task": req.task,
+                "pricing_mode": req.pricing_mode,
+                "unit": req.unit,
+            },
+            actor=staff.actor,
+        )
+    return {"tier": req.tier, "task": req.task, "pricing_mode": req.pricing_mode}
 
 
 class CreditPriceRequest(BaseModel):
@@ -2256,8 +2361,7 @@ class CreditPriceRequest(BaseModel):
 
 
 @app.post("/catalog/credit-price")
-def set_credit_price(req: CreditPriceRequest,
-                     staff: Operator) -> dict[str, Any]:
+def set_credit_price(req: CreditPriceRequest, staff: Operator) -> dict[str, Any]:
     """Price the credit itself. **INSERT, never UPDATE** — history stays.
 
     🔴 **The NUMBER is the owner's commercial act (H-42)**; this route is the
@@ -2272,21 +2376,20 @@ def set_credit_price(req: CreditPriceRequest,
     ⚠️ Bounds mirror the table's own CHECK so the operator reads a named
     refusal instead of an IntegrityError's stack trace.
     """
-    for name, v in (("inr_per_credit", req.inr_per_credit),
-                    ("usd_to_inr", req.usd_to_inr)):
+    for name, v in (("inr_per_credit", req.inr_per_credit), ("usd_to_inr", req.usd_to_inr)):
         if not v.is_finite() or v <= 0 or v > 100_000:
             raise HTTPException(
-                status_code=400,
-                detail=f"{name} must be a positive number up to 100000, "
-                       f"got {v}")
+                status_code=400, detail=f"{name} must be a positive number up to 100000, got {v}"
+            )
     with get_engine().begin() as conn:
         try:
             conn.execute(
-                text("INSERT INTO credit_price (inr_per_credit, usd_to_inr, "
-                     "effective_from) "
-                     "VALUES (:p, :fx, COALESCE(:eff, now()))"),
-                {"p": req.inr_per_credit, "fx": req.usd_to_inr,
-                 "eff": req.effective_from},
+                text(
+                    "INSERT INTO credit_price (inr_per_credit, usd_to_inr, "
+                    "effective_from) "
+                    "VALUES (:p, :fx, COALESCE(:eff, now()))"
+                ),
+                {"p": req.inr_per_credit, "fx": req.usd_to_inr, "eff": req.effective_from},
             )
         except IntegrityError:
             raise HTTPException(
@@ -2297,18 +2400,21 @@ def set_credit_price(req: CreditPriceRequest,
                     "or pass a later timestamp"
                 ),
             ) from None
-        _audit(conn, None, "catalog.credit_price",
-               {"inr_per_credit": str(req.inr_per_credit),
-                "usd_to_inr": str(req.usd_to_inr)},
-               actor=staff.actor)
-    return {"inr_per_credit": str(req.inr_per_credit),
-            "usd_to_inr": str(req.usd_to_inr)}
+        _audit(
+            conn,
+            None,
+            "catalog.credit_price",
+            {"inr_per_credit": str(req.inr_per_credit), "usd_to_inr": str(req.usd_to_inr)},
+            actor=staff.actor,
+        )
+    return {"inr_per_credit": str(req.inr_per_credit), "usd_to_inr": str(req.usd_to_inr)}
 
 
 def _task_exists(conn, task: str) -> bool:
-    return conn.execute(
-        text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}
-    ).first() is not None
+    return (
+        conn.execute(text("SELECT 1 FROM task_catalog WHERE slug = :t"), {"t": task}).first()
+        is not None
+    )
 
 
 def _task_unit(conn, task: str) -> str | None:
@@ -2346,7 +2452,6 @@ def _check_tier_task(conn, *, tier: str, task: str) -> None:
         )
 
 
-
 class ProfileRequest(BaseModel):
     """What a model IS — window, output cap, what the vendor charges us.
 
@@ -2381,8 +2486,7 @@ class ProfileRequest(BaseModel):
     #: The vendor's discounted CACHE-READ rate (013). Without it a
     #: cache-hitting call cannot be costed at all — the computation refuses
     #: rather than bill cached reads at the full input price.
-    vendor_cached_input_per_1m_usd: Decimal | None = Field(
-        default=None, ge=0)
+    vendor_cached_input_per_1m_usd: Decimal | None = Field(default=None, ge=0)
     #: 🔴 The per-unit costs (019, H-78), for the jobs a token price cannot
     #: cost: `transcribe`, `speak` and `image`. Each one carries the unit
     #: `task_catalog` (010) names for that task, so **this route converts
@@ -2394,24 +2498,20 @@ class ProfileRequest(BaseModel):
     #: the same ceiling on the way out. Without it a hand-typed `100000000`
     #: reached Postgres and answered an unhandled psycopg 500 rather than a
     #: refusal the operator could read. `_PER_UNIT_MAX` is the one number.
-    vendor_per_minute_usd: Decimal | None = Field(
-        default=None, ge=0, lt=_PER_UNIT_MAX)
-    vendor_per_character_usd: Decimal | None = Field(
-        default=None, ge=0, lt=_PER_UNIT_MAX)
-    vendor_per_image_usd: Decimal | None = Field(
-        default=None, ge=0, lt=_PER_UNIT_MAX)
+    vendor_per_minute_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
+    vendor_per_character_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
+    vendor_per_image_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
 
     @field_validator(
-        "vendor_per_minute_usd", "vendor_per_character_usd",
+        "vendor_per_minute_usd",
+        "vendor_per_character_usd",
         "vendor_per_image_usd",
     )
     @classmethod
-    def _too_small_is_refused_not_rounded(
-        cls, v: Decimal | None
-    ) -> Decimal | None:
+    def _too_small_is_refused_not_rounded(cls, v: Decimal | None) -> Decimal | None:
         """🔴 A nonzero price that rounds to zero at scale 10 is REFUSED.
 
         `NUMERIC(18, 10)` quantizes on the way in, so `0.00000000001` stores
@@ -2530,24 +2630,19 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                 "think": req.thinks_first,
             },
         )
-        _audit(conn, None, "catalog.profile", {"model": model},
-               actor=staff.actor)
+        _audit(conn, None, "catalog.profile", {"model": model}, actor=staff.actor)
     return {"model": model}
 
 
 @app.get("/providers/credentials")
-def list_provider_credentials(
-    staff: Operator, include_revoked: bool = False
-) -> dict[str, Any]:
+def list_provider_credentials(staff: Operator, include_revoked: bool = False) -> dict[str, Any]:
     """Which providers we hold an account with. **Never the secret.**
 
     Done-when 2. The plaintext is not returned here and it cannot be: the
     query does not select `secret_enc`, so there is nothing to leak.
     """
     with get_engine().begin() as conn:
-        rows = store.provider_credential_list(
-            conn, include_revoked=include_revoked
-        )
+        rows = store.provider_credential_list(conn, include_revoked=include_revoked)
     return {
         "credentials": [
             {
@@ -2568,9 +2663,7 @@ def list_provider_credentials(
 
 
 @app.post("/providers/credentials")
-def install_provider_credential(
-    req: ProviderCredentialRequest, staff: Operator
-) -> dict[str, Any]:
+def install_provider_credential(req: ProviderCredentialRequest, staff: Operator) -> dict[str, Any]:
     """Install a provider credential. Fernet at rest, INSERT only.
 
     Done-when 1: after this route runs, `router.provider_credential()` returns
@@ -2600,9 +2693,7 @@ def install_provider_credential(
 
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug) if req.org_slug else None
-        rotated = store.provider_credential_revoke(
-            conn, provider=provider, organization_id=org_id
-        )
+        rotated = store.provider_credential_revoke(conn, provider=provider, organization_id=org_id)
         credential_id = store.provider_credential_insert(
             conn,
             provider=provider,
@@ -2614,10 +2705,13 @@ def install_provider_credential(
         # ⚠️ The audit row records the PROVIDER and the LABEL, never the key
         # and never a fragment of it. `key.issue` set that precedent and
         # `test_operator_activity.py` fences the trail as a whole.
-        _audit(conn, org_id, "provider.credential.install",
-               {"provider": provider, "label": req.label,
-                "rotated": rotated, "api_base": api_base},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "provider.credential.install",
+            {"provider": provider, "label": req.label, "rotated": rotated, "api_base": api_base},
+            actor=staff.actor,
+        )
 
     return {
         "id": credential_id,
@@ -2647,12 +2741,14 @@ def revoke_provider_credential(
 
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug) if req.org_slug else None
-        revoked = store.provider_credential_revoke(
-            conn, provider=provider, organization_id=org_id
+        revoked = store.provider_credential_revoke(conn, provider=provider, organization_id=org_id)
+        _audit(
+            conn,
+            org_id,
+            "provider.credential.revoke",
+            {"provider": provider, "revoked": revoked},
+            actor=staff.actor,
         )
-        _audit(conn, org_id, "provider.credential.revoke",
-               {"provider": provider, "revoked": revoked},
-               actor=staff.actor)
     return {"provider": provider, "revoked": revoked}
 
 
@@ -2663,9 +2759,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/orgs/provision")
-def provision(
-    req: ProvisionRequest, caller: ProvisionCaller, request: Request
-) -> dict[str, Any]:
+def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) -> dict[str, Any]:
     """Create an organization, its owner and its Core seats. Idempotent.
 
     Idempotent on the org slug rather than on a request id, because the natural
@@ -2744,14 +2838,9 @@ def provision(
                 # could be consulted.
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        "deployment_label is required under the operator "
-                        "scheme"
-                    ),
+                    detail=("deployment_label is required under the operator scheme"),
                 )
-            deployment_id = store.deployment_by_label(
-                conn, label=req.deployment_label
-            )
+            deployment_id = store.deployment_by_label(conn, label=req.deployment_label)
             if deployment_id is None:
                 raise HTTPException(
                     status_code=404,
@@ -2774,8 +2863,11 @@ def provision(
             deployment_id = caller.deployment_id
 
         org_id = store.ensure_organization(
-            conn, slug=req.slug, name=req.name,
-            gstin=req.gstin, billing_state=req.billing_state,
+            conn,
+            slug=req.slug,
+            name=req.name,
+            gstin=req.gstin,
+            billing_state=req.billing_state,
         )
 
         # Placement lands before seats and membership: where an organization
@@ -2834,23 +2926,20 @@ def provision(
             if placed_elsewhere or store.org_owned_by_other(
                 conn, org_id=org_id, owner_email=req.owner_email
             ):
-                raise HTTPException(
-                    status_code=409, detail="slug unavailable"
-                )
-        store.place_organization(
-            conn, org_id=org_id, deployment_id=deployment_id
-        )
+                raise HTTPException(status_code=409, detail="slug unavailable")
+        store.place_organization(conn, org_id=org_id, deployment_id=deployment_id)
 
         identity_id = store.ensure_identity(conn, email=req.owner_email)
 
         # Only grant on FIRST provision — a retry must not keep buying seats.
-        grants, _assigned = store.seat_rows(
-            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG
-        )
+        grants, _assigned = store.seat_rows(conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG)
         if not grants:
             store.grant_seats(
-                conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
-                quantity=req.core_seats, reason="provision",
+                conn,
+                org_id=org_id,
+                plan_slug=CORE_PLAN_SLUG,
+                quantity=req.core_seats,
+                reason="provision",
             )
 
         conn.execute(
@@ -2865,8 +2954,11 @@ def provision(
             {"org": org_id, "identity": identity_id},
         )
         store.try_assign_seat(
-            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
-            identity_id=identity_id, source="core",
+            conn,
+            org_id=org_id,
+            plan_slug=CORE_PLAN_SLUG,
+            identity_id=identity_id,
+            source="core",
         )
         # The trial subscription. Without this row an org has seats and no
         # commercial state at all, and every billing surface has to invent a
@@ -2933,19 +3025,22 @@ def provision(
         }
         if caller is not None:
             detail["key_prefix"] = caller.key_prefix
-        _audit(conn, org_id, "org.provision", detail,
-               # CP-12c CLOSES CP-12b's known gap. This is a DUAL-ARM
-               # door, so `caller is None` means the operator arm ran —
-               # and `auth._stash` put that arm's identity on the request.
-               # `getattr` rather than a bare attribute because the
-               # deployment arm never sets it.
-               actor=(
-                   getattr(
-                       getattr(request, "state", None), "staff", None
-                   ).actor
-                   if caller is None
-                   else "deployment"
-               ))
+        _audit(
+            conn,
+            org_id,
+            "org.provision",
+            detail,
+            # CP-12c CLOSES CP-12b's known gap. This is a DUAL-ARM
+            # door, so `caller is None` means the operator arm ran —
+            # and `auth._stash` put that arm's identity on the request.
+            # `getattr` rather than a bare attribute because the
+            # deployment arm never sets it.
+            actor=(
+                getattr(getattr(request, "state", None), "staff", None).actor
+                if caller is None
+                else "deployment"
+            ),
+        )
 
     return {"organization_id": org_id, "slug": req.slug}
 
@@ -2975,7 +3070,8 @@ def set_lifecycle(req: LifecycleRequest, staff: Operator) -> dict[str, Any]:
         # than living in whoever ran the cancellation's memory.
         export_until = (
             f"now() + interval '{int(req.export_window_days)} days'"
-            if req.target == "cancelled" else "NULL"
+            if req.target == "cancelled"
+            else "NULL"
         )
         conn.execute(
             text(
@@ -2986,19 +3082,28 @@ def set_lifecycle(req: LifecycleRequest, staff: Operator) -> dict[str, Any]:
             {"s": req.target, "i": org_id},
         )
         conn.execute(
-            text("UPDATE org_subscription SET status = :s, updated_at = now() "
-                 "WHERE organization_id = :i AND :s <> 'deleted'"),
+            text(
+                "UPDATE org_subscription SET status = :s, updated_at = now() "
+                "WHERE organization_id = :i AND :s <> 'deleted'"
+            ),
             {"s": req.target, "i": org_id},
         )
-        _audit(conn, org_id, "org.lifecycle",
-               {"from": current, "to": req.target, "reason": req.reason},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "org.lifecycle",
+            {"from": current, "to": req.target, "reason": req.reason},
+            actor=staff.actor,
+        )
 
         caps = capabilities_of(req.target)
 
     return {
-        "slug": req.org_slug, "from": current, "to": req.target,
-        "can_sign_in": caps.can_sign_in, "can_use_ai": caps.can_use_ai,
+        "slug": req.org_slug,
+        "from": current,
+        "to": req.target,
+        "can_sign_in": caps.can_sign_in,
+        "can_use_ai": caps.can_use_ai,
         "can_write_seats": caps.can_write_seats,
         "data_retained": caps.data_retained,
     }
@@ -3065,7 +3170,11 @@ _ORG_PURGE_KEEPS: tuple[str, ...] = (
 #: (`member.add`, `seat.assign`/`release`, `org.provision`). Stripped, not
 #: rewritten — an absent key reads as scrubbed, a fake value reads as data.
 _AUDIT_EMAIL_KEYS: tuple[str, ...] = (
-    "email", "owner_email", "member_email", "actor_email", "user_email",
+    "email",
+    "owner_email",
+    "member_email",
+    "actor_email",
+    "user_email",
 )
 
 #: The detail-strip expression, built ONCE from the module constant above —
@@ -3145,8 +3254,10 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
         # reads as scrubbed rather than as fake data.
         scrubbed: dict[str, int] = {}
         scrubbed["usage_event.user_email"] = conn.execute(
-            text("UPDATE usage_event SET user_email = NULL "
-                 "WHERE organization_id = :i AND user_email IS NOT NULL"),
+            text(
+                "UPDATE usage_event SET user_email = NULL "
+                "WHERE organization_id = :i AND user_email IS NOT NULL"
+            ),
             {"i": org_id},
         ).rowcount
         scrubbed["control_audit.detail"] = conn.execute(
@@ -3154,22 +3265,29 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
             {"i": org_id, "keys": list(_AUDIT_EMAIL_KEYS)},
         ).rowcount
         scrubbed["control_audit.actor"] = conn.execute(
-            text("UPDATE control_audit SET actor = :p "
-                 "WHERE organization_id = :i AND actor LIKE '%@%'"),
+            text(
+                "UPDATE control_audit SET actor = :p "
+                "WHERE organization_id = :i AND actor LIKE '%@%'"
+            ),
             {"i": org_id, "p": _ACTOR_PURGED},
         ).rowcount
         tombstone = f"{req.org_slug}-purged-{uuid.uuid4().hex[:6]}"
         conn.execute(
-            text(
-                "UPDATE organization SET slug = :t, updated_at = now() "
-                "WHERE id = :i"
-            ),
+            text("UPDATE organization SET slug = :t, updated_at = now() WHERE id = :i"),
             {"t": tombstone, "i": org_id},
         )
-        _audit(conn, org_id, "org.purge",
-               {"slug": req.org_slug, "tombstone": tombstone,
-                "deleted": deleted, "scrubbed": scrubbed},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "org.purge",
+            {
+                "slug": req.org_slug,
+                "tombstone": tombstone,
+                "deleted": deleted,
+                "scrubbed": scrubbed,
+            },
+            actor=staff.actor,
+        )
     return {
         "slug": req.org_slug,
         "tombstone": tombstone,
@@ -3181,7 +3299,9 @@ def purge_org_registry(req: OrgPurgeRequest, staff: Operator) -> dict[str, Any]:
 
 @app.post("/registry/resolve")
 def resolve(
-    req: ResolveRequest, caller: ResolveCaller, request: Request,
+    req: ResolveRequest,
+    caller: ResolveCaller,
+    request: Request,
 ) -> dict[str, Any]:
     """Resolve a person against the registry at sign-in, consuming a Core seat.
 
@@ -3210,7 +3330,8 @@ def resolve(
 
 
 def _resolve_for_operator(
-    req: ResolveRequest, request: Request,
+    req: ResolveRequest,
+    request: Request,
 ) -> dict[str, Any]:
     """The shipped operator shape, unchanged (CP-2b clause 3's regression)."""
     if req.org_slug is None:
@@ -3233,12 +3354,9 @@ def _resolve_for_operator(
             # Only `deleted` lands here. `suspended` and `cancelled` sign in
             # deliberately: a customer who cannot log in cannot pay you, cannot
             # update a card and cannot export.
-            raise HTTPException(
-                status_code=403, detail=f"organization is {state}")
+            raise HTTPException(status_code=403, detail=f"organization is {state}")
 
-        identity_id = store.ensure_identity(
-            conn, email=req.email, display_name=req.display_name
-        )
+        identity_id = store.ensure_identity(conn, email=req.email, display_name=req.display_name)
 
         # The SAME allocation path the deployment arm takes — one
         # implementation of "may this person have a Core seat", so the two
@@ -3255,15 +3373,23 @@ def _resolve_for_operator(
         # spec rather than smuggling it into a refactor. The deployment arm
         # passes the real answer.
         _allocate_core_seat(
-            conn, org_id=org_id, identity_id=identity_id, seats_locked=False,
+            conn,
+            org_id=org_id,
+            identity_id=identity_id,
+            seats_locked=False,
         )
         # A staff act that mints an identity and can consume a paid Core
         # seat — audited like its /billing/seats twin (it never was). The
         # deployment arm stays unaudited on purpose: it runs on every
         # product sign-in and belongs to the meter, not the audit trail.
         staff = getattr(getattr(request, "state", None), "staff", None)
-        _audit(conn, org_id, "registry.resolve", {"email": req.email},
-               actor=getattr(staff, "actor", None) or "operator")
+        _audit(
+            conn,
+            org_id,
+            "registry.resolve",
+            {"email": req.email},
+            actor=getattr(staff, "actor", None) or "operator",
+        )
 
         role = conn.execute(
             text(
@@ -3273,7 +3399,8 @@ def _resolve_for_operator(
             {"org": org_id, "i": identity_id},
         ).first()
         seats = [
-            r[0] for r in conn.execute(
+            r[0]
+            for r in conn.execute(
                 text(
                     "SELECT plan_slug FROM seat_assignment "
                     "WHERE organization_id = :org AND user_identity_id = :i "
@@ -3300,9 +3427,7 @@ _SEAT_ALREADY_HELD = "already_held"
 _SEAT_NOT_ALLOCATED = "not_allocated"
 
 
-def _resolve_for_deployment(
-    req: ResolveRequest, caller: DeploymentCaller
-) -> dict[str, Any]:
+def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> dict[str, Any]:
     """A box asking about a person it has just authenticated (CP-2b).
 
     What this answer may carry is bounded to what sign-in needs: org id, slug,
@@ -3333,12 +3458,8 @@ def _resolve_for_deployment(
         # state names: `deleted` is the only state with can_sign_in=False, and
         # `suspended`/`cancelled` stay open deliberately (a customer who cannot
         # log in cannot pay you, and `cancelled` IS the export window).
-        admissible = [
-            o for o in visible if capabilities_of(o["status"]).can_sign_in
-        ]
-        refused = [
-            o for o in visible if not capabilities_of(o["status"]).can_sign_in
-        ]
+        admissible = [o for o in visible if capabilities_of(o["status"]).can_sign_in]
+        refused = [o for o in visible if not capabilities_of(o["status"]).can_sign_in]
 
         if not admissible:
             if refused:
@@ -3358,9 +3479,7 @@ def _resolve_for_deployment(
             # whether this email is known to the Console at all.
             return {"organizations": []}
 
-        identity_id = store.ensure_identity(
-            conn, email=req.email, display_name=req.display_name
-        )
+        identity_id = store.ensure_identity(conn, email=req.email, display_name=req.display_name)
 
         seat_outcomes: dict[str, str] = {}
         if len(admissible) == 1:
@@ -3398,7 +3517,9 @@ def _resolve_for_deployment(
             )
 
             seat_outcomes[org["organization_id"]] = _allocate_core_seat(
-                conn, org_id=org["organization_id"], identity_id=identity_id,
+                conn,
+                org_id=org["organization_id"],
+                identity_id=identity_id,
                 # The lifecycle decides whether a seat may be WRITTEN, and it
                 # is a different question from whether this person may sign in
                 # — the state machine answers both, and this arm asks both.
@@ -3419,8 +3540,10 @@ def _resolve_for_deployment(
                 seat_outcomes[org["organization_id"]] = (
                     _SEAT_ALREADY_HELD
                     if store.has_live_seat(
-                        conn, org_id=org["organization_id"],
-                        plan_slug=CORE_PLAN_SLUG, identity_id=identity_id,
+                        conn,
+                        org_id=org["organization_id"],
+                        plan_slug=CORE_PLAN_SLUG,
+                        identity_id=identity_id,
                     )
                     else _SEAT_NOT_ALLOCATED
                 )
@@ -3480,9 +3603,7 @@ def _capability_block(status: str) -> dict[str, bool]:
     }
 
 
-def _allocate_core_seat(
-    conn, *, org_id: str, identity_id: str, seats_locked: bool
-) -> str:
+def _allocate_core_seat(conn, *, org_id: str, identity_id: str, seats_locked: bool) -> str:
     """Consume a Core seat for one person, idempotently. Raises 409 at the cap.
 
     **The one seat-allocation path both arms of resolve go through** — not two
@@ -3511,7 +3632,9 @@ def _allocate_core_seat(
         # a member who holds none is simply not given one, rather than being
         # refused a login they are entitled to.
         held = store.has_live_seat(
-            conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
+            conn,
+            org_id=org_id,
+            plan_slug=CORE_PLAN_SLUG,
             identity_id=identity_id,
         )
         return _SEAT_ALREADY_HELD if held else _SEAT_NOT_ALLOCATED
@@ -3524,9 +3647,7 @@ def _allocate_core_seat(
     held = store.has_live_seat(
         conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG, identity_id=identity_id
     )
-    grants, assigned = store.seat_rows(
-        conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG
-    )
+    grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG)
     decision = decide_assignment(
         seat_counts(CORE_PLAN_SLUG, grants, assigned),
         already_assigned=held,
@@ -3543,8 +3664,11 @@ def _allocate_core_seat(
     if held:
         return _SEAT_ALREADY_HELD
     store.try_assign_seat(
-        conn, org_id=org_id, plan_slug=CORE_PLAN_SLUG,
-        identity_id=identity_id, source="core",
+        conn,
+        org_id=org_id,
+        plan_slug=CORE_PLAN_SLUG,
+        identity_id=identity_id,
+        source="core",
     )
     return _SEAT_ALLOCATED
 
@@ -3584,9 +3708,7 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
         "organization_id": org_id,
         "seats": seats,
         "credit_balance": str(balance),
-        "members": [
-            {**row, "seats": held.get(row["email"], [])} for row in roster
-        ],
+        "members": [{**row, "seats": held.get(row["email"], [])} for row in roster],
     }
 
 
@@ -3624,39 +3746,40 @@ def list_organizations(_: Operator) -> OrgListView:
         seats: list[SeatPlanView] = []
         mrr_inr = Decimal(0)
         for line in r["seats"]:
-            counts = seat_counts(line["plan_slug"], line["grants"],
-                                 line["assigned"])
-            seats.append(SeatPlanView(
-                plan_slug=counts.plan_slug,
-                purchased=counts.purchased,
-                assigned=counts.assigned,
-                available=counts.available,
-                oversubscribed=counts.oversubscribed,
-            ))
+            counts = seat_counts(line["plan_slug"], line["grants"], line["assigned"])
+            seats.append(
+                SeatPlanView(
+                    plan_slug=counts.plan_slug,
+                    purchased=counts.purchased,
+                    assigned=counts.assigned,
+                    available=counts.available,
+                    oversubscribed=counts.oversubscribed,
+                )
+            )
             mrr_inr += counts.purchased * line["price_inr"]
 
         active = r["subscription_status"] == "active"
-        organizations.append(OrgSummaryView(
-            slug=r["slug"],
-            name=r["name"],
-            status=r["status"],
-            subscription_status=r["subscription_status"],
-            provider=r["provider"],
-            trial_ends_at=_iso(r["trial_ends_at"]),
-            current_period_end=_iso(r["current_period_end"]),
-            export_until=_iso(r["export_until"]),
-            credit_balance=str(r["credit_balance"]),
-            mrr_paise=payments.paise(mrr_inr) if active else 0,
-            seats=seats,
-        ))
+        organizations.append(
+            OrgSummaryView(
+                slug=r["slug"],
+                name=r["name"],
+                status=r["status"],
+                subscription_status=r["subscription_status"],
+                provider=r["provider"],
+                trial_ends_at=_iso(r["trial_ends_at"]),
+                current_period_end=_iso(r["current_period_end"]),
+                export_until=_iso(r["export_until"]),
+                credit_balance=str(r["credit_balance"]),
+                mrr_paise=payments.paise(mrr_inr) if active else 0,
+                seats=seats,
+            )
+        )
 
     return OrgListView(organizations=organizations)
 
 
 @app.post("/billing/subscriptions/activate")
-def activate_subscription_manual(
-    req: ManualActivationRequest, staff: Operator
-) -> dict[str, Any]:
+def activate_subscription_manual(req: ManualActivationRequest, staff: Operator) -> dict[str, Any]:
     """MANUAL / bank-transfer activation — the offline twin of ``payments.fulfil``
     (§6 item (j)).
 
@@ -3724,8 +3847,7 @@ def activate_subscription_manual(
         # The double-grant guard (see the docstring). Read BEFORE any write, so
         # the refusal rolls nothing back.
         current = conn.execute(
-            text("SELECT status FROM org_subscription "
-                 "WHERE organization_id = :i"),
+            text("SELECT status FROM org_subscription WHERE organization_id = :i"),
             {"i": org_id},
         ).scalar_one_or_none()
         if current == "active":
@@ -3745,12 +3867,19 @@ def activate_subscription_manual(
         # provider ids (no provider was involved), the period from the database
         # clock.
         store.activate_subscription(
-            conn, org_id=org_id, term_months=term, provider="manual",
-            provider_customer_id=None, provider_subscription_id=None,
+            conn,
+            org_id=org_id,
+            term_months=term,
+            provider="manual",
+            provider_customer_id=None,
+            provider_subscription_id=None,
         )
         store.grant_seats(
-            conn, org_id=org_id, plan_slug=req.plan_slug,
-            quantity=req.seats, reason="manual",
+            conn,
+            org_id=org_id,
+            plan_slug=req.plan_slug,
+            quantity=req.seats,
+            reason="manual",
         )
         if req.credits is not None:
             # The OTHER door that writes the ledger — same amount rules as
@@ -3759,8 +3888,11 @@ def activate_subscription_manual(
             # Raising here rolls the whole activation back: all or nothing.
             _require_credit_privilege(staff, req.credits)
             store.add_credit(
-                conn, org_id=org_id, delta=req.credits,
-                reason=LEDGER_REASON_MANUAL, ref=req.reference,
+                conn,
+                org_id=org_id,
+                delta=req.credits,
+                reason=LEDGER_REASON_MANUAL,
+                ref=req.reference,
             )
 
         # Recorded as a manual staff grant. `control_audit` has no `reason`
@@ -3776,8 +3908,7 @@ def activate_subscription_manual(
         }
         if req.credits is not None:
             detail["credits"] = str(req.credits)
-        _audit(conn, org_id, "subscription.activate_manual", detail,
-               actor=staff.actor)
+        _audit(conn, org_id, "subscription.activate_manual", detail, actor=staff.actor)
 
         # Surface the result from the same view models the reads use — never a
         # recompute: the seat grid is `_seat_grid` (as `billing_summary`), the
@@ -3816,8 +3947,7 @@ def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"{req.source!r} is not a seat source; expected one of "
-                f"{sorted(_SEAT_SOURCES)}"
+                f"{req.source!r} is not a seat source; expected one of {sorted(_SEAT_SOURCES)}"
             ),
         )
     with get_engine().begin() as conn:
@@ -3827,16 +3957,14 @@ def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
         ).scalar_one()
         if not capabilities_of(state).can_write_seats:
             raise HTTPException(
-                status_code=403,
-                detail=f"organization is {state}; seats are locked")
+                status_code=403, detail=f"organization is {state}; seats are locked"
+            )
 
         identity_id = store.ensure_identity(conn, email=req.email)
         held = store.has_live_seat(
             conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=identity_id
         )
-        grants, assigned = store.seat_rows(
-            conn, org_id=org_id, plan_slug=req.plan_slug
-        )
+        grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=req.plan_slug)
         decision = decide_assignment(
             seat_counts(req.plan_slug, grants, assigned),
             already_assigned=held,
@@ -3848,12 +3976,19 @@ def assign_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
                 detail={"reason": decision.reason, "buy_more": decision.buy_more},
             )
         store.try_assign_seat(
-            conn, org_id=org_id, plan_slug=req.plan_slug,
-            identity_id=identity_id, source=req.source,
+            conn,
+            org_id=org_id,
+            plan_slug=req.plan_slug,
+            identity_id=identity_id,
+            source=req.source,
         )
-        _audit(conn, org_id, "seat.assign",
-               {"email": req.email, "plan": req.plan_slug},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "seat.assign",
+            {"email": req.email, "plan": req.plan_slug},
+            actor=staff.actor,
+        )
 
     return {"assigned": True, "plan_slug": req.plan_slug}
 
@@ -3867,9 +4002,13 @@ def release_seat(req: SeatWriteRequest, staff: Operator) -> dict[str, Any]:
         released = store.release_seat(
             conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=identity_id
         )
-        _audit(conn, org_id, "seat.release",
-               {"email": req.email, "plan": req.plan_slug, "released": released},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "seat.release",
+            {"email": req.email, "plan": req.plan_slug, "released": released},
+            actor=staff.actor,
+        )
 
     return {"released": released}
 
@@ -3979,9 +4118,7 @@ def _admin_scheme_for_deployment(
     visible = store.deployment_visible_orgs(
         conn, deployment_id=caller.deployment_id, email=req.actor_email
     )
-    admissible = [
-        o for o in visible if capabilities_of(o["status"]).can_sign_in
-    ]
+    admissible = [o for o in visible if capabilities_of(o["status"]).can_sign_in]
     if not admissible:
         # The placement bound: a key placed for A resolves only A's members, so
         # naming a member of another deployment's org lands here. One 403,
@@ -4025,11 +4162,7 @@ def _admin_scheme_for_deployment(
         ),
         {"org": org_id, "i": actor_identity_id},
     ).first()
-    if (
-        membership is None
-        or membership[0] not in roles
-        or membership[1] != "active"
-    ):
+    if membership is None or membership[0] not in roles or membership[1] != "active":
         raise HTTPException(
             status_code=403,
             detail="the acting member is not an active admin of this organization",
@@ -4038,7 +4171,9 @@ def _admin_scheme_for_deployment(
 
 
 def _admin_scheme_for_operator(
-    conn, req: AdminSchemeRequest, request: Request,
+    conn,
+    req: AdminSchemeRequest,
+    request: Request,
 ) -> tuple[str, str]:
     """The operator arm: a cross-org staff act that NAMES the org."""
     if req.actor_email is not None:
@@ -4060,8 +4195,7 @@ def _admin_scheme_for_operator(
     # writes discarded it — their audit rows read actor="operator",
     # indistinguishable from anybody. Break-glass still records "operator".
     staff = getattr(getattr(request, "state", None), "staff", None)
-    return _org_id(conn, req.org_slug), (getattr(staff, "actor", None)
-                                         or "operator")
+    return _org_id(conn, req.org_slug), (getattr(staff, "actor", None) or "operator")
 
 
 def _seat_admin_target(conn, *, org_id: str, member_email: str) -> str:
@@ -4094,7 +4228,9 @@ def _seat_admin_target(conn, *, org_id: str, member_email: str) -> str:
 
 @app.post("/registry/seats")
 def assign_seat_admin(
-    req: SeatAdminRequest, caller: SeatAdminCaller, request: Request,
+    req: SeatAdminRequest,
+    caller: SeatAdminCaller,
+    request: Request,
 ) -> dict[str, Any]:
     """Assign a seat under the customer's own admin credential (§6 item (h)).
 
@@ -4131,12 +4267,9 @@ def assign_seat_admin(
         )
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
-            request=request
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES, request=request
         )
-        target_id = _seat_admin_target(
-            conn, org_id=org_id, member_email=req.member_email
-        )
+        target_id = _seat_admin_target(conn, org_id=org_id, member_email=req.member_email)
 
         state = conn.execute(
             text("SELECT status FROM organization WHERE id = :i"), {"i": org_id}
@@ -4153,9 +4286,7 @@ def assign_seat_admin(
         held = store.has_live_seat(
             conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=target_id
         )
-        grants, assigned = store.seat_rows(
-            conn, org_id=org_id, plan_slug=req.plan_slug
-        )
+        grants, assigned = store.seat_rows(conn, org_id=org_id, plan_slug=req.plan_slug)
         decision = decide_assignment(
             seat_counts(req.plan_slug, grants, assigned),
             already_assigned=held,
@@ -4167,18 +4298,28 @@ def assign_seat_admin(
                 detail={"reason": decision.reason, "buy_more": decision.buy_more},
             )
         store.try_assign_seat(
-            conn, org_id=org_id, plan_slug=req.plan_slug,
-            identity_id=target_id, source=req.source,
+            conn,
+            org_id=org_id,
+            plan_slug=req.plan_slug,
+            identity_id=target_id,
+            source=req.source,
         )
-        _audit(conn, org_id, "seat.assign",
-               {"email": req.member_email, "plan": req.plan_slug}, actor=actor)
+        _audit(
+            conn,
+            org_id,
+            "seat.assign",
+            {"email": req.member_email, "plan": req.plan_slug},
+            actor=actor,
+        )
 
     return {"assigned": True, "plan_slug": req.plan_slug}
 
 
 @app.post("/registry/seats/release")
 def release_seat_admin(
-    req: SeatAdminRequest, caller: SeatAdminCaller, request: Request,
+    req: SeatAdminRequest,
+    caller: SeatAdminCaller,
+    request: Request,
 ) -> dict[str, Any]:
     """Release a seat under the customer's own admin credential (§6 item (h)).
 
@@ -4194,18 +4335,19 @@ def release_seat_admin(
         )
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
-            request=request
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES, request=request
         )
-        target_id = _seat_admin_target(
-            conn, org_id=org_id, member_email=req.member_email
-        )
+        target_id = _seat_admin_target(conn, org_id=org_id, member_email=req.member_email)
         released = store.release_seat(
             conn, org_id=org_id, plan_slug=req.plan_slug, identity_id=target_id
         )
-        _audit(conn, org_id, "seat.release",
-               {"email": req.member_email, "plan": req.plan_slug,
-                "released": released}, actor=actor)
+        _audit(
+            conn,
+            org_id,
+            "seat.release",
+            {"email": req.member_email, "plan": req.plan_slug, "released": released},
+            actor=actor,
+        )
 
     return {"released": released}
 
@@ -4217,9 +4359,12 @@ def release_seat_admin(
 # ORGANIZATION-key reads for the per-org billing pages; this is the same picture
 # under the credential a SHARED deployment can actually hold.
 
+
 @app.post("/registry/seats/overview")
 def seat_overview_admin(
-    req: AdminSchemeRequest, caller: SeatAdminCaller, request: Request,
+    req: AdminSchemeRequest,
+    caller: SeatAdminCaller,
+    request: Request,
 ) -> SeatOverviewView:
     """The seat surface's READ under the customer's own admin credential (CP-2h).
 
@@ -4267,17 +4412,13 @@ def seat_overview_admin(
     """
     with get_engine().begin() as conn:
         org_id, _actor = _admin_scheme_context(
-            conn, req, caller, roles=_SEAT_ADMIN_ROLES,
-            request=request
+            conn, req, caller, roles=_SEAT_ADMIN_ROLES, request=request
         )
         rows = store.org_members(conn, org_id=org_id)
         seats = store.live_seats_by_email(conn, org_id=org_id)
         return SeatOverviewView(
             plans=_seat_grid(conn, org_id),
-            members=[
-                MemberView(**row, seats=seats.get(row["email"], []))
-                for row in rows
-            ],
+            members=[MemberView(**row, seats=seats.get(row["email"], [])) for row in rows],
         )
 
 
@@ -4293,9 +4434,12 @@ def seat_overview_admin(
 # box's self-serve funnel offered to create them an organization OF THEIR OWN.
 # An invite, correctly performed, produced a second tenant. See CP-2f / D50.2.
 
+
 @app.post("/registry/members")
 def add_member_admin(
-    req: MemberAdminRequest, caller: MemberAdminCaller, request: Request,
+    req: MemberAdminRequest,
+    caller: MemberAdminCaller,
+    request: Request,
 ) -> dict[str, Any]:
     """Add a member under the customer's own admin credential (CP-2f, D50.2).
 
@@ -4330,8 +4474,7 @@ def add_member_admin(
     """
     with get_engine().begin() as conn:
         org_id, actor = _admin_scheme_context(
-            conn, req, caller, roles=_MEMBER_ADMIN_ROLES,
-            request=request
+            conn, req, caller, roles=_MEMBER_ADMIN_ROLES, request=request
         )
 
         # The same lifecycle question the seat write asks, and for the same
@@ -4350,15 +4493,17 @@ def add_member_admin(
         identity_id = store.ensure_identity(
             conn, email=req.member_email, display_name=req.display_name
         )
-        created, status_now = store.add_invited_member(
-            conn, org_id=org_id, identity_id=identity_id
-        )
+        created, status_now = store.add_invited_member(conn, org_id=org_id, identity_id=identity_id)
         # Audited on BOTH paths, and the payload says which — a re-invite that
         # changed nothing is a real event an operator may need to see beside the
         # one that did.
-        _audit(conn, org_id, "member.add",
-               {"email": req.member_email, "created": created,
-                "status": status_now}, actor=actor)
+        _audit(
+            conn,
+            org_id,
+            "member.add",
+            {"email": req.member_email, "created": created, "status": status_now},
+            actor=actor,
+        )
 
     return {"created": created, "status": status_now}
 
@@ -4414,8 +4559,7 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
         # reason, and correcting a row is what it is for.
         ref = (req.ref or "").strip() or None
         if ref is not None:
-            prior = store.credit_ref_row(
-                conn, org_id=org_id, reason=req.reason, ref=ref)
+            prior = store.credit_ref_row(conn, org_id=org_id, reason=req.reason, ref=ref)
             if prior is not None:
                 raise HTTPException(
                     status_code=409,
@@ -4430,8 +4574,11 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 )
         try:
             store.add_credit(
-                conn, org_id=org_id, delta=req.credits,
-                reason=req.reason, ref=ref,
+                conn,
+                org_id=org_id,
+                delta=req.credits,
+                reason=req.reason,
+                ref=ref,
             )
         except IntegrityError:
             # The SELECT above cannot hold under concurrency: two grants
@@ -4450,9 +4597,13 @@ def grant_credits(req: CreditGrantRequest, staff: Operator) -> dict[str, Any]:
                 ),
             ) from None
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
-        _audit(conn, org_id, "credits.grant",
-               {"delta": str(req.credits), "reason": req.reason},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "credits.grant",
+            {"delta": str(req.credits), "reason": req.reason},
+            actor=staff.actor,
+        )
 
     return {"balance": str(balance)}
 
@@ -4495,7 +4646,8 @@ def credit_balance(org_slug: str, _: Operator) -> dict[str, Any]:
         ).scalar_one()
 
     decision = decide_spend(
-        balance, Decimal(0),
+        balance,
+        Decimal(0),
         policy=OverdraftPolicy(),
         is_trial=(status == "trial"),
     )
@@ -4518,13 +4670,21 @@ def issue_key(req: IssueKeyRequest, staff: Operator) -> dict[str, Any]:
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         store.issue_key(
-            conn, org_id=org_id, prefix=minted.prefix,
-            key_hash=minted.key_hash, label=req.label, created_by="operator",
+            conn,
+            org_id=org_id,
+            prefix=minted.prefix,
+            key_hash=minted.key_hash,
+            label=req.label,
+            created_by="operator",
         )
         # The audit row records the PREFIX, never the token.
-        _audit(conn, org_id, "key.issue",
-               {"prefix": minted.prefix, "label": req.label},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "key.issue",
+            {"prefix": minted.prefix, "label": req.label},
+            actor=staff.actor,
+        )
 
     return {"prefix": minted.prefix, "token": minted.token}
 
@@ -4534,9 +4694,13 @@ def revoke_key(req: RevokeKeyRequest, staff: Operator) -> dict[str, Any]:
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug)
         revoked = store.revoke_key(conn, org_id=org_id, prefix=req.prefix)
-        _audit(conn, org_id, "key.revoke",
-               {"prefix": req.prefix, "revoked": revoked},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "key.revoke",
+            {"prefix": req.prefix, "revoked": revoked},
+            actor=staff.actor,
+        )
     return {"revoked": revoked}
 
 
@@ -4622,13 +4786,16 @@ def _column_exists(conn, table: str, column: str) -> bool:
     metering write down with it. The catalog answers the question first
     instead, and the write goes on.
     """
-    return conn.execute(
-        text(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = :t AND column_name = :c"
-        ),
-        {"t": table, "c": column},
-    ).first() is not None
+    return (
+        conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = :t AND column_name = :c"
+            ),
+            {"t": table, "c": column},
+        ).first()
+        is not None
+    )
 
 
 def _vendor_per_unit(conn, model: str, *, unit: str | None) -> Decimal | None:
@@ -4720,8 +4887,12 @@ def _record_completion(
             # inserts nothing also charges nothing. Zero while the card is
             # unpriced, which is the shipped state until the owner prices it.
             billed, unit = _rate_completion(
-                conn, tier=resolved.tier, model=resolved.model,
-                usage=usage, task=resolved.task, quantity=quantity,
+                conn,
+                tier=resolved.tier,
+                model=resolved.model,
+                usage=usage,
+                task=resolved.task,
+                quantity=quantity,
             )
             if byok:
                 if billed:
@@ -4743,7 +4914,8 @@ def _record_completion(
                 cost = router_mod.vendor_cost_per_unit_usd(
                     quantity,
                     _vendor_per_unit(
-                        conn, resolved.model,
+                        conn,
+                        resolved.model,
                         unit=_task_unit(conn, resolved.task),
                     ),
                 )
@@ -4756,15 +4928,19 @@ def _record_completion(
                     cached_per_1m=prices["cached"],
                 )
             store.record_usage(
-                conn, org_id=org_id,
+                conn,
+                org_id=org_id,
                 # SERVER-generated. The caller's id is correlation only — see
                 # migration 005 and CompletionRequest.client_ref.
                 request_id=f"rtr-{uuid.uuid4().hex}",
                 client_ref=client_ref,
                 billed_credits=billed,
-                user_email=caller.member, agent=caller.agent,
-                module_slug=caller.module_slug, run_id=caller.run_id,
-                model=resolved.model, tier=resolved.tier,
+                user_email=caller.member,
+                agent=caller.agent,
+                module_slug=caller.module_slug,
+                run_id=caller.run_id,
+                model=resolved.model,
+                tier=resolved.tier,
                 # The task the caller DECLARED, which is the served one for
                 # every caller but D-AI-2's lift. See the docstring.
                 task=declared_task or resolved.task,
@@ -4808,16 +4984,17 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     _log.warning("router.provider_error", extra={"upstream_status": status})
     if isinstance(status, int) and 400 <= status < 600:
         return HTTPException(
-            status_code=(
-                502 if status >= 500 or status in (401, 402, 403) else status
-            ),
+            status_code=(502 if status >= 500 or status in (401, 402, 403) else status),
             detail="upstream provider error",
         )
     return HTTPException(status_code=502, detail="upstream provider error")
 
 
 def _chain_credentials(
-    conn, chain: list[ResolvedTier], *, org_id: str,
+    conn,
+    chain: list[ResolvedTier],
+    *,
+    org_id: str,
 ) -> dict[str, router_mod.Credential | None]:
     """One credential per VENDOR named in the chain, read in the caller's
     transaction.
@@ -4837,16 +5014,13 @@ def _chain_credentials(
         if vendor in credentials:
             continue
         try:
-            credentials[vendor] = provider_credential(
-                conn, provider=vendor, org_id=org_id
-            )
+            credentials[vendor] = provider_credential(conn, provider=vendor, org_id=org_id)
         except Exception:
             # A missing or rotated encryption key must fail CLOSED with the
             # same 503 shape the other secrets use — not a 500 that reads
             # as a bug.
             _log.exception("router.credential_unavailable")
-            raise HTTPException(
-                status_code=503, detail="provider credentials unavailable")
+            raise HTTPException(status_code=503, detail="provider credentials unavailable")
     return credentials
 
 
@@ -4864,11 +5038,13 @@ REFUSAL_TIER_UNKNOWN = "tier_unknown"
 #: ⚠️ Named here as well as in the database on purpose. The CHECK is the fence,
 #: and this set makes the writer refuse a fourth spelling BEFORE it becomes an
 #: IntegrityError on the hottest path in the system.
-_REFUSAL_REASONS = frozenset({
-    "insufficient_credits",
-    "run_ceiling_exceeded",
-    REFUSAL_TIER_UNKNOWN,
-})
+_REFUSAL_REASONS = frozenset(
+    {
+        "insufficient_credits",
+        "run_ceiling_exceeded",
+        REFUSAL_TIER_UNKNOWN,
+    }
+)
 
 #: How much of a caller-supplied label a refusal row keeps.
 #:
@@ -4889,7 +5065,12 @@ def _clip(value: str | None) -> str | None:
 
 
 def _record_refusal(
-    reason: str, *, org_id: str, caller: Any, tier: str, task: str,
+    reason: str,
+    *,
+    org_id: str,
+    caller: Any,
+    tier: str,
+    task: str,
     client_ref: str | None = None,
 ) -> None:
     """Write the one ``usage_event`` row that says we refused (A5).
@@ -4924,8 +5105,7 @@ def _record_refusal(
     if reason not in _REFUSAL_REASONS:
         # A slug nobody declared would fail the CHECK. Say so in the log rather
         # than raise on a path whose whole job is to deliver a refusal.
-        _log.warning("router.refusal_slug_unknown",
-                     extra={"router_refusal": reason})
+        _log.warning("router.refusal_slug_unknown", extra={"router_refusal": reason})
         return
     # ⚠️ Clipped BEFORE the database sees them, so a five-megabyte label is
     # never sent as a bind parameter either.
@@ -4933,7 +5113,8 @@ def _record_refusal(
     try:
         with get_engine().begin() as conn:
             store.record_usage(
-                conn, org_id=org_id,
+                conn,
+                org_id=org_id,
                 # SERVER-generated, exactly as the served path mints it.
                 # `request_id` is NOT NULL UNIQUE (001:271).
                 request_id=f"rtr-{uuid.uuid4().hex}",
@@ -4941,7 +5122,8 @@ def _record_refusal(
                 # ledger line — `record_usage` skips the draw on a zero charge.
                 billed_credits=Decimal(0),
                 refusal_reason=reason,
-                user_email=caller.member, agent=caller.agent,
+                user_email=caller.member,
+                agent=caller.agent,
                 module_slug=caller.module_slug,
                 # A `run_ceiling_exceeded` row without its run is not
                 # actionable, and the breaker reads the same field.
@@ -4953,19 +5135,27 @@ def _record_refusal(
                 client_ref=_clip(client_ref),
                 # Both clipped above, because both are caller-supplied and
                 # unbounded and a refused request costs the sender nothing.
-                tier=tier, task=task,
+                tier=tier,
+                task=task,
                 # The call consumed nothing, and the task's own unit keeps the
                 # row readable beside a served one.
-                quantity=0, unit=_task_unit(conn, task),
+                quantity=0,
+                unit=_task_unit(conn, task),
                 # No model answered, and no vendor billed us.
-                model=None, provider_cost_usd=None,
+                model=None,
+                provider_cost_usd=None,
             )
     except Exception:
         _log.exception("router.refusal_metering_failed")
 
 
 def _raise_spend_refusal(
-    refusal: HTTPException, *, org_id: str, caller: Any, tier: str, task: str,
+    refusal: HTTPException,
+    *,
+    org_id: str,
+    caller: Any,
+    tier: str,
+    task: str,
     client_ref: str | None,
 ) -> NoReturn:
     """Record the wall the spend gate raised, then deliver it.
@@ -4990,8 +5180,14 @@ def _raise_spend_refusal(
     """
     detail = refusal.detail
     if isinstance(detail, dict) and detail.get("reason"):
-        _record_refusal(str(detail["reason"]), org_id=org_id, caller=caller,
-                        tier=tier, task=task, client_ref=client_ref)
+        _record_refusal(
+            str(detail["reason"]),
+            org_id=org_id,
+            caller=caller,
+            tier=tier,
+            task=task,
+            client_ref=client_ref,
+        )
     raise refusal
 
 
@@ -5021,7 +5217,10 @@ class _TierWall:
 
 
 def _resolve_serving_chain(
-    conn, *, tier: str, task: str,
+    conn,
+    *,
+    tier: str,
+    task: str,
 ) -> tuple[list[ResolvedTier], _TierWall]:
     """The chain that serves this call, or the wall that refuses it.
 
@@ -5058,7 +5257,8 @@ def _resolve_serving_chain(
         # outcome and this is a 400.
         return [], _TierWall(
             HTTPException(status_code=400, detail=str(unbound)),
-            router_mod.VISION_TIER, router_mod.VISION_TASK,
+            router_mod.VISION_TIER,
+            router_mod.VISION_TASK,
         )
     except TierUnknown:
         # 400, not a silent coercion to a default. A misconfigured agent must
@@ -5066,12 +5266,10 @@ def _resolve_serving_chain(
         return [], _TierWall(
             HTTPException(
                 status_code=400,
-                detail=(
-                    f"no binding for tier {tier!r} on task "
-                    f"{task!r}; name a tier, not a model"
-                ),
+                detail=(f"no binding for tier {tier!r} on task {task!r}; name a tier, not a model"),
             ),
-            tier, task,
+            tier,
+            task,
         )
     return chain, _TierWall(None, tier, task)
 
@@ -5097,8 +5295,7 @@ def _open_stream_chain(
     time a body iterator runs the 200 status line has gone out and no failover
     is expressible any more.
     """
-    return anyio.from_thread.run(
-        router_mod.open_stream_chain, attempts, kwargs_for, on_failover)
+    return anyio.from_thread.run(router_mod.open_stream_chain, attempts, kwargs_for, on_failover)
 
 
 async def _stream_closed() -> AsyncIterator[bytes]:
@@ -5160,12 +5357,17 @@ async def _streamed_completion(
     and ``http.response.start`` — this generator never starts, so no
     ``finally`` of ours exists to run. §8.6 records it.
     """
+
     def _on_finish(usage: ExtractedUsage, started: bool) -> None:
         if not started:
             return
         _record_completion(
-            usage, org_id=org_id, caller=caller,
-            resolved=resolved, client_ref=client_ref, byok=byok,
+            usage,
+            org_id=org_id,
+            caller=caller,
+            resolved=resolved,
+            client_ref=client_ref,
+            byok=byok,
             # A streamed `vision` call takes D-AI-2's lift exactly as a
             # buffered one does, so its row says `vision` too (§8.5 clause 4).
             declared_task=declared_task,
@@ -5226,8 +5428,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # provider call happens after the connection closes — looking a
         # credential up mid-failover would need a second connection on the
         # hottest path in the system.
-        chain, wall = _resolve_serving_chain(
-            conn, tier=req.model, task=req.task)
+        chain, wall = _resolve_serving_chain(conn, tier=req.model, task=req.task)
         unknown_tier = wall.error
 
         if unknown_tier is None:
@@ -5237,31 +5438,38 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             # is worth anything: after it we have already spent the money.
             # Metering afterwards stays best-effort and never fails a
             # completion — the GATE may refuse, the METER may not.
-            refusal = (
-                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
-            )
+            refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
 
     if unknown_tier is not None:
-        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
-                        tier=wall.tier, task=wall.task,
-                        client_ref=req.client_ref)
+        _record_refusal(
+            REFUSAL_TIER_UNKNOWN,
+            org_id=org_id,
+            caller=caller,
+            tier=wall.tier,
+            task=wall.task,
+            client_ref=req.client_ref,
+        )
         raise unknown_tier
 
     if refusal is not None:
         # Carried OUT of the transaction above, then recorded and delivered.
         # `_raise_spend_refusal` holds the rules and the shared shape.
-        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
-                             tier=req.model, task=req.task,
-                             client_ref=req.client_ref)
+        _raise_spend_refusal(
+            refusal,
+            org_id=org_id,
+            caller=caller,
+            tier=req.model,
+            task=req.task,
+            client_ref=req.client_ref,
+        )
 
     # ⚠️ **A step we hold no key for is not a step.** It cannot be tried at all,
     # so it is dropped here rather than attempted and counted as a failure —
     # otherwise one unconfigured vendor in the middle of a chain would burn an
     # attempt and a chunk of the latency budget on every single request.
-    attempts = [
-        step for step in chain
-        if credentials.get(step.model.split("/", 1)[0]) is not None
-    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+    attempts = [step for step in chain if credentials.get(step.model.split("/", 1)[0]) is not None][
+        : router_mod.MAX_CHAIN_ATTEMPTS
+    ]
 
     if not attempts:
         # Unchanged shape: the first step names the vendor somebody has to go
@@ -5282,8 +5490,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         cred = credentials[step.model.split("/", 1)[0]]
         assert cred is not None  # the attempts filter removed keyless steps
         passthrough = {
-            k: v for k, v in req.model_dump(exclude_none=True).items()
-            if k in _FORWARDABLE
+            k: v for k, v in req.model_dump(exclude_none=True).items() if k in _FORWARDABLE
         }
         requested_max = passthrough.get("max_tokens")
         passthrough["max_tokens"] = min(
@@ -5324,17 +5531,18 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # 📌 Declared ABOVE the stream branch on purpose. Both branches announce a
     # failover the same way, and a second copy of this callback is two places
     # to change the day the log line grows a field.
-    def _note_failover(
-        frm: ResolvedTier, to: ResolvedTier, status: int | None
-    ) -> None:
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
         # 📌 WHY a chain moved, which the row does not carry. `served_rank`
         # (migration 013) records WHICH step served. The reason lives here,
         # because it is read during an outage rather than during a bill.
         _log.warning(
             "router.failover",
             extra={
-                "fo_from": frm.model, "fo_to": to.model,
-                "fo_status": status, "fo_tier": frm.tier, "fo_task": frm.task,
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": frm.task,
             },
         )
 
@@ -5370,18 +5578,18 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         }
         try:
             head, source, resolved = _open_stream_chain(
-                attempts, _stream_kwargs_for, _note_failover)
+                attempts, _stream_kwargs_for, _note_failover
+            )
         except router_mod.UpstreamFailed as failed:
             # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
             # raises. `_stream_closed` holds the reason this stayed a 200 once
             # the walk moved out of the body generator and made a 502
             # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            _log.warning("router.stream_open_failed",
-                         extra={"upstream_status": failed.status})
+            _log.warning("router.stream_open_failed", extra={"upstream_status": failed.status})
             return StreamingResponse(
-                _stream_closed(),
-                media_type="text/event-stream", headers=headers)
+                _stream_closed(), media_type="text/event-stream", headers=headers
+            )
 
         return StreamingResponse(
             _streamed_completion(
@@ -5397,7 +5605,8 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 # What the CUSTOMER asked for. The bill follows `resolved`.
                 declared_task=req.task,
             ),
-            media_type="text/event-stream", headers=headers,
+            media_type="text/event-stream",
+            headers=headers,
         )
 
     try:
@@ -5417,8 +5626,10 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # so a failed request can no longer leave a phantom row behind.
     _record_completion(
         usage_from_response(response),
-        org_id=org_id, caller=caller,
-        resolved=resolved, client_ref=req.client_ref,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
         # ⚠️ Judged on the step that ANSWERED, not the primary. A chain can
         # legally mix a BYOK vendor with a platform one, and §3.4's zero-rating
         # follows whichever account the tokens actually ran on.
@@ -5504,9 +5715,7 @@ def _form_is_true(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY_FORM
 
 
-def _chain_invocations(
-    conn, chain: list[ResolvedTier], *, task: str
-) -> dict[str, str]:
+def _chain_invocations(conn, chain: list[ResolvedTier], *, task: str) -> dict[str, str]:
     """The provider verb for each step of the chain. D60 step two.
 
     Read in the caller's transaction beside the credentials, and for the same
@@ -5521,9 +5730,7 @@ def _chain_invocations(
     verbs: dict[str, str] = {}
     for step in chain:
         try:
-            verbs[step.model] = router_mod.resolve_invocation(
-                conn, step.model, task
-            )
+            verbs[step.model] = router_mod.resolve_invocation(conn, step.model, task)
         except TierUnknown:
             _log.warning(
                 "router.capability_missing",
@@ -5546,10 +5753,7 @@ def _nothing_to_try(
         provider = primary.model.split("/", 1)[0]
         detail = f"no provider credential configured for {provider!r}"
     else:
-        detail = (
-            f"no capability declares how to serve {primary.model!r} "
-            f"for task {task!r}"
-        )
+        detail = f"no capability declares how to serve {primary.model!r} for task {task!r}"
     return HTTPException(status_code=503, detail=detail)
 
 
@@ -5659,32 +5863,38 @@ def audio_transcriptions(
         if unknown_tier is None:
             credentials = _chain_credentials(conn, chain, org_id=org_id)
             # D60 step two, on the serving path for the first time.
-            invocations = _chain_invocations(
-                conn, chain, task=TRANSCRIBE_TASK
-            )
-            refusal = (
-                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
-            )
+            invocations = _chain_invocations(conn, chain, task=TRANSCRIBE_TASK)
+            refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
 
     if unknown_tier is not None:
-        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
-                        tier=model, task=TRANSCRIBE_TASK,
-                        client_ref=client_ref)
+        _record_refusal(
+            REFUSAL_TIER_UNKNOWN,
+            org_id=org_id,
+            caller=caller,
+            tier=model,
+            task=TRANSCRIBE_TASK,
+            client_ref=client_ref,
+        )
         raise unknown_tier
 
     if refusal is not None:
-        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
-                             tier=model, task=TRANSCRIBE_TASK,
-                             client_ref=client_ref)
+        _raise_spend_refusal(
+            refusal,
+            org_id=org_id,
+            caller=caller,
+            tier=model,
+            task=TRANSCRIBE_TASK,
+            client_ref=client_ref,
+        )
 
     # A step we hold no key for, or no capability row for, is not a step. It
     # cannot be tried at all, so it is dropped rather than attempted and
     # counted as a failure.
     attempts = [
-        step for step in chain
-        if credentials.get(step.model.split("/", 1)[0]) is not None
-        and step.model in invocations
-    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+        step
+        for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None and step.model in invocations
+    ][: router_mod.MAX_CHAIN_ATTEMPTS]
 
     if not attempts:
         raise _nothing_to_try(chain[0], invocations, task=TRANSCRIBE_TASK)
@@ -5723,14 +5933,14 @@ def audio_transcriptions(
         cred = credentials[step.model.split("/", 1)[0]]
         return bool(cred and cred.byok)
 
-    def _note_failover(
-        frm: ResolvedTier, to: ResolvedTier, status: int | None
-    ) -> None:
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
         _log.warning(
             "router.failover",
             extra={
-                "fo_from": frm.model, "fo_to": to.model,
-                "fo_status": status, "fo_tier": frm.tier,
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
                 "fo_task": TRANSCRIBE_TASK,
             },
         )
@@ -5754,9 +5964,11 @@ def audio_transcriptions(
         # an unmeasured call becomes visible instead of merely cheap.
         _log.warning(
             "router.unmeasured_quantity",
-            extra={"router_model": resolved.model,
-                   "router_tier": resolved.tier,
-                   "router_task": TRANSCRIBE_TASK},
+            extra={
+                "router_model": resolved.model,
+                "router_tier": resolved.tier,
+                "router_task": TRANSCRIBE_TASK,
+            },
         )
         minutes = Decimal(0)
     else:
@@ -5765,8 +5977,10 @@ def audio_transcriptions(
     # Metering is best-effort and NEVER fails the call.
     _record_completion(
         ExtractedUsage(),
-        org_id=org_id, caller=caller,
-        resolved=resolved, client_ref=client_ref,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=client_ref,
         byok=_byok_served(resolved),
         quantity=minutes,
     )
@@ -5880,9 +6094,13 @@ class SpeechRequest(BaseModel):
 
 
 def _serving_prelude(
-    *, tier: str, task: str, org_id: str, caller: Any, client_ref: str | None,
-) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None],
-           dict[str, str]]:
+    *,
+    tier: str,
+    task: str,
+    org_id: str,
+    caller: Any,
+    client_ref: str | None,
+) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None], dict[str, str]]:
     """Resolve the chain, load its keys and verbs, and stand the three walls.
 
     🔴 **ONE prelude for the image door and the speak door.** The transcribe
@@ -5912,36 +6130,38 @@ def _serving_prelude(
         except TierUnknown:
             unknown_tier = HTTPException(
                 status_code=400,
-                detail=(
-                    f"no binding for tier {tier!r} on task {task!r}; "
-                    "name a tier, not a model"
-                ),
+                detail=(f"no binding for tier {tier!r} on task {task!r}; name a tier, not a model"),
             )
 
         if unknown_tier is None:
             credentials = _chain_credentials(conn, chain, org_id=org_id)
             invocations = _chain_invocations(conn, chain, task=task)
-            refusal = (
-                _spend_refusal(conn, caller) if _spend_gate_enabled() else None
-            )
+            refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
 
     if unknown_tier is not None:
-        _record_refusal(REFUSAL_TIER_UNKNOWN, org_id=org_id, caller=caller,
-                        tier=tier, task=task, client_ref=client_ref)
+        _record_refusal(
+            REFUSAL_TIER_UNKNOWN,
+            org_id=org_id,
+            caller=caller,
+            tier=tier,
+            task=task,
+            client_ref=client_ref,
+        )
         raise unknown_tier
 
     if refusal is not None:
-        _raise_spend_refusal(refusal, org_id=org_id, caller=caller,
-                             tier=tier, task=task, client_ref=client_ref)
+        _raise_spend_refusal(
+            refusal, org_id=org_id, caller=caller, tier=tier, task=task, client_ref=client_ref
+        )
 
     # A step we hold no key for, or no capability row for, is not a step. It
     # cannot be tried at all, so it is dropped rather than attempted and
     # counted as a failure.
     attempts = [
-        step for step in chain
-        if credentials.get(step.model.split("/", 1)[0]) is not None
-        and step.model in invocations
-    ][:router_mod.MAX_CHAIN_ATTEMPTS]
+        step
+        for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None and step.model in invocations
+    ][: router_mod.MAX_CHAIN_ATTEMPTS]
 
     if not attempts:
         raise _nothing_to_try(chain[0], invocations, task=task)
@@ -5959,8 +6179,7 @@ def _unmeasured(resolved: ResolvedTier, task: str) -> None:
     """
     _log.warning(
         "router.unmeasured_quantity",
-        extra={"router_model": resolved.model, "router_tier": resolved.tier,
-               "router_task": task},
+        extra={"router_model": resolved.model, "router_tier": resolved.tier, "router_task": task},
     )
 
 
@@ -5993,7 +6212,10 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
     """
     org_id = caller.organization_id
     attempts, credentials, invocations = _serving_prelude(
-        tier=req.model, task=IMAGE_TASK, org_id=org_id, caller=caller,
+        tier=req.model,
+        task=IMAGE_TASK,
+        org_id=org_id,
+        caller=caller,
         client_ref=req.client_ref,
     )
 
@@ -6032,14 +6254,16 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         cred = credentials[step.model.split("/", 1)[0]]
         return bool(cred and cred.byok)
 
-    def _note_failover(
-        frm: ResolvedTier, to: ResolvedTier, status: int | None
-    ) -> None:
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
         _log.warning(
             "router.failover",
-            extra={"fo_from": frm.model, "fo_to": to.model,
-                   "fo_status": status, "fo_tier": frm.tier,
-                   "fo_task": IMAGE_TASK},
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": IMAGE_TASK,
+            },
         )
 
     try:
@@ -6060,8 +6284,10 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
     # Metering is best-effort and NEVER fails the call.
     _record_completion(
         ExtractedUsage(),
-        org_id=org_id, caller=caller,
-        resolved=resolved, client_ref=req.client_ref,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=pictures,
     )
@@ -6114,7 +6340,10 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
 
     org_id = caller.organization_id
     attempts, credentials, invocations = _serving_prelude(
-        tier=req.model, task=SPEAK_TASK, org_id=org_id, caller=caller,
+        tier=req.model,
+        task=SPEAK_TASK,
+        org_id=org_id,
+        caller=caller,
         client_ref=req.client_ref,
     )
 
@@ -6145,14 +6374,16 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         cred = credentials[step.model.split("/", 1)[0]]
         return bool(cred and cred.byok)
 
-    def _note_failover(
-        frm: ResolvedTier, to: ResolvedTier, status: int | None
-    ) -> None:
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
         _log.warning(
             "router.failover",
-            extra={"fo_from": frm.model, "fo_to": to.model,
-                   "fo_status": status, "fo_tier": frm.tier,
-                   "fo_task": SPEAK_TASK},
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": SPEAK_TASK,
+            },
         )
 
     try:
@@ -6184,8 +6415,10 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
     # Metering is best-effort and NEVER fails the call.
     _record_completion(
         ExtractedUsage(),
-        org_id=org_id, caller=caller,
-        resolved=resolved, client_ref=req.client_ref,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=characters,
     )
@@ -6233,11 +6466,15 @@ def my_billing(caller: PayingCaller) -> dict[str, Any]:
         # BYOK: metered, never charged for tokens (§3.4). Presence of the org's
         # own provider credential is what makes it true — not a flag somebody
         # sets separately and forgets to clear.
-        is_byok = bool(conn.execute(
-            text("SELECT 1 FROM provider_credential "
-                 "WHERE organization_id = :o AND revoked_at IS NULL LIMIT 1"),
-            {"o": org_id},
-        ).first())
+        is_byok = bool(
+            conn.execute(
+                text(
+                    "SELECT 1 FROM provider_credential "
+                    "WHERE organization_id = :o AND revoked_at IS NULL LIMIT 1"
+                ),
+                {"o": org_id},
+            ).first()
+        )
 
     return {
         "credits": {
@@ -6412,7 +6649,8 @@ class UsageSeriesView(BaseModel):
 
 @app.get("/admin/usage/orgs")
 def admin_usage_by_org(
-    _: Operator, days: int = store.SPEND_WINDOW_DAYS,
+    _: Operator,
+    days: int = store.SPEND_WINDOW_DAYS,
 ) -> OrgUsageView:
     """Every organization's AI usage, with margin, runway and the silent flag.
 
@@ -6434,7 +6672,8 @@ def admin_usage_by_org(
         burn = {
             r["slug"]: r["credits"]
             for r in store.usage_by_org(
-                conn, days=analytics.BURN_WINDOW_DAYS,
+                conn,
+                days=analytics.BURN_WINDOW_DAYS,
                 limit=max(page["total"], 1),
             )["rows"]
         }
@@ -6445,8 +6684,7 @@ def admin_usage_by_org(
     # A3 over EVERYBODY. The per-row flag survives for the visible page;
     # this list is what stops the cap from hiding the quiet-but-funded.
     silent_slugs = sorted(
-        slug for slug, bal in balances.items()
-        if analytics.is_silent(bal, last_seen.get(slug), now)
+        slug for slug, bal in balances.items() if analytics.is_silent(bal, last_seen.get(slug), now)
     )
     return OrgUsageView(
         windowDays=days,
@@ -6458,17 +6696,18 @@ def admin_usage_by_org(
         silentSlugs=silent_slugs,
         rows=[
             OrgUsageRow(
-                slug=r["slug"], name=r["name"], calls=r["calls"],
-                credits=str(r["credits"]), members=r["members"],
-                costUsd=str(r["cost_usd"]), balance=str(r["balance"]),
+                slug=r["slug"],
+                name=r["name"],
+                calls=r["calls"],
+                credits=str(r["credits"]),
+                members=r["members"],
+                costUsd=str(r["cost_usd"]),
+                balance=str(r["balance"]),
                 lastSeen=r["last_seen"],
-                marginRatio=(
-                    None if r["margin_ratio"] is None else str(r["margin_ratio"])
-                ),
-                costedShare=(
-                    None if r["costed_share"] is None else str(r["costed_share"])
-                ),
-                runwayDays=r["runway_days"], silent=r["silent"],
+                marginRatio=(None if r["margin_ratio"] is None else str(r["margin_ratio"])),
+                costedShare=(None if r["costed_share"] is None else str(r["costed_share"])),
+                runwayDays=r["runway_days"],
+                silent=r["silent"],
                 refusals=r["refusals"],
             )
             for r in annotated
@@ -6478,7 +6717,9 @@ def admin_usage_by_org(
 
 @app.get("/admin/usage/daily")
 def admin_usage_daily(
-    _: Operator, days: int = store.SPEND_WINDOW_DAYS, org_slug: str | None = None,
+    _: Operator,
+    days: int = store.SPEND_WINDOW_DAYS,
+    org_slug: str | None = None,
 ) -> UsageSeriesView:
     """AI usage per day, for the platform or for one organization.
 
@@ -6493,8 +6734,7 @@ def admin_usage_daily(
     return UsageSeriesView(
         windowDays=days,
         days=[
-            UsageDayRow(day=r["day"], calls=r["calls"], credits=str(r["credits"]))
-            for r in series
+            UsageDayRow(day=r["day"], calls=r["calls"], credits=str(r["credits"])) for r in series
         ],
         spikes=analytics.spike_days(series),
     )
@@ -6502,7 +6742,8 @@ def admin_usage_daily(
 
 @app.get("/my/usage/activity")
 def my_usage_by_activity(
-    caller: KeyCaller, member: str | None = None,
+    caller: KeyCaller,
+    member: str | None = None,
 ) -> ActivitySpendView:
     """What this organization ran, and what it cost. **D66 (a).**
 
@@ -6516,12 +6757,15 @@ def my_usage_by_activity(
     """
     with get_engine().begin() as conn:
         rows = store.usage_by_activity(
-            conn, org_id=caller.organization_id, member=member,
+            conn,
+            org_id=caller.organization_id,
+            member=member,
         )
     return ActivitySpendView(
         rows=[
             ActivitySpendRow(
-                activity=r["activity"], calls=r["calls"],
+                activity=r["activity"],
+                calls=r["calls"],
                 credits=str(r["credits"]),
             )
             for r in rows
@@ -6545,7 +6789,9 @@ def my_usage_by_member(caller: KeyCaller) -> MemberSpendView:
     return MemberSpendView(
         rows=[
             MemberSpendRow(
-                member=r["member"], calls=r["calls"], credits=str(r["credits"]),
+                member=r["member"],
+                calls=r["calls"],
+                credits=str(r["credits"]),
             )
             for r in rows
         ],
@@ -6583,10 +6829,7 @@ def my_tiers(_: KeyCaller) -> CustomerTierView:
     with get_engine().begin() as conn:
         rows = store.visible_tiers(conn)
     return CustomerTierView(
-        rows=[
-            CustomerTierRow(slug=r["slug"], label=r["label"], blurb=r["blurb"])
-            for r in rows
-        ],
+        rows=[CustomerTierRow(slug=r["slug"], label=r["label"], blurb=r["blurb"]) for r in rows],
     )
 
 
@@ -6664,16 +6907,18 @@ def billing_catalog(_: CatalogCaller) -> CatalogView:
     an order charges cannot drift into two denominations.
     """
     with get_engine().begin() as conn:
-        return CatalogView(plans=[
-            CatalogPlanView(
-                slug=plan["slug"],
-                name=plan["name"],
-                kind=plan["kind"],
-                price_paise=payments.paise(plan["price_inr"]),
-                sort_order=plan["sort_order"],
-            )
-            for plan in store.active_plans(conn)
-        ])
+        return CatalogView(
+            plans=[
+                CatalogPlanView(
+                    slug=plan["slug"],
+                    name=plan["name"],
+                    kind=plan["kind"],
+                    price_paise=payments.paise(plan["price_inr"]),
+                    sort_order=plan["sort_order"],
+                )
+                for plan in store.active_plans(conn)
+            ]
+        )
 
 
 @app.get("/me/seats")
@@ -6751,10 +6996,9 @@ def my_members(caller: PayingCaller) -> MembersView:
     with get_engine().begin() as conn:
         rows = store.org_members(conn, org_id=caller.organization_id)
         seats = store.live_seats_by_email(conn, org_id=caller.organization_id)
-        return MembersView(members=[
-            MemberView(**row, seats=seats.get(row["email"], []))
-            for row in rows
-        ])
+        return MembersView(
+            members=[MemberView(**row, seats=seats.get(row["email"], [])) for row in rows]
+        )
 
 
 def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:
@@ -6775,21 +7019,27 @@ def _order_view(conn, order: dict[str, Any], *, with_lines: bool) -> OrderView:
         terminal_at=order["terminal_at"],
         lines=(
             [OrderLineView(**line) for line in _lines_for(conn, order["id"])]
-            if with_lines else None
+            if with_lines
+            else None
         ),
         discount=(
             OrderDiscountView(
                 code_prefix=discount["code_prefix"],
                 discount_paise=discount["discount_paise"],
-            ) if discount else None
+            )
+            if discount
+            else None
         ),
     )
 
 
 def _lines_for(conn, order_id: str) -> list[dict[str, Any]]:
     return [
-        {"plan_slug": line["plan_slug"], "quantity": line["quantity"],
-         "unit_price_paise": line["unit_price_paise"]}
+        {
+            "plan_slug": line["plan_slug"],
+            "quantity": line["quantity"],
+            "unit_price_paise": line["unit_price_paise"],
+        }
         for line in store.order_lines(conn, order_id=order_id)
     ]
 
@@ -6816,10 +7066,13 @@ def _priced_basket(conn, lines: list[OrderLineRequest]) -> tuple[list, int]:
             )
         unit = payments.paise(plan["price_inr"])
         gross += unit * line.quantity
-        priced.append({
-            "plan_slug": plan["slug"], "quantity": line.quantity,
-            "unit_price_paise": unit,
-        })
+        priced.append(
+            {
+                "plan_slug": plan["slug"],
+                "quantity": line.quantity,
+                "unit_price_paise": unit,
+            }
+        )
     return priced, gross
 
 
@@ -6873,29 +7126,45 @@ def create_order(req: CreateOrderRequest, caller: PayingCaller) -> OrderView:
             )
 
         order_id = store.create_order(
-            conn, org_id=org_id, provider="razorpay",
-            gross_paise=gross, discount_paise=0, taxable_paise=gross,
-            gst_paise=gst, total_paise=total, gst_split=gst_split,
+            conn,
+            org_id=org_id,
+            provider="razorpay",
+            gross_paise=gross,
+            discount_paise=0,
+            taxable_paise=gross,
+            gst_paise=gst,
+            total_paise=total,
+            gst_split=gst_split,
             customer_gstin=billing[0] if billing else None,
             place_of_supply=billing[1] if billing else None,
-            expires_in_minutes=_ORDER_TTL_MINUTES, lines=priced,
+            expires_in_minutes=_ORDER_TTL_MINUTES,
+            lines=priced,
         )
         # Inside the transaction on purpose: if the provider refuses, the local
         # order rolls back with it. The orphan this can leave is the harmless
         # direction — a provider order nobody pays, which expires there — and
         # never the dangerous one, a local order the customer cannot pay.
         created = provider.create_order(
-            amount_paise=total, receipt=order_id,
+            amount_paise=total,
+            receipt=order_id,
             notes={"organization_id": org_id},
         )
         store.set_provider_order_id(
-            conn, order_id=order_id,
+            conn,
+            order_id=order_id,
             provider_order_id=created.provider_order_id,
         )
-        _audit(conn, org_id, "order.create",
-               {"order_id": order_id, "total_paise": total,
-                "lines": [line["plan_slug"] for line in priced]},
-               actor="organization")
+        _audit(
+            conn,
+            org_id,
+            "order.create",
+            {
+                "order_id": order_id,
+                "total_paise": total,
+                "lines": [line["plan_slug"] for line in priced],
+            },
+            actor="organization",
+        )
         order = store.order_for_update(conn, order_id=order_id, org_id=org_id)
         assert order is not None
         return _order_view(conn, order, with_lines=True)
@@ -6911,7 +7180,8 @@ def read_order(order_id: str, caller: PayingCaller) -> OrderView:
     """
     with get_engine().begin() as conn:
         order = store.order_row(
-            conn, order_id=_valid_uuid(order_id),
+            conn,
+            order_id=_valid_uuid(order_id),
             org_id=caller.organization_id,
         )
         if order is None:
@@ -6921,7 +7191,9 @@ def read_order(order_id: str, caller: PayingCaller) -> OrderView:
 
 @app.get("/billing/orders")
 def list_orders(
-    caller: PayingCaller, status: str | None = None, cursor: str | None = None,
+    caller: PayingCaller,
+    status: str | None = None,
+    cursor: str | None = None,
 ) -> OrderPageView:
     """That organization's orders, newest first (§9.3a).
 
@@ -6932,12 +7204,13 @@ def list_orders(
     if status is not None and status not in payments.ORDER_STATES:
         raise HTTPException(
             status_code=400,
-            detail=f"unknown status {status!r}; "
-                   f"expected one of {sorted(payments.ORDER_STATES)}",
+            detail=f"unknown status {status!r}; expected one of {sorted(payments.ORDER_STATES)}",
         )
     with get_engine().begin() as conn:
         rows = store.orders_page(
-            conn, org_id=caller.organization_id, limit=_ORDER_PAGE_SIZE,
+            conn,
+            org_id=caller.organization_id,
+            limit=_ORDER_PAGE_SIZE,
             status=status,
             cursor=_valid_uuid(cursor) if cursor else None,
         )
@@ -6962,7 +7235,9 @@ def _valid_uuid(value: str) -> str:
 
 @app.post("/billing/orders/{order_id}/redeem")
 def redeem_discount_code(
-    order_id: str, req: RedeemRequest, caller: PayingCaller,
+    order_id: str,
+    req: RedeemRequest,
+    caller: PayingCaller,
 ) -> OrderView:
     """Present a discount code against one's own order (SC-4g, §9.3(2)).
 
@@ -7047,8 +7322,7 @@ def redeem_discount_code(
             raise HTTPException(409, detail={"reason": "expired"})
         if code["revoked"]:
             raise HTTPException(409, detail={"reason": "revoked"})
-        if store.count_redemptions(conn, code_id=code["id"]) >= code[
-                "max_redemptions"]:
+        if store.count_redemptions(conn, code_id=code["id"]) >= code["max_redemptions"]:
             raise HTTPException(409, detail={"reason": "exhausted"})
 
         return _apply_redemption(conn, order=order, code=code, org_id=org_id)
@@ -7100,7 +7374,11 @@ def _log_redeem_attempt(order_id: str, parsed) -> None:
 
 
 def _apply_redemption(
-    conn, *, order: dict[str, Any], code: dict[str, Any], org_id: str,
+    conn,
+    *,
+    order: dict[str, Any],
+    code: dict[str, Any],
+    org_id: str,
 ) -> OrderView:
     """Recompute the order's money, record the redemption, and — at zero — grant.
 
@@ -7110,16 +7388,22 @@ def _apply_redemption(
     tax would leave GST payable on a zero-rupee sale.
     """
     discount = payments.discount_for(
-        gross_paise=order["gross_paise"], kind=code["kind"],
-        percent_bp=code["percent_bp"], amount_paise=code["amount_paise"],
+        gross_paise=order["gross_paise"],
+        kind=code["kind"],
+        percent_bp=code["percent_bp"],
+        amount_paise=code["amount_paise"],
     )
     taxable = order["gross_paise"] - discount
     gst = payments.gst_for(taxable)
     total = taxable + gst
 
     redemption_id = store.write_redemption(
-        conn, code_id=code["id"], org_id=org_id, order_id=order["id"],
-        gross_paise=order["gross_paise"], discount_paise=discount,
+        conn,
+        code_id=code["id"],
+        org_id=org_id,
+        order_id=order["id"],
+        gross_paise=order["gross_paise"],
+        discount_paise=discount,
         net_paise=total,
     )
     if redemption_id is None:
@@ -7128,13 +7412,25 @@ def _apply_redemption(
         return _order_view(conn, order, with_lines=True)
 
     store.apply_discount_to_order(
-        conn, order_id=order["id"], discount_paise=discount,
-        taxable_paise=taxable, gst_paise=gst, total_paise=total,
+        conn,
+        order_id=order["id"],
+        discount_paise=discount,
+        taxable_paise=taxable,
+        gst_paise=gst,
+        total_paise=total,
     )
-    _audit(conn, org_id, "discount.redeem",
-           {"order_id": order["id"], "code_prefix": code["prefix"],
-            "discount_paise": discount, "net_paise": total},
-           actor="organization")
+    _audit(
+        conn,
+        org_id,
+        "discount.redeem",
+        {
+            "order_id": order["id"],
+            "code_prefix": code["prefix"],
+            "discount_paise": discount,
+            "net_paise": total,
+        },
+        actor="organization",
+    )
 
     if total == 0:
         # The Rs 0 path: `provider='none'`, no provider identifier, and ZERO
@@ -7143,7 +7439,8 @@ def _apply_redemption(
         # orphan, named rather than discovered (SC-4g (iv)).
         store.detach_provider(conn, order_id=order["id"])
         payments.fulfil(
-            conn, order_id=order["id"],
+            conn,
+            order_id=order["id"],
             reference=f"redemption:{redemption_id}",
         )
     else:
@@ -7152,28 +7449,28 @@ def _apply_redemption(
         # provider order is REPLACED because its amount is now wrong, and a
         # provider order that collects the pre-discount amount is a customer
         # overcharged by us.
-        _replace_provider_order(conn, order_id=order["id"], total_paise=total,
-                                org_id=org_id)
+        _replace_provider_order(conn, order_id=order["id"], total_paise=total, org_id=org_id)
 
     fresh = store.order_row(conn, order_id=order["id"], org_id=org_id)
     assert fresh is not None
     return _order_view(conn, fresh, with_lines=True)
 
 
-def _replace_provider_order(
-    conn, *, order_id: str, total_paise: int, org_id: str
-) -> None:
+def _replace_provider_order(conn, *, order_id: str, total_paise: int, org_id: str) -> None:
     """Re-create the provider order for the discounted amount."""
     try:
         provider = payments.provider()
     except payments.ProviderUnconfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     created = provider.create_order(
-        amount_paise=total_paise, receipt=order_id,
+        amount_paise=total_paise,
+        receipt=order_id,
         notes={"organization_id": org_id},
     )
     store.set_provider_order_id(
-        conn, order_id=order_id, provider_order_id=created.provider_order_id,
+        conn,
+        order_id=order_id,
+        provider_order_id=created.provider_order_id,
     )
 
 
@@ -7216,18 +7513,19 @@ def razorpay_webhook(event: SignedWebhook) -> dict[str, Any]:
     """
     with get_engine().begin() as conn:
         order = (
-            store.order_by_provider_id(
-                conn, provider_order_id=event.provider_order_id)
-            if event.provider_order_id else None
+            store.order_by_provider_id(conn, provider_order_id=event.provider_order_id)
+            if event.provider_order_id
+            else None
         )
         fresh = store.record_payment_event(
-            conn, provider_event_id=event.event_id,
+            conn,
+            provider_event_id=event.event_id,
             order_id=order["id"] if order else None,
-            kind=event.kind, body=json.dumps(event.body),
+            kind=event.kind,
+            body=json.dumps(event.body),
         )
         if not fresh:
-            _log.info("payments.webhook_duplicate",
-                      extra={"event": event.event_id})
+            _log.info("payments.webhook_duplicate", extra={"event": event.event_id})
             return {"recorded": False, "fulfilled": False}
         if order is None:
             # Recorded, not acted on, and 200 so the provider stops retrying a
@@ -7246,10 +7544,13 @@ def razorpay_webhook(event: SignedWebhook) -> dict[str, Any]:
             # `test_a_capture_with_no_matching_order_is_kept_and_alerted_at_error`.
             _log.error(
                 "payments.webhook_unknown_order",
-                extra={"event": event.event_id, "event_kind": event.kind,
-                       "provider_order_id": event.provider_order_id,
-                       "provider_payment_id": event.provider_payment_id,
-                       "amount_paise": event.amount_paise},
+                extra={
+                    "event": event.event_id,
+                    "event_kind": event.kind,
+                    "provider_order_id": event.provider_order_id,
+                    "provider_payment_id": event.provider_payment_id,
+                    "amount_paise": event.amount_paise,
+                },
             )
             return {"recorded": True, "fulfilled": False}
 
@@ -7276,9 +7577,13 @@ def _handle_webhook_event(
         # says so" reads `payment_event`, not a closed order.
         _log.info(
             "payments.attempt_failed",
-            extra={"order": order["id"], "event": event.event_id,
-                   "event_kind": event.kind, "status": order["status"],
-                   "provider_payment_id": event.provider_payment_id},
+            extra={
+                "order": order["id"],
+                "event": event.event_id,
+                "event_kind": event.kind,
+                "status": order["status"],
+                "provider_payment_id": event.provider_payment_id,
+            },
         )
         return {"recorded": True, "fulfilled": False}
 
@@ -7294,9 +7599,12 @@ def _handle_webhook_event(
         # the incident.
         _log.error(
             "payments.amount_mismatch",
-            extra={"order": order["id"], "event": event.event_id,
-                   "expected_paise": order["total_paise"],
-                   "presented_paise": event.amount_paise},
+            extra={
+                "order": order["id"],
+                "event": event.event_id,
+                "expected_paise": order["total_paise"],
+                "presented_paise": event.amount_paise,
+            },
         )
         raise HTTPException(
             status_code=409,
@@ -7305,16 +7613,21 @@ def _handle_webhook_event(
 
     try:
         payments.fulfil(
-            conn, order_id=order["id"], reference=f"order:{order['id']}",
+            conn,
+            order_id=order["id"],
+            reference=f"order:{order['id']}",
         )
         # The capture that grants seats and credits gets an audit row like
         # its manual twin — `GET /activity` showed a manual activation and
         # hid a paid one. Actor: the provider, whose verified signature
         # authorised the act.
-        _audit(conn, order["organization_id"], "payment.captured",
-               {"order_id": order["id"], "event": event.event_id,
-                "amount_paise": event.amount_paise},
-               actor="razorpay")
+        _audit(
+            conn,
+            order["organization_id"],
+            "payment.captured",
+            {"order_id": order["id"], "event": event.event_id, "amount_paise": event.amount_paise},
+            actor="razorpay",
+        )
     except TransitionRefused:
         # ⚠️ **TWO situations reach this arm and only ONE of them is benign**
         # (split 2026-08-19, review P0(b)). Branching on the order's status is
@@ -7323,8 +7636,9 @@ def _handle_webhook_event(
             # The SECOND event of one capture (`payment.captured` and
             # `order.paid` carry different ids). Recorded, not fulfilled,
             # 200 — the money guard doing exactly its job.
-            _log.info("payments.already_fulfilled",
-                      extra={"order": order["id"], "event": event.event_id})
+            _log.info(
+                "payments.already_fulfilled", extra={"order": order["id"], "event": event.event_id}
+            )
             return {"recorded": True, "fulfilled": False}
         # Any OTHER terminal state — `abandoned` today, reachable the moment a
         # capture lands after the TTL sweep ran — means a signature-verified
@@ -7335,11 +7649,14 @@ def _handle_webhook_event(
         # rows alongside the NULL-`order_id` receipts.
         _log.error(
             "payments.capture_after_terminal",
-            extra={"order": order["id"], "event": event.event_id,
-                   "status": order["status"],
-                   "provider_order_id": event.provider_order_id,
-                   "provider_payment_id": event.provider_payment_id,
-                   "amount_paise": event.amount_paise},
+            extra={
+                "order": order["id"],
+                "event": event.event_id,
+                "status": order["status"],
+                "provider_order_id": event.provider_order_id,
+                "provider_payment_id": event.provider_payment_id,
+                "amount_paise": event.amount_paise,
+            },
         )
         return {"recorded": True, "fulfilled": False}
     return {"recorded": True, "fulfilled": True}
@@ -7372,32 +7689,45 @@ def issue_discount(req: IssueDiscountRequest, staff: Operator) -> dict[str, Any]
     surface CP-8 will render.
     """
     if req.kind not in ("percent", "fixed"):
-        raise HTTPException(status_code=400,
-                            detail="kind must be 'percent' or 'fixed'")
+        raise HTTPException(status_code=400, detail="kind must be 'percent' or 'fixed'")
     if (req.kind == "percent") != (req.percent_bp is not None):
         raise HTTPException(
-            status_code=400,
-            detail="a percent code needs percent_bp and nothing else")
+            status_code=400, detail="a percent code needs percent_bp and nothing else"
+        )
     if (req.kind == "fixed") != (req.amount_paise is not None):
         raise HTTPException(
-            status_code=400,
-            detail="a fixed code needs amount_paise and nothing else")
+            status_code=400, detail="a fixed code needs amount_paise and nothing else"
+        )
 
     minted = mint_key(env=ENV_DISCOUNT)
     with get_engine().begin() as conn:
         org_id = _org_id(conn, req.org_slug) if req.org_slug else None
         store.issue_discount_code(
-            conn, prefix=minted.prefix, code_hash=minted.key_hash,
-            label=req.label, kind=req.kind, org_id=org_id,
-            percent_bp=req.percent_bp, amount_paise=req.amount_paise,
-            max_redemptions=req.max_redemptions, expires_at=req.expires_at,
+            conn,
+            prefix=minted.prefix,
+            code_hash=minted.key_hash,
+            label=req.label,
+            kind=req.kind,
+            org_id=org_id,
+            percent_bp=req.percent_bp,
+            amount_paise=req.amount_paise,
+            max_redemptions=req.max_redemptions,
+            expires_at=req.expires_at,
             created_by="operator",
         )
         # The audit row records the PREFIX, never the token.
-        _audit(conn, org_id, "discount.issue",
-               {"prefix": minted.prefix, "label": req.label,
-                "kind": req.kind, "max_redemptions": req.max_redemptions},
-               actor=staff.actor)
+        _audit(
+            conn,
+            org_id,
+            "discount.issue",
+            {
+                "prefix": minted.prefix,
+                "label": req.label,
+                "kind": req.kind,
+                "max_redemptions": req.max_redemptions,
+            },
+            actor=staff.actor,
+        )
 
     return {"prefix": minted.prefix, "code": minted.token}
 
