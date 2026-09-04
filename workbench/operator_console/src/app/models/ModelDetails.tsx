@@ -20,6 +20,7 @@ import { useState } from "react";
 
 import type { CatalogModel, FeedModel } from "@/lib/contract";
 import { driftFor, prefillFrom } from "@/lib/feed";
+import { windowProblem, wrapsMidnight } from "@/lib/window";
 
 /** Blank means UNKNOWN and travels as null. A typed value travels as the
  *  TRIMMED STRING, verbatim — the wire rule for money ("0.280000" must not
@@ -58,6 +59,33 @@ export default function ModelDetails({
   const [vmin, setVmin] = useState(m.perMinuteUsd?.toString() ?? "");
   const [vchar, setVchar] = useState(m.perCharacterUsd?.toString() ?? "");
   const [vimg, setVimg] = useState(m.perImageUsd?.toString() ?? "");
+  // 023 — the OFF-PEAK rates and the window that selects them.
+  //
+  // ⚠️ The three boxes above hold the PEAK rate. They keep their plain labels
+  // because that is what the vendor feed fills them with, and because R6
+  // forbade renaming the columns underneath.
+  //
+  // 🔴 These change what a call COST us, never what a customer pays: D67 keys
+  // the charge on the tier. And a tier PRICE still derives from the peak rate
+  // alone (owner directive, 2026-09-04), so nothing on the Pricing board reads
+  // an off-peak number.
+  const [vinOff, setVinOff] = useState(m.inputOffpeakPer1M?.toString() ?? "");
+  const [voutOff, setVoutOff] = useState(m.outputOffpeakPer1M?.toString() ?? "");
+  const [vcachedOff, setVcachedOff] = useState(
+    m.cachedInputOffpeakPer1M?.toString() ?? "",
+  );
+  const [offStart, setOffStart] = useState(m.offpeakStartUtc ?? "");
+  const [offEnd, setOffEnd] = useState(m.offpeakEndUtc ?? "");
+  // 023 — the long-context threshold and its rates. Without them a large
+  // document under-bills by half, on exactly the calls that cost most.
+  const [ctxThreshold, setCtxThreshold] = useState(
+    m.contextTierThreshold?.toString() ?? "",
+  );
+  const [vinLong, setVinLong] = useState(m.inputLongPer1M?.toString() ?? "");
+  const [voutLong, setVoutLong] = useState(m.outputLongPer1M?.toString() ?? "");
+  const [vcachedLong, setVcachedLong] = useState(
+    m.cachedInputLongPer1M?.toString() ?? "",
+  );
   const [description, setDescription] = useState(m.description);
   const [readsImages, setReadsImages] = useState(m.kinds.includes("vision"));
   const [thinksFirst, setThinksFirst] = useState(m.kinds.includes("reasoning"));
@@ -77,6 +105,13 @@ export default function ModelDetails({
       ["$ per minute", vmin],
       ["$ per character", vchar],
       ["$ per image", vimg],
+      ["$ per 1M in, off-peak", vinOff],
+      ["$ per 1M out, off-peak", voutOff],
+      ["$ per 1M cached, off-peak", vcachedOff],
+      ["long-context threshold", ctxThreshold],
+      ["$ per 1M in, long context", vinLong],
+      ["$ per 1M out, long context", voutLong],
+      ["$ per 1M cached, long context", vcachedLong],
     ];
     const bad = boxes.find(([, v]) => badNumber(v));
     if (bad) {
@@ -84,6 +119,16 @@ export default function ModelDetails({
         ok: false,
         text: `"${bad[1].trim()}" is not a number (${bad[0]}). Fix the box or clear it — blank means unknown.`,
       });
+      return;
+    }
+
+    // ⚠️ The judgement lives in `lib/window.ts`, not here — the repo's rule
+    // (`priceboard.ts`, `pricing.ts`) is that anything with a right and a
+    // wrong answer is a pure function with its own test. The database refuses
+    // the same shape, so this only moves WHERE the operator finds out.
+    const problem = windowProblem(offStart, offEnd);
+    if (problem) {
+      setResult({ ok: false, text: problem.message });
       return;
     }
     setBusy(true);
@@ -108,6 +153,18 @@ export default function ModelDetails({
           vendor_per_minute_usd: blankToNull(vmin),
           vendor_per_character_usd: blankToNull(vchar),
           vendor_per_image_usd: blankToNull(vimg),
+          // 023 — the off-peak rates, the window, and the long-context tier.
+          // ⚠️ The Console's ProfileRequest is `extra="forbid"`, so a
+          // misnamed key here answers 422 rather than storing nothing.
+          vendor_input_offpeak_per_1m_usd: blankToNull(vinOff),
+          vendor_output_offpeak_per_1m_usd: blankToNull(voutOff),
+          vendor_cached_input_offpeak_per_1m_usd: blankToNull(vcachedOff),
+          offpeak_start_utc: offStart.trim() || null,
+          offpeak_end_utc: offEnd.trim() || null,
+          context_tier_threshold: blankToNull(ctxThreshold),
+          vendor_input_long_per_1m_usd: blankToNull(vinLong),
+          vendor_output_long_per_1m_usd: blankToNull(voutLong),
+          vendor_cached_input_long_per_1m_usd: blankToNull(vcachedLong),
           description: description.trim(),
           reads_images: readsImages,
           thinks_first: thinksFirst,
@@ -149,6 +206,12 @@ export default function ModelDetails({
     setVimg(v.vimg);
     setReadsImages(v.readsImages);
     setThinksFirst(v.thinksFirst);
+    // ⚠️ The off-peak and long-context boxes are DELIBERATELY not filled here,
+    // and this is not an omission. `vendor_price_feed` has no window dimension
+    // and no context tier — litellm publishes one rate per model — so there is
+    // nothing upstream to copy. Prefilling them from the peak number would
+    // write a fact nobody measured, and the operator would then see two
+    // identical rates and reasonably believe the vendor charges one price.
   }
 
   return (
@@ -246,6 +309,139 @@ export default function ModelDetails({
             value={vcached}
             placeholder="0.3"
             onChange={(e) => setVcached(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* 023 — the OFF-PEAK window.
+          🔴 The three boxes above are the PEAK rate. DeepSeek charges less for
+          part of the day, so one number per token kind recorded a cheap call
+          and a dear one as costing the same.
+          ⚠️ This changes what a call COST us and never what a customer pays —
+          D67 keys the charge on the tier — and a tier PRICE still derives from
+          the peak rate alone (owner directive, 2026-09-04). */}
+      <p className="field-hint">
+        Only for a vendor that charges less at certain hours. Leave every box
+        empty and this model is priced the same all day, which is how almost
+        every vendor works. The three boxes above are the <b>peak</b> rate.
+      </p>
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`os-${m.id}`}>Off-peak starts (UTC)</label>
+          <input
+            id={`os-${m.id}`}
+            value={offStart}
+            placeholder="16:30"
+            onChange={(e) => setOffStart(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`oe-${m.id}`}>Off-peak ends (UTC)</label>
+          <input
+            id={`oe-${m.id}`}
+            value={offEnd}
+            placeholder="00:30"
+            onChange={(e) => setOffEnd(e.target.value)}
+          />
+        </div>
+      </div>
+      {/* The window MAY wrap midnight, and DeepSeek's does. Said out loud
+          here because an operator reading "starts 16:30, ends 00:30" would
+          otherwise reasonably wonder whether it means eight hours or none. */}
+      <p className="field-hint">
+        {wrapsMidnight(offStart, offEnd) ? (
+          <>
+            This window <b>crosses midnight</b> — it runs from {offStart.trim()}{" "}
+            tonight to {offEnd.trim()} tomorrow. That is intended for a vendor
+            like DeepSeek, whose cheap hours span the night.
+          </>
+        ) : (
+          <>
+            A window may cross midnight — <code>16:30</code> to{" "}
+            <code>00:30</code> is eight hours over the night. Both times, or
+            neither.
+          </>
+        )}
+      </p>
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`vio-${m.id}`}>We pay, per 1M in (off-peak)</label>
+          <input
+            id={`vio-${m.id}`}
+            inputMode="decimal"
+            value={vinOff}
+            placeholder="0.22"
+            onChange={(e) => setVinOff(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`voo-${m.id}`}>We pay, per 1M out (off-peak)</label>
+          <input
+            id={`voo-${m.id}`}
+            inputMode="decimal"
+            value={voutOff}
+            placeholder="0.66"
+            onChange={(e) => setVoutOff(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vco-${m.id}`}>We pay, per 1M cached (off-peak)</label>
+          <input
+            id={`vco-${m.id}`}
+            inputMode="decimal"
+            value={vcachedOff}
+            placeholder="0.007"
+            onChange={(e) => setVcachedOff(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* 023 — the LONG-CONTEXT tier. Without it a large document under-bills
+          by half, on exactly the calls that already cost most. */}
+      <p className="field-hint">
+        Only for a vendor that charges more above a context size. Set the
+        threshold and the rates that apply above it. Leave empty for one rate
+        at every size.
+      </p>
+      <div className="formrow">
+        <div className="field">
+          <label htmlFor={`ct-${m.id}`}>Long context above (tokens)</label>
+          <input
+            id={`ct-${m.id}`}
+            inputMode="numeric"
+            value={ctxThreshold}
+            placeholder="272000"
+            onChange={(e) => setCtxThreshold(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vil-${m.id}`}>We pay, per 1M in (long)</label>
+          <input
+            id={`vil-${m.id}`}
+            inputMode="decimal"
+            value={vinLong}
+            placeholder="8"
+            onChange={(e) => setVinLong(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vol-${m.id}`}>We pay, per 1M out (long)</label>
+          <input
+            id={`vol-${m.id}`}
+            inputMode="decimal"
+            value={voutLong}
+            placeholder="30"
+            onChange={(e) => setVoutLong(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor={`vcl-${m.id}`}>We pay, per 1M cached (long)</label>
+          <input
+            id={`vcl-${m.id}`}
+            inputMode="decimal"
+            value={vcachedLong}
+            placeholder="0.8"
+            onChange={(e) => setVcachedLong(e.target.value)}
           />
         </div>
       </div>

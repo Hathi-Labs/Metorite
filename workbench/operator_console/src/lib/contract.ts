@@ -114,6 +114,32 @@ export type CatalogModel = {
   perMinuteUsd: number | null;
   perCharacterUsd: number | null;
   perImageUsd: number | null;
+  /** The OFF-PEAK token rates (migration 023). NULL means this vendor charges
+   *  one rate all day, which is every model but DeepSeek's two.
+   *
+   * ⚠️ **`inputPer1M` above is the PEAK rate.** It keeps its plain name
+   *  because R6 forbids a rename in place, and the vendor feed already fills
+   *  it with the peak number.
+   *
+   * ⚠️ These change what a call COST us and never what a customer pays. D67
+   *  keys the charge on the tier. A tier PRICE derives from the peak rate
+   *  always — owner directive, 2026-09-04 — so no suggestion on this board
+   *  may read an off-peak number. */
+  inputOffpeakPer1M: number | null;
+  outputOffpeakPer1M: number | null;
+  cachedInputOffpeakPer1M: number | null;
+  /** When the off-peak window opens and closes, `HH:MM` in UTC. Both or
+   *  neither. The range MAY wrap midnight, and DeepSeek's does (16:30 to
+   *  00:30), so anything that reads these must handle start > end. */
+  offpeakStartUtc: string | null;
+  offpeakEndUtc: string | null;
+  /** Prompt tokens above which the long-context rates apply, and those rates.
+   *  NULL means one rate at every size. Without them a large document
+   *  under-bills by half, on exactly the calls that cost most. */
+  contextTierThreshold: number | null;
+  inputLongPer1M: number | null;
+  outputLongPer1M: number | null;
+  cachedInputLongPer1M: number | null;
   description: string;
   /** A `model_capability` row exists, so the Router will accept it. */
   declared: boolean;

@@ -28,6 +28,13 @@ const M = (over: Partial<CatalogModel>): CatalogModel => ({
   kinds: ["chat"], contextWindow: null, maxOutput: null,
   inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
   perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+  // 023 — the window and the context tier. Null everywhere: these
+  // fixtures predate the columns and no case here depends on them.
+  inputOffpeakPer1M: null, outputOffpeakPer1M: null,
+  cachedInputOffpeakPer1M: null,
+  offpeakStartUtc: null, offpeakEndUtc: null,
+  contextTierThreshold: null, inputLongPer1M: null,
+  outputLongPer1M: null, cachedInputLongPer1M: null,
   description: "", declared: true,
   ...over,
 });

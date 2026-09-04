@@ -178,6 +178,29 @@ peak rate drives the charge, the off-peak rate reaches the report, and a
 boundary-crossing request bills peak. R8 binds it, so it runs against a real
 database.
 
+`workbench/operator_console/src/lib/window.test.ts` fences the surface half.
+
+#### The surface (added 2026-09-05)
+
+⚠️ **A price nobody can enter is a price nobody sets.** The first draft of this
+section named only the columns. An operator then had four new numbers per
+model and no box to type them in, so the whole slice would have shipped inert.
+
+1. The **Models** page carries the off-peak rates, the window, the long-context
+   threshold and its rates. `ModelDetails.tsx` holds the form.
+2. The three existing boxes keep their labels and hold the **peak** rate.
+3. The window shape is a **pure function** in `lib/window.ts`, never a rule
+   inside the component. `priceboard.ts` and `pricing.ts` set that idiom.
+4. The form refuses one bound alone, exactly as
+   `model_profile_offpeak_range_complete` does. The refusal only moves where
+   the operator reads it.
+5. The form says out loud when a window **crosses midnight**. Without that,
+   "16:30 to 00:30" reads as either eight hours or none.
+6. ⚠️ **The feed prefill leaves every new box empty, and that is deliberate.**
+   `vendor_price_feed` has no window and no context tier, so there is nothing
+   upstream to copy. Filling them from the peak number would write a fact
+   nobody measured.
+
 ### 4.2 Per million tokens
 
 **Owner directive, 2026-09-04.** The customer card moves to credits per

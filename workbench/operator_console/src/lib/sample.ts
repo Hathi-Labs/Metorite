@@ -64,6 +64,22 @@ const M = (
   // does about it.
   cachedInputPer1M: id === "anthropic/claude-sonnet-4" ? 0.3
     : id === "openai/gpt-4o" ? 1.25 : null,
+  // 023 — the off-peak window. ⚠️ DeepSeek is the ONE sample vendor that has
+  // one: 16:30 to 00:30 UTC, and it WRAPS midnight. It is set here on purpose,
+  // so the sample board shows the two-rate case rather than pretending every
+  // vendor charges one price all day.
+  inputOffpeakPer1M: id.startsWith("deepseek/") && inP !== null ? inP / 2 : null,
+  outputOffpeakPer1M:
+    id.startsWith("deepseek/") && outP !== null ? outP / 2 : null,
+  cachedInputOffpeakPer1M: null,
+  offpeakStartUtc: id.startsWith("deepseek/") ? "16:30" : null,
+  offpeakEndUtc: id.startsWith("deepseek/") ? "00:30" : null,
+  // No sample vendor has a long-context tier configured yet. The board draws
+  // a dash, which is the honest state.
+  contextTierThreshold: null,
+  inputLongPer1M: null,
+  outputLongPer1M: null,
+  cachedInputLongPer1M: null,
   // The per-unit costs (019, H-78) — the only cost a non-token job has.
   // ⚠️ Whisper reads 0.006 PER MINUTE, and litellm publishes 0.0001 per
   // second. The Console multiplies by 60 once, in the feed read, so the

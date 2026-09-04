@@ -491,13 +491,14 @@ def record_usage(
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
                  task, quantity, unit, served_rank, byok_served, refusal_reason,
-                 metering_fault, cache_convention)
+                 metering_fault, cache_convention, window_at_call, context_tier)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
                  :task, :quantity, :unit, :served_rank, :byok_served,
-                 :refusal_reason, :metering_fault, :cache_convention)
+                 :refusal_reason, :metering_fault, :cache_convention,
+                 :window_at_call, :context_tier)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -538,6 +539,10 @@ def record_usage(
             # counting this row (`credit_pricing.md` §3.2 clause 3).
             "metering_fault": fields.get("metering_fault"),
             "cache_convention": fields.get("cache_convention"),
+            # Migration 023 — WHY the cost is what it is. NULL on a per-unit
+            # job, which has neither dimension.
+            "window_at_call": fields.get("window_at_call"),
+            "context_tier": fields.get("context_tier"),
         },
     ).first()
 

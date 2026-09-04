@@ -70,7 +70,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -85,6 +85,7 @@ from customer_console import (
     operator_signin,
     operators,
     payments,
+    pricing_window,
     provider_keys,
     store,
 )
@@ -1823,6 +1824,25 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "vendor_per_minute_usd": _fixed(r[10]),
                 "vendor_per_character_usd": _fixed(r[11]),
                 "vendor_per_image_usd": _fixed(r[12]),
+                # 023 — the off-peak rates and the window that selects them.
+                # ⚠️ The three peak fields above keep their names, because R6
+                # forbids a rename in place. They ARE the peak rate.
+                "vendor_input_offpeak_per_1m_usd": None if r[13] is None else str(r[13]),
+                "vendor_output_offpeak_per_1m_usd": None if r[14] is None else str(r[14]),
+                "vendor_cached_input_offpeak_per_1m_usd": (
+                    None if r[15] is None else str(r[15])
+                ),
+                # `HH:MM` on the wire. A `time` would serialise as `16:30:00`
+                # and the operator typed `16:30`.
+                "offpeak_start_utc": None if r[16] is None else r[16].strftime("%H:%M"),
+                "offpeak_end_utc": None if r[17] is None else r[17].strftime("%H:%M"),
+                # 023 — the long-context threshold and its rates.
+                "context_tier_threshold": r[18],
+                "vendor_input_long_per_1m_usd": None if r[19] is None else str(r[19]),
+                "vendor_output_long_per_1m_usd": None if r[20] is None else str(r[20]),
+                "vendor_cached_input_long_per_1m_usd": (
+                    None if r[21] is None else str(r[21])
+                ),
                 "description": r[6],
                 "reads_images": r[7],
                 "thinks_first": r[8],
@@ -1834,7 +1854,18 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     "       description, reads_images, thinks_first, "
                     "       vendor_cached_input_per_1m_usd, "
                     "       vendor_per_minute_usd, vendor_per_character_usd, "
-                    "       vendor_per_image_usd "
+                    "       vendor_per_image_usd, "
+                    # ⚠️ APPENDED, never inserted. This projection reads BY
+                    # POSITION, so a column added in the middle silently
+                    # renames every field after it.
+                    "       vendor_input_offpeak_per_1m_usd, "
+                    "       vendor_output_offpeak_per_1m_usd, "
+                    "       vendor_cached_input_offpeak_per_1m_usd, "
+                    "       offpeak_start_utc, offpeak_end_utc, "
+                    "       context_tier_threshold, "
+                    "       vendor_input_long_per_1m_usd, "
+                    "       vendor_output_long_per_1m_usd, "
+                    "       vendor_cached_input_long_per_1m_usd "
                     "FROM model_profile ORDER BY model"
                 )
             )
@@ -2502,9 +2533,71 @@ class ProfileRequest(BaseModel):
     vendor_per_minute_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
     vendor_per_character_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
     vendor_per_image_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
+    #: 🔴 The OFF-PEAK rates (023, `credit_pricing.md` §4.1). DeepSeek charges
+    #: less for part of the day, so a call that ran cheap and a call that ran
+    #: dear were recorded as costing the same.
+    #:
+    #: ⚠️ **The three fields above hold the PEAK rate**, and they keep their
+    #: names because R6 forbids a rename in place. The vendor feed already
+    #: fills them with the peak number.
+    #:
+    #: ⚠️ These change what a call COST us and never what a customer pays. D67
+    #: keys the charge on the tier, so a window moves our margin and not their
+    #: bill — and a tier PRICE derives from the peak rate always (owner
+    #: directive, 2026-09-04, `pricing_window.pricing_basis`).
+    vendor_input_offpeak_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_output_offpeak_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_cached_input_offpeak_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    #: When the off-peak window opens and closes, in UTC, as `HH:MM`. Both or
+    #: neither — a half-configured range cannot say whether the operator meant
+    #: all day or nothing, and `model_profile_offpeak_range_complete` refuses
+    #: it. The range MAY wrap midnight, and DeepSeek's does.
+    offpeak_start_utc: str | None = None
+    offpeak_end_utc: str | None = None
+    #: 🔴 The LONG-CONTEXT rates (023). A vendor that charges roughly double
+    #: past a threshold under-bills by half without these, on exactly the
+    #: calls that cost most.
+    context_tier_threshold: int | None = Field(default=None, ge=1)
+    vendor_input_long_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_output_long_per_1m_usd: Decimal | None = Field(default=None, ge=0)
+    vendor_cached_input_long_per_1m_usd: Decimal | None = Field(default=None, ge=0)
     description: str = ""
     reads_images: bool = False
     thinks_first: bool = False
+
+    @field_validator("offpeak_start_utc", "offpeak_end_utc")
+    @classmethod
+    def _a_window_bound_is_HH_MM(cls, v: str | None) -> str | None:
+        """⚠️ Refuse a bound Postgres would read as a different time.
+
+        A blank string is `None` — the operator cleared the box. Anything else
+        must be `HH:MM`, because a value this route waves through reaches a
+        `TIME` column and lands as whatever Postgres decides it meant.
+        """
+        if v is None or not v.strip():
+            return None
+        raw = v.strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", raw):
+            raise ValueError(
+                f"{raw!r} is not a time of day. Write HH:MM in UTC, "
+                "for example 16:30. Clear the box to remove the window."
+            )
+        return raw
+
+    @model_validator(mode="after")
+    def _both_window_bounds_or_neither(self) -> ProfileRequest:
+        """The API refuses what `model_profile_offpeak_range_complete` refuses.
+
+        Refusing here as well turns an IntegrityError 500 into a 422 that
+        names the field — the same reason `ge=0` mirrors the column CHECKs.
+        """
+        if (self.offpeak_start_utc is None) != (self.offpeak_end_utc is None):
+            raise ValueError(
+                "an off-peak window needs BOTH offpeak_start_utc and "
+                "offpeak_end_utc, or neither. One bound alone cannot say "
+                "whether you meant all day or nothing."
+            )
+        return self
 
     @field_validator(
         "vendor_per_minute_usd",
@@ -2590,10 +2683,21 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                     vendor_cached_input_per_1m_usd,
                     vendor_per_minute_usd, vendor_per_character_usd,
                     vendor_per_image_usd,
+                    vendor_input_offpeak_per_1m_usd,
+                    vendor_output_offpeak_per_1m_usd,
+                    vendor_cached_input_offpeak_per_1m_usd,
+                    offpeak_start_utc, offpeak_end_utc,
+                    context_tier_threshold,
+                    vendor_input_long_per_1m_usd,
+                    vendor_output_long_per_1m_usd,
+                    vendor_cached_input_long_per_1m_usd,
                     description, reads_images, thinks_first, updated_at
                 ) VALUES (
                     :model, :label, :ctx, :out, :vin, :vout, :vcached,
                     :vmin, :vchar, :vimg,
+                    :vin_off, :vout_off, :vcached_off,
+                    CAST(:off_start AS TIME), CAST(:off_end AS TIME),
+                    :ctx_threshold, :vin_long, :vout_long, :vcached_long,
                     :descr, :imgs, :think, now()
                 )
                 ON CONFLICT (model) DO UPDATE SET
@@ -2608,6 +2712,21 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                     vendor_per_character_usd =
                         EXCLUDED.vendor_per_character_usd,
                     vendor_per_image_usd = EXCLUDED.vendor_per_image_usd,
+                    vendor_input_offpeak_per_1m_usd =
+                        EXCLUDED.vendor_input_offpeak_per_1m_usd,
+                    vendor_output_offpeak_per_1m_usd =
+                        EXCLUDED.vendor_output_offpeak_per_1m_usd,
+                    vendor_cached_input_offpeak_per_1m_usd =
+                        EXCLUDED.vendor_cached_input_offpeak_per_1m_usd,
+                    offpeak_start_utc = EXCLUDED.offpeak_start_utc,
+                    offpeak_end_utc = EXCLUDED.offpeak_end_utc,
+                    context_tier_threshold = EXCLUDED.context_tier_threshold,
+                    vendor_input_long_per_1m_usd =
+                        EXCLUDED.vendor_input_long_per_1m_usd,
+                    vendor_output_long_per_1m_usd =
+                        EXCLUDED.vendor_output_long_per_1m_usd,
+                    vendor_cached_input_long_per_1m_usd =
+                        EXCLUDED.vendor_cached_input_long_per_1m_usd,
                     description = EXCLUDED.description,
                     reads_images = EXCLUDED.reads_images,
                     thinks_first = EXCLUDED.thinks_first,
@@ -2626,6 +2745,17 @@ def set_model_profile(req: ProfileRequest, staff: Operator) -> dict[str, Any]:
                 "vmin": req.vendor_per_minute_usd,
                 "vchar": req.vendor_per_character_usd,
                 "vimg": req.vendor_per_image_usd,
+                # 023 — the window and the context tier. Straight through,
+                # like every price above: the route does no arithmetic.
+                "vin_off": req.vendor_input_offpeak_per_1m_usd,
+                "vout_off": req.vendor_output_offpeak_per_1m_usd,
+                "vcached_off": req.vendor_cached_input_offpeak_per_1m_usd,
+                "off_start": req.offpeak_start_utc,
+                "off_end": req.offpeak_end_utc,
+                "ctx_threshold": req.context_tier_threshold,
+                "vin_long": req.vendor_input_long_per_1m_usd,
+                "vout_long": req.vendor_output_long_per_1m_usd,
+                "vcached_long": req.vendor_cached_input_long_per_1m_usd,
                 "descr": (req.description or "").strip(),
                 "imgs": req.reads_images,
                 "think": req.thinks_first,
@@ -4739,24 +4869,78 @@ def whoami(caller: KeyCaller) -> dict[str, Any]:
     }
 
 
-def _vendor_prices(conn, model: str) -> dict[str, Decimal | None]:
+#: Every `model_profile` column the window and context-tier read needs.
+#: Named once, because a SELECT that drifts from `resolve_rates`'s key names
+#: fails by answering NULL rather than by raising — the quiet shape.
+_PROFILE_RATE_COLUMNS = (
+    "vendor_input_per_1m_usd",
+    "vendor_output_per_1m_usd",
+    "vendor_cached_input_per_1m_usd",
+    "vendor_input_offpeak_per_1m_usd",
+    "vendor_output_offpeak_per_1m_usd",
+    "vendor_cached_input_offpeak_per_1m_usd",
+    "vendor_input_long_per_1m_usd",
+    "vendor_output_long_per_1m_usd",
+    "vendor_cached_input_long_per_1m_usd",
+    "offpeak_start_utc",
+    "offpeak_end_utc",
+    "context_tier_threshold",
+)
+
+
+def _vendor_prices(
+    conn,
+    model: str,
+    *,
+    prompt_tokens: int = 0,
+    started_at: datetime | None = None,
+) -> dict[str, Any]:
     """The vendor's prices for one model, from the operator's own record.
 
     Read at metering time and applied to THIS call only, so a later profile
     edit never rewrites what a past call cost (012's effective-dating
     argument, honoured by snapshotting instead of by history).
+
+    🔴 **Which rate applies depends on WHEN the call ran and HOW BIG it was**
+    (migration 023, `credit_pricing.md` §4.1). DeepSeek prices an off-peak
+    window cheaper. OpenAI prices input past a context threshold dearer. Both
+    arrive here as arguments rather than being read from a clock, so the caller
+    cannot resolve "now" when it meant "when this call started".
+
+    ⚠️ **``prompt_tokens`` must be the count the PROVIDER REPORTED.** A
+    pre-flight estimate uses the wrong tokenizer for at least one vendor, and a
+    threshold missed that way under-bills a large document by half.
+
+    Returns the three rates plus the two labels the usage row records, so the
+    number can be explained a year later.
     """
     row = conn.execute(
         text(
-            "SELECT vendor_input_per_1m_usd, vendor_output_per_1m_usd, "
-            "vendor_cached_input_per_1m_usd FROM model_profile "
-            "WHERE model = :m"
+            f"SELECT {', '.join(_PROFILE_RATE_COLUMNS)} "  # noqa: S608 - a fixed tuple, never input
+            "FROM model_profile WHERE model = :m"
         ),
         {"m": model},
     ).first()
     if row is None:
-        return {"input": None, "output": None, "cached": None}
-    return {"input": row[0], "output": row[1], "cached": row[2]}
+        # Unknown model: no rates, and no claim about a window we cannot see.
+        return {
+            "input": None, "output": None, "cached": None,
+            "window": None, "context": None,
+        }
+
+    profile = dict(zip(_PROFILE_RATE_COLUMNS, row, strict=True))
+    rates = pricing_window.resolve_rates(
+        profile,
+        prompt_tokens=prompt_tokens,
+        started_at=started_at or datetime.now(UTC),
+    )
+    return {
+        "input": rates.input_per_1m,
+        "output": rates.output_per_1m,
+        "cached": rates.cached_per_1m,
+        "window": rates.window,
+        "context": rates.context,
+    }
 
 
 #: Which `model_profile` column prices ONE unit of a task, keyed by the unit
@@ -4837,6 +5021,7 @@ def _record_completion(
     byok: bool = False,
     quantity: Decimal | None = None,
     declared_task: str | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     """Write ONE usage row and draw the credits for it. Never raises.
 
@@ -4890,6 +5075,11 @@ def _record_completion(
     # "never raises" and whose one caller is this function. Validating first
     # keeps that contract true instead of merely documented.
     metering_fault: str | None = None
+    # ⚠️ NULL unless a token-priced call resolved them. A per-unit job (an
+    # image, a minute of audio) has no window and no context tier, and writing
+    # a guess would put a fact in the row that nothing measured.
+    window_at_call: str | None = None
+    context_tier: str | None = None
     try:
         TokenUsage(
             prompt_tokens=usage.prompt_tokens,
@@ -4969,7 +5159,17 @@ def _record_completion(
                     ),
                 )
             else:
-                prices = _vendor_prices(conn, resolved.model)
+                # ⚠️ The tokens the PROVIDER reported, and the moment the call
+                # STARTED — never an estimate and never "now". Migration 023's
+                # two dimensions both resolve from these two arguments.
+                prices = _vendor_prices(
+                    conn,
+                    resolved.model,
+                    prompt_tokens=usage.prompt_tokens,
+                    started_at=started_at,
+                )
+                window_at_call = prices["window"]
+                context_tier = prices["context"]
                 cost = router_mod.vendor_cost_usd(
                     usage,
                     input_per_1m=prices["input"],
@@ -5010,6 +5210,11 @@ def _record_completion(
                 # comment carries the full reason.
                 metering_fault=metering_fault,
                 cache_convention=usage.cache_convention,
+                # Migration 023. Why the cost is the number it is, recorded
+                # beside the number so nobody has to re-derive it from a
+                # profile that may have been edited since.
+                window_at_call=window_at_call,
+                context_tier=context_tier,
             )
     except Exception:
         _log.exception("router.metering_failed")
@@ -5382,6 +5587,7 @@ async def _streamed_completion(
     client_ref: str | None,
     byok: bool = False,
     declared_task: str | None = None,
+    started_at: datetime | None = None,
 ) -> AsyncIterator[bytes]:
     """Replay the first chunk, relay the rest, and meter the result once.
 
@@ -5425,6 +5631,11 @@ async def _streamed_completion(
             # A streamed `vision` call takes D-AI-2's lift exactly as a
             # buffered one does, so its row says `vision` too (§8.5 clause 4).
             declared_task=declared_task,
+            # 🔴 The window follows the moment the request STARTED, not the
+            # moment the last frame arrived. A stream is exactly the call that
+            # can span a boundary, and the vendor charges the window it
+            # entered on (`credit_pricing.md` §4.1 clause 6).
+            started_at=started_at,
         )
 
     async def _replayed() -> AsyncIterator[Any]:
@@ -5467,6 +5678,12 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     driven through ``asyncio.run`` inside the threadpool worker instead.
     """
     org_id = caller.organization_id
+    # 🔴 Taken ONCE, here, before anything talks to a vendor — and carried to
+    # the meter on both the buffered and the streamed path. The vendor charges
+    # the window a request ENTERED on, so a call that spans the boundary must
+    # resolve from this moment and not from whenever metering happened to run
+    # (`credit_pricing.md` §4.1 clause 6, migration 023).
+    started_at = datetime.now(UTC)
 
     # 🔴 **A CUSTOMER refusal leaves this block before it is raised** (§8.1
     # clause 3). The meter has to record the wall, and a row written on the
@@ -5658,6 +5875,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 byok=_byok_served(resolved),
                 # What the CUSTOMER asked for. The bill follows `resolved`.
                 declared_task=req.task,
+                started_at=started_at,
             ),
             media_type="text/event-stream",
             headers=headers,
@@ -5692,6 +5910,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # The BILL follows `resolved`, so D-AI-2's lift records `vision` and
         # charges the (chosen tier, `chat`) pair (§8.5 clause 4).
         declared_task=req.task,
+        started_at=started_at,
     )
 
     return response

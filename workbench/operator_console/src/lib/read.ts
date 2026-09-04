@@ -55,6 +55,18 @@ type WireCatalog = {
     vendor_per_minute_usd?: string | null;
     vendor_per_character_usd?: string | null;
     vendor_per_image_usd?: string | null;
+    // 023 — the window and the context tier. Optional for the same reason
+    // the per-unit costs are: a Console still mid-rollout answers without
+    // them, and R6 says old code must meet new schema without breaking.
+    vendor_input_offpeak_per_1m_usd?: string | null;
+    vendor_output_offpeak_per_1m_usd?: string | null;
+    vendor_cached_input_offpeak_per_1m_usd?: string | null;
+    offpeak_start_utc?: string | null;
+    offpeak_end_utc?: string | null;
+    context_tier_threshold?: number | null;
+    vendor_input_long_per_1m_usd?: string | null;
+    vendor_output_long_per_1m_usd?: string | null;
+    vendor_cached_input_long_per_1m_usd?: string | null;
     description: string;
     reads_images: boolean;
     thinks_first: boolean;
@@ -208,6 +220,21 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         perMinuteUsd: num(p?.vendor_per_minute_usd ?? null),
         perCharacterUsd: num(p?.vendor_per_character_usd ?? null),
         perImageUsd: num(p?.vendor_per_image_usd ?? null),
+        // 023 — the off-peak rates and the window that selects them. The
+        // three fields above are the PEAK rates and keep their plain names.
+        inputOffpeakPer1M: num(p?.vendor_input_offpeak_per_1m_usd ?? null),
+        outputOffpeakPer1M: num(p?.vendor_output_offpeak_per_1m_usd ?? null),
+        cachedInputOffpeakPer1M: num(
+          p?.vendor_cached_input_offpeak_per_1m_usd ?? null,
+        ),
+        // ⚠️ NOT `num()`. These are `HH:MM`, and a number parse would turn
+        // 16:30 into 16 and lose the half hour without erroring.
+        offpeakStartUtc: p?.offpeak_start_utc ?? null,
+        offpeakEndUtc: p?.offpeak_end_utc ?? null,
+        contextTierThreshold: p?.context_tier_threshold ?? null,
+        inputLongPer1M: num(p?.vendor_input_long_per_1m_usd ?? null),
+        outputLongPer1M: num(p?.vendor_output_long_per_1m_usd ?? null),
+        cachedInputLongPer1M: num(p?.vendor_cached_input_long_per_1m_usd ?? null),
         description: p?.description ?? "",
         declared: true,
       };
