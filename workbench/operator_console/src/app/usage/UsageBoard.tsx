@@ -88,7 +88,7 @@ export default function UsageBoard({
     return { calls, credits, cost };
   }, [live]);
 
-  // 🔴 **The SERVER's uncapped figure, never the page's sum** (022, 025).
+  // 🔴 **The SERVER's uncapped figure, never the page's sum** (023, 025).
   //
   // ⚠️ A total computed from `rows` would read zero exactly when it mattered.
   // An unbilled call bills zero by definition, the page sorts by credits

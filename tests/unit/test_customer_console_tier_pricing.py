@@ -559,7 +559,7 @@ def test_my_tiers_reads_the_same_slate_for_two_organizations(client, db, org):
 
 # ── Per MILLION tokens (credit_pricing.md §4.2, slice 3) ────────────────────
 #
-# 🔴 **Migration 024 is RELEASE ONE of two.** R6 forbids a rename in place on a
+# 🔴 **Migration 025 is RELEASE ONE of two.** R6 forbids a rename in place on a
 # ladder that cannot roll back, so this release adds the per-million columns,
 # writes BOTH, and reads the per-million set. A later release drops the
 # per-thousand ones.

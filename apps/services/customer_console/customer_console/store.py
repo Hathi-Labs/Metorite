@@ -1006,7 +1006,7 @@ def record_usage(
             # counting this row (`credit_pricing.md` §3.2 clause 3).
             "metering_fault": fields.get("metering_fault"),
             "cache_convention": fields.get("cache_convention"),
-            # Migration 023 — WHY the cost is what it is. NULL on a per-unit
+            # Migration 024 — WHY the cost is what it is. NULL on a per-unit
             # job, which has neither dimension.
             "window_at_call": fields.get("window_at_call"),
             "context_tier": fields.get("context_tier"),
@@ -1026,7 +1026,7 @@ def record_usage(
         )
 
     # 🔴 **The RELEASE, in the SAME transaction as the usage row and the
-    # charge** (migration 026, `credit_pricing.md` §5). The hold reserved the
+    # charge** (migration 027, `credit_pricing.md` §5). The hold reserved the
     # worst case; the line above charged the real number; this gives the
     # difference back.
     #
@@ -1413,7 +1413,7 @@ def usage_by_org(
                    COUNT(u.id) FILTER
                        (WHERE u.refusal_reason IS NOT NULL) AS refusals,
                    -- 🔴 **Calls this customer RECEIVED and we did not bill**
-                   -- (migrations 022 and 025). The meter failed, so we chose
+                   -- (migrations 023 and 025). The meter failed, so we chose
                    -- to absorb the cost rather than send a number we could
                    -- not defend. That choice is only defensible while it is
                    -- rare, and until this column nothing measured whether it
@@ -1472,7 +1472,7 @@ def usage_by_org(
             "refusals": int(r.refusals),
             # 🔴 What this customer used and we did not charge for. A count and
             # the tokens behind it — never an estimate of the money, because
-            # estimating is the defect migration 022 exists to stop.
+            # estimating is the defect migration 023 exists to stop.
             "unbilled_calls": int(r.unbilled_calls),
             "unbilled_tokens": int(r.unbilled_tokens),
             "cost_usd": Decimal(r.cost_usd),

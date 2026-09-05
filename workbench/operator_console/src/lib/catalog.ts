@@ -32,7 +32,7 @@ export function singular(unit: string): string {
 export function describeRate(
   // Structural on purpose: the model-keyed card and the tier card (D67)
   // share every field this reads, and one describer keeps one phrasing.
-  // ⚠️ The TIER card reads per MILLION (024) and the retired MODEL card still
+  // ⚠️ The TIER card reads per MILLION (025) and the retired MODEL card still
   // reads per 1k, so the describer takes the numbers rather than the row and
   // one phrasing survives both. `describeTierRate` below is the tier caller.
   row: Pick<ModelRate, "mode" | "unit" | "creditsPerUnit"> & {
@@ -53,7 +53,7 @@ export function describeRate(
 }
 
 
-/** The TIER card's line, per MILLION tokens (migration 024, slice 3).
+/** The TIER card's line, per MILLION tokens (migration 025, slice 3).
  *
  * 🔴 **Per million is the scale of record from 2026-09-04** (owner directive).
  * Every vendor quotes per million, so the card a customer is billed against

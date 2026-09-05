@@ -1938,7 +1938,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "task": r[1],
                 "unit": r[2],
                 "pricing_mode": r[3],
-                # ⚠️ BOTH scales on the wire (migration 024, release one).
+                # ⚠️ BOTH scales on the wire (migration 025, release one).
                 # The console and the Console deploy separately, so the wire
                 # is an expand/contract surface too: a frontend that has not
                 # shipped yet still reads `_per_1k` and still draws the right
@@ -1971,7 +1971,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             )
         ]
         # 🔴 What each tier ACTUALLY earned, against the floor it was given
-        # (migration 028, `credit_pricing.md` §4.3). Grouped by TIER, because
+        # (migration 029, `credit_pricing.md` §4.3). Grouped by TIER, because
         # the question is whether a PRODUCT is priced right and one customer's
         # mix says nothing about that.
         tier_margins = store.margin_by_tier(conn, days=MARGIN_WINDOW_DAYS)
@@ -2341,7 +2341,7 @@ class TierRateRequest(BaseModel):
     unit: str
     pricing_mode: str
     #: ⚠️ **The per-thousand fields are the OLD scale and they still work**
-    #: (migration 024, release one of two). A caller that has not moved yet —
+    #: (migration 025, release one of two). A caller that has not moved yet —
     #: an unrestarted console, a script — keeps sending these and keeps
     #: pricing correctly. A later release removes them.
     input_per_1k: Decimal = Decimal(0)
@@ -2450,7 +2450,7 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
             raise _catalog_refusal(exc) from exc
 
         # 🔴 **BOTH scales are written, and that is what makes the rollout
-        # safe** (migration 024, release one of two). Old code reading
+        # safe** (migration 025, release one of two). Old code reading
         # `_per_1k` finds its number. New code reading `_per_1m` finds its
         # own. A later release drops the per-thousand columns and this
         # doubling with them.
@@ -2665,7 +2665,7 @@ class ProfileRequest(BaseModel):
     vendor_per_minute_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
     vendor_per_character_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
     vendor_per_image_usd: Decimal | None = Field(default=None, ge=0, lt=_PER_UNIT_MAX)
-    #: 🔴 The OFF-PEAK rates (023, `credit_pricing.md` §4.1). DeepSeek charges
+    #: 🔴 The OFF-PEAK rates (024, `credit_pricing.md` §4.1). DeepSeek charges
     #: less for part of the day, so a call that ran cheap and a call that ran
     #: dear were recorded as costing the same.
     #:
@@ -2686,7 +2686,7 @@ class ProfileRequest(BaseModel):
     #: it. The range MAY wrap midnight, and DeepSeek's does.
     offpeak_start_utc: str | None = None
     offpeak_end_utc: str | None = None
-    #: 🔴 The LONG-CONTEXT rates (023). A vendor that charges roughly double
+    #: 🔴 The LONG-CONTEXT rates (024). A vendor that charges roughly double
     #: past a threshold under-bills by half without these, on exactly the
     #: calls that cost most.
     context_tier_threshold: int | None = Field(default=None, ge=1)
@@ -5057,7 +5057,7 @@ def _vendor_prices(
     argument, honoured by snapshotting instead of by history).
 
     🔴 **Which rate applies depends on WHEN the call ran and HOW BIG it was**
-    (migration 023, `credit_pricing.md` §4.1). DeepSeek prices an off-peak
+    (migration 024, `credit_pricing.md` §4.1). DeepSeek prices an off-peak
     window cheaper. OpenAI prices input past a context threshold dearer. Both
     arrive here as arguments rather than being read from a clock, so the caller
     cannot resolve "now" when it meant "when this call started".
@@ -5346,7 +5346,7 @@ def _record_completion(
         )
 
     # 🔴 **The SECOND way a served call goes unbilled, and the quieter one**
-    # (migration 025). `usage_from_response` never raises, so a body we do not
+    # (migration 026). `usage_from_response` never raises, so a body we do not
     # recognise returns three zeros. The partition assert passes — zero is not
     # greater than zero — `rate_call` multiplies zeros, and the row lands
     # looking exactly like a served call that happened to be free.
@@ -5382,7 +5382,7 @@ def _record_completion(
             # A faulted call bills ZERO and still writes its row. The customer
             # already has their completion, so the row is the evidence — and it
             # still COUNTS as a served call, which is why the fault is not a
-            # `refusal_reason` (migration 022).
+            # `refusal_reason` (migration 023).
             if metering_fault:
                 billed, unit = Decimal(0), None
             else:
@@ -5427,7 +5427,7 @@ def _record_completion(
                 )
             else:
                 # ⚠️ The tokens the PROVIDER reported, and the moment the call
-                # STARTED — never an estimate and never "now". Migration 023's
+                # STARTED — never an estimate and never "now". Migration 024's
                 # two dimensions both resolve from these two arguments.
                 prices = _vendor_prices(
                     conn,
@@ -5447,7 +5447,7 @@ def _record_completion(
                 conn,
                 org_id=org_id,
                 # 🔴 The id the HOLD used, so the release can find its
-                # reservation (migration 026). Minted in the route beside
+                # reservation (migration 027). Minted in the route beside
                 # `started_at`. A fresh one here would orphan every hold.
                 # Still SERVER-generated — the caller's `client_ref` is
                 # correlation only (migration 005).
@@ -5476,11 +5476,11 @@ def _record_completion(
                 served_rank=getattr(resolved, "rank", 1),
                 byok_served=byok,
                 # ⚠️ NOT `refusal_reason`. The call SERVED — the customer holds
-                # their completion — and only the meter failed. Migration 022's
+                # their completion — and only the meter failed. Migration 023's
                 # comment carries the full reason.
                 metering_fault=metering_fault,
                 cache_convention=usage.cache_convention,
-                # Migration 023. Why the cost is the number it is, recorded
+                # Migration 024. Why the cost is the number it is, recorded
                 # beside the number so nobody has to re-derive it from a
                 # profile that may have been edited since.
                 window_at_call=window_at_call,
@@ -5954,9 +5954,9 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # the meter on both the buffered and the streamed path. The vendor charges
     # the window a request ENTERED on, so a call that spans the boundary must
     # resolve from this moment and not from whenever metering happened to run
-    # (`credit_pricing.md` §4.1 clause 6, migration 023).
+    # (`credit_pricing.md` §4.1 clause 6, migration 024).
     started_at = datetime.now(UTC)
-    # 🔴 **Minted HERE, not at metering time** (migration 026). The hold and
+    # 🔴 **Minted HERE, not at metering time** (migration 027). The hold and
     # the settle must carry the SAME `ref`, or the release cannot find the
     # reservation it closes and the sweeper sees an orphan on every call.
     # SERVER-generated, exactly as before — the caller's `client_ref` is
@@ -5990,7 +5990,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             # completion — the GATE may refuse, the METER may not.
             refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
 
-            # 🔴 **The RESERVE** (migration 026, `credit_pricing.md` §5). The
+            # 🔴 **The RESERVE** (migration 027, `credit_pricing.md` §5). The
             # gate above answers "is there any headroom at all"; this answers
             # "is there enough for THIS call", and takes it.
             #
@@ -7195,7 +7195,7 @@ class OrgUsageRow(BaseModel):
     #: above zero with `calls` at zero is an organization that got nothing
     #: through, which is the row support wants before the customer writes in.
     refusals: int = 0
-    #: 🔴 **Calls this organization RECEIVED that we did not bill** (022, 025).
+    #: 🔴 **Calls this organization RECEIVED that we did not bill** (023, 025).
     #: The meter failed, so we absorbed the vendor's cost rather than send a
     #: number we could not defend.
     #:
@@ -7229,7 +7229,7 @@ class OrgUsageView(BaseModel):
     #: A3 exists to find is the exact row the cap removes. Slugs only — the
     #: row data for the visible ones is already in `rows`.
     silentSlugs: list[str] = []
-    #: 🔴 **Served and NOT billed, over every organization** (022, 025).
+    #: 🔴 **Served and NOT billed, over every organization** (023, 025).
     #: Computed UNCAPPED, because a leak bills zero and a zero-credit row
     #: sorts off the spend-ordered page — so a total taken from `rows` would
     #: read zero exactly when it mattered most.

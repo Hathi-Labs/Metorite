@@ -1,6 +1,6 @@
 """Which vendor rate applied — the window and the context tier.
 
-Spec: ``project-docs/specs/credit_pricing.md`` §4.1 (slice 2). Migration 023.
+Spec: ``project-docs/specs/credit_pricing.md`` §4.1 (slice 2). Migration 024.
 
 🔴 **One model can carry four prices for the same token, and until slice 2 we
 recorded one.** DeepSeek charges an off-peak rate for part of the day.

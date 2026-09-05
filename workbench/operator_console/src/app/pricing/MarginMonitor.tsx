@@ -1,6 +1,6 @@
 // The margin monitor — what each tier ACTUALLY earned, against its own floor.
 //
-// Spec: `project-docs/specs/credit_pricing.md` §4.3. Migration 028.
+// Spec: `project-docs/specs/credit_pricing.md` §4.3. Migration 029.
 //
 // 🔴 **The screen that earns its keep.** The rest of the pricing board is data
 // entry: it records what we intend to charge. This one says whether the

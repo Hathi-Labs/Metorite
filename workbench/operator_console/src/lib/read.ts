@@ -335,7 +335,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     inputPer1k: r.input_per_1k,
     outputPer1k: r.output_per_1k,
     cachedInputPer1k: r.cached_input_per_1k,
-    // 🔴 The scale of record (migration 024). ⚠️ The fallback is for a Console
+    // 🔴 The scale of record (migration 025). ⚠️ The fallback is for a Console
     // that has not shipped release one yet — this app and that service deploy
     // apart, so new code can legitimately meet an old wire. Without it the
     // board would draw a blank price where a real one exists.

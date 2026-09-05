@@ -1,4 +1,4 @@
--- 022 — the meter admits when it could not meter.
+-- 023 — the meter admits when it could not meter.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` §3 (slice 1).
 --

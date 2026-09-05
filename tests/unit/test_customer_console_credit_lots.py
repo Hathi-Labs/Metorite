@@ -1,6 +1,6 @@
 """Credits remember what they cost and when they expire.
 
-Spec: ``project-docs/specs/credit_pricing.md`` §6 (slice 6). Migration 027.
+Spec: ``project-docs/specs/credit_pricing.md`` §6 (slice 6). Migration 028.
 
 🔴 **A balance is one number and it cannot answer three questions.**
 ``SUM(credit_ledger.delta)`` says how many credits an organization holds. It

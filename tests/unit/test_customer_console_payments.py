@@ -140,7 +140,7 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: An entry that is NOT another Router serving route is the thing this list
 #: exists to stop.
 #:
-#: ⚠️ **The HOLD cycle joined it on 2026-09-05** (migration 026,
+#: ⚠️ **The HOLD cycle joined it on 2026-09-05** (migration 027,
 #: `credit_pricing.md` §5). `place_hold` and `release_hold` write
 #: `credit_ledger` directly rather than through `add_credit`, so the four
 #: entries above did not cover them.
@@ -942,7 +942,7 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         the answer is almost certainly that the write belongs behind the
         internal token, which is what ``/usage/record`` had to become after
         verification minted 100,000 credits through it.
-        The HOLD cycle joined on 2026-09-05 (migration 026). `place_hold`
+        The HOLD cycle joined on 2026-09-05 (migration 027). `place_hold`
         and `release_hold` write `credit_ledger` directly rather than through
         `add_credit`, so the four entries above did not reach them — and it
         is STILL the same argument. The reservation is computed from a tier
@@ -3744,7 +3744,7 @@ class TestTheLedgerVocabulary:
         assert {
             "usage", "purchase", "discount_redemption", "adjustment", "grant",
             "manual",
-            # ⚠️ THREE MORE since migration 026 — the hold cycle. They are not
+            # ⚠️ THREE MORE since migration 027 — the hold cycle. They are not
             # a fourth commercial reason: `hold` and `release` net to zero over
             # one call, and `settle` is the charge itself. A ledger row reading
             # `hold` is a reservation, never revenue.

@@ -41,7 +41,7 @@ from customer_console.credits import (
 #: Numbers alone no longer make a card billable, because a zero cannot carry
 #: three meanings — not-yet-priced, absorbed into the seat price (D19.2), and
 #: deliberately free are three different states with one number.
-#: ⚠️ Restated at the per-MILLION scale (migration 024). These are the SAME
+#: ⚠️ Restated at the per-MILLION scale (migration 025). These are the SAME
 #: prices as before — 2.0 per 1k IS 2000 per 1M — so every expected credit
 #: figure in this file is unchanged. If one of them moves, the conversion is
 #: wrong, not the test.
@@ -592,7 +592,7 @@ class TestUsagePartition:
         assert TokenUsage(prompt_tokens=8000).fresh_prompt_tokens == 8000
 
 
-# ── The unbilled fleet read (credit_pricing.md §3, migrations 022 and 025) ──
+# ── The unbilled fleet read (credit_pricing.md §3, migrations 023 and 025) ──
 
 
 class TestTheUnbilledFleetRead:

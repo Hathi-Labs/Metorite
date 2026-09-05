@@ -89,7 +89,7 @@ LEDGER_REASON_GRANT = "grant"
 #: all say `'manual'` for exactly this activation.
 LEDGER_REASON_MANUAL = "manual"
 
-# ── The hold cycle (migration 026, `credit_pricing.md` §5) ──────────────────
+# ── The hold cycle (migration 027, `credit_pricing.md` §5) ──────────────────
 #
 # 🔴 **Three rows for one call, and the third is what makes a crash safe.**
 #
@@ -500,7 +500,7 @@ def rate_call(
         )
 
     if card.unit == "tokens":
-        # 🔴 A MILLION, not a thousand (migration 024, owner directive
+        # 🔴 A MILLION, not a thousand (migration 025, owner directive
         # 2026-09-04). Every vendor quotes per million, so the card now speaks
         # the same unit as the cost it is derived from — and a reader comparing
         # the two no longer has to carry a factor of 1000 in their head.

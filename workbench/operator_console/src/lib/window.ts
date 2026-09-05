@@ -1,6 +1,6 @@
 // The off-peak window, as the operator types it — SHAPE ONLY.
 //
-// Spec: `project-docs/specs/credit_pricing.md` §4.1 (slice 2). Migration 023.
+// Spec: `project-docs/specs/credit_pricing.md` §4.1 (slice 2). Migration 024.
 //
 // 🔴 **A judgement, so it lives here rather than inside the form.** The repo's
 // rule (`priceboard.ts`, `pricing.ts`) is that anything with a right and a
@@ -26,7 +26,7 @@ export type WindowProblem =
  *  vendor charges one rate all day.
  *
  * ⚠️ **Both or neither, and the database agrees.**
- * `model_profile_offpeak_range_complete` (023) refuses one bound alone for the
+ * `model_profile_offpeak_range_complete` (024) refuses one bound alone for the
  * same reason: a single bound cannot say whether the operator meant all day or
  * nothing, and a reader would have to guess. Refusing in the form as well only
  * changes WHERE the operator finds out — here, beside the box, instead of in a

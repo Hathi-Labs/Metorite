@@ -287,7 +287,7 @@ describe("a $0-listed vendor price", () => {
   });
 });
 
-// ── The margin monitor (migration 028, credit_pricing.md §4.3) ─────────────
+// ── The margin monitor (migration 029, credit_pricing.md §4.3) ─────────────
 
 describe("the margin monitor", () => {
   it("treats a MISSING floor or margin as neutral, never as a pass", () => {

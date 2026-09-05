@@ -1,8 +1,8 @@
--- 026 — reserve credits before a call, settle the real charge after it.
+-- 027 — reserve credits before a call, settle the real charge after it.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 5 (slice 4).
 --
--- ⚠️ **Do not write a bare percent sign in this file.** Migration 022 learned
+-- ⚠️ **Do not write a bare percent sign in this file.** Migration 023 learned
 -- that the expensive way.
 --
 -- 🔴 **Nothing reserves credits today.** The meter runs AFTER the provider

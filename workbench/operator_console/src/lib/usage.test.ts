@@ -215,7 +215,7 @@ describe("the headline", () => {
   });
 });
 
-// ── Served and not billed (migrations 022, 025) ─────────────────────────────
+// ── Served and not billed (migrations 023, 025) ─────────────────────────────
 //
 // 🔴 The inverse of a refusal, and reading them the same way is the mistake
 // these tests exist to prevent. A refusal is a customer we said NO to — they

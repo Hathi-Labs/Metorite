@@ -125,7 +125,7 @@ somebody consumed. **You do not. You absorb it.**
    **only after** the fleet data shows the signal is reliable. Acting on an
    unmeasured inference is how you overcharge.
 
-⚠️ **There are TWO faults, and the second is worse.** Migration 025 adds it.
+⚠️ **There are TWO faults, and the second is worse.** Migration 026 adds it.
 `usage_from_response` never raises. So a body we do not recognise returns three
 zeros and the partition assert passes. The row then lands looking like a served
 call that happened to be free. The partition case at least writes a log line.
@@ -336,7 +336,7 @@ number** (H-42).
 
 #### What slice 7 BUILT (added 2026-09-05)
 
-Migration 028 adds `tier_margin`, and it **ships empty**. `analytics.
+Migration 029 adds `tier_margin`, and it **ships empty**. `analytics.
 realised_margin` computes the fraction, `analytics.margin_alarms` finds the
 tiers below their floor, and `store.margin_by_tier` is the seven-day read. The
 Pricing page carries a **Margin monitor** panel.
@@ -394,7 +394,7 @@ path.
 
 ### 5.3a What slice 4 BUILT, and what it did not (added 2026-09-05)
 
-**Built.** Migration 026 adds `credit_ledger.hold_ref` and a partial index
+**Built.** Migration 027 adds `credit_ledger.hold_ref` and a partial index
 for open holds. `estimate_hold` is pure and sizes the reservation.
 
 `place_hold`, `release_hold` and `sweep_orphan_holds` live in `store.py`. The
@@ -477,7 +477,7 @@ deferred revenue cannot be reported.
 
 ### 6.2a What slice 6 BUILT (added 2026-09-05)
 
-Migration 027 adds `credit_lot` and `credit_ledger.lot_id`. `store.open_lots`
+Migration 028 adds `credit_lot` and `credit_ledger.lot_id`. `store.open_lots`
 holds the order. `store.draw_from_lots` allocates a charge across lots and
 `store.add_credit_lot` records one.
 

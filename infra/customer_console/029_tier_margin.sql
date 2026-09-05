@@ -1,8 +1,8 @@
--- 028 — the margin we intend per tier, and the floor that alarms.
+-- 029 — the margin we intend per tier, and the floor that alarms.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 4.3 (slice 7).
 --
--- ⚠️ **Do not write a bare percent sign in this file.** Migration 022 learned
+-- ⚠️ **Do not write a bare percent sign in this file.** Migration 023 learned
 -- that the expensive way.
 --
 -- 🔴 **One margin knob cannot price eleven tiers.** The console defaults every

@@ -34,7 +34,7 @@ export type OrgUsageRow = {
    * than saying nothing did: `silent` switched off and no other signal
    * switched on. Refusals with no calls is the row support wants. */
   refusals: number;
-  /** 🔴 **Calls this customer RECEIVED that we did not bill** (migrations 022
+  /** 🔴 **Calls this customer RECEIVED that we did not bill** (migrations 023
    *  and 025). The meter failed, so we absorbed the cost rather than send a
    *  number we could not defend.
    *

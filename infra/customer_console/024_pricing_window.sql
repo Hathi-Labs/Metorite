@@ -1,10 +1,10 @@
--- 023 — the vendor rate depends on WHEN a call ran and HOW BIG it was.
+-- 024 — the vendor rate depends on WHEN a call ran and HOW BIG it was.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 4.1 (slice 2).
 --
 -- ⚠️ **Do not write a bare percent sign in this file.** The test ladder applies
 -- migrations through psycopg, which reads one as a placeholder and fails the
--- whole file. Migration 022 learned that the expensive way.
+-- whole file. Migration 023 learned that the expensive way.
 --
 -- 🔴 **One model can carry FOUR different prices for the same token.** DeepSeek
 -- charges an off-peak rate for eight hours a day and a peak rate otherwise.

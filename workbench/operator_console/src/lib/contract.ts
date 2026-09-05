@@ -114,7 +114,7 @@ export type CatalogModel = {
   perMinuteUsd: number | null;
   perCharacterUsd: number | null;
   perImageUsd: number | null;
-  /** The OFF-PEAK token rates (migration 023). NULL means this vendor charges
+  /** The OFF-PEAK token rates (migration 024). NULL means this vendor charges
    *  one rate all day, which is every model but DeepSeek's two.
    *
    * ⚠️ **`inputPer1M` above is the PEAK rate.** It keeps its plain name
@@ -213,7 +213,7 @@ export type TierRate = {
   mode: string;
   /** Money as the STRINGS the Console sent.
    *
-   * ⚠️ **The per-1k fields are the OLD scale** (migration 024, release one of
+   * ⚠️ **The per-1k fields are the OLD scale** (migration 025, release one of
    *  two). Both scales cross the wire while the Console and this app deploy
    *  apart, and a later release removes them. Read `…Per1m` in new code. */
   inputPer1k: string;
@@ -229,7 +229,7 @@ export type TierRate = {
   creditsPerUnit: string;
 };
 
-/** What one tier actually earned, against the floor it was given (028).
+/** What one tier actually earned, against the floor it was given (029).
  *
  * 🔴 **`realisedMargin` is NULL until the operator saves a credit price**, and
  *  NULL is NEUTRAL. No saved price means no margin, not a bad one — a zero
@@ -388,7 +388,7 @@ export type AiCatalog = {
   feed: VendorFeed;
   /** What customers pay, per (tier, job) — D67. The card billing reads. */
   tierRates: TierRate[];
-  /** Per-tier realised margin against its floor (028). Empty from a Console
+  /** Per-tier realised margin against its floor (029). Empty from a Console
    *  that predates the read — which is NOT "no tiers", and the board says so. */
   tierMargins: TierMargin[];
   /** The credit's own rupee price — null until the owner sets it (H-42). */

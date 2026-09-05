@@ -1,12 +1,12 @@
--- 025 — the second way a served call goes unbilled, and the louder one.
+-- 026 — the second way a served call goes unbilled, and the louder one.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 3 (slice 1, completed).
 --
--- ⚠️ **Do not write a bare percent sign in this file.** Migration 022 learned
+-- ⚠️ **Do not write a bare percent sign in this file.** Migration 023 learned
 -- that the expensive way.
 --
 -- 🔴 **A provider whose usage shape we do not recognise bills ZERO and flags
--- NOTHING.** Migration 022 gave the partition failure a name. Measured
+-- NOTHING.** Migration 023 gave the partition failure a name. Measured
 -- 2026-09-05, this one had none: `usage_from_response` never raises, so an
 -- unreadable body returns three zeros, the partition assert passes (0 is not
 -- greater than 0), `rate_call` multiplies zeros and answers zero credits, and
@@ -18,7 +18,7 @@
 -- happened to read a spend chart and wonder.
 --
 -- 📌 **Both faults answer the owner's question the same way: we do not price
--- it, we absorb it.** Guessing is what migration 022 exists to stop, and an
+-- it, we absorb it.** Guessing is what migration 023 exists to stop, and an
 -- estimate here would be the same defect pointed the other way. So the rule is
 -- bill nothing, record that we billed nothing, and make the total visible on
 -- the operator's own page — because "we eat it" is only acceptable while it is

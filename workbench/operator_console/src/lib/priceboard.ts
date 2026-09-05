@@ -179,7 +179,7 @@ export function inrLabel(
   const inr = n * (a.inrPerCredit as number);
   const rounded = inr >= 100 ? Math.round(inr)
     : Number(inr.toPrecision(3));
-  // ⚠️ **Grouped, and that became necessary with migration 024.** At the
+  // ⚠️ **Grouped, and that became necessary with migration 025.** At the
   // per-1k scale these read "₹4" and "₹12" and grouping bought nothing. At
   // per MILLION every figure gains three digits, and "₹204000" is a number an
   // operator has to count digits on before they can compare it to "₹34000".
@@ -248,7 +248,7 @@ export function priceGroups(cat: AiCatalog): {
   return groups.filter((g) => g.rows.length > 0);
 }
 
-// ── The margin monitor (migration 028, credit_pricing.md §4.3) ─────────────
+// ── The margin monitor (migration 029, credit_pricing.md §4.3) ─────────────
 
 /** How a realised margin reads against the floor it was given.
  *

@@ -411,7 +411,7 @@ _PER_1K_TO_PER_1M = Decimal(1000)
 
 
 def _per_1m(per_1m: Decimal | None, per_1k: Decimal | None) -> Decimal:
-    """The per-million rate, from either column. Migration 024, release one.
+    """The per-million rate, from either column. Migration 025, release one.
 
     🔴 **The per-million column wins whenever it holds a number**, and the
     per-thousand column is the fallback for a row written before 024 applied,
@@ -470,7 +470,7 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
     return TierRate(
         tier=tier,
         # 🔴 Prefer the per-MILLION column, fall back to the per-thousand one
-        # times 1000 (migration 024, release one of two).
+        # times 1000 (migration 025, release one of two).
         #
         # ⚠️ The fallback is not defensive padding. During a rollout, new code
         # can meet the OLD schema — a row written before 024 applied, or by a

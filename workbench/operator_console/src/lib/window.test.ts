@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { windowProblem, wrapsMidnight } from "./window";
 
-// Spec: `project-docs/specs/credit_pricing.md` §4.1 (slice 2). Migration 023.
+// Spec: `project-docs/specs/credit_pricing.md` §4.1 (slice 2). Migration 024.
 //
 // 🔴 The shape this file refuses is the one the DATABASE refuses:
 // `model_profile_offpeak_range_complete`. Refusing it here as well only moves

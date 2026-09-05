@@ -263,7 +263,7 @@ describe("the tier registry and the tier rates (015, D67)", () => {
       }],
     }));
     // ⚠️ This wire carries NO per-million fields, which is a Console that has
-    // not shipped migration 024 release one. The mapping must DERIVE them —
+    // not shipped migration 025 release one. The mapping must DERIVE them —
     // exactly, by `timesThousand` — rather than draw a blank price. The two
     // services deploy apart, so new code legitimately meets an old wire.
     expect(cat.tierRates).toEqual([{

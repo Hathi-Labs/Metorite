@@ -1,6 +1,6 @@
 """Reserve credits before a call, settle the real charge after it.
 
-Spec: ``project-docs/specs/credit_pricing.md`` §5 (slice 4). Migration 026.
+Spec: ``project-docs/specs/credit_pricing.md`` §5 (slice 4). Migration 027.
 
 🔴 **Nothing reserved credits before this slice.** The meter ran AFTER the
 provider answered, so two calls arriving together each read the same balance,

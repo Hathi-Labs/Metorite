@@ -42,7 +42,7 @@ import { chipClass, pricingTone } from "@/lib/tone";
 
 export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
   const router = useRouter();
-  // 🔴 **No default of 70 any more** (migration 028, §4.3). One knob cannot
+  // 🔴 **No default of 70 any more** (migration 029, §4.3). One knob cannot
   // price eleven tiers: the design document asks for 2.5 on Fast and 1.4 on
   // Powerful, because a cheap tier absorbs a fat multiplier invisibly and an
   // expensive one cannot.

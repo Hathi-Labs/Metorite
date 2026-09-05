@@ -1,10 +1,10 @@
--- 024 — the customer's card moves to credits per MILLION tokens. Expand half.
+-- 025 — the customer's card moves to credits per MILLION tokens. Expand half.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 4.2 (slice 3).
 -- Owner directive, 2026-09-04: keep it per million, because that is what every
 -- vendor quotes now.
 --
--- ⚠️ **Do not write a bare percent sign in this file.** Migration 022 learned
+-- ⚠️ **Do not write a bare percent sign in this file.** Migration 023 learned
 -- that the expensive way: the test ladder applies migrations through psycopg,
 -- which reads one as a placeholder and fails the whole file.
 --
@@ -77,7 +77,7 @@ END $$;
 
 COMMENT ON COLUMN tier_rate_card.input_credits_per_1m IS
     'What a customer pays per MILLION prompt tokens, in credits. The scale of '
-    'record from release one of migration 024. The per-thousand column beside '
+    'record from release one of migration 025. The per-thousand column beside '
     'it holds the same price at the old scale and a later release drops it. '
     'Every vendor quotes per million, so the card now speaks the same unit as '
     'the cost it is derived from.';

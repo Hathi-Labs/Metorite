@@ -5,7 +5,7 @@ Spec: ``project-docs/specs/credit_pricing.md`` §4.1 (slice 2).
 🔴 **One model can carry four prices for the same token.** DeepSeek charges an
 off-peak rate for part of the day and a peak rate otherwise. OpenAI charges
 roughly double for input past a context threshold. ``model_profile`` held one
-number per token kind until migration 023, so a call that ran cheap and a call
+number per token kind until migration 024, so a call that ran cheap and a call
 that ran dear were recorded as costing the same.
 
 📌 **Two questions, and confusing them is the trap this module exists to stop.**
@@ -43,11 +43,11 @@ __all__ = [
     "window_of",
 ]
 
-#: The two windows. `usage_event_window_known` (023) holds the same two words.
+#: The two windows. `usage_event_window_known` (024) holds the same two words.
 WINDOW_PEAK = "peak"
 WINDOW_OFFPEAK = "offpeak"
 
-#: The two context tiers. `usage_event_context_tier_known` (023) agrees.
+#: The two context tiers. `usage_event_context_tier_known` (024) agrees.
 CONTEXT_SHORT = "short"
 CONTEXT_LONG = "long"
 

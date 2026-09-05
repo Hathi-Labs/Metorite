@@ -48,7 +48,7 @@ type Loaded = {
   plansError: string | null;
   /** The org's roster with seat state (LS-9). Empty when none arrived. */
   members: MemberRow[];
-  /** What the balance is MADE OF (migration 027), in the order lots burn.
+  /** What the balance is MADE OF (migration 028), in the order lots burn.
    *
    * ⚠️ **`undefined` means the Console sent no `credit_lots` key**, which is a
    *  Console predating the migration. That is NOT "this customer has no lots",
@@ -123,7 +123,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     let members: MemberRow[] = [];
     let membersError: string | null = null;
     // 022/027 — where the balance came from. `undefined` means a Console that
-    // predates migration 027 and is NOT the same as "this customer has none".
+    // predates migration 028 and is NOT the same as "this customer has none".
     let lots: CreditLot[] | undefined;
     if (sumRes.status !== 200) {
       membersError = `The summary read returned ${sumRes.status}.`;
@@ -346,7 +346,7 @@ export default async function CustomerDetailPage({
         </div>
       </div>
 
-      {/* ── Where the credits came from (migration 027, §6) ──────────── */}
+      {/* ── Where the credits came from (migration 028, §6) ──────────── */}
       <section className="panel">
         <div className="panel-head">
           <h2>Credit lots</h2>
@@ -358,13 +358,13 @@ export default async function CustomerDetailPage({
           </p>
         </div>
         {lots === undefined ? (
-          /* ⚠️ NOT an empty table. A Console predating migration 027 sends no
+          /* ⚠️ NOT an empty table. A Console predating migration 028 sends no
              `credit_lots` key at all, and drawing zero rows over a missing
              feature would read as "this customer has none". */
           <p className="field-hint warn">
             This Console does not report credit lots yet. The balance above is
             still correct — nothing here can say what it cost or when it
-            expires until the Console ships migration 027.
+            expires until the Console ships migration 028.
           </p>
         ) : lots.length === 0 ? (
           <p className="field-hint">

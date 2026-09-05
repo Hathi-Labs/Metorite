@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { timesThousand } from "./scale";
 
-// Spec: `project-docs/specs/credit_pricing.md` §4.2 (slice 3). Migration 024.
+// Spec: `project-docs/specs/credit_pricing.md` §4.2 (slice 3). Migration 025.
 //
 // 🔴 **This exists because `Number(v) * 1000` is a money bug.** Measured over
 // the 20000 rates between 0.0001 and 2.0000: 4773 of them come back with a

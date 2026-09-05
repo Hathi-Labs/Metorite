@@ -425,7 +425,7 @@ export function plansNotice(
   return null;
 }
 
-// ── Credit lots (migration 027, `credit_pricing.md` §6) ────────────────────
+// ── Credit lots (migration 028, `credit_pricing.md` §6) ────────────────────
 //
 // 🔴 **What a balance CANNOT say.** `credit_balance` is one number. It cannot
 // say what those credits cost, when they lapse, or whether anybody paid for
@@ -452,7 +452,7 @@ export type CreditLot = {
 /** The lots on a billing summary, in the order they will BURN.
  *
  * ⚠️ **`undefined` when the Console sent no `credit_lots` key at all**, which
- * is a Console predating migration 027. That is NOT the same as "this customer
+ * is a Console predating migration 028. That is NOT the same as "this customer
  * has no lots", and the board says which it is rather than drawing an empty
  * table over a missing feature. */
 export function readCreditLots(body: unknown): CreditLot[] | undefined {

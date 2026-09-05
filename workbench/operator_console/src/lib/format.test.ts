@@ -488,11 +488,11 @@ describe("the credit ledger read (manual payments)", () => {
   });
 });
 
-// ── Credit lots (migration 027, credit_pricing.md §6) ──────────────────────
+// ── Credit lots (migration 028, credit_pricing.md §6) ──────────────────────
 
 describe("reading credit lots", () => {
   it("distinguishes a MISSING key from an empty list", () => {
-    // 🔴 A Console predating migration 027 sends no `credit_lots` key. That is
+    // 🔴 A Console predating migration 028 sends no `credit_lots` key. That is
     // not "this customer has no lots", and drawing an empty table over a
     // missing feature would say something untrue.
     expect(readCreditLots({})).toBeUndefined();

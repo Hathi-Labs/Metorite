@@ -1,8 +1,8 @@
--- 027 — credits remember what they cost and when they expire.
+-- 028 — credits remember what they cost and when they expire.
 --
 -- Spec: `project-docs/specs/credit_pricing.md` section 6 (slice 6).
 --
--- ⚠️ **Do not write a bare percent sign in this file.** Migration 022 learned
+-- ⚠️ **Do not write a bare percent sign in this file.** Migration 023 learned
 -- that the expensive way.
 --
 -- 🔴 **A balance is one number today, and it cannot answer three questions.**
