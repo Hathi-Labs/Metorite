@@ -1,6 +1,10 @@
 import { cookies } from "next/headers";
 import { isStaff, STAFF_COOKIE, StaffUnconfigured } from "@/lib/staff";
-import { SESSION_COOKIE, usesSessions } from "@/lib/identity";
+import {
+  SESSION_COOKIE,
+  passphraseFallbackEnabled,
+  usesSessions,
+} from "@/lib/identity";
 import { json, readJsonBody } from "@/lib/route";
 import {
   ConsoleUnconfigured,
@@ -46,6 +50,14 @@ export async function POST(request: Request): Promise<Response> {
   if (usesSessions()) {
     const accessToken = (body.access_token ?? "").trim();
     if (!accessToken) {
+      // ⛔ **The back door — CP-12k**, OFF by default. A `secret` posted here
+      // used to be a flat 400, and that is still the answer unless the owner
+      // turned the fallback on. When they have, fall through to the interim
+      // handler below, which is the SAME code the pre-identity path runs —
+      // never a second copy of it.
+      if (passphraseFallbackEnabled() && (body.secret ?? "").trim()) {
+        return interimSignIn(body, jar);
+      }
       return json(400, { error: "access_token is required" });
     }
 
@@ -92,6 +104,19 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   // ── The interim path (F1, F2, F5 — all of them still true here) ──────────
+  return interimSignIn(body, jar);
+}
+
+// The passphrase exchange, in ONE place.
+//
+// ⚠️ **Extracted rather than copied, and that is the point.** CP-12k lets this
+// run while identity sign-in is on (the back door), so it now has two callers.
+// A second copy would be a second passphrase rule, and the day one of them
+// gained a rate limit or a length check the other would not have it.
+async function interimSignIn(
+  body: Body,
+  jar: Awaited<ReturnType<typeof cookies>>,
+): Promise<Response> {
   let ok: boolean;
   try {
     ok = isStaff(body.secret ?? null);

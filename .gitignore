@@ -47,6 +47,12 @@ htmlcov/
 # Node / workbench
 node_modules/
 .next/
+# The deploy builds into .next.staging and renames it onto .next only after the
+# build succeeds, so the live server never loses the directory it serves from.
+# .next.previous is the outgoing build, held for the moment the rename takes.
+# See build_next_staged in scripts/vps_apply.sh.
+.next.staging/
+.next.previous/
 out/
 
 # Data / runtime
@@ -72,6 +78,10 @@ ide/
 # Playwright transient artifacts
 /test-results/
 workbench/control_plane/test-results/
+# visual-review captures. Evidence for one review, never a committed baseline —
+# a checked-in screenshot becomes a second source of truth about how the app
+# looks, and it goes stale the first time anybody changes a token.
+workbench/control_plane/ux-shots/
 
 # Agent harness. ⚠️ NOT a blanket ignore any more (D29, 2026-08-10).
 #
@@ -113,6 +123,21 @@ workbench/control_plane/test-results/
 # Vendored from github.com/dickwu/apple-design-skill @ d0bac1e (owner ask,
 # 2026-08-31): the HIG design-review skill every checkout must load.
 !.claude/skills/apple-design/
+# Adopted from skills/upstream/anthropics/ @ 53048666 (owner ask, 2026-09-03).
+# The mirror under skills/upstream/ is a REVIEW copy that nothing loads — Claude
+# Code reads .claude/skills/ only. Adoption is this line, and nothing else.
+# ⚠️ Three of the five carry a METORITE ADOPTION NOTE below their frontmatter,
+# because their advice fights DESIGN_SYSTEM.md §0. A refresh drops that note.
+# The adoption procedure lives in skills/upstream/README.md.
+!.claude/skills/webapp-testing/
+!.claude/skills/frontend-design/
+!.claude/skills/skill-creator/
+!.claude/skills/theme-factory/
+!.claude/skills/brand-guidelines/
+# Ours, not vendored: the visual-review rig. It is the gate DESIGN_SYSTEM.md §0
+# asks for and the conformance suite cannot supply, so every checkout needs it.
+# The STE linter DOES bind it — it is our prose.
+!.claude/skills/visual-review/
 skill-observations/
 
 # Runtime caches / secrets / junk that must never be committed (foundation audit F2).

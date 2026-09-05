@@ -47,7 +47,11 @@ export function LiveDock() {
 
   // Don't shadow the local recorder's own dock, and don't nag while you're
   // already looking at the session (its console or its recording screen).
-  const candidates = sessions.filter(
+  // ⚠️ THIS DOCK SITS IN `AppShell`, ABOVE EVERY LAYOUT BOUNDARY. A body that
+  // is not an array threw here and blanked EVERY page in the product —
+  // Projects, Tasks, Calendar — none of which have anything to do with meeting
+  // notes. Measured 2026-09-03. A widget must not be able to take the shell.
+  const candidates = (Array.isArray(sessions) ? sessions : []).filter(
     (s) =>
       s.meeting_id !== localMeetingId &&
       pathname !== `/notes/live/${s.meeting_id}` &&

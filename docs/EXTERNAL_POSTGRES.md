@@ -3,10 +3,22 @@
 The application seam (`acb_common.db`, one `DATABASE_URL`) is fully portable.
 What assumes a local dockerised Postgres is the **ops shell** around it. This
 page is the complete delta for pointing a Metorite box at a managed database.
-Written 2026-08-17 for the metorite.com production bring-up (HANDOFF H-11);
-tenant DB and customer-console DB are **separate** Supabase projects — the two
-planes each define an `organization` table with different shapes and cannot
-share a schema.
+Written 2026-08-17 for the metorite.com production bring-up (HANDOFF H-11).
+The tenant DB and the customer-console DB are **separate** Supabase projects.
+The two planes each define an `organization` table with a different shape, so
+they cannot share a schema.
+
+⚠️ **The dashboard names invert this page's vocabulary. Read the config
+variable, never the project name.** The owner named the projects for what they
+hold, which is clearer, and the opposite of the word "tenant" below:
+
+| Supabase project (2026-09-02) | This page calls it | The variable that points at it |
+|---|---|---|
+| Metorite **Application** Database | the tenant plane | `DATABASE_URL` · `PGHOST` · `POSTGRES_USER` |
+| Metorite **Tenant** Database | the customer console | `CUSTOMER_CONSOLE_DATABASE_URL` |
+
+A DSN in the wrong one of those two is not a typo. It puts our provider
+credentials and the credit ledger on a customer's data plane.
 
 ## 1. Connection string
 
@@ -65,6 +77,19 @@ SKIP_PRE_MIGRATION_BACKUP=1
 an explicit `-U "$PG_USER"` computed from those two keys, and an explicit
 `-U` outranks the `PG*` env vars.)
 
+⚠️ **To target a DIFFERENT database without editing `.env`, export `PG_USER`
+and `PG_DB`.** Those two names are the override. `POSTGRES_USER` and
+`POSTGRES_DB` are read from `.env` only, so exporting them changes nothing.
+The runner resolves `PG_USER="${PG_USER:-${env_user:-acb}}"`, and its own
+comment says this is "how a replay targets a scratch database".
+
+Measured 2026-09-02, on the Mumbai bring-up. A run that exported
+`POSTGRES_USER` for the new project still authenticated as the OLD project's
+role, because `.env` still named it. The failure reads as a host problem,
+because the host in the error is the new one:
+
+    FATAL: (ENOTFOUND) tenant/user postgres.<old-ref> not found
+
 `scripts/vps_apply.sh` lifts exactly those keys from `.env` into the runner's
 environment before it starts (the deploy delivers the script over stdin, so
 `.env` is the only channel that survives).
@@ -79,6 +104,42 @@ run): the unit has no EnvironmentFile, would default to the local container,
 and a dump of that EMPTY container passes `--verify-restore` — a green false
 restore point.
 
+## 3.1 🔴 The ladder brings up NO row-level security
+
+**A database built only from `apply_migrations.sh` has ZERO tenant isolation.**
+Every page loads, every query works, and every tenant reads every other tenant.
+Nothing warns you.
+
+Measured 2026-09-02 on a fresh Mumbai project, straight after the runner
+reported `193 applied, 0 already recorded`:
+
+    tables 157 · migrations 193 · rls_on 0 · rls_forced 0
+
+The cause is structural, not a defect. **No numbered migration contains
+`ENABLE ROW LEVEL SECURITY`.** All 140 live in
+`infra/postgres/generated/04_policies.sql`, and the ladder never replays
+`generated/`. So a new deployment must apply the four generated files, in
+order, as the owner:
+
+```bash
+cd infra/postgres/generated
+for f in 01_add_columns.sql 02_backfill.sql 03_constraints.sql 04_policies.sql; do
+  psql "$DSN" -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+⚠️ **`04_policies.sql` is a CLIFF.** After it applies, a connection that has
+not bound `app.tenant_id` reads zero rows. Its header states the prerequisite:
+a deploy must land MT-1c first, and somebody must verify it. Check the box
+before you run this file — `IDENTITY_CUTOVER=true` and
+`ACB_GRAPH_TENANT_BIND=true`, with `EMAIL_SYNC_ENABLED` and
+`WORKFLOW_SCHEDULER_ENABLED` false.
+
+**Count the rows to verify, never trust the exit code.** Expect `rls_on = rls_forced =
+policies = 140` — the number `04_policies.sql` declares in its own header.
+A live database may read higher, because it can carry drift from earlier
+manual acts. The generator is the authority, not a running system.
+
 ## 4. Things that will bite (each verified in this tree)
 
 | Trap | Where | What to do |
@@ -88,7 +149,7 @@ restore point.
 | The compose `core` profile still starts the (unused) `acb-postgres` container | `infra/docker-compose.yml` | harmless; remove from the profile only as its own reviewed change |
 | Pool arithmetic assumes `max_connections=100` | `acb_common/settings.py` (`db_pool_size`/`db_max_overflow`) | redo the math against the provider tier; pooler mitigates |
 | Agent workspace files are BYTEA **in Postgres** (no object store) | `infra/postgres/71_agent_blob_store.sql` | size the provider plan for it |
-| RLS policies are staged, NOT applied | `infra/postgres/generated/04_policies.sql` | do not hand-apply; promoting them is a planned maintenance act (see its header) |
+| RLS policies are staged, NOT applied | `infra/postgres/generated/04_policies.sql` | on a LIVE database, promoting them is a planned maintenance act (see its header). On a NEW one, §3.1 applies — skip it and the database has no tenant isolation at all |
 | Customer Console DSN is separate and has no default | `customer_console/db.py` (`CUSTOMER_CONSOLE_DATABASE_URL`) | second project; never point it at the tenant DB |
 
 ## 5. What is NOT replaced

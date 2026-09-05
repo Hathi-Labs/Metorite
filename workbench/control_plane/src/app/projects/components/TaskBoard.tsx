@@ -38,6 +38,7 @@ import Icon, { themedIcon } from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { dropIndexFor, gapKey } from "@/lib/boardDrop";
 import { Fragment, useMemo, useState } from "react";
 
@@ -354,7 +355,6 @@ export function TaskBoard({
       <li key={`gap-${index}`}>
         <DropGap
           active={dropAt === gapKey(scope, index)}
-          dragging={Boolean(dragging)}
           onOver={() => dragging && setDropAt(gapKey(scope, index))}
           onDrop={() => applyDrop(colKey, cellTasks, laneKey, index)}
         />
@@ -474,8 +474,7 @@ export function TaskBoard({
   const card = (task: TaskRow) => (
     <li key={task.id} className="flex items-start gap-1.5 rounded-md">
       {onToggle ? (
-        <input
-          type="checkbox"
+        <Checkbox
           className="mt-3 shrink-0"
           aria-label={`Select ${task.title}`}
           checked={selected?.has(task.id) ?? false}

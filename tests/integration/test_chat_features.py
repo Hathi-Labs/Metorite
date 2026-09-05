@@ -22,7 +22,7 @@ Covers ALL chat features across MAF and GitHub Copilot SDK agents:
   - Edge cases (empty responses, long content, rapid tool calls)
 
 Prerequisites:
-    - VPS gateway running (http://187.127.179.143:8080)
+    - VPS gateway running (http://187.127.172.200:8080)
     - Redis available for stream relay tests
     - At least one MAF agent (e.g. "task-manager") registered
     - At least one Copilot SDK agent (e.g. "agent-project-manager") registered

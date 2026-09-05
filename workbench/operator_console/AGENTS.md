@@ -12,9 +12,43 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   `@base-ui/react`, the `Icon`/`Button` primitives, the `--cat-*` ramp or the
   conformance suite. "One product, one look" is for surfaces customers see; a
   plain, clean staff UI is correct here. Plain CSS in `src/app/globals.css`.
-- **Staff directory is OURS (D35.3).** Auth pins our own Entra staff directory —
+- **Staff directory is OURS (D35.3).** Auth pins one staff directory, ours —
   the inverse of the customer product's multi-directory rule. Never gate on "any
   org owner": a customer's org-owner is not a platform operator.
+  ⛔ **D70 moved the mechanism on 2026-09-01.** We hold no Entra directory.
+  `hathilabs.com` is a Google Workspace domain, so the `hd` hosted-domain claim
+  replaces the Entra `tid`. `OPERATOR_SIGNIN_PROVIDER` is the switch and it
+  defaults to `azure`. The vocabulary lives in
+  `customer_console/operators.py`, and `src/lib/identity.ts` holds the console
+  half (`signinProvider`, `providerLabel`).
+  ⛔ **D71 NARROWED D70.2 on 2026-09-02, and the narrowing is easy to
+  over-read.** Email OTP was refused here outright. It is now admitted when
+  THREE things hold together: `OPERATOR_ADMISSION_MODE=registry`,
+  `OPERATOR_ALLOW_EMAIL_OTP` on, and the operator's own
+  `operator.allowed_methods` row permitting it. The owner assigns operators
+  Gmail and outside addresses, so a Workspace-only directory cannot describe
+  the staff. **The reasoning behind D70.2 still stands.** This console reaches
+  every customer organization. So inbox control must never become staff access
+  for anybody the owner has not named, and the per-row pin keeps that true.
+  ✅ **CP-12j built the code form on 2026-09-02.** `src/lib/otp.ts` decides
+  whether to show it. `EmailCodeForm.tsx` runs the two steps against Supabase
+  from the BROWSER. That is where the OAuth button already sends people, so
+  this app gains no new upstream.
+  🔴 **`isPublishableKey` is the fence that makes that safe, and nobody may
+  weaken it.** The form receives the anon key as a prop, so rendering it
+  publishes that key. The `service_role` key has the same shape and sits one
+  line away in the Supabase dashboard. It bypasses row-level security on every
+  table. The helper refuses it, refuses `sb_secret_`, and refuses any shape it
+  cannot parse. Fence: `src/lib/otp.test.ts` and `login.test.ts`.
+  ⚠️ **`OPERATOR_SIGNIN_PROVIDER` lives in TWO env files.** This app reads it,
+  and the Customer Console API reads it too. Set it in one only and sign-in
+  answers 401 with no message that names the cause. `OPERATOR_SUPABASE_URL` is
+  the other two-container value. The table of record is
+  `operator_identity_and_access.md` §4.2a, and the owner's copy is H-54.
+  ⚠️ **Read an allowlist with `Object.hasOwn`, never with `in`.** `in` walks
+  the prototype chain, so `constructor` and `__proto__` passed
+  `PROVIDER_LABELS` until 2026-09-01 and read back an `Object.prototype`
+  member as the label. Fence: `src/lib/identity.test.ts`.
 - **Cross-org reads live ONLY here + on the Console.** No route of the customer
   workbench may reach one. The `GET /orgs` cross-org list is Operator-scheme on
   the Console; this app is its only consumer.
@@ -48,10 +82,13 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   is on (`operator_identity_and_access.md` §8 done-when 29). So the identity
   path carries a recovery NOTE and never a passphrase form. The note names
   the variable to unset, and it shows only when sign-in is not configured or
-  Microsoft refused the caller. A form there would answer 400 on submit, because
-  `POST /api/operator/session` wants a Supabase `access_token`. Fence:
-  `src/app/login/login.test.ts`, which walks the returned element tree because
-  vitest here is node-env and renders nothing.
+  the directory refused the caller. A form there would answer 400 on submit, because
+  `POST /api/operator/session` wants a Supabase `access_token`. The button copy
+  and the `?provider=` slug both come from `signinProvider()`, so the page can
+  never name one directory and link to another. `login/callback/page.tsx` names
+  NO provider: it is a client component and cannot read a server-only variable.
+  Fence: `src/app/login/login.test.ts`, which walks the returned element tree
+  because vitest here is node-env and renders nothing.
 
 ## Rules
 - Every Console call is server-side, through `src/lib/console.ts`. Never fetch
@@ -65,7 +102,13 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
 
 ## Ship dark
 Not deployed, no hostname/Caddy route, no secrets set. Deploy, hostname, the
-operator-token env and the staff Entra app are all OWNER-GATE.
+operator-token env and the staff Google Workspace app are all OWNER-GATE.
+
+⚠️ **This section describes what `deploy/` PROVISIONS, and not the world.**
+The `Caddyfile` declares `api.metorite.com` and `app.metorite.com` alone, and
+no `acb-operator-console.service` sits beside the six units. But
+`operator.metorite.com` serves today, because somebody stood the console up by
+hand. H-75 holds that gap, and only the box settles it.
 
 ## Verify
 `npm run typecheck` (whole app) · `npm run typecheck:lib` (pure lib only) ·

@@ -17,8 +17,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IDENTITY_FLAG } from "@/lib/identity";
+import {
+  IDENTITY_FLAG,
+  PROVIDER_LABELS,
+  PASSPHRASE_FALLBACK_FLAG,
+  SIGNIN_PROVIDER_FLAG,
+  signinProvider,
+} from "@/lib/identity";
+import {
+  ANON_KEY_FLAG,
+  DIRECTORY_SIGNIN_FLAG,
+  EMAIL_OTP_FLAG,
+} from "@/lib/otp";
 import LoginPage from "./page";
+import EmailCodeForm from "./EmailCodeForm";
 import InterimForm from "./InterimForm";
 
 const SUPABASE = "https://project.supabase.co";
@@ -61,6 +73,38 @@ function types(node: Node, out: unknown[] = []): unknown[] {
   return out;
 }
 
+//: Every `className` in the tree. A divider carries no text worth asserting
+//: on, so its class is what identifies it.
+function classes(node: Node, out: string[] = []): string[] {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((child) => classes(child, out));
+    return out;
+  }
+  const el = node as { props?: { children?: Node; className?: unknown } };
+  if (typeof el.props?.className === "string") out.push(el.props.className);
+  if (el.props && "children" in el.props) classes(el.props.children, out);
+  return out;
+}
+
+//: The `href` of every anchor in the tree. The provider slug rides in a PROP,
+//: not in text, so the text walker above cannot see it.
+function hrefs(node: Node, out: string[] = []): string[] {
+  if (node === null || node === undefined || typeof node !== "object") {
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((child) => hrefs(child, out));
+    return out;
+  }
+  const el = node as { props?: { children?: Node; href?: unknown } };
+  if (typeof el.props?.href === "string") out.push(el.props.href);
+  if (el.props && "children" in el.props) hrefs(el.props.children, out);
+  return out;
+}
+
 async function render(params: { origin?: string; error?: string } = {}) {
   return await LoginPage({ searchParams: Promise.resolve(params) });
 }
@@ -71,6 +115,16 @@ beforeEach(() => {
   vi.unstubAllEnvs();
   vi.stubEnv("OPERATOR_SUPABASE_URL", "");
   vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+  // Unset means `azure`, which is what the six cases below describe. Stubbed
+  // rather than assumed, so a variable on the developer's box cannot change
+  // what these cases are testing.
+  vi.stubEnv(SIGNIN_PROVIDER_FLAG, "");
+  // D71.3 ships dark too. Every case above this line describes a box with no
+  // email fallback, and a variable on somebody's machine must not change that.
+  vi.stubEnv(EMAIL_OTP_FLAG, "");
+  vi.stubEnv(ANON_KEY_FLAG, "");
+  // CP-12k ships dark too. Every case above describes one door at a time.
+  vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "");
 });
 
 describe("flag ON, Supabase not configured", () => {
@@ -143,5 +197,247 @@ describe("flag OFF", () => {
     expect(types(page)).toContain(InterimForm);
     expect(text(page)).not.toContain(IDENTITY_FLAG);
     expect(text(page)).not.toContain(RECOVERY);
+  });
+});
+
+// ── Which directory the button sends you to — D70 ─────────────────────────
+//
+// Spec: `operator_identity_and_access.md` §4.1 check 1 · D70.1.
+//
+// ⚠️ **The slug and the label are ONE decision.** A page that said "Sign in
+// with Google" over a link carrying `?provider=azure` would send the reader to
+// Microsoft and then report a Google failure. Every case below asserts both.
+
+describe("the sign-in provider", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+  });
+
+  it("defaults to Microsoft, so an unset variable changes nothing", async () => {
+    // ⚠️ This is the ship-dark property. D70 moves a console that was told to
+    // move, and no other.
+    const page = await render();
+    expect(text(page)).toContain("Sign in with Microsoft");
+    expect(hrefs(page).join(" ")).toContain("provider=azure");
+    expect(signinProvider({})).toBe("azure");
+  });
+
+  it("names Google, and links to Google, when told to", async () => {
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "google");
+    const page = await render();
+    expect(text(page)).toContain(`Sign in with ${PROVIDER_LABELS.google}`);
+    expect(text(page)).not.toContain("Sign in with Microsoft");
+
+    const link = hrefs(page).find((h) => h.includes("/auth/v1/authorize"));
+    expect(link).toBeDefined();
+    expect(link).toContain("provider=google");
+    expect(link).not.toContain("provider=azure");
+    // The redirect target is unchanged by the provider. It is the console's
+    // own callback, and it must stay on the Supabase allowlist (H-54).
+    expect(link).toContain(encodeURIComponent(`${ORIGIN}/login/callback`));
+  });
+
+  it("⚠️ falls back to the default on a value it does not know", async () => {
+    // The Console answers 503 for an unknown name, so the page cannot sign
+    // anybody in either way. Rendering the default keeps the recovery note
+    // reachable rather than throwing inside a server component.
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "entra");
+    expect(signinProvider()).toBe("azure");
+    expect(hrefs(await render()).join(" ")).toContain("provider=azure");
+  });
+
+  it("reads the value case-insensitively and ignores padding", () => {
+    expect(signinProvider({ [SIGNIN_PROVIDER_FLAG]: "  GOOGLE " })).toBe(
+      "google",
+    );
+  });
+
+  it("⚠️ still renders no second door on the Google path", async () => {
+    // Done-when 29 does not weaken because the directory moved.
+    vi.stubEnv(SIGNIN_PROVIDER_FLAG, "google");
+    const kinds = types(await render({ error: "refused" }));
+    expect(kinds).not.toContain(InterimForm);
+    expect(kinds).not.toContain("form");
+    expect(kinds).not.toContain("input");
+    expect(kinds).not.toContain("button");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The EMAIL CODE fallback — WS-31 CP-12j, D71.3, spec §8 done-when 41.
+// ══════════════════════════════════════════════════════════════════════════
+
+//: A legacy Supabase key, whose payload names a role.
+function key(role: string): string {
+  const head = Buffer.from(JSON.stringify({ alg: "HS256" })).toString(
+    "base64url",
+  );
+  const body = Buffer.from(JSON.stringify({ role })).toString("base64url");
+  return `${head}.${body}.sig`;
+}
+
+describe("the email-code fallback", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+  });
+
+  it("ships dark — no form until the flag is on", async () => {
+    // ⚠️ The whole D71 slice defaults to off, and this is that property on
+    // the page. Deleting the flag check would show a code box on every box.
+    expect(types(await render())).not.toContain(EmailCodeForm);
+  });
+
+  it("shows the form BESIDE the directory button, never instead of it", async () => {
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    const tree = await render();
+
+    // Both doors. D71.4 keeps the directory the strong one, and a page that
+    // dropped the button would move every operator onto the weaker method —
+    // including the admin, who is the person that adds operators.
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(hrefs(tree).some((h) => h.includes("/auth/v1/authorize"))).toBe(true);
+    expect(text(tree)).toContain("or");
+  });
+
+  it("🔴 renders NO form for a service_role key", async () => {
+    // Rendering the form PUBLISHES the key to every visitor. `otp.ts` refuses
+    // a key that is not publishable, and this is that refusal at the page.
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("service_role"));
+    const tree = await render();
+
+    expect(types(tree)).not.toContain(EmailCodeForm);
+    // The secret must not reach the tree by any other route either.
+    expect(JSON.stringify(tree)).not.toContain(key("service_role"));
+  });
+
+  it("still shows the code form when the DIRECTORY is unconfigured", async () => {
+    // A box with the fallback on and no Supabase origin is exactly the box
+    // this slice exists for. The old page printed a configuration banner and
+    // nothing else, which would strand a person who has a working code path.
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    const tree = await render();
+
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(text(tree)).not.toContain("Sign-in is not configured");
+    // And the recovery note stays OFF, because this reader is not stranded.
+    expect(text(tree)).not.toContain(RECOVERY);
+  });
+
+  it("keeps the recovery note when NEITHER door works", async () => {
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    const body = text(await render());
+    expect(body).toContain("Sign-in is not configured");
+    expect(body).toContain(RECOVERY);
+  });
+
+  it("never renders the passphrase form beside the code form", async () => {
+    // §8 done-when 29 — one door at a time for the PASSPHRASE. D71.3 adds a
+    // second identity method, and it does not reopen the interim path.
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    expect(types(await render())).not.toContain(InterimForm);
+  });
+});
+
+describe("email-only sign-in — the owner's 2026-09-02 shape", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "0");
+  });
+
+  it("offers the code form and NO directory button", async () => {
+    const tree = await render();
+    expect(types(tree)).toContain(EmailCodeForm);
+    expect(hrefs(tree).some((h) => h.includes("/auth/v1/authorize"))).toBe(false);
+  });
+
+  it("prints no configuration banner and no recovery note", async () => {
+    // A person on an email-only box is not stranded and not misconfigured.
+    // Either message here would send them looking for a problem they do not
+    // have.
+    const body = text(await render());
+    expect(body).not.toContain("Sign-in is not configured");
+    expect(body).not.toContain(RECOVERY);
+  });
+
+  it("drops the 'or' divider, because there is nothing to choose between", async () => {
+    // ⚠️ Asserted on the className in the TREE, not on visible text. An
+    // earlier version of this case read `text()` for "or-rule" — a class name
+    // is never text, so it could not have failed and proved nothing.
+    expect(classes(await render())).not.toContain("or-rule");
+    // And the divider IS there when both doors are offered, which is what
+    // proves the walker above can see it at all.
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "1");
+    expect(classes(await render())).toContain("or-rule");
+  });
+
+  it("still shows the banner when the code form is off TOO", async () => {
+    vi.stubEnv(EMAIL_OTP_FLAG, "0");
+    const body = text(await render());
+    expect(body).toContain("Sign-in is not configured");
+    expect(body).toContain(RECOVERY);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The passphrase BACK DOOR — CP-12k, 2026-09-02. Owner directive after an
+// agent flipped the identity flag onto a box where nothing could sign in.
+// ══════════════════════════════════════════════════════════════════════════
+
+describe("the passphrase fallback", () => {
+  beforeEach(() => {
+    vi.stubEnv(IDENTITY_FLAG, "1");
+    vi.stubEnv("OPERATOR_SUPABASE_URL", SUPABASE);
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", ORIGIN);
+    vi.stubEnv(EMAIL_OTP_FLAG, "1");
+    vi.stubEnv(ANON_KEY_FLAG, key("anon"));
+    vi.stubEnv(DIRECTORY_SIGNIN_FLAG, "0");
+  });
+
+  it("🔴 done-when 29 STILL HOLDS by default — no passphrase form", async () => {
+    // The whole rule this slice weakens. Flipping the default would put a
+    // shared secret back on every deployment, and this case is what stops it.
+    expect(types(await render())).not.toContain(InterimForm);
+  });
+
+  it("renders a real FORM when the owner turns it on, not a note", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    const tree = await render();
+    // Everywhere else in this file a passphrase box would 400 on submit, so
+    // CP-12g printed text. Here the route accepts a secret again.
+    expect(types(tree)).toContain(InterimForm);
+    // And the code form stays — this is a SECOND door, not a replacement.
+    expect(types(tree)).toContain(EmailCodeForm);
+  });
+
+  it("replaces the recovery note, rather than printing both", async () => {
+    // The note says "unset the flag and restart to get the passphrase back".
+    // Printing that beside a working passphrase form would send the reader to
+    // an ssh session they do not need.
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    vi.stubEnv("OPERATOR_CONSOLE_ORIGIN", "");
+    vi.stubEnv(EMAIL_OTP_FLAG, "0");
+    const body = text(await render());
+    expect(body).not.toContain(RECOVERY);
+    expect(body).toContain("BACKUP");
+  });
+
+  it("says what the backup costs, on the page", async () => {
+    vi.stubEnv(PASSPHRASE_FALLBACK_FLAG, "1");
+    const body = text(await render());
+    expect(body).toContain("admits everybody");
+    expect(body).toContain("OPERATOR_PASSPHRASE_FALLBACK");
   });
 });

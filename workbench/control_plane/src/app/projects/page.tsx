@@ -2513,7 +2513,20 @@ function ProjectsWorkspace() {
    * nothing. The escalation is one prop pair, not a second component — see
    * `lib/panelMode.ts`.
    */
+  //
+  // ⚠️ WRAPPED, because the boundary above covers the CANVASES ONLY.
+  //
+  // `LayoutBoundary`'s own header explains the choice: scope it to the code
+  // that walks server-shaped data, so a broken canvas leaves the tree and the
+  // toolbar alive. The task panel walks server-shaped data too — relations,
+  // subtasks, custom fields, attachments — and it sat outside every boundary.
+  // Measured 2026-09-03: a relations body one field short threw out of
+  // `RelationsBlock`, reached the React root, and blanked the whole document.
+  //
+  // `completeRelations` fixes that one body. This makes the NEXT one a named
+  // fallback beside a working board, instead of a white page.
   const taskPanel = openTask ? (
+    <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
       task={openTask}
       statuses={panelStatuses}
@@ -2535,6 +2548,7 @@ function ProjectsWorkspace() {
         );
       }}
     />
+    </LayoutBoundary>
   ) : null;
 
   /** Everything that floats above the layout, in ONE place — so the two

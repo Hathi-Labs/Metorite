@@ -75,6 +75,141 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
+- **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
+  `failure` on the most recent scheduled run means this is still open. The log
+  line to look for is `GitHub Actions is not permitted to create or approve
+  pull requests`.
+- **Why:** `.github/workflows/skills-upstream-sync.yml` mirrors
+  anthropics/skills into `skills/upstream/` every Monday, then opens a PR. The
+  repository setting that lets a workflow open a PR is off, so the job dies
+  after 15 seconds. It last succeeded on 2026-08-10.
+- **What it costs:** the mirror froze at SHA `f17010c9` for 24 days. Two new
+  upstream skills, `academy-guide` and `discernment-nudge`, never arrived. This
+  PR refreshed the mirror by hand to `53048666`. **A hand refresh is not a
+  fix.** The next Monday fails the same way.
+- **The fix, and it is yours:** GitHub → repository **Settings → Actions →
+  General → Workflow permissions** → turn on *Allow GitHub Actions to create
+  and approve pull requests*. Then run the workflow once with
+  `gh workflow run skills-upstream-sync.yml` and watch it to green.
+- **⚠️ A workflow that fails reports nothing.** The schedule is weekly and no
+  alert fires, so this stayed silent for three weeks. Whoever flips the setting
+  must also decide whether a sync that fails tells anybody.
+- **If you prefer not to grant that permission:** change the job to push a
+  branch and stop there. A person then opens the PR. That edit is an agent job,
+  and it needs your word first, because it changes CI.
+- **Authority:** `.github/workflows/skills-upstream-sync.yml` ·
+  `skills/upstream/README.md`
+- **Added:** 2026-09-03 · skills-adopt PR (the adoption found the dead sync)
+
+### H-99 · ⏳ `bypassPermissions` has NO EXPIRY, and everything around it does · [OWNER]
+- **Check:** `grep defaultMode .claude/settings.local.json` on the owner's
+  machine. `bypassPermissions` means this is live. **Due 2026-09-30**, with the
+  rest of the dev-phase window.
+- **Why:** the owner set it on 2026-09-02 to unblock in-place edits of the
+  production `.env` over `ssh`, which the harness classifier refused. It works,
+  and it is broader than the thing it fixed. It removes every permission prompt
+  and the classifier, for every tool, in every session on that machine.
+  🔴 **Everything ELSE in this window expires by itself.** The grants carry
+  `ALLOW-UNTIL 2026-09-30`. `CLAUDE.md` §3a says delete the section.
+  `.claude/settings.json` says delete the block. **This one setting carries no
+  date, and `.gitignore` hides it, so no review will ever surface it.** It is
+  the single change most likely to outlive the phase that justified it.
+  📌 **It also weakens a fence nothing else covers.** The `deny` list — VM
+  destroy, snapshot restore, DNS reset, domain transfer — may not be consulted
+  in this mode, and `plan-guard.mjs` does not cover those acts. Today they rest
+  on an agent's judgement alone.
+- **The fix, on or before 2026-09-30:** set `defaultMode` back to
+  `acceptEdits` in `.claude/settings.local.json`, then restart. The broad
+  `allow` list in the tracked `.claude/settings.json` keeps ordinary work
+  prompt-free, which is what it was widened for.
+- **Reconsider it, do not reflex-revert.** One task in two days needed it. If
+  that rate holds, `acceptEdits` plus the allow list is enough, and the rare
+  production `.env` edit belongs in an interactive session where a human
+  approves it.
+- **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
+- **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
+
+### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
+- **Check:** run three commands on the box. Every one must change before this
+  entry closes.
+  1. `grep -c CUSTOMER_CONSOLE_DATABASE_URL /opt/acb/app/scripts/backup_db.sh`
+     → `0` means the Console database stays out of scope.
+  2. `systemctl list-timers --all | grep acb-backup` → no line means nothing
+     schedules the job.
+  3. `systemctl show acb-backup.service -p Result` → `exit-code` means the last
+     run failed.
+- **Why:** the owner lost the Console data on 2026-09-01 and held no backup.
+  The owner did not need that data. The next loss can cost more.
+- 🔴 **Four failures compound, and each one hides the next.** An agent measured
+  all four on `srv1914284`, 2026-09-02:
+  1. `scripts/backup_db.sh` reads `DATABASE_URL` and nothing else. It holds
+     ZERO references to `CUSTOMER_CONSOLE_DATABASE_URL`. So the job skips every
+     organization, operator and provider credential.
+  2. The newest dump names `pg_container: acb-postgres`, a LOCAL docker
+     container, and not Supabase. Its manifest counts `app_user: 0`,
+     `email_messages: 0`, `gtd_items: 0`, `meeting: 0` and `agent_run: 0`.
+  3. `systemctl list-timers` shows no timer for the unit. Only Debian's own
+     `dpkg-db-backup.timer` runs. So nothing schedules the job.
+  4. `acb-backup.service` last started on 2026-08-25 and exited non-zero.
+     Nothing retried it. Nothing reported it.
+- 📌 **The empty dump is the worst of the four.** A job that fails loudly stops
+  nobody for long. A job that writes a manifest full of zeros reads as success.
+- 📌 **This is NOT the cause of H-89.** The dumps live in `/opt/acb/backups`,
+  outside the checkout, so the backup unit does not write the root-owned files
+  in `workbench/operator_console/`. H-89 stays open and unexplained.
+- **The AGENT half:** point `backup_db.sh` at both DSNs, and make a zero row
+  count fail the job. ⚠️ The timer belongs in `deploy/`, which is §6
+  owner-gate, so an agent writes the script and the owner installs the timer.
+- **The OWNER half, and take it first:** decide whether the control plane needs
+  a backup of ours at all. Supabase takes a daily backup on a paid plan. That
+  answer turns the agent half from "build it" into "delete the unit".
+- **Authority:** `work_plan.md` §6 (deploy reach) · `scripts/backup_db.sh` ·
+  `deploy/hostinger/`
+- **Added:** 2026-09-02 · operator-identity env session, found while an agent
+  read the box after the Supabase move
+
+### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
+- **Check:** has somebody rotated all four credentials below since 2026-09-02?
+  ⚠️ The original entry named the OLD Tokyo project, and the owner deleted it
+  on 2026-09-02. That half is now moot. The three from the Mumbai bring-up are
+  live and they are the ones that matter.
+- **🔴 The three live ones (2026-09-02).** All reached the transcript of the
+  Mumbai migration session. The owner pasted two, and the agent generated the
+  third and then echoed all three inside `ssh` and `psql` commands:
+  1. `postgres` owner on **Metorite Application Database** (`wbjpwtxigkileyjsgahk`)
+  2. `acb_app` on the same project — the role the gateway runs as
+  3. `postgres` owner on **Metorite Tenant Database** (`uttxlicdccfkramtjfpi`)
+  Together they reach all 157 application tables and the console's credit
+  ledger, operator rows and provider credentials.
+- **What to do:** reset all three in the Supabase dashboard. Then update
+  `PGPASSWORD` and `DATABASE_URL` in `/opt/acb/app/.env`, and
+  `CUSTOMER_CONSOLE_DATABASE_URL` in the console's `.env`. Restart
+  `acb-gateway` and `acb-customer-console`.
+- **📌 The lesson the original entry missed.** It names an ACCIDENT — `psql`
+  echoing a DSN on stderr. The 2026-09-02 exposure was deliberate and routine:
+  a credential travels in the command that uses it, and the command is the
+  transcript. An agent that runs `psql "postgresql://user:pass@host"` discloses
+  the password every time, even when the command succeeds. Pass credentials
+  through `PGPASSWORD` in the environment, never inside a URI on a command line.
+- **Why:** on 2026-09-01 an agent ran `psql "$DATABASE_URL"` on the box and
+  piped **stderr** into the transcript. `psql` rejects the DSN, because
+  `DATABASE_URL` carries the SQLAlchemy form `postgresql+psycopg://`. Its error
+  message quotes the connection string **in full, with the password**.
+  🔴 The credential is the `acb_app` role on the tenant Supabase pooler. That
+  role reads and writes all 157 public tables.
+  📌 **Nobody used it, and that does not matter.** This is the same class as
+  **H-3**: a secret in a transcript is a disclosed secret.
+  📌 **The trap is general, and it is worth naming.** A tool that fails on a
+  credential usually echoes the credential. Never pipe stderr from `psql`,
+  `pg_dump`, `redis-cli` or `curl -u` into a transcript. Send it to
+  `/dev/null` and report the exit code.
+- **Rotate the DSN form too:** it is a papercut of its own. `psql` cannot
+  read `postgresql+psycopg://`, so every ad-hoc query needs a `sed` first.
+  Consider a `PSQL_URL` beside `DATABASE_URL`, or a small wrapper.
+- **Authority:** H-3 (same class) · `work_plan.md` §6 credentials
+- **Added:** 2026-09-01 · guardrail-relaxation session, self-reported
+
 ### H-93 · 🔴 DEF-1's trigger has FIRED — a second operator `admin` exists · [OWNER]
 - **Check:** run this on the Console database.
 
@@ -102,7 +237,14 @@ line — never reclaim a number by deleting the other entry.
   needs its own slice, its own acceptance and a board row. `work_plan.md` §6.0
   **C4** already says the two decisions arrive together and must not be
   separated. The owner takes the shape. An agent then builds it.
+- 📌 **§9.1a holds the menu — read it before you ask the owner
+  anything.** It holds the one decision that matters (what happens when the
+  second admin is asleep), the four that follow with defaults, and the five
+  guards `POST /orgs/purge` ALREADY carries. ⚠️ That list matters: those five
+  guards close the mis-click case. So four-eyes buys protection against a
+  compromised admin and not a tired one. Do not re-derive this in chat.
 - **Authority:** `specs/operator_identity_and_access.md` §9 DEF-1 · §9.1 ·
+  **§9.1a (the shape)** ·
   `work_plan.md` §6.0 C4 · D64.6
 - **Added:** 2026-09-01 · WS-31 D70 documentation session
 
@@ -155,10 +297,23 @@ line — never reclaim a number by deleting the other entry.
   13:29 and PR #198 at 13:57, both on fully green CI. 113 tracked paths were
   root-owned, and the remaining 66681 were `.next` build output, which git
   ignores.
-- **The open question: which step runs as root and writes there?** A container
-  or build with a bind mount is the first suspect, because the operator console
-  is the only tree affected. Read the unit files and the compose file on the
-  box, find the writer, and stop it writing as root.
+- **🟢 ANSWERED 2026-09-01 — the writer is the deploy unit itself.**
+  `deploy/hostinger/acb-pull.service:29` sets `User=root`, and it runs
+  `vps_pull.sh` → `vps_apply.sh`. So every `npm ci` and `npm run build` that
+  script invokes writes root-owned files into an `acb`-owned
+  checkout. Measured on the box that morning, `.next` under
+  `workbench/control_plane` was `root root` inside an `acb acb` parent.
+  ⚠️ It is not a container and not a bind mount, which is where this entry
+  pointed. It is also **not only the operator console** — the same unit builds
+  the workbench, so the whole tree is exposed.
+  📌 `tests/unit/test_deploy_venv_ownership.py` had already recorded this
+  asymmetry for `.venv` in its own docstring. The fact was in the repo before
+  this entry asked the question.
+- **What is still owed.** The correct fix drops to `acb` for the build instead
+  of repairing ownership afterwards. A `chown` is another repair that hides
+  the next occurrence, which this entry already warns against. That change
+  touches how the deploy runs and nobody can test it off the box, so it stays
+  owner-gated.
 - **Why this stays open although the repair landed.** The repair lives inside
   `vps_apply.sh`. A hand-run deploy, or any other path that resets the
   checkout, meets the same failure with no repair. The repair also hides the
@@ -171,44 +326,6 @@ line — never reclaim a number by deleting the other entry.
   (verify by evidence, never by a green job)
 - **Added:** 2026-08-31 · projects UI/UX session, on the PR #198 deploy ·
   rewritten the same day, after the block cleared and the repair landed
-
-### H-90 · ⚠️ Production publishes its whole API schema, because `env=dev` · [OWNER]
-- **Check:** `curl -s -o /dev/null -w '%{http_code} %{size_download}\n'
-  https://api.metorite.com/openapi.json`. A `200` means this is open. Measured
-  2026-08-31 17:05 UTC: **200, and 1121924 bytes, with no credential**. `/docs`
-  answers 200 too, and serves the Swagger UI.
-- **One variable causes it.** `/version` reports `"env":"dev"`.
-  `Settings.acb_env` defaults to `"dev"`, so an ABSENT `ACB_ENV` on the box
-  gives exactly this reading. `gateway/main.py:591` then returns
-  `env == "dev"` from `docs_enabled`, which wires `docs_url`, `redoc_url` and
-  `openapi_url`.
-- **The auth dependency cannot save us here.** FastAPI mounts the docs routes
-  as plain Starlette routes with NO dependency chain. `main.py:583` says so in
-  its own docstring, and `tests/unit/test_default_deny_auth.py` repeats it. The
-  app-level `require_authenticated` never reaches them. Switching the env off
-  is the ONLY guard this design has, and the box has it switched on.
-- **What the schema gives a reader.** Every route, every path parameter, every
-  request and response model, and the admin surface. It is a map of the attack
-  surface. It is not a credential, so this is exposure and not a breach.
-- **The fix, and why it is small.** Set `ACB_ENV=prod` in the box's `.env`, then
-  restart the gateway. The whole tree reads `acb_env` in six places: the startup
-  log, `docs_enabled`, `/health`, `/version`, the reconciler's start log and
-  `scripts/check_infra.py`. Nothing in the auth path reads it. So the flip
-  removes the docs and corrects two labels. Nothing else moves.
-- **Then close the same hole in the deploy.** `.env.example` carries
-  `ACB_ENV=dev`, and no deploy step sets `prod`. The next fresh box repeats
-  this exactly. Decide where production's value comes from.
-- **The fence now exists (R7).** `vps-health.yml` gained an `exposure` job. It
-  probes the three paths and `/version` hourly from outside, and it fails the
-  run while any of them says `dev`. ⚠️ **So that job is RED until somebody sets
-  the variable.** That is the alarm working, not a broken job. It carries its
-  own job and never touches the outage issue, so it cannot mask a real
-  reachability alert, and a real outage cannot mask it.
-- **Authority:** `work_plan.md` §6 (`env-write` on the box is owner-gated) ·
-  `gateway/main.py` `docs_enabled` · `test_docs_are_dev_only` ·
-  `vps-health.yml` job `exposure`
-- **Added:** 2026-08-31 · projects UI/UX session · escalated the same day from
-  "reports the wrong label", after the schema probe returned 200
 
 ### H-87 · Give the vendor image price a SIZE dimension, before we offer sizes · [AGENT]
 - **Check:** the DELIVERABLE first, and the request body only after it.
@@ -764,29 +881,25 @@ line — never reclaim a number by deleting the other entry.
   - (c) Accept it, and say so in the release notes.
   ⚠️ Do not "fix" this by making the health check gentler. The check is honest.
   It is watching the wrong moment.
+- 🟢 **The DOMINANT term is fixed, and it was not the restart (2026-09-01).**
+  This entry named the restart as the cause. Measured that morning, the restart
+  was the small half. `vps_apply.sh` ran `rm -rf .next` and then built, so the
+  live server lost the directory it serves from and answered **HTTP 500 on
+  every route for the whole build** — minutes, with two Next builds per deploy,
+  not the seconds a restart costs. `build_next_staged` now builds into
+  `.next.staging` and renames it in on success, so the window shrinks to the
+  restart alone and a FAILED build changes nothing.
+  ⚠️ **This entry stays OPEN.** The restart gap this entry describes is still
+  there, and options (a) and (b) remain the fix for it. What changed is the
+  size of the problem, not its existence.
+  📌 **Nothing saw the big half for a day.** `vps-health.yml` counted an HTTP
+  500 as proof of life. That is fixed in the same PR, and the two changes must
+  not be separated — alarming on 5xx is only correct once deploys stop serving
+  them routinely. Fence: `test_deploy_next_build_swap.py`.
 - **Authority:** `deploy/hostinger/` (owner-gated) · `.github/workflows/deploy.yml` ·
   D36 (Fracktal is customer zero)
-- **Added:** 2026-08-26 · guardrails + handoff session
-
-### H-61 · `.claude/OWNER_GRANTS.md` is untracked AND un-ignored · [OWNER]
-- **Check:** `git check-ignore -v .claude/OWNER_GRANTS.md` → no output means this
-  entry is live. `git status --short` shows it as `??` every session.
-- **Why:** the file now DOES something — PR #119 landed the reading half of D45,
-  so plan-guard honours it. It sits in a bad third state. It is not committed,
-  and it is not ignored.
-  🔴 **`git clean -xdf` deletes it, silently, with every grant in it.** It also
-  shows as untracked noise in every `git status`, which is how people learn to
-  skim that output.
-  📌 **My recommendation, and it is the owner's call because D45 owns this.**
-  Add one `.gitignore` line. A grant is a LOCAL, one-day authorization by one
-  human at one keyboard. Committing it would make a grant travel to every
-  checkout, every cloud session and every worktree — which is the opposite of
-  what D45 is for.
-  📌 Measured 2026-08-26: 23 `ALLOW` lines, of which **1** was live. Stale lines
-  are inert by design, so this is tidiness, not risk. The file says to delete
-  them when convenient.
-- **Authority:** D45 · `.claude/OWNER_GRANTS.md` · `.claude/hooks/plan-guard.mjs`
-- **Added:** 2026-08-26 · guardrails + handoff session
+- **Added:** 2026-08-26 · guardrails + handoff session · build half measured and
+  fixed 2026-09-01
 
 ### H-62 · Two WS-39 design questions block the first Tasks slice · [OWNER]
 - **Check:** these are decisions, not code. `rg -n "origin" workbench/control_plane/src/app/tasks/lib/types.ts`
@@ -807,23 +920,6 @@ line — never reclaim a number by deleting the other entry.
   📌 The third question in that group is CLOSED: `horizonId` is settled by **D65**
   and **H-59** owns the removal.
 - **Authority:** H-33 · H-59 · D65 · `task_manager_app.md` §13.5a
-- **Added:** 2026-08-26 · guardrails + handoff session
-
-### H-63 · Eight stale worktrees hold branches nobody is reading · [OWNER]
-- **Check:** `git worktree list` → more than the main checkout means this is live.
-- **Why:** measured 2026-08-26 — eight worktrees under `C:\wt-*`, each holding a
-  branch checked out. One of them blocked an ordinary `git branch -d` today,
-  which is how they announce themselves.
-  ⚠️ **Only the owner knows which hold unmerged work.** Some names look finished
-  (`cp-8-provision-customer`, `fix-migrate-tmpfile`) and some do not
-  (`ws-29-provision-rls-bind`, `ws-30-invites`). An agent cannot tell the
-  difference from a name, and removing the wrong one loses work.
-  📌 **The recorded hazard, so nobody repeats it:** `rmdir` the `node_modules`
-  junction BEFORE `git worktree remove`, or the remove follows the junction and
-  deletes the REAL `node_modules`.
-  🟢 For each: `git log --oneline origin/main..<branch>` shows what is unmerged.
-  Empty means it is safe to remove.
-- **Authority:** local dev environment · `git worktree list`
 - **Added:** 2026-08-26 · guardrails + handoff session
 
 ### H-33 · WS-39 S3a-CLIENT slice 5: the CRUD and AI tail · [AGENT]
@@ -1348,44 +1444,153 @@ line — never reclaim a number by deleting the other entry.
   done-when section and a repaired Check
 
 
-### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the five `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+### H-54 · Configure the Supabase GOOGLE WORKSPACE staff provider, the SIX `OPERATOR_*` values, and turn identity linking OFF · [OWNER]
+- ✅ **The ENV half is DONE, 2026-09-02, and only the BROWSER half is left.**
+  An agent set all six values, and `OPERATOR_CONSOLE_ORIGIN` beside them, in
+  the two files this table names. Both files stay `acb:acb 600`. The agent then
+  restarted `acb-customer-console`, and local health answered 200.
+  ⚠️ **`OPERATOR_IDENTITY_ENABLED` stays UNSET on purpose.** Turn it on before
+  the Supabase project holds a Google provider, and the page replaces the
+  passphrase form with a button that cannot work. H-56 step 1 owns that flip.
+  📌 **The owner must still do four acts, and all four are in a browser.**
+  Make the Google Cloud OAuth client. Turn on the Supabase Google provider.
+  Add the redirect allowlist entry. Turn manual identity linking OFF.
+  H-96 listed the same four as its items 5 to 8.
+- 📌 **A tenth thing, learned from the move H-96 describes.** The rows do not
+  travel with the schema. The owner applied the ladder to the new project and
+  started the data again from nothing.
 - **⛔ REWRITTEN 2026-09-01 for D70.** The provider is **Google Workspace**, not
   Microsoft. `OPERATOR_GOOGLE_HD` replaces `OPERATOR_ENTRA_TENANT_ID`. We have
   no Entra directory, and `hathilabs.com` is a Google Workspace domain with an
   admin console.
-- **Check:** `ssh` to the box and read the operator console env for
-  `OPERATOR_GOOGLE_HD` → an unset value means still pending. From the repo
-  alone: `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
-  → **no hit at all** means the code half is not built either, which is the
-  state on 2026-09-01.
+- **⛔ AMENDED 2026-09-01, same day, after CP-12h shipped.** This entry said
+  **five** values and named five. There are **six**. It also carried a Check
+  that the code half of CP-12h has now made false.
+- **⛔ AMENDED AGAIN 2026-09-01** by the second repair round. This entry named
+  six values and said WHERE none of them goes. Two of the six go in **both**
+  containers, and a copy in one only fails with a bare 401. The table below is
+  now the placement of record, and it holds eight rows.
+- **Check:** `ssh` to the box and read **TWO** env files, not one.
+  1. The API file, `/opt/acb/app/apps/services/customer_console/.env`
+     (`acb-customer-console.service`, `EnvironmentFile`). It must hold
+     `OPERATOR_SIGNIN_PROVIDER=google` and `OPERATOR_GOOGLE_HD`.
+  2. The operator console env, which the separate Next process reads. It must
+     hold `OPERATOR_SIGNIN_PROVIDER=google` too.
+
+  Anything other than `google` in either file means still pending. An unset
+  value is the same as `azure`. An unset `OPERATOR_GOOGLE_HD` means still
+  pending too. **Set all three lines, or this entry stays open.**
+  ⚠️ **This Check read ONE file, and the wrong one, until 2026-09-01.** It
+  asked for `OPERATOR_GOOGLE_HD` in the console env. The API reads that value,
+  and the console never does. The table below is the placement of record.
+  ⚠️ **`deploy/` names no unit file for the operator console**, so this entry
+  cannot give you a path for file 2. `deploy/hostinger/` holds a service for
+  the gateway, the Customer Console, the workbench and the WhatsApp bridge, and
+  none for this app. Find where the running console reads its env before you
+  start. `workbench/operator_console/AGENTS.md` still says "not deployed",
+  and this entry says the box has been reachable since 2026-08-22. One of the
+  two is stale, and only the box can settle it.
+  ⚠️ From the repo alone you can no longer tell.
+  `rg -n "OPERATOR_GOOGLE_HD" workbench/operator_console/ apps/services/customer_console/`
+  returned nothing before CP-12h and returns hits now, so it says only that the
+  CODE half is built. It says nothing about the box.
 - **Why:** CP-12a builds the three-check staff gate. It cannot admit anybody
   until the owner configures the provider and sets the values. Until then
   the console stays on **one shared passphrase**. That box has been reachable
   since 2026-08-22.
-- **The five values.** `OPERATOR_GOOGLE_HD`, `OPERATOR_STAFF_DOMAINS`,
-  `OPERATOR_BOOTSTRAP_EMAIL`, `OPERATOR_SUPABASE_URL` and
-  `OPERATOR_SUPABASE_ANON_KEY`. ⚠️ `deploy/hostinger/customer_console.env.example`
-  still documents the Entra name. `deploy/` is OWNER-GATE, so an agent may not
-  correct it there.
+- **The SIX values, and the first one is the switch.**
+  **`OPERATOR_SIGNIN_PROVIDER=google`**, `OPERATOR_GOOGLE_HD`,
+  `OPERATOR_STAFF_DOMAINS`, `OPERATOR_BOOTSTRAP_EMAIL`,
+  `OPERATOR_SUPABASE_URL` and `OPERATOR_SUPABASE_ANON_KEY`.
+- **WHERE each value goes, and TWO of the six go in BOTH containers.**
+  Added 2026-09-01, because this entry gave no location at all. The API is
+  `acb-customer-console.service`, and it reads
+  `/opt/acb/app/apps/services/customer_console/.env`. The operator console is a
+  second process, Next, with an env of its own.
+
+  | Value | API `.env` | Operator console env | Owner |
+  |---|---|---|---|
+  | **`OPERATOR_SIGNIN_PROVIDER=google`** | ✅ | ✅ **BOTH** | H-54 |
+  | `OPERATOR_SUPABASE_URL` | ✅ | ✅ **BOTH** | H-54 |
+  | `OPERATOR_SUPABASE_ANON_KEY` | ✅ | — | H-54 |
+  | `OPERATOR_GOOGLE_HD` | ✅ | — | H-54 |
+  | `OPERATOR_STAFF_DOMAINS` | ✅ | — | H-54 |
+  | `OPERATOR_BOOTSTRAP_EMAIL` | ✅ | — | H-54 |
+  | `OPERATOR_CONSOLE_ORIGIN` | — | ✅ | H-56 |
+  | `OPERATOR_IDENTITY_ENABLED` | — | ✅ | H-56, and it is the last act |
+
+  🔴 **`OPERATOR_CONSOLE_ORIGIN` is NOT one of the six, and sign-in cannot work
+  without it.** `login/page.tsx` builds the authorize link out of it, and an
+  unset value prints "Sign-in is not configured on this deployment" instead of
+  the button. So the console needs THREE values before the flag flip, and H-56
+  step 1 now says so. An owner walk of these two entries found it on
+  2026-09-01.
+  ⚠️ **A one-container copy of the switch fails QUIETLY.** Put it in the API
+  only, and the page still offers "Sign in with Microsoft". Put it in the Next
+  process only, and Supabase returns a `google` identity while the API computes
+  `azure`. The two disagree, and the gate answers **401** with no message that
+  names the cause.
+  Measured on `ws-31-google-signin`, 2026-09-01. The API reads the value in
+  `customer_console/operators.py::signin_provider`. The Next process reads it
+  in `workbench/operator_console/src/lib/identity.ts::signinProvider`, at
+  request time, because `login/page.tsx` is `force-dynamic`.
+- ⚠️ **Set the other five and skip the switch, and the box stays on `azure`.**
+  Every Google sign-in then answers **401**, and no message names the unset
+  variable. This entry named five values until 2026-09-01, and that gap is
+  what an owner would have spent a day on.
+  ⚠️ `deploy/hostinger/customer_console.env.example` still documents the Entra
+  name. `deploy/` is OWNER-GATE, so an agent may not correct it there.
 - **Turn manual identity linking OFF in the Supabase project.** A staff
   account that links a second provider can be signed in through that
   provider. The Console refuses such a sign-in, because it reads
   `app_metadata.provider`. That claim is not per-session, so linking is
   the condition the bypass needs, and removal is the durable fix.
-- 🔴 **Measure one real Supabase GOOGLE payload, and confirm whether `hd`
-  appears in `identities[].identity_data`.** This is **still unmeasured and
-  still load-bearing.** `operator_signin.extract_identity` reads a shape nobody
-  has seen. It fails CLOSED, so a wrong guess refuses everybody instead of
-  admits anybody. ⚠️ The old part 3 of this entry asked for the **Azure** claim
-  shape. That question is dead. This one replaces it.
+  ⚠️ **A SECOND fact, measured 2026-09-01, and it sits here because linking
+  closes both.** `app_metadata.provider` holds a provider NAME, so it cannot
+  separate two identities that share that name. An operator can link a
+  personal Google account to their own Supabase user. That operator then holds
+  two `google` identities, and `_google_hd` reads the `hd` off either one.
+  That reader proves *"this account holds an identity from our Workspace"*,
+  and not *"this sign-in came from our Workspace"*. No outsider can reach it.
+  Turning linking off removes it.
+- 🔴 **Measure one real Supabase GOOGLE payload. Read TWO claims off it.**
+  1. Does `hd` appear in `identities[].identity_data`?
+  2. Does **`email_verified`** appear in the same place, and is it `true`?
+  Both are **unmeasured and load-bearing.** `operator_signin` reads a shape
+  nobody has seen. It fails CLOSED, so a wrong guess refuses everybody instead
+  of admits anybody. ⚠️ **Spec done-when 31 makes `email_verified is True` on
+  the SIGN-IN identity the ONLY accepted proof of a verified address. If
+  Supabase leaves that key out when the value is false, nobody signs in at
+  all.** It is one read, and the second answer costs nothing.
+  ⚠️ The old part 3 of this entry asked for the **Azure** claim shape. That
+  question is dead. This one replaces it.
+- 📌 **HOW to read the payload, and what to do when the sign-in refuses you.**
+  A refusal at step 4 answers a deliberately uninformative 403, because §4.1
+  gives one refusal for every failed check. **The log holds the real answer.**
+  1. Read the payload directly. Sign in once, take the `access_token` the
+     callback puts in the URL fragment, then
+     `curl -H "apikey: $OPERATOR_SUPABASE_ANON_KEY"
+     -H "Authorization: Bearer $TOKEN" "$OPERATOR_SUPABASE_URL/auth/v1/user"`.
+     `identities[].identity_data` is the object both claims live in.
+  2. Read why the Console said no.
+     `journalctl -u acb-customer-console | grep operator.refused`.
+     The line carries `operator_check` and `operator_tid`. A `directory` check
+     with `operator_tid=<none>` means Supabase sent no `hd`, so part 1 above
+     answered NO and `_google_hd` is the one function to change.
+  ⚠️ Without this, a refused sign-in gives the owner a 403 and no next action.
 - ⚠️ **A payload with NO `hd` must refuse.** Google issues an account on any
   address it verifies by mail, and such an account carries `email_verified:
   true` and no `hd`. Do not read a missing claim as a pass. Spec §8.1 done-when
   30 is the acceptance.
-- **Authority:** `specs/operator_identity_and_access.md` §4.1 · §10 G1–G2 ·
-  `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) · **D70.1** · D64.1
+- **Authority:** `specs/operator_identity_and_access.md` §4.1 · §8.1 done-whens
+  30 to 33 · §10 G1–G2 · `work_plan.md` §6.0 B5 · §6.1 (CP-12 block) ·
+  **D70.1** · D64.1
 - **Added:** 2026-08-26 · operator-identity spec session · **rewritten
-  2026-09-01** for D70
+  2026-09-01** for D70 · **amended 2026-09-01** by the CP-12h repair round,
+  which found the sixth value and the false Check.
+  **Amended again the same day** by the second repair round. That round added
+  the placement table, the two-container switch and
+  `OPERATOR_CONSOLE_ORIGIN`.
 
 ### H-58 · Name the first operators and their roles · [OWNER]
 - **Check:** `rg -n "OPERATOR_BOOTSTRAP_EMAIL" deploy/ .env.example` → no hit
@@ -1408,14 +1613,29 @@ line — never reclaim a number by deleting the other entry.
 - **⚠️ Amended 2026-08-27.** CP-12a to CP-12g slice 1 are built. The console
   now has both sign-in paths, and `OPERATOR_IDENTITY_ENABLED` chooses.
 - **The order, and it is the reverse of what it looks like:**
-  0. **[AGENT]** ⛔ **NEW, and it comes first. D70 changed the provider on
-     2026-09-01.** The built code names Microsoft and reads `tid`. The gate
-     must read the Google Workspace `hd` claim against `OPERATOR_GOOGLE_HD`.
-     Nobody can finish step 1 against a provider the code does not accept.
-     Acceptance: spec §8.1 done-whens 1, 5 and 30 to 33.
+  0. **[AGENT]** ✅ **BUILT 2026-09-01** on `ws-31-google-signin` as CP-12h,
+     and repaired the same day after an independent verification.
+     `OPERATOR_SIGNIN_PROVIDER` names the directory, and the gate reads the
+     Google Workspace `hd` claim against `OPERATOR_GOOGLE_HD`. Spec §8.1
+     done-whens 1, 5 and 30 to 33 are MET.
+     ⚠️ **This step is done in the CODE only.** Nobody has merged that branch,
+     and nobody has set a variable on the box. Step 1 is still owed.
   1. **[OWNER]** Finish **H-54**. Configure the Supabase **Google Workspace**
-     provider, set the five `OPERATOR_*` values, turn identity linking OFF, and
-     add `<origin>/login/callback` to the redirect allowlist.
+     provider, set the **six** `OPERATOR_*` values, turn identity linking OFF,
+     and add `<origin>/login/callback` to the redirect allowlist.
+     ⚠️ **`OPERATOR_SIGNIN_PROVIDER=google` is one of the six.** Without it the
+     box stays on `azure`, and every Google sign-in answers 401. This step read
+     "five" until 2026-09-01.
+     ⚠️ **TWO of the six go in BOTH env files** — the switch itself and
+     `OPERATOR_SUPABASE_URL`. Set the switch in one container only, and sign-in
+     fails with no message that names the cause. H-54 holds the placement
+     table, one row per value.
+     🔴 **Set `OPERATOR_CONSOLE_ORIGIN` on the console in this step too.** It
+     is not one of the six, and the sign-in button does not appear without it.
+     The console therefore needs three values here: the switch,
+     `OPERATOR_SUPABASE_URL` and `OPERATOR_CONSOLE_ORIGIN`. Step 3 flips the
+     fourth. This step named none of them until 2026-09-01, and an owner who
+     followed it exactly reached a page that said "Sign-in is not configured".
   2. ✅ **DONE.** The Console ladder is applied on production. Measured
      2026-09-01: the `operator` table exists, and migrations 019 to 021 are
      recorded. **H-64 carried this and the owner closed it**, so that entry is
@@ -1439,7 +1659,13 @@ line — never reclaim a number by deleting the other entry.
   `deploy/` is OWNER-GATE and I may not write there. Add to the operator
   console's env: `OPERATOR_IDENTITY_ENABLED` (the flag, default off) and
   `OPERATOR_CONSOLE_ORIGIN` (the console's own public URL, used to build the
-  Supabase callback). `OPERATOR_SUPABASE_URL` is needed by BOTH services.
+  Supabase callback). Both are console-only.
+- ⚠️ **BOTH services read TWO of the values**, and this line named one of
+  them until 2026-09-01. They are `OPERATOR_SUPABASE_URL` and
+  **`OPERATOR_SIGNIN_PROVIDER`**. The switch is the one that fails quietly.
+  The API computes the provider from it. The console builds the authorize link
+  from it. A mismatch answers **401** and names nothing.
+  H-54 carries the full table, container by container.
 - **Authority:** `specs/operator_identity_and_access.md` §8 · `work_plan.md` §2
   WS-31 (CP-12 clause) · D64
 - **Added:** 2026-08-26 · operator-identity spec session
@@ -1658,6 +1884,9 @@ line — never reclaim a number by deleting the other entry.
   because `main` already holds the stack.
 - 📌 **Item 1 above is the durable repair.** A console that the deploy BUILDS
   but does not OWN does this again on the next file it must replace.
+- ✅ **Item 3 is ANSWERED, 2026-09-02.** An agent read the box. The unit
+  is `acb-operator-console.service` and it is active. So nobody needs to set
+  `OPERATOR_CONSOLE_UNIT`. Items 1 and 2 stay open, and both are owner-gate.
 - **Authority:** `work_plan.md` §6 (deploy reach) · D35 (own hostname, own
   app) · `scripts/vps_apply.sh`
 - **Added:** 2026-08-28 · operator-console deploy session · **escalated
@@ -1791,9 +2020,103 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
+### H-64 · Board drag-and-drop writes an order that nothing reads · [AGENT]
+- **Check:** `rg -n "view_position" apps/services/gateway/gateway/routes/projects/`
+  → no hit means the read half is still missing, and the entry is still real.
+- **Why:** A drag inside one column is a silent no-op. The card returns to its
+  old place, and the user sees the gesture fail.
+  - `handleDrop` writes the order to `pm_view_task_positions` through
+    `PUT /projects/views/{id}/positions`. That half works.
+  - `GET /projects/tasks` does `SELECT t.* FROM pm_tasks t` and never joins that
+    table. `rg` finds `view_position` in **no** `.py` or `.sql` file in the tree.
+  - `GET /projects/views/{id}/positions` exists at `views.py:313`. No frontend
+    code calls it.
+  - So `view_position` is `undefined` on every real row. `sortForView` then puts
+    every task in its `created_at` branch, and each column shows creation order.
+  - `planDrop` sees no neighbour with a position, so **every** drop materialises
+    the whole group. Each drag writes up to `MAX_POSITIONS` = 1000 rows that
+    nothing reads.
+  - A same-column drop also makes `buildCellDropPatch` answer `null`, because
+    the axis value did not change. There is no optimistic move either.
+- **What it needs:** `GET /projects/tasks` takes an optional `view_id`, LEFT
+  JOINs `pm_view_task_positions`, and returns `position AS view_position`.
+  `loadProject` then sends the order-bearing view. R8 applies — verify the SQL
+  against the live database, not a fake.
+- **⚠️ Ask the owner first.** "Priority" on this surface is the `importance`
+  field (`FilterBar.tsx:74`), and `pm_tasks` has no `priority` column. The owner
+  must say whether a drop keeps rank per view (D-PM-5, the design above) or
+  writes `importance` from the neighbours (**against** D-PM-5). Do not build
+  before that answer.
+- **Also owed:** the board reads 100 tasks by `created_at` and sorts them in the
+  browser. A project above 100 tasks cannot show a correct hand order. Name this
+  in the same board row.
+- **Authority:** `specs/project_management_app.md` D-PM-5 (line 929) ·
+  `work_plan.md` §2 WS-27 row · CLAUDE.md §5 (a finding for the board)
+- **Added:** 2026-08-26 · Projects UI session (owner asked to flag, not build)
+
+### H-94 · The Projects filter row is half-converted · [AGENT]
+- **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
+  → hits on `<Select` mean the controls are still selects, and the button
+  conversion below is still owed.
+- **Why:** The owner gave four more directions in the session that consolidated
+  the row. Work stopped part-way, so the row is in a state nobody designed.
+  1. **"Assignees" becomes a button, not a select.** A click shows the items.
+  2. **Every dropdown in the row becomes a button.** At the default value, draw a
+     two-headed arrow in place of the single down arrow.
+  3. **The search field collapses to an icon** at the left of the row. Remove the
+     placeholder text. A click opens the real field.
+  ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
+  a transition, and that half is withdrawn. A `MOTION.md` landed here the same
+  day and the owner removed it. Build the collapse as a state change with no
+  animation. Do not add a duration or an easing curve to this row, and do not
+  re-open the question. Ask the owner if you believe motion is needed.
+- **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
+  `src/components/ui/Modal.tsx` is the only file that may import it. A button
+  that opens a list is a popover. Do not hand-roll one, and do not import a
+  second library. `src/lib/outsideClick.ts` is the answer for a popover we do
+  not build on the substrate.
+- **⚠️ Also still owed on this row:** the Clear button takes 76px from the search
+  box at 1920px. It is a sibling in the same `flex flex-wrap` container. The
+  search box is the only `flex-1` in that container, so it pays for everything
+  that appears or disappears. Measured: 0px at 1280, 1440 and 1600, and −76px at
+  1920. Direction 4 above may remove this by construction. Measure, do not assume.
+- **Authority:** `AGENTS.md` rule 8 (the substrate) ·
+  `specs/project_management_app.md` §11.2 item 3 · board row WS-27
+- **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
+  *(minted H-65. Renumbered to H-94 on 2026-09-01, because `main` had taken
+  65 for the plan-guard heredoc entry. This branch merged second. That is the
+  case the numbering rule above names.)*
+
+### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
+- **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
+  case-insensitive string test against the whole command means the defect is
+  still there. A test that matches only a redirect, an editor or a `tee` means
+  it is fixed.
+- **⚠️ This entry deliberately never spells that filename.** An entry that spelt
+  it could not be written by a shell command, which is the defect itself.
+- **Why:** Line 231 refuses the command when the grants filename appears
+  **anywhere in the text**, and not only in a write. So a commit message that
+  names the file is refused as a write to it. Measured 2026-09-01: a
+  `git commit -F -` whose heredoc body named the file was blocked twice. The
+  same commit passed as soon as the message said "the owner grants file"
+  instead. Filing this entry hit the same wall a third time.
+- **⚠️ The refusal itself is correct and must stay.** D45 says the owner writes
+  that file. This entry asks for the test to be narrower, never for the gate to
+  be weaker. The failure mode is the expensive one. An agent that meets a
+  refusal it cannot explain will look for a way around it. The way around a
+  false positive also goes around the true one.
+- **What it needs:** match a WRITE, not a mention. Match the redirect, the
+  editor and the `tee` forms, the way the path regexp above it already does. A
+  mention inside a quoted string or a heredoc body is not a write.
+- **Related:** **H-65** is the same family. plan-guard cannot see a write an
+  interpreter makes from a heredoc. That entry is about a write it MISSES. This
+  one is about a write it INVENTS. Both read shell text as if it were an action.
+- **Authority:** `.claude/hooks/plan-guard.mjs` line 231 · D45 · `work_plan.md` §6
+- **Added:** 2026-09-01 · Projects UI session, met while merging `main`
+
 ---
 
-### H-98 · The `ruff` pre-commit hook refuses every commit that touches the Console · [AGENT]
+### H-102 · The `ruff` pre-commit hook refuses every commit that touches the Console · [AGENT]
 - **Check:** `uv run ruff check apps/services/customer_console/customer_console/main.py`
   on a clean tree. Three findings means this is open. Zero means somebody
   swept it.
@@ -1816,7 +2139,10 @@ line — never reclaim a number by deleting the other entry.
 - 📌 Related: **H-74** holds the same shape for mypy, which reports 93
   findings here and does not block.
 - **Authority:** `.pre-commit-config.yaml` lines 21 to 30 · CLAUDE.md §3.5 (R7)
-- **Added:** 2026-09-04 · credit-pricing slice 1 session
+- **Added:** 2026-09-04 · credit-pricing slice 1 session · **renumbered
+  from H-98 on 2026-09-05**, because `main` minted its own H-98 (the
+  Console backup gap) and merged first. Ids are never reused, so that one
+  keeps the number. `test_handoff_queue` named the collision.
 
 # DONE — deleted, not archived
 

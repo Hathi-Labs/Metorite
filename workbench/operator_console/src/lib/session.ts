@@ -9,7 +9,12 @@
 
 import { cookies } from "next/headers";
 import { isStaff, STAFF_COOKIE, StaffUnconfigured } from "./staff";
-import { SESSION_COOKIE, looksLikeSession, usesSessions } from "./identity";
+import {
+  SESSION_COOKIE,
+  looksLikeSession,
+  passphraseFallbackEnabled,
+  usesSessions,
+} from "./identity";
 
 export type StaffSession = {
   //: Render the page, or redirect to /login.
@@ -30,9 +35,27 @@ export async function staffSession(): Promise<StaffSession> {
     // ⚠️ `configured: true` even with no cookie. The gate IS configured — the
     // person simply has not signed in — and saying otherwise would send the
     // reader to check environment variables instead of the sign-in page.
-    return looksLikeSession(token)
-      ? { ok: true, configured: true, authToken: (token as string).trim() }
-      : { ok: false, configured: true };
+    if (looksLikeSession(token)) {
+      return { ok: true, configured: true, authToken: (token as string).trim() };
+    }
+    // ⛔ **The back door — CP-12k.** OFF by default, so done-when 29 still
+    // holds. When the owner turns it on, a valid passphrase cookie renders
+    // the page and carries NO `authToken`, exactly as the interim path does.
+    // That difference matters: a passphrase names nobody, so the Console must
+    // fall back to the shared operator token rather than attribute the read
+    // to a person who did not prove they are one.
+    if (passphraseFallbackEnabled()) {
+      try {
+        if (isStaff(jar.get(STAFF_COOKIE)?.value ?? null)) {
+          return { ok: true, configured: true };
+        }
+      } catch (e) {
+        // An unconfigured passphrase is not an error HERE — the identity door
+        // is the real one, and this is only a backup that is not set up.
+        if (!(e instanceof StaffUnconfigured)) throw e;
+      }
+    }
+    return { ok: false, configured: true };
   }
 
   try {

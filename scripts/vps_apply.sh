@@ -237,13 +237,60 @@ echo "==> Applying the Customer Console ladder (D47 · H-24)"
 #   • no DSN, unit ENABLED     -> the Console is live and misconfigured. FAIL.
 #   • no DSN, unit not enabled -> not provisioned here. Say so LOUDLY, continue.
 # The thing H-24 closes is the SILENT skip. A loud, reasoned skip is not one.
+#
+# ⚠️ A FOURTH CASE, added 2026-09-03 (H-100). The three above ask only whether
+# the DSN is PRESENT. A DSN that is present and DEAD fell into the first one,
+# ran the ladder, and `psql` failed under `set -e` — which took the rest of this
+# file with it. The workbench rebuild is ~360 lines BELOW here, so the box kept
+# serving old code from a stack where all four units read `active`.
+#
+# Measured 2026-09-02: the owner deleted the Console Supabase project during the
+# Mumbai migration and the console `.env` still named it. Deploys failed for
+# hours. `vps-health.yml` probed the public URLs and the app answered on OLD
+# code, so every signal stayed green. Only `acb-pull.service` knew, and nothing
+# read it.
+#
+#   • DSN present but UNREACHABLE, unit ENABLED     -> FAIL, and NAME the cause.
+#   • DSN present but UNREACHABLE, unit not enabled -> skip LOUDLY, continue.
+#
+# The second half is the part that matters most. A dead Console DSN on a box
+# that does not run the Console must not take the tenant deploy down with it.
+# That is the whole failure this case exists to stop.
 CC_ENV="$APP_DIR/apps/services/customer_console/.env"
 CC_DSN="$(grep -E '^CUSTOMER_CONSOLE_DATABASE_URL=' "$CC_ENV" 2>/dev/null | tail -1 | cut -d= -f2-)"
 # systemd's EnvironmentFile accepts quoted values; psql would take the quotes
 # literally and try to resolve them as a hostname.
 CC_DSN="${CC_DSN%\"}"; CC_DSN="${CC_DSN#\"}"
 CC_DSN="${CC_DSN%\'}"; CC_DSN="${CC_DSN#\'}"
-if [ -n "$CC_DSN" ]; then
+# Reachability probe. `psql` wants a libpq URL and the service DSN carries a
+# SQLAlchemy driver suffix, so strip it the same way
+# `apply_customer_console_migrations.sh` does.
+#
+# ⚠️ NEVER let this command's stderr reach a log. `psql` quotes the WHOLE
+# connection string, password included, when it cannot connect — that is how a
+# tenant credential reached a transcript on 2026-09-02 (H-97). Exit code only.
+cc_reachable() {
+  local dsn="${CC_DSN/+psycopg2/}"
+  dsn="${dsn/+psycopg/}"
+  command -v psql >/dev/null 2>&1 || return 0   # cannot probe -> do not block
+  PGCONNECT_TIMEOUT=10 psql "$dsn" -tAc 'select 1' >/dev/null 2>&1
+}
+
+if [ -n "$CC_DSN" ] && ! cc_reachable; then
+  if systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
+    echo "    !! The Console DSN in $CC_ENV is PRESENT but UNREACHABLE, and"
+    echo "       acb-customer-console is ENABLED. The database it names is gone,"
+    echo "       renamed, or refusing this credential."
+    echo "       Refusing to continue: the ladder cannot run, so the service"
+    echo "       would serve new code against an unmigrated schema."
+    echo "       Fix CUSTOMER_CONSOLE_DATABASE_URL on the box, then redeploy."
+    exit 1
+  fi
+  echo "    !! The Console DSN in $CC_ENV is PRESENT but UNREACHABLE."
+  echo "       acb-customer-console is NOT enabled here, so this box does not"
+  echo "       serve the Console -> ladder SKIPPED, deploy CONTINUES."
+  echo "       ⚠️ Still a defect: the .env names a database that does not answer."
+elif [ -n "$CC_DSN" ]; then
   CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
     bash scripts/apply_customer_console_migrations.sh < /dev/null
 elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
@@ -598,14 +645,67 @@ else
   echo "    vendor cache already present, skipping install ($T2_VENDOR_DIR)"
 fi
 
+# ── Build a Next.js app WITHOUT taking it down ────────────────────
+#
+# 🔴 **`rm -rf .next` BEFORE a build is an outage, and after a failed build it
+# is a permanent one.** This function replaced that pattern on 2026-09-01.
+#
+# Measured that morning: `app.metorite.com` answered **HTTP 500 on every route**
+# — including `/` — while `acb-workbench` restart-looped every 5 seconds with
+# "Could not find a production build in the '.next' directory". The build had
+# not failed. It was simply still running, and the directory the live server
+# serves from had already been deleted to make room for it. Two Next builds run
+# per deploy, so that window is minutes.
+#
+# ⚠️ **Nothing alarmed.** `systemctl is-active` was true the whole time (the
+# unit restarts, so it is always "starting"), the gateway answered 200, and
+# `vps-health.yml` counted an HTTP 500 as proof of life. This is the same
+# green-signal-about-the-machinery failure the Operator Console block below
+# describes, wearing its fourth hat.
+#
+# The fix: build into a staging directory, and rename it onto `.next` only
+# after the build produces a BUILD_ID. Downtime becomes one restart instead of
+# one build, and a FAILED build changes nothing at all — the app keeps serving
+# the previous build while the deploy exits non-zero and says so.
+#
+# ⚠️ The swap is a RENAME, never a copy. A rename is atomic within a
+# filesystem; a copy is not, and a server that reloads mid-copy reads half a
+# build.
+#
+# ⚠️ The clean-build requirement has NOT gone away — a kept `.next` produces
+# stale client-reference-manifest errors under Turbopack. The staging directory
+# satisfies it for free: it is removed before every build, so it is always
+# empty, and `.next` is never written in place.
+#
+# Requires `distDir: process.env.NEXT_DIST_DIR || ".next"` in the app's
+# next.config — both apps carry it, and `test_deploy_next_build_swap.py`
+# fails if either loses it.
+NEXT_BUILD_HEAP_MB="${NEXT_BUILD_HEAP_MB:-1024}"
+build_next_staged() {
+  name="$1"
+  rm -rf .next.staging .next.previous
+  # A non-zero exit here propagates under `set -e` with `.next` untouched.
+  NEXT_DIST_DIR=".next.staging" \
+    NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" npm run build
+  # BUILD_ID is the file `next start` looks for and fails on. Checking it
+  # rather than only the exit code is the difference between "the build
+  # command returned 0" and "there is a build here" — this repo has been
+  # burned by that distinction three times.
+  if [ ! -f .next.staging/BUILD_ID ]; then
+    echo "    ! $name: no BUILD_ID in .next.staging — keeping the running build"
+    return 1
+  fi
+  if [ -d .next ]; then mv .next .next.previous; fi
+  mv .next.staging .next
+  rm -rf .next.previous
+  echo "    $name: new build swapped in"
+}
+
 echo "==> Rebuilding + restarting workbench (Next.js)"
 cd "$APP_DIR/workbench/control_plane"
 if [ -f package-lock.json ] || [ -f package.json ]; then
   npm ci --prefer-offline 2>/dev/null || npm install
-  # Clean build avoids stale client-reference-manifest errors (Next.js Turbopack)
-  rm -rf .next
-  # Limit Node heap to 1GB to avoid OOM on 4GB VPS
-  NODE_OPTIONS="--max-old-space-size=1024" npm run build
+  build_next_staged "workbench"
 fi
 # Reload systemd unit in case acb-workbench.service changed (adds PATH for uv etc.)
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
@@ -646,11 +746,10 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   cd "$OC_DIR"
   if [ -f package-lock.json ] || [ -f package.json ]; then
     npm ci --prefer-offline 2>/dev/null || npm install
-    # Same clean build as the workbench: a kept `.next` produces stale
-    # client-reference-manifest errors under Turbopack.
-    rm -rf .next
-    # 1GB heap ceiling — this box has 4GB and two Next builds run per deploy.
-    NODE_OPTIONS="--max-old-space-size=1024" npm run build
+    # Same staged build as the workbench, for the same reason and with the same
+    # guarantee: the console keeps serving its previous build until a new one
+    # exists. See `build_next_staged` above.
+    build_next_staged "operator console"
   fi
   sudo systemctl restart "$OC_UNIT"
   sleep 3

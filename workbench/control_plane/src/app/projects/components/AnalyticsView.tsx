@@ -58,12 +58,12 @@ const COLUMN_LABELS: Record<string, string> = {
  */
 function columns(summary: NodeSummary): string[] {
   const seen = new Set<string>();
-  for (const child of summary.children) {
-    for (const [key, count] of Object.entries(child.by_category)) {
+  for (const child of summary.children ?? []) {
+    for (const [key, count] of Object.entries(child.by_category ?? {})) {
       if (count > 0) seen.add(key);
     }
   }
-  for (const [key, count] of Object.entries(summary.by_category)) {
+  for (const [key, count] of Object.entries(summary.by_category ?? {})) {
     if (count > 0) seen.add(key);
   }
   const known = COLUMN_ORDER.filter((c) => seen.has(c));
@@ -71,13 +71,42 @@ function columns(summary: NodeSummary): string[] {
   return [...known, ...extra];
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+/**
+ * One figure, and never a blank.
+ *
+ * ⚠️ `value` is TYPED as a number and is not guaranteed to be one. `api.call`
+ * parses JSON and casts it, so a roll-up that omits `projects` or `tasks`
+ * arrives as `undefined` — and `{undefined}` renders NOTHING. Measured
+ * 2026-09-03: two of the five tiles were a heading over empty space.
+ *
+ * A tile whose whole purpose is one figure, showing no figure, is worse than a
+ * tile that is absent. It reads as a number that FAILED, not as a number that
+ * is zero, and the reader cannot tell which. Zero is "0". An unavailable
+ * figure is an explicit dash that says so.
+ */
+function Stat({
+  label,
+  value,
+  tone,
+  className = "",
+}: {
+  label: string;
+  value?: number;
+  tone?: string;
+  className?: string;
+}) {
+  const known = typeof value === "number" && Number.isFinite(value);
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2">
+    <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <p className={`text-lg font-semibold ${tone ?? "text-foreground"}`}>{value}</p>
+      <p
+        className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
+        title={known ? undefined : `${label} did not come back from the server`}
+      >
+        {known ? value : "—"}
+      </p>
     </div>
   );
 }
@@ -90,26 +119,39 @@ export default function AnalyticsView({
   summary: NodeSummary;
   onOpen: (id: string) => void;
 }) {
-  const by = summary.by_category;
-  const cats = columns(summary);
+  /**
+   * ⚠️ Read the roll-up defensively, for the same reason `Stat` does.
+   *
+   * `children` and `by_category` are typed as present and are not guaranteed
+   * to be. A response without `children` threw on `.length` before a single
+   * tile rendered — the whole pane, gone, for one absent key. `hasChildren`
+   * keeps the DIFFERENCE that the empty state depends on: absent means the
+   * server did not say, and `[]` means it said none.
+   */
+  const hasChildren = Array.isArray(summary.children);
+  const children = hasChildren ? summary.children : [];
+  const by = summary.by_category ?? {};
+  const cats = columns({ ...summary, children, by_category: by });
   const done = by.done ?? 0;
   const inProgress = by.in_progress ?? 0;
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      <p className="mb-3 text-[11px] uppercase tracking-wider text-muted-foreground">
-        Analytics
-      </p>
-
       {/* The KPI strip — Plane's total-insights row, our Stat idiom. */}
+      {/* ⚠️ FIVE tiles, and 5 divides by neither 2 nor 3. So the last one sat
+          alone on its own row at phone and tablet width — an orphan, which
+          reads as a tile that failed to load rather than as the fifth of five.
+          It spans the leftover columns instead, until all five fit in one row. */}
       <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-        <Stat label="Spaces" value={summary.children.length} />
+        <Stat label="Spaces" value={hasChildren ? children.length : undefined} />
         <Stat label="Projects" value={summary.projects} />
         <Stat label="Tasks" value={summary.tasks} />
         <Stat label="In progress" value={inProgress} />
         <Stat
           label="Overdue"
           value={summary.overdue}
+          // The fifth of five. See the grid note above.
+          className="col-span-2 sm:col-span-1"
           tone={
             summary.overdue > 0
               ? statusAccent({ category: "cancelled" }).text
@@ -119,7 +161,7 @@ export default function AnalyticsView({
       </div>
 
       {/* The insight table — Plane's per-project state matrix, over spaces. */}
-      {summary.children.length > 0 ? (
+      {children.length > 0 ? (
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -149,7 +191,7 @@ export default function AnalyticsView({
               </tr>
             </thead>
             <tbody>
-              {summary.children.map((child) => (
+              {children.map((child) => (
                 <SpaceRow key={child.id} child={child} cats={cats} onOpen={onOpen} />
               ))}
             </tbody>
@@ -168,8 +210,17 @@ export default function AnalyticsView({
           </table>
         </div>
       ) : (
+        /* ⚠️ Two different facts, two different sentences.
+           This read "No spaces yet" whatever the reason, so a roll-up that
+           came back without its children said "nothing here" beside a rail
+           that listed six spaces. An empty state is a claim about the world,
+           and a false one sends the reader to create what they already have.
+           `children` absent means the server did not tell us. An empty array
+           means it did, and the answer was none. */
         <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-          No spaces yet. Create one with the + beside Spaces.
+          {hasChildren
+            ? "No spaces yet. Create one with the + beside Spaces."
+            : "Could not load the roll-up. The spaces in the rail are unaffected."}
         </p>
       )}
     </div>
@@ -204,7 +255,7 @@ function SpaceRow({
         </span>
       </td>
       {cats.map((cat) => {
-        const count = child.by_category[cat] ?? 0;
+        const count = (child.by_category ?? {})[cat] ?? 0;
         return (
           <td
             key={cat}

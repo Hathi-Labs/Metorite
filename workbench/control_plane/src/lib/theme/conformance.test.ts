@@ -595,6 +595,110 @@ describe("active and selected use the house token", () => {
 
 // ── Rule 7: single-choice and file pickers use the primitives ───────────────
 
+describe("checkboxes go through the Checkbox primitive", () => {
+  /**
+   * Why this rule exists (S6, 2026-09-03).
+   *
+   * `components/ui/` held Badge, Button, Input, Modal, Skeleton and Toast and
+   * NO Checkbox, so every tick in the app was a raw `<input type="checkbox">`
+   * wearing the platform's paint rather than the design system's.
+   *
+   * That is invisible in dark mode — the native control recedes into a faint
+   * outline and reads as deliberate. In light mode the identical element is a
+   * solid black square, and a board of twelve cards is twelve black squares
+   * outweighing the titles beside them. An owner found it in a screenshot, and
+   * rules 1/3/5 were all silent because there is no colour literal to see:
+   * the wrong colour is the one the BROWSER chose.
+   *
+   * Same argument as the `<select>` rule above, and the same ratchet.
+   *
+   * ⚠️ `components/ui/Checkbox.tsx` is the primitive and keeps its own raw
+   * input on purpose. A hand-rolled `div` with `role="checkbox"` would owe us
+   * focus, space-to-toggle and label association, and would get one wrong.
+   */
+  const CHECKBOX_TAG = /type="checkbox"/g;
+
+  /**
+   * Comments removed, rule-locally.
+   *
+   * The `<select>` rule below defines its own `stripTags` for reasons its
+   * comment sets out, and it is scoped to that block. Sharing one stripper
+   * across both would couple two rules that have different reasons to change,
+   * so this is a deliberate copy rather than an oversight. The same boundary
+   * rule applies: a block comment counts as a comment only when its `/*` sits
+   * on a token boundary, which `accept="image/*"` does not.
+   */
+  const stripBoxes = (text: string) =>
+    text
+      .replace(/(?<=^|[\s{(])\/\*[\s\S]*?\*\//g, "")
+      .replace(/(?<![:"'/])\/\/[^\n]*/g, "");
+
+  /** The primitive's own implementation. Same shape as SELECT_SOURCES. */
+  const CHECKBOX_SOURCES = ["components/ui/Checkbox.tsx"];
+
+  /**
+   * Every raw checkbox left in the tree, per file.
+   *
+   * `/projects` is deliberately absent: its six were the first conversion and
+   * are the worked example. The rest predate the primitive.
+   */
+  const CHECKBOX_DEBT: Record<string, number> = {
+    "app/agents/page.tsx": 1,
+    "app/build/apps/[slug]/edit/page.tsx": 1,
+    "app/build/apps/[slug]/page.tsx": 1,
+    "app/calendar/components/CalendarSettings.tsx": 2,
+    "app/crm/components/PipelineSettings.tsx": 2,
+    "app/email/components/automation/BulkUnsubscribeView.tsx": 3,
+    "app/email/components/automation/ai-settings/RulesTab.tsx": 2,
+    "app/email/components/automation/ai-settings/SettingsTab.tsx": 1,
+    "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 3,
+    "app/email/components/automation/ai-settings/fixDialog.tsx": 3,
+    "app/notes/components/NotesSettingsModal.tsx": 2,
+    "app/settings/groups/page.tsx": 1,
+    "app/settings/organization/OrganizationAdmin.tsx": 1,
+    "app/tasks/components/FlatList.tsx": 1,
+    "app/tasks/components/ItemList.tsx": 1,
+    "app/tasks/components/TaskCard.tsx": 1,
+    "app/tasks/components/TaskListGrouped.tsx": 1,
+    "app/tasks/components/WaitingForView.tsx": 1,
+    "app/workflows/components/TriggerPanel.tsx": 3,
+  };
+
+  const boxes = (rel: string) =>
+    CHECKBOX_SOURCES.includes(rel)
+      ? 0
+      : (stripBoxes(read(rel)).match(CHECKBOX_TAG) ?? []).length;
+
+  it("a file with no budget uses <Checkbox>", () => {
+    const offenders = sourceFiles()
+      .filter((f) => f.endsWith(".tsx") && !(f in CHECKBOX_DEBT))
+      .map((f) => [f, boxes(f)] as const)
+      .filter(([, n]) => n > 0);
+    expect(
+      offenders,
+      "Use `<Checkbox>` from components/ui/Checkbox.tsx. A raw checkbox takes " +
+        "its paint from the platform: a faint outline in dark mode and a solid " +
+        "black square in light, which no colour rule can see.",
+    ).toEqual([]);
+  });
+
+  it("no baselined file gets worse, and none is stale", () => {
+    const drift = Object.entries(CHECKBOX_DEBT)
+      .map(([f, budget]) => ({ file: f, budget, actual: boxes(f) }))
+      .filter((r) => r.actual !== r.budget);
+    expect(drift, "Update CHECKBOX_DEBT to match reality — down only.").toEqual([]);
+  });
+
+  it("the primitive's allowlist has no stale entry", () => {
+    for (const f of CHECKBOX_SOURCES) {
+      expect(
+        count(read(f), CHECKBOX_TAG),
+        `${f} no longer renders a checkbox — drop it from CHECKBOX_SOURCES`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("selects and file pickers go through the primitives", () => {
   /**
    * Why this rule exists, and why it is two halves of one thing (S5).
@@ -650,7 +754,10 @@ describe("selects and file pickers go through the primitives", () => {
    * worse, and one that improved fails until its number comes down.
    *
    * `app/projects/components/TaskPanel.tsx` is deliberately absent: it was the
-   * first file converted and is the worked example.
+   * first file converted and is the worked example. `FilterBar.tsx` left this
+   * list at WS-27at: consolidating its row put all three of its selects
+   * (status, group-by, lanes) through the primitive, and added a fourth for
+   * "Assigned to" that was never a raw one.
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
@@ -670,7 +777,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/projects/components/BulkBar.tsx": 2,
     "app/projects/components/CustomFieldValues.tsx": 1,
     "app/projects/components/FieldManager.tsx": 1,
-    "app/projects/components/FilterBar.tsx": 3,
     "app/projects/components/RelationsBlock.tsx": 1,
     "app/projects/components/RepeatEditor.tsx": 3,
     "app/projects/components/TableView.tsx": 3,

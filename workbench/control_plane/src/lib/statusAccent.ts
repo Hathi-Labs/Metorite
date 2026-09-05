@@ -116,19 +116,29 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
     chip: "bg-success/10 text-success",
   },
   blue: {
-    dot: "bg-primary",
-    soft: "bg-primary/10",
-    text: "text-primary",
-    bar: "border-l-primary",
-    chip: "bg-primary/10 text-primary",
+    // ⚠️ `--info`, NOT `--primary`. `--primary` is the accent a member picks at
+    // Settings → Appearance, so while these read it, "In progress" was not
+    // blue — it was whatever colour the viewer chose. Set the accent to green
+    // and an active lane became the same colour as Done. Measured 2026-09-03.
+    //
+    // A status says what is TRUE of the work. An accent says what the member
+    // likes. One must not move the other, and `statusAccent.test.ts` now fails
+    // if a hue in this map reaches for `primary` again.
+    dot: "bg-info",
+    soft: "bg-info/10",
+    text: "text-info",
+    bar: "border-l-info",
+    chip: "bg-info/10 text-info",
   },
   violet: {
-    // No dedicated violet token — primary at lower emphasis, so a fifth lane
-    // still differs from plain blue without inventing a raw colour.
-    dot: "bg-primary/60",
-    soft: "bg-primary/5",
-    text: "text-primary/80",
-    bar: "border-l-primary/50",
+    // ⚠️ This was `--primary` at 60% opacity, which made it BLUE ONE STEP
+    // FAINTER rather than a fifth colour. Two of the five lanes on a
+    // positionally-coloured board never differed by hue at all. It has its own
+    // token now, so `POSITIONAL` really does hand out four distinct hues.
+    dot: "bg-violet",
+    soft: "bg-violet/10",
+    text: "text-violet",
+    bar: "border-l-violet",
     // The tag palette's violet, kept as it was: `accent` is the one token pair
     // that gives a distinct chip without competing with `primary`.
     chip: "bg-accent text-accent-foreground",

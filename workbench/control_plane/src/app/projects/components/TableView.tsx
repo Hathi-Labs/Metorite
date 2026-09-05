@@ -30,6 +30,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { AvatarStack } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { durationLabel } from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
@@ -425,9 +426,8 @@ export function TableView({
     const stored = (task.custom_fields ?? {})[key];
     if (def.field_type === "boolean") {
       return (
-        <input
+        <Checkbox
           autoFocus
-          type="checkbox"
           aria-label={`${def.name} of ${task.title}`}
           defaultChecked={stored === true}
           onChange={(e) =>

@@ -34,11 +34,13 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
 import {
   type BoardLanes,
+  DEFAULT_GROUP_BY,
   EMPTY_FILTERS,
   type Filters,
   GROUP_OPTIONS,
@@ -70,18 +72,55 @@ const CATEGORIES: Array<[string, string]> = [
   ["cancelled", "Cancelled"],
 ];
 
-const GROUP_LABELS: Record<GroupBy, string> = {
-  status: "Status",
-  assignee: "Assignee",
-  project: "Project",
-  importance: "Priority",
-  tag: "Tag",
-  none: "Nothing",
+
+/**
+ * Each axis control says what it DOES, so it needs no label beside it.
+ *
+ * "Any status" and "Anyone" already read this way and the two axis controls did
+ * not: a bare "Status" next to a bare "No lanes" is two controls whose meaning
+ * lived in a `<label>` that the flex row then had to carry. Folding the verb
+ * into the option text removes two elements from the busiest row in the app.
+ */
+const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
+  status: "Group by status",
+  assignee: "Group by assignee",
+  project: "Group by project",
+  importance: "Group by priority",
+  tag: "Group by tag",
+  none: "No grouping",
 };
 
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
+const LANE_OPTION_LABELS: Record<GroupBy, string> = {
+  status: "Lanes by status",
+  assignee: "Lanes by assignee",
+  project: "Lanes by project",
+  importance: "Lanes by priority",
+  tag: "Lanes by tag",
+  none: "No lanes",
+};
+
+/**
+ * A control that is NOT at its default wears the house active pair.
+ *
+ * `bg-primary/10 text-primary` is the measured norm for active/selected across
+ * this tree (`AGENTS.md` rule 6), and it is the same primary the pressed
+ * buttons in this row use — tinted rather than filled, because a select still
+ * has to read as a field you can open.
+ *
+ * The row then answers "what have I changed?" at a glance. Before this, a board
+ * grouped by assignee looked exactly like a board grouped by status until you
+ * read the control.
+ *
+ * ⚠️ Colour only, and never a cue that changes the control's BOX. The search
+ * field in this row is `flex-1` and absorbs whatever its siblings give up, so a
+ * border-width or ring cue would move the search bar every time a filter
+ * changed. A weight cue is unavailable for a different reason: `.cc-control`
+ * sets `font-weight` from `--label-weight` in unlayered CSS, which beats a
+ * utility class.
+ */
+const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
+const AT_DEFAULT = "";
+
 
 interface Props {
   filters: Filters;
@@ -244,18 +283,21 @@ export function FilterBar({
           />
         </div>
 
-        <select
-          aria-label="Status"
-          className={SELECT}
-          value={filters.statusCategory}
-          onChange={(e) => set({ statusCategory: e.target.value })}
-        >
-          {CATEGORIES.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        <div className="w-[9rem]">
+          <Select
+            aria-label="Status"
+            inputSize="sm"
+            className={filters.statusCategory ? OFF_DEFAULT : AT_DEFAULT}
+            value={filters.statusCategory}
+            onChange={(e) => set({ statusCategory: e.target.value })}
+          >
+            {CATEGORIES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </Select>
+        </div>
 
         {/* ── Assignee (WS-27af) ───────────────────────────────────────────
             One axis, one control. This was two toggle buttons — "Mine" and
@@ -278,6 +320,9 @@ export function FilterBar({
           <Select
             inputSize="sm"
             aria-label="Assignee"
+            className={
+              filters.unassigned || filters.assignee ? OFF_DEFAULT : AT_DEFAULT
+            }
             value={filters.unassigned ? UNSET : filters.assignee}
             onChange={(e) => {
               const picked = e.target.value;
@@ -348,11 +393,11 @@ export function FilterBar({
             grouping, and a saved view carries both axes whichever canvas
             saved it. */}
         {honoursGroupBy(mode) ? (
-          <label className="flex items-center gap-1 text-xs text-muted-foreground">
-            Group by
-            <select
+          <div className="w-[11rem]">
+            <Select
               aria-label="Group by"
-              className={SELECT}
+              inputSize="sm"
+              className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
               value={groupBy}
               onChange={(e) => onGroupBy(e.target.value as GroupBy)}
             >
@@ -360,22 +405,26 @@ export function FilterBar({
                 axisOffered(option, groupBy)
               ).map((option) => (
                 <option key={option} value={option}>
-                  {GROUP_LABELS[option]}
+                  {GROUP_OPTION_LABELS[option]}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </div>
         ) : null}
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
         {honoursLanes(mode) ? (
-          <label className="flex items-center gap-1 text-xs text-muted-foreground">
-            Lanes
-            <select
+          <div className="w-[11rem]">
+            <Select
               aria-label="Sub-group by (swimlanes)"
-              className={SELECT}
+              inputSize="sm"
+              className={
+                (subGroupBy === groupBy ? "none" : subGroupBy) === "none"
+                  ? AT_DEFAULT
+                  : OFF_DEFAULT
+              }
               value={subGroupBy === groupBy ? "none" : subGroupBy}
               onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
             >
@@ -385,11 +434,11 @@ export function FilterBar({
                   axisOffered(option, subGroupBy)
               ).map((option) => (
                 <option key={option} value={option}>
-                  {option === "none" ? "No lanes" : GROUP_LABELS[option]}
+                  {LANE_OPTION_LABELS[option]}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </div>
         ) : null}
 
         {/* WS-27x — which fields this view shows. ONE set feeding two
@@ -437,8 +486,7 @@ export function FilterBar({
                     key={key}
                     className="flex items-center gap-2 rounded px-1 py-0.5 text-xs text-foreground hover:bg-muted"
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={shownFields.includes(key)}
                       onChange={() => onShownFields(toggleField(shownFields, key))}
                       aria-label={`Show ${label}`}

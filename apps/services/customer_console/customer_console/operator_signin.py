@@ -1,7 +1,26 @@
 """The front door — turning a Supabase sign-in into a verified identity.
 
 Spec: ``project-docs/specs/operator_identity_and_access.md`` §4.1 · **F8** ·
-**D64.1**. Board: WS-31 **CP-12f2**.
+**D64.1**, amended by **D70.1**. Board: WS-31 **CP-12f2** and **CP-12h**.
+
+⚠️ **TWO directories, one switch** (**D70**, 2026-09-01). ``azure`` reads the
+Entra ``tid``. ``google`` reads the Google Workspace ``hd`` hosted domain.
+:func:`customer_console.operators.signin_provider` picks one, and it defaults
+to ``azure``.
+
+⚠️ **The SWITCH ships dark. This module does NOT.** An unset variable keeps
+check 1 on the Entra ``tid``, exactly as before. It does not keep
+:func:`_email_is_verified` as it was. That function dropped the top-level
+``email_confirmed_at`` and now reads the sign-in provider's identity alone
+(spec §8.1 done-when 31), which tightens the ``azure`` path too.
+
+**Measured 2026-09-01**, on one Entra payload with a top-level
+``email_confirmed_at`` and no ``email_verified`` on its identity: the parent
+commit returned a :class:`VerifiedIdentity`, and this one raises
+:class:`SigninRejected` (a **401**). The change is deliberate, and D70 asks
+for it. It is safe today because D70 records that we hold no Entra directory
+and H-54 is unfinished, so nobody signs in on that path. ⚠️ **If that stops
+being true, this tightening bites `azure` first.**
 
 ⚠️ **This module closes F8.** CP-12a wrote the three admission checks, and
 CP-12b wrote the session they protect, but nothing ever called them: the
@@ -27,10 +46,13 @@ our own ``cc_sess_`` session, which :mod:`customer_console.operator_sessions`
 verifies against our own database with no network hop.
 
 ⚠️ **The claim shape below is not yet confirmed against a live project.**
-Configuring the Microsoft provider is owner work (**H-54**), so no Azure
-identity exists to read yet. Every unknown here FAILS CLOSED: a payload this
-module does not recognise yields no ``tid``, and ``operators.admit`` refuses.
-Confirm the shape when H-54 lands, and change :func:`extract_identity` alone.
+Configuring the provider is owner work (**H-54**), so no staff identity exists
+to read yet. **Nobody has measured whether Supabase copies ``hd`` into
+``identities[].identity_data``**, and H-54 item 3 records that as unmeasured.
+Every unknown here FAILS CLOSED: a payload this module does not recognise
+yields no directory claim, and ``operators.admit`` refuses. So a wrong guess
+refuses everybody rather than admitting anybody. Confirm the shape when H-54
+lands, and change :func:`_google_hd` alone.
 """
 from __future__ import annotations
 
@@ -41,11 +63,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from customer_console import operators
+
 _log = logging.getLogger("platform.auth")
 
 __all__ = [
     "AZURE_PROVIDER",
     "DEFAULT_TIMEOUT_SECONDS",
+    "GOOGLE_PROVIDER",
     "SigninRejected",
     "SigninUnconfigured",
     "VerifiedIdentity",
@@ -56,11 +81,12 @@ __all__ = [
     "supabase_url",
 ]
 
-#: What Supabase calls the Microsoft Entra provider. It is ``azure``, not
-#: ``microsoft`` and not ``entra`` — a named constant because a typo here
-#: refuses every operator with a message about the directory, which sends the
-#: reader to Entra rather than to this line.
-AZURE_PROVIDER = "azure"
+#: The provider vocabulary lives in :mod:`customer_console.operators`, beside
+#: the env variables each provider pins. These two names are bound here so a
+#: payload reader reads one word rather than a dotted path. They are the SAME
+#: objects, never a second definition.
+AZURE_PROVIDER = operators.AZURE_PROVIDER
+GOOGLE_PROVIDER = operators.GOOGLE_PROVIDER
 
 #: Sign-in waits this long for the issuer. Short on purpose: a hung sign-in is
 #: indistinguishable from a broken one to the person in front of it.
@@ -89,13 +115,30 @@ class SigninRejected(Exception):
 class VerifiedIdentity:
     """What the issuer told us, reduced to the three things `admit` needs."""
 
-    #: The Microsoft Entra tenant id. ``None`` when the payload carried none,
-    #: which ``operators._check_directory`` refuses.
+    #: The DIRECTORY claim — the Entra ``tid`` on the ``azure`` path, and the
+    #: Google Workspace ``hd`` hosted domain on the ``google`` path (**D70**).
+    #: ``None`` when the payload carried none, which
+    #: ``operators._check_directory`` refuses. The field keeps the name ``tid``
+    #: so every call site and every test of the built code reads unchanged.
     tid: str | None
     email: str
     #: Supabase's stable user id. Stored as ``operator.directory_subject`` so a
     #: later email change does not silently create a second person.
     subject: str
+    #: HOW this sign-in proved itself — the provider name, or
+    #: :data:`operators.EMAIL_METHOD` for a code to the inbox (**D71.3**).
+    #: ``operators.admit`` matches it against the box's method set and against
+    #: the operator's own ``allowed_methods`` (**D71.4**).
+    #:
+    #: ⚠️ **The default is ``None``, meaning "not stated", and NOT a method
+    #: name.** Every construction in this module sets it. A test or an older
+    #: call site that omits it gets the pre-D71 behaviour, where ``admit``
+    #: runs no method check at all. Defaulting to a real name would instead
+    #: make such a caller ASSERT something it never measured, and the two ways
+    #: that could be wrong are opposite — a default of ``email`` would claim
+    #: the weakest method, and a default of ``google`` would let a row pinned
+    #: to Google admit a code.
+    method: str | None = None
 
 
 def safe_ip(value: str | None) -> str | None:
@@ -187,6 +230,15 @@ def _signin_provider(payload: dict[str, Any]) -> str | None:
     the question. **The durable fix is to disable manual identity linking in
     the Supabase project**, which is owner configuration and rides with
     H-54. Recorded in the spec rather than left in a comment here.
+
+    ⚠️ **The remaining hole, measured 2026-09-01, and NOT closed here.** This
+    reads one provider NAME. It cannot tell two identities apart when both
+    carry that name. An operator who links a personal Google account to their
+    own Supabase user therefore holds two ``google`` identities, and
+    :func:`_google_hd` reads the ``hd`` off whichever one has it. Nobody
+    outside can reach this, because it needs the operator to link the second
+    account themselves. Turning identity linking OFF closes it, and H-54 asks
+    the owner for exactly that.
     """
     meta = payload.get("app_metadata") or {}
     if not isinstance(meta, dict):
@@ -195,6 +247,23 @@ def _signin_provider(payload: dict[str, Any]) -> str | None:
     if isinstance(one, str) and one.strip():
         return one.strip().lower()
     return None
+
+
+def _claim_name(provider: str) -> str:
+    """The payload key that proves the directory, from the ONE table.
+
+    ⚠️ **Read from :data:`operators.DIRECTORY_CLAIM`, never written here.**
+    The two readers below hard-coded ``tid`` and ``hd`` until 2026-09-01, so
+    the table held only KEYS that were live and VALUES that nothing consumed.
+    A reviewer measured it: changing ``GOOGLE_PROVIDER: "hd"`` in that table
+    to ``"email"`` left the whole suite green. A constant nothing reads is a
+    comment that a future reader will trust as code.
+
+    R7 — the fence is
+    ``test_operator_identity.py::test_the_claim_table_is_what_the_readers_read``.
+    """
+    return operators.DIRECTORY_CLAIM[provider]
+
 
 def _azure_tid(payload: dict[str, Any]) -> str | None:
     """The Entra tenant id, read ONLY from the Microsoft identity.
@@ -207,6 +276,7 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
     rather than "this sign-in came from our directory", which is a different
     and much weaker claim.
     """
+    name = _claim_name(AZURE_PROVIDER)
     for identity in payload.get("identities") or []:
         if not isinstance(identity, dict):
             continue
@@ -214,7 +284,7 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
             continue
         data = identity.get("identity_data")
         if isinstance(data, dict):
-            tid = data.get("tid")
+            tid = data.get(name)
             if isinstance(tid, str) and tid.strip():
                 return tid.strip()
 
@@ -225,26 +295,99 @@ def _azure_tid(payload: dict[str, Any]) -> str | None:
         for bag in ("app_metadata", "user_metadata"):
             meta = payload.get(bag)
             if isinstance(meta, dict):
-                tid = meta.get("tid")
+                tid = meta.get(name)
                 if isinstance(tid, str) and tid.strip():
                     return tid.strip()
     return None
 
 
-def _email_is_verified(payload: dict[str, Any]) -> bool:
-    """Whether the issuer says it proved the address.
+def _google_hd(payload: dict[str, Any]) -> str | None:
+    """The Google Workspace hosted domain, read ONLY from a Google identity.
 
-    ⚠️ Defence in depth, not the main gate. ``operators._check_directory``
-    already demands our Entra tenant, which no outsider can present. This
-    stops the narrower case where a provider hands back an address it never
-    proved, and somebody registers a colleague's address elsewhere.
+    ⚠️ **As strict as :func:`_azure_tid`, for the same reason.** A Supabase
+    user can carry more than one linked identity. A scan across all of them
+    would read an ``hd`` off a GitHub or a Microsoft identity, and that is a
+    claim about a different account.
+
+    ⚠️ **What this proves, stated exactly.** It proves *"this account holds an
+    identity from our Workspace"*. It does NOT prove *"this sign-in came from
+    our Workspace"*. Measured 2026-09-01: an account with two ``google``
+    identities, where only the SECOND carries the ``hd``, is admitted. The
+    provider filter cannot separate two identities that share one provider
+    name, and :func:`_signin_provider` records why. No outsider can reach it,
+    because the operator must link the second account themselves. H-54 asks
+    the owner to turn identity linking OFF, and that closes it.
+
+    ⚠️ **``hd`` is the whole of check 1 on this path** (**D70.3**). Google
+    issues an account on any address it can verify by mail, and such an
+    account carries ``email_verified: true`` and **no ``hd`` at all**. So an
+    absent claim returns ``None`` here, and ``operators.directory_matches``
+    reads ``None`` as a refusal rather than as a match.
+
+    ⚠️ **Unmeasured, and deliberately fail-closed.** No live project has
+    confirmed that Supabase copies ``hd`` into ``identity_data`` (H-54 item
+    3). A wrong guess refuses everybody. It admits nobody.
     """
-    if payload.get("email_confirmed_at"):
-        return True
-    if payload.get("confirmed_at"):
-        return True
+    name = _claim_name(GOOGLE_PROVIDER)
     for identity in payload.get("identities") or []:
         if not isinstance(identity, dict):
+            continue
+        if (identity.get("provider") or "").strip().lower() != GOOGLE_PROVIDER:
+            continue
+        data = identity.get("identity_data")
+        if isinstance(data, dict):
+            hd = data.get(name)
+            if isinstance(hd, str) and hd.strip():
+                return hd.strip()
+
+    # Some Supabase configurations copy the provider claims up instead of
+    # leaving them on the identity. Read those only when Google is the ONLY
+    # provider on the account, so the reasoning above still holds.
+    if _providers(payload) == {GOOGLE_PROVIDER}:
+        for bag in ("app_metadata", "user_metadata"):
+            meta = payload.get(bag)
+            if isinstance(meta, dict):
+                hd = meta.get(name)
+                if isinstance(hd, str) and hd.strip():
+                    return hd.strip()
+    return None
+
+
+#: Which reader answers check 1 for each provider. One table, so adding a
+#: directory is one row rather than a branch somebody forgets.
+_CLAIM_READERS = {
+    AZURE_PROVIDER: _azure_tid,
+    GOOGLE_PROVIDER: _google_hd,
+}
+
+
+def _email_is_verified(payload: dict[str, Any], provider: str) -> bool:
+    """Whether the SIGN-IN provider says it proved the address.
+
+    ⚠️ Defence in depth, not the main gate. ``operators._check_directory``
+    already demands our directory claim, which no outsider can present. This
+    stops the narrower case where a provider hands back an address it never
+    proved, and somebody registers a colleague's address elsewhere.
+
+    ⚠️ **It reads ONE identity — the sign-in provider's** (spec §8.1
+    done-when 31). The built version accepted a top-level
+    ``email_confirmed_at`` or ``confirmed_at``, and then scanned EVERY
+    identity for ``email_verified``. So a second linked identity satisfied it,
+    which is the same shape as the bypass :func:`_signin_provider` closed. A
+    proof that the OTHER account's address was checked says nothing about
+    this sign-in.
+
+    🔴 **The PLACEMENT of ``email_verified`` is UNMEASURED, exactly as ``hd``
+    is.** Nobody has read a real Supabase payload to confirm that the key sits
+    in ``identities[].identity_data``. ⚠️ **If Supabase leaves it out when the
+    value is false, this returns ``False`` and nobody signs in on EITHER
+    path.** H-54 item 3 now asks the owner to read ``hd`` and
+    ``email_verified`` off the SAME payload. It is one read.
+    """
+    for identity in payload.get("identities") or []:
+        if not isinstance(identity, dict):
+            continue
+        if (identity.get("provider") or "").strip().lower() != provider:
             continue
         data = identity.get("identity_data")
         if isinstance(data, dict) and data.get("email_verified") is True:
@@ -257,13 +400,25 @@ def _reject(why: str) -> SigninRejected:
     return SigninRejected(_REFUSAL)
 
 
-def extract_identity(payload: Any) -> VerifiedIdentity:
+def extract_identity(
+    payload: Any, *, env: dict[str, str] | None = None
+) -> VerifiedIdentity:
     """Reduce Supabase's user payload to the identity `admit` needs.
 
     Raises :class:`SigninRejected` for anything it cannot read. ⚠️ Every branch
     here fails CLOSED, because this runs on a payload shape that no live
     project has confirmed yet (**H-54**).
+
+    ⚠️ **The configured directory is read first**, and an unknown value raises
+    ``operators.OperatorUnconfigured`` (a **503**). A box nobody configured and
+    a person we refuse are different incidents.
     """
+    # ⚠️ **Read FIRST, before the payload is even shaped.** This is the one
+    # line that keeps "the box is wrong" (503) ahead of "the person is wrong"
+    # (403). It raises on an unknown directory name, on an unknown admission
+    # mode, and on an `OPERATOR_ALLOW_EMAIL_OTP` that contradicts the mode.
+    accepted = operators.accepted_methods(env)
+
     if not isinstance(payload, dict):
         raise _reject("payload")
 
@@ -277,20 +432,33 @@ def extract_identity(payload: Any) -> VerifiedIdentity:
 
     # ⚠️ The SIGN-IN provider, not the set of linked ones. See
     # :func:`_signin_provider` for why that difference is a bypass.
-    # ⚠️ The SIGN-IN provider, not the set of linked ones. See
-    # :func:`_signin_provider` for why that difference is a bypass.
-    if _signin_provider(payload) != AZURE_PROVIDER:
-        # A password or magic-link sign-in reaches here. It is a real Supabase
-        # user, and it is not a Microsoft one, so it is not staff.
+    #
+    # ⚠️ **D71.3 widened this from ONE name to a SET, and the set is still
+    # closed.** It holds the configured directory always, and ``email`` only
+    # when the box is in ``registry`` mode with the flag on. A password or
+    # magic-link sign-in still reaches here and is still refused, because
+    # ``accepted_methods`` never names ``magiclink``, ``phone`` or ``sms``.
+    used = _signin_provider(payload)
+    if used is None or used not in accepted:
         raise _reject("provider")
 
-    if not _email_is_verified(payload):
+    # ⚠️ **Verify against the method ACTUALLY used, never the configured
+    # directory.** Passing `provider` here would read the Google identity's
+    # `email_verified` for a sign-in that came through the email code, which
+    # is the same class of bypass done-when 31 closed.
+    if not _email_is_verified(payload, used):
         raise _reject("unverified")
 
+    # An email code carries no directory claim, and there is no reader for one.
+    # ``None`` is the honest answer, and `operators.admit` refuses it outright
+    # in `directory` mode.
+    reader = _CLAIM_READERS.get(used)
+
     return VerifiedIdentity(
-        tid=_azure_tid(payload),
+        tid=reader(payload) if reader else None,
         email=email.strip().lower(),
         subject=subject.strip(),
+        method=used,
     )
 
 
@@ -338,4 +506,4 @@ def introspect(
     except Exception as exc:
         raise _reject("body") from exc
 
-    return extract_identity(payload)
+    return extract_identity(payload, env=env)

@@ -20,7 +20,27 @@ class Settings(BaseSettings):
     )
 
     # Runtime
-    acb_env: Literal["dev", "staging", "prod"] = "dev"
+    #
+    # ⚠️ THE DEFAULT IS "prod" BECAUSE AN ABSENT VALUE MUST FAIL CLOSED.
+    # It read "dev" until 2026-09-01, and that one word published the
+    # whole API schema to the internet. `docs_enabled()` returns
+    # `env == "dev"`, and FastAPI mounts Swagger/ReDoc as plain Starlette
+    # routes that the app-level auth dependency cannot reach. So this
+    # value is the ONLY guard those routes have. Nothing in the deploy
+    # set it, so production ran on the default and served
+    # `/openapi.json` (1121924 bytes) and `/docs` to anyone. See H-90.
+    #
+    # The fix is the DIRECTION, not the value. Forgetting the variable
+    # used to mean EXPOSED. It now means SAFE, and a wrong guess costs a
+    # developer their local Swagger instead of costing us the attack
+    # surface.
+    #
+    # ⚠️ LOCAL DEV IS UNCHANGED: `.env.example` ships `ACB_ENV=dev`, so
+    # anyone who copies the template still gets docs. Only the ABSENCE
+    # of a value changed meaning.
+    #
+    # Fence: `test_acb_env_defaults_to_prod` in tests/unit/test_smoke.py.
+    acb_env: Literal["dev", "staging", "prod"] = "prod"
     log_level: str = "INFO"
 
     # Postgres
