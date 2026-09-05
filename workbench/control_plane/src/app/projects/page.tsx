@@ -38,6 +38,7 @@ import { FieldManager } from "./components/FieldManager";
 import { MoveDialog } from "./components/MoveDialog";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
+import { StatusManager } from "./components/StatusManager";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
@@ -581,6 +582,16 @@ function ProjectsWorkspace() {
   // manager all read it, and three fetches of one list would disagree.
   const [tags, setTags] = useState<TagRow[]>([]);
   const [managingTags, setManagingTags] = useState(false);
+
+  // The status editor (owner directive 2026-09-03). `statuses` above is already
+  // held here for the board's lanes, so the dialog writes through the same
+  // state and a rename relabels every lane without a refetch.
+  //
+  // Reachable from any node, unlike the lifecycle policy below: the gateway
+  // resolves the root itself (`admin._root_for`), so a subproject opens its
+  // space's set rather than being refused. That is the point — one set per
+  // space is what keeps two spaces comparable through the category.
+  const [managingStatuses, setManagingStatuses] = useState(false);
 
   // WS-27z — the lifecycle-policy dialog. Root projects only: the policy is a
   // root setting the whole subtree inherits, and the gateway 422s a child.
@@ -1555,6 +1566,7 @@ function ProjectsWorkspace() {
       manage: (what) => {
         if (what === "fields") setManagingFields(true);
         else if (what === "tags") setManagingTags(true);
+        else if (what === "statuses") setManagingStatuses(true);
         else if (what === "lifecycle") setManagingLifecycle(true);
       },
       showShortcuts: () => setShowingShortcuts(true),
@@ -1582,6 +1594,7 @@ function ProjectsWorkspace() {
     showingShortcuts ||
     managingFields ||
     managingTags ||
+    managingStatuses ||
     managingLifecycle;
 
   // The listener is attached ONCE and reads through this, rather than being
@@ -2115,6 +2128,20 @@ function ProjectsWorkspace() {
               <Icon name="SlidersHorizontal" className="h-3.5 w-3.5 text-muted-foreground" />
               Custom fields
             </button>
+            {/* Statuses leads the vocabularies: it is the one whose category
+                half drives the roll-up, completion, and what /tasks shows. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+              onClick={() => {
+                setManageOpen(false);
+                setManagingStatuses(true);
+              }}
+            >
+              <Icon name="Columns3" className="h-3.5 w-3.5 text-muted-foreground" />
+              Statuses
+            </button>
             <button
               type="button"
               role="menuitem"
@@ -2578,6 +2605,23 @@ function ProjectsWorkspace() {
           onChanged={setTags}
           // A rename or merge rewrites task rows, so the board is stale until
           // it reloads — the chips would otherwise show a name no card carries.
+          onTasksTouched={() => {
+            if (selected) void loadProject(selected);
+          }}
+        />
+      ) : null}
+
+      {managingStatuses && selected ? (
+        <StatusManager
+          projectId={selected.id}
+          projectName={selected.name}
+          onClose={() => setManagingStatuses(false)}
+          // `setStatuses` is the board's own lane source, so a rename or a
+          // recolour repaints the lanes behind the open dialog.
+          onChanged={setStatuses}
+          // A re-categorise can stamp or clear `completed_at` across a whole
+          // lane, and a rename changes what every card reads. Either way the
+          // task rows on screen are stale until they reload.
           onTasksTouched={() => {
             if (selected) void loadProject(selected);
           }}

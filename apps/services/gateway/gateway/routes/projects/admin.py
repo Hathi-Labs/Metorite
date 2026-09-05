@@ -85,20 +85,39 @@ async def _root_for(db: Any, vis: Any, project_id: str) -> str:
     return await root_project_id(db, project_id)
 
 
-async def _clear_other_defaults(db: Any, table: str, root: str, keep: str) -> None:
-    """Exactly one default per project.
+async def _clear_other_defaults(
+    db: Any, table: str, root: str, keep: str, category: str | None = None,
+) -> None:
+    """Exactly one default per project — per CATEGORY, when the table has one.
 
     The migration cannot express this — a partial unique index would need the
     project in its predicate — so it is enforced here, by demoting the others
     rather than refusing the write. Refusing would make "make this the default"
     a two-step operation that is broken in between.
+
+    ⚠️ **`category` narrows the demotion, and it has to.** This function used to
+    demote every other row in the tree, so a root held exactly ONE default
+    status. Measured on the dev database 2026-09-03: five roots, four statuses
+    each, and all five defaults sat on `backlog` — no root had a default in
+    `todo`, `in_progress` or `done`.
+
+    That makes the rule in `project_management_app.md` §9.12.3 — "dropping a
+    card into a category column sets the task's status to that project's
+    DEFAULT status in that category" — unanswerable for three of four columns.
+    A default is the answer to "which lane in this STAGE", and a stage is what
+    a category is, so one per root was the wrong grain.
+
+    Types have no category, so they pass none and keep the root-wide rule
+    verbatim. That is why this is a narrowing parameter rather than a second
+    function: one demotion rule, read one way, whichever table calls it.
     """
+    where = "project_id = CAST(:root AS uuid) AND id <> CAST(:keep AS uuid)"
+    params: dict[str, Any] = {"root": root, "keep": keep}
+    if category is not None:
+        where += " AND category = :category"
+        params["category"] = category
     await db.execute(
-        text(
-            f"UPDATE {table} SET is_default = false "
-            f"WHERE project_id = CAST(:root AS uuid) AND id <> CAST(:keep AS uuid)"
-        ),
-        {"root": root, "keep": keep},
+        text(f"UPDATE {table} SET is_default = false WHERE {where}"), params,
     )
 
 
@@ -154,7 +173,9 @@ async def create_status(
             },
         )).fetchone()
         if row.is_default:
-            await _clear_other_defaults(db, "pm_task_statuses", root, str(row.id))
+            await _clear_other_defaults(
+                db, "pm_task_statuses", root, str(row.id), str(row.category),
+            )
         return row_to_dict(row, StatusModel)
 
 
@@ -173,8 +194,14 @@ async def patch_status(
             return row_to_dict(existing, StatusModel)
         row = await update_row(db, "pm_task_statuses", status_id, values)
         if values.get("is_default"):
+            # `row.category`, not `values` — a PATCH that sets `is_default`
+            # without naming a category must demote inside the category the row
+            # ALREADY has, and a PATCH that moves the row to a new category must
+            # demote inside the destination. The stored row after the update is
+            # the only value that is right in both cases.
             await _clear_other_defaults(
                 db, "pm_task_statuses", str(row.project_id), status_id,
+                str(row.category),
             )
         return row_to_dict(row, StatusModel)
 

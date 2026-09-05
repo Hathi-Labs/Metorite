@@ -1821,24 +1821,51 @@ async def next_task_number(db: Any, root_id: str) -> int:
 
 # ── Statuses ────────────────────────────────────────────────────────────────
 
-async def load_default_status(db: Any, root_id: str) -> Any:
-    """The status a new task lands in: the flagged default, else the first lane.
+async def load_default_status(
+    db: Any, root_id: str, category: str | None = None,
+) -> Any:
+    """The status a task lands in: the flagged default, else the first lane.
 
     Falling back to the lowest ``position`` rather than failing is deliberate —
     an owner who deletes the row that happened to carry ``is_default`` must not
     discover it by being unable to create a task.
+
+    ``category`` narrows the question from "which lane does a new task start
+    in" to "which lane of this STAGE", which is what a caller moving a task
+    ACROSS stages is actually asking. ``is_default`` is per-category
+    (``admin._clear_other_defaults``), so the two-step fallback holds inside a
+    category exactly as it does across the root: the owner's choice first, then
+    the lowest position, and only then a refusal.
+
+    Without the argument a caller has to write the SQL again, and the copy that
+    already existed got it wrong — ``personal.complete`` selected the done lane
+    ``ORDER BY position LIMIT 1`` and never consulted ``is_default``, so an
+    owner who marked "Shipped" the default done status still had completions
+    land in whichever done row sorted first.
     """
+    narrow = "AND category = :category " if category is not None else ""
+    params: dict[str, Any] = {"root": root_id}
+    if category is not None:
+        params["category"] = category
     for clause in ("AND is_default ", ""):
         row = (await db.execute(
             text(
                 f"SELECT * FROM pm_task_statuses "
-                f"WHERE project_id = CAST(:root AS uuid) {clause}"
+                f"WHERE project_id = CAST(:root AS uuid) {narrow}{clause}"
                 f"ORDER BY position, name LIMIT 1"
             ),
-            {"root": root_id},
+            params,
         )).fetchone()
         if row is not None:
             return row
+    if category is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This project has no {category.replace('_', ' ')} status; "
+                "add one first."
+            ),
+        )
     raise HTTPException(
         status_code=422,
         detail="No task statuses are configured for this project; create one first.",
