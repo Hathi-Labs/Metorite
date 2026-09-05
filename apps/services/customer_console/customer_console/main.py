@@ -5186,6 +5186,33 @@ def _record_completion(
             },
         )
 
+    # 🔴 **The SECOND way a served call goes unbilled, and the quieter one**
+    # (migration 025). `usage_from_response` never raises, so a body we do not
+    # recognise returns three zeros. The partition assert passes — zero is not
+    # greater than zero — `rate_call` multiplies zeros, and the row lands
+    # looking exactly like a served call that happened to be free.
+    #
+    # ⚠️ **A per-unit job is NOT unreadable when it reports no tokens.** An
+    # image, a minute of audio and a character of speech are measured by
+    # `quantity`, and they carry no token counts at all. `quantity is None` is
+    # what tells the two apart, so this check must sit beside that fact.
+    #
+    # ⚠️ A prompt of zero is the signal, not a completion of zero. A provider
+    # can legitimately return an empty completion. Nobody sends an empty
+    # prompt — every chat call carries at least a system message.
+    if metering_fault is None and quantity is None and usage.prompt_tokens == 0:
+        metering_fault = "usage_unreadable"
+        _log.error(
+            "router.usage_unreadable",
+            extra={
+                "router_org": org_id,
+                "router_client_ref": client_ref,
+                "router_model": resolved.model,
+                "router_tier": resolved.tier,
+                "router_task": resolved.task,
+            },
+        )
+
     try:
         with get_engine().begin() as conn:
             # CP-6: the draw. `record_usage` negates this into `credit_ledger`
@@ -6968,6 +6995,21 @@ class OrgUsageRow(BaseModel):
     #: above zero with `calls` at zero is an organization that got nothing
     #: through, which is the row support wants before the customer writes in.
     refusals: int = 0
+    #: 🔴 **Calls this organization RECEIVED that we did not bill** (022, 025).
+    #: The meter failed, so we absorbed the vendor's cost rather than send a
+    #: number we could not defend.
+    #:
+    #: ⚠️ **The inverse of `refusals`, and reading them the same way is the
+    #: mistake this comment exists to prevent.** A refusal is a customer we
+    #: said NO to — they got nothing and owe nothing. This is a customer we
+    #: said YES to and then did not charge: they hold their completion and we
+    #: hold the vendor's bill. What is missing is our money, never their
+    #: service.
+    unbilledCalls: int = 0
+    #: The tokens those calls consumed. ⚠️ Zero on an `usage_unreadable` row
+    #: BY DEFINITION, so a large count beside a small token total is itself
+    #: the signal that the provider's SHAPE broke and not our arithmetic.
+    unbilledTokens: int = 0
 
 
 class OrgUsageView(BaseModel):
@@ -6987,6 +7029,13 @@ class OrgUsageView(BaseModel):
     #: A3 exists to find is the exact row the cap removes. Slugs only — the
     #: row data for the visible ones is already in `rows`.
     silentSlugs: list[str] = []
+    #: 🔴 **Served and NOT billed, over every organization** (022, 025).
+    #: Computed UNCAPPED, because a leak bills zero and a zero-credit row
+    #: sorts off the spend-ordered page — so a total taken from `rows` would
+    #: read zero exactly when it mattered most.
+    unbilledOrgs: int = 0
+    unbilledCallsTotal: int = 0
+    unbilledTokensTotal: int = 0
 
 
 class UsageDayRow(BaseModel):
@@ -7032,6 +7081,10 @@ def admin_usage_by_org(
             )["rows"]
         }
         last_seen = store.last_seen_by_org(conn)
+        # 🔴 UNCAPPED, for the reason `last_seen_by_org` is. A leak bills zero
+        # by definition, so the leaking organization sorts last and falls off
+        # the page — the worse the leak, the more certainly it hides.
+        unbilled = store.unbilled_fleet_total(conn, days=days)
 
     now = datetime.now(UTC)
     annotated = analytics.annotate_orgs(rows, balances, burn, now)
@@ -7048,6 +7101,9 @@ def admin_usage_by_org(
         total=page["total"],
         shown=page["shown"],
         silentSlugs=silent_slugs,
+        unbilledOrgs=unbilled["orgs"],
+        unbilledCallsTotal=unbilled["calls"],
+        unbilledTokensTotal=unbilled["tokens"],
         rows=[
             OrgUsageRow(
                 slug=r["slug"],
@@ -7063,6 +7119,8 @@ def admin_usage_by_org(
                 runwayDays=r["runway_days"],
                 silent=r["silent"],
                 refusals=r["refusals"],
+                unbilledCalls=r["unbilled_calls"],
+                unbilledTokens=r["unbilled_tokens"],
             )
             for r in annotated
         ],

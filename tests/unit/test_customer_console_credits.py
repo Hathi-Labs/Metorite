@@ -590,3 +590,62 @@ class TestUsagePartition:
     def test_no_cached_count_is_legal(self):
         """The common case: a provider that reports no cache at all."""
         assert TokenUsage(prompt_tokens=8000).fresh_prompt_tokens == 8000
+
+
+# ── The unbilled fleet read (credit_pricing.md §3, migrations 022 and 025) ──
+
+
+class TestTheUnbilledFleetRead:
+    """🔴 A leak bills ZERO, and a zero sorts off a spend-ordered page.
+
+    So the operator's total cannot come from the page. `usage_by_org` orders
+    by credits descending and caps at `SPEND_PAGE_SIZE`; an unbilled call
+    contributes no credits by definition, which puts the leaking organization
+    LAST. The worse the leak, the more certainly it hides.
+
+    Measured 2026-09-05 on a scratch database: two organizations with a
+    faulted call sat past position 5900 of 5988, and the page summed to zero
+    while the fleet held two.
+    """
+
+    def test_the_read_is_uncapped_and_takes_no_limit(self):
+        """The property, read off the signature.
+
+        A `limit` here would re-introduce the bug: whatever the bound, the
+        leaking organization is the one it drops.
+        """
+        import inspect
+
+        from customer_console import store
+
+        params = inspect.signature(store.unbilled_fleet_total).parameters
+        assert "limit" not in params, (
+            "unbilled_fleet_total must not take a limit — a leak bills zero "
+            "and a capped read drops exactly the row it exists to find"
+        )
+        assert set(params) == {"conn", "days"}
+
+    def test_it_counts_organizations_AND_calls(self):
+        """One customer with 400 leaks is a broken integration. 400 customers
+        with one each is a broken provider. One number cannot say which."""
+        import inspect
+
+        from customer_console import store
+
+        src = inspect.getsource(store.unbilled_fleet_total)
+        assert "COUNT(DISTINCT organization_id)" in src
+        assert "COUNT(*)" in src
+
+    def test_it_reads_metering_fault_and_never_refusal_reason(self):
+        """⚠️ The two are opposites and the SQL must not confuse them.
+
+        A refusal is a customer we said no to — they got nothing and owe
+        nothing. A fault is a customer we said yes to and did not charge.
+        """
+        import inspect
+
+        from customer_console import store
+
+        src = inspect.getsource(store.unbilled_fleet_total)
+        assert "metering_fault IS NOT NULL" in src
+        assert "refusal_reason" not in src

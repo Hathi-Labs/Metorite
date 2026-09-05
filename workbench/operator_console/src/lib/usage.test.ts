@@ -17,11 +17,16 @@ import {
   runwayTone,
   sparklinePath,
   usageHeadline,
+  hasUnbilled,
+  unbilledTotals,
 } from "./usage";
 
 const ROW = (over: Partial<OrgUsageRow> = {}): OrgUsageRow => ({
   slug: "acme",
   name: "Acme",
+  // 022/025 — a clean row serves and bills. Zero here is the healthy state.
+  unbilledCalls: 0,
+  unbilledTokens: 0,
   calls: 10,
   credits: "100",
   members: 3,
@@ -207,5 +212,60 @@ describe("the headline", () => {
 
   it("omits a count that is zero rather than printing '0 silent'", () => {
     expect(usageHeadline([ROW()])).not.toContain("0 silent");
+  });
+});
+
+// ── Served and not billed (migrations 022, 025) ─────────────────────────────
+//
+// 🔴 The inverse of a refusal, and reading them the same way is the mistake
+// these tests exist to prevent. A refusal is a customer we said NO to — they
+// got nothing and owe nothing. This is a customer we said YES to and then did
+// not charge: they hold their completion and we hold the vendor's bill.
+
+describe("consumption we served and did not bill", () => {
+  it("one call is enough to flag a row", () => {
+    // A leak is not a threshold problem. An unbilled call means a provider
+    // shape we cannot read or counts we cannot trust, and both get WORSE with
+    // volume. Waiting for a round number is how the original silent
+    // undercharge survived.
+    expect(hasUnbilled(ROW({ unbilledCalls: 1 }))).toBe(true);
+    expect(hasUnbilled(ROW({ unbilledCalls: 0 }))).toBe(false);
+  });
+
+  it("counts organizations AND calls, because they are different problems", () => {
+    // "One customer, 400 calls" is a broken integration. "400 customers, one
+    // call each" is a broken provider. A single number hides which you have.
+    const rows = [
+      ROW({ slug: "a", unbilledCalls: 400, unbilledTokens: 900_000 }),
+      ROW({ slug: "b", unbilledCalls: 0, unbilledTokens: 0 }),
+      ROW({ slug: "c", unbilledCalls: 2, unbilledTokens: 5_000 }),
+    ];
+    expect(unbilledTotals(rows)).toEqual({
+      orgs: 2, calls: 402, tokens: 905_000,
+    });
+  });
+
+  it("is zero across a healthy fleet", () => {
+    expect(unbilledTotals([ROW(), ROW({ slug: "b" })])).toEqual({
+      orgs: 0, calls: 0, tokens: 0,
+    });
+  });
+
+  it("counts a row whose TOKENS are zero — that is the unreadable case", () => {
+    // ⚠️ `usage_unreadable` means we could not read the counts, so its token
+    // total is zero BY DEFINITION. A totals function that keyed off tokens
+    // would miss precisely the worse of the two faults.
+    const rows = [ROW({ unbilledCalls: 7, unbilledTokens: 0 })];
+    expect(unbilledTotals(rows)).toEqual({ orgs: 1, calls: 7, tokens: 0 });
+  });
+
+  it("survives a Console that has not shipped the columns yet", () => {
+    // R6: this app and the Console deploy apart. An older Console sends
+    // neither field, and the board must read zero rather than NaN.
+    const stale = { ...ROW(), unbilledCalls: undefined, unbilledTokens: undefined };
+    expect(hasUnbilled(stale as never)).toBe(false);
+    expect(unbilledTotals([stale as never])).toEqual({
+      orgs: 0, calls: 0, tokens: 0,
+    });
   });
 });

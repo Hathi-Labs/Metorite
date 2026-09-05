@@ -108,6 +108,53 @@ convention and wrong for the other, and no code sees the difference.
 6. Every count read keeps ignoring `metering_fault`. A faulted call served, so
    it counts as a call. Only its credits are zero.
 
+### 3.2a What we do with a call we cannot meter (added 2026-09-05)
+
+The owner asked how you price something when you do not know how much of it
+somebody consumed. **You do not. You absorb it.**
+
+1. The call **serves**. The customer holds their completion.
+2. We bill **zero** and pay the vendor. We never estimate. Estimating is the
+   defect §3.1 measured, pointed the other way. A bill nobody can explain is
+   worse than a call we admit we could not meter.
+3. We record the fault, so the choice is **countable**. Absorbing cost is only
+   defensible while it is rare, and until this column nothing measured whether
+   it was.
+4. Later, we stop refusing. `cache_convention` records which vendor field
+   answered, so the convention is knowable. An agent may normalise correctly
+   **only after** the fleet data shows the signal is reliable. Acting on an
+   unmeasured inference is how you overcharge.
+
+⚠️ **There are TWO faults, and the second is worse.** Migration 025 adds it.
+`usage_from_response` never raises. So a body we do not recognise returns three
+zeros and the partition assert passes. The row then lands looking like a served
+call that happened to be free. The partition case at least writes a log line.
+
+| Fault | Meaning |
+|---|---|
+| `usage_partition` | The counts contradict each other |
+| `usage_unreadable` | The provider reported nothing we recognise |
+
+### 3.2b The surface (added 2026-09-05)
+
+**Owner directive, 2026-09-05: make it very visible that this is not built and
+the customer used the tokens anyway.**
+
+1. `/usage` carries a **danger banner**, above the silent-customer one. It
+   says the calls served and that we paid the vendor. It says we charged
+   nothing. It says billing them correctly **is not built yet**.
+2. A stat tile reads **"Served, unbilled"**. It renders at zero too. A tile
+   that appears only on failure teaches nobody where to look.
+3. The table gains a **"Given away"** column, beside "Refused". It is not
+   called "Unbilled". That reads as an invoice still to send, which is
+   recoverable. This is not.
+4. 🔴 **The banner reads the SERVER's uncapped total, never the page's sum.**
+   `usage_by_org` orders by credits and caps the page. A leak bills zero by
+   definition. So the leaking organization sorts **last** and falls off the
+   page. The worse the leak, the more certainly it hides. Measured 2026-09-05:
+   the page summed to 0 while the fleet held 2. `store.unbilled_fleet_total`
+   is the uncapped read, and its fence asserts it takes no `limit`.
+
 ### 3.3 The fence (R7)
 
 `tests/unit/test_customer_console_credits.py` gains three cases. One asserts

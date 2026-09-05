@@ -44,6 +44,11 @@ export default async function UsagePage() {
   let rows: OrgUsageRow[] = [];
   let total = 0;
   let silentSlugs: string[] = [];
+  // 022/025 — undefined until the Console answers, and undefined is NOT zero:
+  // an older Console sends nothing and the board then falls back to the page.
+  let unbilled: {
+    orgs?: number; calls?: number; tokens?: number;
+  } = {};
   let days: UsageDay[] = [];
   let spikes: string[] = [];
   let error: string | null = null;
@@ -59,6 +64,11 @@ export default async function UsagePage() {
         rows: OrgUsageRow[];
         total?: number;
         silentSlugs?: string[];
+        // 022/025 — the fleet figures, uncapped. See UsageBoard for why the
+        // page's own sum cannot answer this.
+        unbilledOrgs?: number;
+        unbilledCallsTotal?: number;
+        unbilledTokensTotal?: number;
       };
       rows = body.rows;
       silentSlugs = body.silentSlugs ?? [];
@@ -66,6 +76,11 @@ export default async function UsagePage() {
       // that fall off are the QUIET ones — the exact rows the read LEFT JOINs
       // to include. Carrying the total is what stops the table looking whole.
       total = body.total ?? body.rows.length;
+      unbilled = {
+        orgs: body.unbilledOrgs,
+        calls: body.unbilledCallsTotal,
+        tokens: body.unbilledTokensTotal,
+      };
     } else {
       // Surfaced, never swallowed. An empty table would hide a 500 and read as
       // "nobody has used AI yet".
@@ -103,7 +118,16 @@ export default async function UsagePage() {
         {error ? (
           <div className="banner danger">{error}</div>
         ) : (
-          <UsageBoard rows={rows} days={days} spikes={spikes} total={total} silentSlugs={silentSlugs} />
+          <UsageBoard
+            rows={rows}
+            days={days}
+            spikes={spikes}
+            total={total}
+            silentSlugs={silentSlugs}
+            unbilledOrgs={unbilled.orgs}
+            unbilledCallsTotal={unbilled.calls}
+            unbilledTokensTotal={unbilled.tokens}
+          />
         )}
       </main>
     </>

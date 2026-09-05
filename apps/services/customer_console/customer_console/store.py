@@ -769,6 +769,47 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 USAGE_MAX_DAYS = 365
 
 
+def unbilled_fleet_total(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS
+) -> dict[str, int]:
+    """Consumption we served and did not bill, over EVERY organization.
+
+    🔴 **This read exists because computing it from the page would never
+    fire.** `usage_by_org` sorts by credits descending and caps the page. An
+    unbilled call bills ZERO by definition, so a leaking organization sorts
+    LAST — and a leak is precisely what pushes it there. A banner fed by the
+    page would therefore read "0 unbilled" while the leak ran, and the worse
+    the leak got the more certainly it would hide.
+
+    Measured 2026-09-05 on a scratch database: two organizations with a
+    faulted call sat at position 5900-odd of 5988, one hundred rows past the
+    cap. Same shape as H-76's silent-customer half, same fix — an uncapped
+    read beside the paged one.
+
+    ⚠️ **Counts organizations AND calls.** "One customer, 400 calls" is a
+    broken integration and "400 customers, one call each" is a broken
+    provider. One number cannot say which, and they need different people.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT COUNT(DISTINCT organization_id) AS orgs,
+                   COUNT(*)                        AS calls,
+                   COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+            FROM usage_event
+            WHERE metering_fault IS NOT NULL
+              AND created_at >= now() - make_interval(days => :days)
+            """
+        ),
+        {"days": days},
+    ).one()
+    return {
+        "orgs": int(row.orgs),
+        "calls": int(row.calls),
+        "tokens": int(row.tokens),
+    }
+
+
 def last_seen_by_org(conn: Connection) -> dict[str, Any]:
     """Every organization's last AI call, UNCAPPED. slug -> timestamp.
 
@@ -887,6 +928,27 @@ def usage_by_org(
                    -- same window, so `calls` and `refusals` are comparable.
                    COUNT(u.id) FILTER
                        (WHERE u.refusal_reason IS NOT NULL) AS refusals,
+                   -- 🔴 **Calls this customer RECEIVED and we did not bill**
+                   -- (migrations 022 and 025). The meter failed, so we chose
+                   -- to absorb the cost rather than send a number we could
+                   -- not defend. That choice is only defensible while it is
+                   -- rare, and until this column nothing measured whether it
+                   -- was — the only trace was a log line.
+                   --
+                   -- ⚠️ NOT a refusal and NOT excluded from `calls`. The
+                   -- customer holds their completion. What is missing is our
+                   -- money, not their service.
+                   COUNT(u.id) FILTER
+                       (WHERE u.metering_fault IS NOT NULL) AS unbilled_calls,
+                   -- The tokens those calls consumed, so the size of the leak
+                   -- is legible rather than just its count. ⚠️ Zero on an
+                   -- `usage_unreadable` row BY DEFINITION — we could not read
+                   -- them — so a large count beside a small token total is
+                   -- itself the signal that the shape, not the arithmetic, is
+                   -- what broke.
+                   COALESCE(SUM(u.prompt_tokens + u.completion_tokens) FILTER
+                       (WHERE u.metering_fault IS NOT NULL), 0)
+                                                         AS unbilled_tokens,
                    COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
                    -- ⚠️ `last_seen` takes NO filter, on purpose. A refusal
                    -- MUST move it — a customer at a wall is a customer who is
@@ -924,6 +986,11 @@ def usage_by_org(
             "members": int(r.members),
             # A plain count, never money. It is how many times we said no.
             "refusals": int(r.refusals),
+            # 🔴 What this customer used and we did not charge for. A count and
+            # the tokens behind it — never an estimate of the money, because
+            # estimating is the defect migration 022 exists to stop.
+            "unbilled_calls": int(r.unbilled_calls),
+            "unbilled_tokens": int(r.unbilled_tokens),
             "cost_usd": Decimal(r.cost_usd),
             "last_seen": r.last_seen.isoformat() if r.last_seen else None,
         }
