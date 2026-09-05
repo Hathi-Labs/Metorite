@@ -793,7 +793,7 @@ export function edgePoints(
   const y2 = to.row * ROW_H + ROW_H / 2;
   const x1 = from.bar.leftPx + from.bar.widthPx;
   const x2 = to.bar.leftPx;
-  const stub = 12;
+  const stub = EDGE_STUB_PX;
 
   // Same row with room ahead: a straight line. A dogleg between two bars on
   // one line is a corner drawn for nothing.
@@ -855,6 +855,11 @@ export function edgePoints(
  */
 export const CHANNEL_PX = 7;
 
+/** How far clear of a bar a route turns. One number, read by the router and
+ *  by the trunk below, so the two cannot disagree about where a corner goes. */
+export const EDGE_STUB_PX = 12;
+
+
 export interface RoutedEdge {
   id: string;
   points: Point[];
@@ -883,16 +888,65 @@ function cluster<T>(items: T[], value: (item: T) => number): T[][] {
  */
 export function stagger(routes: readonly RoutedEdge[]): RoutedEdge[] {
   const moved = new Map<string, Point[]>();
+  /**
+   * ── The TRUNK: arrows leaving one bar branch, they do not weave ───────────
+   *
+   * Owner report, 2026-09-05, second round: the branches "don't look neat" and
+   * the arrows leaving one bar cross each other. The shared first leg is fine —
+   * that was checked. The tangle is the fault.
+   *
+   * `edgePoints` turns each edge down at the MIDPOINT between its two bars, and
+   * that midpoint comes from the target's X. Two arrows leaving one bar
+   * therefore run along the same y and turn down at two different places, so
+   * the further one's horizontal passes straight through the nearer one's
+   * corner. Nesting the channels does not help: they were already nested in the
+   * reported case, and the junction is what reads as a crossing.
+   *
+   * A fan is a TREE, so it is drawn as one: siblings share a single trunk just
+   * clear of the bar they leave, and each peels off right at its own row. One
+   * line down, one branch per target, and nothing crosses anything — the
+   * shorter branch's trunk is contained in the longer one's rather than meeting
+   * it at an angle.
+   *
+   * A LONE arrow keeps the balanced midpoint, which is the better shape when
+   * there is nothing to branch with. So the two routings are not a mixture:
+   * one edge is a line, several from one bar are a tree.
+   */
+  const trunked = new Set<string>();
+  const bySource = new Map<string, RoutedEdge[]>();
+  for (const r of routes) {
+    if (r.points.length !== 4 || r.points[1].x !== r.points[2].x) continue;
+    const key = `${Math.round(r.points[0].x)}:${Math.round(r.points[0].y)}`;
+    const list = bySource.get(key);
+    if (list) list.push(r);
+    else bySource.set(key, [r]);
+  }
+  for (const group of bySource.values()) {
+    if (group.length < 2) continue;
+    const trunk = group[0].points[0].x + EDGE_STUB_PX;
+    for (const route of group) {
+      trunked.add(route.id);
+      // Never past the bar it points at: a target that starts inside the stub
+      // keeps its own channel rather than being dragged on top of itself.
+      if (trunk >= route.points[3].x) continue;
+      if (route.points[1].x === trunk) continue;
+      const pts = route.points.map((p) => ({ ...p }));
+      pts[1].x = trunk;
+      pts[2].x = trunk;
+      moved.set(route.id, pts);
+    }
+  }
 
   // Forward routes: the vertical run at points[1].x === points[2].x.
-  const forward = routes.filter(
-    (r) => r.points.length === 4 && r.points[1].x === r.points[2].x,
-  );
+  const forward = routes
+    .filter((r) => !trunked.has(r.id))
+    .map((r) => ({ id: r.id, points: moved.get(r.id) ?? r.points }))
+    .filter((r) => r.points.length === 4 && r.points[1].x === r.points[2].x);
   for (const group of cluster(forward, (r) => r.points[1].x)) {
     if (group.length < 2) continue;
     group.forEach((route, i) => {
       const shift = (i - (group.length - 1) / 2) * CHANNEL_PX;
-      const pts = route.points.map((p) => ({ ...p }));
+      const pts = (moved.get(route.id) ?? route.points).map((p) => ({ ...p }));
       // Clamped inside the two bars, so a channel can never route backwards
       // through the thing it leaves or the thing it points at.
       const lo = Math.min(pts[0].x, pts[3].x) + 1;

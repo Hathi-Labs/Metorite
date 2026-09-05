@@ -28,7 +28,9 @@ import { describe, expect, it } from "vitest";
 import type { TaskRow } from "./api";
 import { fromDayKey, shiftDay } from "./calendar";
 import {
+
   CHANNEL_PX,
+  EDGE_STUB_PX,
   stagger,
   AIM_KEEP_PX,
   CONTROL_SHIELD_PX,
@@ -1447,13 +1449,24 @@ describe("stagger — two arrows must not share one corridor", () => {
   // Owner report, 2026-09-05. `edgePoints` routes each edge alone and puts its
   // vertical run at the midpoint between the bars, so edges with similar
   // endpoints drew their runs on top of one another.
-  const forward = (id: string, x: number): { id: string; points: Point[] } => ({
+  /**
+   * One forward route.
+   *
+   * ⚠️ `srcY` matters. Edges that share a SOURCE are a fan and get a trunk;
+   * the channel pass below is about edges from DIFFERENT bars whose runs
+   * happen to collide, so these fixtures must not accidentally be siblings.
+   */
+  const forward = (
+    id: string,
+    x: number,
+    srcY = 0,
+  ): { id: string; points: Point[] } => ({
     id,
     points: [
-      { x: 0, y: 0 },
-      { x, y: 0 },
-      { x, y: 40 },
-      { x: 200, y: 40 },
+      { x: 0, y: srcY },
+      { x, y: srcY },
+      { x, y: srcY + 40 },
+      { x: 200, y: srcY + 40 },
     ],
   });
 
@@ -1463,7 +1476,7 @@ describe("stagger — two arrows must not share one corridor", () => {
   });
 
   it("splits two colliding runs either side of where they were", () => {
-    const out = stagger([forward("a", 100), forward("b", 100)]);
+    const out = stagger([forward("a", 100), forward("b", 100, 200)]);
     const xs = out.map((r) => r.points[1].x).sort((p, q) => p - q);
     expect(xs[1] - xs[0]).toBe(CHANNEL_PX);
     // Centred: the pair straddles the original, rather than both sliding away.
@@ -1472,24 +1485,71 @@ describe("stagger — two arrows must not share one corridor", () => {
 
   it("keeps the vertical run vertical", () => {
     // Moving one point of the pair and not the other would draw a diagonal.
-    for (const r of stagger([forward("a", 100), forward("b", 103)])) {
+    for (const r of stagger([forward("a", 100), forward("b", 103, 200)])) {
       expect(r.points[1].x).toBe(r.points[2].x);
     }
   });
 
   it("does not move edges that were already clear of each other", () => {
-    const far = [forward("a", 40), forward("b", 140)];
+    const far = [forward("a", 40), forward("b", 140, 200)];
     expect(stagger(far).map((r) => r.points[1].x)).toEqual([40, 140]);
   });
 
   it("never moves an endpoint", () => {
     // An arrow must still leave the bar it leaves and arrive where it arrives.
-    const input = [forward("a", 100), forward("b", 100), forward("c", 101)];
+    //
+    // ⚠️ This briefly allowed a vertical shift, for a "fan" that gave two
+    // arrows leaving one bar their own departure heights. The owner ruled the
+    // shared first leg fine and the CROSSING the fault — and the fan made the
+    // crossing worse, because a second horizontal at a different height cuts
+    // THROUGH the first edge's vertical instead of meeting it at a corner.
+    // Reverted, and the contract is strict again.
+    const input = [forward("a", 100), forward("b", 100, 200), forward("c", 101, 400)];
     for (const r of stagger(input)) {
       const before = input.find((i) => i.id === r.id)!;
       expect(r.points[0]).toEqual(before.points[0]);
       expect(r.points[3]).toEqual(before.points[3]);
     }
+  });
+
+  it("puts siblings on ONE trunk, so branches never cross", () => {
+    // The report: arrows leaving one bar cross each other. They turned down at
+    // two different x, so the further one's horizontal ran straight through the
+    // nearer one's corner. A fan is a tree, so it is drawn as one.
+    const src = { x: 0, y: 0 };
+    const out = stagger([
+      { id: "near", points: [src, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] },
+      { id: "far", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] },
+    ]);
+    const xs = out.map((r) => r.points[1].x);
+    expect(new Set(xs).size, `two trunks: ${xs.join(", ")}`).toBe(1);
+    expect(xs[0]).toBe(EDGE_STUB_PX);
+  });
+
+  it("keeps the vertical run vertical on the trunk", () => {
+    const src = { x: 0, y: 0 };
+    const out = stagger([
+      { id: "a", points: [src, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] },
+      { id: "b", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] },
+    ]);
+    for (const r of out) expect(r.points[1].x).toBe(r.points[2].x);
+  });
+
+  it("leaves a LONE arrow on its balanced midpoint", () => {
+    // One edge is a line, several from one bar are a tree. A single arrow has
+    // nothing to branch with, and the midpoint is the better shape for it.
+    const only = [{ id: "a", points: [{ x: 0, y: 0 }, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] }];
+    expect(stagger(only)[0].points[1].x).toBe(190);
+  });
+
+  it("does not drag a branch past the bar it points at", () => {
+    // A target starting inside the stub keeps its own channel rather than being
+    // routed on top of itself.
+    const src = { x: 0, y: 0 };
+    const tight = { id: "tight", points: [src, { x: 4, y: 0 }, { x: 4, y: 40 }, { x: 8, y: 40 }] };
+    const wide = { id: "wide", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] };
+    const out = stagger([tight, wide]);
+    for (const r of out) expect(r.points[1].x).toBeLessThan(r.points[3].x);
   });
 
   it("keeps the channel between the two bars", () => {
@@ -1527,12 +1587,12 @@ describe("stagger — two arrows must not share one corridor", () => {
   });
 
   it("returns every edge it was given, in the caller's order", () => {
-    const input = [forward("a", 100), forward("b", 100), forward("c", 100)];
+    const input = [forward("a", 100), forward("b", 100, 200), forward("c", 100, 400)];
     expect(stagger(input).map((r) => r.id)).toEqual(["a", "b", "c"]);
   });
 
   it("does not mutate the routes it was handed", () => {
-    const input = [forward("a", 100), forward("b", 100)];
+    const input = [forward("a", 100), forward("b", 100, 200)];
     stagger(input);
     expect(input.map((r) => r.points[1].x)).toEqual([100, 100]);
   });
