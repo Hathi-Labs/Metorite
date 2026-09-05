@@ -23,6 +23,7 @@ import {
   runwayLabel,
   runwayTone,
   sparklinePath,
+  unbilledTotals,
   usageHeadline,
 } from "@/lib/usage";
 
@@ -44,6 +45,7 @@ function Spark({ days }: { days: UsageDay[] }) {
 
 export default function UsageBoard({
   rows, days, spikes, total, silentSlugs = [],
+  unbilledOrgs, unbilledCallsTotal, unbilledTokensTotal,
 }: {
   rows: OrgUsageRow[];
   days: UsageDay[];
@@ -54,6 +56,14 @@ export default function UsageBoard({
   /** 🔴 Silent customers judged over EVERY organization (H-76), so the ones
    *  the spend-sorted cap pushed off the page still reach a reader. */
   silentSlugs?: string[];
+  /** 🔴 Served-and-unbilled judged over EVERY organization, for the same
+   *  reason `silentSlugs` is — except sharper here, because a leak bills zero
+   *  and a zero-credit row ALWAYS sorts off a spend-ordered page. Optional:
+   *  this app and the Console deploy apart (R6), and an older Console sends
+   *  none of the three. */
+  unbilledOrgs?: number;
+  unbilledCallsTotal?: number;
+  unbilledTokensTotal?: number;
 }) {
   // ⚠️ Purged organizations arrive from the Console on purpose — their usage
   // rows survive the purge as billing history. The roster already owns the
@@ -78,8 +88,51 @@ export default function UsageBoard({
     return { calls, credits, cost };
   }, [live]);
 
+  // 🔴 **The SERVER's uncapped figure, never the page's sum** (023, 025).
+  //
+  // ⚠️ A total computed from `rows` would read zero exactly when it mattered.
+  // An unbilled call bills zero by definition, the page sorts by credits
+  // descending, so a leaking organization sorts LAST and falls off the cap —
+  // the worse the leak, the more certainly it hides. Measured 2026-09-05: the
+  // page summed to 0 while the fleet held 2 leaking organizations.
+  //
+  // `unbilledTotals(live)` stays for the rows the page DOES carry, so a
+  // visible leak is attributable to a customer as well as counted.
+  const onPage = useMemo(() => unbilledTotals(live), [live]);
+  const unbilled = {
+    orgs: unbilledOrgs ?? onPage.orgs,
+    calls: unbilledCallsTotal ?? onPage.calls,
+    tokens: unbilledTokensTotal ?? onPage.tokens,
+  };
+
   return (
     <>
+      {/* 🔴 **FIRST on the page, and deliberately louder than the silent
+          banner below it.** This is revenue we have already lost: the customer
+          holds their completion, we hold the vendor's bill, and nothing will
+          reconcile the two later. The silent-customer banner is a prompt to
+          make a call; this one is a defect that is still running. */}
+      {unbilled.calls > 0 && (
+        <div className="banner danger">
+          <strong>
+            {unbilled.calls}{" "}
+            {unbilled.calls === 1 ? "call was" : "calls were"} served and NOT
+            billed
+          </strong>{" "}
+          across {unbilled.orgs}{" "}
+          {unbilled.orgs === 1 ? "customer" : "customers"}
+          {unbilled.tokens > 0 && (
+            <> — about {unbilled.tokens.toLocaleString("en-IN")} tokens</>
+          )}
+          . The customer received the AI. We paid the vendor. We charged
+          nothing, because the meter could not read the usage and this console
+          refuses to invoice a number it cannot defend.{" "}
+          <strong>This is not built yet</strong> — billing an unmeterable call
+          correctly needs the vendor-convention data these rows are collecting.
+          Until then every one of them is absorbed cost.
+        </div>
+      )}
+
       {hiddenSilent.length > 0 && (
         <div className="banner">
           {hiddenSilent.length} funded{" "}
@@ -114,6 +167,13 @@ export default function UsageBoard({
           <div className={`stat ${spikes.length > 0 ? "caution" : ""}`}>
             <div className="num">{spikes.length}</div>
             <div className="lbl">Cost spikes</div>
+          </div>
+          {/* ⚠️ Always rendered, never hidden at zero. A tile that appears
+              only on failure teaches nobody where to look, and its absence
+              then reads as "not measured" rather than "none". */}
+          <div className={`stat ${unbilled.calls > 0 ? "alarm" : ""}`}>
+            <div className="num">{unbilled.calls}</div>
+            <div className="lbl">Served, unbilled</div>
           </div>
         </div>
 
@@ -153,6 +213,12 @@ export default function UsageBoard({
                 {/* A5 (§8.1). Beside Calls on purpose — "0 calls, 41 refused"
                     is one sentence, and it is the sentence support needs. */}
                 <th>Refused</th>
+                {/* Deliberately NOT "Unbilled" alone. "Unbilled" reads as an
+                    invoice that has not gone out yet, which is recoverable.
+                    This is not — it is service already given away. */}
+                <th title="Served and not charged — absorbed cost">
+                  Given away
+                </th>
                 <th>Credits</th>
                 <th>Our cost</th>
                 <th>Margin</th>
@@ -185,6 +251,20 @@ export default function UsageBoard({
                     <td>{r.calls}</td>
                     <td className={r.refusals > 0 ? "caution" : "muted"}>
                       {r.refusals}
+                    </td>
+                    {/* 🔴 Money we did not collect, beside the count of times
+                        we said no. Reading the two the same way is the trap:
+                        a refusal cost us nothing, this cost us the vendor's
+                        bill. */}
+                    <td
+                      className={r.unbilledCalls > 0 ? "danger-t" : "muted"}
+                      title={
+                        r.unbilledCalls > 0
+                          ? `${r.unbilledCalls} served call(s) we could not meter, about ${r.unbilledTokens.toLocaleString("en-IN")} tokens. Absorbed, not charged.`
+                          : undefined
+                      }
+                    >
+                      {r.unbilledCalls}
                     </td>
                     <td>{r.credits}</td>
                     <td>${r.costUsd}</td>

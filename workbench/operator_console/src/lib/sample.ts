@@ -64,6 +64,22 @@ const M = (
   // does about it.
   cachedInputPer1M: id === "anthropic/claude-sonnet-4" ? 0.3
     : id === "openai/gpt-4o" ? 1.25 : null,
+  // 023 — the off-peak window. ⚠️ DeepSeek is the ONE sample vendor that has
+  // one: 16:30 to 00:30 UTC, and it WRAPS midnight. It is set here on purpose,
+  // so the sample board shows the two-rate case rather than pretending every
+  // vendor charges one price all day.
+  inputOffpeakPer1M: id.startsWith("deepseek/") && inP !== null ? inP / 2 : null,
+  outputOffpeakPer1M:
+    id.startsWith("deepseek/") && outP !== null ? outP / 2 : null,
+  cachedInputOffpeakPer1M: null,
+  offpeakStartUtc: id.startsWith("deepseek/") ? "16:30" : null,
+  offpeakEndUtc: id.startsWith("deepseek/") ? "00:30" : null,
+  // No sample vendor has a long-context tier configured yet. The board draws
+  // a dash, which is the honest state.
+  contextTierThreshold: null,
+  inputLongPer1M: null,
+  outputLongPer1M: null,
+  cachedInputLongPer1M: null,
   // The per-unit costs (019, H-78) — the only cost a non-token job has.
   // ⚠️ Whisper reads 0.006 PER MINUTE, and litellm publishes 0.0001 per
   // second. The Console multiplies by 60 once, in the feed read, so the
@@ -425,26 +441,36 @@ const TIER_RATES: TierRate[] = [
     tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
     inputPer1k: "0.0080", outputPer1k: "0.0400",
     cachedInputPer1k: "0.0008", creditsPerUnit: "0",
+    inputPer1m: "8", outputPer1m: "40",
+    cachedInputPer1m: "0.8",
   },
   {
     tier: "tier-balanced", task: "chat", unit: "tokens", mode: "priced",
     inputPer1k: "0.0300", outputPer1k: "0.1500",
     cachedInputPer1k: "0.0030", creditsPerUnit: "0",
+    inputPer1m: "30", outputPer1m: "150",
+    cachedInputPer1m: "3",
   },
   {
     tier: "tier-embed", task: "embed", unit: "tokens", mode: "absorbed",
     inputPer1k: "0", outputPer1k: "0",
     cachedInputPer1k: "0", creditsPerUnit: "0",
+    inputPer1m: "0", outputPer1m: "0",
+    cachedInputPer1m: "0",
   },
   {
     tier: "tier-stt", task: "transcribe", unit: "minutes", mode: "priced",
     inputPer1k: "0", outputPer1k: "0",
     cachedInputPer1k: "0", creditsPerUnit: "0.4000",
+    inputPer1m: "0", outputPer1m: "0",
+    cachedInputPer1m: "0",
   },
   {
     tier: "tier-image", task: "image", unit: "images", mode: "priced",
     inputPer1k: "0", outputPer1k: "0",
     cachedInputPer1k: "0", creditsPerUnit: "12.0000",
+    inputPer1m: "0", outputPer1m: "0",
+    cachedInputPer1m: "0",
   },
 ];
 
@@ -458,6 +484,11 @@ export const SAMPLE_CATALOG: AiCatalog = {
   failovers: FAILOVERS,
   feed: FEED,
   tierRates: TIER_RATES,
+  // 028 — the sample board shows the margin monitor with NO numbers set,
+  // which is the shipped state: `tier_margin` ships empty and every figure in
+  // it is the owner's (H-42). A sample that invented multipliers would teach
+  // an operator that the slate is already priced.
+  tierMargins: [],
   creditPrice: {
     inrPerCredit: "1", usdToInr: "88",
     effectiveFrom: "2026-08-20T00:00:00Z",

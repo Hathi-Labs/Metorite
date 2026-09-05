@@ -10,7 +10,7 @@
 // ⚠️ A SERVER component: every judgement is pure (`lib/priceboard.ts`,
 // `lib/catalog.ts`) and every fact is the page's own catalog read.
 
-import { describeRate } from "@/lib/catalog";
+import { describeTierRate } from "@/lib/catalog";
 import type { AiCatalog } from "@/lib/contract";
 import { inrRateLine, priceGroups } from "@/lib/priceboard";
 import { chipClass, pricingTone } from "@/lib/tone";
@@ -55,7 +55,7 @@ export default function PriceList({ catalog }: { catalog: AiCatalog }) {
                       </span>
                     ) : (
                       <>
-                        <span>{describeRate(rate)}</span>
+                        <span>{describeTierRate(rate)}</span>
                         {inr && <span className="muted small">{inr}</span>}
                       </>
                     )}

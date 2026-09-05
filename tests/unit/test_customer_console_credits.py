@@ -13,6 +13,7 @@ Three failure modes drive these tests, all of them expensive in different ways:
   3. **A hard stop at exactly zero** — lands mid-workflow and costs more in
      support than the overdraft ever will.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,6 @@ import re
 from decimal import Decimal
 
 import pytest
-
 from customer_console.credits import (
     CREDIT_QUANTUM,
     OverdraftPolicy,
@@ -28,6 +28,7 @@ from customer_console.credits import (
     RunCeiling,
     TokenUsage,
     UnpricedModel,
+    UsagePartitionError,
     balance_of,
     decide_member_cap,
     decide_run_ceiling,
@@ -40,11 +41,15 @@ from customer_console.credits import (
 #: Numbers alone no longer make a card billable, because a zero cannot carry
 #: three meanings — not-yet-priced, absorbed into the seat price (D19.2), and
 #: deliberately free are three different states with one number.
+#: ⚠️ Restated at the per-MILLION scale (migration 025). These are the SAME
+#: prices as before — 2.0 per 1k IS 2000 per 1M — so every expected credit
+#: figure in this file is unchanged. If one of them moves, the conversion is
+#: wrong, not the test.
 CARD = RateCard(
     model="deepseek/deepseek-v4-pro",
-    input_per_1k=Decimal("2.0"),
-    output_per_1k=Decimal("6.0"),
-    cached_input_per_1k=Decimal("0.5"),
+    input_per_1m=Decimal("2000"),
+    output_per_1m=Decimal("6000"),
+    cached_input_per_1m=Decimal("500"),
     pricing_mode="priced",
 )
 
@@ -52,8 +57,8 @@ CARD = RateCard(
 #: all before this slice, and `tier-stt` ships in the production seed.
 STT_CARD = RateCard(
     model="groq/whisper-large-v3-turbo",
-    input_per_1k=Decimal(0),
-    output_per_1k=Decimal(0),
+    input_per_1m=Decimal(0),
+    output_per_1m=Decimal(0),
     task="transcribe",
     unit="minutes",
     credits_per_unit=Decimal("0.4"),
@@ -73,9 +78,7 @@ class TestRating:
         #
         # 1000 prompt of which 800 cached →
         #   200 fresh @2/1k = 0.4  +  800 cached @0.5/1k = 0.4  +  0 output
-        cost = rate_call(
-            CARD, TokenUsage(prompt_tokens=1000, cached_tokens=800)
-        )
+        cost = rate_call(CARD, TokenUsage(prompt_tokens=1000, cached_tokens=800))
         assert cost == Decimal("0.8")
 
         # And it must be strictly cheaper than the same call with no cache hit,
@@ -83,11 +86,21 @@ class TestRating:
         uncached = rate_call(CARD, TokenUsage(prompt_tokens=1000))
         assert cost < uncached
 
-    def test_cached_exceeding_prompt_never_goes_negative(self):
-        # Providers have shipped inconsistent counters before; a negative
-        # fresh-token count would CREDIT the customer for using more cache.
-        cost = rate_call(CARD, TokenUsage(prompt_tokens=100, cached_tokens=500))
-        assert cost >= 0
+    def test_cached_exceeding_prompt_REFUSES(self):
+        """⚠️ This REPLACES `test_cached_exceeding_prompt_never_goes_negative`.
+
+        That test asserted the CLAMP — `max(0, prompt - cached)` — and it was
+        right that a negative fresh count would credit the customer for using
+        more cache. It was wrong about the remedy. Clamping answers a plausible
+        number where the honest answer is "these counts cannot both be true",
+        and `credit_pricing.md` §3 measured what that cost: a sibling-convention
+        report undercharged by 27 % with no error and no log line.
+
+        Refusing keeps the old guarantee — nothing goes negative — and adds the
+        one the clamp threw away, which is that somebody finds out.
+        """
+        with pytest.raises(UsagePartitionError):
+            rate_call(CARD, TokenUsage(prompt_tokens=100, cached_tokens=500))
 
     def test_an_unpriced_model_raises_rather_than_billing_zero(self):
         # 002_seed_catalog.sql seeds every model at zero on purpose, so this
@@ -112,9 +125,7 @@ class TestRating:
         with pytest.raises(UnpricedModel):
             rate_call(drafted, TokenUsage(prompt_tokens=1000))
 
-        assert RateCard(
-            "m", Decimal(0), Decimal("0.1"), pricing_mode="priced"
-        ).is_priced is True
+        assert RateCard("m", Decimal(0), Decimal("0.1"), pricing_mode="priced").is_priced is True
 
     def test_absorbed_is_free_and_is_NOT_an_error(self):
         """D19.2 absorbs embeddings into the seat price. That is not a mistake.
@@ -123,9 +134,7 @@ class TestRating:
         from a misconfigured one, and somebody would "fix" it by inventing a
         price the customer never agreed to.
         """
-        absorbed = RateCard(
-            "m", Decimal(0), Decimal(0), task="embed", pricing_mode="absorbed"
-        )
+        absorbed = RateCard("m", Decimal(0), Decimal(0), task="embed", pricing_mode="absorbed")
         assert absorbed.is_priced is False
         assert absorbed.is_absorbed is True
         assert rate_call(absorbed, TokenUsage(prompt_tokens=1_000_000)) == 0
@@ -158,15 +167,14 @@ class TestUnitsOtherThanTokens:
         # Its quantity IS the usage counters. A stray quantity must not
         # double-count or override them.
         with_q = rate_call(
-            CARD, TokenUsage(prompt_tokens=1000, completion_tokens=500),
+            CARD,
+            TokenUsage(prompt_tokens=1000, completion_tokens=500),
             quantity=Decimal("999"),
         )
         assert with_q == Decimal("5.0")
 
     def test_the_unit_price_is_decimal_not_float(self):
-        assert isinstance(
-            rate_call(STT_CARD, TokenUsage(), quantity=Decimal(1)), Decimal
-        )
+        assert isinstance(rate_call(STT_CARD, TokenUsage(), quantity=Decimal(1)), Decimal)
 
     def test_money_is_decimal_not_float(self):
         # Small rates x large token counts, summed thousands of times a month,
@@ -222,9 +230,9 @@ class TestTheSpendGate:
 
     def test_trial_grace_is_available_when_deliberately_enabled(self):
         policy = OverdraftPolicy(grace_credits=Decimal("50"), grace_for_trial=True)
-        assert decide_spend(
-            Decimal("0"), Decimal("10"), policy=policy, is_trial=True
-        ).allowed is True
+        assert (
+            decide_spend(Decimal("0"), Decimal("10"), policy=policy, is_trial=True).allowed is True
+        )
 
 
 class TestMemberCaps:
@@ -238,9 +246,7 @@ class TestMemberCaps:
         assert decide_member_cap(Decimal("100"), Decimal("100")) == ("degrade", True)
 
     def test_block_when_explicitly_configured(self):
-        action, warn = decide_member_cap(
-            Decimal("100"), Decimal("100"), on_exhaustion="block"
-        )
+        action, warn = decide_member_cap(Decimal("100"), Decimal("100"), on_exhaustion="block")
         assert (action, warn) == ("block", True)
 
     def test_warns_at_80_percent_without_restricting(self):
@@ -254,6 +260,7 @@ class TestMemberCaps:
 
 
 # ── CP-6: the overdraft at both edges of the SHIPPED value ──────────────────
+
 
 class TestTheOverdraftIsANamedConfigValue:
     """Acceptance: *"the ~10 percent overdraft is a named config value with a
@@ -273,9 +280,7 @@ class TestTheOverdraftIsANamedConfigValue:
     def test_the_last_call_INSIDE_the_grace_floor_is_allowed(self):
         # Balance -99.9999 spending one quantum lands exactly ON -100, which is
         # inside the floor: the comparison is `projected < -grace`.
-        assert decide_spend(
-            Decimal("-99.9999"), CREDIT_QUANTUM
-        ).allowed is True
+        assert decide_spend(Decimal("-99.9999"), CREDIT_QUANTUM).allowed is True
 
     def test_the_first_call_PAST_the_grace_floor_is_refused_402(self):
         d = decide_spend(Decimal("-100"), CREDIT_QUANTUM)
@@ -304,10 +309,8 @@ class TestTheOverdraftIsANamedConfigValue:
 
     def test_a_trial_has_no_grace_at_either_edge(self):
         # Both edges again, for the state every new organization starts in.
-        assert decide_spend(
-            Decimal("0"), CREDIT_QUANTUM, is_trial=True).allowed is False
-        assert decide_spend(
-            CREDIT_QUANTUM, CREDIT_QUANTUM, is_trial=True).allowed is True
+        assert decide_spend(Decimal("0"), CREDIT_QUANTUM, is_trial=True).allowed is False
+        assert decide_spend(CREDIT_QUANTUM, CREDIT_QUANTUM, is_trial=True).allowed is True
 
 
 class TestTheCreditQuantum:
@@ -325,6 +328,7 @@ class TestTheCreditQuantum:
 
 
 # ── CP-6: the per-run circuit breaker ───────────────────────────────────────
+
 
 class TestThePerRunCircuitBreaker:
     """§4.4: *"A per-run spend ceiling is not optional."*"""
@@ -367,15 +371,28 @@ class TestThePerRunCircuitBreaker:
 # ── R7: the structural fence (CP-6 acceptance clause 1) ─────────────────────
 
 #: ``<repo>/tests/unit/test_customer_console_credits.py`` -> ``<repo>``.
-_REPO_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_SKIP_DIRS = frozenset({
-    ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".codegraph", "dist",
-    "build", "site-packages", "htmlcov", ".turbo", ".uv",
-})
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".codegraph",
+        "dist",
+        "build",
+        "site-packages",
+        "htmlcov",
+        ".turbo",
+        ".uv",
+    }
+)
 
 _SCANNED = (".py", ".sql", ".ts", ".tsx")
 
@@ -387,9 +404,7 @@ _UPDATE_BODY = re.compile(r"\bUPDATE\b([^;]{0,800})", re.IGNORECASE | re.DOTALL)
 #: ``infra/postgres/42_email_model_roles.sql`` and is not a balance write, but a
 #: naive search for "balance" near "UPDATE" flags it. That near-miss is why
 #: this matches the identifier on the left of the ``=``.
-_SET_TARGET = re.compile(
-    r"(?:\bSET\b|,)\s*\"?([A-Za-z_][A-Za-z0-9_.]*)\"?\s*=", re.IGNORECASE
-)
+_SET_TARGET = re.compile(r"(?:\bSET\b|,)\s*\"?([A-Za-z_][A-Za-z0-9_.]*)\"?\s*=", re.IGNORECASE)
 
 #: A column DECLARATION whose name contains "balance" — the other half of the
 #: same doctrine. §3.4's SQL sketch lists ``balance_after`` on
@@ -483,13 +498,13 @@ class TestNoCodePathUpdatesABalanceColumn:
         Without this, "no offenders" is indistinguishable from "the regex
         stopped matching", which is how a guard goes quietly dead.
         """
-        assert balance_updates_in(
-            "UPDATE credit_ledger SET balance_after = 5 WHERE id = 1"
-        ) == ["balance_after"]
+        assert balance_updates_in("UPDATE credit_ledger SET balance_after = 5 WHERE id = 1") == [
+            "balance_after"
+        ]
         # Not the first assignment in the SET list.
-        assert balance_updates_in(
-            "UPDATE organization SET name = 'x', credit_balance = 0"
-        ) == ["credit_balance"]
+        assert balance_updates_in("UPDATE organization SET name = 'x', credit_balance = 0") == [
+            "credit_balance"
+        ]
         # Multi-line, as real SQL in this repo is written.
         assert balance_updates_in(
             'conn.execute(text("""\n'
@@ -501,18 +516,201 @@ class TestNoCodePathUpdatesABalanceColumn:
     def test_the_fence_does_not_fire_on_the_live_near_miss(self):
         # infra/postgres/42_email_model_roles.sql really does contain this. A
         # fence that flags it gets deleted by the first person it annoys.
-        assert balance_updates_in(
-            "UPDATE email_assistant_settings SET chat_model = 'tier-balanced'"
-        ) == []
+        assert (
+            balance_updates_in("UPDATE email_assistant_settings SET chat_model = 'tier-balanced'")
+            == []
+        )
 
     def test_the_column_fence_is_not_blind(self):
-        assert _BALANCE_COLUMN.findall(
-            "    balance_after   NUMERIC(14, 4),"
-        ) == ["balance_after"]
+        assert _BALANCE_COLUMN.findall("    balance_after   NUMERIC(14, 4),") == ["balance_after"]
         assert _BALANCE_COLUMN.findall(
             "ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS balance NUMERIC"
         ) == ["balance"]
         # The word in prose, or in a comment, is not a column.
-        assert _BALANCE_COLUMN.findall(
-            "-- Balance is SUM(delta); there is no balance column to update."
-        ) == []
+        assert (
+            _BALANCE_COLUMN.findall(
+                "-- Balance is SUM(delta); there is no balance column to update."
+            )
+            == []
+        )
+
+
+# ── The usage partition (credit_pricing.md §3, slice 1) ─────────────────────
+#
+# 🔴 **The fourth expensive failure mode, added 2026-09-04.** `cached_tokens`
+# is a SUBSET of `prompt_tokens` under the OpenAI-compatible convention and a
+# SIBLING of them under the Anthropic one. `fresh_prompt_tokens` subtracts,
+# which is right for the first and wrong for the second — and it used to clamp
+# the result at zero, so the wrong answer never reached anybody.
+
+class TestUsagePartition:
+    """A cached count larger than the prompt total must refuse, never clamp."""
+
+    def test_a_sibling_convention_report_refuses_instead_of_undercharging(self):
+        """The measured 27 % undercharge, now an exception.
+
+        These are the numbers from the specification: one real call of 8000
+        prompt tokens with a 6000-token cached prefix. Reported as a sibling
+        the prompt total reads 2000, and the old clamp billed 183.60 credits
+        where 251.60 was owed.
+        """
+        with pytest.raises(UsagePartitionError) as exc:
+            TokenUsage(prompt_tokens=2000, cached_tokens=6000,
+                       completion_tokens=800)
+        # The message must name BOTH counts. An alarm that says only "bad
+        # usage" cannot be triaged against the row it came from.
+        assert "6000" in str(exc.value)
+        assert "2000" in str(exc.value)
+
+    def test_the_subset_convention_still_prices_exactly_as_before(self):
+        """⚠️ The guard must not move a single legitimate number.
+
+        This is the same 8000/6000/800 call read correctly. It is the
+        regression fence on the whole change: if this figure moves, the assert
+        has started charging people differently rather than refusing the
+        impossible.
+        """
+        usage = TokenUsage(prompt_tokens=8000, cached_tokens=6000,
+                           completion_tokens=800)
+        assert usage.fresh_prompt_tokens == 2000
+        card = RateCard(
+            model="deepseek/deepseek-v4-pro",
+            input_per_1m=Decimal("34000"),
+            cached_input_per_1m=Decimal("3400"),
+            output_per_1m=Decimal("204000"),
+            pricing_mode="priced",
+        )
+        assert quantize_credits(rate_call(card, usage)) == Decimal("251.6000")
+
+    def test_equal_counts_are_legal(self):
+        """A fully cached prompt is ordinary, not an error. Fresh is zero."""
+        usage = TokenUsage(prompt_tokens=6000, cached_tokens=6000)
+        assert usage.fresh_prompt_tokens == 0
+
+    def test_no_cached_count_is_legal(self):
+        """The common case: a provider that reports no cache at all."""
+        assert TokenUsage(prompt_tokens=8000).fresh_prompt_tokens == 8000
+
+
+# ── The unbilled fleet read (credit_pricing.md §3, migrations 023 and 025) ──
+
+
+class TestTheUnbilledFleetRead:
+    """🔴 A leak bills ZERO, and a zero sorts off a spend-ordered page.
+
+    So the operator's total cannot come from the page. `usage_by_org` orders
+    by credits descending and caps at `SPEND_PAGE_SIZE`; an unbilled call
+    contributes no credits by definition, which puts the leaking organization
+    LAST. The worse the leak, the more certainly it hides.
+
+    Measured 2026-09-05 on a scratch database: two organizations with a
+    faulted call sat past position 5900 of 5988, and the page summed to zero
+    while the fleet held two.
+    """
+
+    def test_the_read_is_uncapped_and_takes_no_limit(self):
+        """The property, read off the signature.
+
+        A `limit` here would re-introduce the bug: whatever the bound, the
+        leaking organization is the one it drops.
+        """
+        import inspect
+
+        from customer_console import store
+
+        params = inspect.signature(store.unbilled_fleet_total).parameters
+        assert "limit" not in params, (
+            "unbilled_fleet_total must not take a limit — a leak bills zero "
+            "and a capped read drops exactly the row it exists to find"
+        )
+        assert set(params) == {"conn", "days"}
+
+    def test_it_counts_organizations_AND_calls(self):
+        """One customer with 400 leaks is a broken integration. 400 customers
+        with one each is a broken provider. One number cannot say which."""
+        import inspect
+
+        from customer_console import store
+
+        src = inspect.getsource(store.unbilled_fleet_total)
+        assert "COUNT(DISTINCT organization_id)" in src
+        assert "COUNT(*)" in src
+
+    def test_it_reads_metering_fault_and_never_refusal_reason(self):
+        """⚠️ The two are opposites and the SQL must not confuse them.
+
+        A refusal is a customer we said no to — they got nothing and owe
+        nothing. A fault is a customer we said yes to and did not charge.
+        """
+        import inspect
+
+        from customer_console import store
+
+        src = inspect.getsource(store.unbilled_fleet_total)
+        assert "metering_fault IS NOT NULL" in src
+        assert "refusal_reason" not in src
+
+
+# ── The per-operation floor (credit_pricing.md §5.4, slice 5) ───────────────
+
+
+class TestTheChargeFloor:
+    """🔴 The floor exists to cover overhead, and `tier-embed` must escape it.
+
+    One embedding costs a fraction of a credit. A five-credit floor per call
+    charges **50000 credits to index 10000 documents** against perhaps 200
+    credits of real value — a 250x overcharge on the one task a customer runs
+    in bulk by design.
+    """
+
+    def test_it_SHIPS_INERT_and_the_owner_arms_it(self, monkeypatch):
+        """⚠️ The mechanism is an agent's. The FIGURE is the owner's (H-42).
+
+        The first build of this slice shipped it at 5 and turned thirteen
+        suites red, each one the floor working correctly on a number nobody
+        had agreed to.
+        """
+        from customer_console import credits as c
+
+        monkeypatch.delenv(c.MIN_CHARGE_ENV, raising=False)
+        assert c.min_charge() == 0
+        assert c.floor_charge(Decimal("0.4"), task="chat") == Decimal("0.4")
+
+    def test_once_armed_it_floors_a_tiny_charge(self, monkeypatch):
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal("0.4"), task="chat") == Decimal(5)
+        assert c.floor_charge(Decimal("423"), task="chat") == Decimal("423")
+
+    def test_EMBED_is_exempt_even_when_armed(self, monkeypatch):
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal("0.4"), task="embed") == Decimal("0.4")
+
+    def test_the_exemption_is_keyed_on_the_TASK_not_the_tier(self):
+        """⚠️ D61 makes tiers free text and tasks an allowlist.
+
+        A second embedding tier would silently lose the exemption if this read
+        a tier slug.
+        """
+        from customer_console import credits as c
+
+        assert c.NO_MIN_CHARGE_TASKS == frozenset({"embed"})
+
+    def test_a_ZERO_stays_zero_even_when_armed(self, monkeypatch):
+        """⚠️ An absorbed task (D19.2) and an unpriced card both rate to
+        nothing on purpose. Lifting either to five credits invents a charge."""
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal(0), task="chat") == 0
+
+    def test_a_broken_value_reads_as_ZERO_and_never_raises(self, monkeypatch):
+        """A misconfigured floor must not fail completions."""
+        from customer_console import credits as c
+
+        for bad in ("banana", "-5", ""):
+            monkeypatch.setenv(c.MIN_CHARGE_ENV, bad)
+            assert c.min_charge() == 0, bad

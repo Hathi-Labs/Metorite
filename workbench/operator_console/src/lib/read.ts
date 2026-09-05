@@ -35,6 +35,7 @@ import {
   type Deps,
 } from "./console";
 import { OWED, SAMPLE_CATALOG } from "./sample";
+import { timesThousand } from "./scale";
 import { type Sourced, resolve } from "./source";
 
 // ── The live wire shapes, named so the mapping below reads as a mapping ─────
@@ -55,6 +56,18 @@ type WireCatalog = {
     vendor_per_minute_usd?: string | null;
     vendor_per_character_usd?: string | null;
     vendor_per_image_usd?: string | null;
+    // 023 — the window and the context tier. Optional for the same reason
+    // the per-unit costs are: a Console still mid-rollout answers without
+    // them, and R6 says old code must meet new schema without breaking.
+    vendor_input_offpeak_per_1m_usd?: string | null;
+    vendor_output_offpeak_per_1m_usd?: string | null;
+    vendor_cached_input_offpeak_per_1m_usd?: string | null;
+    offpeak_start_utc?: string | null;
+    offpeak_end_utc?: string | null;
+    context_tier_threshold?: number | null;
+    vendor_input_long_per_1m_usd?: string | null;
+    vendor_output_long_per_1m_usd?: string | null;
+    vendor_cached_input_long_per_1m_usd?: string | null;
     description: string;
     reads_images: boolean;
     thinks_first: boolean;
@@ -91,7 +104,21 @@ type WireCatalog = {
     input_per_1k: string;
     output_per_1k: string;
     cached_input_per_1k: string;
+    // 024 release one — the per-MILLION scale. Optional, because this app and
+    // the Console deploy apart and a Console that predates the release sends
+    // only the per-thousand fields.
+    input_per_1m?: string;
+    output_per_1m?: string;
+    cached_input_per_1m?: string;
     credits_per_unit: string;
+  }[];
+  // 028 — per-tier margin. Absent from a Console still mid-rollout.
+  tier_margins?: {
+    tier: string; calls: number; costed_calls: number;
+    credits: string; cost_usd: string;
+    margin_multiplier: string | null;
+    margin_floor: string | null;
+    realised_margin: string | null;
   }[];
   // 017 — the credit's own price. Absent from a Console still mid-rollout.
   credit_price?: {
@@ -208,6 +235,21 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
         perMinuteUsd: num(p?.vendor_per_minute_usd ?? null),
         perCharacterUsd: num(p?.vendor_per_character_usd ?? null),
         perImageUsd: num(p?.vendor_per_image_usd ?? null),
+        // 023 — the off-peak rates and the window that selects them. The
+        // three fields above are the PEAK rates and keep their plain names.
+        inputOffpeakPer1M: num(p?.vendor_input_offpeak_per_1m_usd ?? null),
+        outputOffpeakPer1M: num(p?.vendor_output_offpeak_per_1m_usd ?? null),
+        cachedInputOffpeakPer1M: num(
+          p?.vendor_cached_input_offpeak_per_1m_usd ?? null,
+        ),
+        // ⚠️ NOT `num()`. These are `HH:MM`, and a number parse would turn
+        // 16:30 into 16 and lose the half hour without erroring.
+        offpeakStartUtc: p?.offpeak_start_utc ?? null,
+        offpeakEndUtc: p?.offpeak_end_utc ?? null,
+        contextTierThreshold: p?.context_tier_threshold ?? null,
+        inputLongPer1M: num(p?.vendor_input_long_per_1m_usd ?? null),
+        outputLongPer1M: num(p?.vendor_output_long_per_1m_usd ?? null),
+        cachedInputLongPer1M: num(p?.vendor_cached_input_long_per_1m_usd ?? null),
         description: p?.description ?? "",
         declared: true,
       };
@@ -293,7 +335,28 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     inputPer1k: r.input_per_1k,
     outputPer1k: r.output_per_1k,
     cachedInputPer1k: r.cached_input_per_1k,
+    // 🔴 The scale of record (migration 025). ⚠️ The fallback is for a Console
+    // that has not shipped release one yet — this app and that service deploy
+    // apart, so new code can legitimately meet an old wire. Without it the
+    // board would draw a blank price where a real one exists.
+    inputPer1m: r.input_per_1m ?? timesThousand(r.input_per_1k),
+    outputPer1m: r.output_per_1m ?? timesThousand(r.output_per_1k),
+    cachedInputPer1m:
+      r.cached_input_per_1m ?? timesThousand(r.cached_input_per_1k),
     creditsPerUnit: r.credits_per_unit,
+  }));
+
+  const tierMargins = (w.tier_margins ?? []).map((m) => ({
+    tier: m.tier,
+    calls: m.calls,
+    costedCalls: m.costed_calls,
+    credits: m.credits,
+    costUsd: m.cost_usd,
+    // ⚠️ `?? null`, never `String(...)`. A null must stay null — `String(null)`
+    // is "null", which would draw as a number.
+    marginMultiplier: m.margin_multiplier ?? null,
+    marginFloor: m.margin_floor ?? null,
+    realisedMargin: m.realised_margin ?? null,
   }));
 
   const failovers = (w.failovers ?? []).map((f) => ({
@@ -335,7 +398,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
 
   return {
     tasks: w.tasks, models, rates, tiers, accounts: [], accountsKnown: true,
-    failovers, feed, tierRates,
+    failovers, feed, tierRates, tierMargins,
     creditPrice: w.credit_price
       ? {
           inrPerCredit: w.credit_price.inr_per_credit,

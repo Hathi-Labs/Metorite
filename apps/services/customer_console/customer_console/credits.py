@@ -14,6 +14,7 @@ deterministic bookkeeping — count tokens, multiply by a rate, decrement a
 balance, write a row. The only judgement call is the rate card, which is a
 business decision made once by a human (§3.5).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,14 +22,21 @@ from decimal import ROUND_HALF_UP, Decimal
 
 __all__ = [
     "CREDIT_QUANTUM",
+    "DEFAULT_MIN_CHARGE",
+    "MIN_CHARGE_ENV",
+    "NO_MIN_CHARGE_TASKS",
     "LEDGER_REASONS",
     "LEDGER_REASON_ADJUSTMENT",
     "LEDGER_REASON_DISCOUNT_REDEMPTION",
     "LEDGER_REASON_GRANT",
+    "LEDGER_REASON_HOLD",
     "LEDGER_REASON_MANUAL",
     "LEDGER_REASON_PURCHASE",
+    "LEDGER_REASON_RELEASE",
+    "LEDGER_REASON_SETTLE",
     "LEDGER_REASON_USAGE",
     "OverdraftPolicy",
+    "HoldEstimate",
     "RateCard",
     "RunCeiling",
     "SpendDecision",
@@ -39,6 +47,9 @@ __all__ = [
     "decide_member_cap",
     "decide_run_ceiling",
     "decide_spend",
+    "estimate_hold",
+    "floor_charge",
+    "min_charge",
     "quantize_credits",
     "rate_call",
 ]
@@ -78,6 +89,30 @@ LEDGER_REASON_GRANT = "grant"
 #: all say `'manual'` for exactly this activation.
 LEDGER_REASON_MANUAL = "manual"
 
+# ── The hold cycle (migration 027, `credit_pricing.md` §5) ──────────────────
+#
+# 🔴 **Three rows for one call, and the third is what makes a crash safe.**
+#
+#     hold     -1792   reserved before the call, at the WORST case
+#     settle    -423   the real charge, written with the usage row
+#     release  +1792   the reservation given back
+#
+# Net: -423. A single mutable "reserved" column cannot survive a process that
+# dies between the provider answering and the meter running — the credits stay
+# reserved with nothing to reconcile them against. Three append-only rows leave
+# the ledger consistent at every point.
+#
+# ⚠️ All three carry the REQUEST ID as `ref`, so
+# `credit_ledger_reason_ref_unique` makes each one idempotent for free. A
+# retried request re-inserts nothing and re-charges nothing.
+
+#: Credits reserved before the provider is called. Always negative.
+LEDGER_REASON_HOLD = "hold"
+#: The real charge, written in the same transaction as the usage row.
+LEDGER_REASON_SETTLE = "settle"
+#: The reservation, given back. Always positive, always equal to its hold.
+LEDGER_REASON_RELEASE = "release"
+
 #: Every reason a ledger row may carry. Fenced structurally by
 #: ``test_customer_console_payments.py`` over the CALL SITES of
 #: ``store.add_credit`` — a real fence in this slice, because it reads code
@@ -85,14 +120,19 @@ LEDGER_REASON_MANUAL = "manual"
 #: pairwise distinguishable is scoped to when packs land: the subscription path
 #: writes zero ledger rows today, and a test over an empty table passes for the
 #: wrong reason — the disarmed-gate shape CP-3 already cost us once.)
-LEDGER_REASONS: frozenset[str] = frozenset({
-    LEDGER_REASON_USAGE,
-    LEDGER_REASON_PURCHASE,
-    LEDGER_REASON_DISCOUNT_REDEMPTION,
-    LEDGER_REASON_ADJUSTMENT,
-    LEDGER_REASON_GRANT,
-    LEDGER_REASON_MANUAL,
-})
+LEDGER_REASONS: frozenset[str] = frozenset(
+    {
+        LEDGER_REASON_USAGE,
+        LEDGER_REASON_PURCHASE,
+        LEDGER_REASON_DISCOUNT_REDEMPTION,
+        LEDGER_REASON_ADJUSTMENT,
+        LEDGER_REASON_GRANT,
+        LEDGER_REASON_MANUAL,
+        LEDGER_REASON_HOLD,
+        LEDGER_REASON_SETTLE,
+        LEDGER_REASON_RELEASE,
+    }
+)
 
 #: The smallest amount the ledger can represent: ``credit_ledger.delta`` and
 #: ``usage_event.billed_credits`` are both ``NUMERIC(14, 4)``.
@@ -117,6 +157,171 @@ def quantize_credits(credits: Decimal) -> Decimal:
     return credits.quantize(CREDIT_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+@dataclass(frozen=True)
+class HoldEstimate:
+    """What to reserve before a call, and why that number.
+
+    ``credits`` is what the hold takes. ``reason`` explains the shape it was
+    computed for, so an operator reading a large hold can see whether it was a
+    worst case or an exact figure.
+    """
+
+    credits: Decimal
+    reason: str
+
+    @property
+    def is_exact(self) -> bool:
+        """A deterministic job needs no release — the hold IS the charge."""
+        return self.reason == "exact"
+
+
+def estimate_hold(
+    card: RateCard | TierRate,
+    *,
+    prompt_tokens: int,
+    max_output_tokens: int,
+    quantity: Decimal | None = None,
+) -> HoldEstimate:
+    """Credits to reserve before the provider is called.
+
+    🔴 **Three cost shapes, and forcing them through one path is the mistake
+    this function exists to avoid** (`credit_pricing.md` §5.2).
+
+    * **Deterministic** — a transcription's duration is a property of the file,
+      so the charge is knowable before the call. Reserve exactly it, and no
+      release is owed. Audio is EASIER than text here, not harder.
+    * **Variable** — a chat completion's output length is unknowable, so
+      reserve the worst case on both sides.
+
+    ⚠️ **The worst case rates at the UNCACHED rate, always.** Assuming a cache
+    hit makes the hold too small, and a hold too small is an organization that
+    goes negative on the settle — which is the whole failure this reserve
+    exists to prevent. The cache discount reaches the customer at settle time,
+    where it is measured rather than hoped for.
+
+    ⚠️ **An unpriced card holds ZERO and does not raise.** The card ships
+    unpriced (H-42), and a reserve that refused every call until somebody
+    priced the slate would take the product down rather than protect it.
+    Pricing is what turns this on.
+    """
+    if not card.is_priced:
+        return HoldEstimate(Decimal(0), "unpriced")
+
+    if card.unit != "tokens":
+        if quantity is None:
+            # Nothing measured the quantity, so nothing can reserve for it.
+            # `rate_call` refuses this case at settle time and the metering
+            # caller downgrades it to "bill zero, loudly" — holding zero keeps
+            # those two answers consistent.
+            return HoldEstimate(Decimal(0), "unmeasured")
+        return HoldEstimate(
+            quantize_credits(quantity * card.credits_per_unit), "exact"
+        )
+
+    million = Decimal(1_000_000)
+    worst = (
+        Decimal(max(prompt_tokens, 0)) / million * card.input_per_1m
+        + Decimal(max(max_output_tokens, 0)) / million * card.output_per_1m
+    )
+    return HoldEstimate(quantize_credits(worst), "worst_case")
+
+
+#: The environment variable the owner sets to arm the floor.
+MIN_CHARGE_ENV = "CUSTOMER_CONSOLE_MIN_CHARGE_CREDITS"
+
+#: 🔴 **SHIPS AT ZERO, which means the floor is inert until the owner sets
+#: it** (`credit_pricing.md` §5.4). A two-token classification call rates to a
+#: fraction of a credit and does not cover the overhead of serving it — but
+#: *how much* an operation must cover is a commercial number, and §2 of the
+#: specification puts every commercial number behind H-42.
+#:
+#: ⚠️ **The first build of this slice shipped it at 5 and it changed real
+#: bills.** Thirteen suites went red because their fixtures price in fractions
+#: of a credit, and each one was the floor working correctly on a number
+#: nobody had agreed to. The mechanism is an agent's to build. The figure is
+#: the owner's to choose, exactly as the rate card ships unpriced and the
+#: spend gate ships off.
+DEFAULT_MIN_CHARGE = Decimal(0)
+
+
+def min_charge() -> Decimal:
+    """The floor in force, from the environment. Zero unless the owner set it.
+
+    Read per call rather than at import, so a rotation takes effect without a
+    restart — the idiom `_spend_gate_enabled` already uses.
+
+    ⚠️ An unparseable or negative value reads as ZERO rather than raising. A
+    misconfigured floor must not fail completions, and zero is the shipped
+    state it falls back to.
+    """
+    import os
+
+    raw = os.environ.get(MIN_CHARGE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MIN_CHARGE
+    try:
+        value = Decimal(raw)
+    except (ArithmeticError, ValueError):
+        return DEFAULT_MIN_CHARGE
+    return value if value > 0 else DEFAULT_MIN_CHARGE
+
+#: 🔴 **Tasks the floor must NEVER touch, and this is not a nicety.**
+#:
+#: One embedding costs a fraction of a credit. A five-credit floor per call
+#: would charge **50000 credits to index 10000 documents** against perhaps 200
+#: credits of real value — a 250x overcharge, on the one task a customer runs
+#: in bulk by design. §3.4 of the design document names it in terms.
+#:
+#: ⚠️ **Keyed on the TASK and never on the tier.** D61 makes tiers free text
+#: and tasks an allowlist, so a second embedding tier — `tier-embed-fast`, a
+#: customer-specific slate — would silently lose the exemption if this read a
+#: tier slug. The task is the durable axis.
+#:
+#: ⚠️ The exemption is not "embeddings are free". `tier-embed` still rates and
+#: still bills what it rates. It is only the FLOOR that does not apply, because
+#: the floor assumes one call is one human action and an index is not.
+NO_MIN_CHARGE_TASKS: frozenset[str] = frozenset({"embed"})
+
+
+def floor_charge(credits: Decimal, *, task: str) -> Decimal:
+    """Apply the per-operation floor, or refuse to for a bulk task.
+
+    ⚠️ **A ZERO stays ZERO.** An absorbed task (D19.2) and an unpriced card
+    both rate to nothing on purpose, and lifting either to five credits would
+    invent a charge nobody agreed to. The floor exists to round a real but tiny
+    charge up to something that covers its overhead — not to mint one.
+    """
+    if credits <= 0:
+        return credits
+    if task in NO_MIN_CHARGE_TASKS:
+        return credits
+    return max(credits, min_charge())
+
+
+class UsagePartitionError(Exception):
+    """Raised when cached tokens cannot be a subset of the prompt total.
+
+    🔴 **The billing code treats ``cached_tokens`` as a SUBSET of
+    ``prompt_tokens``, and one of the two vendor conventions disagrees.**
+    OpenAI-compatible providers report the cached count *inside*
+    ``prompt_tokens``. Anthropic-style providers report it *beside* them. The
+    subtraction in :attr:`TokenUsage.fresh_prompt_tokens` is right for the
+    first convention and wrong for the second.
+
+    ⚠️ **This used to clamp at zero, and that was a silent undercharge.**
+    Measured 2026-09-04 against `tier-balanced`: the same real call billed
+    251.60 credits read as a subset and 183.60 credits read as a sibling — 27 %
+    less, with no error and no log line. `prompt=100 cached=99999` was accepted
+    and billed 340 credits.
+
+    We refuse rather than guess. Re-normalising on a hunch bills the customer
+    wrong in the other direction, and a wrong bill nobody can explain is worse
+    than a call we admit we could not meter. ``usage_event.cache_convention``
+    records which field the count came from, so the fleet can be MEASURED
+    before anybody decides to re-normalise.
+    """
+
+
 class UnpricedModel(Exception):
     """Raised when a model has no usable rate-card entry.
 
@@ -133,7 +338,7 @@ class UnpricedModel(Exception):
 
 @dataclass(frozen=True)
 class RateCard:
-    """Credits per 1,000 tokens for one model, as of one ``effective_from``.
+    """Credits per MILLION tokens for one model, as of one ``effective_from``.
 
     Versioned by ``effective_from`` in the table so a re-price never rewrites
     history: rating happens once, at write time, and a past invoice is never
@@ -141,9 +346,9 @@ class RateCard:
     """
 
     model: str
-    input_per_1k: Decimal
-    output_per_1k: Decimal
-    cached_input_per_1k: Decimal = Decimal(0)
+    input_per_1m: Decimal
+    output_per_1m: Decimal
+    cached_input_per_1m: Decimal = Decimal(0)
     #: Which task this card prices. A model can serve several, at different
     #: rates and in different units (D60).
     task: str = "chat"
@@ -185,7 +390,7 @@ class RateCard:
 
 @dataclass(frozen=True)
 class TierRate:
-    """Credits per unit for one (TIER, task) — what a CUSTOMER pays. D67.
+    """Credits per MILLION tokens for one (TIER, task) — what a CUSTOMER pays.
 
     🔴 **The card the metering path bills against since 2026-08-30.** The
     tier is the product and the model is supply, so the customer's price is
@@ -198,9 +403,9 @@ class TierRate:
     """
 
     tier: str
-    input_per_1k: Decimal
-    output_per_1k: Decimal
-    cached_input_per_1k: Decimal = Decimal(0)
+    input_per_1m: Decimal
+    output_per_1m: Decimal
+    cached_input_per_1m: Decimal = Decimal(0)
     task: str = "chat"
     unit: str = "tokens"
     credits_per_unit: Decimal = Decimal(0)
@@ -235,10 +440,30 @@ class TokenUsage:
     #: precisely the thing prompt caching was sold to them as saving.
     cached_tokens: int = 0
 
+    def __post_init__(self) -> None:
+        """Assert the partition. See :class:`UsagePartitionError` for why.
+
+        ⚠️ **On the dataclass, not in ``rate_call``.** Every path that meters —
+        the completion route, the stream relay, the per-unit tasks — builds one
+        of these, so the check placed here cannot be forgotten by a caller that
+        arrives later. A check in the pricing function would miss the BYOK path,
+        which zero-rates the bill and still records the counters.
+        """
+        if self.cached_tokens > self.prompt_tokens:
+            raise UsagePartitionError(
+                f"cached_tokens ({self.cached_tokens}) exceeds prompt_tokens "
+                f"({self.prompt_tokens}); cached must be a subset of the "
+                "prompt total, so this call cannot be metered"
+            )
+
     @property
     def fresh_prompt_tokens(self) -> int:
-        """Prompt tokens that were NOT served from cache. Clamped at zero."""
-        return max(0, self.prompt_tokens - self.cached_tokens)
+        """Prompt tokens that were NOT served from cache.
+
+        ⚠️ **No clamp.** ``__post_init__`` has already refused the case a clamp
+        would have hidden, so a negative here is impossible by construction.
+        """
+        return self.prompt_tokens - self.cached_tokens
 
 
 def rate_call(
@@ -271,16 +496,25 @@ def rate_call(
 
     if not card.is_priced:
         raise UnpricedModel(
-            f"{card.subject}/{card.task} has no rate-card price; "
-            "refusing to bill it as free"
+            f"{card.subject}/{card.task} has no rate-card price; refusing to bill it as free"
         )
 
     if card.unit == "tokens":
-        thousand = Decimal(1000)
+        # 🔴 A MILLION, not a thousand (migration 025, owner directive
+        # 2026-09-04). Every vendor quotes per million, so the card now speaks
+        # the same unit as the cost it is derived from — and a reader comparing
+        # the two no longer has to carry a factor of 1000 in their head.
+        #
+        # ⚠️ The divisor and the field name must move TOGETHER. A card holding
+        # per-million numbers divided by a thousand overcharges by 1000, which
+        # is a bill nobody could mistake for a rounding error and nobody could
+        # defend. `test_customer_console_credits.py` pins one exact figure for
+        # exactly this reason.
+        million = Decimal(1_000_000)
         return (
-            Decimal(usage.fresh_prompt_tokens) / thousand * card.input_per_1k
-            + Decimal(usage.cached_tokens) / thousand * card.cached_input_per_1k
-            + Decimal(usage.completion_tokens) / thousand * card.output_per_1k
+            Decimal(usage.fresh_prompt_tokens) / million * card.input_per_1m
+            + Decimal(usage.cached_tokens) / million * card.cached_input_per_1m
+            + Decimal(usage.completion_tokens) / million * card.output_per_1m
         )
 
     if quantity is None:
@@ -289,8 +523,7 @@ def rate_call(
         # metering caller downgrades this to "bill zero, loudly" — visibly,
         # where somebody can see it.
         raise UnpricedModel(
-            f"{card.subject}/{card.task} is priced per {card.unit} "
-            "and no quantity was measured"
+            f"{card.subject}/{card.task} is priced per {card.unit} and no quantity was measured"
         )
 
     return Decimal(quantity) * card.credits_per_unit
@@ -387,11 +620,7 @@ def decide_spend(
     of AI credits will not top up, they will churn.
     """
     policy = policy or OverdraftPolicy()
-    grace = (
-        policy.grace_credits
-        if (not is_trial or policy.grace_for_trial)
-        else Decimal(0)
-    )
+    grace = policy.grace_credits if (not is_trial or policy.grace_for_trial) else Decimal(0)
     projected = balance - cost
 
     if projected < -grace:

@@ -114,6 +114,32 @@ export type CatalogModel = {
   perMinuteUsd: number | null;
   perCharacterUsd: number | null;
   perImageUsd: number | null;
+  /** The OFF-PEAK token rates (migration 024). NULL means this vendor charges
+   *  one rate all day, which is every model but DeepSeek's two.
+   *
+   * ⚠️ **`inputPer1M` above is the PEAK rate.** It keeps its plain name
+   *  because R6 forbids a rename in place, and the vendor feed already fills
+   *  it with the peak number.
+   *
+   * ⚠️ These change what a call COST us and never what a customer pays. D67
+   *  keys the charge on the tier. A tier PRICE derives from the peak rate
+   *  always — owner directive, 2026-09-04 — so no suggestion on this board
+   *  may read an off-peak number. */
+  inputOffpeakPer1M: number | null;
+  outputOffpeakPer1M: number | null;
+  cachedInputOffpeakPer1M: number | null;
+  /** When the off-peak window opens and closes, `HH:MM` in UTC. Both or
+   *  neither. The range MAY wrap midnight, and DeepSeek's does (16:30 to
+   *  00:30), so anything that reads these must handle start > end. */
+  offpeakStartUtc: string | null;
+  offpeakEndUtc: string | null;
+  /** Prompt tokens above which the long-context rates apply, and those rates.
+   *  NULL means one rate at every size. Without them a large document
+   *  under-bills by half, on exactly the calls that cost most. */
+  contextTierThreshold: number | null;
+  inputLongPer1M: number | null;
+  outputLongPer1M: number | null;
+  cachedInputLongPer1M: number | null;
   description: string;
   /** A `model_capability` row exists, so the Router will accept it. */
   declared: boolean;
@@ -185,11 +211,44 @@ export type TierRate = {
   unit: string;
   /** `priced`, `absorbed` or `unpriced` — same G-4 vocabulary. */
   mode: string;
-  /** Money as the STRINGS the Console sent. */
+  /** Money as the STRINGS the Console sent.
+   *
+   * ⚠️ **The per-1k fields are the OLD scale** (migration 025, release one of
+   *  two). Both scales cross the wire while the Console and this app deploy
+   *  apart, and a later release removes them. Read `…Per1m` in new code. */
   inputPer1k: string;
   outputPer1k: string;
   cachedInputPer1k: string;
+  /** 🔴 The scale of record from 2026-09-04 (owner directive). Every vendor
+   *  quotes per million, so the card now speaks the same unit as the cost it
+   *  is derived from — and a reader comparing the two carries no factor of
+   *  1000 in their head. */
+  inputPer1m: string;
+  outputPer1m: string;
+  cachedInputPer1m: string;
   creditsPerUnit: string;
+};
+
+/** What one tier actually earned, against the floor it was given (029).
+ *
+ * 🔴 **`realisedMargin` is NULL until the operator saves a credit price**, and
+ *  NULL is NEUTRAL. No saved price means no margin, not a bad one — a zero
+ *  would read as "we are selling at cost", which is a claim nobody made. */
+export type TierMargin = {
+  tier: string;
+  calls: number;
+  /** How many of those calls carry a MEASURED cost. The context that stops
+   *  `realisedMargin` reading as authority it does not have. */
+  costedCalls: number;
+  credits: string;
+  costUsd: string;
+  /** What we multiply cost by to SUGGEST a price. NULL means the owner has
+   *  set none, which is the shipped state — `tier_margin` ships empty. */
+  marginMultiplier: string | null;
+  /** The realised margin below which somebody should look, as a FRACTION.
+   *  NULL means no floor, and a tier with no floor never alarms. */
+  marginFloor: string | null;
+  realisedMargin: string | null;
 };
 
 export type ModelRate = {
@@ -329,6 +388,9 @@ export type AiCatalog = {
   feed: VendorFeed;
   /** What customers pay, per (tier, job) — D67. The card billing reads. */
   tierRates: TierRate[];
+  /** Per-tier realised margin against its floor (029). Empty from a Console
+   *  that predates the read — which is NOT "no tiers", and the board says so. */
+  tierMargins: TierMargin[];
   /** The credit's own rupee price — null until the owner sets it (H-42). */
   creditPrice: CreditPrice | null;
 };
@@ -336,5 +398,6 @@ export type AiCatalog = {
 export const EMPTY_CATALOG: AiCatalog = {
   tasks: [], models: [], rates: [], tiers: [], accounts: [],
   accountsKnown: true, failovers: [], feed: EMPTY_FEED, tierRates: [],
+  tierMargins: [],
   creditPrice: null,
 };

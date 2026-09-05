@@ -34,6 +34,25 @@ export type OrgUsageRow = {
    * than saying nothing did: `silent` switched off and no other signal
    * switched on. Refusals with no calls is the row support wants. */
   refusals: number;
+  /** 🔴 **Calls this customer RECEIVED that we did not bill** (migrations 023
+   *  and 025). The meter failed, so we absorbed the cost rather than send a
+   *  number we could not defend.
+   *
+   * ⚠️ **This is not a refusal.** A refusal is a customer we said no to. This
+   *  is a customer we said YES to and then did not charge — they hold their
+   *  completion and we hold the vendor's bill. What is missing is our money,
+   *  never their service.
+   *
+   * ⚠️ It is deliberately a COUNT and a token total, never an estimate of the
+   *  money. Estimating the charge is the exact defect the partition assert
+   *  exists to stop, and doing it here would be that defect wearing a
+   *  different hat. */
+  unbilledCalls: number;
+  /** The tokens those calls consumed. ⚠️ Zero on an unreadable row BY
+   *  DEFINITION — we could not read them — so a large count beside a small
+   *  token total is itself the signal that the provider's SHAPE broke, not
+   *  our arithmetic. */
+  unbilledTokens: number;
 };
 
 export type UsageDay = { day: string; calls: number; credits: string };
@@ -175,4 +194,31 @@ export function usageHeadline(rows: OrgUsageRow[]): string {
   if (walled) parts.push(`${walled} walled`);
   if (silent) parts.push(`${silent} silent`);
   return `${parts.join(" · ")}.`;
+}
+
+
+/** Does this organization hold unbilled consumption?
+ *
+ * 🔴 **One call is enough to show it.** A leak is not a threshold problem: an
+ * unbilled call means a provider shape we cannot read or counts we cannot
+ * trust, and both get WORSE with volume rather than better. Waiting for a
+ * round number to react is how the original silent undercharge survived. */
+export function hasUnbilled(row: Pick<OrgUsageRow, "unbilledCalls">): boolean {
+  return (row.unbilledCalls ?? 0) > 0;
+}
+
+/** The fleet total, for the banner. Counts organizations AND calls, because
+ *  "one customer, 400 calls" and "400 customers, one call each" are different
+ *  problems and a single number hides which one you have. */
+export function unbilledTotals(rows: OrgUsageRow[]): {
+  orgs: number;
+  calls: number;
+  tokens: number;
+} {
+  const hit = rows.filter(hasUnbilled);
+  return {
+    orgs: hit.length,
+    calls: hit.reduce((n, r) => n + (r.unbilledCalls ?? 0), 0),
+    tokens: hit.reduce((n, r) => n + (r.unbilledTokens ?? 0), 0),
+  };
 }

@@ -21,6 +21,9 @@ import {
   readKeys,
   readLedger,
   ledgerAdds,
+  readCreditLots,
+  LOT_SOURCE_LABEL,
+  type CreditLot,
   type MemberRow,
   type KeyRow,
   type LedgerRow,
@@ -45,6 +48,13 @@ type Loaded = {
   plansError: string | null;
   /** The org's roster with seat state (LS-9). Empty when none arrived. */
   members: MemberRow[];
+  /** What the balance is MADE OF (migration 028), in the order lots burn.
+   *
+   * ⚠️ **`undefined` means the Console sent no `credit_lots` key**, which is a
+   *  Console predating the migration. That is NOT "this customer has no lots",
+   *  and the panel says which it is rather than drawing an empty table over a
+   *  missing feature. */
+  lots?: CreditLot[];
   /**
    * Why the roster is empty, or null when it arrived.
    *
@@ -98,6 +108,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         plansError: null,
         members: [],
         membersError: null,
+        lots: undefined,
         keys: [],
         keysError: null,
         ledger: [],
@@ -111,11 +122,16 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       catRes.status === 200 ? (JSON.parse(catRes.body) as Catalog).plans : [];
     let members: MemberRow[] = [];
     let membersError: string | null = null;
+    // 022/027 — where the balance came from. `undefined` means a Console that
+    // predates migration 028 and is NOT the same as "this customer has none".
+    let lots: CreditLot[] | undefined;
     if (sumRes.status !== 200) {
       membersError = `The summary read returned ${sumRes.status}.`;
     } else {
       try {
-        members = readMembers(JSON.parse(sumRes.body));
+        const body = JSON.parse(sumRes.body);
+        members = readMembers(body);
+        lots = readCreditLots(body);
       } catch {
         membersError = "The summary read could not be parsed.";
       }
@@ -159,6 +175,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       plansError: plansNotice(catRes.status, plans.length),
       members,
       membersError,
+      lots,
       keys,
       keysError,
       ledger,
@@ -195,7 +212,7 @@ export default async function CustomerDetailPage({
 
   const { slug } = await params;
   const {
-    org, plans, plansError, members, membersError, keys, keysError,
+    org, plans, plansError, members, membersError, lots, keys, keysError,
     ledger, ledgerError, error,
   } = await loadOrg(slug, gate.authToken);
 
@@ -311,6 +328,13 @@ export default async function CustomerDetailPage({
         <div className="stat">
           <div className="lbl">AI credits</div>
           <div className="num small-num">{org.credit_balance}</div>
+          {/* 🔴 The balance is one number and cannot say what it cost or when
+              it lapses. The panel below breaks it down. */}
+          {lots !== undefined && lots.length > 0 && (
+            <div className="muted small">
+              {lots.length} {lots.length === 1 ? "lot" : "lots"}
+            </div>
+          )}
         </div>
         <div className="stat">
           <div className="lbl">Dates</div>
@@ -321,6 +345,66 @@ export default async function CustomerDetailPage({
           </div>
         </div>
       </div>
+
+      {/* ── Where the credits came from (migration 028, §6) ──────────── */}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Credit lots</h2>
+          <p>
+            What this balance is <strong>made of</strong> — what each lot cost,
+            where it came from, and when it lapses. They burn in the order
+            shown: soonest to expire first, and free before paid, so a customer
+            never loses credits they bought.
+          </p>
+        </div>
+        {lots === undefined ? (
+          /* ⚠️ NOT an empty table. A Console predating migration 028 sends no
+             `credit_lots` key at all, and drawing zero rows over a missing
+             feature would read as "this customer has none". */
+          <p className="field-hint warn">
+            This Console does not report credit lots yet. The balance above is
+            still correct — nothing here can say what it cost or when it
+            expires until the Console ships migration 028.
+          </p>
+        ) : lots.length === 0 ? (
+          <p className="field-hint">
+            No lots with credits left. Every lot this customer held has been
+            spent, or none was ever recorded — credits granted before migration
+            027 carry no lot, and their history starts from the ledger below.
+          </p>
+        ) : (
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Remaining</th>
+                <th>Of</th>
+                <th>Paid</th>
+                <th>Expires</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lots.map((lot) => (
+                <tr key={lot.id}>
+                  <td>{LOT_SOURCE_LABEL[lot.source] ?? lot.source}</td>
+                  <td className="mono">{lot.remaining}</td>
+                  <td className="mono muted">{lot.credits}</td>
+                  {/* ⚠️ NULL and "0" are DIFFERENT facts and must not draw the
+                      same. Nobody paid, versus somebody paid nothing. */}
+                  <td className={lot.pricePaidInr === null ? "muted" : "mono"}>
+                    {lot.pricePaidInr === null
+                      ? "free"
+                      : `₹${Number(lot.pricePaidInr).toLocaleString("en-IN")}`}
+                  </td>
+                  <td className={lot.expiresAt ? "" : "muted"}>
+                    {lot.expiresAt ? formatDate(lot.expiresAt) : "never"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       {org.seats.length > 1 && (
         <div className="panel">

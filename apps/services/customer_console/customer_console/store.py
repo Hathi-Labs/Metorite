@@ -12,6 +12,7 @@ matching ``lower(col) = :param`` against NULL; a ``LEFT JOIN`` whose ``ON``
 could not see its table). ``tests/unit/test_customer_console_sql.py`` runs all of it
 against a real Postgres and skips loudly when none is configured.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -21,7 +22,17 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from customer_console.credits import LEDGER_REASON_USAGE
+from customer_console.credits import (
+    LEDGER_REASON_ADJUSTMENT,
+    LEDGER_REASON_DISCOUNT_REDEMPTION,
+    LEDGER_REASON_GRANT,
+    LEDGER_REASON_HOLD,
+    LEDGER_REASON_MANUAL,
+    LEDGER_REASON_PURCHASE,
+    LEDGER_REASON_RELEASE,
+    LEDGER_REASON_SETTLE,
+    LEDGER_REASON_USAGE,
+)
 
 __all__ = [
     "activate_subscription",
@@ -91,9 +102,14 @@ __all__ = [
 
 # ── Registry ────────────────────────────────────────────────────────────────
 
+
 def ensure_organization(
-    conn: Connection, *, slug: str, name: str,
-    gstin: str | None = None, billing_state: str | None = None,
+    conn: Connection,
+    *,
+    slug: str,
+    name: str,
+    gstin: str | None = None,
+    billing_state: str | None = None,
 ) -> str:
     """Create the organization, or return the existing one with that slug.
 
@@ -112,15 +128,13 @@ def ensure_organization(
             RETURNING id
             """
         ),
-        {"slug": slug, "name": name, "gstin": gstin,
-         "billing_state": billing_state},
+        {"slug": slug, "name": name, "gstin": gstin, "billing_state": billing_state},
     ).first()
     assert row is not None  # guaranteed by DO UPDATE
     return str(row[0])
 
 
-def ensure_identity(conn: Connection, *, email: str,
-                    display_name: str | None = None) -> str:
+def ensure_identity(conn: Connection, *, email: str, display_name: str | None = None) -> str:
     """Create the global identity for a human, or return the existing one.
 
     ``email`` is CITEXT, so ``Ada@Corp.com`` and ``ada@corp.com`` are one
@@ -147,8 +161,10 @@ def ensure_identity(conn: Connection, *, email: str,
 
 # ── Seats ───────────────────────────────────────────────────────────────────
 
-def grant_seats(conn: Connection, *, org_id: str, plan_slug: str,
-                quantity: int, reason: str | None = None) -> None:
+
+def grant_seats(
+    conn: Connection, *, org_id: str, plan_slug: str, quantity: int, reason: str | None = None
+) -> None:
     """Record a seat purchase (or, with a negative quantity, a reduction)."""
     conn.execute(
         text(
@@ -162,8 +178,9 @@ def grant_seats(conn: Connection, *, org_id: str, plan_slug: str,
     )
 
 
-def seat_rows(conn: Connection, *, org_id: str, plan_slug: str,
-              now: datetime | None = None) -> tuple[list[int], int]:
+def seat_rows(
+    conn: Connection, *, org_id: str, plan_slug: str, now: datetime | None = None
+) -> tuple[list[int], int]:
     """Return ``(grant quantities in effect, live assignment count)``.
 
     The time filter is ``effective_from <= :now`` with ``:now`` supplied by the
@@ -198,8 +215,7 @@ def seat_rows(conn: Connection, *, org_id: str, plan_slug: str,
     return grants, int(assigned)
 
 
-def lock_seat_capacity(conn: Connection, *, org_id: str,
-                       plan_slug: str) -> None:
+def lock_seat_capacity(conn: Connection, *, org_id: str, plan_slug: str) -> None:
     """Serialise the capacity decision for one ``(org, plan)`` pair.
 
     ⚠️ **Without this, the seat cap is check-then-insert and the check does not
@@ -232,8 +248,7 @@ def lock_seat_capacity(conn: Connection, *, org_id: str,
     )
 
 
-def has_live_seat(conn: Connection, *, org_id: str, plan_slug: str,
-                  identity_id: str) -> bool:
+def has_live_seat(conn: Connection, *, org_id: str, plan_slug: str, identity_id: str) -> bool:
     return bool(
         conn.execute(
             text(
@@ -248,8 +263,9 @@ def has_live_seat(conn: Connection, *, org_id: str, plan_slug: str,
     )
 
 
-def try_assign_seat(conn: Connection, *, org_id: str, plan_slug: str,
-                    identity_id: str, source: str = "alacarte") -> bool:
+def try_assign_seat(
+    conn: Connection, *, org_id: str, plan_slug: str, identity_id: str, source: str = "alacarte"
+) -> bool:
     """Assign a seat. Returns False when the member already holds one.
 
     The ``ON CONFLICT`` clause names the *partial* unique index by repeating its
@@ -273,14 +289,12 @@ def try_assign_seat(conn: Connection, *, org_id: str, plan_slug: str,
             RETURNING id
             """
         ),
-        {"org": org_id, "plan": plan_slug, "identity": identity_id,
-         "source": source},
+        {"org": org_id, "plan": plan_slug, "identity": identity_id, "source": source},
     ).first()
     return row is not None
 
 
-def release_seat(conn: Connection, *, org_id: str, plan_slug: str,
-                 identity_id: str) -> bool:
+def release_seat(conn: Connection, *, org_id: str, plan_slug: str, identity_id: str) -> bool:
     """Release a seat, freeing it immediately. Returns False if none was held.
 
     Sets ``released_at`` rather than deleting the row: who held which seat when
@@ -339,8 +353,7 @@ def active_plans(conn: Connection) -> list[dict[str, Any]]:
     this module never becomes a second place money changes denomination.
     """
     return [
-        {"slug": r[0], "name": r[1], "kind": r[2], "price_inr": r[3],
-         "sort_order": r[4]}
+        {"slug": r[0], "name": r[1], "kind": r[2], "price_inr": r[3], "sort_order": r[4]}
         for r in conn.execute(
             text(
                 """
@@ -355,6 +368,7 @@ def active_plans(conn: Connection) -> list[dict[str, Any]]:
 
 
 # ── Credits and usage ───────────────────────────────────────────────────────
+
 
 def credit_deltas(conn: Connection, *, org_id: str) -> list[Decimal]:
     """Every ledger delta for the org. Balance is their sum, never a column."""
@@ -395,21 +409,478 @@ def run_spend(conn: Connection, *, org_id: str, run_id: str) -> Decimal:
     return Decimal(total)
 
 
-def add_credit(conn: Connection, *, org_id: str, delta: Decimal,
-               reason: str, ref: str | None = None) -> None:
+#: Which lot a ledger reason opens when credits arrive.
+#:
+#: 🔴 **A reason absent from this map opens NO lot, and two absences are
+#: deliberate.** `release` returns a reservation the customer already owned —
+#: it is not new credits and a lot for it would double-count. `hold` is its
+#: negative twin and never reaches this map at all.
+#:
+#: ⚠️ `manual` maps to `purchase` because it IS one: a paid term settled by
+#: bank transfer. It keeps its own LEDGER word so a bank settlement stays
+#: distinguishable from a processor capture, and that distinction lives in the
+#: ledger where a dispute reads it. The LOT answers a different question —
+#: did somebody pay for these — and the answer there is yes.
+_LOT_SOURCE_FOR_REASON: dict[str, str] = {
+    LEDGER_REASON_PURCHASE: "purchase",
+    LEDGER_REASON_MANUAL: "purchase",
+    LEDGER_REASON_DISCOUNT_REDEMPTION: "promo",
+    LEDGER_REASON_GRANT: "grant",
+    LEDGER_REASON_ADJUSTMENT: "grant",
+}
+
+#: Which reasons CONSUME credits, so a charge draws down the lots it spent.
+#:
+#: ⚠️ **`hold` is NOT here, and that is the whole distinction.** A hold is a
+#: reservation: the credits are unavailable but they are not spent, and drawing
+#: a lot down for one would consume value the customer may never use. Only the
+#: settle spends.
+_LOT_DRAWING_REASONS: frozenset[str] = frozenset({LEDGER_REASON_USAGE})
+
+
+def add_credit(
+    conn: Connection,
+    *,
+    org_id: str,
+    delta: Decimal,
+    reason: str,
+    ref: str | None = None,
+    price_paid_inr: Decimal | None = None,
+    expires_at: Any | None = None,
+) -> None:
+    """Write ONE ledger row, and keep the lots in step with it.
+
+    🔴 **The lot bookkeeping lives HERE, in the one ledger writer, and not at
+    the three call sites that grant credits.** A future fourth site would
+    otherwise arrive without lots and nobody would notice until a refund could
+    not be computed. `credit_pricing.md` §6 says the lot explains the balance,
+    and it can only do that if the two are written together.
+
+    ⚠️ **The balance is still `SUM(delta)`.** Nothing here changes what an
+    organization holds. A lot records what the credits COST and when they
+    LAPSE, and `draw_from_lots` records which of them a charge spent.
+    """
+    lot_id: int | None = None
+    if delta > 0:
+        source = _LOT_SOURCE_FOR_REASON.get(reason)
+        if source is not None:
+            lot_id = add_credit_lot(
+                conn,
+                org_id=org_id,
+                source=source,
+                credits=delta,
+                price_paid_inr=price_paid_inr,
+                expires_at=expires_at,
+            )
+    elif delta < 0 and reason in _LOT_DRAWING_REASONS:
+        drawn = draw_from_lots(conn, org_id=org_id, credits=-delta)
+        # ⚠️ The FIRST lot the charge touched. A charge that spans several is
+        # recorded fully in `credit_lot.credits_used`; this column names where
+        # it started, so a human reading one ledger row has somewhere to look.
+        lot_id = drawn[0]["lot_id"] if drawn else None
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO credit_ledger (organization_id, delta, reason, ref, lot_id)
+            VALUES (:org, :delta, :reason, :ref, :lot_id)
+            """
+        ),
+        {
+            "org": org_id,
+            "delta": delta,
+            "reason": reason,
+            "ref": ref,
+            "lot_id": lot_id,
+        },
+    )
+
+
+class HoldRefused(Exception):
+    """The balance could not cover this reservation."""
+
+    def __init__(self, needed: Decimal, balance: Decimal) -> None:
+        super().__init__(
+            f"needs {needed} credits, balance is {balance}"
+        )
+        self.needed = needed
+        self.balance = balance
+
+
+def place_hold(
+    conn: Connection,
+    *,
+    org_id: str,
+    request_id: str,
+    credits: Decimal,
+    floor: Decimal = Decimal(0),
+) -> bool:
+    """Reserve credits before the provider is called. ATOMIC.
+
+    🔴 **The lock is the whole point** (`credit_pricing.md` §5.3). Balance is
+    ``SUM(delta)``, not a column, so there is nothing to update and nothing to
+    contend on. Two calls arriving together therefore each read the same
+    balance, each pass the check, and the organization goes negative by the
+    size of the second one — under exactly the load where the gate matters.
+
+    ``SELECT ... FOR UPDATE`` on the ORGANIZATION row serialises the pair. The
+    second transaction blocks until the first commits, then reads a balance
+    that already carries the first hold.
+
+    ⚠️ **The organization row is the lock, not a balance row.** There is no
+    balance row to lock, and inventing one would be a second source of truth
+    for a number the ledger already defines — the exact mistake `balance_of`
+    exists to prevent.
+
+    ⚠️ **A zero hold writes NO row and answers True.** The card ships unpriced,
+    so every hold is zero until somebody prices the slate. A zero-delta row is
+    noise in the one table a customer reads during a dispute, and refusing on
+    zero would take the product down.
+
+    Returns True when the reservation is in place. Raises :class:`HoldRefused`
+    when the balance cannot cover it.
+    """
+    if credits <= 0:
+        return True
+
+    # The lock. Nothing reads this row's contents — taking it IS the effect.
+    conn.execute(
+        text("SELECT id FROM organization WHERE id = CAST(:org AS uuid) FOR UPDATE"),
+        {"org": org_id},
+    )
+    balance = conn.execute(
+        text(
+            "SELECT COALESCE(SUM(delta), 0) FROM credit_ledger "
+            "WHERE organization_id = CAST(:org AS uuid)"
+        ),
+        {"org": org_id},
+    ).scalar_one()
+    if Decimal(balance) - credits < -floor:
+        raise HoldRefused(credits, Decimal(balance))
+
+    # ⚠️ ON CONFLICT DO NOTHING, so a retried request re-reserves nothing.
+    # `credit_ledger_reason_ref_unique` carries the idempotency already.
     conn.execute(
         text(
             """
             INSERT INTO credit_ledger (organization_id, delta, reason, ref)
-            VALUES (:org, :delta, :reason, :ref)
+            VALUES (CAST(:org AS uuid), :delta, :reason, :ref)
+            ON CONFLICT (organization_id, reason, ref)
+                WHERE ref IS NOT NULL DO NOTHING
             """
         ),
-        {"org": org_id, "delta": delta, "reason": reason, "ref": ref},
+        {
+            "org": org_id,
+            "delta": -credits,
+            "reason": LEDGER_REASON_HOLD,
+            "ref": request_id,
+        },
+    )
+    return True
+
+
+def release_hold(
+    conn: Connection, *, org_id: str, request_id: str
+) -> Decimal:
+    """Give a reservation back. Idempotent. Returns what was released.
+
+    ⚠️ **Reads the hold's OWN delta rather than being told the number.** A
+    caller that passed the amount could pass a different one than it reserved,
+    and the ledger would then carry a release that does not match its hold —
+    a discrepancy nobody could explain and no constraint would catch.
+    """
+    held = conn.execute(
+        text(
+            "SELECT delta FROM credit_ledger "
+            "WHERE organization_id = CAST(:org AS uuid) "
+            "  AND reason = :reason AND ref = :ref"
+        ),
+        {"org": org_id, "reason": LEDGER_REASON_HOLD, "ref": request_id},
+    ).scalar_one_or_none()
+    if held is None or Decimal(held) == 0:
+        return Decimal(0)
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO credit_ledger (organization_id, delta, reason, ref)
+            VALUES (CAST(:org AS uuid), :delta, :reason, :ref)
+            ON CONFLICT (organization_id, reason, ref)
+                WHERE ref IS NOT NULL DO NOTHING
+            """
+        ),
+        {
+            "org": org_id,
+            # The hold is negative, so its inverse gives the reservation back.
+            "delta": -Decimal(held),
+            "reason": LEDGER_REASON_RELEASE,
+            "ref": request_id,
+        },
+    )
+    return -Decimal(held)
+
+
+def sweep_orphan_holds(
+    conn: Connection, *, older_than_seconds: int
+) -> list[dict[str, Any]]:
+    """Release every hold whose call never closed it. Returns what it freed.
+
+    🔴 **A crash between the hold and the settle strands credits**
+    (`credit_pricing.md` §5.3 clause 6). The customer cannot spend them and
+    nothing will ever reconcile them, because the request that reserved them
+    is gone.
+
+    ⚠️ **Every release here is logged LOUDLY by the caller**, and that is the
+    point of returning the rows rather than a count. A swept hold means a
+    request path died after reserving credits, and that is a defect report —
+    a sweeper that quietly tidied up would hide the thing it proves.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT h.organization_id::text AS org_id,
+                   h.ref                   AS ref,
+                   h.delta                 AS delta,
+                   h.created_at            AS created_at
+            FROM credit_ledger h
+            WHERE h.reason = :hold
+              AND h.ref IS NOT NULL
+              AND h.created_at < now() - make_interval(secs => :secs)
+              -- Open means no partner row closed it. A settle alone is not
+              -- enough: the release is what gives the reservation back.
+              AND NOT EXISTS (
+                  SELECT 1 FROM credit_ledger r
+                  WHERE r.organization_id = h.organization_id
+                    AND r.ref = h.ref
+                    AND r.reason = :release
+              )
+            ORDER BY h.created_at
+            """
+        ),
+        {
+            "hold": LEDGER_REASON_HOLD,
+            "release": LEDGER_REASON_RELEASE,
+            "secs": older_than_seconds,
+        },
+    ).all()
+
+    freed: list[dict[str, Any]] = []
+    for r in rows:
+        released = release_hold(conn, org_id=r.org_id, request_id=r.ref)
+        if released:
+            freed.append(
+                {
+                    "org_id": r.org_id,
+                    "ref": r.ref,
+                    "credits": released,
+                    "held_since": r.created_at,
+                }
+            )
+    return freed
+
+
+#: Which lot burns first when two share an expiry.
+#:
+#: 🔴 **FREE before PAID, so a customer never loses money they spent.** A trial
+#: grant and a purchased pack expiring the same day are not equivalent: burning
+#: the paid one first means the free one expires unused, and the customer paid
+#: for credits they never got to spend. Both rules here favour the customer,
+#: deliberately — the alternative is a support conversation about credits that
+#: vanished.
+_LOT_FREE_FIRST = ("trial", "promo", "grant")
+
+
+def open_lots(conn: Connection, *, org_id: str) -> list[Any]:
+    """Every lot with credits left, in the order they must burn.
+
+    **Soonest expiry first, then free before paid, then oldest first.**
+
+    ⚠️ **`NULLS LAST` on the expiry, and it is load-bearing.** A lot that never
+    expires must burn LAST, not first: burning it early lets a dated lot reach
+    its expiry unused, which is the exact loss the ordering exists to avoid.
+    A bare `ORDER BY expires_at` puts NULL first in Postgres and inverts the
+    rule.
+    """
+    return list(
+        conn.execute(
+            text(
+                """
+                SELECT id, source, credits, credits_used, price_paid_inr,
+                       expires_at,
+                       (credits - credits_used) AS remaining
+                FROM credit_lot
+                WHERE organization_id = CAST(:org AS uuid)
+                  AND credits_used < credits
+                ORDER BY expires_at ASC NULLS LAST,
+                         (source = ANY(:free)) DESC,
+                         id ASC
+                """
+            ),
+            {"org": org_id, "free": list(_LOT_FREE_FIRST)},
+        ).all()
     )
 
 
-def credit_ref_row(conn: Connection, *, org_id: str, reason: str,
-                   ref: str) -> Any:
+def draw_from_lots(
+    conn: Connection, *, org_id: str, credits: Decimal
+) -> list[dict[str, Any]]:
+    """Allocate a charge across lots, soonest-expiring first.
+
+    Returns what each lot gave, as ``[{"lot_id": .., "credits": ..}, ..]``.
+
+    ⚠️ **This UPDATES a projection and never the balance.** `SUM(delta)` on the
+    ledger stays the authority for what an organization holds. `credits_used`
+    exists so the NEXT draw knows which lot to reach for, and so a report can
+    say what a lot cost.
+
+    ⚠️ **A charge larger than every open lot draws them all and stops.** It
+    does not raise and it does not invent a lot. The hold in §5 is what
+    refuses an unaffordable call, and a second refusal here would fire on the
+    ordinary case where lots simply have not been backfilled yet.
+    """
+    if credits <= 0:
+        return []
+
+    drawn: list[dict[str, Any]] = []
+    left = credits
+    for lot in open_lots(conn, org_id=org_id):
+        if left <= 0:
+            break
+        take = min(left, Decimal(lot.remaining))
+        if take <= 0:
+            continue
+        conn.execute(
+            text(
+                "UPDATE credit_lot SET credits_used = credits_used + :take "
+                "WHERE id = :id"
+            ),
+            {"take": take, "id": lot.id},
+        )
+        drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
+        left -= take
+    return drawn
+
+
+def add_credit_lot(
+    conn: Connection,
+    *,
+    org_id: str,
+    source: str,
+    credits: Decimal,
+    price_paid_inr: Decimal | None = None,
+    expires_at: Any | None = None,
+) -> int:
+    """Record a lot. Returns its id.
+
+    ⚠️ **Writes NO ledger row.** The caller writes the ledger, because the
+    ledger is the balance and this table only explains it. Doing both here
+    would let a lot exist that the balance does not reflect, which is the one
+    inconsistency the "explains, never replaces" rule exists to forbid.
+    """
+    return int(
+        conn.execute(
+            text(
+                """
+                INSERT INTO credit_lot
+                    (organization_id, source, credits, price_paid_inr, expires_at)
+                VALUES (CAST(:org AS uuid), :source, :credits, :price, :expires)
+                RETURNING id
+                """
+            ),
+            {
+                "org": org_id,
+                "source": source,
+                "credits": credits,
+                "price": price_paid_inr,
+                "expires": expires_at,
+            },
+        ).scalar_one()
+    )
+
+
+def margin_by_tier(
+    conn: Connection, *, days: int = 7
+) -> list[dict[str, Any]]:
+    """What each tier actually earned, against the floor it was given.
+
+    🔴 **Grouped by TIER and never by organization.** The question is whether a
+    PRODUCT is priced right, and one customer's mix says nothing about that.
+    An organization-shaped read would also inherit H-76's cap, which drops the
+    quiet rows — and a tier nobody used much is exactly the one whose price
+    nobody has checked.
+
+    ⚠️ **The COSTED slice only.** `SUM` skips a NULL cost, so a ratio of
+    all-calls credits over some-calls cost overstates the margin. `costed_calls`
+    rides along so a reader can see how much of the tier this figure speaks
+    for — the same rule `usage_by_org` already follows.
+
+    ⚠️ **A refusal is not a call and a metering fault is not revenue.** Both
+    are excluded: a refusal billed nothing because we said no, and a fault
+    billed nothing because we could not read the usage. Counting either as a
+    zero-margin call would drag every tier's figure down for reasons that have
+    nothing to do with its price.
+
+    ⚠️ **LEFT JOIN from the catalog**, so a tier with no traffic appears with
+    zeros rather than vanishing. A tier nobody called is a finding, not a gap.
+    """
+    return [
+        {
+            "tier": r.tier,
+            "calls": int(r.calls),
+            "costed_calls": int(r.costed_calls),
+            "credits": Decimal(r.credits),
+            "cost_usd": Decimal(r.cost_usd),
+            "margin_multiplier": r.margin_multiplier,
+            "margin_floor": r.margin_floor,
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT t.slug AS tier,
+                       COUNT(u.id) FILTER (
+                           WHERE u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS calls,
+                       COUNT(u.id) FILTER (
+                           WHERE u.provider_cost_usd IS NOT NULL
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS costed_calls,
+                       COALESCE(SUM(u.billed_credits) FILTER (
+                           WHERE u.provider_cost_usd IS NOT NULL
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ), 0) AS credits,
+                       COALESCE(SUM(u.provider_cost_usd) FILTER (
+                           WHERE u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ), 0) AS cost_usd,
+                       m.margin_multiplier,
+                       m.margin_floor
+                FROM tier_catalog t
+                LEFT JOIN usage_event u
+                       ON u.tier = t.slug
+                      AND u.created_at >= now() - make_interval(days => :days)
+                -- The margin in force: newest row whose date has passed.
+                -- ⚠️ DISTINCT ON in a subquery, because this table is
+                -- INSERT-only and a bare join would return every past
+                -- intention beside the current one.
+                LEFT JOIN (
+                    SELECT DISTINCT ON (tier) tier, margin_multiplier, margin_floor
+                    FROM tier_margin
+                    WHERE effective_from <= now()
+                    ORDER BY tier, effective_from DESC
+                ) m ON m.tier = t.slug
+                GROUP BY t.slug, t.sort_order, m.margin_multiplier, m.margin_floor
+                ORDER BY t.sort_order, t.slug
+                """
+            ),
+            {"days": days},
+        ).all()
+    ]
+
+
+def credit_ref_row(conn: Connection, *, org_id: str, reason: str, ref: str) -> Any:
     """The EARLIEST ledger row carrying this (reason, ref), or None.
 
     🔴 The manual-payment fence: an operator crediting a bank transfer types
@@ -431,26 +902,28 @@ def credit_ref_row(conn: Connection, *, org_id: str, reason: str,
     ).first()
 
 
-def credit_ledger_rows(conn: Connection, *, org_id: str,
-                       limit: int = 50) -> list[Any]:
+def credit_ledger_rows(conn: Connection, *, org_id: str, limit: int = 50) -> list[Any]:
     """The newest ledger rows, for the customer page's history panel.
 
     ⚠️ Deltas leave here as they are stored — the caller stringifies. This
     is the table a customer reads in a dispute, and the operator's view of
     it must be the rows, not a reformatting of them.
     """
-    return list(conn.execute(
-        text(
-            "SELECT delta, reason, ref, created_at FROM credit_ledger "
-            "WHERE organization_id = :org "
-            "ORDER BY created_at DESC, id LIMIT :lim"
-        ),
-        {"org": org_id, "lim": limit},
-    ))
+    return list(
+        conn.execute(
+            text(
+                "SELECT delta, reason, ref, created_at FROM credit_ledger "
+                "WHERE organization_id = :org "
+                "ORDER BY created_at DESC, id LIMIT :lim"
+            ),
+            {"org": org_id, "lim": limit},
+        )
+    )
 
 
-def record_usage(conn: Connection, *, org_id: str, request_id: str,
-                 billed_credits: Decimal, **fields: Any) -> bool:
+def record_usage(
+    conn: Connection, *, org_id: str, request_id: str, billed_credits: Decimal, **fields: Any
+) -> bool:
     """Write one usage event and its ledger draw. Idempotent on ``request_id``.
 
     Returns True when this call was newly recorded, False when this
@@ -484,13 +957,15 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
                 (organization_id, request_id, billed_credits, user_email,
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
-                 task, quantity, unit, served_rank, byok_served, refusal_reason)
+                 task, quantity, unit, served_rank, byok_served, refusal_reason,
+                 metering_fault, cache_convention, window_at_call, context_tier)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
                  :task, :quantity, :unit, :served_rank, :byok_served,
-                 :refusal_reason)
+                 :refusal_reason, :metering_fault, :cache_convention,
+                 :window_at_call, :context_tier)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -526,6 +1001,15 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
             # holds the vocabulary closed, so a fourth slug fails here rather
             # than becoming a second name for one wall.
             "refusal_reason": fields.get("refusal_reason"),
+            # ⚠️ NOT a refusal. The call SERVED and only our meter failed, so
+            # the five counting reads that exclude `refusal_reason` must keep
+            # counting this row (`credit_pricing.md` §3.2 clause 3).
+            "metering_fault": fields.get("metering_fault"),
+            "cache_convention": fields.get("cache_convention"),
+            # Migration 024 — WHY the cost is what it is. NULL on a per-unit
+            # job, which has neither dimension.
+            "window_at_call": fields.get("window_at_call"),
+            "context_tier": fields.get("context_tier"),
         },
     ).first()
 
@@ -534,9 +1018,29 @@ def record_usage(conn: Connection, *, org_id: str, request_id: str,
 
     if billed_credits:
         add_credit(
-            conn, org_id=org_id, delta=-billed_credits,
-            reason=LEDGER_REASON_USAGE, ref=request_id,
+            conn,
+            org_id=org_id,
+            delta=-billed_credits,
+            reason=LEDGER_REASON_USAGE,
+            ref=request_id,
         )
+
+    # 🔴 **The RELEASE, in the SAME transaction as the usage row and the
+    # charge** (migration 027, `credit_pricing.md` §5). The hold reserved the
+    # worst case; the line above charged the real number; this gives the
+    # difference back.
+    #
+    # ⚠️ **One transaction, or a crash between the two leaves credits
+    # stranded** — which is the exact state the sweeper exists to repair, and
+    # the point of putting these together is that the sweeper should almost
+    # never have anything to do. `record_usage` already runs inside the
+    # caller's transaction, so this inherits that guarantee rather than
+    # opening a second one.
+    #
+    # ⚠️ A call that reserved nothing releases nothing. `release_hold` reads
+    # the hold's own delta and answers zero when there is no hold, so the
+    # unpriced path — every path today — writes no extra row.
+    release_hold(conn, org_id=org_id, request_id=request_id)
     return True
 
 
@@ -569,7 +1073,10 @@ SPEND_PAGE_SIZE = 100
 
 
 def usage_by_activity(
-    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+    conn: Connection,
+    *,
+    org_id: str,
+    days: int = SPEND_WINDOW_DAYS,
     member: str | None = None,
 ) -> list[dict[str, Any]]:
     """What this organization ran, and what it cost. **Never what it ran ON.**
@@ -615,18 +1122,25 @@ def usage_by_activity(
             LIMIT :lim
             """
         ),
-        {"org": org_id, "days": days, "member": member,
-         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+        {
+            "org": org_id,
+            "days": days,
+            "member": member,
+            "unattributed": UNATTRIBUTED_ACTIVITY,
+            "lim": SPEND_PAGE_SIZE,
+        },
     )
     return [
-        {"activity": r.activity, "calls": int(r.calls),
-         "credits": Decimal(r.credits)}
+        {"activity": r.activity, "calls": int(r.calls), "credits": Decimal(r.credits)}
         for r in total
     ]
 
 
 def usage_by_member(
-    conn: Connection, *, org_id: str, days: int = SPEND_WINDOW_DAYS,
+    conn: Connection,
+    *,
+    org_id: str,
+    days: int = SPEND_WINDOW_DAYS,
 ) -> list[dict[str, Any]]:
     """Per-member cost for one organization — D66 (b), the admin's read.
 
@@ -667,12 +1181,15 @@ def usage_by_member(
             LIMIT :lim
             """
         ),
-        {"org": org_id, "days": days,
-         "unattributed": UNATTRIBUTED_ACTIVITY, "lim": SPEND_PAGE_SIZE},
+        {
+            "org": org_id,
+            "days": days,
+            "unattributed": UNATTRIBUTED_ACTIVITY,
+            "lim": SPEND_PAGE_SIZE,
+        },
     )
     return [
-        {"member": r.member, "calls": int(r.calls), "credits": Decimal(r.credits)}
-        for r in rows
+        {"member": r.member, "calls": int(r.calls), "credits": Decimal(r.credits)} for r in rows
     ]
 
 
@@ -714,9 +1231,7 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
             """
         )
     )
-    return [
-        {"slug": r.slug, "label": r.label, "blurb": r.blurb} for r in rows
-    ]
+    return [{"slug": r.slug, "label": r.label, "blurb": r.blurb} for r in rows]
 
 
 # ── Operator spend reads (WS-31) ────────────────────────────────────────────
@@ -736,6 +1251,47 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 #: 365 points, which is already more than any chart reads usefully, and an
 #: unbounded window lets one request scan the whole table.
 USAGE_MAX_DAYS = 365
+
+
+def unbilled_fleet_total(
+    conn: Connection, *, days: int = SPEND_WINDOW_DAYS
+) -> dict[str, int]:
+    """Consumption we served and did not bill, over EVERY organization.
+
+    🔴 **This read exists because computing it from the page would never
+    fire.** `usage_by_org` sorts by credits descending and caps the page. An
+    unbilled call bills ZERO by definition, so a leaking organization sorts
+    LAST — and a leak is precisely what pushes it there. A banner fed by the
+    page would therefore read "0 unbilled" while the leak ran, and the worse
+    the leak got the more certainly it would hide.
+
+    Measured 2026-09-05 on a scratch database: two organizations with a
+    faulted call sat at position 5900-odd of 5988, one hundred rows past the
+    cap. Same shape as H-76's silent-customer half, same fix — an uncapped
+    read beside the paged one.
+
+    ⚠️ **Counts organizations AND calls.** "One customer, 400 calls" is a
+    broken integration and "400 customers, one call each" is a broken
+    provider. One number cannot say which, and they need different people.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT COUNT(DISTINCT organization_id) AS orgs,
+                   COUNT(*)                        AS calls,
+                   COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+            FROM usage_event
+            WHERE metering_fault IS NOT NULL
+              AND created_at >= now() - make_interval(days => :days)
+            """
+        ),
+        {"days": days},
+    ).one()
+    return {
+        "orgs": int(row.orgs),
+        "calls": int(row.calls),
+        "tokens": int(row.tokens),
+    }
 
 
 def last_seen_by_org(conn: Connection) -> dict[str, Any]:
@@ -762,8 +1318,11 @@ def last_seen_by_org(conn: Connection) -> dict[str, Any]:
 
 
 def usage_by_org(
-    conn: Connection, *, days: int = SPEND_WINDOW_DAYS,
-    limit: int = SPEND_PAGE_SIZE, slug: str | None = None,
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    limit: int = SPEND_PAGE_SIZE,
+    slug: str | None = None,
 ) -> dict[str, Any]:
     """Per-organization AI usage over the window. **Operator-only.**
 
@@ -853,6 +1412,27 @@ def usage_by_org(
                    -- same window, so `calls` and `refusals` are comparable.
                    COUNT(u.id) FILTER
                        (WHERE u.refusal_reason IS NOT NULL) AS refusals,
+                   -- 🔴 **Calls this customer RECEIVED and we did not bill**
+                   -- (migrations 023 and 025). The meter failed, so we chose
+                   -- to absorb the cost rather than send a number we could
+                   -- not defend. That choice is only defensible while it is
+                   -- rare, and until this column nothing measured whether it
+                   -- was — the only trace was a log line.
+                   --
+                   -- ⚠️ NOT a refusal and NOT excluded from `calls`. The
+                   -- customer holds their completion. What is missing is our
+                   -- money, not their service.
+                   COUNT(u.id) FILTER
+                       (WHERE u.metering_fault IS NOT NULL) AS unbilled_calls,
+                   -- The tokens those calls consumed, so the size of the leak
+                   -- is legible rather than just its count. ⚠️ Zero on an
+                   -- `usage_unreadable` row BY DEFINITION — we could not read
+                   -- them — so a large count beside a small token total is
+                   -- itself the signal that the shape, not the arithmetic, is
+                   -- what broke.
+                   COALESCE(SUM(u.prompt_tokens + u.completion_tokens) FILTER
+                       (WHERE u.metering_fault IS NOT NULL), 0)
+                                                         AS unbilled_tokens,
                    COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
                    -- ⚠️ `last_seen` takes NO filter, on purpose. A refusal
                    -- MUST move it — a customer at a wall is a customer who is
@@ -890,6 +1470,11 @@ def usage_by_org(
             "members": int(r.members),
             # A plain count, never money. It is how many times we said no.
             "refusals": int(r.refusals),
+            # 🔴 What this customer used and we did not charge for. A count and
+            # the tokens behind it — never an estimate of the money, because
+            # estimating is the defect migration 023 exists to stop.
+            "unbilled_calls": int(r.unbilled_calls),
+            "unbilled_tokens": int(r.unbilled_tokens),
             "cost_usd": Decimal(r.cost_usd),
             "last_seen": r.last_seen.isoformat() if r.last_seen else None,
         }
@@ -903,15 +1488,20 @@ def usage_by_org(
     # filtered read returns one row, and a total taken over the whole table
     # would make `shown < total` — which the console renders as "1 of 25,959".
     total = conn.execute(
-        text("SELECT count(*) FROM organization "
-             "WHERE CAST(:slug AS TEXT) IS NULL OR slug = CAST(:slug AS TEXT)"),
+        text(
+            "SELECT count(*) FROM organization "
+            "WHERE CAST(:slug AS TEXT) IS NULL OR slug = CAST(:slug AS TEXT)"
+        ),
         {"slug": slug},
     ).scalar_one()
     return {"rows": out, "total": int(total), "shown": len(out)}
 
 
 def usage_daily(
-    conn: Connection, *, days: int = SPEND_WINDOW_DAYS, org_id: str | None = None,
+    conn: Connection,
+    *,
+    days: int = SPEND_WINDOW_DAYS,
+    org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """AI usage per day. One series, two callers.
 
@@ -961,8 +1551,7 @@ def usage_daily(
         {"days": days, "org": org_id},
     )
     return [
-        {"day": r.day.isoformat(), "calls": int(r.calls),
-         "credits": Decimal(r.credits)}
+        {"day": r.day.isoformat(), "calls": int(r.calls), "credits": Decimal(r.credits)}
         for r in rows
     ]
 
@@ -1002,8 +1591,16 @@ def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
 
 # ── Keys ────────────────────────────────────────────────────────────────────
 
-def issue_key(conn: Connection, *, org_id: str, prefix: str, key_hash: str,
-              label: str | None = None, created_by: str | None = None) -> str:
+
+def issue_key(
+    conn: Connection,
+    *,
+    org_id: str,
+    prefix: str,
+    key_hash: str,
+    label: str | None = None,
+    created_by: str | None = None,
+) -> str:
     """Store a freshly minted key. The secret is never passed here — only its hash."""
     row = conn.execute(
         text(
@@ -1014,8 +1611,7 @@ def issue_key(conn: Connection, *, org_id: str, prefix: str, key_hash: str,
             RETURNING id
             """
         ),
-        {"org": org_id, "prefix": prefix, "hash": key_hash,
-         "label": label, "by": created_by},
+        {"org": org_id, "prefix": prefix, "hash": key_hash, "label": label, "by": created_by},
     ).first()
     assert row is not None
     return str(row[0])
@@ -1046,8 +1642,7 @@ def list_keys(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
     forgets to strip it before serialising.
     """
     return [
-        {"prefix": r[0], "label": r[1], "created_at": r[2].isoformat(),
-         "revoked": r[3] is not None}
+        {"prefix": r[0], "label": r[1], "created_at": r[2].isoformat(), "revoked": r[3] is not None}
         for r in conn.execute(
             text(
                 "SELECT prefix, label, created_at, revoked_at FROM llm_api_key "
@@ -1059,8 +1654,13 @@ def list_keys(conn: Connection, *, org_id: str) -> list[dict[str, Any]]:
 
 
 def issue_deployment_key(
-    conn: Connection, *, deployment_id: str, prefix: str, key_hash: str,
-    label: str | None = None, created_by: str | None = None,
+    conn: Connection,
+    *,
+    deployment_id: str,
+    prefix: str,
+    key_hash: str,
+    label: str | None = None,
+    created_by: str | None = None,
     capabilities: list[str] | None = None,
 ) -> str:
     """Store a freshly minted **deployment** key. Only the hash is passed here.
@@ -1086,16 +1686,20 @@ def issue_deployment_key(
             RETURNING id
             """
         ),
-        {"dep": deployment_id, "prefix": prefix, "hash": key_hash,
-         "label": label, "by": created_by, "caps": capabilities},
+        {
+            "dep": deployment_id,
+            "prefix": prefix,
+            "hash": key_hash,
+            "label": label,
+            "by": created_by,
+            "caps": capabilities,
+        },
     ).first()
     assert row is not None
     return str(row[0])
 
 
-def resolve_deployment_key(
-    conn: Connection, *, prefix: str
-) -> tuple[str, str, list[str]] | None:
+def resolve_deployment_key(conn: Connection, *, prefix: str) -> tuple[str, str, list[str]] | None:
     """Look up a live deployment key → ``(deployment_id, key_hash, caps)``.
 
     ``revoked_at IS NULL`` is resolved here rather than left to the caller, for
@@ -1129,6 +1733,7 @@ def resolve_deployment_key(
 # decision between them is a REFUSAL, and a helper that both moved and refused
 # would put that decision at every call site.
 
+
 def deployment_by_label(conn: Connection, *, label: str) -> str | None:
     """The deployment carrying this ``label``, or ``None``.
 
@@ -1161,18 +1766,13 @@ def current_placement(conn: Connection, *, org_id: str) -> str | None:
     caller believing a move happened is worse than the refusal.
     """
     row = conn.execute(
-        text(
-            "SELECT deployment_id FROM org_placement "
-            "WHERE organization_id = :org"
-        ),
+        text("SELECT deployment_id FROM org_placement WHERE organization_id = :org"),
         {"org": org_id},
     ).first()
     return str(row[0]) if row else None
 
 
-def org_owned_by_other(
-    conn: Connection, *, org_id: str, owner_email: str
-) -> bool:
+def org_owned_by_other(conn: Connection, *, org_id: str, owner_email: str) -> bool:
     """True iff the org already has an owner membership held by a DIFFERENT email.
 
     The deployment-key provision arm **creates only, it never joins** (WS-31
@@ -1212,9 +1812,7 @@ def org_owned_by_other(
     )
 
 
-def place_organization(
-    conn: Connection, *, org_id: str, deployment_id: str
-) -> None:
+def place_organization(conn: Connection, *, org_id: str, deployment_id: str) -> None:
     """Place an organization on a deployment. **Never moves one.**
 
     ``ON CONFLICT (organization_id) DO NOTHING``: a re-run is a no-op and
@@ -1302,9 +1900,7 @@ def deployment_visible_orgs(
     ]
 
 
-def add_invited_member(
-    conn: Connection, *, org_id: str, identity_id: str
-) -> tuple[bool, str]:
+def add_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> tuple[bool, str]:
     """Create an ``invited`` membership if the org has none for this identity.
 
     CP-2f / D50.2 — the ONLY member-add writer besides ``provision``'s founder
@@ -1359,9 +1955,7 @@ def add_invited_member(
     return False, str(existing)
 
 
-def activate_invited_member(
-    conn: Connection, *, org_id: str, identity_id: str
-) -> bool:
+def activate_invited_member(conn: Connection, *, org_id: str, identity_id: str) -> bool:
     """Promote an ``invited`` membership to ``active``. Returns whether it moved.
 
     D50.3 — *"first sign-in auto-activates an invited member"*, driven from the
@@ -1486,6 +2080,7 @@ def live_seats_by_email(conn: Connection, *, org_id: str) -> dict[str, list[str]
 
 # ── Operator Console: the cross-org read (§4.1a / CP-8) ─────────────────────
 
+
 def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
     """Every organization with the numbers the Operator Console renders (§4.1a).
 
@@ -1535,9 +2130,10 @@ def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
     so the ``slug`` tie-break is not decoration (``active_plans`` makes the same
     argument for its own ordering).
     """
-    orgs = conn.execute(
-        text(
-            """
+    orgs = (
+        conn.execute(
+            text(
+                """
             SELECT o.id, o.slug, o.name, o.status, o.export_until,
                    o.created_at,
                    s.status AS sub_status, s.trial_ends_at, s.provider,
@@ -1552,8 +2148,11 @@ def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
             ) c ON c.organization_id = o.id
             ORDER BY o.created_at, o.slug
             """
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     grants: dict[tuple[str, str], list[int]] = {}
     for r in conn.execute(
@@ -1624,6 +2223,7 @@ def cross_org_summary(conn: Connection) -> list[dict[str, Any]]:
 # functions a test can run without a database. This module puts the integers in
 # and takes them out.
 
+
 def priced_plan(conn: Connection, *, plan_slug: str) -> dict[str, Any] | None:
     """A catalog row a checkout may sell, or ``None``.
 
@@ -1634,23 +2234,25 @@ def priced_plan(conn: Connection, *, plan_slug: str) -> dict[str, Any] | None:
     eventually sells R&D Center.
     """
     row = conn.execute(
-        text(
-            "SELECT slug, kind, price_inr FROM plan_catalog "
-            "WHERE slug = :slug AND active"
-        ),
+        text("SELECT slug, kind, price_inr FROM plan_catalog WHERE slug = :slug AND active"),
         {"slug": plan_slug},
     ).first()
-    return (
-        {"slug": row[0], "kind": row[1], "price_inr": row[2]}
-        if row else None
-    )
+    return {"slug": row[0], "kind": row[1], "price_inr": row[2]} if row else None
 
 
 def create_order(
-    conn: Connection, *, org_id: str, provider: str,
-    gross_paise: int, discount_paise: int, taxable_paise: int,
-    gst_paise: int, total_paise: int, gst_split: str,
-    customer_gstin: str | None, place_of_supply: str | None,
+    conn: Connection,
+    *,
+    org_id: str,
+    provider: str,
+    gross_paise: int,
+    discount_paise: int,
+    taxable_paise: int,
+    gst_paise: int,
+    total_paise: int,
+    gst_split: str,
+    customer_gstin: str | None,
+    place_of_supply: str | None,
     expires_in_minutes: int,
     lines: list[dict[str, Any]],
 ) -> str:
@@ -1668,9 +2270,10 @@ def create_order(
     an expiry the app believes in but the database does not is a bug that only
     appears near the boundary.
     """
-    order_id = str(conn.execute(
-        text(
-            """
+    order_id = str(
+        conn.execute(
+            text(
+                """
             INSERT INTO payment_order
                 (organization_id, provider, gross_paise, discount_paise,
                  taxable_paise, gst_paise, total_paise, gst_split,
@@ -1681,13 +2284,22 @@ def create_order(
                  now() + make_interval(mins => :ttl))
             RETURNING id
             """
-        ),
-        {"org": org_id, "provider": provider, "gross": gross_paise,
-         "discount": discount_paise, "taxable": taxable_paise,
-         "gst": gst_paise, "total": total_paise, "split": gst_split,
-         "gstin": customer_gstin, "pos": place_of_supply,
-         "ttl": expires_in_minutes},
-    ).scalar_one())
+            ),
+            {
+                "org": org_id,
+                "provider": provider,
+                "gross": gross_paise,
+                "discount": discount_paise,
+                "taxable": taxable_paise,
+                "gst": gst_paise,
+                "total": total_paise,
+                "split": gst_split,
+                "gstin": customer_gstin,
+                "pos": place_of_supply,
+                "ttl": expires_in_minutes,
+            },
+        ).scalar_one()
+    )
 
     for line in lines:
         conn.execute(
@@ -1698,15 +2310,17 @@ def create_order(
                 VALUES (:order, :plan, :qty, :unit)
                 """
             ),
-            {"order": order_id, "plan": line["plan_slug"],
-             "qty": line["quantity"], "unit": line["unit_price_paise"]},
+            {
+                "order": order_id,
+                "plan": line["plan_slug"],
+                "qty": line["quantity"],
+                "unit": line["unit_price_paise"],
+            },
         )
     return order_id
 
 
-def set_provider_order_id(
-    conn: Connection, *, order_id: str, provider_order_id: str
-) -> None:
+def set_provider_order_id(conn: Connection, *, order_id: str, provider_order_id: str) -> None:
     """Record the provider's id for an order we just created there."""
     conn.execute(
         text("UPDATE payment_order SET provider_order_id = :p WHERE id = :i"),
@@ -1770,9 +2384,7 @@ def _order_dict(row: Any) -> dict[str, Any]:
     }
 
 
-def order_row(
-    conn: Connection, *, order_id: str, org_id: str
-) -> dict[str, Any] | None:
+def order_row(conn: Connection, *, order_id: str, org_id: str) -> dict[str, Any] | None:
     """One order, **scoped to the owning organization** (CP-9 §9.3(7)).
 
     ``organization_id`` is part of the predicate rather than something the
@@ -1782,8 +2394,9 @@ def order_row(
     a membership oracle over other tenants' order ids.
     """
     row = conn.execute(
-        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
-             "WHERE id = :id AND organization_id = :org"),
+        text(
+            f"SELECT {_ORDER_COLUMNS} FROM payment_order WHERE id = :id AND organization_id = :org"
+        ),
         {"id": order_id, "org": org_id},
     ).first()
     return _order_dict(row) if row else None
@@ -1806,29 +2419,28 @@ def order_for_update(
     """
     scope = " AND organization_id = :org" if org_id is not None else ""
     row = conn.execute(
-        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
-             f"WHERE id = :id{scope} FOR UPDATE"),
-        {"id": order_id, "org": org_id} if org_id is not None
-        else {"id": order_id},
+        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order WHERE id = :id{scope} FOR UPDATE"),
+        {"id": order_id, "org": org_id} if org_id is not None else {"id": order_id},
     ).first()
     return _order_dict(row) if row else None
 
 
-def order_by_provider_id(
-    conn: Connection, *, provider_order_id: str
-) -> dict[str, Any] | None:
+def order_by_provider_id(conn: Connection, *, provider_order_id: str) -> dict[str, Any] | None:
     """The order a webhook is about, row-locked. ``None`` when we do not know it."""
     row = conn.execute(
-        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order "
-             "WHERE provider_order_id = :p FOR UPDATE"),
+        text(f"SELECT {_ORDER_COLUMNS} FROM payment_order WHERE provider_order_id = :p FOR UPDATE"),
         {"p": provider_order_id},
     ).first()
     return _order_dict(row) if row else None
 
 
 def orders_page(
-    conn: Connection, *, org_id: str, limit: int,
-    status: str | None = None, cursor: str | None = None,
+    conn: Connection,
+    *,
+    org_id: str,
+    limit: int,
+    status: str | None = None,
+    cursor: str | None = None,
 ) -> list[dict[str, Any]]:
     """One page of an organization's orders, newest first.
 
@@ -1868,8 +2480,7 @@ def order_lines(conn: Connection, *, order_id: str) -> list[dict[str, Any]]:
     make that branch N round trips.
     """
     return [
-        {"plan_slug": r[0], "quantity": int(r[1]),
-         "unit_price_paise": int(r[2]), "kind": r[3]}
+        {"plan_slug": r[0], "quantity": int(r[1]), "unit_price_paise": int(r[2]), "kind": r[3]}
         for r in conn.execute(
             text(
                 "SELECT l.plan_slug, l.quantity, l.unit_price_paise, p.kind "
@@ -1882,9 +2493,7 @@ def order_lines(conn: Connection, *, order_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def set_order_status(
-    conn: Connection, *, order_id: str, status: str, terminal: bool
-) -> None:
+def set_order_status(conn: Connection, *, order_id: str, status: str, terminal: bool) -> None:
     """Write a state the caller has already checked against the graph.
 
     ``terminal`` is passed in rather than derived here, so the terminal set
@@ -1937,8 +2546,12 @@ def lock_org_activation(conn: Connection, *, org_id: str) -> None:
 
 
 def activate_subscription(
-    conn: Connection, *, org_id: str, term_months: int,
-    provider: str | None, provider_customer_id: str | None,
+    conn: Connection,
+    *,
+    org_id: str,
+    term_months: int,
+    provider: str | None,
+    provider_customer_id: str | None,
     provider_subscription_id: str | None,
 ) -> None:
     """Start (or renew) the purchased term.
@@ -1980,15 +2593,23 @@ def activate_subscription(
                 updated_at = now()
             """
         ),
-        {"org": org_id, "months": term_months, "provider": provider,
-         "customer": provider_customer_id,
-         "subscription": provider_subscription_id},
+        {
+            "org": org_id,
+            "months": term_months,
+            "provider": provider,
+            "customer": provider_customer_id,
+            "subscription": provider_subscription_id,
+        },
     )
 
 
 def record_payment_event(
-    conn: Connection, *, provider_event_id: str, order_id: str | None,
-    kind: str, body: str,
+    conn: Connection,
+    *,
+    provider_event_id: str,
+    order_id: str | None,
+    kind: str,
+    body: str,
 ) -> bool:
     """Record one verified delivery. **False when we have seen this id before.**
 
@@ -2011,15 +2632,12 @@ def record_payment_event(
             RETURNING provider_event_id
             """
         ),
-        {"eid": provider_event_id, "order": order_id, "kind": kind,
-         "body": body},
+        {"eid": provider_event_id, "order": order_id, "kind": kind, "body": body},
     ).first()
     return row is not None
 
 
-def capture_provider_refs(
-    conn: Connection, *, order_id: str
-) -> dict[str, Any]:
+def capture_provider_refs(conn: Connection, *, order_id: str) -> dict[str, Any]:
     """Provider identifiers from the newest capture event for this order.
 
     Read from ``payment_event.body`` rather than carried through the call
@@ -2046,11 +2664,20 @@ def capture_provider_refs(
 
 # ── Discount codes (SC-4g) ──────────────────────────────────────────────────
 
+
 def issue_discount_code(
-    conn: Connection, *, prefix: str, code_hash: str, label: str,
-    kind: str, org_id: str | None = None, percent_bp: int | None = None,
-    amount_paise: int | None = None, max_redemptions: int = 1,
-    expires_at: datetime | None = None, created_by: str = "operator",
+    conn: Connection,
+    *,
+    prefix: str,
+    code_hash: str,
+    label: str,
+    kind: str,
+    org_id: str | None = None,
+    percent_bp: int | None = None,
+    amount_paise: int | None = None,
+    max_redemptions: int = 1,
+    expires_at: datetime | None = None,
+    created_by: str = "operator",
 ) -> str:
     """Store a freshly minted code. The secret is never passed here.
 
@@ -2070,17 +2697,24 @@ def issue_discount_code(
             RETURNING id
             """
         ),
-        {"prefix": prefix, "hash": code_hash, "label": label, "org": org_id,
-         "kind": kind, "bp": percent_bp, "amount": amount_paise,
-         "max": max_redemptions, "expires": expires_at, "by": created_by},
+        {
+            "prefix": prefix,
+            "hash": code_hash,
+            "label": label,
+            "org": org_id,
+            "kind": kind,
+            "bp": percent_bp,
+            "amount": amount_paise,
+            "max": max_redemptions,
+            "expires": expires_at,
+            "by": created_by,
+        },
     ).first()
     assert row is not None
     return str(row[0])
 
 
-def resolve_discount_code(
-    conn: Connection, *, prefix: str
-) -> dict[str, Any] | None:
+def resolve_discount_code(conn: Connection, *, prefix: str) -> dict[str, Any] | None:
     """Look up a code by its clear prefix. Returns the row, judges nothing.
 
     ⚠️ Deliberately **no** filtering on ``expires_at``/``revoked_at`` here,
@@ -2108,15 +2742,17 @@ def resolve_discount_code(
     if row is None:
         return None
     return {
-        "id": str(row.id), "prefix": row.prefix, "code_hash": row.code_hash,
+        "id": str(row.id),
+        "prefix": row.prefix,
+        "code_hash": row.code_hash,
         "label": row.label,
-        "organization_id": (str(row.organization_id)
-                            if row.organization_id else None),
-        "kind": row.kind, "percent_bp": row.percent_bp,
-        "amount_paise": (int(row.amount_paise)
-                         if row.amount_paise is not None else None),
+        "organization_id": (str(row.organization_id) if row.organization_id else None),
+        "kind": row.kind,
+        "percent_bp": row.percent_bp,
+        "amount_paise": (int(row.amount_paise) if row.amount_paise is not None else None),
         "max_redemptions": int(row.max_redemptions),
-        "expired": bool(row.expired), "revoked": bool(row.revoked),
+        "expired": bool(row.expired),
+        "revoked": bool(row.revoked),
     }
 
 
@@ -2146,16 +2782,23 @@ def count_redemptions(conn: Connection, *, code_id: str) -> int:
     The same append-only argument ``credit_ledger`` makes: the count and the
     evidence for it are the same rows, so they cannot disagree.
     """
-    return int(conn.execute(
-        text("SELECT count(*) FROM discount_redemption "
-             "WHERE discount_code_id = :c"),
-        {"c": code_id},
-    ).scalar_one())
+    return int(
+        conn.execute(
+            text("SELECT count(*) FROM discount_redemption WHERE discount_code_id = :c"),
+            {"c": code_id},
+        ).scalar_one()
+    )
 
 
 def write_redemption(
-    conn: Connection, *, code_id: str, org_id: str, order_id: str,
-    gross_paise: int, discount_paise: int, net_paise: int,
+    conn: Connection,
+    *,
+    code_id: str,
+    org_id: str,
+    order_id: str,
+    gross_paise: int,
+    discount_paise: int,
+    net_paise: int,
 ) -> str | None:
     """Record a redemption. **None when this order already redeemed this code.**
 
@@ -2176,15 +2819,19 @@ def write_redemption(
             RETURNING id
             """
         ),
-        {"code": code_id, "org": org_id, "order": order_id,
-         "gross": gross_paise, "discount": discount_paise, "net": net_paise},
+        {
+            "code": code_id,
+            "org": org_id,
+            "order": order_id,
+            "gross": gross_paise,
+            "discount": discount_paise,
+            "net": net_paise,
+        },
     ).first()
     return str(row[0]) if row else None
 
 
-def redemption_for_order(
-    conn: Connection, *, order_id: str
-) -> dict[str, Any] | None:
+def redemption_for_order(conn: Connection, *, order_id: str) -> dict[str, Any] | None:
     """The redemption applied to this order, with the code's PREFIX only.
 
     ``code_hash`` is excluded at the SQL level rather than filtered afterwards,
@@ -2201,15 +2848,18 @@ def redemption_for_order(
         {"o": order_id},
     ).first()
     return (
-        {"id": str(row[0]), "code_prefix": row[1],
-         "discount_paise": int(row[2])}
-        if row else None
+        {"id": str(row[0]), "code_prefix": row[1], "discount_paise": int(row[2])} if row else None
     )
 
 
 def apply_discount_to_order(
-    conn: Connection, *, order_id: str, discount_paise: int,
-    taxable_paise: int, gst_paise: int, total_paise: int,
+    conn: Connection,
+    *,
+    order_id: str,
+    discount_paise: int,
+    taxable_paise: int,
+    gst_paise: int,
+    total_paise: int,
 ) -> None:
     """Write the recomputed money columns. The arithmetic happened in Python.
 
@@ -2224,13 +2874,17 @@ def apply_discount_to_order(
             "       taxable_paise = :t, gst_paise = :g, total_paise = :total "
             "WHERE id = :i"
         ),
-        {"d": discount_paise, "t": taxable_paise, "g": gst_paise,
-         "total": total_paise, "i": order_id},
+        {
+            "d": discount_paise,
+            "t": taxable_paise,
+            "g": gst_paise,
+            "total": total_paise,
+            "i": order_id,
+        },
     )
 
 
-def resolve_key(conn: Connection, *, prefix: str
-                ) -> tuple[str, str, str] | None:
+def resolve_key(conn: Connection, *, prefix: str) -> tuple[str, str, str] | None:
     """Look up a live key. Returns ``(organization_id, key_hash, org_status)``.
 
     Indexed lookup on the prefix, then a constant-time hash comparison by the
@@ -2276,16 +2930,20 @@ def operator_by_email(conn: Connection, email: str) -> dict[str, Any] | None:
     locked out by it. ⚠️ R8 is why this is not a hermetic test: a fake once
     matched ``lower(col) = :param`` against NULL and shipped green.
     """
-    row = conn.execute(
-        text(
-            """
+    row = (
+        conn.execute(
+            text(
+                """
             SELECT id, email, role, status, directory_subject, allowed_methods
               FROM operator
              WHERE lower(email) = :email
             """
-        ),
-        {"email": (email or "").strip().lower()},
-    ).mappings().first()
+            ),
+            {"email": (email or "").strip().lower()},
+        )
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -2304,10 +2962,7 @@ def operator_count(conn: Connection) -> int:
 def operator_active_admin_count(conn: Connection) -> int:
     """How many ``active`` admins exist — the last-admin guard's input."""
     row = conn.execute(
-        text(
-            "SELECT count(*) FROM operator "
-            "WHERE role = 'admin' AND status = 'active'"
-        )
+        text("SELECT count(*) FROM operator WHERE role = 'admin' AND status = 'active'")
     ).first()
     return int(row[0]) if row else 0
 
@@ -2347,9 +3002,7 @@ def operator_insert(
     return str(existing[0])
 
 
-def operator_set_directory_subject(
-    conn: Connection, *, operator_id: str, subject: str
-) -> None:
+def operator_set_directory_subject(conn: Connection, *, operator_id: str, subject: str) -> None:
     """Record the Entra object id learned on a successful sign-in.
 
     ``WHERE directory_subject IS NULL`` so the FIRST sign-in writes it and
@@ -2394,16 +3047,20 @@ def operator_session_insert(
             RETURNING id
             """
         ),
-        {"op": operator_id, "prefix": prefix, "hash": key_hash,
-         "expires": expires_at, "ip": ip, "ua": user_agent},
+        {
+            "op": operator_id,
+            "prefix": prefix,
+            "hash": key_hash,
+            "expires": expires_at,
+            "ip": ip,
+            "ua": user_agent,
+        },
     ).first()
     assert row is not None
     return str(row[0])
 
 
-def operator_session_by_prefix(
-    conn: Connection, prefix: str
-) -> dict[str, Any] | None:
+def operator_session_by_prefix(conn: Connection, prefix: str) -> dict[str, Any] | None:
     """The session AND the operator behind it, in one read.
 
     ⚠️ The JOIN is the point. A session is only as good as the person, so
@@ -2411,9 +3068,10 @@ def operator_session_by_prefix(
     trusted from sign-in time. That is what lets a deactivation take effect
     at once instead of whenever the session happened to expire.
     """
-    row = conn.execute(
-        text(
-            """
+    row = (
+        conn.execute(
+            text(
+                """
             SELECT s.id, s.operator_id, s.key_hash, s.expires_at,
                    s.last_seen_at, s.revoked_at,
                    o.email, o.role, o.status
@@ -2421,9 +3079,12 @@ def operator_session_by_prefix(
               JOIN operator o ON o.id = s.operator_id
              WHERE s.prefix = :prefix
             """
-        ),
-        {"prefix": prefix},
-    ).mappings().first()
+            ),
+            {"prefix": prefix},
+        )
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -2444,10 +3105,7 @@ def operator_session_touch(conn: Connection, session_id: str) -> None:
     surviving mutation as a missing fence — read it as a second guard.
     """
     conn.execute(
-        text(
-            "UPDATE operator_session SET last_seen_at = now() "
-            "WHERE id = CAST(:id AS UUID)"
-        ),
+        text("UPDATE operator_session SET last_seen_at = now() WHERE id = CAST(:id AS UUID)"),
         {"id": session_id},
     )
 
@@ -2490,13 +3148,17 @@ def operator_sessions_revoke_all(conn: Connection, operator_id: str) -> int:
 
 def operator_by_id(conn: Connection, operator_id: str) -> dict[str, Any] | None:
     """One registry row by id, or ``None``."""
-    row = conn.execute(
-        text(
-            "SELECT id, email, role, status, directory_subject, created_at "
-            "FROM operator WHERE id = CAST(:id AS UUID)"
-        ),
-        {"id": operator_id},
-    ).mappings().first()
+    row = (
+        conn.execute(
+            text(
+                "SELECT id, email, role, status, directory_subject, created_at "
+                "FROM operator WHERE id = CAST(:id AS UUID)"
+            ),
+            {"id": operator_id},
+        )
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -2507,9 +3169,10 @@ def operator_list(conn: Connection) -> list[dict[str, Any]]:
     moment it does not, DEF-3's directory sync is the answer rather than a
     page cursor over our own staff.
     """
-    rows = conn.execute(
-        text(
-            """
+    rows = (
+        conn.execute(
+            text(
+                """
             SELECT o.id, o.email, o.role, o.status, o.created_at,
                    o.directory_subject IS NOT NULL AS has_signed_in,
                    (SELECT count(*) FROM operator_session s
@@ -2519,25 +3182,23 @@ def operator_list(conn: Connection) -> list[dict[str, Any]]:
               FROM operator o
              ORDER BY (o.status = 'active') DESC, o.email
             """
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
 def operator_set_role(conn: Connection, *, operator_id: str, role: str) -> None:
     """Change one operator's role."""
     conn.execute(
-        text(
-            "UPDATE operator SET role = :role, updated_at = now() "
-            "WHERE id = CAST(:id AS UUID)"
-        ),
+        text("UPDATE operator SET role = :role, updated_at = now() WHERE id = CAST(:id AS UUID)"),
         {"id": operator_id, "role": role},
     )
 
 
-def operator_set_status(
-    conn: Connection, *, operator_id: str, status: str
-) -> None:
+def operator_set_status(conn: Connection, *, operator_id: str, status: str) -> None:
     """Change one operator's status.
 
     ⚠️ The caller revokes the sessions. Doing it here would hide a security
@@ -2547,8 +3208,7 @@ def operator_set_status(
     """
     conn.execute(
         text(
-            "UPDATE operator SET status = :status, updated_at = now() "
-            "WHERE id = CAST(:id AS UUID)"
+            "UPDATE operator SET status = :status, updated_at = now() WHERE id = CAST(:id AS UUID)"
         ),
         {"id": operator_id, "status": status},
     )
@@ -2575,16 +3235,13 @@ def operator_elevation_open(
             RETURNING id
             """
         ),
-        {"op": operator_id, "reason": reason, "ref": reference,
-         "expires": expires_at},
+        {"op": operator_id, "reason": reason, "ref": reference, "expires": expires_at},
     ).first()
     assert row is not None
     return str(row[0])
 
 
-def operator_elevation_live(
-    conn: Connection, operator_id: str
-) -> dict[str, Any] | None:
+def operator_elevation_live(conn: Connection, operator_id: str) -> dict[str, Any] | None:
     """The newest window that is neither revoked nor expired, or ``None``.
 
     ⚠️ The expiry is filtered in SQL with `now()` AND re-checked in
@@ -2592,9 +3249,10 @@ def operator_elevation_live(
     the read cheap, and the Python check is what a reviewer can see, so
     neither one is the only thing standing between a stale row and a purge.
     """
-    row = conn.execute(
-        text(
-            """
+    row = (
+        conn.execute(
+            text(
+                """
             SELECT id, reason, reference, granted_at, expires_at
               FROM operator_elevation
              WHERE operator_id = CAST(:op AS UUID)
@@ -2603,9 +3261,12 @@ def operator_elevation_live(
              ORDER BY expires_at DESC
              LIMIT 1
             """
-        ),
-        {"op": operator_id},
-    ).mappings().first()
+            ),
+            {"op": operator_id},
+        )
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -2657,9 +3318,10 @@ def activity_page(
     activity.CURSOR_IS_EPHEMERAL` before changing this: the ordering carries a
     known and measured limitation (H-7).
     """
-    rows = conn.execute(
-        text(
-            """
+    rows = (
+        conn.execute(
+            text(
+                """
             SELECT a.id,
                    a.actor,
                    a.action,
@@ -2681,16 +3343,19 @@ def activity_page(
              ORDER BY a.created_at DESC, a.id DESC
              LIMIT :limit
             """
-        ),
-        {
-            "actor": actor,
-            "action": action,
-            "org_slug": org_slug,
-            "cursor_ts": cursor_created_at,
-            "cursor_id": cursor_id,
-            "limit": limit,
-        },
-    ).mappings().all()
+            ),
+            {
+                "actor": actor,
+                "action": action,
+                "org_slug": org_slug,
+                "cursor_ts": cursor_created_at,
+                "cursor_id": cursor_id,
+                "limit": limit,
+            },
+        )
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
@@ -2701,9 +3366,7 @@ def activity_actions(conn: Connection) -> list[str]:
     would be a second vocabulary to keep in step with the call sites. An action
     nobody has performed does not need a filter entry.
     """
-    rows = conn.execute(
-        text("SELECT DISTINCT action FROM control_audit ORDER BY action")
-    ).all()
+    rows = conn.execute(text("SELECT DISTINCT action FROM control_audit ORDER BY action")).all()
     return [r[0] for r in rows]
 
 
@@ -2742,8 +3405,13 @@ def provider_credential_insert(
             RETURNING id
             """
         ),
-        {"provider": provider, "org": organization_id, "secret": secret_enc,
-         "api_base": api_base, "label": label},
+        {
+            "provider": provider,
+            "org": organization_id,
+            "secret": secret_enc,
+            "api_base": api_base,
+            "label": label,
+        },
     ).first()
     assert row is not None
     return str(row[0])
@@ -2759,9 +3427,10 @@ def provider_credential_list(
     reach a response through this function however carelessly it is used.
     ``test_provider_keys.py`` asserts the column list at source level.
     """
-    rows = conn.execute(
-        text(
-            """
+    rows = (
+        conn.execute(
+            text(
+                """
             SELECT c.id, c.provider, c.api_base, c.label,
                    c.created_at, c.revoked_at,
                    o.slug AS org_slug
@@ -2771,9 +3440,12 @@ def provider_credential_list(
              ORDER BY c.provider, c.organization_id NULLS FIRST,
                       c.created_at DESC
             """
-        ),
-        {"all_rows": include_revoked},
-    ).mappings().all()
+            ),
+            {"all_rows": include_revoked},
+        )
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 

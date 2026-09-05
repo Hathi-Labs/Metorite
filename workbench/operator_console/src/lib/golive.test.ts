@@ -21,6 +21,13 @@ const MODEL = (over: Partial<CatalogModel> = {}): CatalogModel => ({
   kinds: ["chat"], contextWindow: null, maxOutput: null,
   inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
   perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+  // 023 — the window and the context tier. Null everywhere: these
+  // fixtures predate the columns and no case here depends on them.
+  inputOffpeakPer1M: null, outputOffpeakPer1M: null,
+  cachedInputOffpeakPer1M: null,
+  offpeakStartUtc: null, offpeakEndUtc: null,
+  contextTierThreshold: null, inputLongPer1M: null,
+  outputLongPer1M: null, cachedInputLongPer1M: null,
   description: "", declared: true, ...over,
 });
 
@@ -118,7 +125,11 @@ describe("step 4 — prices", () => {
     tierRates: [{
       tier: "fast", task: "chat", unit: "tokens",
       mode: "absorbed" as const, inputPer1k: "0", outputPer1k: "0",
-      cachedInputPer1k: "0", creditsPerUnit: "0",
+      cachedInputPer1k: "0",
+      // 024 — the same zero at the per-million scale. An absorbed tier is
+      // free on purpose (D19.2), so zero here is a PRICE and not an absence.
+      inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",
+      creditsPerUnit: "0",
     }],
   };
 

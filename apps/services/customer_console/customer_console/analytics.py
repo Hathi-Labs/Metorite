@@ -56,6 +56,71 @@ def margin_ratio(credits: Decimal, cost_usd: Decimal) -> Decimal | None:
     return (Decimal(credits) / Decimal(cost_usd)).quantize(Decimal("0.01"))
 
 
+def realised_margin(
+    credits: Decimal,
+    cost_usd: Decimal,
+    *,
+    inr_per_credit: Decimal | None,
+    usd_to_inr: Decimal | None,
+) -> Decimal | None:
+    """The margin actually earned, as a FRACTION. ``None`` when unanswerable.
+
+    🔴 **This is the number :func:`margin_ratio` deliberately refused to
+    compute, and migration 017 is what made it answerable.** The comment above
+    that function still stands for its own return: credits and dollars are
+    different units, and subtracting them invents an exchange rate. The
+    difference here is that the operator has now SAVED one — `credit_price`
+    carries both the rupee price of a credit and the planning rate for
+    dollars — so the conversion is a fact somebody asserted rather than a
+    number this module made up.
+
+    ⚠️ **``None`` whenever any leg is missing, and None is NEUTRAL.** No saved
+    credit price means no margin, not a bad one. The console draws a dash. A
+    zero here would read as "we are selling at cost", which is a claim nobody
+    made.
+
+    ⚠️ **``None`` on zero revenue, for :func:`margin_ratio`'s reason.** A tier
+    that billed nothing has no margin to report, and dividing by it would
+    produce a number that renders as certainty.
+    """
+    if inr_per_credit is None or usd_to_inr is None:
+        return None
+    if Decimal(inr_per_credit) <= 0 or Decimal(usd_to_inr) <= 0:
+        return None
+
+    revenue_inr = Decimal(credits) * Decimal(inr_per_credit)
+    if revenue_inr <= 0:
+        return None
+    cost_inr = Decimal(cost_usd or 0) * Decimal(usd_to_inr)
+    return ((revenue_inr - cost_inr) / revenue_inr).quantize(Decimal("0.001"))
+
+
+def margin_alarms(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The tiers sitting below their own floor. Empty when none are.
+
+    ⚠️ **A tier with no floor never alarms**, and a tier with no measured
+    margin never alarms either. Both are unanswered questions rather than
+    failures, and an alarm on an unanswered question teaches an operator to
+    ignore the alarm.
+
+    ⚠️ **Each tier is judged against ITS OWN floor.** A single fleet threshold
+    would alarm on Powerful constantly and never on Fast — the design document
+    puts their floors at 0.22 and 0.45 precisely because the same margin means
+    different things on a cheap tier and an expensive one.
+    """
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        floor = r.get("margin_floor")
+        realised = r.get("realised_margin")
+        if floor is None or realised is None:
+            continue
+        if Decimal(realised) < Decimal(floor):
+            out.append(r)
+    return out
+
+
 def runway_days(balance: Decimal, credits_burned: Decimal,
                 window_days: int = BURN_WINDOW_DAYS) -> int | None:
     """Whole days of credit left at the recent burn rate. ``None`` if unknown.

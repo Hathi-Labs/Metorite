@@ -262,10 +262,16 @@ describe("the tier registry and the tier rates (015, D67)", () => {
         credits_per_unit: "0",
       }],
     }));
+    // ⚠️ This wire carries NO per-million fields, which is a Console that has
+    // not shipped migration 025 release one. The mapping must DERIVE them —
+    // exactly, by `timesThousand` — rather than draw a blank price. The two
+    // services deploy apart, so new code legitimately meets an old wire.
     expect(cat.tierRates).toEqual([{
       tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
       inputPer1k: "0.0080", outputPer1k: "0.0400",
-      cachedInputPer1k: "0.0008", creditsPerUnit: "0",
+      cachedInputPer1k: "0.0008",
+      inputPer1m: "8", outputPer1m: "40", cachedInputPer1m: "0.8",
+      creditsPerUnit: "0",
     }]);
   });
 

@@ -22,6 +22,7 @@ tested without a provider account. That is not a testing convenience bolted on:
 without it the only way to test the Router is to spend money at DeepSeek, which
 means in practice nobody tests it.
 """
+
 from __future__ import annotations
 
 import base64
@@ -113,9 +114,7 @@ class ResolvedTier:
     rank: int = 1
 
 
-def resolve_tier(
-    conn: Connection, tier: str, task: str = "chat"
-) -> ResolvedTier:
+def resolve_tier(conn: Connection, tier: str, task: str = "chat") -> ResolvedTier:
     """Resolve a tier alias to the model currently bound to it.
 
     Picks the newest binding whose ``effective_from`` has passed, so a future
@@ -152,9 +151,7 @@ def resolve_tier(
     return ResolvedTier(tier=tier, model=row[0], task=task)
 
 
-def resolve_chain(
-    conn: Connection, tier: str, task: str = "chat"
-) -> list[ResolvedTier]:
+def resolve_chain(conn: Connection, tier: str, task: str = "chat") -> list[ResolvedTier]:
     """Every model bound to this ``(task, tier)``, in the order to try them.
 
     🔴 **This is what a fallback IS.** The Router walks this list and stops at
@@ -190,10 +187,7 @@ def resolve_chain(
     ).all()
     if not rows:
         raise TierUnknown(f"no binding for tier {tier!r} on task {task!r}")
-    return [
-        ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1]))
-        for r in rows
-    ]
+    return [ResolvedTier(tier=tier, model=r[0], task=task, rank=int(r[1])) for r in rows]
 
 
 # ── D-AI-2: an image follows the chat model when it can (§3.2) ──────────────
@@ -233,9 +227,7 @@ def reads_images(conn: Connection, model: str) -> bool:
     return bool(row and row[0])
 
 
-def _models_that_read_images(
-    conn: Connection, models: Sequence[str]
-) -> set[str]:
+def _models_that_read_images(conn: Connection, models: Sequence[str]) -> set[str]:
     """The subset of *models* that reads an image, in ONE query.
 
     🔴 **The chain resolves on the serving path, and inside the serving
@@ -263,18 +255,13 @@ def _models_that_read_images(
     if not wanted:
         return set()
     rows = conn.execute(
-        text(
-            "SELECT model FROM model_profile "
-            "WHERE model = ANY(:models) AND reads_images"
-        ),
+        text("SELECT model FROM model_profile WHERE model = ANY(:models) AND reads_images"),
         {"models": wanted},
     ).all()
     return {r[0] for r in rows}
 
 
-def resolve_vision_chain(
-    conn: Connection, tier: str
-) -> list[ResolvedTier]:
+def resolve_vision_chain(conn: Connection, tier: str) -> list[ResolvedTier]:
     """Which chain serves a ``task: vision`` call on *tier* (D-AI-2, §3.2).
 
     🔴 **Nothing here reads the payload.** The CALLER declares the task (G-3,
@@ -355,16 +342,14 @@ def resolve_vision_chain(
         return resolve_chain(conn, VISION_TIER, VISION_TASK)
     except TierUnknown as unbound:
         raise VisionUnbound(
-            f"no vision model is bound; the chat model for tier {tier} "
-            "does not read images"
+            f"no vision model is bound; the chat model for tier {tier} does not read images"
         ) from unbound
 
 
 # ── The rate card (CP-6) ────────────────────────────────────────────────────
 
-def resolve_rate_card(
-    conn: Connection, model: str, task: str = "chat"
-) -> RateCard:
+
+def resolve_rate_card(conn: Connection, model: str, task: str = "chat") -> RateCard:
     """The rate card in force for one model, as of now.
 
     Deliberately the same shape as :func:`resolve_tier`: newest row whose
@@ -403,14 +388,49 @@ def resolve_rate_card(
         )
     return RateCard(
         model=model,
-        input_per_1k=row[0],
-        output_per_1k=row[1],
-        cached_input_per_1k=row[2],
+        # ⚠️ `model_rate_card` gains NO per-million columns and never will.
+        # D67.2 retired it as a billing input and the table stays only so a
+        # past invoice reads back (R6). So this converts on the way out, and
+        # the domain object carries ONE scale whichever card it came from —
+        # which is the property that lets `rate_call` price either without
+        # knowing which it holds.
+        input_per_1m=_per_1m(None, row[0]),
+        output_per_1m=_per_1m(None, row[1]),
+        cached_input_per_1m=_per_1m(None, row[2]),
         task=task,
         unit=row[3],
         credits_per_unit=row[4],
         pricing_mode=row[5],
     )
+
+
+#: The scale the per-thousand columns are multiplied by to reach per million.
+#: Named once, because a bare 1000 appearing twice is how the two copies
+#: eventually disagree.
+_PER_1K_TO_PER_1M = Decimal(1000)
+
+
+def _per_1m(per_1m: Decimal | None, per_1k: Decimal | None) -> Decimal:
+    """The per-million rate, from either column. Migration 025, release one.
+
+    🔴 **The per-million column wins whenever it holds a number**, and the
+    per-thousand column is the fallback for a row written before 024 applied,
+    or by a service that has not restarted yet.
+
+    ⚠️ **Zero is a NUMBER and must not fall through.** ``or`` would treat a
+    legitimate zero rate — an absorbed task, a free tier — as missing and
+    silently reach for the other column. The explicit ``is None`` is the whole
+    difference, and `test_customer_console_tier_pricing.py` pins it.
+
+    Both absent answers zero rather than raising: `pricing_mode` already
+    decides whether a card may be billed at all, and a second refusal here
+    would fire on the `absorbed` rows D19.2 puts there on purpose.
+    """
+    if per_1m is not None:
+        return per_1m
+    if per_1k is not None:
+        return per_1k * _PER_1K_TO_PER_1M
+    return Decimal(0)
 
 
 def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
@@ -431,7 +451,9 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
             """
             SELECT input_credits_per_1k, output_credits_per_1k,
                    cached_input_credits_per_1k,
-                   unit, credits_per_unit, pricing_mode
+                   unit, credits_per_unit, pricing_mode,
+                   input_credits_per_1m, output_credits_per_1m,
+                   cached_input_credits_per_1m
             FROM tier_rate_card
             WHERE tier = :tier AND task = :task AND effective_from <= now()
             ORDER BY effective_from DESC
@@ -447,15 +469,22 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
         )
     return TierRate(
         tier=tier,
-        input_per_1k=row[0],
-        output_per_1k=row[1],
-        cached_input_per_1k=row[2],
+        # 🔴 Prefer the per-MILLION column, fall back to the per-thousand one
+        # times 1000 (migration 025, release one of two).
+        #
+        # ⚠️ The fallback is not defensive padding. During a rollout, new code
+        # can meet the OLD schema — a row written before 024 applied, or by a
+        # service that has not restarted. Without the fallback that row rates
+        # as NULL and the call bills zero, silently, which is the exact shape
+        # of the bug slice 1 exists to stop.
+        input_per_1m=_per_1m(row[6], row[0]),
+        output_per_1m=_per_1m(row[7], row[1]),
+        cached_input_per_1m=_per_1m(row[8], row[2]),
         task=task,
         unit=row[3],
         credits_per_unit=row[4],
         pricing_mode=row[5],
     )
-
 
 
 def resolve_invocation(conn: Connection, model: str, task: str) -> str:
@@ -483,13 +512,12 @@ def resolve_invocation(conn: Connection, model: str, task: str) -> str:
         {"model": model, "task": task},
     ).first()
     if row is None:
-        raise TierUnknown(
-            f"{model!r} declares no capability for task {task!r}"
-        )
+        raise TierUnknown(f"{model!r} declares no capability for task {task!r}")
     return row[0]
 
 
 # ── Provider credentials ────────────────────────────────────────────────────
+
 
 def _fernet():
     from cryptography.fernet import Fernet
@@ -532,8 +560,9 @@ class Credential(NamedTuple):
     byok: bool
 
 
-def provider_credential(conn: Connection, *, provider: str,
-                        org_id: str | None = None) -> Credential | None:
+def provider_credential(
+    conn: Connection, *, provider: str, org_id: str | None = None
+) -> Credential | None:
     """The live credential for a provider, with whose account it is.
 
     Prefers the organization's OWN credential when it has one — that is BYOK
@@ -575,12 +604,14 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: clause 9). Each one has a door now, so the Router may call it. The set
 #: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
 #: serving route, and an operator may still declare it.
-SERVING_INVOCATIONS = frozenset({
-    "acompletion",
-    "atranscription",
-    "aimage_generation",
-    "aspeech",
-})
+SERVING_INVOCATIONS = frozenset(
+    {
+        "acompletion",
+        "atranscription",
+        "aimage_generation",
+        "aspeech",
+    }
+)
 
 #: The verb a caller that names none gets. Every chat call made this exact
 #: request before ``invocation`` existed, so the default keeps that path byte
@@ -635,11 +666,24 @@ async def call_provider(**kwargs: Any) -> Any:
 
 # ── Usage extraction ────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class ExtractedUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    #: WHICH vendor convention reported ``cached_tokens``, or None when no
+    #: cached count arrived. ``subset`` means the count sits INSIDE
+    #: ``prompt_tokens`` (the OpenAI-compatible shape, read from
+    #: ``prompt_tokens_details.cached_tokens``). ``sibling`` means it sits
+    #: BESIDE them (the Anthropic shape, read from ``cache_read_input_tokens``).
+    #:
+    #: 🔴 **Recorded rather than acted on, on purpose.** The billing code
+    #: subtracts, which is right for ``subset`` and wrong for ``sibling``.
+    #: Re-normalising on a guess would bill wrong in the other direction, so
+    #: `credit_pricing.md` §3 refuses the impossible case and stores this
+    #: instead — the fleet gets MEASURED before anybody changes the arithmetic.
+    cache_convention: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -724,9 +768,7 @@ def vendor_cost_per_unit_usd(
         return None
     if quantity <= 0:
         return None
-    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(
-        Decimal("0.00000001")
-    )
+    return (Decimal(quantity) * Decimal(per_unit_usd)).quantize(Decimal("0.00000001"))
 
 
 #: What the meter asks the provider to answer with on a transcription.
@@ -755,6 +797,7 @@ def duration_seconds(response: Any) -> Decimal | None:
     object FIRST matters, because it is the reported one rather than the
     inferred one.
     """
+
     def _get(obj: Any, key: str) -> Any:
         if obj is None:
             return None
@@ -858,6 +901,7 @@ def speech_audio(response: Any) -> tuple[bytes, str]:
     cannot read reaches the customer as an empty one, which their own player
     reports far better than a 500 does.
     """
+
     def _media_type(source: Any) -> str | None:
         headers = getattr(getattr(source, "response", None), "headers", None)
         if headers is None:
@@ -900,6 +944,7 @@ def usage_from_response(response: Any) -> ExtractedUsage:
     as a subset of ``prompt_tokens`` and must not have to know which provider it
     came from.
     """
+
     def _get(obj: Any, key: str) -> Any:
         if obj is None:
             return None
@@ -918,17 +963,26 @@ def usage_from_response(response: Any) -> ExtractedUsage:
         prompt = _get(usage, "prompt_tokens") or 0
         completion = _get(usage, "completion_tokens") or 0
 
+        # ⚠️ WHICH field answered is the convention signal, so record it here
+        # and nowhere else — this is the only place that knows.
+        convention: str | None = None
         cached = _get(usage, "cache_read_input_tokens")
-        if not isinstance(cached, int):
+        if isinstance(cached, int):
+            convention = "sibling"
+        else:
             details = _get(usage, "prompt_tokens_details")
             cached = _get(details, "cached_tokens")
+            if isinstance(cached, int):
+                convention = "subset"
         if not isinstance(cached, int):
             cached = 0
+            convention = None
 
         return ExtractedUsage(
             prompt_tokens=int(prompt) if isinstance(prompt, int) else 0,
             completion_tokens=int(completion) if isinstance(completion, int) else 0,
             cached_tokens=cached,
+            cache_convention=convention,
         )
     except Exception:
         return ExtractedUsage()
@@ -960,8 +1014,7 @@ def frame_of(chunk: Any) -> bytes:
     if isinstance(chunk, (bytes, bytearray)):
         return bytes(chunk)
     dump = getattr(chunk, "model_dump_json", None)
-    body = (dump(exclude_none=True) if callable(dump)
-            else json.dumps(chunk, default=str))
+    body = dump(exclude_none=True) if callable(dump) else json.dumps(chunk, default=str)
     return b"data: " + body.encode("utf-8") + b"\n\n"
 
 
@@ -975,7 +1028,7 @@ def usage_from_frame(frame: bytes) -> ExtractedUsage:
         line = frame.strip()
         if not line.startswith(_DATA_PREFIX):
             return ExtractedUsage()
-        body = line[len(_DATA_PREFIX):].strip()
+        body = line[len(_DATA_PREFIX) :].strip()
         if body == b"[DONE]" or not body:
             return ExtractedUsage()
         return usage_from_response(json.loads(body))
@@ -1094,8 +1147,7 @@ class UpstreamFailed(Exception):
 async def walk_chain(
     attempts: Sequence[ResolvedTier],
     attempt: Callable[[ResolvedTier], Awaitable[Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Try each step in order and return the first answer, and who gave it.
 
@@ -1129,8 +1181,7 @@ async def walk_chain(
             if status in CREDENTIAL_STATUSES:
                 dead_vendors.add(vendor)
             remaining = [
-                s for s in attempts[position + 1:]
-                if s.model.split("/", 1)[0] not in dead_vendors
+                s for s in attempts[position + 1 :] if s.model.split("/", 1)[0] not in dead_vendors
             ]
             if not is_retryable(status) or not remaining:
                 raise UpstreamFailed(status) from exc
@@ -1144,8 +1195,7 @@ async def walk_chain(
 async def call_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[Any, ResolvedTier]:
     """Walk the chain for a BUFFERED completion.
 
@@ -1157,6 +1207,7 @@ async def call_chain(
     building a provider call needs the request, the credential and the clamp,
     and none of that is this function's business.
     """
+
     async def _attempt(step: ResolvedTier) -> Any:
         return await call_provider(**kwargs_for(step))
 
@@ -1191,8 +1242,7 @@ async def aclose_quietly(source: Any) -> None:
 async def open_stream_chain(
     attempts: Sequence[ResolvedTier],
     kwargs_for: Callable[[ResolvedTier], dict[str, Any]],
-    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None]
-    | None = None,
+    on_failover: Callable[[ResolvedTier, ResolvedTier, int | None], None] | None = None,
 ) -> tuple[list[Any], Any, ResolvedTier]:
     """Open a provider STREAM, pull its first chunk, and walk while doing it.
 
@@ -1214,6 +1264,7 @@ async def open_stream_chain(
     provider that completed with no content has served the request, and paying
     a second vendor to repeat it would bill twice for one empty answer.
     """
+
     async def _attempt(step: ResolvedTier) -> tuple[list[Any], Any]:
         source = await call_provider(**kwargs_for(step))
         iterator = aiter(source)

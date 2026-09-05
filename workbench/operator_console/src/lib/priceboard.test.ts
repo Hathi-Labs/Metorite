@@ -19,6 +19,10 @@ import {
   tokenSuggestion,
   unitSuggestion,
   vendorUsdBox,
+  marginTone,
+  marginPct,
+  monitorRows,
+  defaultMarginPct,
 } from "./priceboard";
 import { SAMPLE_CATALOG } from "./sample";
 
@@ -117,6 +121,13 @@ describe("the recorded per-unit vendor cost (H-78)", () => {
     kinds: ["transcribe"], contextWindow: null, maxOutput: null,
     inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
     perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+  // 023 — the window and the context tier. Null everywhere: these
+  // fixtures predate the columns and no case here depends on them.
+  inputOffpeakPer1M: null, outputOffpeakPer1M: null,
+  cachedInputOffpeakPer1M: null,
+  offpeakStartUtc: null, offpeakEndUtc: null,
+  contextTierThreshold: null, inputLongPer1M: null,
+  outputLongPer1M: null, cachedInputLongPer1M: null,
     description: "", declared: true, ...over,
   });
 
@@ -183,14 +194,16 @@ describe("the rupee labels on the price list", () => {
       inrRateLine(
         { tier: "t", task: "chat", unit: "tokens", mode: "priced",
           inputPer1k: "2", outputPer1k: "6", cachedInputPer1k: "0.5",
+          inputPer1m: "2000", outputPer1m: "6000", cachedInputPer1m: "500",
           creditsPerUnit: "0" },
         PRICE, TASKS,
       ),
-    ).toBe("≈ ₹4 in / ₹12 out per 1k tokens");
+    ).toBe("≈ ₹4,000 in / ₹12,000 out per 1M tokens");
     expect(
       inrRateLine(
         { tier: "t", task: "image", unit: "images", mode: "priced",
           inputPer1k: "0", outputPer1k: "0", cachedInputPer1k: "0",
+          inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",
           creditsPerUnit: "18" },
         PRICE, TASKS,
       ),
@@ -202,6 +215,7 @@ describe("the rupee labels on the price list", () => {
       inrRateLine(
         { tier: "t", task: "chat", unit: "tokens", mode: "absorbed",
           inputPer1k: "0", outputPer1k: "0", cachedInputPer1k: "0",
+          inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",
           creditsPerUnit: "0" },
         PRICE, TASKS,
       ),
@@ -270,5 +284,76 @@ describe("a $0-listed vendor price", () => {
     expect(s).not.toBeNull();
     expect(s?.cached1k).toBe("0");
     expect(Number(s?.in1k)).toBeGreaterThan(0);
+  });
+});
+
+// ── The margin monitor (migration 029, credit_pricing.md §4.3) ─────────────
+
+describe("the margin monitor", () => {
+  it("treats a MISSING floor or margin as neutral, never as a pass", () => {
+    // 🔴 Both are unanswered questions. An alarm on an unanswered question
+    // teaches an operator to ignore alarms.
+    expect(marginTone(null, "0.45")).toBe("muted");
+    expect(marginTone("0.60", null)).toBe("muted");
+    expect(marginTone(null, null)).toBe("muted");
+  });
+
+  it("alarms only when the realised margin is BELOW its own floor", () => {
+    expect(marginTone("0.32", "0.45")).toBe("alarm");
+    expect(marginTone("0.66", "0.45")).toBe("ok");
+    // Exactly at the floor is not below it.
+    expect(marginTone("0.45", "0.45")).toBe("ok");
+  });
+
+  it("judges each tier against ITS OWN floor", () => {
+    // The same margin passes on Powerful and fails on Fast, which is the
+    // whole reason the floor is per tier.
+    expect(marginTone("0.30", "0.22")).toBe("ok");
+    expect(marginTone("0.30", "0.45")).toBe("alarm");
+  });
+
+  it("draws a dash rather than a zero for an unknown margin", () => {
+    expect(marginPct(null)).toBe("—");
+    expect(marginPct("0.325")).toBe("32.5%");
+  });
+
+  it("keeps a priced tier on the monitor even at zero traffic", () => {
+    // ⚠️ That is the row whose price nobody has checked.
+    const rows = [
+      { calls: 0, marginMultiplier: "1.4", marginFloor: null },
+      { calls: 0, marginMultiplier: null, marginFloor: null },
+      { calls: 12, marginMultiplier: null, marginFloor: null },
+    ];
+    expect(monitorRows(rows)).toHaveLength(2);
+  });
+});
+
+describe("the margin box's starting value", () => {
+  it("is EMPTY when the owner has set no multiplier", () => {
+    // 🔴 The board used to open at 70 percent: a commercial number nobody
+    // chose, presented to an operator as an answer.
+    expect(defaultMarginPct({ tierMargins: [] })).toBe("");
+    expect(
+      defaultMarginPct({ tierMargins: [{ marginMultiplier: null }] }),
+    ).toBe("");
+  });
+
+  it("takes the MEDIAN, so it lands on a value some tier carries", () => {
+    // A mean is dragged by whichever end has more tiers.
+    expect(
+      defaultMarginPct({
+        tierMargins: [
+          { marginMultiplier: "1.4" },
+          { marginMultiplier: "1.7" },
+          { marginMultiplier: "2.5" },
+        ],
+      }),
+    ).toBe("41"); // 1 - 1/1.7
+  });
+
+  it("ignores a multiplier below 1, which would sell at a loss", () => {
+    expect(
+      defaultMarginPct({ tierMargins: [{ marginMultiplier: "0.5" }] }),
+    ).toBe("");
   });
 });
