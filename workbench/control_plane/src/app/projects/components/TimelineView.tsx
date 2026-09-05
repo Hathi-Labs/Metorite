@@ -89,6 +89,8 @@ import {
   EDGE_HIT_PX,
   edgeHitOrder,
   edgeMidpoint,
+  type RoutedEdge,
+  stagger,
   edgePoints,
   interval,
   monthCells,
@@ -413,6 +415,36 @@ export function TimelineView({
     }
     return out;
   }, [drawn, range, drag]);
+
+  /**
+   * Every edge's path, routed TOGETHER.
+   *
+   * `edgePoints` routes one edge at a time and puts its vertical run at the
+   * midpoint between the two bars, so two edges with similar endpoints drew
+   * their runs on top of one another — one hid the other, and where they
+   * diverged the pair read as a single line forking for no reason. `stagger`
+   * is the pass that can see them all at once and gives each collision its own
+   * channel.
+   *
+   * Computed here rather than in the map so the drawing, the hit stroke, the
+   * aim corridor and the midpoint of the remove control all read ONE path. Two
+   * of those computing their own would put the control off the line.
+   */
+  const routed = useMemo(() => {
+    const out: RoutedEdge[] = [];
+    for (const edge of links) {
+      const from = indexById.get(edge.blocker_id);
+      const to = indexById.get(edge.blocked_id);
+      if (from === undefined || to === undefined) continue;
+      const points = edgePoints(
+        { bar: barById.get(edge.blocker_id) ?? null, row: from },
+        { bar: barById.get(edge.blocked_id) ?? null, row: to },
+      );
+      if (!points) continue;
+      out.push({ id: edge.id, points });
+    }
+    return new Map(stagger(out).map((r) => [r.id, r.points]));
+  }, [links, indexById, barById]);
 
   const months = monthCells(range);
   const days = useMemo(() => dayCells(range, todayKey), [range, todayKey]);
@@ -999,13 +1031,7 @@ export function TimelineView({
                   if (!onUnlink || !hoverEdge) return null;
                   const edge = links.find((e) => e.id === hoverEdge);
                   if (!edge) return null;
-                  const from = indexById.get(edge.blocker_id);
-                  const to = indexById.get(edge.blocked_id);
-                  if (from === undefined || to === undefined) return null;
-                  const pts = edgePoints(
-                    { bar: barById.get(edge.blocker_id) ?? null, row: from },
-                    { bar: barById.get(edge.blocked_id) ?? null, row: to },
-                  );
+                  const pts = routed.get(edge.id);
                   if (!pts) return null;
                   return (
                     <path
@@ -1023,13 +1049,7 @@ export function TimelineView({
                     loses the pointer to whichever overlapping edge happens to
                     sit later in `links` — see `edgeHitOrder`. */}
                 {edgeHitOrder(links, hoverEdge).map((edge) => {
-                  const from = indexById.get(edge.blocker_id);
-                  const to = indexById.get(edge.blocked_id);
-                  if (from === undefined || to === undefined) return null;
-                  const points = edgePoints(
-                    { bar: barById.get(edge.blocker_id) ?? null, row: from },
-                    { bar: barById.get(edge.blocked_id) ?? null, row: to },
-                  );
+                  const points = routed.get(edge.id);
                   if (!points) return null;
                   const d = roundedPath(points);
                   const mid = edgeMidpoint(points);

@@ -28,6 +28,8 @@ import { describe, expect, it } from "vitest";
 import type { TaskRow } from "./api";
 import { fromDayKey, shiftDay } from "./calendar";
 import {
+  CHANNEL_PX,
+  stagger,
   AIM_KEEP_PX,
   CONTROL_SHIELD_PX,
   edgeHitOrder,
@@ -1438,5 +1440,100 @@ describe("edgeHitOrder — the aimed arrow keeps the pointer", () => {
     // And wider than the hit stroke, or the corridor is narrower than the line
     // it is protecting the arrival on.
     expect(CONTROL_SHIELD_PX).toBeGreaterThan(EDGE_HIT_PX);
+  });
+});
+
+describe("stagger — two arrows must not share one corridor", () => {
+  // Owner report, 2026-09-05. `edgePoints` routes each edge alone and puts its
+  // vertical run at the midpoint between the bars, so edges with similar
+  // endpoints drew their runs on top of one another.
+  const forward = (id: string, x: number): { id: string; points: Point[] } => ({
+    id,
+    points: [
+      { x: 0, y: 0 },
+      { x, y: 0 },
+      { x, y: 40 },
+      { x: 200, y: 40 },
+    ],
+  });
+
+  it("leaves a lone edge exactly where it was", () => {
+    const one = [forward("a", 100)];
+    expect(stagger(one)[0].points).toEqual(one[0].points);
+  });
+
+  it("splits two colliding runs either side of where they were", () => {
+    const out = stagger([forward("a", 100), forward("b", 100)]);
+    const xs = out.map((r) => r.points[1].x).sort((p, q) => p - q);
+    expect(xs[1] - xs[0]).toBe(CHANNEL_PX);
+    // Centred: the pair straddles the original, rather than both sliding away.
+    expect((xs[0] + xs[1]) / 2).toBe(100);
+  });
+
+  it("keeps the vertical run vertical", () => {
+    // Moving one point of the pair and not the other would draw a diagonal.
+    for (const r of stagger([forward("a", 100), forward("b", 103)])) {
+      expect(r.points[1].x).toBe(r.points[2].x);
+    }
+  });
+
+  it("does not move edges that were already clear of each other", () => {
+    const far = [forward("a", 40), forward("b", 140)];
+    expect(stagger(far).map((r) => r.points[1].x)).toEqual([40, 140]);
+  });
+
+  it("never moves an endpoint", () => {
+    // An arrow must still leave the bar it leaves and arrive where it arrives.
+    const input = [forward("a", 100), forward("b", 100), forward("c", 101)];
+    for (const r of stagger(input)) {
+      const before = input.find((i) => i.id === r.id)!;
+      expect(r.points[0]).toEqual(before.points[0]);
+      expect(r.points[3]).toEqual(before.points[3]);
+    }
+  });
+
+  it("keeps the channel between the two bars", () => {
+    // A shift wide enough to escape the span would route the arrow backwards
+    // through the bar it leaves.
+    const tight = [
+      { id: "a", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 40 }, { x: 4, y: 40 }] },
+      { id: "b", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 80 }, { x: 4, y: 80 }] },
+      { id: "c", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 120 }, { x: 4, y: 120 }] },
+    ];
+    for (const r of stagger(tight)) {
+      expect(r.points[1].x).toBeGreaterThan(0);
+      expect(r.points[1].x).toBeLessThan(4);
+    }
+  });
+
+  it("spreads the lane of backward routes too", () => {
+    // The conflict case, and exactly where several arrows converge.
+    const back = (id: string, y: number) => ({
+      id,
+      points: [
+        { x: 100, y: 0 },
+        { x: 112, y: 0 },
+        { x: 112, y },
+        { x: 8, y },
+        { x: 8, y: 40 },
+        { x: 20, y: 40 },
+      ],
+    });
+    const out = stagger([back("a", 20), back("b", 20)]);
+    const ys = out.map((r) => r.points[2].y).sort((p, q) => p - q);
+    expect(ys[1] - ys[0]).toBe(CHANNEL_PX);
+    // And the lane stays horizontal.
+    for (const r of out) expect(r.points[2].y).toBe(r.points[3].y);
+  });
+
+  it("returns every edge it was given, in the caller's order", () => {
+    const input = [forward("a", 100), forward("b", 100), forward("c", 100)];
+    expect(stagger(input).map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not mutate the routes it was handed", () => {
+    const input = [forward("a", 100), forward("b", 100)];
+    stagger(input);
+    expect(input.map((r) => r.points[1].x)).toEqual([100, 100]);
   });
 });

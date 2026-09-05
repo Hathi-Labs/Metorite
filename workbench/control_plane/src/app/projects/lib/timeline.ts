@@ -829,6 +829,100 @@ export function edgePoints(
   ];
 }
 
+/**
+ * ── STAGGERING: two arrows must not share one corridor ────────────────────
+ *
+ * `edgePoints` routes each edge on its own, and its vertical run sits at the
+ * midpoint between the two bars. Two edges with similar endpoints therefore
+ * get near-identical midpoints and draw their vertical runs ON TOP of one
+ * another — one line hides the other, and where they diverge the pair reads as
+ * a single line that forks for no reason. Owner report, 2026-09-05.
+ *
+ * The fix is the standard one for orthogonal edge routing: a corridor is a set
+ * of parallel CHANNELS, and colliding runs each take their own. Nothing about
+ * an individual edge changes; what changes is that they are placed with
+ * knowledge of each other, which routing one at a time cannot do.
+ *
+ * Two kinds of run collide, and both are handled:
+ *
+ *  - the **vertical** x of a forward route (4 points), and
+ *  - the **horizontal** lane y of a backward route (6 points), which is the
+ *    conflict case, and exactly where several arrows converge.
+ *
+ * Centred on the group, so a lone edge never moves and a pair splits evenly
+ * either side of where it would have been. Deterministic: the order is the
+ * caller's, so the same board always draws the same way.
+ */
+export const CHANNEL_PX = 7;
+
+export interface RoutedEdge {
+  id: string;
+  points: Point[];
+}
+
+/** Consecutive runs of values within `CHANNEL_PX` of each other. */
+function cluster<T>(items: T[], value: (item: T) => number): T[][] {
+  const sorted = [...items].sort((a, b) => value(a) - value(b));
+  const groups: T[][] = [];
+  for (const item of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && Math.abs(value(item) - value(last[last.length - 1])) < CHANNEL_PX) {
+      last.push(item);
+    } else {
+      groups.push([item]);
+    }
+  }
+  return groups;
+}
+
+/**
+ * The same edges, with colliding runs spread into parallel channels.
+ *
+ * Never reorders the result and never changes an endpoint — an arrow still
+ * leaves the same bar and still arrives at the same one. Only the middle moves.
+ */
+export function stagger(routes: readonly RoutedEdge[]): RoutedEdge[] {
+  const moved = new Map<string, Point[]>();
+
+  // Forward routes: the vertical run at points[1].x === points[2].x.
+  const forward = routes.filter(
+    (r) => r.points.length === 4 && r.points[1].x === r.points[2].x,
+  );
+  for (const group of cluster(forward, (r) => r.points[1].x)) {
+    if (group.length < 2) continue;
+    group.forEach((route, i) => {
+      const shift = (i - (group.length - 1) / 2) * CHANNEL_PX;
+      const pts = route.points.map((p) => ({ ...p }));
+      // Clamped inside the two bars, so a channel can never route backwards
+      // through the thing it leaves or the thing it points at.
+      const lo = Math.min(pts[0].x, pts[3].x) + 1;
+      const hi = Math.max(pts[0].x, pts[3].x) - 1;
+      const x = Math.max(lo, Math.min(hi, pts[1].x + shift));
+      pts[1].x = x;
+      pts[2].x = x;
+      moved.set(route.id, pts);
+    });
+  }
+
+  // Backward routes: the horizontal lane at points[2].y === points[3].y.
+  const backward = routes.filter(
+    (r) => r.points.length === 6 && r.points[2].y === r.points[3].y,
+  );
+  for (const group of cluster(backward, (r) => r.points[2].y)) {
+    if (group.length < 2) continue;
+    group.forEach((route, i) => {
+      const shift = (i - (group.length - 1) / 2) * CHANNEL_PX;
+      const pts = (moved.get(route.id) ?? route.points).map((p) => ({ ...p }));
+      const y = pts[2].y + shift;
+      pts[2].y = y;
+      pts[3].y = y;
+      moved.set(route.id, pts);
+    });
+  }
+
+  return routes.map((r) => (moved.has(r.id) ? { id: r.id, points: moved.get(r.id)! } : r));
+}
+
 export function edgePath(
   from: { bar: Bar | null; row: number },
   to: { bar: Bar | null; row: number },
