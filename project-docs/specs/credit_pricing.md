@@ -263,7 +263,31 @@ does.
    the `_per_1k` column multiplied by 1000.
 2. Release one writes both column sets on every insert. It reads the `_per_1m`
    set.
-3. Release two drops the `_per_1k` columns.
+3. ✅ **Release two drops the `_per_1k` columns.** Migration 030, 2026-09-05.
+
+   ⚠️ **The two-release split exists to protect a live billing window, and the
+   owner confirmed there is none.** No customer is on the product, the card
+   ships unpriced and the spend gate ships off. So both halves went in one
+   release. Recorded as a decision somebody took, not a rule nobody knew.
+
+   🔴 **THE CONSTRAINT NAME IS LOAD-BEARING.** Postgres drops a CHECK with any
+   column it names, so the drop also removed migration 015's
+   `tier_rate_card_nonneg`. 015 re-adds that constraint under a name-based
+   guard, and its predicate names the dropped columns — and **the deploy
+   replays the whole ladder on every run**. Migration 030 therefore re-creates
+   the constraint under 015's own name so the guard finds it. Measured: the
+   suite went from 155 passing to **876 errors** before that fix.
+
+   ⚠️ **Migration 025's backfill needed the same treatment**, and it is a
+   change to a shipped file. Its `UPDATE` reads the dropped column, so a replay
+   fails. It is now guarded on the column existing, which changes nothing for a
+   database where the backfill already ran.
+
+   ⚠️ **`model_rate_card` KEEPS its per-thousand columns.** D67.2 retired it as
+   a billing input and kept the table so a past invoice reads back. It sits one
+   function above the tier read in `router.py`. A blanket rename caught it
+   three separate times during this slice, in `router.py`, `tier_pricing` and
+   `tasks` — the fences caught all three.
 4. `rate_call` divides by 1000000, never by 1000.
 5. The console shows per million, and `priceboard.ts` converts once.
 

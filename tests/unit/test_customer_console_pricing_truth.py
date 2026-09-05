@@ -283,9 +283,9 @@ def test_byok_is_metered_and_billed_zero(client, db, org, vendor, serve):
              "s": router_mod.encrypt_secret("sk-their-own-key")})
         c.execute(
             text("INSERT INTO tier_rate_card (tier, task, "
-                 "input_credits_per_1k, output_credits_per_1k, "
-                 "cached_input_credits_per_1k, pricing_mode, effective_from) "
-                 "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now())"),
+                 "input_credits_per_1m, output_credits_per_1m, "
+                 "cached_input_credits_per_1m, pricing_mode, effective_from) "
+                 "VALUES (:t, 'chat', 2000, 6000, 500, 'priced', now())"),
             {"t": tier})
         before = c.execute(
             text("SELECT COALESCE(SUM(delta), 0) FROM credit_ledger "
@@ -319,9 +319,9 @@ def test_a_platform_call_on_a_priced_card_still_bills(
     with db.begin() as c:
         c.execute(
             text("INSERT INTO tier_rate_card (tier, task, "
-                 "input_credits_per_1k, output_credits_per_1k, "
-                 "cached_input_credits_per_1k, pricing_mode, effective_from) "
-                 "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now())"),
+                 "input_credits_per_1m, output_credits_per_1m, "
+                 "cached_input_credits_per_1m, pricing_mode, effective_from) "
+                 "VALUES (:t, 'chat', 2000, 6000, 500, 'priced', now())"),
             {"t": tier})
 
     assert _ask(client, key, tier).status_code == 200

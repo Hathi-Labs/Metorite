@@ -257,19 +257,21 @@ describe("the tier registry and the tier rates (015, D67)", () => {
     const cat = catalogFromWire(WIRE({
       tier_rates: [{
         tier: "tier-fast", task: "chat", unit: "tokens",
-        pricing_mode: "priced", input_per_1k: "0.0080",
-        output_per_1k: "0.0400", cached_input_per_1k: "0.0008",
+        pricing_mode: "priced", input_per_1m: "8",
+        output_per_1m: "40", cached_input_per_1m: "0.8",
         credits_per_unit: "0",
       }],
     }));
-    // ⚠️ This wire carries NO per-million fields, which is a Console that has
-    // not shipped migration 025 release one. The mapping must DERIVE them —
-    // exactly, by `timesThousand` — rather than draw a blank price. The two
-    // services deploy apart, so new code legitimately meets an old wire.
+    // ⚠️ This REPLACES the per-thousand fallback case. That test fed a wire
+    // carrying only `_per_1k` and asserted the mapping derived the per-million
+    // figure from it. Migration 030 dropped the columns, the projection and
+    // the wire fields together, so the input it fed can no longer arrive — a
+    // test that kept asserting it would be exercising a shape nothing sends.
+    //
+    // The property that still matters is that money crosses as a STRING and
+    // is not re-derived on the way through.
     expect(cat.tierRates).toEqual([{
       tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
-      inputPer1k: "0.0080", outputPer1k: "0.0400",
-      cachedInputPer1k: "0.0008",
       inputPer1m: "8", outputPer1m: "40", cachedInputPer1m: "0.8",
       creditsPerUnit: "0",
     }]);

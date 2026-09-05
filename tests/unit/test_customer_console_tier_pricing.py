@@ -68,10 +68,13 @@ RESPONSE = {
 
 #: What those counts bill at in=2 / out=6 / cached=0.5 credits per 1k:
 #: 300×2/1k + 900×0.5/1k + 40×6/1k = 1.29 credits.
-RATE_A = {"i": 2, "o": 6, "c": Decimal("0.5")}
+# ⚠️ Restated at the per-MILLION scale (migration 030). These are the SAME
+# prices — 2 per 1k IS 2000 per 1M — so every expected bill below is
+# unchanged. If one moves, the conversion is wrong and not the test.
+RATE_A = {"i": 2000, "o": 6000, "c": Decimal("500")}
 BILL_A = Decimal("1.2900")
 #: And at exactly double: the premium tier on the SAME model.
-RATE_B = {"i": 4, "o": 12, "c": Decimal("1.0")}
+RATE_B = {"i": 4000, "o": 12000, "c": Decimal("1000")}
 BILL_B = Decimal("2.5800")
 
 #: The slate migration 015 registers (beside anything tests add).
@@ -165,8 +168,8 @@ def _price(db, tier: str, rate: dict, *, when: str = "now()") -> None:
     with db.begin() as c:
         c.execute(
             text("INSERT INTO tier_rate_card (tier, task, "
-                 "input_credits_per_1k, output_credits_per_1k, "
-                 "cached_input_credits_per_1k, pricing_mode, effective_from) "
+                 "input_credits_per_1m, output_credits_per_1m, "
+                 "cached_input_credits_per_1m, pricing_mode, effective_from) "
                  f"VALUES (:t, 'chat', :i, :o, :c, 'priced', {when})"),
             {"t": tier, **rate})
 
@@ -306,6 +309,9 @@ def test_a_model_card_row_no_longer_bills_anybody(client, db, org, vendor,
     _stage(db, tier=tier, models=[model])
     with db.begin() as c:
         c.execute(
+            # ⚠️ `model_rate_card` KEEPS its per-thousand columns (D67.2,
+            # migration 030). A blanket rename caught this line once and the
+            # insert failed on a column that never existed here.
             text("INSERT INTO model_rate_card (model, task, "
                  "input_credits_per_1k, output_credits_per_1k, "
                  "pricing_mode, effective_from) "
@@ -592,11 +598,18 @@ def _tier_row(client, tier: str, task: str) -> dict:
 
 
 class TestThePerMillionScale:
-    def test_the_two_scales_stay_EXACTLY_a_thousand_apart(self, client, db):
-        """⚠️ Same price, second unit — never a repricing.
+    def test_an_OLD_scale_caller_still_prices_correctly(self, client, db):
+        """⚠️ This REPLACES `test_the_two_scales_stay_EXACTLY_a_thousand_apart`.
 
-        If this drifts, somebody has re-derived a rate instead of restating
-        it, and every past invoice stops reconciling against its own card.
+        That test compared the two columns against each other, and migration
+        030 dropped one of them. The property it protected — a restatement
+        and never a repricing — is what this asserts instead, from the outside:
+        a caller sending the OLD per-thousand field still lands the right
+        number on the surviving column.
+
+        🔴 **The REQUEST keeps both fields on purpose.** The columns
+        contracted; the wire did not. A script somebody wrote last month must
+        not start pricing at zero because we changed a unit.
         """
         tier = _scratch_tier(db)
         res = client.post("/catalog/tier-rates", headers=OP, json={
@@ -605,8 +618,55 @@ class TestThePerMillionScale:
             "output_per_1k": "16.5", "cached_input_per_1k": "0.175"})
         assert res.status_code == 200, res.text
         row = _tier_row(client, tier, "chat")
-        for k in ("input", "output", "cached_input"):
-            assert Decimal(row[f"{k}_per_1m"]) == Decimal(row[f"{k}_per_1k"]) * 1000
+        assert Decimal(row["input_per_1m"]) == Decimal("5500")
+        assert Decimal(row["output_per_1m"]) == Decimal("16500")
+        assert Decimal(row["cached_input_per_1m"]) == Decimal("175")
+
+    def test_the_per_thousand_COLUMNS_are_gone(self, db):
+        """🔴 The contract half of migration 030, asserted on the schema.
+
+        A drop nothing checks is a drop somebody re-adds by habit.
+        """
+        from sqlalchemy import text
+
+        with db.begin() as c:
+            cols = {
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'tier_rate_card'"
+                    )
+                ).all()
+            }
+        assert "input_credits_per_1m" in cols
+        assert cols.isdisjoint({
+            "input_credits_per_1k",
+            "output_credits_per_1k",
+            "cached_input_credits_per_1k",
+        }), "migration 030 did not drop the per-thousand columns"
+
+    def test_model_rate_card_KEEPS_its_per_thousand_columns(self, db):
+        """⚠️ The near-miss 030 had to avoid.
+
+        `model_rate_card` is one function above the tier read in `router.py`
+        and it still selects these. D67.2 retired it as a billing input and
+        kept the table so a past invoice reads back. A contract that took both
+        would have broken that read.
+        """
+        from sqlalchemy import text
+
+        with db.begin() as c:
+            cols = {
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'model_rate_card'"
+                    )
+                ).all()
+            }
+        assert "input_credits_per_1k" in cols
 
     def test_a_caller_on_EITHER_scale_prices_the_tier_the_same(self, client, db):
         """The wire is an expand surface too — both services deploy apart."""
@@ -623,8 +683,8 @@ class TestThePerMillionScale:
         }).status_code == 200
 
         old_row, new_row = _tier_row(client, old_t, "chat"), _tier_row(client, new_t, "chat")
-        for k in ("input_per_1m", "output_per_1m", "cached_input_per_1m",
-                  "input_per_1k", "output_per_1k", "cached_input_per_1k"):
+        # ⚠️ Per million only. The wire contracted with the columns (030).
+        for k in ("input_per_1m", "output_per_1m", "cached_input_per_1m"):
             assert Decimal(old_row[k]) == Decimal(new_row[k]), (
                 f"{k} differs depending on which scale the caller used"
             )
@@ -644,7 +704,6 @@ class TestThePerMillionScale:
         assert res.status_code == 200, res.text
         row = _tier_row(client, tier, "chat")
         assert Decimal(row["input_per_1m"]) == Decimal("34000")
-        assert Decimal(row["input_per_1k"]) == Decimal("34")
 
     def test_a_zero_rate_survives_as_a_zero_and_is_not_read_as_absent(self, client, db):
         """⚠️ Zero is a PRICE. `or` would read it as "not sent"."""
@@ -656,4 +715,3 @@ class TestThePerMillionScale:
         assert res.status_code == 200, res.text
         row = _tier_row(client, tier, "chat")
         assert Decimal(row["input_per_1m"]) == 0
-        assert Decimal(row["input_per_1k"]) == 0

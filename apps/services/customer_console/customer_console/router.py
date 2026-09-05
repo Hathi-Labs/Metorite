@@ -449,9 +449,7 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
     row = conn.execute(
         text(
             """
-            SELECT input_credits_per_1k, output_credits_per_1k,
-                   cached_input_credits_per_1k,
-                   unit, credits_per_unit, pricing_mode,
+            SELECT unit, credits_per_unit, pricing_mode,
                    input_credits_per_1m, output_credits_per_1m,
                    cached_input_credits_per_1m
             FROM tier_rate_card
@@ -469,21 +467,21 @@ def resolve_tier_rate(conn: Connection, tier: str, task: str) -> TierRate:
         )
     return TierRate(
         tier=tier,
-        # 🔴 Prefer the per-MILLION column, fall back to the per-thousand one
-        # times 1000 (migration 025, release one of two).
+        # 🔴 Per MILLION, and there is no per-thousand column left to fall back
+        # to — migration 030 dropped them. The fallback existed for the window
+        # in which new code could meet the old schema, and release one closed
+        # it.
         #
-        # ⚠️ The fallback is not defensive padding. During a rollout, new code
-        # can meet the OLD schema — a row written before 024 applied, or by a
-        # service that has not restarted. Without the fallback that row rates
-        # as NULL and the call bills zero, silently, which is the exact shape
-        # of the bug slice 1 exists to stop.
-        input_per_1m=_per_1m(row[6], row[0]),
-        output_per_1m=_per_1m(row[7], row[1]),
-        cached_input_per_1m=_per_1m(row[8], row[2]),
+        # ⚠️ `_per_1m` still normalises NULL to zero. A row that predates the
+        # backfill would otherwise rate as NULL and bill zero in silence, which
+        # is the shape slice 1 exists to stop.
+        input_per_1m=_per_1m(row[3], None),
+        output_per_1m=_per_1m(row[4], None),
+        cached_input_per_1m=_per_1m(row[5], None),
         task=task,
-        unit=row[3],
-        credits_per_unit=row[4],
-        pricing_mode=row[5],
+        unit=row[0],
+        credits_per_unit=row[1],
+        pricing_mode=row[2],
     )
 
 
