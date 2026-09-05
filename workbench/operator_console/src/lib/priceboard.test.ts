@@ -193,7 +193,6 @@ describe("the rupee labels on the price list", () => {
     expect(
       inrRateLine(
         { tier: "t", task: "chat", unit: "tokens", mode: "priced",
-          inputPer1k: "2", outputPer1k: "6", cachedInputPer1k: "0.5",
           inputPer1m: "2000", outputPer1m: "6000", cachedInputPer1m: "500",
           creditsPerUnit: "0" },
         PRICE, TASKS,
@@ -202,7 +201,6 @@ describe("the rupee labels on the price list", () => {
     expect(
       inrRateLine(
         { tier: "t", task: "image", unit: "images", mode: "priced",
-          inputPer1k: "0", outputPer1k: "0", cachedInputPer1k: "0",
           inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",
           creditsPerUnit: "18" },
         PRICE, TASKS,
@@ -214,7 +212,6 @@ describe("the rupee labels on the price list", () => {
     expect(
       inrRateLine(
         { tier: "t", task: "chat", unit: "tokens", mode: "absorbed",
-          inputPer1k: "0", outputPer1k: "0", cachedInputPer1k: "0",
           inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",
           creditsPerUnit: "0" },
         PRICE, TASKS,

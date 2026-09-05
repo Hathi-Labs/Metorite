@@ -420,8 +420,8 @@ def priced_stt(db):
     with db.begin() as c:
         c.execute(text(
             "INSERT INTO tier_rate_card (tier, task, unit, credits_per_unit, "
-            " input_credits_per_1k, output_credits_per_1k, "
-            " cached_input_credits_per_1k, pricing_mode, effective_from) "
+            " input_credits_per_1m, output_credits_per_1m, "
+            " cached_input_credits_per_1m, pricing_mode, effective_from) "
             "VALUES ('tier-stt', 'transcribe', 'minutes', :c, 0, 0, 0, "
             " 'priced', now())"), {"c": CREDITS_PER_MINUTE})
     yield
@@ -626,8 +626,8 @@ def _price(db, *, tier, task, unit, per_unit):
     with db.begin() as c:
         c.execute(text(
             "INSERT INTO tier_rate_card (tier, task, unit, credits_per_unit, "
-            " input_credits_per_1k, output_credits_per_1k, "
-            " cached_input_credits_per_1k, pricing_mode, effective_from) "
+            " input_credits_per_1m, output_credits_per_1m, "
+            " cached_input_credits_per_1m, pricing_mode, effective_from) "
             "VALUES (:t, :k, :u, :c, 0, 0, 0, 'priced', now())"),
             {"t": tier, "k": task, "u": unit, "c": per_unit})
 

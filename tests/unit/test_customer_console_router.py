@@ -168,10 +168,10 @@ def priced_card(db):
     tier = "tier-balanced"
     with db.begin() as c:
         c.execute(text(
-            "INSERT INTO tier_rate_card (tier, task, input_credits_per_1k, "
-            " output_credits_per_1k, cached_input_credits_per_1k, "
+            "INSERT INTO tier_rate_card (tier, task, input_credits_per_1m, "
+            " output_credits_per_1m, cached_input_credits_per_1m, "
             " pricing_mode, effective_from) "
-            "VALUES (:t, 'chat', 2, 6, 0.5, 'priced', now()) "
+            "VALUES (:t, 'chat', 2000, 6000, 500, 'priced', now()) "
             "ON CONFLICT DO NOTHING"), {"t": tier})
     yield tier
     with db.begin() as c:
@@ -179,7 +179,7 @@ def priced_card(db):
         # the ships-unpriced idea holds for the slate.
         c.execute(text(
             "DELETE FROM tier_rate_card WHERE tier = :t "
-            "  AND (input_credits_per_1k <> 0 OR output_credits_per_1k <> 0)"),
+            "  AND (input_credits_per_1m <> 0 OR output_credits_per_1m <> 0)"),
             {"t": tier})
 
 
@@ -2015,13 +2015,13 @@ class TestTaskRoutingEndToEnd:
             # chat FIRST, image SECOND. The wrong lookup takes the newest.
             c.execute(text(
                 "INSERT INTO tier_rate_card (tier, task, unit, "
-                " input_credits_per_1k, output_credits_per_1k, pricing_mode, "
+                " input_credits_per_1m, output_credits_per_1m, pricing_mode, "
                 " effective_from) VALUES "
-                "(:t, 'chat', 'tokens', 2, 6, 'priced', now() - interval '1 h')"),
+                "(:t, 'chat', 'tokens', 2000, 6000, 'priced', now() - interval '1 h')"),
                 {"t": tier})
             c.execute(text(
                 "INSERT INTO tier_rate_card (tier, task, unit, "
-                " input_credits_per_1k, output_credits_per_1k, "
+                " input_credits_per_1m, output_credits_per_1m, "
                 " credits_per_unit, pricing_mode, effective_from) VALUES "
                 "(:t, 'image', 'images', 0, 0, 999, 'priced', now())"),
                 {"t": tier})
@@ -2324,10 +2324,10 @@ def priced(db):
                 "ON CONFLICT (slug) DO NOTHING"), {"t": tier})
             c.execute(text(
                 "INSERT INTO tier_rate_card (tier, task, "
-                " input_credits_per_1k, output_credits_per_1k, "
-                " cached_input_credits_per_1k, unit, pricing_mode, "
+                " input_credits_per_1m, output_credits_per_1m, "
+                " cached_input_credits_per_1m, unit, pricing_mode, "
                 " effective_from) "
-                "VALUES (:t, :k, 2, 6, 0.5, 'tokens', 'priced', now())"),
+                "VALUES (:t, :k, 2000, 6000, 500, 'tokens', 'priced', now())"),
                 {"t": tier, "k": task})
 
     yield _price

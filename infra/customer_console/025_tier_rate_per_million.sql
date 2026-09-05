@@ -47,17 +47,35 @@ ALTER TABLE tier_rate_card
 -- keep their own scale, because an image is still priced per image.
 
 -- The backfill. Idempotent by the NULL guard, so the ladder replays clean.
-UPDATE tier_rate_card
-   SET input_credits_per_1m = input_credits_per_1k * 1000
- WHERE input_credits_per_1m IS NULL;
-
-UPDATE tier_rate_card
-   SET output_credits_per_1m = output_credits_per_1k * 1000
- WHERE output_credits_per_1m IS NULL;
-
-UPDATE tier_rate_card
-   SET cached_input_credits_per_1m = cached_input_credits_per_1k * 1000
- WHERE cached_input_credits_per_1m IS NULL;
+-- 🔴 **Guarded on the SOURCE COLUMN still existing, and that guard was added
+-- on 2026-09-05 when migration 030 dropped it.** The deploy replays the whole
+-- ladder on every run, so this file executes again on a database where 030 has
+-- already contracted the schema — and a bare UPDATE naming a dropped column
+-- fails the whole migration step for everybody.
+--
+-- ⚠️ This changes NOTHING for a database where the backfill already ran. The
+-- rows are filled and the guard only decides whether to look at them again.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'tier_rate_card'
+          AND column_name = 'input_credits_per_1k'
+    ) THEN
+        EXECUTE '
+            UPDATE tier_rate_card
+               SET input_credits_per_1m = input_credits_per_1k * 1000
+             WHERE input_credits_per_1m IS NULL';
+        EXECUTE '
+            UPDATE tier_rate_card
+               SET output_credits_per_1m = output_credits_per_1k * 1000
+             WHERE output_credits_per_1m IS NULL';
+        EXECUTE '
+            UPDATE tier_rate_card
+               SET cached_input_credits_per_1m = cached_input_credits_per_1k * 1000
+             WHERE cached_input_credits_per_1m IS NULL';
+    END IF;
+END $$;
 
 DO $$
 BEGIN

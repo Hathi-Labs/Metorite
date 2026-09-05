@@ -63,7 +63,10 @@ RESPONSE = {
 
 #: 300x2/1k + 900x0.5/1k + 40x6/1k = 1.29 credits — the tier-pricing suite's
 #: arithmetic, reused verbatim so a drift here would fail there first.
-RATE_A = {"i": 2, "o": 6, "c": Decimal("0.5")}
+# ⚠️ Restated at the per-MILLION scale (migration 030). These are the SAME
+# prices — 2 per 1k IS 2000 per 1M — so every expected bill below is
+# unchanged. If one moves, the conversion is wrong and not the test.
+RATE_A = {"i": 2000, "o": 6000, "c": Decimal("500")}
 BILL_A = Decimal("1.2900")
 
 
@@ -211,8 +214,8 @@ def test_billing_never_reads_the_credit_price(client, db, org, vendor):
                        "effective_from) VALUES (:t, 'chat', :m, 1, now())"),
                   {"t": tier, "m": model})
         c.execute(text("INSERT INTO tier_rate_card (tier, task, "
-                       "input_credits_per_1k, output_credits_per_1k, "
-                       "cached_input_credits_per_1k, pricing_mode, "
+                       "input_credits_per_1m, output_credits_per_1m, "
+                       "cached_input_credits_per_1m, pricing_mode, "
                        "effective_from) "
                        "VALUES (:t, 'chat', :i, :o, :c, 'priced', now())"),
                   {"t": tier, **RATE_A})

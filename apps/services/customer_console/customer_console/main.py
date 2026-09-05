@@ -1982,29 +1982,21 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 # The console and the Console deploy separately, so the wire
                 # is an expand/contract surface too: a frontend that has not
                 # shipped yet still reads `_per_1k` and still draws the right
-                # number. A later release removes them here as well.
-                "input_per_1k": str(r[4]),
-                "output_per_1k": str(r[5]),
-                "cached_input_per_1k": str(r[6]),
-                # 🔴 The scale of record. NULL only for a row written before
-                # 024 backfilled, so the fallback keeps the number honest.
-                "input_per_1m": str(r[9] if r[9] is not None else r[4] * 1000),
-                "output_per_1m": str(r[10] if r[10] is not None else r[5] * 1000),
-                "cached_input_per_1m": str(
-                    r[11] if r[11] is not None else r[6] * 1000
-                ),
+                # 🔴 ONE scale on the wire now (migration 030). The
+                # per-thousand fields are gone from the column, the projection
+                # and this payload together, which is what "contract" means.
+                "input_per_1m": str(r[4]),
+                "output_per_1m": str(r[5]),
+                "cached_input_per_1m": str(r[6]),
                 "credits_per_unit": str(r[7]),
                 "effective_from": _iso(r[8]),
             }
             for r in conn.execute(
                 text(
                     "SELECT DISTINCT ON (tier, task) tier, task, unit, "
-                    "       pricing_mode, input_credits_per_1k, "
-                    "       output_credits_per_1k, cached_input_credits_per_1k, "
-                    "       credits_per_unit, effective_from, "
-                    # ⚠️ APPENDED. This projection reads by POSITION.
-                    "       input_credits_per_1m, output_credits_per_1m, "
-                    "       cached_input_credits_per_1m "
+                    "       pricing_mode, input_credits_per_1m, "
+                    "       output_credits_per_1m, cached_input_credits_per_1m, "
+                    "       credits_per_unit, effective_from "
                     "FROM tier_rate_card WHERE effective_from <= now() "
                     "ORDER BY tier, task, effective_from DESC"
                 )
@@ -2489,35 +2481,29 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
         except catalog.CatalogRefused as exc:
             raise _catalog_refusal(exc) from exc
 
-        # 🔴 **BOTH scales are written, and that is what makes the rollout
-        # safe** (migration 025, release one of two). Old code reading
-        # `_per_1k` finds its number. New code reading `_per_1m` finds its
-        # own. A later release drops the per-thousand columns and this
-        # doubling with them.
+        # 🔴 **ONE scale is written now** (migration 030). The dual write was
+        # the expand phase: it existed so old code reading `_per_1k` still
+        # found a number while the rollout finished. That window closed when
+        # release one shipped, and this migration drops the columns it fed.
         #
-        # ⚠️ Whichever scale the CALLER sent is the authority, and the other
-        # is derived from it. Deriving both from one field keeps them exactly
-        # 1000 apart by construction, so the two columns cannot drift into
-        # disagreeing about one price.
+        # ⚠️ **The REQUEST still accepts either scale.** A caller on the old
+        # field is converted by `_tier_rate_scales` and its price lands
+        # correctly — the wire contracts on its own schedule, and a script
+        # somebody wrote last month should not start pricing at zero.
         try:
             conn.execute(
                 text(
                     "INSERT INTO tier_rate_card (tier, task, unit, "
-                    "    input_credits_per_1k, output_credits_per_1k, "
-                    "    cached_input_credits_per_1k, credits_per_unit, "
-                    "    pricing_mode, effective_from, "
+                    "    credits_per_unit, pricing_mode, effective_from, "
                     "    input_credits_per_1m, output_credits_per_1m, "
                     "    cached_input_credits_per_1m) "
-                    "VALUES (:tr, :t, :u, :i, :o, :c, :cpu, :pm, "
+                    "VALUES (:tr, :t, :u, :cpu, :pm, "
                     "        COALESCE(:eff, now()), :i1m, :o1m, :c1m)"
                 ),
                 {
                     "tr": req.tier,
                     "t": req.task,
                     "u": req.unit,
-                    "i": per_1m["input"] / _PER_1K,
-                    "o": per_1m["output"] / _PER_1K,
-                    "c": per_1m["cached"] / _PER_1K,
                     "cpu": req.credits_per_unit,
                     "pm": req.pricing_mode,
                     "eff": req.effective_from,
